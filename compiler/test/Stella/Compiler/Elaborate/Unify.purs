@@ -13,9 +13,8 @@ import Prim as P
 import Stella.Compiler.Elaborate.Kind (KindMetaVar(..), XKind(..))
 import Stella.Compiler.Elaborate.Row (xnf)
 import Stella.Compiler.Elaborate.Type (MetaVar(..), Scope, XConstraint(..), XRowEntry(..), XType(..), emptyScope)
-import Stella.Compiler.Elaborate.Unify (KindMetaBinding(..), KindMetaInfo, KindRequirement(..), MetaBinding(..), MetaContext, MetaInfo, UnifyError(..), UnifyResult(..), emptyContext, freshKindMeta, freshMeta, lookupKindMeta, lookupMeta, requireProducesType, requireQuantifiable, substitute, substituteKind, unifyKind, unifyRow, unifyType)
-import Stella.Compiler.TypedCore (Constraint(..), EffName(..), KindVar(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..), Type(..))
-import Stella.Compiler.TypedCore.Entailment (AtomicFacts, decompose, noFacts)
+import Stella.Compiler.Elaborate.Unify (KindMetaBinding(..), KindMetaInfo, KindRequirement(..), MetaBinding(..), MetaContext, MetaInfo, UnifyEnv, UnifyError(..), UnifyResult(..), emptyContext, freshKindMeta, freshMeta, lookupKindMeta, lookupMeta, requireProducesType, requireQuantifiable, substitute, substituteKind, unifyKind, unifyRow, unifyType)
+import Stella.Compiler.TypedCore (EffName(..), KindVar(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
@@ -71,25 +70,10 @@ rowTypeInfo :: MetaInfo
 rowTypeInfo =
   { kind: XKRow RowType
   , scope: { types: Set.singleton rigidR, kinds: Set.empty }
-  , lacks: Set.empty
-  , disjointFrom: Set.empty
   }
 
 effectRowInfo :: MetaInfo
 effectRowInfo = rowTypeInfo { kind = XKRow RowEffect }
-
-lacking :: P.Array RowKey -> MetaInfo
-lacking keys = rowTypeInfo { lacks = Set.fromFoldable keys }
-
--- | `Γ*` with nothing assumed, which is what most of these cases unify under.
-noAssumptions :: AtomicFacts
-noAssumptions = noFacts
-
--- | `Γ*` built from the row constraints a case assumes.
-assuming :: P.Array Constraint -> AtomicFacts
-assuming cs = case decompose cs of
-  Right facts -> facts
-  Left _ -> noFacts
 
 -- | Two fresh metavariables over an empty context.
 twoMetas :: MetaInfo -> MetaInfo -> { r :: MetaVar, s :: MetaVar, ctx :: MetaContext }
@@ -180,10 +164,15 @@ pairOf x y = XApp (XApp (XCon (Qualified prim (TyName "Pair")) []) x) y
 recordOf :: XType -> XType
 recordOf row = XApp (XCon (Qualified prim (TyName "Record")) []) row
 
+-- | What a unification reads off the site of an equation. No kind variable is in
+-- | scope in any case here, so a kind metavariable one creates may mention none.
+env :: UnifyEnv
+env = { kindVars: Set.empty }
+
 -- | Whether two closed types unify, which is what the cases carrying no
 -- | metavariable assert.
 unifiesAt :: XKind -> XType -> XType -> P.Boolean
-unifiesAt kind t1 t2 = case unifyType noAssumptions Set.empty emptyContext kind t1 t2 of
+unifiesAt kind t1 t2 = case unifyType env emptyContext kind t1 t2 of
   Solved _ -> true
   _ -> false
 
@@ -288,9 +277,9 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         first = freshMeta unknownKind (snd kindMeta)
         second = freshMeta rowTypeInfo (snd first)
         ctx = snd second
-        result = unifyRow noAssumptions ctx (XMeta (fst first)) (XMeta (fst second))
+        result = unifyRow ctx (XMeta (fst first)) (XMeta (fst second))
       case fst result of
-        Solved ctx' -> kindSolutionOf ctx' (fst kindMeta) `shouldEqual` Just (XKRow RowType)
+        Solved { metas: ctx' } -> kindSolutionOf ctx' (fst kindMeta) `shouldEqual` Just (XKRow RowType)
         other -> show other `shouldEqual` "Solved …"
 
   describe "type unification" do
@@ -323,8 +312,8 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         m = freshMeta typeInfo emptyContext
         left = XForall tvA XKType (XMeta (fst m))
         right = XForall tvB XKType tA
-      case unifyType noAssumptions Set.empty (snd m) XKType left right of
-        Solved ctx -> solutionOf ctx (fst m) `shouldEqual` Just tA
+      case unifyType env (snd m) XKType left right of
+        Solved { metas: ctx } -> solutionOf ctx (fst m) `shouldEqual` Just tA
         other -> show other `shouldEqual` "Solved …"
 
     it "refuses a metavariable whose solution is the other side's binder" do
@@ -333,7 +322,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         m = freshMeta typeInfo emptyContext
         left = XForall tvA XKType (XMeta (fst m))
         right = XForall tvB XKType (XVar tvB)
-      case unifyType noAssumptions Set.empty (snd m) XKType left right of
+      case unifyType env (snd m) XKType left right of
         Mismatch (CannotSolveAcrossForall _ binder) -> binder `shouldEqual` tvB
         other -> show other `shouldEqual` "Mismatch (CannotSolveAcrossForall …)"
 
@@ -344,7 +333,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         m = freshMeta (typeInfo { scope = { types: Set.singleton tvA, kinds: Set.empty } }) emptyContext
         left = XForall tvA XKType (XMeta (fst m))
         right = XForall tvB XKType (XVar tvA)
-      case unifyType noAssumptions Set.empty (snd m) XKType left right of
+      case unifyType env (snd m) XKType left right of
         Mismatch (CannotSolveAcrossForall _ binder) -> binder `shouldEqual` tvA
         other -> show other `shouldEqual` "Mismatch (CannotSolveAcrossForall …)"
 
@@ -352,32 +341,26 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
       -- `{ a : A | ?r } ≡ { a : B | ?s }` solves the tails and leaves `A ≡ B`,
       -- which is what fails
       let m = twoMetas rowTypeInfo rowTypeInfo
-      case unifyType noAssumptions Set.empty m.ctx (XKRow RowType) (field a tA (XMeta m.r)) (field a tB (XMeta m.s)) of
+      case unifyType env m.ctx (XKRow RowType) (field a tA (XMeta m.r)) (field a tB (XMeta m.s)) of
         Mismatch (TypeNotEqual _ _) -> pure unit
         other -> show other `shouldEqual` "Mismatch (TypeNotEqual …)"
 
     it "solves a metavariable of a kind that is not a row" do
       let m = freshMeta typeInfo emptyContext
-      case unifyType noAssumptions Set.empty (snd m) XKType (XMeta (fst m)) tA of
-        Solved ctx -> solutionOf ctx (fst m) `shouldEqual` Just tA
+      case unifyType env (snd m) XKType (XMeta (fst m)) tA of
+        Solved { metas: ctx } -> solutionOf ctx (fst m) `shouldEqual` Just tA
         other -> show other `shouldEqual` "Solved …"
 
     it "reports a row metavariable met at a kind that is not a row" do
       let m = freshMeta rowTypeInfo emptyContext
-      case unifyType noAssumptions Set.empty (snd m) XKType (XMeta (fst m)) tA of
+      case unifyType env (snd m) XKType (XMeta (fst m)) tA of
         Mismatch (KindMismatch _ _ _) -> pure unit
         other -> show other `shouldEqual` "Mismatch (KindMismatch …)"
 
-    it "reports a row constraint carried by a metavariable solved to a non-row" do
-      let m = freshMeta (typeInfo { lacks = Set.singleton (SymbolKey a) }) emptyContext
-      case unifyType noAssumptions Set.empty (snd m) XKType (XMeta (fst m)) tA of
-        Mismatch (RowConstraintOnNonRow _ _) -> pure unit
-        other -> show other `shouldEqual` "Mismatch (RowConstraintOnNonRow …)"
-
     it "descends an application and its head" do
       let m = freshMeta typeInfo emptyContext
-      case unifyType noAssumptions Set.empty (snd m) XKType (pairOf tA (XMeta (fst m))) (pairOf tA tB) of
-        Solved ctx -> solutionOf ctx (fst m) `shouldEqual` Just tB
+      case unifyType env (snd m) XKType (pairOf tA (XMeta (fst m))) (pairOf tA tB) of
+        Solved { metas: ctx } -> solutionOf ctx (fst m) `shouldEqual` Just tB
         other -> show other `shouldEqual` "Solved …"
 
     it "refuses two constructors that differ" do
@@ -388,7 +371,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         m = twoMetas rowTypeInfo rowTypeInfo
         left = XConstrained (XLacks (SymbolKey a) (XMeta m.r)) tA
         right = XConstrained (XLacks (SymbolKey a) (XMeta m.s)) tA
-      case unifyType noAssumptions Set.empty m.ctx XKType left right of
+      case unifyType env m.ctx XKType left right of
         Solved _ -> pure unit
         other -> show other `shouldEqual` "Solved …"
 
@@ -400,8 +383,8 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         second = freshMeta (typeInfo { kind = XKFun XKType XKType }) (snd first)
         left = XRowExtend (XRowEffectEntry stateEff [ tA, tB ]) XRowEmpty
         right = XRowExtend (XRowEffectEntry stateEff [ XMeta (fst first), XMeta (fst second) ]) XRowEmpty
-      case unifyType noAssumptions Set.empty (snd second) (XKRow RowEffect) left right of
-        Solved ctx -> do
+      case unifyType env (snd second) (XKRow RowEffect) left right of
+        Solved { metas: ctx } -> do
           solutionOf ctx (fst first) `shouldEqual` Just tA
           solutionOf ctx (fst second) `shouldEqual` Just tB
         other -> show other `shouldEqual` "Solved …"
@@ -413,16 +396,16 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         m = twoMetas effectRowInfo effectRowInfo
         wrong = twoMetas effectRowInfo rowTypeInfo
         lacksOn r = XConstrained (XLacks (EffectKey stateEff) (XMeta r)) tA
-      case unifyType noAssumptions Set.empty m.ctx XKType (lacksOn m.r) (lacksOn m.s) of
+      case unifyType env m.ctx XKType (lacksOn m.r) (lacksOn m.s) of
         Solved _ -> pure unit
         other -> show other `shouldEqual` "Solved …"
-      case unifyType noAssumptions Set.empty wrong.ctx XKType (lacksOn wrong.r) (lacksOn wrong.s) of
+      case unifyType env wrong.ctx XKType (lacksOn wrong.r) (lacksOn wrong.s) of
         Mismatch (KindMismatch _ _ _) -> pure unit
         other -> show other `shouldEqual` "Mismatch (KindMismatch …)"
 
     it "checks the kind of a metavariable met against itself" do
       let m = freshMeta rowTypeInfo emptyContext
-      case unifyType noAssumptions Set.empty (snd m) XKType (XMeta (fst m)) (XMeta (fst m)) of
+      case unifyType env (snd m) XKType (XMeta (fst m)) (XMeta (fst m)) of
         Mismatch (KindMismatch _ _ _) -> pure unit
         other -> show other `shouldEqual` "Mismatch (KindMismatch …)"
 
@@ -442,7 +425,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         m = freshMeta rowTypeInfo emptyContext
         left = XForall tvR (XKRow RowType) (recordOf (field a tA (XVar tvR)))
         right = XForall tvS (XKRow RowType) (recordOf (field a tA (XRowUnion (XVar tvS) (XMeta (fst m)))))
-      case unifyType noAssumptions Set.empty (snd m) XKType left right of
+      case unifyType env (snd m) XKType left right of
         Solved _ -> pure unit
         other -> show other `shouldEqual` "Solved …"
 
@@ -451,7 +434,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         m = freshMeta rowTypeInfo emptyContext
         left = XForall tvR (XKRow RowType) (recordOf (field a tA (XVar tvR)))
         right = XForall tvS (XKRow RowType) (recordOf (XMeta (fst m)))
-      case unifyType noAssumptions Set.empty (snd m) XKType left right of
+      case unifyType env (snd m) XKType left right of
         Mismatch (CannotSolveAcrossForall _ binder) -> binder `shouldEqual` tvR
         other -> show other `shouldEqual` "Mismatch (CannotSolveAcrossForall …)"
 
@@ -459,24 +442,24 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
       -- `()` gives its row element kind away nowhere, so a flexible root is the
       -- only thing left to read the kind off
       let m = freshMeta effectRowInfo emptyContext
-      case unifyType noAssumptions Set.empty (snd m) (XKRow RowType) (XMeta (fst m)) XRowEmpty of
+      case unifyType env (snd m) (XKRow RowType) (XMeta (fst m)) XRowEmpty of
         Mismatch (KindMismatch _ _ _) -> pure unit
         other -> show other `shouldEqual` "Mismatch (KindMismatch …)"
-      case unifyType noAssumptions Set.empty (snd m) (XKRow RowEffect) (XMeta (fst m)) XRowEmpty of
-        Solved ctx -> solutionOf ctx (fst m) `shouldEqual` Just XRowEmpty
+      case unifyType env (snd m) (XKRow RowEffect) (XMeta (fst m)) XRowEmpty of
+        Solved { metas: ctx } -> solutionOf ctx (fst m) `shouldEqual` Just XRowEmpty
         other -> show other `shouldEqual` "Solved …"
 
     it "leaves behind no kind metavariable of its own" do
       -- each application stands for its argument's kind with a metavariable, and
       -- a comparison constraining none of them keeps none
-      case unifyType noAssumptions Set.empty emptyContext XKType (pairOf tA tB) (pairOf tA tB) of
-        Solved ctx -> Map.isEmpty ctx.kindBindings `shouldEqual` true
+      case unifyType env emptyContext XKType (pairOf tA tB) (pairOf tA tB) of
+        Solved { metas: ctx } -> Map.isEmpty ctx.kindBindings `shouldEqual` true
         other -> show other `shouldEqual` "Solved …"
 
     it "keeps a kind metavariable that stood there before it ran" do
       let m = freshKindMeta closedKindInfo emptyContext
-      case unifyType noAssumptions Set.empty (snd m) XKType (pairOf tA tB) (pairOf tA tB) of
-        Solved ctx -> Map.member (fst m) ctx.kindBindings `shouldEqual` true
+      case unifyType env (snd m) XKType (pairOf tA tB) (pairOf tA tB) of
+        Solved { metas: ctx } -> Map.member (fst m) ctx.kindBindings `shouldEqual` true
         other -> show other `shouldEqual` "Solved …"
 
     it "refuses two constraints that differ" do
@@ -484,7 +467,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         m = twoMetas rowTypeInfo rowTypeInfo
         left = XConstrained (XLacks (SymbolKey a) (XMeta m.r)) tA
         right = XConstrained (XLacks (SymbolKey b) (XMeta m.s)) tA
-      case unifyType noAssumptions Set.empty m.ctx XKType left right of
+      case unifyType env m.ctx XKType left right of
         Mismatch (ConstraintNotEqual _ _) -> pure unit
         other -> show other `shouldEqual` "Mismatch (ConstraintNotEqual …)"
 
@@ -562,13 +545,13 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
     it "reports one standing against itself" do
       -- the two occurrences cancel each other, so nothing later in the case
       -- analysis would look at either
-      case fst (unifyRow noAssumptions emptyContext (XMeta (MetaVar 0)) (XMeta (MetaVar 0))) of
+      case fst (unifyRow emptyContext (XMeta (MetaVar 0)) (XMeta (MetaVar 0))) of
         Mismatch (MetaUnbound _) -> pure unit
         other -> show other `shouldEqual` "Mismatch (MetaUnbound …)"
 
     it "reports one standing against a metavariable the context holds" do
       let m = twoMetas rowTypeInfo rowTypeInfo
-      case fst (unifyRow noAssumptions m.ctx (XMeta m.r) (XMeta (MetaVar 99))) of
+      case fst (unifyRow m.ctx (XMeta m.r) (XMeta (MetaVar 99))) of
         Mismatch (MetaUnbound unbound) -> unbound `shouldEqual` MetaVar 99
         other -> show other `shouldEqual` "Mismatch (MetaUnbound …)"
 
@@ -582,9 +565,9 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         first = freshMeta outer emptyContext
         second = freshMeta payload (snd first)
         ctx = snd second
-        result = unifyRow noAssumptions ctx (XMeta (fst first)) (field a (XMeta (fst second)) XRowEmpty)
+        result = unifyRow ctx (XMeta (fst first)) (field a (XMeta (fst second)) XRowEmpty)
       case fst result of
-        Solved ctx' -> scopeOfMeta ctx' (fst second) `shouldEqual` Just emptyScope
+        Solved { metas: ctx' } -> scopeOfMeta ctx' (fst second) `shouldEqual` Just emptyScope
         other -> show other `shouldEqual` "Solved …"
 
     it "narrows a kind metavariable a type solution mentions" do
@@ -596,9 +579,9 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         outer = rowTypeInfo { scope = emptyScope }
         first = freshMeta outer (snd kindMeta)
         proxied = XCon (Qualified prim (TyName "Proxy")) [ XKMeta (fst kindMeta) ]
-        result = unifyRow noAssumptions (snd first) (XMeta (fst first)) (field a proxied XRowEmpty)
+        result = unifyRow (snd first) (XMeta (fst first)) (field a proxied XRowEmpty)
       case fst result of
-        Solved ctx -> case unifyKind ctx (XKMeta (fst kindMeta)) (XKVar k) of
+        Solved { metas: ctx } -> case unifyKind ctx (XKMeta (fst kindMeta)) (XKVar k) of
           Left (KindEscapingVariable _ escaping) -> escaping `shouldEqual` k
           other -> show other `shouldEqual` "Left (KindEscapingVariable …)"
         other -> show other `shouldEqual` "Solved …"
@@ -615,21 +598,10 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
           }
         first = freshMeta outer emptyContext
         second = freshMeta payload (snd first)
-        result = unifyRow noAssumptions (snd second) (XMeta (fst first)) (field a (XMeta (fst second)) XRowEmpty)
+        result = unifyRow (snd second) (XMeta (fst first)) (field a (XMeta (fst second)) XRowEmpty)
       case fst result of
         Mismatch (EscapingKindVariable _ escaping) -> escaping `shouldEqual` k
         other -> show other `shouldEqual` "Mismatch (EscapingKindVariable …)"
-
-    it "refuses where the narrowed metavariable's disjointness would escape" do
-      let
-        outer = rowTypeInfo { scope = emptyScope }
-        payload = rowTypeInfo { disjointFrom = Set.singleton rigidR }
-        first = freshMeta outer emptyContext
-        second = freshMeta payload (snd first)
-        result = unifyRow noAssumptions (snd second) (XMeta (fst first)) (field a (XMeta (fst second)) XRowEmpty)
-      case fst result of
-        Mismatch (EscapingVariable _ escaping) -> escaping `shouldEqual` rigidR
-        other -> show other `shouldEqual` "Mismatch (EscapingVariable …)"
 
     it "narrows a kind metavariable standing in the narrowed metavariable's kind" do
       let
@@ -639,9 +611,9 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         payload = rowTypeInfo { kind = XKMeta (fst kindMeta), scope = emptyScope }
         first = freshMeta outer (snd kindMeta)
         second = freshMeta payload (snd first)
-        result = unifyRow noAssumptions (snd second) (XMeta (fst first)) (field a (XMeta (fst second)) XRowEmpty)
+        result = unifyRow (snd second) (XMeta (fst first)) (field a (XMeta (fst second)) XRowEmpty)
       case fst result of
-        Solved ctx -> case unifyKind ctx (XKMeta (fst kindMeta)) (XKVar k) of
+        Solved { metas: ctx } -> case unifyKind ctx (XKMeta (fst kindMeta)) (XKVar k) of
           Left (KindEscapingVariable _ escaping) -> escaping `shouldEqual` k
           other -> show other `shouldEqual` "Left (KindEscapingVariable …)"
         other -> show other `shouldEqual` "Solved …"
@@ -662,7 +634,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
           let
             first = freshMeta outer solvedKind
             second = freshMeta payload (snd first)
-            result = unifyRow noAssumptions (snd second) (XMeta (fst first)) (field a (XMeta (fst second)) XRowEmpty)
+            result = unifyRow (snd second) (XMeta (fst first)) (field a (XMeta (fst second)) XRowEmpty)
           in
             case fst result of
               Mismatch (EscapingKindVariable _ escaping) -> escaping `shouldEqual` k
@@ -685,9 +657,9 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
       --   ?r := ( b : B | ?t )   and   ?s := ( a : A | ?t )
       let
         m = twoMetas rowTypeInfo rowTypeInfo
-        result = unifyRow noAssumptions m.ctx (field a tA (XMeta m.r)) (field b tB (XMeta m.s))
+        result = unifyRow m.ctx (field a tA (XMeta m.r)) (field b tB (XMeta m.s))
       case fst result of
-        Solved ctx -> do
+        Solved { metas: ctx } -> do
           knownKeysOf ctx m.r `shouldEqual` Just [ SymbolKey b ]
           knownKeysOf ctx m.s `shouldEqual` Just [ SymbolKey a ]
           -- the same fresh tail stands on both sides
@@ -695,20 +667,17 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
           map Array.length (tailOf ctx m.r) `shouldEqual` Just 1
         other -> show other `shouldEqual` "Solved"
 
-    it "carries the Lacks of both sides onto the fresh tail" do
-      -- Lacks(?t) ⊇ dom(D1) ∪ dom(D2) ∪ Lacks(?r) ∪ Lacks(?s)
+    it "gives the fresh tail the scope both sides had, and nothing else" do
+      -- What the tail is obliged to is not here: an obligation that named either
+      -- of the two it replaces names it once its constraint is zonked
       let
-        m = twoMetas (lacking [ SymbolKey (Symbol "x") ]) rowTypeInfo
-        result = unifyRow noAssumptions m.ctx (field a tA (XMeta m.r)) (field b tB (XMeta m.s))
+        outer = rowTypeInfo { scope = emptyScope }
+        m = twoMetas outer rowTypeInfo
+        result = unifyRow m.ctx (field a tA (XMeta m.r)) (field b tB (XMeta m.s))
       case fst result of
-        Solved ctx ->
+        Solved { metas: ctx } ->
           case tailOf ctx m.r of
-            Just [ t ] -> case lookupMeta ctx t of
-              Just (Unsolved info) -> do
-                Set.member (SymbolKey (Symbol "x")) info.lacks `shouldEqual` true
-                Set.member (SymbolKey a) info.lacks `shouldEqual` true
-                Set.member (SymbolKey b) info.lacks `shouldEqual` true
-              _ -> "the fresh tail is unsolved" `shouldEqual` "…"
+            Just [ t ] -> scopeOfMeta ctx t `shouldEqual` Just emptyScope
             _ -> "one fresh tail" `shouldEqual` "…"
         other -> show other `shouldEqual` "Solved"
 
@@ -717,14 +686,14 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
       -- ?s ≡ ( a : A | r ) succeeds: `r` is rigid but the other side can take it
       let
         m = twoMetas rowTypeInfo rowTypeInfo
-        result = unifyRow noAssumptions m.ctx (XMeta m.s) (field a tA (XVar rigidR))
+        result = unifyRow m.ctx (XMeta m.s) (field a tA (XVar rigidR))
       case fst result of
-        Solved ctx -> knownKeysOf ctx m.s `shouldEqual` Just [ SymbolKey a ]
+        Solved { metas: ctx } -> knownKeysOf ctx m.s `shouldEqual` Just [ SymbolKey a ]
         other -> show other `shouldEqual` "Solved"
 
     it "does not let a rigid tail absorb a known field" do
       -- `forall (r : Row Type). r ≡ ( a : A )` fails: `r` is not assignable
-      let result = unifyRow noAssumptions emptyContext (XVar rigidR) (field a tA XRowEmpty)
+      let result = unifyRow emptyContext (XVar rigidR) (field a tA XRowEmpty)
       case fst result of
         Mismatch (RigidTailRemains vars) -> Set.member rigidR vars `shouldEqual` true
         other -> show other `shouldEqual` "Mismatch (RigidTailRemains …)"
@@ -733,7 +702,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
       -- ( a : A | r ) ≡ ( a : A | s ) fails: they stand for different unknowns
       let
         other = TyVar "s"
-        result = unifyRow noAssumptions emptyContext (field a tA (XVar rigidR)) (field a tA (XVar other))
+        result = unifyRow emptyContext (field a tA (XVar rigidR)) (field a tA (XVar other))
       case fst result of
         Mismatch (RigidTailRemains vars) -> do
           Set.member rigidR vars `shouldEqual` true
@@ -744,7 +713,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
       -- ( a : A | r ) ≡ ( a : A | r )
       let
         row = field a tA (XVar rigidR)
-        result = unifyRow noAssumptions emptyContext row row
+        result = unifyRow emptyContext row row
       case fst result of
         Solved _ -> pure unit
         other -> show other `shouldEqual` "Solved"
@@ -754,9 +723,9 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
       -- ⟨∅;{?r,?s}⟩ ≡ ⟨{a↦A};∅⟩ has two solutions, so it waits
       let
         m = twoMetas rowTypeInfo rowTypeInfo
-        result = unifyRow noAssumptions m.ctx (XRowUnion (XMeta m.r) (XMeta m.s)) (field a tA XRowEmpty)
+        result = unifyRow m.ctx (XRowUnion (XMeta m.r) (XMeta m.s)) (field a tA XRowEmpty)
       case fst result of
-        Stuck waiting -> do
+        Stuck { blockedOn: waiting } -> do
           Set.member m.r waiting `shouldEqual` true
           Set.member m.s waiting `shouldEqual` true
         other -> show other `shouldEqual` "Stuck"
@@ -765,26 +734,17 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
       -- one flexible tail and a leftover on the determined side is a failure
       let
         m = twoMetas rowTypeInfo rowTypeInfo
-        result = unifyRow noAssumptions m.ctx (field a tA XRowEmpty) (field b tB (XMeta m.s))
+        result = unifyRow m.ctx (field a tA XRowEmpty) (field b tB (XMeta m.s))
       case fst result of
         Mismatch _ -> pure unit
         other -> show other `shouldEqual` "Mismatch"
 
   describe "what a substitution must preserve" do
-    it "refuses a solution carrying a key the metavariable lacks" do
-      -- `a ∉ ?s` assumed, so `?s := ( a : A )` is refused
-      let
-        m = twoMetas rowTypeInfo (lacking [ SymbolKey a ])
-        result = unifyRow noAssumptions m.ctx (XMeta m.s) (field a tA XRowEmpty)
-      case fst result of
-        Mismatch (LacksViolated key) -> key `shouldEqual` SymbolKey a
-        other -> show other `shouldEqual` "Mismatch (LacksViolated …)"
-
     it "refuses a solution of the wrong row kind" do
       let
         effectInfo = rowTypeInfo { kind = XKRow RowEffect }
         m = twoMetas rowTypeInfo effectInfo
-        result = unifyRow noAssumptions m.ctx (XMeta m.s) (field a tA XRowEmpty)
+        result = unifyRow m.ctx (XMeta m.s) (field a tA XRowEmpty)
       case fst result of
         Mismatch (KindMismatch _ expected actual) -> do
           expected `shouldEqual` XKRow RowEffect
@@ -797,73 +757,21 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
       let
         inner = TyVar "inner"
         m = twoMetas rowTypeInfo rowTypeInfo
-        result = unifyRow noAssumptions m.ctx (XMeta m.s) (field a tA (XVar inner))
+        result = unifyRow m.ctx (XMeta m.s) (field a tA (XVar inner))
       case fst result of
         Mismatch (EscapingVariable _ escaping) -> escaping `shouldEqual` inner
         other -> show other `shouldEqual` "Mismatch (EscapingVariable …)"
 
-    it "refuses a rigid tail the context does not prove the Lacks of" do
-      -- `a ∉ ?m` assumed of the metavariable, nothing assumed of `r`
+    it "refuses a refinement that would absorb a rigid tail out of scope" do
+      -- `?s` was created outside `r` and `?q` inside it, so refining the two
+      -- together would put `r` into the solution of `?s`
       let
-        m = twoMetas rowTypeInfo (lacking [ SymbolKey a ])
-        result = unifyRow noAssumptions m.ctx (XMeta m.s) (XVar rigidR)
+        outer = rowTypeInfo { scope = emptyScope }
+        m = twoMetas rowTypeInfo outer
+        result = unifyRow m.ctx (XRowUnion (XMeta m.r) (XVar rigidR)) (XMeta m.s)
       case fst result of
-        Mismatch (LacksUnproven key t) -> do
-          key `shouldEqual` SymbolKey a
-          t `shouldEqual` rigidR
-        other -> show other `shouldEqual` "Mismatch (LacksUnproven …)"
-
-    it "accepts that rigid tail once the context proves it" do
-      let
-        m = twoMetas rowTypeInfo (lacking [ SymbolKey a ])
-        facts = assuming [ Lacks (SymbolKey a) (TVar rigidR) ]
-        result = unifyRow facts m.ctx (XMeta m.s) (XVar rigidR)
-      case fst result of
-        Solved _ -> pure unit
-        other -> show other `shouldEqual` "Solved"
-
-    it "refuses a rigid tail it is assumed to be disjoint from" do
-      -- `?t # r` recorded, so `?t := r` would build `r ⊎ r`
-      let
-        m = twoMetas rowTypeInfo (rowTypeInfo { disjointFrom = Set.singleton rigidR })
-        result = unifyRow noAssumptions m.ctx (XMeta m.s) (XVar rigidR)
-      case fst result of
-        Mismatch (DisjointUnproven t u) -> do
-          t `shouldEqual` rigidR
-          u `shouldEqual` rigidR
-        other -> show other `shouldEqual` "Mismatch (DisjointUnproven …)"
-
-    it "refuses a known key the context cannot prove absent from a disjoint tail" do
-      -- `?m # r` solved to `( a : A )` needs `a ∉ r`, which nothing gives
-      let
-        m = twoMetas rowTypeInfo (rowTypeInfo { disjointFrom = Set.singleton rigidR })
-        result = unifyRow noAssumptions m.ctx (XMeta m.s) (field a tA XRowEmpty)
-      case fst result of
-        Mismatch (LacksUnproven key u) -> do
-          key `shouldEqual` SymbolKey a
-          u `shouldEqual` rigidR
-        other -> show other `shouldEqual` "Mismatch (LacksUnproven …)"
-
-    it "accepts that known key once the context proves it absent" do
-      let
-        m = twoMetas rowTypeInfo (rowTypeInfo { disjointFrom = Set.singleton rigidR })
-        facts = assuming [ Lacks (SymbolKey a) (TVar rigidR) ]
-        result = unifyRow facts m.ctx (XMeta m.s) (field a tA XRowEmpty)
-      case fst result of
-        Solved _ -> pure unit
-        other -> show other `shouldEqual` "Solved"
-
-    it "refuses a refinement whose fresh tail would leave a variable out of scope" do
-      -- `?s` was created outside `r`, `?q` inside it; the fresh tail would have
-      -- to be disjoint from `r` while standing where `?s` stands
-      let
-        outer = rowTypeInfo { scope = { types: Set.empty, kinds: Set.empty } }
-        inner = rowTypeInfo
-        m = twoMetas outer inner
-        result = unifyRow noAssumptions m.ctx (XRowUnion (XMeta m.r) (XVar rigidR)) (XMeta m.s)
-      case fst result of
-        Mismatch (FreshTailOutOfScope escaping) -> escaping `shouldEqual` rigidR
-        other -> show other `shouldEqual` "Mismatch (FreshTailOutOfScope …)"
+        Mismatch (EscapingVariable _ escaping) -> escaping `shouldEqual` rigidR
+        other -> show other `shouldEqual` "Mismatch (EscapingVariable …)"
 
     it "refuses a solution mentioning a kind variable out of scope" do
       -- `[Γ]` covers kind variables too, which reach a type through the kind
@@ -872,7 +780,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         k = KindVar "k"
         m = twoMetas rowTypeInfo rowTypeInfo
         proxied = XCon (Qualified prim (TyName "Proxy")) [ XKVar k ]
-        result = unifyRow noAssumptions m.ctx (XMeta m.s) (field a proxied XRowEmpty)
+        result = unifyRow m.ctx (XMeta m.s) (field a proxied XRowEmpty)
       case fst result of
         Mismatch (EscapingKindVariable _ escaping) -> escaping `shouldEqual` k
         other -> show other `shouldEqual` "Mismatch (EscapingKindVariable …)"
@@ -883,7 +791,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         info = rowTypeInfo { scope = { types: Set.singleton rigidR, kinds: Set.singleton k } }
         m = twoMetas rowTypeInfo info
         proxied = XCon (Qualified prim (TyName "Proxy")) [ XKVar k ]
-        result = unifyRow noAssumptions m.ctx (XMeta m.s) (field a proxied XRowEmpty)
+        result = unifyRow m.ctx (XMeta m.s) (field a proxied XRowEmpty)
       case fst result of
         Solved _ -> pure unit
         other -> show other `shouldEqual` "Solved"
@@ -892,10 +800,10 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
       -- a hole left in `XLacks`'s row would survive zonking and fail `toCore`
       let
         m = twoMetas rowTypeInfo rowTypeInfo
-        result = unifyRow noAssumptions m.ctx (XMeta m.s) XRowEmpty
+        result = unifyRow m.ctx (XMeta m.s) XRowEmpty
         constrained = XConstrained (XLacks (SymbolKey a) (XMeta m.s)) (XVar rigidR)
       case fst result of
-        Solved ctx ->
+        Solved { metas: ctx } ->
           substitute ctx constrained
             `shouldEqual` XConstrained (XLacks (SymbolKey a) XRowEmpty) (XVar rigidR)
         other -> show other `shouldEqual` "Solved"
@@ -904,7 +812,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
       -- neither side has an element to give its row element kind away
       let
         m = twoMetas rowTypeInfo (rowTypeInfo { kind = XKRow RowEffect })
-        result = unifyRow noAssumptions m.ctx (XMeta m.r) (XMeta m.s)
+        result = unifyRow m.ctx (XMeta m.r) (XMeta m.s)
       case fst result of
         Mismatch (KindMismatch _ _ _) -> pure unit
         other -> show other `shouldEqual` "Mismatch (KindMismatch …)"
@@ -913,13 +821,13 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
       -- the payloads are not unified here; they are handed back to the caller
       let
         m = twoMetas rowTypeInfo rowTypeInfo
-        result = unifyRow noAssumptions m.ctx (field a tA (XMeta m.r)) (field a tB (XMeta m.s))
+        result = unifyRow m.ctx (field a tA (XMeta m.r)) (field a tB (XMeta m.s))
       snd result `shouldEqual` [ Tuple tA tB ]
 
     it "equates the arguments of two elements sharing a key and an effect" do
       let
         m = twoMetas effectRowInfo effectRowInfo
-        result = unifyRow noAssumptions m.ctx
+        result = unifyRow m.ctx
           (labelledEffect cache stateEff [ tA ] (XMeta m.r))
           (labelledEffect cache stateEff [ tB ] (XMeta m.s))
       snd result `shouldEqual` [ Tuple tA tB ]
@@ -929,7 +837,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
       -- on the key and still name different protocols
       let
         m = twoMetas effectRowInfo effectRowInfo
-        result = unifyRow noAssumptions m.ctx
+        result = unifyRow m.ctx
           (labelledEffect cache stateEff [ tA ] (XMeta m.r))
           (labelledEffect cache readerEff [ tA ] (XMeta m.s))
       case fst result of
@@ -941,7 +849,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
       -- mismatch rather than a prefix of the longer one
       let
         m = twoMetas effectRowInfo effectRowInfo
-        result = unifyRow noAssumptions m.ctx
+        result = unifyRow m.ctx
           (labelledEffect cache stateEff [ tA ] (XMeta m.r))
           (labelledEffect cache stateEff [ tA, tB ] (XMeta m.s))
       case fst result of
@@ -951,7 +859,7 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
     it "equates both the variable and the layout of two regions sharing the key" do
       let
         m = twoMetas effectRowInfo effectRowInfo
-        result = unifyRow noAssumptions m.ctx
+        result = unifyRow m.ctx
           (regionOf tA (field a tA XRowEmpty) (XMeta m.r))
           (regionOf tB (field a tB XRowEmpty) (XMeta m.s))
       snd result `shouldEqual`
@@ -964,10 +872,77 @@ spec = describe "Stella.Compiler.Elaborate.Unify" do
         m = twoMetas effectRowInfo effectRowInfo
         left = field a tA XRowEmpty
         right = field b tA XRowEmpty
-        result = unifyRow noAssumptions m.ctx
+        result = unifyRow m.ctx
           (regionOf tA left (XMeta m.r))
           (regionOf tA right (XMeta m.s))
       snd result `shouldEqual` [ Tuple tA tA, Tuple left right ]
-      case fst (unifyRow noAssumptions m.ctx left right) of
+      case fst (unifyRow m.ctx left right) of
         Mismatch (RowMismatch _ _) -> pure unit
         other -> show other `shouldEqual` "Mismatch (RowMismatch …)"
+
+  describe "what a unification reports" do
+    it "names the metavariables it assigned" do
+      let
+        m = twoMetas rowTypeInfo rowTypeInfo
+      case
+        unifyType env m.ctx (XKRow RowType)
+          (field a tA (XMeta m.r))
+          (field b tB (XMeta m.s))
+        of
+        Solved progress ->
+          progress.assigned `shouldEqual` Set.fromFoldable [ m.r, m.s ]
+        other -> show other `shouldEqual` "Solved …"
+
+    it "names none where an equation assigned nothing" do
+      case unifyType env emptyContext XKType (pairOf tA tB) (pairOf tA tB) of
+        Solved progress -> Set.isEmpty progress.assigned `shouldEqual` true
+        other -> show other `shouldEqual` "Solved …"
+
+    it "leaves no journal in the context it reports" do
+      -- What is reported is read once. A context carrying the same set would have
+      -- a caller that threads it act on one assignment twice.
+      let
+        m = twoMetas rowTypeInfo rowTypeInfo
+      case
+        unifyType env m.ctx (XKRow RowType)
+          (field a tA (XMeta m.r))
+          (field b tB (XMeta m.s))
+        of
+        Solved progress -> Set.isEmpty progress.metas.assigned `shouldEqual` true
+        other -> show other `shouldEqual` "Solved …"
+
+    it "refuses a context whose journal nobody has read" do
+      -- Emptying it here would make losing an assignment the quiet default: each
+      -- one in the set is owed a wake and a re-deciding of what watches it.
+      let
+        m = twoMetas rowTypeInfo rowTypeInfo
+        unread = m.ctx { assigned = Set.singleton m.r }
+      case unifyType env unread XKType tA tA of
+        Mismatch (AssignmentsUnread ms) -> ms `shouldEqual` Set.singleton m.r
+        other -> show other `shouldEqual` "Mismatch (AssignmentsUnread …)"
+      case fst (unifyRow unread XRowEmpty XRowEmpty) of
+        Mismatch (AssignmentsUnread ms) -> ms `shouldEqual` Set.singleton m.r
+        other -> show other `shouldEqual` "Mismatch (AssignmentsUnread …)"
+
+    it "reports what it assigned before a sub-equation it cannot decide" do
+      -- The first argument refines both tails; the second has two flexible tails
+      -- on one side and waits. What the first did stands in what is reported, so
+      -- that a caller re-decides the obligations those assignments were watched by
+      -- rather than reading the equation as merely waiting.
+      let
+        one = freshMeta rowTypeInfo emptyContext
+        two = freshMeta rowTypeInfo (snd one)
+        three = freshMeta rowTypeInfo (snd two)
+        four = freshMeta rowTypeInfo (snd three)
+        r = fst one
+        s = fst two
+        v = fst three
+        w = fst four
+        left = pairOf (field a tA (XMeta r)) (XRowUnion (XMeta v) (XMeta w))
+        right = pairOf (field b tB (XMeta s)) (field cache tA XRowEmpty)
+      case unifyType env (snd four) XKType left right of
+        Stuck { progress, blockedOn } -> do
+          blockedOn `shouldEqual` Set.fromFoldable [ v, w ]
+          progress.assigned `shouldEqual` Set.fromFoldable [ r, s ]
+          knownKeysOf progress.metas r `shouldEqual` Just [ SymbolKey b ]
+        other -> show other `shouldEqual` "Stuck …"

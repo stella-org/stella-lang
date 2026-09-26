@@ -14,6 +14,10 @@ module Stella.Compiler.TypedCore.Entailment
   , noFacts
   , decompose
   , addAssumption
+  , addLacks
+  , addDisjoint
+  , knownToLack
+  , knownDisjoint
   , entails
   ) where
 
@@ -129,6 +133,9 @@ addLacks :: RowKey -> TyVar -> AtomicFacts -> AtomicFacts
 addLacks key t facts =
   facts { lacks = Map.insertWith Set.union t (Set.singleton key) facts.lacks }
 
+-- | Both directions are recorded here, which is the whole of the closure `Γ*`
+-- | carries. Every decomposition adds its facts through this and `addLacks`, so
+-- | that the closure has one implementation.
 addDisjoint :: TyVar -> TyVar -> AtomicFacts -> AtomicFacts
 addDisjoint t1 t2 facts =
   facts { disjoint = Set.insert (Tuple t1 t2) (Set.insert (Tuple t2 t1) facts.disjoint) }

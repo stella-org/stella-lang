@@ -19,6 +19,9 @@ import Test.Stella.Compiler.TypedCore.Declare as Declare
 import Test.Stella.Compiler.TypedCore.Domain as Domain
 import Test.Stella.Compiler.TypedCore.Kinding as Kinding
 import Test.Stella.Compiler.TypedCore.Row as Row
+import Test.Stella.Compiler.Elaborate.Context as ElaborateContext
+import Test.Stella.Compiler.Elaborate.Obligation as ElaborateObligation
+import Test.Stella.Compiler.Elaborate.Scheduler as ElaborateScheduler
 import Test.Stella.Compiler.Elaborate.Unify as Unify
 import Test.Stella.Compiler.TypedCore.RowProperties as RowProperties
 import Test.Stella.Compiler.TypedCore.EffectSlice as EffectSlice
@@ -50,3 +53,6 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   HandlerSlice.spec
   RowProperties.spec
   Unify.spec
+  ElaborateContext.spec
+  ElaborateObligation.spec
+  ElaborateScheduler.spec

@@ -149,7 +149,7 @@ The heading of each group names the step of the plan that the group belongs to.
 | `( name : String \| r ) ≡ ( name : String \| s )`, `r` and `s` distinct rigid variables | Fails. Distinct row variables are not identified |
 | `⟨∅;{r,s}⟩ ≡ ⟨∅;{s,r}⟩` | Succeeds. The tail is a set |
 | `⟨∅;{?r,?s}⟩ ≡ ⟨{a↦A};∅⟩` | Stuck, not failure. Two solutions exist, so the constraint waits |
-| A solved `?r := D ⊎ ?t` where `k ∉ ?r` was assumed | The Lacks constraint propagates to `?t`, and `k ∉ dom(D)` is checked. Omitting this produces Core that is not well-kinded |
+| A solved `?r := D ⊎ ?t` where `k ∉ ?r` was required | The obligation that named `?r` names `?t` once its constraint is zonked, and `k ∉ dom(D)` is decided again. Omitting either produces Core that is not well-kinded |
 | `r ⊎ r` | Ill-kinded. The disjointness side condition rejects it before normalization |
 
 ### Kinds and constraints (step 3)
@@ -387,6 +387,30 @@ The interpreter is handed a table already assembled, so these need no host that 
 | A reference below the arity, then applied to the rest | One `pap`, and the body called once when the last argument arrives |
 | `TAILFFI` | The same value and the same fault as `FFI`, and no `Resume` pushed |
 
+### The array operations (step 5, interpreter 6)
+
+Four of the eight operations of `stella-base-0.1` are `Base.Array` entries, and they are the first that carrying one out cannot do without reaching the payload of a value ([Prim and Base](../06-Modules/02-Prim-and-Base.md)).
+
+| Input | Required outcome |
+| --- | --- |
+| `length` of an array `unsafeNew` produced | The count it was created with, whatever has been written since. A slot count is immutable, which is why this entry is the one of the four carrying `#observ(none)` |
+| `unsafeNew n`, for `n` at zero and above | An array value of that many slots. Two calls with one `n` give two arrays, and nothing the interpreter does merges them |
+| `unsafeNew` with a negative count | A fault, and not an array of no slots. A count of zero is an array of no slots and is not an error |
+| `unsafeSet i x ys` then `unsafeIndex ys i` | `x`. This is the whole of what the pair is for, and it is the case a machine that copied an array on write would pass every other test while failing |
+| `unsafeSet` on an index outside the array | A fault, and the array unchanged |
+| `unsafeIndex` on an index outside the array | A fault |
+| The array a `PRIM` returned, passed to another `PRIM` and to a foreign | Arrives as the same array, writes through one reaching reads through the other. An array is an opaque value and nothing between the two takes it apart |
+| A snapshot of an array value | Stops at it, the way it stops at a continuation or an action. Nothing descends into the payload ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)) |
+| A `PAP` over an array operation, completed later | The operation is carried out once, when the last argument arrives, as with any other callee |
+| A module naming an operation code this interpreter does not implement | Refused at load, which is unchanged by there being more codes |
+| `Data.Array.mapArray` over a non-empty array, run end to end | The mapped array. This is the program the three entries exist for, and it is what a fold that dropped the `unsafeSet` call would break |
+
+**Reading a slot `unsafeNew` left unwritten is not in this table, and nothing replaces it.** It violates the precondition of `unsafeIndex` (D42), so a test executing such a read and asserting anything about the result would be fixing what the specification declines to fix, and would fail a backend that chose differently.
+
+**Nor is the converse testable.** A backend that tracks which slots are written and faults on an unwritten read is **conformant**: the ABI obliges no one to detect a violation and equally forbids no one from doing so, and a program that runs there and nowhere else is exactly the difference an unspecified case admits. So "no initialization bit is kept, and no read consults one" is **not** a conformance property and must not be asserted as one. It is a performance decision of this interpreter — the check would stand on the hot path of the operation a portable array library is built out of — and belongs in the interpreter's own notes rather than in a test.
+
+What is testable around the precondition is only what holds on either side of it: an in-range written read gives the element, an out-of-range read faults, and a program that writes every slot before reading gives the same answer whatever the allocation left.
+
 ### Kind and type unification (step 7, division 2)
 
 These need no surface language: an equation is written by hand, as a Core module is in step 4 ([Elaboration](../02-Surface-Language/01-Elaboration.md)).
@@ -404,11 +428,47 @@ These need no surface language: an equation is written by hand, as a Core module
 | `{ a : A \| ?r } ≡ { a : B \| ?s }` | Rejected. The tails solve and the payload equation `A ≡ B` is what fails; leaving the equations undischarged accepts it |
 | A `Row Effect` element whose two arguments stand at different kinds | Each payload equation stands at a kind of its own. One metavariable shared between them identifies the two |
 | `?α : Row Type` met at kind `Type` | Rejected as a kind mismatch. Kind equality decides before any row obligation is read |
-| `?α : Type ≡ Int` | **Accepted.** A solution that is not a row has no tail to propagate a Lacks to |
-| A metavariable carrying a Lacks, solved to a type that is not a row | Rejected as an invariant of the solver. Only a row metavariable carries one |
+| `?α : Type ≡ Int` | **Accepted.** Nothing about a row is read of a solution that is not one |
+| A metavariable an obligation names, solved to a type that is not a row | Rejected where that obligation is re-decided, its subject zonking to something with no normal form. Only a row metavariable is named by a row constraint, so this is an invariant of the solver rather than a property of the program |
 | `?r ≡ ()` where `?r : Row Effect` and the carried kind is `Row Type` | Rejected. An empty row gives its element kind away nowhere, so a flexible root is what the kind is read against |
 | A closed comparison that constrains none of the kind metavariables it created | Leaves none of them in `Ψ`. Each belongs to the equation rather than to the solver's state |
 | A kind metavariable that stood in `Ψ` before the equation ran | Left alone, whether or not the equation constrained it |
+
+### The transaction and the scheduler (step 7, division 3)
+
+**The bookkeeping is separable from the transaction and is written first.** The three tables, the envelope, and the context a site snapshots need neither a checkpoint nor anything that runs a job, so what they promise can be settled before either exists ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)).
+
+What the tables promise of one another is checked rather than assumed, each of these being a way for a job to run twice or never.
+
+```text
+id ∈ blocked[?α]  ⟺  ?α ∈ pending[id].awaiting     both directions
+an identifier on the ready queue awaits nothing
+an identifier either queue holds is one pending holds
+no identifier is twice on the ready queue
+no identifier is at once ready and blocked
+```
+
+**Both directions of the first are needed.** The table and the set each name what the other is read through: a job registered under a metavariable its own set does not name is never unregistered, and one awaiting a metavariable it is registered under nowhere is never woken by that assignment.
+
+| Input | Required outcome |
+| --- | --- |
+| A job registered under `?a` and `?b`, with `?a` assigned | On the ready queue once, and registered under `?b` no longer |
+| The same job, with `?b` then assigned in the same attempt | Still once on the queue. A registration left standing enqueues a job that is already on it |
+| A job postponing a second time on `?b` alone | Registered under `?b` and nothing else, the set being assigned rather than added to |
+| A job woken and not yet postponed again | Awaits nothing, which is what a report at quiescence reads |
+| One assignment waking several jobs | Queued in the order they were created |
+| A job completed while registered | Held by no table afterwards |
+| A `Lacks` assumed of a flexible tail | Yields no atomic fact, and yields one at the attempt after that tail is solved to a row with a rigid one |
+| The same assumption, where the solution carries the key | Rejected. Which store rejects it is the obligation's and not the context's, the facts derived from a site being silent about a metavariable |
+| A `Disjoint` between two flexible tails | Watched under both. A record per metavariable cannot hold one, there being no one metavariable it belongs to |
+| An obligation whose site proves the rigid tail a solution introduced, and the same obligation carried from a site that does not | Admitted, and refused. The two differ in nothing but which context the obligation carries |
+| A requirement solved to a rigid tail nothing proves anything about | Refused. What holds of a rigid variable is what its own context gives |
+| An assumption whose tail is solved to a rigid one | Admitted with nothing proved, and refused only where the solution carries the key. Held to a requirement's rule it would prove itself, zonking it being how its own site's facts grow |
+| A closed obligation that is unproved, or already contradicted | Refused where it is introduced. Watching nothing, it would otherwise never be re-decided |
+| A unification that assigns and then meets a sub-equation it cannot decide | Reports both the dependency and what it assigned. Reporting the dependency alone has an equation that has broken a constraint read as one short of information |
+| A context handed to a unification with assignments nobody has acted on | Refused. Emptying it instead makes losing a wake, and a re-deciding, the quiet default |
+| The fresh tail of a two-sided refinement | Carries its kind and the scope both sides had, and no constraint. What it owes is what the two tails it replaces owed, which zonking their constraints says |
+| What a metavariable's own record holds | Its kind and its scope. A row constraint may relate two metavariables and must be decided against its own site, so neither fits in a record one metavariable owns |
 
 ### Handler declarations and implicit insertion (step 7)
 

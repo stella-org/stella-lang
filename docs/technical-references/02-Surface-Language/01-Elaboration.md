@@ -27,7 +27,7 @@ e⁺ ::= … | ?m                          term metavariable
 
 Recording the variables a metavariable was created under allows the scope check that decides whether a solution mentioning local variables may be assigned to it. A type metavariable records **both classes**, since a kind variable of an inner declaration escapes as readily as a type variable does — `?α`'s kind and the kinds inside its solution are where a kind variable reaches it. A kind metavariable records the kind variables alone: kinds and types are separate classes and no kind mentions a type variable (D2).
 
-**A substitution narrows what the metavariables inside it may mention.** A metavariable standing in a solution mentions none of the variables it was created under until it is solved, so assigning `?α := τ` restricts every metavariable of `τ` to `?α`'s own scope — and refuses the assignment where what such a metavariable already holds, its kind or its disjointness, lies outside it. Without that, `?α` created outside a binder and solved to a type mentioning `?β` would admit whatever `?β` was later solved to, binder and all.
+**A substitution narrows what the metavariables inside it may mention.** A metavariable standing in a solution mentions none of the variables it was created under until it is solved, so assigning `?α := τ` restricts every metavariable of `τ` to `?α`'s own scope — and refuses the assignment where the kind such a metavariable stands at lies outside it. Without that, `?α` created outside a binder and solved to a type mentioning `?β` would admit whatever `?β` was later solved to, binder and all.
 
 `R` is settled with [kind unification](#kind-unification) below.
 
@@ -193,7 +193,8 @@ solve(ρ1 ≡ ρ2  under B):
      (d) |M1| ≥ 2 or |M2| ≥ 2
            Stuck: no unique solution, so wait until one of them is instantiated
 
-  every substitution performs an occurs check and the Lacks propagation below
+  every substitution performs an occurs check and the scope narrowing it owes,
+  and the conditions below are re-decided against it
 ```
 
 **An empty `B` makes `∖B` the difference by name.** Two rigid tails then cancel exactly when they are one variable, which is the ordinary reading, and the flexible tails cancel by identity in either case, a metavariable belonging to `Ψ` rather than to the side it appears on and so being the same metavariable whatever binders stand around it.
@@ -239,6 +240,10 @@ Lacks(?t) ⊇ dom(D1) ∪ dom(D2) ∪ Lacks(?r) ∪ Lacks(?s)
 
 Neglecting this produces Core that is not well-kinded. The Core type checker re-validates the side conditions, so an omission is caught.
 
+**What the fresh tail owes is inherited rather than copied.** A constraint that named `?r` names whatever `?r` was solved to once it is zonked, so one that reached `?r` reaches `?t` with nothing written onto the metavariable; the containment above is a consequence of the substitution and not a set anything maintains.
+
+**And it is re-decided rather than decided here.** Each of these constraints holds on the assumptions of the site it came from, which the equation making the substitution need not stand at, so what decides them is the obligations and not this procedure ([Elaborator API](03-Elaborator-API.md)). A unification reports the metavariables it assigned, and its caller re-decides what those were watched by.
+
 ## Synthesis goals
 
 ```text
@@ -267,6 +272,7 @@ blocked : Meta ⇀ Set PendingId
 
 assign(?α := τ):
   record the substitution in the current transactional Ψ
+  re-decide the obligations ?α is watched by, each against its own site
   for each id in blocked[?α]:
     remove id from every dependency it is registered under
     push id onto the ready queue
@@ -286,7 +292,9 @@ Distinguishing "unsolvable" from "not enough information yet" is exactly this th
 
 Case (d) of row unification joins the same queue, and so does the search for an implicit effect handler ([Effect Handlers](02-Effect-Handlers.md)). The row solver, the handler search, and the synthesis scheduler share one resumption mechanism.
 
-**A postponed equality carries the site it was written at**, as a synthesis goal does. Deciding one consults the Lacks and Disjoint assumptions of a context — a substitution is checked against the constraints the metavariable carries, and those are discharged from the atomic facts of `Γ` — so an equality re-decided under whatever context elaboration has since reached would admit a substitution its own site forbids, or reject one it allows ([Elaborator API](03-Elaborator-API.md)).
+**A postponed equality carries the site it was written at**, as a synthesis goal does. What it takes from that site is the kind variables in scope there — a kind metavariable created while solving it may mention those and no others — and the place a failure is reported.
+
+**What a substitution must preserve is decided elsewhere.** The row constraints naming a metavariable are obligations, and each is discharged from the atomic facts of the site **it** came from, which need not be the site of the equation making the substitution ([Elaborator API](03-Elaborator-API.md)). What a unification reports is the metavariables it assigned; re-deciding what those were watched by is its caller's.
 
 ## Operations available to metaprograms
 

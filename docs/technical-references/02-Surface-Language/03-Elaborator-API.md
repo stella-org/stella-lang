@@ -49,22 +49,47 @@ Pending =
 
 Site =
   { context   Γ as it stood where the job was created, the row constraints
-              assumed there among it, decomposed as entailment reads them
+              assumed there among it, as they were written
   , origin    where it came from, for diagnostics
   }
 
-job = JobUnify           EqualityGoal    two types, two rows, or two kinds
+job = JobUnify           EqualityGoal    { kind, τ1, τ2 }
     | JobSynthesis       GoalRecord      { targetTermMeta, expectedType, synthesizer }
     | JobImplicitHandler HandlerGoal     { sourceRow, targetRow, thunk, Ξ }
 ```
 
-**The envelope is shared because every one of the three is decided against its site.** An equality is no exception, and this is the case easiest to get wrong: deciding `?s := D ⊎ R` requires the Lacks and Disjoint assumptions the metavariable carries to hold of the solution, and those are discharged from the atomic facts of a context ([Elaboration](01-Elaboration.md), [Rows](../03-Typed-Core/02-Rows.md)). An equality postponed at case (d) and woken later must be solved against the facts of **where it was written**, not against whatever context elaboration has reached. One re-decided against another site either admits a substitution the site forbids or rejects one it allows.
+**The envelope is shared because every one of the three is decided against its site**, though what each takes from one differs. A synthesis goal reaches the bindings and the assumptions through `localContext` and `localConstraints`. An **equality** takes two things: the kind variables in scope where it was written, which a kind metavariable created while solving it may mention, and where a failure is reported. One woken far from where it was written and creating a kind metavariable under whatever elaboration has since reached would admit a kind variable that is out of scope at the equation, or refuse one that is in it.
+
+**What decides a substitution is not the site of the equation that made it.** Deciding `?s := D ⊎ R` requires the row constraints naming `?s` to survive it, and each of those is an obligation holding on the assumptions of the site **it** came from — several different sites, in general, and not necessarily this equation's ([Elaboration](01-Elaboration.md), [Rows](../03-Typed-Core/02-Rows.md)). The facts a substitution is judged by therefore travel with the obligations rather than with the equality, and an obligation decided against the facts at hand would be proved from assumptions that do not hold where it arose, or refused where the ones that do hold prove it.
+
+**An equality job is one type equation, carrying the kind both sides stand at.** Unification is directed by that kind rather than synthesizing it ([Elaboration](01-Elaboration.md)), so the kind travels with the equation instead of being recovered when the job is woken. A **row** equality is an equation of this form at a row kind, its payload equations being type unification's to discharge, so nothing separate is queued for one. A **kind** equality is never queued at all: kind equality is syntactic (D2), so it is decided where it is met and has no third outcome to wait for.
 
 **The context is a snapshot and not a reference.** A job is created deep inside a term and woken much later, when elaboration stands somewhere else entirely; `localContext` answering with whatever is current at that moment would answer about another part of the program. The snapshot is what makes an attempt a function of its job rather than of the schedule.
 
 **What is snapshotted is lexical belonging and not solutions.** The types in `context`, and the rows its assumptions mention, may contain metavariables, and those are read against `Ψ` as it stands — zonked afresh at each attempt. Freezing their solutions instead would have a later attempt reason about a `Ψ` the rest of elaboration has moved past, which is the error the snapshot exists to prevent, met from the other side.
 
-**`localContext` and `localConstraints` are two views of one field.** A context carries its assumptions with it, decomposed, because that is the form entailment decides from ([Rows](../03-Typed-Core/02-Rows.md)); the two operations project the bindings and the assumptions of the same snapshot rather than reading two stores that could disagree.
+**`Γ*` is derived at each attempt and is stored nowhere.** The atomic facts entailment decides from come from decomposing the assumptions over their normal forms ([Rows](../03-Typed-Core/02-Rows.md)), and what a normal form is depends on what `Ψ` has solved: a decomposition frozen at the site would answer about a row that has since been refined. The site therefore keeps the assumptions as they were written, and each attempt decomposes them afresh. This is the paragraph above applied to the one part of a context that is not syntax.
+
+**Only a rigid tail yields an atomic fact.** A fact is about a row variable `Γ` binds, and an assumption whose tail is still a metavariable says nothing about one — it is a condition on the assignments that metavariable admits. Every fact derived is a consequence of the assumption it came from, so the derivation is sound and incomplete in one direction only: an assumption silent at one attempt contributes once its tail is solved to a row with a rigid one, which is what deriving it afresh buys.
+
+**Such an assumption is held as an obligation, and holding it is not the site's.** `k ∉ ?r` forbids `?r := ( k : A | () )`, and nothing a context does refuses that: the facts derived from the site are silent about `?r`. The obligation belongs to the constraint set the session owns, is recorded in the same act that introduces the assumption, and is re-decided at every assignment to a metavariable it names. It is part of what an attempt owns, so a rollback restores it with everything else.
+
+**Every obligation carries the context it came from, and is decided against that one.** The assignment to be judged may be made anywhere, under assumptions that have nothing to do with the constraint being preserved; deciding it against the site the assignment happened at would prove it from assumptions that do not hold where it came from, and refuse it where the ones that do hold prove it.
+
+### What it takes to hold depends on why it must
+
+An obligation holds on one of two **bases**, and the rule is not the same for the two.
+
+| | Why it must hold | What an assignment must not do | What a rigid tail entering it needs |
+| --- | --- | --- | --- |
+| **assumed** | the site assumes it, and the final Core context carries it | make it unsatisfiable | nothing; what a site assumes is the authority its facts are derived from |
+| **required** | the solver imposed it on a row it is building — that a record row not repeat a key, that two rows joined by `⊎` stay apart | the same | to be **proved** from the facts of the site the requirement arose at |
+
+**Deciding one by the other's rule is a hole either way.** An assumption held to the second rule proves itself: `k ∉ ?r` assumed and then `?r := t` makes `k ∉ t` a fact of that very site, since zonking the assumption is how its facts grow, so nothing is ever refused. A requirement held to the first admits a rigid tail that nothing says anything about, and the Core that results is not well-kinded.
+
+**Nothing is held undecided.** An obligation is decided where it is introduced and not only when something assigns into it. One whose constraint carries no metavariable watches nothing and so is never re-decided, and a closed requirement that is unproved, or an assumption already contradicted, would stand in the store unread. What the store holds therefore means "holds so far, and these are the metavariables that could still break it"; what is settled on arrival is not kept at all.
+
+**`localContext` and `localConstraints` are two views of one field.** A context carries its assumptions with it, as written, and the two operations project the bindings and the assumptions of the same snapshot rather than reading two stores that could disagree. The decomposed facts are neither view: they are derived from the second and kept nowhere.
 
 What the **guest** sees of a synthesis job is the expected type, with its site reached through `localContext` and `localConstraints`. None of the record above is specific to type classes: every field is a fact about a job, and none is a fact about a class, an instance, or a dictionary.
 
@@ -123,9 +148,12 @@ attempt(pending):
   checkpoint
 
   Solved x       commit, and record the result
-  Stuck ms       rollback, admit ms against Ψ, and register this pending under each of ms
+  Stuck cause    rollback, derive the durable dependencies from cause,
+                 admit them, and register this pending under each
   Failed d       rollback, and report d
 ```
+
+**`cause` is the postponement with its provenance**, which is what decides how the dependencies are derived: one a synthesizer raised is admitted as it named it, and one the mechanism's own unification raised has them extracted. Both are below.
 
 **The guest's heap is not part of that.** It is not the host's to restore, so the contract has two sides: the host restores what the lists below give, and the guest owes **observational restartability**, defined after them. Neither side alone is enough, and the second is the one nothing checks.
 
@@ -143,7 +171,7 @@ attempt(pending):
 - the resource counters — fuel, a deadline, and cancellation — which bound the loop, and one that rolled back would let an attempt restart forever
 - **the generation counter handles are stamped from**, for the reason below
 
-**The two supplies are governed oppositely, and each rule is what its guarantee rests on.** The supply of fresh names — metavariables, and what `freshIdent` gives — **is** restored, so that a second run of one goal builds the same term. The supply of generations is **not**, so that a handle issued before a rollback can never be mistaken for one issued after it: were the counter restored, the next attempt would allocate into the freed slot and stamp it with the generation just given back, and a handle the rollback invalidated would validate against an object it never named. Restoring one and not the other is deliberate, and an implementation that draws both from one counter has neither property.
+**The two supplies are governed oppositely, and each rule is what its guarantee rests on.** The supply of fresh names — metavariables, and what `freshIdent` gives — **is** restored, so that a name a goal takes does not depend on how many times the goal has run: two runs against the same state take the same names. The supply of generations is **not**, so that a handle issued before a rollback can never be mistaken for one issued after it: were the counter restored, the next attempt would allocate into the freed slot and stamp it with the generation just given back, and a handle the rollback invalidated would validate against an object it never named. Restoring one and not the other is deliberate, and an implementation that draws both from one counter has neither property.
 
 The two halves say different things, and both are needed. What is restored is what would otherwise **accumulate** across attempts: a duplicate metavariable, a constraint emitted twice, a warning reported once per try. What is not restored is what must **not** be undone, or the loop would not terminate and a stale handle would not be detectable.
 
@@ -157,7 +185,9 @@ The two halves say different things, and both are needed. What is restored is wh
 
 ### A dependency must survive the rollback
 
-A rollback deletes the metavariables the attempt created, so the set a `postpone` names cannot be taken as given. It is **admitted against `Ψ` as the rollback leaves it**, and three conditions decide it.
+A rollback deletes the metavariables the attempt created, so the set a postponement names cannot be taken as given: what a job waits under has to be something `Ψ` still holds and something an assignment can still reach. It is **admitted against `Ψ` as the rollback leaves it**, and **how it is admitted depends on where the postponement came from**. The two provenances are kept apart because a rule loose enough for one hides a defect in the other.
+
+**A postponement a synthesizer raises is admitted as it stands**, and three conditions decide it.
 
 ```text
 admit(ms):
@@ -172,7 +202,32 @@ admit(ms):
 
 **A `postpone` failing any of the three is a contract violation**, and the attempt fails with a diagnostic naming the synthesizer. It is not reported as a property of the program being compiled: nothing the author wrote is wrong, and the program may well be solvable by the goal the synthesizer meant to wait on.
 
-The alternative is to keep such a `postpone` and **project** its dependencies onto the outer metavariables the attempt-local ones arose from. That needs a rule saying which outer metavariable an inner one's solution would come from, and none of the mechanism supplies one — a fresh row tail stands for what two sides share and not for either of them ([Elaboration](01-Elaboration.md)). Until such a rule exists, admission is what keeps every blocked entry wakeable.
+**Dropping the inadmissible part silently instead would hide that defect.** A synthesizer that names one metavariable it created among several it did not would be registered and woken, and the reading that produced the bad name — a type it did not zonk, a metavariable it held across an attempt — would never be reported. Refusing the whole postponement is what makes such a reading visible where it happens.
+
+**A postponement the mechanism's own unification raises carries its provenance, and its dependencies are extracted rather than taken.** The mechanism has no defect to hide and cannot name a metavariable a synthesizer misread; what it can do is get stuck on a metavariable it created itself, and that case is reachable rather than hypothetical.
+
+```text
+SolverStuck { blockedOn, written }
+
+durable = (blockedOn ∪ written) ∩ { ?α | Ψ holds ?α unsolved after the rollback }
+```
+
+`blockedOn` is what the equation could not decide between. `written` is **every metavariable the attempt assigned that existed at the checkpoint**, which is what makes the extraction possible.
+
+```text
+Pair { a : A | ?r } { c : C | ?r }  ≡  Pair { b : B | ?s } (?v ⊎ ?w)
+
+  the first argument refines both tails      ?r := ( b : B | ?t ),  ?s := ( a : A | ?t )
+  the second is then  { c : C, b : B | ?t } ≡ ?v ⊎ ?w,  stuck on { ?t, ?v, ?w }
+```
+
+**`?t` is gone after the rollback and `?r` is not.** Registering under `?t` blocks the job on an assignment nothing can make; refusing the postponement rejects an equation that `?v` or `?w` being solved would decide. What changes the outcome of the re-run is a solution for one of the metavariables whose refinement produced `?t` — and the write set names those without anyone having to say which fresh tail arose from which, since a fresh row tail stands for what two sides share and not for either of them ([Elaboration](01-Elaboration.md)). It is an over-approximation: a wake it causes needlessly costs one attempt, which fuel already bounds.
+
+**The write set is attempt-local, cumulative, and rolled back with an inner `transact`.** A candidate the search tried and discarded assigned what it assigned, and those assignments are not the goal's dependencies: waking the goal because a rejected candidate once touched a metavariable would have the discarded work decide when it runs. It is therefore part of what an attempt owns and not a counter the rollback leaves alone, and it is kept apart from the record of assignments the scheduler drains to wake jobs, which is emptied at each wake where this accumulates until the attempt ends.
+
+**A postponement with nothing durable is still a contract violation**, whatever its provenance. Nothing would ever wake the job, and the loop would reach quiescence naming a metavariable no table holds.
+
+**Correctness does not rest on a re-run producing the same fresh tail.** Another attempt may commit between the two, so the metavariable a second run creates need not be the one the first did; what the restart contract asks is that the same inputs rebuild an equivalent one, and not that a number be held across other work.
 
 ### `transact` catches a failure and not a postponement
 
@@ -240,10 +295,17 @@ on Solved or Failed        id is removed from pending
 ```text
 assign(?α := τ):
   record the substitution in the current transactional Ψ
+  re-decide the obligations ?α is watched by, each against its own site
   for each id in blocked[?α]:
     remove id from every dependency it is registered under
     push id onto the ready queue
 ```
+
+**What an assignment owes is that list**, and a unification that assigns several metavariables owes it for each of them. Re-deciding may refuse the assignment, and the equation then **fails** rather than waiting.
+
+**A unification therefore reports what it assigned whether it solved or became stuck.** It assigns as it descends, so it can refine one metavariable and then meet a sub-equation it cannot decide; an outcome that reported the dependency alone would have an equation that has already broken a constraint read as one that is merely short of information. What is committed is another matter, and only a success is.
+
+A **failure** reports the diagnostic and nothing else. The whole equation is rolled back, so there is no assignment left for an obligation to be re-decided against and no wake to perform.
 
 **Recording is not publishing.** An `assign` happens inside an attempt, and the substitution together with every queue change above is part of that attempt: where it goes on to postpone or to fail, the assignment is rolled back and the jobs it woke go back to waiting where they were. What makes an assignment visible to anything else is the enclosing attempt committing.
 
@@ -332,9 +394,12 @@ Each is a case where a plausible implementation gives the wrong answer, and each
 | The same goal, run a second time | It creates the same metavariables and emits the same constraints, and neither is duplicated. Reading a counter that the rollback left alone is what makes a second run differ |
 | A `postpone` naming a metavariable the attempt itself created | The attempt fails, naming the synthesizer. Registering the job blocks it on an assignment nothing can make, and quiescence then reports a name `Ψ` does not hold |
 | A `postpone` naming the empty set, or a metavariable already solved | The same failure. Neither can wake a job, and the second is a type that was not zonked |
+| A stuck row equation among whose flexible tails is one the attempt created | Registered under the metavariables the attempt assigned that `Ψ` still holds unsolved. Registering under the fresh tail blocks the job on an assignment nothing can make, and refusing the postponement rejects an equation a later solution would decide |
+| The same, with a candidate discarded by a `transact` in between | That candidate's assignments are none of the dependencies. A write set an inner rollback left standing has work the search rejected decide when the goal is woken |
 | A `postpone` inside a `transact` | It rolls that checkpoint back and propagates to the attempt root. A `transact` returning `Left` has a resolver reject a candidate for lack of information and commit to the next |
 | A `throw` inside a `transact` | Caught there, which is what `Either Diagnostic a` says |
-| A `PendingUnify` whose solution needs a Lacks assumption of its site, woken later | Solved against the facts of that site. Deciding it against the context elaboration has reached admits a substitution the site forbids, or rejects one it allows |
+| A `PendingUnify` whose substitution has to preserve a Lacks assumed at another site | Decided against the facts of the site that assumed it, whatever site the equation stands at. The obligation carries its own context, so nothing is decided by the facts that happen to be at hand |
+| A `PendingUnify` woken far from where it was written | Creates its kind metavariables under the kind variables in scope at its own site. What it needs the snapshot for is that and the place a failure is reported |
 | A handle a rollback invalidated, presented again | Reported as a defect in the synthesizer. Resolving it to whatever occupies that place now is how a guest cache corrupts a later attempt |
 | A different object allocated into a slot a rollback freed, and the old handle presented | Still rejected. A generation counter restored with the rest of the attempt would stamp the new object with the number the old handle carries |
 | An `assign` inside an attempt that goes on to postpone | The substitution and the wakeups it made are both rolled back, and the jobs it woke are waiting where they were. Publishing at the `assign` leaves a job on the ready queue for an assignment that was undone |

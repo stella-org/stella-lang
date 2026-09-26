@@ -13,6 +13,9 @@ module Stella.Compiler.Elaborate.Row
   , XRowError(..)
   , emptyXNormalForm
   , xnf
+  , knownKeys
+  , rigidTails
+  , sharedKey
   , payloadEquations
   , rebuild
   ) where
@@ -121,6 +124,20 @@ union l r =
 
 domain :: XRowNormalForm -> Set RowKey
 domain n = Set.fromFoldable (Map.keys n.known)
+
+-- | The keys of the known part, and the tails no substitution can touch. Every
+-- | reading of a normal form that decides a constraint asks for exactly these
+-- | two, so they are named once here.
+knownKeys :: XRowNormalForm -> P.Array RowKey
+knownKeys n = Set.toUnfoldable (domain n)
+
+rigidTails :: XRowNormalForm -> P.Array TyVar
+rigidTails n = Set.toUnfoldable n.rigid
+
+-- | A key both known parts carry, which is what makes two rows impossible to
+-- | keep apart.
+sharedKey :: XRowNormalForm -> XRowNormalForm -> Maybe RowKey
+sharedKey l r = Array.head (Array.filter (\key -> Map.member key r.known) (knownKeys l))
 
 -- | A normal form written back as a row, which is how a solution is recorded:
 -- | `?s := D ⊎ R ⊎ ?t` is built here.
