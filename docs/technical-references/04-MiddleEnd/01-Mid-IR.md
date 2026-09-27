@@ -256,8 +256,8 @@ privileges a name of its own choosing.
 **Whether an operation may fault is the ABI specification's to say as well**, and
 is not read off the operation. The ABI fixes one observable meaning for every
 backend: `stella-base-0.1` has `Base.Int.add` wrap, so a backend on a host that
-traps on overflow owes the wrapping form, and it has the two indexing entries fault
-outside their range ([Prim and Base](../06-Modules/02-Prim-and-Base.md)). For an
+traps on overflow owes the wrapping form, and it has the entries carrying an index
+fault outside their range and `Base.Int.quot` fault on a zero divisor ([Prim and Base](../06-Modules/02-Prim-and-Base.md)). For an
 entry the ABI has not yet fixed, a consumer treats the operation as one that may
 fault ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
 

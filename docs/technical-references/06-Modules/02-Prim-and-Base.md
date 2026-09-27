@@ -295,8 +295,34 @@ code.
 -- ABI entries
 Base.Int.add                 : Int -> Int -> Int
 Base.Int.sub                 : Int -> Int -> Int
+Base.Int.mul                 : Int -> Int -> Int
+Base.Int.quot                : Int -> Int -> Int        -- faults on a zero divisor
+Base.Int.rem                 : Int -> Int -> Int        -- faults on a zero divisor
+Base.Int.eq                  : Int -> Int -> Boolean
+Base.Int.lt                  : Int -> Int -> Boolean
+Base.Int.toNumber            : Int -> Number
+Base.Int.toString            : Int -> String
+Base.Number.add              : Number -> Number -> Number
+Base.Number.sub              : Number -> Number -> Number
+Base.Number.mul              : Number -> Number -> Number
+Base.Number.divide           : Number -> Number -> Number
+Base.Number.negate           : Number -> Number
+Base.Number.eq               : Number -> Number -> Boolean
+Base.Number.lt               : Number -> Number -> Boolean
+Base.Number.floor            : Number -> Number
+Base.Number.ceil             : Number -> Number
+Base.Number.trunc            : Number -> Number
+Base.Number.toInt            : Number -> Int
+Base.Number.toString         : Number -> String
 Base.String.length           : String -> Int
 Base.String.codePointAt      : Int -> String -> Char    -- faults out of range
+Base.String.append           : String -> String -> String
+Base.String.slice            : Int -> Int -> String -> String   -- faults out of range
+Base.String.singleton        : Char -> String
+Base.String.eq               : String -> String -> Boolean
+Base.String.lt               : String -> String -> Boolean
+Base.Char.toCodePoint        : Char -> Int
+Base.Char.fromCodePoint      : Int -> Char              -- faults on what is no scalar value
 Base.Array.Array             : Type -> Type            -- manifest intrinsic
 Base.Array.length            : forall a. Array a -> Int
 Base.Array.unsafeNew         : forall a. Int -> Array a          -- faults on a negative count
@@ -418,7 +444,7 @@ is graded.
 | Profile | Contents |
 | --- | --- |
 | `core-runtime` | `Base.IO.pure` and `Base.IO.bind`, together with the execution D25 places outside Core: native leaf actions, world state, and the invocation of `main` |
-| `standard` | `core-runtime`, together with `Base.Int`, `Base.String`, `Base.Array`, the uncurried families, and whatever else the `Prelude` of a given version requires |
+| `standard` | `core-runtime`, together with `Base.Int`, `Base.Number`, `Base.String`, `Base.Char`, `Base.Array`, the uncurried families, and whatever else the `Prelude` of a given version requires |
 
 **A profile is a floor, not a ceiling.**
 
@@ -473,7 +499,9 @@ profiles:
   standard:
     includes core-runtime
     Base.Int.*
+    Base.Number.*
     Base.String.*
+    Base.Char.*
     Base.Array.*
     Base.Function.Uncurried.*
 ```
@@ -543,20 +571,41 @@ any, should enforce this is open ([Open Questions](../99-Open-Questions/01-Open-
 
 ### The operations of `stella-base-0.1`
 
-Eight entries of this version are **operations**: a `.dmo` names one by a code rather
-than through its foreign table, and whatever executes it carries the entry out
+Thirty-four entries of this version are **operations**: a `.dmo` names one by a code
+rather than through its foreign table, and whatever executes it carries the entry out
 itself ([Encoding](../05-Backend/02-Encoding.md)). Their meaning is fixed here, in
 terms that name no backend, and so is which of them may fault.
 
+`minInt` below is `-2147483648` and `maxInt` is `2147483647`.
+
 | Entry | Meaning | Faults | `#observ(none)` |
 | --- | --- | --- | --- |
-| `Base.Int.add`, `Base.Int.sub` | addition and subtraction **modulo 2³², the result read as a 32-bit signed integer** (D37) | never | yes |
+| `Base.Int.add`, `Base.Int.sub`, `Base.Int.mul` | addition, subtraction, and multiplication **modulo 2³², the result read as a 32-bit signed integer** (D37) | never | yes |
+| `Base.Int.quot` | division **truncated towards zero**; `minInt` divided by `-1` is `minInt`, wrapping | on a zero divisor | no |
+| `Base.Int.rem` | the remainder `quot` leaves, `a - b * quot a b`, whose sign is the dividend's; `minInt` by `-1` leaves `0` | on a zero divisor | no |
+| `Base.Int.eq`, `Base.Int.lt` | whether the first equals, or is less than, the second | never | yes |
+| `Base.Int.toNumber` | the binary64 of the same value, which is always exact | never | yes |
+| `Base.Int.toString` | the decimal numeral: `-` before a negative value, and no leading zero | never | yes |
+| `Base.Number.add`, `sub`, `mul`, `divide` | the IEEE 754 binary64 operation, rounding to nearest with ties to even; a zero divisor gives an infinity or NaN as IEEE says | never | yes |
+| `Base.Number.negate` | the value with its sign flipped, `0.0` giving `-0.0` | never | yes |
+| `Base.Number.eq`, `Base.Number.lt` | IEEE 754 equality and less-than: false wherever NaN takes part, and `0.0` equal to `-0.0` | never | yes |
+| `Base.Number.floor`, `ceil`, `trunc` | the integral value towards negative infinity, positive infinity, and zero; NaN, an infinity, and a zero come back as they were | never | yes |
+| `Base.Number.toInt` | the value truncated towards zero, **saturating**: NaN gives `0`, anything below `minInt` gives `minInt`, and anything above `maxInt` gives `maxInt` | never | yes |
+| `Base.Number.toString` | the string `Number::toString(x, 10)` of ECMA-262, 15th edition, gives (below) | never | yes |
 | `Base.String.length` | the number of Unicode scalar values in the string (D27) | never | yes |
 | `Base.String.codePointAt` | the scalar value at a **scalar index**, counting from zero | on an index outside the string | no |
+| `Base.String.append` | the scalar values of the first followed by those of the second | never | yes |
+| `Base.String.slice` | the scalar values from index `start` up to but not including `end` | unless `0 ≤ start ≤ end ≤ length` | no |
+| `Base.String.singleton` | the string of that one scalar value | never | yes |
+| `Base.String.eq` | whether the two are the same sequence of scalar values | never | yes |
+| `Base.String.lt` | whether the first precedes the second **lexicographically by scalar value**, a proper prefix preceding what it prefixes | never | yes |
+| `Base.Char.toCodePoint` | the scalar value, as an `Int` | never | yes |
+| `Base.Char.fromCodePoint` | the scalar value an `Int` names | unless it is in `0` to `0x10FFFF` and outside the surrogates `0xD800` to `0xDFFF` | no |
 | `Base.Array.length` | the number of slots the array has, which is the count it was created with | never | yes |
 | `Base.Array.unsafeNew` | an array of that many slots, none of them written | on a negative count | no |
 | `Base.Array.unsafeSet` | write the element into that slot of the array, and return `Unit` | on an index outside the array | no |
 | `Base.Array.unsafeIndex` | the element at an index | on an index outside the array | no |
+
 
 **A negative count faults rather than being left undefined**, and this is not
 symmetry for its own sake. It is the one place every backend has to do something
@@ -580,8 +629,8 @@ without being told the representation.
 **The last column happens to agree with the one before it in this version, and does
 not follow from it.** What the annotation asserts is the absence of an
 **observational effect** — a hidden read or write, an observable identity, a fault —
-and faulting is one of three ([Modules](01-Modules.md), D41). For the five entries
-that touch nothing the agreement is the whole story: each depends on its arguments
+and faulting is one of three ([Modules](01-Modules.md), D41). For every entry but
+the unsafe three the agreement is the whole story: each depends on its arguments
 alone, so faulting is the only thing that could exclude it. For the unsafe three it
 is a coincidence. Each of them faults, so reading the column off faulting gives the
 right answer; each of them would be excluded anyway — `unsafeNew` hands back an array
@@ -602,6 +651,111 @@ between them would be comparing nothing.
 **An index is a scalar index and not an index of code units**, which is the split
 `String` already rests on: a backend holding UTF-16 counts and indexes scalar values
 all the same.
+
+**A comparison answers with a `Boolean`, and ordering is not the ABI's.** `Ord` and
+`Eq` are `Prelude`'s classes, so what the ABI owes is the two primitive questions
+each is built from — equal, and less than — and everything else is written over
+them. A three-way comparison is not among the entries: `lt` and `eq` express it, and
+adding one later would widen the surface without changing any meaning.
+
+#### Integer division truncates, and `div` is `Prelude`'s
+
+`Base.Int.quot` and `Base.Int.rem` divide **towards zero**, which is what every host
+already has — Wasm's `i32.div_s` and `i32.rem_s`, and JavaScript's `/` and `%` — so a
+backend adds a check rather than a correction. **The names `div` and `mod` are kept
+for Euclidean division**, whose remainder is never negative, and that is `Prelude`'s:
+its `EuclideanRing Int` is ordinary Stella over these two.
+
+```text
+div a b = let q = quot a b ; r = rem a b in
+          if r < 0 then (if 0 < b then q - 1 else q + 1) else q
+mod a b = let r = rem a b in
+          if r < 0 then (if 0 < b then r + b else r - b) else r
+```
+
+So throughout Stella a name says which division it is: `quot` and `rem` truncate,
+`div` and `mod` are Euclidean, and no layer spells truncating division `div`. The
+division of `Number` is `divide` for the same reason.
+
+**`minInt` divided by `-1` wraps to `minInt`, and leaves a remainder of `0`.** The
+true quotient is one past `maxInt`, and this is the one case where the hosts part
+ways: JavaScript's `(a / b) | 0` gives `minInt`, while Wasm's `i32.div_s` traps.
+Wrapping is what the rest of `Base.Int` does, and it leaves the Euclidean pair above
+correct without a case of its own.
+
+**A zero divisor faults.** Returning `0`, as PureScript does, would turn a mistake
+into a value nothing marks; and neither host gives a result for free — Wasm traps,
+and JavaScript's `Infinity | 0` is `0` only by accident — so a check is paid either
+way. The cost is that the two entries carry no `#observ(none)`, so an optimizer
+keeps a division it cannot prove has a non-zero divisor. `Prelude`'s `div` and `mod`
+inherit the fault.
+
+#### A `Number` is compared by IEEE 754, and a literal by its identity
+
+**`Base.Number.eq` is not literal identity, and the two are needed for different
+things.** Literal identity decides a `switchLit`: every NaN is one literal and `0.0`
+and `-0.0` are two, because a dispatch has to send each value to one branch (D37).
+`Base.Number.eq` answers the numeric question, where NaN equals nothing, itself
+included, and the two zeros are equal. A backend implements `switchLit` by the first
+and this entry by the second, and neither may stand in for the other.
+
+**`Base.Number.negate` exists because subtraction cannot produce `-0.0`.**
+`0.0 - 0.0` is `0.0`, so a negation written as `sub 0.0 x` sends `0.0` to `0.0`
+where its negation is `-0.0` — a different literal. `Int` needs no such entry,
+`sub 0 x` being its negation, `minInt` included.
+
+**Converting to an `Int` saturates rather than faulting.** `Base.Number.toInt`
+truncates towards zero and clamps what does not fit: NaN gives `0`, and values beyond
+the range give its nearer end — which is Wasm's `i32.trunc_sat_f64_s` exactly. Being
+total, it carries `#observ(none)`, and a conversion that must refuse what does not
+fit is a portable library's: `Data.Int.fromNumber` compares against the range before
+it converts, and answers with a `Maybe`.
+
+**`Base.Number.toString` is the abstract operation `Number::toString ( x, radix )` at
+radix 10, as clause 6.1.6.1.20 of ECMA-262, 15th edition (ECMAScript 2024), defines
+it.** That algorithm is fully specified — the shortest decimal that reads back as the
+same value, in positional notation where the decimal exponent is from `-6` to `20`
+and in exponential notation, as `1e+21` and `1e-7`, beyond that — so a backend
+without a JavaScript host implements it as it would any other specification. A format
+of Stella's own would buy nothing and cost every JavaScript backend a
+reimplementation.
+
+**The edition is named because the meaning is fixed for the life of this version**,
+and a later revision of ECMA-262 does not change it. A JavaScript backend emitting the
+host's own conversion therefore relies on the host still agreeing with that edition,
+which it does so long as the algorithm is unrevised; where one is, the backend
+implements the edition this version names.
+
+#### Strings are ordered by scalar value
+
+`Base.String.lt` compares the scalar values in order, and a proper prefix precedes
+what it prefixes. **This is not the order JavaScript's `<` gives**, which compares
+UTF-16 code units: an astral character is a surrogate pair there, and a surrogate is
+below `U+E000`, so `"\u{E000}" < "😀"` is false in JavaScript and true here. A
+JavaScript backend therefore implements the entry rather than emitting `<`, which is
+the cost D27 names where representation and meaning diverge.
+
+**`Base.String.slice` faults outside its range rather than clamping.** A clamping
+slice is written over this one after a comparison, and a faulting one cannot be
+recovered from a slice that clamped.
+
+#### What this version does not hold
+
+Each of these was considered, and each has a reason that is not its usefulness.
+
+| Not an entry | Why |
+| --- | --- |
+| `Boolean`'s `and`, `or`, `not`, and `Char`'s comparisons | Written in Stella: a `switchLit` or a `guard`, and `Base.Char.toCodePoint` with `Base.Int.lt` |
+| Parsing a `String` into an `Int` | Written in Stella over `codePointAt` and `Int` arithmetic |
+| Parsing a `String` into a `Number` | A correctly rounded parse is heavy to write in Stella, and an entry would need a sentinel where a `Maybe` cannot stand. Left for a later version |
+| `sin`, `exp`, `log`, `pow`, and the rest of the transcendental functions | ECMAScript leaves their results implementation-approximated, so no one meaning can be fixed for every backend |
+| `sqrt` | Nothing needs it yet. Its meaning can be fixed when one does, the result being the square root rounded to binary64 as IEEE 754 defines it |
+| `round` | Hosts break ties differently — JavaScript's `Math.round` towards positive infinity, Wasm's `f64.nearest` to even — and `floor` of `x + 0.5` is not either |
+| The remainder of a `Number` | Wasm has no instruction for it |
+| Bitwise operations on `Int` | Their meaning can be fixed — a shift count masked to five bits, as both hosts do — and nothing needs them yet |
+| Copying, slicing, or converting an `Array` wholesale | Each reads the slots of a mutable array, so none is Core-modelled, and each is a loop in Stella |
+
+Adding any of them later changes the meaning of no existing code.
 
 #### `unsafeIndex` carries the one precondition of this version
 
@@ -784,8 +938,9 @@ usable here, identifying the two zeros and separating a NaN from itself, so a
 backend's dispatch implements the relation above rather than `==`.
 
 **Whether arithmetic wraps or faults** on overflow is the ABI specification's, one
-answer for every backend, and `stella-base-0.1` fixes it: `Base.Int.add` and
-`Base.Int.sub` wrap and fault on nothing (above).
+answer for every backend, and `stella-base-0.1` fixes it: `Base.Int.add`,
+`Base.Int.sub`, and `Base.Int.mul` wrap and fault on nothing, and `Base.Int.quot`
+wraps where its one overflow arises (above).
 
 One thing about a literal remains open, and it is not a domain. **Which surface
 token denotes which value** is the lexer's: `42`, `0x2a`, and `0b101010` are one

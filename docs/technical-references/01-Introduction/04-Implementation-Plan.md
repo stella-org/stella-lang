@@ -389,7 +389,7 @@ These are about the table itself and not about where it came from, so a table wr
 
 ### The array operations (step 5, interpreter 6)
 
-Four of the eight operations of `stella-base-0.1` are `Base.Array` entries, and they are the first that carrying one out cannot do without reaching the payload of a value ([Prim and Base](../06-Modules/02-Prim-and-Base.md)).
+Four of the operations of `stella-base-0.1` are `Base.Array` entries, and they are the first that carrying one out cannot do without reaching the payload of a value ([Prim and Base](../06-Modules/02-Prim-and-Base.md)).
 
 | Input | Required outcome |
 | --- | --- |
@@ -406,13 +406,43 @@ Four of the eight operations of `stella-base-0.1` are `Base.Array` entries, and 
 
 **What the end-to-end case is, at this stage, is `Base.Array` and a module written over it**, carried from Core to a value: the manifest supplying an `intrinsic opaque`, four `foreign` declarations, a lowering that makes each a `prim` rather than an `ffi`, a loader resolving them to the interpreter, and a program that allocates, writes every slot, and reads one back. That is the chain this step owes, and it needs no library above it.
 
-**`Data.Array.mapArray` is not that case and does not belong to this step.** The loop it is written as tests `i < length xs`, and `stella-base-0.1` holds no comparison: `Base.Int` has `add` and `sub`, so nothing decides an ordering on `Int`. The writes are unrolled instead, which reaches the same entries by the same route. **The surface is what is unfinished here, not the interpreter** — the entries settled so far were chosen by what the machine needed, and what a program needs is a different list, which is the ABI's own work and follows this one ([Prim and Base](../06-Modules/02-Prim-and-Base.md), [Open Questions](../99-Open-Questions/01-Open-Questions.md)).
+**`Data.Array.mapArray` is the end-to-end case over the wider surface**, and closes the group below: its loop tests `i < length xs` with `Base.Int.lt` and advances with `Base.Int.add`, so it is written in Core over the ABI as it stands, needing no library above it.
+
+**A function over an array does not reach the ABI as a higher-order entry.** A `foreign` supplies a first-order leaf, and `mapArray` is Stella over the four above ([Modules](../06-Modules/01-Modules.md)).
+
 
 **Reading a slot `unsafeNew` left unwritten is not in this table, and nothing replaces it.** It violates the precondition of `unsafeIndex` (D42), so a test executing such a read and asserting anything about the result would be fixing what the specification declines to fix, and would fail a backend that chose differently.
 
 **Nor is the converse testable.** A backend that tracks which slots are written and faults on an unwritten read is **conformant**: the ABI obliges no one to detect a violation and equally forbids no one from doing so, and a program that runs there and nowhere else is exactly the difference an unspecified case admits. So "no initialization bit is kept, and no read consults one" is **not** a conformance property and must not be asserted as one. It is a performance decision of this interpreter — the check would stand on the hot path of the operation a portable array library is built out of — and belongs in the interpreter's own notes rather than in a test.
 
 What is testable around the precondition is only what holds on either side of it: an in-range written read gives the element, an out-of-range read faults, and a program that writes every slot before reading gives the same answer whatever the allocation left.
+
+### The scalar and text operations (step 5, interpreter 6)
+
+The rest of the operations compute from their arguments alone, and each case below is one where a host's own operator gives another answer ([Prim and Base](../06-Modules/02-Prim-and-Base.md)).
+
+| Input | Required outcome |
+| --- | --- |
+| `Base.Int.add maxInt 1`, `Base.Int.mul 65536 65536` | `minInt`, and `0`. Arithmetic wraps, whatever the host does on overflow |
+| `Base.Int.mul maxInt maxInt` | `1`. The exact product needs more than 53 bits, so a multiplication through binary64 loses the low ones: JavaScript's `(a * b) | 0` gives `0` here where `Math.imul` gives `1` |
+| `Base.Int.quot minInt (-1)`, `Base.Int.rem minInt (-1)` | `minInt`, and `0`. The one overflow division has; a host that traps there checks first |
+| `Base.Int.quot 7 (-2)`, `Base.Int.rem (-7) 2` | `-3`, and `-1`. Division truncates towards zero and the remainder takes the dividend's sign; Euclidean `div` and `mod` are `Prelude`'s |
+| `Base.Int.quot` or `Base.Int.rem` with a zero divisor | A fault. Not `0`, which would make a mistake a value |
+| `Base.Int.toString minInt` | `"-2147483648"`. Negating first overflows, so a conversion that did would print a second minus sign or none |
+| `Base.Number.negate 0.0` | `-0.0`. `Base.Number.sub 0.0 0.0` gives `0.0`, which is why the entry exists |
+| `Base.Number.eq nan nan`, `Base.Number.eq 0.0 (-0.0)` | `false`, and `true`. The opposite of literal identity in both, which a `switchLit` keeps deciding by |
+| `Base.Number.lt` with NaN on either side | `false` |
+| `Base.Number.toInt nan`, `Base.Number.toInt 1e10`, `Base.Number.toInt (-2.9)` | `0`, `maxInt`, and `-2`. Saturating, and truncating towards zero. A conversion by `\| 0` gives `1410065408` for the second |
+| `Base.Number.floor (-0.5)`, `Base.Number.trunc (-0.5)` | `-1.0`, and `-0.0` |
+| `Base.Number.toString 1e21`, `1e20`, `1e-7`, `0.1`, `-0.0` | `"1e+21"`, `"100000000000000000000"`, `"1e-7"`, `"0.1"`, and `"0"` |
+| `Base.String.lt "\u{E000}" "😀"` | `true`. By scalar value; JavaScript's `<` over UTF-16 code units says `false` |
+| `Base.String.lt "ab" "abc"`, `Base.String.lt "abc" "abc"` | `true`, and `false` |
+| `Base.String.slice 1 3 "a😀bc"` | `"😀b"`. The indices count scalar values |
+| `Base.String.slice 2 1 s`, or an `end` past the length | A fault, not a clamped result |
+| `Base.String.slice (-1) 2 s`, `Base.String.slice 0 (-1) s` | A fault each. A negative index is not counted from the end, as a host's own `slice` counts it |
+| `Base.Char.fromCodePoint 0xD800`, `0x110000`, `-1` | A fault each |
+| `Base.Char.toCodePoint (Base.Char.fromCodePoint 0x1F600)` | `0x1F600` |
+| A hand-written Core `mapArray` over an array `unsafeNew` produced, its loop testing `Base.Int.lt` | Every slot written with the function's result, in index order. The chain this step owes, carried over the whole surface a portable array library is written with |
 
 ### The drive loop (step 5, interpreter 8)
 

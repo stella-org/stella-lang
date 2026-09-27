@@ -1163,14 +1163,14 @@ settled, at which point the two share one.
 
 `PRIMS` names operations, and executing a `PRIM` is carrying out the `Base` entry
 its code stands for. **What each one means, and which of them fault, is the ABI's
-and is one meaning for every backend** — the eight the format carries are fixed in
+and is one meaning for every backend** — the thirty-four the format carries are fixed in
 [Prim and Base](../06-Modules/02-Prim-and-Base.md) — so the interpreter implements
 what is written there and decides nothing of its own. A code it does not implement
 is a load error rather than something discovered when a `PRIM` runs.
 
-**Carrying one out reaches the host, and the array operations are why.** Four of the
-eight compute from scalar arguments alone, and it would be possible to carry those
-out without leaving the interpreter; every entry of `Base.Array` reaches the payload
+**Carrying one out reaches the host, and the array operations are why.** All but the
+four of `Base.Array` compute from scalar arguments alone, and it would be possible to
+carry those out without leaving the interpreter; every entry of `Base.Array` reaches the payload
 of an array instead — `unsafeNew` allocates one, `unsafeSet` writes into it,
 `unsafeIndex` reads what that write left, and even `length` reads a count held
 there — so the operation boundary is the same kind of boundary as the foreign one. **It is the same boundary

@@ -289,12 +289,38 @@ means beside them ([Prim and Base](../06-Modules/02-Prim-and-Base.md)).
 | --- | --- |
 | `0x01` | `Base.Int.add` |
 | `0x02` | `Base.Int.sub` |
+| `0x03` | `Base.Int.mul` |
+| `0x04` | `Base.Int.quot` |
+| `0x05` | `Base.Int.rem` |
+| `0x06` | `Base.Int.eq` |
+| `0x07` | `Base.Int.lt` |
+| `0x08` | `Base.Int.toNumber` |
+| `0x09` | `Base.Int.toString` |
 | `0x10` | `Base.String.length` |
 | `0x11` | `Base.String.codePointAt` |
+| `0x12` | `Base.String.append` |
+| `0x13` | `Base.String.slice` |
+| `0x14` | `Base.String.singleton` |
+| `0x15` | `Base.String.eq` |
+| `0x16` | `Base.String.lt` |
 | `0x20` | `Base.Array.unsafeIndex` |
 | `0x21` | `Base.Array.unsafeNew` |
 | `0x22` | `Base.Array.unsafeSet` |
 | `0x23` | `Base.Array.length` |
+| `0x30` | `Base.Number.add` |
+| `0x31` | `Base.Number.sub` |
+| `0x32` | `Base.Number.mul` |
+| `0x33` | `Base.Number.divide` |
+| `0x34` | `Base.Number.negate` |
+| `0x35` | `Base.Number.eq` |
+| `0x36` | `Base.Number.lt` |
+| `0x37` | `Base.Number.floor` |
+| `0x38` | `Base.Number.ceil` |
+| `0x39` | `Base.Number.trunc` |
+| `0x3A` | `Base.Number.toInt` |
+| `0x3B` | `Base.Number.toString` |
+| `0x40` | `Base.Char.toCodePoint` |
+| `0x41` | `Base.Char.fromCodePoint` |
 
 Three rules hold of the table, and they are what let a code stand in a file.
 
@@ -304,6 +330,13 @@ any of those would change a published file's meaning when an operation is added.
 The array family is where the table already shows it: `unsafeIndex` holds `0x20`
 because it was written first, and the two entries added beside it took the codes
 after rather than the order a reader would group them in.
+
+**The codes of this version are grouped by module** — `Base.Int` from `0x00`,
+`Base.String` from `0x10`, `Base.Array` from `0x20`, `Base.Number` from `0x30`, and
+`Base.Char` from `0x40` — which is how they were chosen and nothing more. **A later
+version assigns whatever unused code it likes**, and a module outgrowing its sixteen
+takes codes elsewhere; nothing reserves a range. A reader checks no grouping: a code
+means what the table says, wherever it stands.
 
 **A code is fixed for the life of an ABI version, and a removed operation's code
 is not reused.** A later version may drop an operation, and a reader of that
