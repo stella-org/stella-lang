@@ -337,6 +337,7 @@ infer           : Syntax -> Elab (Tuple Expr Type)
 localVariable   : Scope -> Ident -> Elab Expr
 globalRef       : Scope -> QIdent -> [KindView] -> Elab Expr
 literal         : Scope -> Literal -> Elab Expr
+                  -- and the binders and applications the Elaborator API lists
 
 -- control
 transact        : Elab a -> Elab (Either Diagnostic a)

@@ -678,6 +678,19 @@ no identifier is at once ready and blocked
 | A term built in a child scope, used in the child's descendant, in its parent, and in its sibling | Used, refused, and refused. A term built in no build scope is refused everywhere |
 | A fresh name whose first candidate the context already binds, for a value and for a type variable | The next number, and the skipped one is spent. `#` keeps a name only from what an author wrote |
 | A fresh name drawn inside a `transact` that fails, and drawn again | The same name. The supply is part of what an attempt owns |
+| A lambda's variable given to `termApply`, to `openLet`, or as the body of a sibling lambda, outside the lambda | Refused. A term built in a body's scope stays under its binder, through every builder that takes a term |
+| A lambda closed with a row built in its body's scope, or with a row at `Row Type` | Refused. The row is the synthesizer's to give, from the scope the lambda was opened in, at `Row Effect` |
+| `termApply` of a function whose claim is `?f τ`, or `?m`, with the metavariable unsolved | Postponed on `?f`, or on `?m`. A spine headed by a metavariable may become a function type |
+| `termApply` of a function whose claim is `?g ()` with `?g : Row Type -> Type`, or a metavariable applied to four arguments | A defect of the synthesizer, and nothing waited on. No solution of the head makes the spine a function type, so a job registered under it would wait forever |
+| `termApply` of a function claimed at `?a -{()}-> Int` | Claimed at `Int`, without waiting. The head is `Function` already, and what the arrow holds decides nothing about the shape |
+| `termApply` of a term claimed at `Int` | A defect of the synthesizer. No solution makes it a function |
+| `termApply` of `λ(x : Int). x` to a `Boolean` literal | Built, claimed at `Int`, and refused by the Core type checker. A derived claim reads the syntax and proves nothing |
+| `typeApply` of a type abstraction at a type of another kind, and of a term claimed at no `forall` | Refused |
+| `constraintApply` of a term claimed at `k ∉ r => τ`, at the root and inside `openConstraint (k ∉ r)` | A failure, and claimed at `τ`. The requirement is introduced with the term, against the scope's assumptions |
+| A constraint abstraction closed over a constraint that cannot hold | A failure there |
+| A `letrec` of two names whose right-hand sides refer to each other, closed with one right-hand side, or with one built outside the group | Built; refused for the count; refused for the scope |
+| A binder of any sort closed by the operation for another, or left open when the attempt succeeds | A defect of the synthesizer |
+| `λ(x#0 : Int). x#0` built by the kernel and handed to the Core type checker | Accepted. The names the host binds pass it |
 | A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
 | No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
 | No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |

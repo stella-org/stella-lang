@@ -592,7 +592,7 @@ A type in no build scope reaches a builder only through the operation that opens
 
 **The host ABI is first order.** Opening a `forall` hands back a binder, the variable it binds, and the scope its body is built in, and closing it takes the three back, in the scope it was opened in; no request of the host waits on a guest closure. The variable is named after the hint and drawn from a supply of fresh names that is part of what an attempt owns, so a rolled-back attempt returns the names and scopes it drew, and a re-run draws the same ones. **A name is fresh where it is bound**: the hint, `#`, and the first number whose name the scope does not already bind. That no source identifier holds `#` keeps a name apart from what an author wrote and nothing more, since a context may hold one another operation of the host generated; a number skipped is spent. Value variables and type variables are drawn from supplies of their own.
 
-**Every binder opened is closed exactly once, by the operation for its sort and inside out, before the attempt succeeds.** An attempt holds the binders it has open, each with the ancestors of its body's scope, as part of what it owns, so a rollback releases the ones a discarded candidate opened. One still open when an attempt ends in success — checked at the attempt root, whoever runs the attempt — one closed while a binder opened inside its body is still open, one closed twice, and a `forall` binder closed as a constraint or the reverse are defects of the synthesizer. Siblings may be closed in either order. What is built under an open binder is not only types — an obligation proved from its assumption, a job, a metavariable — and without the check those would commit without the type that carries the assumption.
+**Every binder opened is closed exactly once, by the operation for its sort and inside out, before the attempt succeeds.** An attempt holds the binders it has open, each with the ancestors of its body's scope, as part of what it owns, so a rollback releases the ones a discarded candidate opened. One still open when an attempt ends in success — checked at the attempt root, whoever runs the attempt — one closed while a binder opened inside its body is still open, one closed twice, and one closed by the operation for another sort are defects of the synthesizer. Siblings may be closed in either order. What is built under an open binder is not only types — an obligation proved from its assumption, a job, a metavariable — and without the check those would commit without the type that carries the assumption.
 
 **A row is sharp by construction.** Kinding judges a row's shape and not that its keys are distinct, so `extendRow` requires `key ∉ rest` and `unionRow` requires `left # right`, each introducing the requirement together with the row it builds. The requirement carries the build scope's context — the site's, with every assumption opened around it — and the running job's origin, so a row sharp only under an assumption `openConstraint` opened is built inside that constraint's body and nowhere else. A row the requirement refuses, a key it already has included, is a **failure** and not a defect: it is a candidate that does not hold, and a `transact` around it takes the next.
 
@@ -610,6 +610,22 @@ The key says what element a payload makes: a structural key over a `TypePayload`
 localVariable : Scope -> Ident -> Elab Expr
 globalRef     : Scope -> QIdent -> [KindView] -> Elab Expr
 literal       : Scope -> Literal -> Elab Expr
+
+termApply       : Scope -> Expr -> Expr -> Elab Expr
+typeApply       : Scope -> Expr -> Type -> Elab Expr
+constraintApply : Scope -> Expr -> Elab Expr
+
+openLambda         : Scope -> String -> Type -> Elab { binder, variable : Expr, bodyScope }
+closeLambda        : Scope -> Binder -> Expr -> Type -> Elab Expr         the last is the row
+openTypeAbs        : Scope -> String -> KindView -> Elab { binder, variable : Type, bodyScope }
+closeTypeAbs       : Scope -> Binder -> Expr -> Elab Expr
+openConstraintAbs  : Scope -> ConstraintView -> Elab { binder, bodyScope }
+closeConstraintAbs : Scope -> Binder -> Expr -> Elab Expr
+openLet            : Scope -> String -> Expr -> Elab { binder, variable : Expr, bodyScope }
+closeLet           : Scope -> Binder -> Expr -> Elab Expr
+openLetRec         : Scope -> [ { hint : String, type : Type } ]
+                       -> Elab { binder, variables : [Expr], bodyScope }
+closeLetRec        : Scope -> Binder -> [Expr] -> Expr -> Elab Expr
 ```
 
 **A term is built in a build scope, as a type is, and is used by the same rule**: only where it was built in the scope given or in one of its ancestors. A term built under a binder mentions what the binder binds or assumes, so it may stand only under the term binder that corresponds.
@@ -617,6 +633,16 @@ literal       : Scope -> Literal -> Elab Expr
 **A builder is not a type checker.** Each `Expr` holds the type it is claimed at, zonked and kinded at `Type` under its scope; the kernel checks the scope, the class of each handle, and how a binder is used, and whether a claim is borne out is the Core type checker's to decide once the term is zonked. **A leaf is claimed at the one type it can have, and the host computes it**: a variable at the type the scope binds it at, a global at its scheme instantiated at the kinds given — judged as `instantiateScheme` judges it, by the one procedure — and a literal at its literal type. `localVariable` accepts only a name the scope binds, so no name can be made up; the names a term binder binds are the host's to draw, and a synthesizer receives the variable as an `Expr` rather than a name.
 
 **Two forms have no builder.** `?m` is made by `subgoal` alone, which creates the job that fills it. A typed hole is the Surface elaborator's, for reporting and recovery: a synthesizer that cannot build a candidate throws, where a hole would succeed here and fail only at the Core boundary, after the search had stopped.
+
+**A binder of a term is opened and closed as a binder of a type is**: first order, exactly once, inside out, in the scope it was opened in, by the operation for its sort. Its body's scope binds what it binds — a value, a type variable, an assumption — and the name is the host's, fresh where it is bound; the variable comes back as an `Expr` or a `Type` built in the body's scope, so a term that mentions it stays under the binder. A `let`'s right-hand side is given where the `let` is opened, as a term the outer scope may use, and its variable is bound at what that term is claimed at; every name of a `letrec` is bound in each right-hand side and in the body, each declared type is one the outer scope may use at `Type`, and the group is closed with one right-hand side for each name.
+
+**A compound term is claimed at the type the Core rule gives it, read off the claims of its parts**: an application at the result of its function's claim, a type application at the substitution `instantiateForall` makes, a constraint application at the body of its term's `C => τ`, an abstraction at the `forall`, the `C =>`, or the arrow over its body's claim, and a `let` or `letrec` at its body's. **Only a lambda's effect row is the synthesizer's to give**, no claim recording one; it is a type the scope the lambda was opened in may use, at `Row Effect`, so a row built inside the body does not leave it this way, and an effect metavariable the row needs is created before the lambda is opened.
+
+**Where the shape a claim needs is not there yet, the builder waits on what decides it.** A function type is an application spine headed by `Function`, so a claim headed by an unsolved metavariable may become one **where the metavariable's kind and the spine's arguments are compatible with `Function` partially applied** — at most three arguments, and the kind that of `Function` with the arguments the spine does not supply already given — and only then is that metavariable waited on: `?f : Type -> Type` applied to one argument can be solved to `Function τ ρ`, and `?f : Row Type -> Type` applied to one can be solved to nothing that makes an arrow. Waiting on an incompatible head would register a job under a metavariable whose solution could never give it the shape. Once the head is `Function`, nothing inside the arrow is waited on. A `forall` or a `C =>` is waited on only where the whole claim is an unsolved metavariable. A claim no solution can give the shape is a defect of the synthesizer, the claim being observable through `typeOf`.
+
+**`constraintApply` requires the constraint of the scope it is applied in, together with the term**: proved now, watched where a flexible tail leaves it open, and a failure where it is already broken. A constraint abstraction holds its assumption from where it is closed, as `closeConstraint` does.
+
+**A claim the kernel derives is the type the term's syntax has under the Core rule, and no proof that the term satisfies the rule.** What the rules ask beyond the shape of the parts — that an argument stands at the parameter's type, that an abstraction's body is a value and pure, that a `letrec`'s right-hand sides are function values, that an application's arrow row is the ambient row — is the Core type checker's to decide once the term is zonked. A term whose parts disagree is built here and refused there.
 
 ### The catalog
 
