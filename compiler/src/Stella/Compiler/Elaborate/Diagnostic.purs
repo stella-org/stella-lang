@@ -32,7 +32,7 @@ import Stella.Compiler.Elaborate.Term (TermMetaVar)
 import Stella.Compiler.Elaborate.Type (MetaVar, XType)
 import Stella.Compiler.Elaborate.Row (XRowError)
 import Stella.Compiler.Elaborate.Unify (UnifyError)
-import Stella.Compiler.TypedCore (Ident, Qualified, RowKey, TyVar)
+import Stella.Compiler.TypedCore (Ident, JoinName, Qualified, RowKey, TyVar)
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Generic.Rep (class Generic)
 import Data.Set (Set)
@@ -122,6 +122,10 @@ data Defect
   -- | from its assumption, a job, a metavariable — would commit without the
   -- | type that carries it.
   | BindersLeftOpen (Set ScopeId)
+  -- | A term issued in a scope whose join points do not include one it jumps to.
+  -- | Every builder checks what it is given against the scope, so this is an
+  -- | invariant of the host broken.
+  | JoinsOutOfScope (Set JoinName)
   -- | A kernel operation that reads where it stands, run with no frame: outside
   -- | any attempt. The host called it where it had no site to give.
   | NoFrame
@@ -195,6 +199,12 @@ data BuildError
   | NotAnEffectRow Handle
   -- | A `letrec` closed with another number of right-hand sides than it binds.
   | LetRecArity Handle P.Int P.Int
+  -- | A join point used where it is not in scope, or a term mentioning one used
+  -- | where that join point is not: outside the `letjoin` that binds it, or
+  -- | under an abstraction, whose body jumps to no join point outside it.
+  | JoinOutOfScope Handle
+  -- | A jump with another number of arguments than its join point takes.
+  | JumpArity Handle P.Int P.Int
   -- | A binder closed in a scope other than the one it was opened in, or by the
   -- | operation that closes another sort of binder.
   | BinderMisuse Handle

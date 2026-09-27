@@ -22,7 +22,11 @@ module Stella.Compiler.Elaborate.BuildScope
   , schemeAt
   , mapChildren
   , foldChildren
-  , childOf
+  , inheritingChild
+  , abstractedChild
+  , childWith
+  , closedOverParts
+  , joinsWithin
   , visibleUnder
   , closedOver
   , Shape(..)
@@ -40,15 +44,15 @@ import Stella.Compiler.Elaborate.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..))
 import Stella.Compiler.Elaborate.Context (XContext)
 import Stella.Compiler.Elaborate.Elab (Elab, Release(..), askEnv, break, currentMetas, freshBinderName, freshScopeId, issue, postpone, release, require, resolveExpr, resolveType)
-import Stella.Compiler.Elaborate.Handle (ExprObject, Handle, HandleObject(..), ScopeId, ScopeObject, TypeObject)
+import Stella.Compiler.Elaborate.Handle (ExprObject, Handle, HandleObject(..), JoinSignature, ScopeId, ScopeObject, TypeObject)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (KindEvidence, KindingScope, checkConstraint, checkKind, quantifiable, settledIn, synthKind)
 import Stella.Compiler.Elaborate.Pending (Site)
-import Stella.Compiler.Elaborate.Term (XExpr)
+import Stella.Compiler.Elaborate.Term (XExpr, freeVarsOf)
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..), freeRigids, metasOf)
 import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, lookupMeta, substitute, substituteKind)
 import Stella.Compiler.Elaborate.View (ConstraintView(..), KindView(..))
-import Stella.Compiler.TypedCore (Ident, KindVar, Qualified, RowElemKind(..), TyVar(..))
+import Stella.Compiler.TypedCore (Ident, JoinName, KindVar, Qualified, RowElemKind(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (functionTy)
 import Data.Array as Array
 import Data.Either (Either(..))
@@ -72,24 +76,37 @@ usableIn scope handle = do
 -- | A term the scope may use: one built in it or in one of its ancestors, by the
 -- | rule a type is held to. A term built under a binder mentions what the binder
 -- | binds or assumes, and one built in no build scope belongs to none.
+-- |
+-- | **Every join point the term jumps to must be one the scope may jump to.** A
+-- | term built outside an abstraction is visible inside it, and one that jumps
+-- | to a join point outside would carry the jump under the abstraction.
 usableTermIn :: ScopeObject -> Handle -> Elab ExprObject
 usableTermIn scope handle = do
   object <- resolveExpr handle
   case object.builtIn of
-    Just id | id == scope.id || Set.member id scope.ancestors -> pure object
+    Just id | id == scope.id || Set.member id scope.ancestors ->
+      if joinsWithin scope object.term then pure object
+      else rejected (JoinOutOfScope handle)
     _ -> rejected (ScopeViolation handle)
+
+-- | Whether every join point a term jumps to free is one the scope may jump to.
+joinsWithin :: ScopeObject -> XExpr Unit -> P.Boolean
+joinsWithin scope term = Set.subset (freeVarsOf term).joins (Map.keys scope.joins)
 
 -- | Issue a term built in the scope, claimed at the type given, zonked.
 -- |
--- | The claim is kinded at `Type` under the scope. A claim the host computed, or
--- | one taken from a type the scope may use, stands there already, so a claim
--- | that does not is a defect of the host.
+-- | The claim is kinded at `Type` under the scope, and every join point the term
+-- | jumps to must be one the scope may jump to. A builder's claim is the host's
+-- | own or taken from a type the scope may use, and what it is given is checked
+-- | against the scope, so a term failing either is a defect of the host.
 issueTerm :: ScopeObject -> XExpr Unit -> XType -> Elab Handle
 issueTerm scope term claimed = do
   env <- askEnv
   metas <- currentMetas
   let
     zonked = substitute metas claimed
+  unless (joinsWithin scope term)
+    (break (JoinsOutOfScope (Set.difference (freeVarsOf term).joins (Map.keys scope.joins))))
   case checkKind env.session.kinding (kindingScopeOf scope) metas XKType zonked of
     Left fault -> break (KindingFailed fault)
     Right _ ->
@@ -255,12 +272,25 @@ foldChildren f = case _ of
     XRowLabelledEffectEntry _ _ args -> foldMap f args
     XRowRegionEntry var cells -> f var <> f cells
 
--- | A child of the scope, with the context given: a build scope for a binder's
--- | body, drawn from the attempt's supply of scopes.
-childOf :: ScopeObject -> XContext -> Elab ScopeObject
-childOf scope context = do
+-- | A child of the scope for a binder's body, with the context given, whose
+-- | terms may jump to the join points the scope's may: the body of a `let`, a
+-- | `letrec`, a branch, a `letjoin`, and a type's binder. Drawn from the
+-- | attempt's supply of scopes.
+inheritingChild :: ScopeObject -> XContext -> Elab ScopeObject
+inheritingChild scope context = childWith scope context scope.joins
+
+-- | A child of the scope for the body of an abstraction — `λ`, `Λ(a)`,
+-- | `Λ(_ : C)` — which jumps to no join point outside it: a join point is a
+-- | continuation of the evaluation the abstraction delays, and a body run
+-- | later has no such continuation to jump to.
+abstractedChild :: ScopeObject -> XContext -> Elab ScopeObject
+abstractedChild scope context = childWith scope context Map.empty
+
+-- | A child of the scope with the context and the join points given.
+childWith :: ScopeObject -> XContext -> Map JoinName JoinSignature -> Elab ScopeObject
+childWith scope context joins = do
   id <- freshScopeId
-  pure { id, ancestors: Set.insert scope.id scope.ancestors, context }
+  pure { id, ancestors: Set.insert scope.id scope.ancestors, context, joins }
 
 -- | Whether what was built in the scope named is visible under a binder closed
 -- | in the scope given: built in the binder's own body scope, in the scope, or
@@ -281,9 +311,24 @@ closedOver
   -> Maybe ScopeId
   -> Handle
   -> Elab Unit
-closedOver scope binderHandle binder builtIn bodyHandle = do
+closedOver scope binderHandle binder builtIn bodyHandle =
+  closedOverParts scope binderHandle binder [ { within: binder.body, builtIn, handle: bodyHandle } ]
+
+-- | `closedOver`, for a binder whose body is in several parts, each visible
+-- | under the scope it names and not under another's: a part built in its own
+-- | scope, in the scope the binder is closed in, or in one of that scope's
+-- | ancestors.
+closedOverParts
+  :: forall r
+   . ScopeObject
+  -> Handle
+  -> { parent :: ScopeId, body :: ScopeId | r }
+  -> P.Array { within :: ScopeId, builtIn :: Maybe ScopeId, handle :: Handle }
+  -> Elab Unit
+closedOverParts scope binderHandle binder parts = do
   when (binder.parent /= scope.id) (rejected (BinderMisuse binderHandle))
-  unless (visibleUnder scope binder builtIn) (rejected (ScopeViolation bodyHandle))
+  for_ parts \part ->
+    unless (visibleUnder scope { body: part.within } part.builtIn) (rejected (ScopeViolation part.handle))
   release binder.body >>= case _ of
     Released -> pure unit
     NotOpen -> rejected (BinderClosed binderHandle)

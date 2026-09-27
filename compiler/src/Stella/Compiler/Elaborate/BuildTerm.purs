@@ -34,21 +34,24 @@ module Stella.Compiler.Elaborate.BuildTerm
   , closeLet
   , openLetRec
   , closeLetRec
+  , openJoin
+  , closeJoin
+  , jump
   ) where
 
 import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.BuildScope (Shape(..), built, childOf, closedOver, constrainedShape, constraintIn, forallShape, functionShape, instantiatedAt, issueTerm, kindIn, rejected, requiredIn, schemeAt, siteOf, usableIn, usableTermIn, visibleUnder)
+import Stella.Compiler.Elaborate.BuildScope (Shape(..), abstractedChild, built, childWith, closedOver, closedOverParts, constrainedShape, constraintIn, forallShape, functionShape, inheritingChild, instantiatedAt, issueTerm, kindIn, rejected, requiredIn, schemeAt, siteOf, usableIn, usableTermIn, visibleUnder)
 import Stella.Compiler.Elaborate.Context (bindTyVar, bindVar)
 import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..))
-import Stella.Compiler.Elaborate.Elab (Elab, assume, currentMetas, freshBinderName, freshIdent, holdOpen, issue, postpone, resolveBinder, resolveExpr, resolveScope)
-import Stella.Compiler.Elaborate.Handle (BinderObject(..), Handle, HandleObject(..), ScopeObject)
+import Stella.Compiler.Elaborate.Elab (Elab, assume, currentMetas, freshBinderName, freshIdent, freshJoin, holdOpen, issue, postpone, resolveBinder, resolveExpr, resolveJoin, resolveScope)
+import Stella.Compiler.Elaborate.Handle (BinderObject(..), ExprObject, Handle, HandleObject(..), ScopeId, ScopeObject)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), quantifiable)
-import Stella.Compiler.Elaborate.Term (XExpr(..))
+import Stella.Compiler.Elaborate.Term (XExpr(..), freeVarsOf)
 import Stella.Compiler.Elaborate.Type (XType(..), fromCore)
 import Stella.Compiler.Elaborate.Unify (substitute)
 import Stella.Compiler.Elaborate.View (ConstraintView, KindView)
@@ -58,6 +61,7 @@ import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
+import Data.Set as Set
 import Data.Traversable (traverse)
 
 -- | A value variable the scope binds, at the type it is bound at.
@@ -146,7 +150,7 @@ openLambda scopeHandle hint typeHandle = do
   scope <- resolveScope scopeHandle
   ty <- valueType scope typeHandle
   name <- freshIdent (Map.keys scope.context.vars) hint
-  child <- childOf scope (bindVar scope.context name ty)
+  child <- abstractedChild scope (bindVar scope.context name ty)
   binder <- issue (BinderObject (LambdaBinder { name, type: ty, parent: scope.id, body: child.id }))
   holdOpen child.id child.ancestors
   variable <- issueTerm child (EVar unit name) ty
@@ -165,8 +169,7 @@ closeLambda scopeHandle binderHandle bodyHandle rowHandle = do
   scope <- resolveScope scopeHandle
   resolveBinder binderHandle >>= case _ of
     LambdaBinder b -> do
-      body <- resolveExpr bodyHandle
-      closedOver scope binderHandle b body.builtIn bodyHandle
+      body <- abstractedBody scope binderHandle b bodyHandle
       row <- usableIn scope rowHandle
       case row.kind of
         ExactKind (XKRow RowEffect) -> pure unit
@@ -179,6 +182,7 @@ closeLambda scopeHandle binderHandle bodyHandle rowHandle = do
     ConstraintAbsBinder _ -> misuse
     LetBinder _ -> misuse
     LetRecGroup _ -> misuse
+    JoinBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -196,7 +200,7 @@ openTypeAbs scopeHandle hint kindView = do
     Left fault -> rejected (IllKinded fault)
     Right _ -> pure unit
   name <- freshBinderName (Map.keys scope.context.tyVars) hint
-  child <- childOf scope (bindTyVar scope.context name kind)
+  child <- abstractedChild scope (bindTyVar scope.context name kind)
   binder <- issue (BinderObject (TypeAbsBinder { name, kind, parent: scope.id, body: child.id }))
   holdOpen child.id child.ancestors
   variable <- built child (XVar name)
@@ -210,8 +214,7 @@ closeTypeAbs scopeHandle binderHandle bodyHandle = do
   scope <- resolveScope scopeHandle
   resolveBinder binderHandle >>= case _ of
     TypeAbsBinder b -> do
-      body <- resolveExpr bodyHandle
-      closedOver scope binderHandle b body.builtIn bodyHandle
+      body <- abstractedBody scope binderHandle b bodyHandle
       issueTerm scope (ETyLam unit b.name b.kind body.term) (XForall b.name b.kind body.claimed)
     ForallBinder _ -> misuse
     AssumedConstraint _ -> misuse
@@ -219,6 +222,7 @@ closeTypeAbs scopeHandle binderHandle bodyHandle = do
     ConstraintAbsBinder _ -> misuse
     LetBinder _ -> misuse
     LetRecGroup _ -> misuse
+    JoinBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -229,7 +233,7 @@ openConstraintAbs :: Handle -> ConstraintView -> Elab { binder :: Handle, bodySc
 openConstraintAbs scopeHandle view = do
   scope <- resolveScope scopeHandle
   constraint <- constraintIn scope view
-  child <- childOf scope (Context.assume scope.context constraint)
+  child <- abstractedChild scope (Context.assume scope.context constraint)
   binder <- issue (BinderObject (ConstraintAbsBinder { constraint, parent: scope.id, body: child.id }))
   holdOpen child.id child.ancestors
   bodyScope <- issue (ScopeObject child)
@@ -243,8 +247,7 @@ closeConstraintAbs scopeHandle binderHandle bodyHandle = do
   scope <- resolveScope scopeHandle
   resolveBinder binderHandle >>= case _ of
     ConstraintAbsBinder b -> do
-      body <- resolveExpr bodyHandle
-      closedOver scope binderHandle b body.builtIn bodyHandle
+      body <- abstractedBody scope binderHandle b bodyHandle
       site <- siteOf scope
       _ <- assume site b.constraint
       issueTerm scope (EConstraintLam unit b.constraint body.term) (XConstrained b.constraint body.claimed)
@@ -254,6 +257,7 @@ closeConstraintAbs scopeHandle binderHandle bodyHandle = do
     TypeAbsBinder _ -> misuse
     LetBinder _ -> misuse
     LetRecGroup _ -> misuse
+    JoinBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -270,7 +274,7 @@ openLet scopeHandle hint rhsHandle = do
   scope <- resolveScope scopeHandle
   rhs <- usableTermIn scope rhsHandle
   name <- freshIdent (Map.keys scope.context.vars) hint
-  child <- childOf scope (bindVar scope.context name rhs.claimed)
+  child <- inheritingChild scope (bindVar scope.context name rhs.claimed)
   binder <- issue (BinderObject (LetBinder { name, type: rhs.claimed, rhs: rhs.term, parent: scope.id, body: child.id }))
   holdOpen child.id child.ancestors
   variable <- issueTerm child (EVar unit name) rhs.claimed
@@ -293,6 +297,7 @@ closeLet scopeHandle binderHandle bodyHandle = do
     TypeAbsBinder _ -> misuse
     ConstraintAbsBinder _ -> misuse
     LetRecGroup _ -> misuse
+    JoinBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -309,7 +314,7 @@ openLetRec scopeHandle declared = do
   names <- traverse (\d -> freshIdent (Map.keys scope.context.vars) d.hint) declared
   let
     bindings = Array.zipWith { name: _, type: _ } names types
-  child <- childOf scope (Array.foldl (\ctx b -> bindVar ctx b.name b.type) scope.context bindings)
+  child <- inheritingChild scope (Array.foldl (\ctx b -> bindVar ctx b.name b.type) scope.context bindings)
   binder <- issue (BinderObject (LetRecGroup { bindings, parent: scope.id, body: child.id }))
   holdOpen child.id child.ancestors
   variables <- traverse (\b -> issueTerm child (EVar unit b.name) b.type) bindings
@@ -339,6 +344,7 @@ closeLetRec scopeHandle binderHandle rhsHandles bodyHandle = do
     TypeAbsBinder _ -> misuse
     ConstraintAbsBinder _ -> misuse
     LetBinder _ -> misuse
+    JoinBinder _ -> misuse
   where
   misuse :: forall a. Elab a
   misuse = rejected (BinderMisuse binderHandle)
@@ -360,3 +366,108 @@ valueType scope handle = do
 functionType :: XType -> XType -> XType -> XType
 functionType argument row result =
   XApp (XApp (XApp (XCon functionTy []) argument) row) result
+
+-- An abstraction's body: visible under its binder, and jumping to no join
+-- point, the body's scope having none.
+abstractedBody
+  :: forall r
+   . ScopeObject
+  -> Handle
+  -> { parent :: ScopeId, body :: ScopeId | r }
+  -> Handle
+  -> Elab ExprObject
+abstractedBody scope binderHandle binder bodyHandle = do
+  body <- resolveExpr bodyHandle
+  closedOver scope binderHandle binder body.builtIn bodyHandle
+  unless (Set.isEmpty (freeVarsOf body.term).joins) (rejected (JoinOutOfScope bodyHandle))
+  pure body
+
+-- | Open `letjoin j (x̄ : τ̄) : τ`: a binder, the join point as a handle, the
+-- | parameters as terms built in the definition's scope, and two scopes — the
+-- | definition's, binding the parameters and `j`, and the continuation's,
+-- | binding `j` alone.
+-- |
+-- | Each type is one the scope may use, at `Type`. The names are the host's,
+-- | fresh where they are bound, `j` in a namespace of join points apart from
+-- | values.
+openJoin
+  :: Handle
+  -> P.String
+  -> P.Array { hint :: P.String, type :: Handle }
+  -> Handle
+  -> Elab
+       { binder :: Handle
+       , join :: Handle
+       , params :: P.Array Handle
+       , definitionScope :: Handle
+       , bodyScope :: Handle
+       }
+openJoin scopeHandle hint declared resultHandle = do
+  scope <- resolveScope scopeHandle
+  types <- traverse (valueType scope <<< _.type) declared
+  result <- valueType scope resultHandle
+  name <- freshJoin (Map.keys scope.joins) hint
+  names <- traverse (\d -> freshIdent (Map.keys scope.context.vars) d.hint) declared
+  let
+    params = Array.zipWith { name: _, type: _ } names types
+    signature = { params: types, result }
+    joins = Map.insert name signature scope.joins
+  hub <- inheritingChild scope scope.context
+  definition <- childWith hub (Array.foldl (\ctx p -> bindVar ctx p.name p.type) scope.context params) joins
+  continuation <- childWith hub scope.context joins
+  binder <- issue
+    ( BinderObject
+        ( JoinBinder
+            { name, params, result, parent: scope.id, body: hub.id, definition: definition.id, continuation: continuation.id }
+        )
+    )
+  holdOpen hub.id hub.ancestors
+  join <- issue (JoinObject { name, signature, hub: hub.id })
+  paramTerms <- traverse (\p -> issueTerm definition (EVar unit p.name) p.type) params
+  definitionScope <- issue (ScopeObject definition)
+  bodyScope <- issue (ScopeObject continuation)
+  pure { binder, join, params: paramTerms, definitionScope, bodyScope }
+
+-- | Close a `letjoin` opened in this scope, over a definition visible under the
+-- | definition's scope and a body visible under the continuation's, claimed at
+-- | the join point's result.
+closeJoin :: Handle -> Handle -> Handle -> Handle -> Elab Handle
+closeJoin scopeHandle binderHandle definitionHandle bodyHandle = do
+  scope <- resolveScope scopeHandle
+  resolveBinder binderHandle >>= case _ of
+    JoinBinder b -> do
+      definition <- resolveExpr definitionHandle
+      body <- resolveExpr bodyHandle
+      closedOverParts scope binderHandle b
+        [ { within: b.definition, builtIn: definition.builtIn, handle: definitionHandle }
+        , { within: b.continuation, builtIn: body.builtIn, handle: bodyHandle }
+        ]
+      let
+        params = map (\p -> { name: p.name, ty: p.type }) b.params
+      issueTerm scope (ELetJoin unit b.name params b.result definition.term body.term) b.result
+    ForallBinder _ -> misuse
+    AssumedConstraint _ -> misuse
+    LambdaBinder _ -> misuse
+    TypeAbsBinder _ -> misuse
+    ConstraintAbsBinder _ -> misuse
+    LetBinder _ -> misuse
+    LetRecGroup _ -> misuse
+  where
+  misuse = rejected (BinderMisuse binderHandle)
+
+-- | `jump j (ē)`, claimed at `j`'s result.
+-- |
+-- | `j` must be in scope: this scope must stand under the `letjoin` that binds
+-- | it, and no abstraction may stand between. The arguments are as many as `j`
+-- | takes; what they are claimed at, and whether the jump is in tail position,
+-- | are the Core type checker's.
+jump :: Handle -> Handle -> P.Array Handle -> Elab Handle
+jump scopeHandle joinHandle argumentHandles = do
+  scope <- resolveScope scopeHandle
+  join <- resolveJoin joinHandle
+  unless (Set.member join.hub scope.ancestors && Map.lookup join.name scope.joins == Just join.signature)
+    (rejected (JoinOutOfScope joinHandle))
+  when (Array.length argumentHandles /= Array.length join.signature.params)
+    (rejected (JumpArity joinHandle (Array.length join.signature.params) (Array.length argumentHandles)))
+  arguments <- traverse (usableTermIn scope) argumentHandles
+  issueTerm scope (EJump unit join.name (map _.term arguments)) join.signature.result

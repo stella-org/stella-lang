@@ -29,6 +29,8 @@ module Stella.Compiler.Elaborate.Handle
   , TypeObject
   , ExprObject
   , ScopeObject
+  , JoinSignature
+  , JoinObject
   , BinderObject(..)
   , ScopeId(..)
   , HandleObject(..)
@@ -50,7 +52,7 @@ import Stella.Compiler.Elaborate.Kinding (KindEvidence, KindingScope)
 import Stella.Compiler.Elaborate.Pending (GoalRecord, PendingId)
 import Stella.Compiler.Elaborate.Term (XExpr)
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint, XType)
-import Stella.Compiler.TypedCore (Ident, TyVar)
+import Stella.Compiler.TypedCore (Ident, JoinName, TyVar)
 import Data.Either (Either(..))
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
@@ -71,6 +73,7 @@ data HandleClass
   | MetaClass
   | ScopeClass
   | BinderClass
+  | JoinClass
 
 newtype Handle = Handle
   { session :: SessionId
@@ -97,13 +100,29 @@ type TypeObject =
   , builtIn :: Maybe ScopeId
   }
 
--- | A build scope: where a builder assembles types. `ancestors` are the scopes
--- | it was opened inside, and `context` is what it binds, which is what a type
--- | built in it is kinded under.
+-- | A build scope: where a builder assembles types and terms. `ancestors` are
+-- | the scopes it was opened inside; `context` is what it binds, which is what a
+-- | type built in it is kinded under; and `joins` is `Δ`, the join points a term
+-- | built in it may jump to, each with its parameters' types and its result.
 type ScopeObject =
   { id :: ScopeId
   , ancestors :: Set ScopeId
   , context :: XContext
+  , joins :: Map JoinName JoinSignature
+  }
+
+-- | What a join point takes and gives.
+type JoinSignature =
+  { params :: P.Array XType
+  , result :: XType
+  }
+
+-- | A join point a `letjoin` binds: its name and signature, and the scope of
+-- | the `letjoin` it belongs to, under which alone it can be jumped to.
+type JoinObject =
+  { name :: JoinName
+  , signature :: JoinSignature
+  , hub :: ScopeId
   }
 
 -- | What an open operation hands back to be closed: what was opened, the scope
@@ -157,6 +176,18 @@ data BinderObject
       , parent :: ScopeId
       , body :: ScopeId
       }
+  -- | A `letjoin`. Its body scope holds two scopes: the definition's, binding
+  -- | the parameters and the join point, and the continuation's, binding the
+  -- | join point alone.
+  | JoinBinder
+      { name :: JoinName
+      , params :: P.Array { name :: Ident, type :: XType }
+      , result :: XType
+      , parent :: ScopeId
+      , body :: ScopeId
+      , definition :: ScopeId
+      , continuation :: ScopeId
+      }
 
 -- | The identity of a build scope within an attempt. The root, opened on the
 -- | site of the running job, is 0.
@@ -184,6 +215,7 @@ data HandleObject
   | MetaObject MetaVar
   | ScopeObject ScopeObject
   | BinderObject BinderObject
+  | JoinObject JoinObject
 
 type Arena =
   { slots :: Map P.Int { generation :: P.Int, object :: HandleObject }
@@ -215,6 +247,7 @@ objectClass = case _ of
   MetaObject _ -> MetaClass
   ScopeObject _ -> ScopeClass
   BinderObject _ -> BinderClass
+  JoinObject _ -> JoinClass
 
 -- | Place an object in the next slot, under the generation given. The caller
 -- | supplies a generation no handle has carried before.

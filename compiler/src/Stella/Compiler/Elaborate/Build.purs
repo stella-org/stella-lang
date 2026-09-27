@@ -53,7 +53,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.BuildScope (built, childOf, closedOver, constraintIn, instantiatedAt, issueBuilt, kindIn, kinded, rejected, requiredIn, schemeAt, siteOf, usableIn)
+import Stella.Compiler.Elaborate.BuildScope (built, closedOver, inheritingChild, constraintIn, instantiatedAt, issueBuilt, kindIn, kinded, rejected, requiredIn, schemeAt, siteOf, usableIn)
 import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Context (bindTyVar)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..))
@@ -76,7 +76,7 @@ rootScope = do
   env <- askEnv
   case env.frame of
     Nothing -> break NoFrame
-    Just frame -> issue (ScopeObject { id: ScopeId 0, ancestors: Set.empty, context: frame.site.context })
+    Just frame -> issue (ScopeObject { id: ScopeId 0, ancestors: Set.empty, context: frame.site.context, joins: Map.empty })
 
 -- | A type variable the scope binds.
 typeVariable :: Handle -> TyVar -> Elab Handle
@@ -148,7 +148,7 @@ openForall scopeHandle hint kindView = do
     Left fault -> rejected (IllKinded fault)
     Right _ -> pure unit
   name <- freshBinderName (Map.keys scope.context.tyVars) hint
-  child <- childOf scope (bindTyVar scope.context name kind)
+  child <- inheritingChild scope (bindTyVar scope.context name kind)
   binder <- issue (BinderObject (ForallBinder { name, kind, parent: scope.id, body: child.id }))
   holdOpen child.id child.ancestors
   variable <- built child (XVar name)
@@ -171,6 +171,7 @@ closeForall scopeHandle binderHandle bodyHandle = do
     ConstraintAbsBinder _ -> misuse
     LetBinder _ -> misuse
     LetRecGroup _ -> misuse
+    JoinBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -186,7 +187,7 @@ openConstraint :: Handle -> ConstraintView -> Elab { assumption :: Handle, bodyS
 openConstraint scopeHandle view = do
   scope <- resolveScope scopeHandle
   constraint <- constraintIn scope view
-  child <- childOf scope (Context.assume scope.context constraint)
+  child <- inheritingChild scope (Context.assume scope.context constraint)
   assumption <- issue (BinderObject (AssumedConstraint { constraint, parent: scope.id, body: child.id }))
   holdOpen child.id child.ancestors
   bodyScope <- issue (ScopeObject child)
@@ -215,6 +216,7 @@ closeConstraint scopeHandle binderHandle bodyHandle = do
     ConstraintAbsBinder _ -> misuse
     LetBinder _ -> misuse
     LetRecGroup _ -> misuse
+    JoinBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 

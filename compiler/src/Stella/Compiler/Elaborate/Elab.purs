@@ -55,9 +55,11 @@ module Stella.Compiler.Elaborate.Elab
   , resolveMeta
   , resolveScope
   , resolveBinder
+  , resolveJoin
   , freshScopeId
   , freshBinderName
   , freshIdent
+  , freshJoin
   , holdOpen
   , release
   , Release(..)
@@ -76,7 +78,7 @@ import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..), MalformedGoal(..))
 import Stella.Compiler.Elaborate.Kind (XKind)
 import Stella.Compiler.Elaborate.Kinding (KindingEnv, emptyKindingEnv)
-import Stella.Compiler.Elaborate.Handle (Arena, ExprObject, GoalObject, Handle, HandleClass(..), HandleError(..), HandleObject(..), BinderObject, ScopeId(..), ScopeObject, SessionId, TypeObject, emptyArena, issueIn, resolveIn)
+import Stella.Compiler.Elaborate.Handle (Arena, ExprObject, GoalObject, Handle, HandleClass(..), HandleError(..), HandleObject(..), BinderObject, JoinObject, ScopeId(..), ScopeObject, SessionId, TypeObject, emptyArena, issueIn, resolveIn)
 import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce, recheck)
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, GoalRecord, Job(..), PendingId, Site, SynthRef, goalOf, newGoal)
 import Stella.Compiler.Elaborate.Row (XRowError)
@@ -85,7 +87,7 @@ import Stella.Compiler.Elaborate.Term (TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
 import Stella.Compiler.Elaborate.TermMeta as TermMeta
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint, XType(..))
-import Stella.Compiler.TypedCore (Ident(..), TyVar(..))
+import Stella.Compiler.TypedCore (Ident(..), JoinName(..), TyVar(..))
 import Stella.Compiler.Elaborate.Unify (MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupTermMeta, substitute, unifyType)
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
@@ -142,7 +144,7 @@ type Tentative =
   , scheduler :: Scheduler
   , written :: Set MetaVar
   , arena :: Arena
-  , names :: { nextScope :: P.Int, nextBinder :: P.Int, nextIdent :: P.Int }
+  , names :: { nextScope :: P.Int, nextBinder :: P.Int, nextIdent :: P.Int, nextJoin :: P.Int }
   , open :: Map ScopeId (Set ScopeId)
   }
 
@@ -262,7 +264,7 @@ initialState session fuel =
       , scheduler: emptyScheduler
       , written: Set.empty
       , arena: emptyArena
-      , names: { nextScope: 1, nextBinder: 0, nextIdent: 0 }
+      , names: { nextScope: 1, nextBinder: 0, nextIdent: 0, nextJoin: 0 }
       , open: Map.empty
       }
   , retained: { session, nextGeneration: 0, fuel }
@@ -381,6 +383,11 @@ resolveBinder handle = resolveObject BinderClass handle >>= case _ of
   BinderObject binder -> pure binder
   _ -> break (InvalidHandle handle (HandleClassMismatch BinderClass))
 
+resolveJoin :: Handle -> Elab JoinObject
+resolveJoin handle = resolveObject JoinClass handle >>= case _ of
+  JoinObject join -> pure join
+  _ -> break (InvalidHandle handle (HandleClassMismatch JoinClass))
+
 -- | The identity of a build scope opened in this attempt. The root is 0.
 freshScopeId :: Elab ScopeId
 freshScopeId = Elab \_ s ->
@@ -411,6 +418,16 @@ freshIdent taken hint = Elab \_ s ->
     Tuple k name = firstFree (\i -> Ident (hint <> "#" <> show i)) (\v -> Set.member v taken) s.tentative.names.nextIdent
   in
     Tuple (Done name) (s { tentative { names { nextIdent = k + 1 } } })
+
+-- | A join point a builder binds, by the rule `freshBinderName` follows, from a
+-- | supply of its own, join points being a namespace apart from values: the
+-- | join points in scope where it is bound are the set given.
+freshJoin :: Set JoinName -> P.String -> Elab JoinName
+freshJoin taken hint = Elab \_ s ->
+  let
+    Tuple k name = firstFree (\i -> JoinName (hint <> "#" <> show i)) (\v -> Set.member v taken) s.tentative.names.nextJoin
+  in
+    Tuple (Done name) (s { tentative { names { nextJoin = k + 1 } } })
 
 -- The first number from the one given whose name is not taken, and that name.
 firstFree :: forall a. (P.Int -> a) -> (a -> P.Boolean) -> P.Int -> Tuple P.Int a
