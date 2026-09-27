@@ -1,0 +1,14 @@
+{
+  "name": "@stella-lang/runtime",
+  "description": "What a JavaScript implementation of a Stella foreign reaches the runtime through",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./foreign": "./src/foreign.js",
+    "./interpreter": "./src/interpreter.js"
+  },
+  "files": [
+    "src"
+  ]
+}
