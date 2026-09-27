@@ -353,10 +353,12 @@ spec = describe "Steam.Load" do
         )
         (ForeignWithoutImplementation (Qualified intModuleName (Ident "mystery")))
 
-    it "an operation it does not carry out" do
-      refusedBy
-        (\dmos -> [ dmos.int, dmos.lib { prims = dmos.lib.prims <> [ ArrayUnsafeIndex ] } ])
-        (OperationNotImplemented ArrayUnsafeIndex)
+    -- **the refusal stands and cannot be reached from here.** This interpreter
+    -- carries out every operation of `stella-base-0.1`, and a code outside the
+    -- version is rejected where the file is decoded rather than here, so what is
+    -- left to assert is the positive: naming one is not what refuses a module
+    it "accepts an operation it does carry out, there being no other kind" do
+      accepts (\dmos -> [ dmos.int, dmos.lib { prims = dmos.lib.prims <> [ ArrayUnsafeIndex ] } ])
 
     it "a global installed as a function whose function expects captures" do
       -- a `func` entry installs a closure over an empty capture list, so a function
@@ -514,6 +516,14 @@ refusedBy change expected = case compiled of
   Right dmos -> do
     outcome <- loading (change dmos)
     map (const unit) outcome `shouldEqual` Left expected
+
+-- | The same modules, changed the same way, and loaded rather than refused.
+accepts :: ({ int :: Dmo, lib :: Dmo, main :: Dmo } -> P.Array Dmo) -> Aff Unit
+accepts change = case compiled of
+  Left err -> fail err
+  Right dmos -> do
+    outcome <- loading (change dmos)
+    map (const unit) outcome `shouldEqual` Right unit
 
 derive instance Eq Held
 

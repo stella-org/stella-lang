@@ -16,6 +16,8 @@ import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Class (liftEffect)
 import Effect.Ref as Ref
+import Effect.Uncurried (runEffectFn1, runEffectFn3)
+import Steam.Array as Arr
 import Steam.Render (render, renderKey)
 import Steam.Structural (NumberAtom(..), SnapshotLimits, RuntimeNames, StructuralValue(..), compareKeys, defaultLimits, inspect)
 import Steam.Value (Continuation(..), CtorId(..), IOValue(..), KeyId(..), ModuleId(..), OpId(..), Value(..))
@@ -232,6 +234,16 @@ spec = describe "Steam.Structural" do
     it "reaches nothing under a continuation or an action" do
       snapshot (VCont (Continuation [])) `shouldEqual` SContinuation
       render (snapshot (VIO (IOPure (VInt 1)))) `shouldEqual` "<io>"
+
+    -- an array is an `intrinsic opaque`, so a snapshot stops at it as it stops at
+    -- those: what the payload holds belongs to the interpreter and to no report
+    it "stops at an array, whatever its slots hold" do
+      array <- liftEffect do
+        allocated <- runEffectFn1 Arr.allocate 2
+        runEffectFn3 Arr.write allocated 0 (VInt 1)
+        pure (VOpaque (Arr.toOpaque allocated))
+      snapshot array `shouldEqual` SOpaque
+      render (snapshot array) `shouldEqual` "<opaque>"
 
   describe "the limits, which a snapshot always stops within" do
     it "stops at the depth it is given" do

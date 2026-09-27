@@ -45,9 +45,9 @@ import Data.Show.Generic (genericShow)
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Effect.Exception (message, try)
-import Effect.Uncurried (runEffectFn1)
 import Effect.Ref (Ref)
 import Effect.Ref as Ref
+import Effect.Uncurried (runEffectFn1)
 import Run (EFFECT, Run, liftEffect)
 import Run.Except (EXCEPT)
 import Run.Except as Except
@@ -161,6 +161,10 @@ type EVAL r = (EXCEPT Failure + EFFECT + r)
 type Machine =
   { registry :: Registry
   , stack :: Ref (P.Array StackEntry)
+  -- | `Prim.Unit`, which a write to a cell and a write to an array both answer
+  -- | with. The identity is the registry's, assigned once across everything
+  -- | loaded, so one value serves whichever module is running.
+  , unit :: Value
   }
 
 -- | Where a run stands: inside an activation, carrying a value to whatever takes
@@ -367,8 +371,12 @@ splitAt machine at = do
 -- | captures `CAPT` reads cannot come from two different functions.
 enter :: forall r. Registry -> Closure -> P.Array Value -> Run (EVAL r) Value
 enter registry closure args = do
+  -- the identity `Prim.Unit` was interned under, which every loaded module holds
+  unit <- case Map.lookup closure.func.module registry of
+    Just loaded -> pure loaded.unit
+    Nothing -> bug (NoSuchModule closure.func.module)
   stack <- liftEffect (Ref.new [])
-  let machine = { registry, stack }
+  let machine = { registry, stack, unit }
   activation <- activationOf machine closure args
   loop machine (Running activation)
 
@@ -484,15 +492,11 @@ arityOf = case _ of
 -- | entering does make is the activation and the registers it runs in, which a call
 -- | needs of its own since the caller's are still live under it.
 saturated :: forall r. Machine -> Resolved -> P.Array Value -> Run (EVAL r) State
-saturated _ resolved args = case resolved of
+saturated machine resolved args = case resolved of
   ResolvedClosure closure function -> map Running (activationIn closure function args)
   ResolvedCtor ctor _ -> pure (Returning (VData ctor args))
-  ResolvedForeign carriedOutBy _ -> carryOutForeign carriedOutBy args
-  ResolvedPrim op _ -> case Op.carryOut op args of
-    Right value -> pure (Returning value)
-    Left (Op.Faulted reason) -> fault reason
-    Left Op.WrongOperands -> bug (WrongOperands op)
-    Left (Op.NotImplemented _) -> unimplemented "an operation"
+  ResolvedForeign carriedOutBy _ -> carryOutForeign machine carriedOutBy args
+  ResolvedPrim op _ -> carryOutOp machine op args
 
 -- | Apply a continuation, which takes one argument.
 -- |
@@ -661,7 +665,7 @@ transfer machine loaded activation = do
     TAILFFI ix args -> do
       entry <- foreignAt loaded ix
       values <- traverse (readReg activation) args
-      carryOutForeign entry.carriedOutBy values
+      carryOutForeign machine entry.carriedOutBy values
     -- in tail position nothing waits for the return clause's value, so no `Resume`
     -- stands below the marker
     TAILHNDL ix body ret clauses cells -> do
@@ -825,7 +829,7 @@ exec machine loaded activation = case _ of
   FFI d ix args -> do
     entry <- foreignAt loaded ix
     values <- traverse (readReg activation) args
-    state <- carryOutForeign entry.carriedOutBy values
+    state <- carryOutForeign machine entry.carriedOutBy values
     case state of
       Returning value -> advance (writeReg activation d value)
       _ -> bug (NotOfClass ACallable)
@@ -835,11 +839,10 @@ exec machine loaded activation = case _ of
   PRIM d ix args -> do
     op <- primAt loaded ix
     values <- traverse (readReg activation) args
-    case Op.carryOut op values of
-      Right value -> advance (writeReg activation d value)
-      Left (Op.Faulted reason) -> fault reason
-      Left Op.WrongOperands -> bug (WrongOperands op)
-      Left (Op.NotImplemented _) -> unimplemented "an operation"
+    state <- carryOutOp machine op values
+    case state of
+      Returning value -> advance (writeReg activation d value)
+      _ -> bug (NotOfClass ACallable)
   -- the innermost marker of the key answers, and which reduction applies is the
   -- clause's form (D28)
   PERF d keyIx opIx s -> do
@@ -909,13 +912,9 @@ expectCaptures loaded func given = do
 -- | ([Abstract Machine](../../../docs/technical-references/07-Runtime/01-Abstract-Machine.md)).
 -- | Only a synchronous throw is this boundary's: a body is synchronous, and what
 -- | may be awaited is a native action the drive loop performs.
-carryOutForeign :: forall r. Foreign -> P.Array Value -> Run (EVAL r) State
-carryOutForeign carriedOutBy args = case carriedOutBy of
-  ForeignOperation op -> case Op.carryOut op args of
-    Right value -> pure (Returning value)
-    Left (Op.Faulted reason) -> fault reason
-    Left Op.WrongOperands -> bug (WrongOperands op)
-    Left (Op.NotImplemented _) -> unimplemented "an operation"
+carryOutForeign :: forall r. Machine -> Foreign -> P.Array Value -> Run (EVAL r) State
+carryOutForeign machine carriedOutBy args = case carriedOutBy of
+  ForeignOperation op -> carryOutOp machine op args
 
   ForeignHosted name body -> do
     outcome <- liftEffect (try (runEffectFn1 body args))
@@ -923,6 +922,26 @@ carryOutForeign carriedOutBy args = case carriedOutBy of
       Right (Produced value) -> pure (Returning value)
       Right (Refused reason) -> fault (ForeignRefused name reason)
       Left thrown -> fault (ForeignThrew name (message thrown))
+
+-- | Carry out an operation, which is a `Base` entry the interpreter claims.
+-- |
+-- | **Every route to a saturated operation converges here** — a `PRIM`, a partial
+-- | application whose last argument arrived, and a `FOREIGNREFS` entry the loader
+-- | resolved to the interpreter itself.
+-- |
+-- | This reaches the host, which the `Base.Array` entries are why: one of them
+-- | allocates, one writes, and two read ([Op](Op.purs)). **What it does not do is
+-- | catch**, unlike the foreign boundary above: an operation is the interpreter's
+-- | own code, so a throw from one is a defect here rather than a failure the ABI
+-- | admits, and swallowing it would hide the defect.
+carryOutOp :: forall r. Machine -> PrimOp -> P.Array Value -> Run (EVAL r) State
+carryOutOp machine op args = do
+  outcome <- liftEffect (Op.carryOut machine.unit op args)
+  case outcome of
+    Right value -> pure (Returning value)
+    Left (Op.Faulted reason) -> fault reason
+    Left Op.WrongOperands -> bug (WrongOperands op)
+    Left (Op.NotImplemented _) -> unimplemented "an operation"
 
 -- | The callee a `CALLEES` entry stands for.
 calleeOf :: forall r. CalleeTarget -> Run (EVAL r) Callee

@@ -36,7 +36,7 @@ import Steam.Foreign (ForeignTable, emptyTable, insert)
 import Steam.Load (LoadError(..), Store, emptyStore, globalNamed, load, moduleNamed, noIdentities)
 import Steam.Module (CalleeTarget(..), Loaded, Registry, prepare)
 import Steam.Value (Closure, CtorId(..), Foreign(..), ForeignBody, ForeignOutcome(..), IOValue(..), KeyId(..), ModuleId(..), Value(..))
-import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), ForeignIx(..), FuncIx(..), Function, HandlerIx(..), Instr(..), Node, Reg(..), Tail(..))
+import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), ForeignIx(..), FuncIx(..), Function, HandlerIx(..), Instr(..), Node, PrimIx(..), Reg(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Constant(..), Dmo, GlobalInit(..))
 import Stella.Compiler.MiddleEnd.Rep (Rep(..))
 import Stella.Compiler.Primitive (PrimOp(..), arityOfOp)
@@ -219,6 +219,9 @@ valueOf store name = liftEffect case globalNamed store name of
 -- | | 7 | that callee |
 -- | | 8 | the return clause of the handler, which a discarded marker never runs |
 -- | | 9 | a body that throws where it is applied rather than where it is run |
+-- | | 10 | an array allocated, written, and read back through `PRIM` |
+-- | | 11 | the same write, reached through a `PAP` over the operation |
+-- | | 12 | the slot count an array reports back |
 machineFunctions :: P.Array Function
 machineFunctions =
   [ plain 2
@@ -304,6 +307,41 @@ machineFunctions =
           ]
           (Reg 1)
       )
+
+  -- 10: an array written and read back through `PRIM`
+  , plain 5
+      ( returning
+          [ LOADK (Reg 0) (ConstIx 1)
+          , PRIM (Reg 1) (PrimIx 0) [ Reg 0 ]
+          , LOADK (Reg 2) (ConstIx 0)
+          , PRIM (Reg 3) (PrimIx 1) [ Reg 2, Reg 0, Reg 1 ]
+          , PRIM (Reg 4) (PrimIx 2) [ Reg 1, Reg 2 ]
+          ]
+          (Reg 4)
+      )
+
+  -- 11: the same write, reached through a partial application over the operation
+  , plain 6
+      ( returning
+          [ LOADK (Reg 0) (ConstIx 1)
+          , PRIM (Reg 1) (PrimIx 0) [ Reg 0 ]
+          , LOADK (Reg 2) (ConstIx 0)
+          , PAP (Reg 3) (CalleeIx 1) [ Reg 2, Reg 0 ]
+          , CALLU (Reg 4) (Reg 3) [ Reg 1 ]
+          , PRIM (Reg 5) (PrimIx 2) [ Reg 1, Reg 2 ]
+          ]
+          (Reg 5)
+      )
+
+  -- 12: the slot count an array reports back
+  , plain 3
+      ( returning
+          [ LOADK (Reg 0) (ConstIx 1)
+          , PRIM (Reg 1) (PrimIx 0) [ Reg 0 ]
+          , PRIM (Reg 2) (PrimIx 3) [ Reg 1 ]
+          ]
+          (Reg 2)
+      )
   ]
 
 -- | The fixture, with the bodies its `FOREIGNREFS` hold and the counter one of them
@@ -355,8 +393,11 @@ machine = do
           , hosted (Qualified hostModule (Ident "throws")) throws 1
           , hosted throwsOnCallName throwsOnCall 1
           ]
-      , callees: [ TargetForeign (ForeignHosted hostJoin joined) 2 ]
-      , prims: []
+      , callees:
+          [ TargetForeign (ForeignHosted hostJoin joined) 2
+          , TargetPrim ArrayUnsafeSet
+          ]
+      , prims: [ ArrayUnsafeNew, ArrayUnsafeSet, ArrayUnsafeIndex, ArrayLength ]
       , handlers: [ { key: KeyId 1, cells: [], opClauses: [] } ]
       , unit: VData (CtorId 999) []
       , functions: Array.mapMaybe prepared machineFunctions
@@ -553,6 +594,22 @@ spec = describe "Steam.Foreign" do
       fixture <- liftEffect machine
       returns fixture 6 (Right (AnInt 1))
       liftEffect (Ref.read fixture.echoes) >>= (_ `shouldEqual` 1)
+
+  describe "the array operations, through the machine" do
+
+    -- the same value reaches the register, whether the operation was named by a
+    -- `PRIM` or completed from a partial application over it
+    it "writes and reads an array back through PRIM" do
+      fixture <- liftEffect machine
+      returns fixture 10 (Right (AnInt 2))
+
+    it "does the same where a PAP over the operation completed the arity" do
+      fixture <- liftEffect machine
+      returns fixture 11 (Right (AnInt 2))
+
+    it "reports the slot count the array was created with" do
+      fixture <- liftEffect machine
+      returns fixture 12 (Right (AnInt 2))
 
 -- | The names the two failing bodies of the fixture were resolved for, which a
 -- | fault carries.

@@ -23,6 +23,7 @@ package:
     - tuples
     - typelevel-prelude
     - unicode
+    - unsafe-coerce
   run:
     main: Steam.CLI.JS
   test:

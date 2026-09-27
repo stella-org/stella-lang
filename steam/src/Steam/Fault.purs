@@ -24,6 +24,14 @@ data Fault
   -- | An index outside the string, as the index and the number of scalar values
   -- | the string holds.
   = IndexOutsideString P.Int P.Int
+  -- | An index outside the array, as the index and the number of slots the array
+  -- | has. **An index inside the array naming a slot nothing wrote is not this**:
+  -- | the range is decided first, and what is left is the precondition of
+  -- | `Base.Array.unsafeIndex` rather than a failure it reports (D42).
+  | IndexOutsideArray P.Int P.Int
+  -- | A negative slot count handed to `Base.Array.unsafeNew`, as the count. A count
+  -- | of zero is an array of no slots and is not this.
+  | NegativeArrayLength P.Int
   -- | A foreign that produced no value, as the reason its body gave. This is the
   -- | failure the ABI admits an implementation may report.
   | ForeignRefused (Qualified Ident) P.String

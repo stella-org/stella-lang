@@ -76,7 +76,8 @@
             "strings",
             "tuples",
             "typelevel-prelude",
-            "unicode"
+            "unicode",
+            "unsafe-coerce"
           ]
         },
         "test": {
