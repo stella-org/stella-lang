@@ -433,7 +433,9 @@ Type  =  { type : τ⁺ , kind : KindEvidence , scope : the rigid kind variables
                                               the type variables, with their kinds,
                                               it may mention free
          , builtIn : the build scope it was built in, if any }
-Expr  =  { term : e⁺ , claimed : τ⁺ }        the term held without annotations
+Expr  =  { term : e⁺ , claimed : τ⁺ ,        the term held without annotations
+           scope : what the claimed type is kinded under ,
+           builtIn : the build scope it was built in }
 Goal  =  the goal the current attempt runs
 
 KindEvidence = ExactKind κ⁺  |  AnyRow
@@ -451,7 +453,7 @@ KindEvidence = ExactKind κ⁺  |  AnyRow
 
 **What a synthesizer is shown holds no unsettled kind.** A kind metavariable reachable from a type, a constraint, or a declaration a synthesizer observes — a variable's kind, a constructor's kind argument, a binder, a kind being synthesized — is refused as not settled. A synthesis job runs after the kinds of what it reads are decided, and a kind metavariable is nothing a synthesizer could name, solve, or wait on.
 
-**`kindOf` and `typeOf` read what the handle holds; neither infers anything anew.** Unification is directed by a kind it is given rather than one it synthesizes ([Elaboration](01-Elaboration.md)), so `unify` takes the two handles' kind evidence, refuses where it disagrees, and hands the kind to type unification. A term's claimed type is what the operation that built the term said of it. **A claim the term does not bear out is not caught here**: an elaborator may construct an ill-typed term, and the Core type checker rejects it once the term is zonked. Rechecking Core⁺ in the kernel would be a second checker, and the trusted one is the only one there needs to be.
+**`kindOf` and `typeOf` read what the handle holds; neither infers anything anew.** Unification is directed by a kind it is given rather than one it synthesizes ([Elaboration](01-Elaboration.md)), so `unify` takes the two handles' kind evidence, refuses as a misuse evidence that cannot meet, and hands the kind to type unification. A term's claimed type is what the operation that built the term said of it. **A claim the term does not bear out is not caught here**: an elaborator may construct an ill-typed term, and the Core type checker rejects it once the term is zonked. Rechecking Core⁺ in the kernel would be a second checker, and the trusted one is the only one there needs to be.
 
 A term is held without annotations for the reason a term metavariable's solution is: where it lands, it takes the annotation of the place it lands in ([Elaboration](01-Elaboration.md)).
 
@@ -488,12 +490,29 @@ Frame      = { site, goal }            read-only for the length of the attempt
 | --- | --- |
 | `goalType`, the `Goal` a synthesizer is applied to | the goal: the handle must name the goal the frame is running, and a frame with no goal has none to observe |
 | `localContext`, `localConstraints` | the site's context, as its two views |
-| `freshMetaType`, `subgoal` | the scope a metavariable is created under |
-| `entails` | the facts the site's assumptions give against the current `Ψ` |
-| `require` | the site an obligation carries |
+| `unify`, `require`, `subgoal` | the origin a failure, an obligation, or a job carries |
 | `lookupGlobal`, `declsWithAttr` | the catalog, which the session environment holds rather than the frame |
 
-**No kernel operation takes a context or a scope from its caller.** A caller that could state one could state a wider one than it stands in, and admit a solution the site has no variable for. The mechanism's own operations — what the elaborator walking a term uses as it enters binders — do take one; they are not the kernel, and no synthesizer reaches them.
+**No kernel operation takes a context or a scope from its caller.** A caller that could state one could state a wider one than it stands in, and admit a solution the site has no variable for. **A build scope is not one**: it is a handle the host issued for the site, or for a binder opened inside it, so a caller can name one and cannot state one. Every request over metavariables and constraints takes one, since what it decides against inside a binder's body is the site's variables and assumptions together with the ones opened around it:
+
+```text
+freshMetaType : Scope -> KindView -> Elab Type              under the scope's variables
+isAssigned    : Meta -> Elab Boolean                        whether the current `Ψ` has solved it
+unify         : Scope -> Type -> Type -> Elab Unit          an equation standing at the scope's context
+entails       : Scope -> ConstraintView -> Elab Boolean     the scope's facts, against the current `Ψ`
+require       : Scope -> ConstraintView -> Elab Unit        a `Required` obligation carrying the scope's context
+subgoal       : Scope -> Type -> SynthRef -> Elab Expr      a job at the scope's site
+```
+
+**Every type a request is given is one the scope may use** ([below](#types-are-built-in-a-build-scope)), so nothing observed in no build scope reaches the solver: a `forall` body's variable is never equated with, or required of, a site variable that happens to share its name. Each goes through the mechanism's own operation, so an assignment is never made except where its obligations are rechecked, its wakes queued, and its write recorded.
+
+**`freshMetaType` asks for a kind a type variable could stand at** — settled, well-formed in the scope, and quantifiable — since a metavariable a synthesizer holds stands where a type variable would; `Effect`, and an arrow whose final result is a row, such as `Type -> Row Type`, are refused as `openForall` refuses them, a row kind itself not being. The metavariables the mechanism creates for itself are not held to this: a synthesizer cannot create one, but may observe one — in a goal's type, as a row's flexible tail — and wait on it.
+
+**`unify` equates at the kind the two handles' evidence gives.** Two exact kinds must agree; a row standing at any row kind meets a row at an exact one at that one; and two rows standing at any row kind are equated at **`Row Type`**, the one representative chosen for them — each is closed and empty, with no element and no tail, so no substitution can observe the choice. Evidence that cannot meet is a defect of the synthesizer and not a candidate that does not fit: every kind a handle holds is settled, and `kindOf` would have said so.
+
+**`entails` answers `true` only for a proof.** A constraint waiting on a flexible tail is not proved, and neither is one the facts refute or fail to prove, so a flexible tail is never taken for a fact; a synthesizer that would rather wait reads the row's flexible tails from its view and postpones on them. Assumptions that contradict each other prove nothing here. A row with no normal form is a broken invariant of the solver, the constraint having been judged well-formed, and is a defect rather than an answer of `false`. It reads and changes nothing.
+
+`entails` reads and `require` introduces; both, and `openConstraint`, judge the constraint by the one well-formedness judgement every constraint is judged by. The mechanism's own operations — what the elaborator walking a term uses as it enters binders — do take one; they are not the kernel, and no synthesizer reaches them.
 
 An equality job runs under a frame with no goal, and it runs no synthesizer, so nothing in it asks for one. A kernel operation reading a goal where the frame holds none is a defect of the host that called it.
 
@@ -502,10 +521,10 @@ An equality job runs under a frame with no goal, and it runs no synthesizer, so 
 **The kernel creates no term metavariable without saying what fills it.** A bare `?m` handed to a synthesizer could be filled by nothing the synthesizer can reach — the kernel offers no assignment of a term — so it would stand in the result until the boundary refused it.
 
 ```text
-subgoal : Type -> SynthRef -> Elab Expr
+subgoal : Scope -> Type -> SynthRef -> Elab Expr
 ```
 
-`subgoal τ f` is `⟨ τ by f ⟩` asked from inside an attempt: it creates `?m` under the current site's context and a synthesis job for it at the current site, and returns the `Expr` `?m` claimed at `τ`. **The job is queued and not attempted.** Attempting it at once would open an attempt inside the one that asked for it; it is placed on the ready queue for its first attempt, which spends no fuel ([above](#the-loop)), and like everything else the attempt did, it goes if the attempt rolls back. A synthesizer composing a dictionary from another is the ordinary case: `dictShowArray [?a] (subgoal (Show ?a) resolve)`.
+`subgoal s τ f` is `⟨ τ by f ⟩` asked from inside an attempt: it creates `?m` under the context of the build scope `s` — the site's, with every binder opened around `s` — and a synthesis job for it at that site with the running job's origin, and returns the `Expr` `?m` claimed at `τ`, built in `s`. `τ` must be one `s` may use, standing at `Type`. **An `Expr` carries the build scope it was built in, as a `Type` does**: a term solved under a binder's assumptions or variables may be placed only under the corresponding term binder, and a synthesizer's result is accepted only where it was built in the root. **The job is queued and not attempted.** Attempting it at once would open an attempt inside the one that asked for it; it is placed on the ready queue for its first attempt, which spends no fuel ([above](#the-loop)), and like everything else the attempt did, it goes if the attempt rolls back. A synthesizer composing a dictionary from another is the ordinary case: `dictShowArray [?a] (subgoal root (Show ?a) resolve)`.
 
 A synthesizer that wants a candidate's sub-result now rather than later calls itself, as any function does; `subgoal` is for what is to be decided by the scheduler. **The bare term metavariable remains the mechanism's**, where the elaborator knows what will fill it, and what fills one the elaborator creates is always written down beside it.
 
@@ -518,7 +537,8 @@ TypeView        = VarType a | MetaType Meta | ConType T [KindView]
                 | AppType Type Type | ForallType a KindView Type
                 | ConstrainedType ConstraintView Type | NormalRow RowView
 RowView         = { elementKind : Maybe (Type | Effect)
-                  , known : [ (RowKey, PayloadView) ], rigid : [a], flexible : [Meta] }
+                  , known : [ (RowKey, PayloadView) ], rigid : [a]
+                  , flexible : [ { meta : Meta, type : Type } ] }
 PayloadView     = TypePayload Type | EffectPayload E [Type] | RegionPayload Type Type
 KindView        = KindType | KindEffect | KindRow ε | KindFun KindView KindView
                 | KindVar k | KindAnyRow
@@ -527,7 +547,9 @@ ConstraintView  = LacksView RowKey Type | DisjointView Type Type
 
 **A row is shown as its normal form**, `elementKind` being `Nothing` for one that stands at any row kind. Two rows are one row exactly when their normal forms agree, so how a row was written is nothing a synthesizer can rely on; `known`, `rigid`, and `flexible` come in ascending order of key, of name, and of metavariable, so one row has one view.
 
-**An unsolved type metavariable is shown as a `Meta` handle**, which is the only way to come by one: it names a metavariable a type actually stands for, and it is what `postpone` is given. **Each observation zonks against the current `Ψ` first**, so one `Type` handle shows `MetaType` before its metavariable is solved and the solution after.
+**An unsolved type metavariable is shown as a `Meta` handle**, which is the only way to come by one: it names a metavariable a type actually stands for, and it is what `postpone` is given. **Each observation zonks against the current `Ψ` first**, so one `Type` handle shows `MetaType` before its metavariable is solved and the solution after. **A `Meta` is what `postpone` and `isAssigned` take, and nothing else**: no request turns one into a type, the `Type` it stands for always being handed out beside it — the handle viewed as `MetaType`, a row's flexible tail, and what `freshMetaType` returns — with the build scope it came from.
+
+**A row's flexible tail is shown twice over**: as the `Meta`, which is what `postpone` is given, and as the `Type` standing for it, in the row's build scope and at the row's kind, which is what the row is rebuilt from. A `Meta` alone says nothing of where it was observed, so turning one back into a type would let a tail observed in no build scope — a catalog scheme's, a `forall` body's — into one.
 
 **An observation changes the arena and nothing else.** It issues handles for the parts it shows; no metavariable, obligation, job, or unit of fuel is touched, so reading is never what makes two runs of one goal differ.
 
@@ -539,14 +561,19 @@ typeVariable      : Scope -> a -> Elab Type
 typeConstructor   : Scope -> T -> [KindView] -> Elab Type
 applyType         : Scope -> Type -> Type -> Elab Type
 emptyRow          : Scope -> Elab Type
+extendRow         : Scope -> RowKey -> PayloadView -> Type -> Elab Type
+unionRow          : Scope -> Type -> Type -> Elab Type
 openForall        : Scope -> String -> KindView
                       -> Elab { binder : Binder, variable : Type, bodyScope : Scope }
 closeForall       : Scope -> Binder -> Type -> Elab Type
+openConstraint    : Scope -> ConstraintView
+                      -> Elab { assumption : Binder, bodyScope : Scope }
+closeConstraint   : Scope -> Binder -> Type -> Elab Type
 instantiateForall : Scope -> Type -> Type -> Elab Type
 instantiateScheme : Scope -> QIdent -> [KindView] -> Elab Type
 ```
 
-**A `Scope` is an opaque handle naming what a type built in it may mention.** The root is the running site's context; `openForall` gives a child scope binding one variable more. `Scope` and `Binder` are handle classes like the others, attempt-scoped and resolved by the same checks. Every `Type` records the build scope it was built in, and **a builder uses a type only where it was built in the scope given or in one of its ancestors** — never in a descendant, where a variable the type mentions is not bound, and never in a sibling.
+**A `Scope` is an opaque handle naming what a type built in it may mention.** The root is the running site's context; `openForall` gives a child scope binding one variable more, and `openConstraint` one assuming one constraint more. `Scope` and `Binder` are handle classes like the others, attempt-scoped and resolved by the same checks. Every `Type` records the build scope it was built in, and **a builder uses a type only where it was built in the scope given or in one of its ancestors** — never in a descendant, where a variable the type mentions is not bound, and never in a sibling.
 
 **No builder merges the scopes of the types it is given.** Two binders opened alike, with one kind and one hint, are still two binders, and only the scope a type was built in says which one it mentions; a builder that merged scopes would let a type from one `forall` body be closed under the other.
 
@@ -554,7 +581,8 @@ instantiateScheme : Scope -> QIdent -> [KindView] -> Elab Type
 
 | Observed | Build scope |
 | --- | --- |
-| `goalType`, `typeOf`, `localContext`, `localConstraints` | the root |
+| `goalType`, `localContext`, `localConstraints` | the root |
+| `typeOf` of an `Expr` | the build scope the term was built in |
 | a catalog scheme, from `lookupGlobal` | none |
 | `whnf` of a type | the type's |
 | a part a view takes — a head, an argument, a row's payload, a constraint's row | the whole's |
@@ -563,6 +591,14 @@ instantiateScheme : Scope -> QIdent -> [KindView] -> Elab Type
 A type in no build scope reaches a builder only through the operation that opens it: **`instantiateForall`** for a `forall`, and **`instantiateScheme`** for a scheme, which reads the entry from the catalog by name and judges it in its own scope — at `Type`, under the kind variables it declares and no type variable, as `lookupGlobal` does — before the caller's scope is involved. A variable free in the scheme would otherwise be taken for one of the caller's sharing its name, and a scheme failing that judgement is a defect of the host, whose catalog it is. A scheme's parts inheriting the root's scope would let its kind variables reach a type without being instantiated, and a `forall` body inheriting its parent's would let its binder escape.
 
 **The host ABI is first order.** Opening a `forall` hands back a binder, the variable it binds, and the scope its body is built in, and closing it takes the three back, in the scope it was opened in; no request of the host waits on a guest closure. The variable is named after the hint and drawn from a supply of fresh names that is part of what an attempt owns, so a rolled-back attempt returns the names and scopes it drew, and a re-run draws the same ones.
+
+**Every binder opened is closed exactly once, by the operation for its sort and inside out, before the attempt succeeds.** An attempt holds the binders it has open, each with the ancestors of its body's scope, as part of what it owns, so a rollback releases the ones a discarded candidate opened. One still open when an attempt ends in success — checked at the attempt root, whoever runs the attempt — one closed while a binder opened inside its body is still open, one closed twice, and a `forall` binder closed as a constraint or the reverse are defects of the synthesizer. Siblings may be closed in either order. What is built under an open binder is not only types — an obligation proved from its assumption, a job, a metavariable — and without the check those would commit without the type that carries the assumption.
+
+**A row is sharp by construction.** Kinding judges a row's shape and not that its keys are distinct, so `extendRow` requires `key ∉ rest` and `unionRow` requires `left # right`, each introducing the requirement together with the row it builds. The requirement carries the build scope's context — the site's, with every assumption opened around it — and the running job's origin, so a row sharp only under an assumption `openConstraint` opened is built inside that constraint's body and nowhere else. A row the requirement refuses, a key it already has included, is a **failure** and not a defect: it is a candidate that does not hold, and a `transact` around it takes the next.
+
+The key says what element a payload makes: a structural key over a `TypePayload` a field, `EffectKey E` over `EffectPayload E` an unlabelled effect, and a `SymbolKey` over an `EffectPayload` a labelled one. **A region element is refused by every builder**, `RegionPayload` being shown by a view and never accepted: a region is introduced and removed by the handler that owns it, and by nothing else (D36).
+
+**A constraint is judged well-formed where it is opened, and whether it can hold is decided where it is closed.** Closing holds the assumption as an `Assumed` obligation, so an assignment making it unsatisfiable is refused from then on, and one that cannot hold already is a failure there. One that cannot hold makes every requirement built under it fail on the facts of its scope in the meantime, and the binder has to be closed before anything built under it commits.
 
 **`instantiateForall` zonks both sides, then substitutes capture-avoidingly**: a binder of the body that the argument mentions free is renamed, to a name drawn from the same supply of fresh binder names, before the substitution passes it. Zonking the argument first is what lets a binder named only by a solved metavariable's solution be seen. **An unsolved metavariable that could come to mention a variable the substitution treats specially postpones the instantiation until it is solved** — one in the body whose scope has the binder or a binder being renamed, and one in the argument whose scope has a binder of the body. The substitution stops at an unsolved metavariable, so the first's later solution could mention a binder the result no longer has, and the second's could be captured by a binder that was not renamed. This is waiting for information and not a defect: which substitution is safe is decided by a solution not yet made.
 
@@ -601,7 +637,7 @@ A guest cannot build the host's diagnostic, which names sites and holds Core⁺;
 | | Examples | Outcome | Caught by `transact` |
 | --- | --- | --- | --- |
 | **program diagnostic** | an equation no substitution satisfies; an obligation broken or rejected; a result escaping its scope; a result whose claim the goal's type refutes; a `throw` | `Failed` | yes |
-| **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session; a builder asked for what cannot be built | `Broke`, naming the synthesizer and the goal | no |
+| **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session; a builder asked for what cannot be built; a binder left open by an attempt that succeeds, or closed twice; an equation between kinds that cannot meet, or a goal not at `Type` | `Broke`, naming the synthesizer and the goal | no |
 | **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; a catalog scheme ill-formed under what it declares; the mechanism's own invariants | `Broke` | no |
 
 **A `SynthRef` with no implementation is the host's defect and not the program's.** Name resolution resolved it against `Σ` where the goal was written ([above](#what-a-synthesis-goal-carries)), so the name exists; a session unable to run what it names was set up without it.

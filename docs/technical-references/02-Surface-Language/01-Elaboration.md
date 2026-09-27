@@ -322,14 +322,14 @@ lookupGlobal    : QIdent -> Elab (Maybe Decl)
 declsWithAttr   : AttrKey -> Elab (Array QIdent)
 
 -- metavariables
-freshMetaType   : Kind -> Elab Type
-subgoal         : Type -> SynthRef -> Elab Expr
+freshMetaType   : Scope -> KindView -> Elab Type
+subgoal         : Scope -> Type -> SynthRef -> Elab Expr
 isAssigned      : Meta -> Elab Boolean
 
 -- constraints
-unify           : Type -> Type -> Elab Unit
-entails         : Constraint -> Elab Boolean
-require         : Constraint -> Elab Unit
+unify           : Scope -> Type -> Type -> Elab Unit
+entails         : Scope -> ConstraintView -> Elab Boolean
+require         : Scope -> ConstraintView -> Elab Unit
 
 -- construction
 check           : Syntax -> Type -> Elab Expr

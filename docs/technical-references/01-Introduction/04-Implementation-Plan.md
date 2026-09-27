@@ -613,6 +613,35 @@ no identifier is at once ready and blocked
 | `instantiateForall` over a body holding an unsolved metavariable whose scope has the binder | Postponed on that metavariable. The substitution stops at it, and its later solution could mention a binder the result no longer has |
 | `instantiateForall` at an argument holding an unsolved metavariable whose scope has a binder of the body | Postponed on that metavariable. Its later solution could be captured by a binder nothing renamed |
 | `instantiateScheme` of a scheme mentioning a type or kind variable it does not declare, the caller's scope binding one of that name | A defect of the host. Judged only in the caller's scope, after substitution, the caller's variable would vouch for the scheme's |
+| `extendRow` over a row already carrying the key, or over a rigid tail the scope does not prove lacks it | A failure, and the handle and the obligation are both gone after a `transact`. Kinding alone admits the row, sharpness being an entailment and not a shape |
+| `extendRow` over a flexible tail, the tail then solved to a row carrying the key | The assignment fails. The requirement was introduced with the row and watches the tail |
+| `unionRow` of rows sharing a key, or of a row and a rigid tail not proved to lack its keys | A failure |
+| A row sharp only under `k ∉ r`, built inside `openConstraint (k ∉ r)` | Built, and usable at the root only once `closeConstraint` has wrapped it in the constraint. The requirement is decided against the build scope's context, which holds the assumption; the site's does not |
+| An assignment breaking a constraint opened and not yet closed, and the same once it is closed | Admitted, and refused. The assumption is held from where it is closed, which is where the constrained type exists |
+| Closing a constraint that cannot hold | A failure there |
+| A synthesizer that opens a binder and ends in success without closing it | A defect, and nothing commits. What was built under the binder — an obligation proved from its assumption, a job — would otherwise commit without the type carrying it |
+| The same, where the attempt is run by `runAttempt` directly rather than through a job | The same defect. The check is the attempt root's, not a runner's, so no way of running an attempt commits an open binder |
+| A binder closed while one opened inside its body is still open, the inner one then closed | A defect at the outer close, for every pairing of `forall` and constraint. Closing both would leave the ledger empty, and what the inner one built would commit after the type carrying the outer one was fixed |
+| Nested binders closed inside out, and siblings closed in either order | Committed |
+| A binder closed twice, or a `forall` binder closed as a constraint or the reverse | A defect of the synthesizer |
+| A binder opened by a candidate a `transact` discarded | Not held open. The ledger is part of what an attempt owns |
+| A region element given to `extendRow` | Refused. Only the handler owning a region introduces one |
+| A row view's flexible tail, taken from a row in no build scope | Its `Type` is in no build scope either. A `Meta` turned back into a type without the row's scope would launder it into one |
+| `freshMetaType` in a `forall` body's scope, and in the root | Scoped to the body's variables, binder included, and to the site's. The scope is the build scope's; a caller has none to state |
+| A metavariable created in the root, equated in a child scope with the child's binder | A failure. The solution would mention a variable its scope does not hold |
+| `freshMetaType` at `Effect`, or at an arrow whose final result is a row such as `Type -> Row Type` | Refused. A metavariable a synthesizer holds stands where a type variable would |
+| `unify` of two handles whose exact kinds differ, or of a row with a type | A defect of the synthesizer, and nothing unified. Every kind a handle holds is settled, so it is a misuse and not a candidate that does not fit |
+| `unify` of two empty rows, and of an empty row with a row metavariable | Equated, at `Row Type` and at the metavariable's kind. The first choice is invisible, neither side having an element or a tail |
+| `unify` given a `forall` body, or a type from a sibling scope | Refused. Equated with a site variable of the same name, the body's variable would be taken for it |
+| `unify` breaking an obligation, inside a `transact` | Caught as a failure, and the metavariable is unsolved afterwards |
+| `entails` of `k ∉ ?t` with `?t` flexible, then with `?t` solved to `()` | `false`, and then `true`. A flexible tail is never a fact |
+| `entails` of `k ∉ r` at the root, and inside `openConstraint (k ∉ r)` | `false`, and `true`. The assumptions are the build scope's |
+| `entails` of a constraint the facts refute, or under assumptions that contradict each other | `false`, and not a defect. Only a row with no normal form is one |
+| `entails` | Changes nothing: no metavariable, and no obligation |
+| `require` of a constraint already broken, or unproved at the scope | A failure where it is introduced |
+| `subgoal` in a `forall` body's scope | A job whose site binds the body's variable, queued for a first attempt, and an `Expr` built in that scope whose claimed type is built there too |
+| `subgoal` at a type not standing at `Type`, or at one the scope may not use | A defect of the synthesizer |
+| `subgoal` inside a `transact` that fails | The job and its target are both gone |
 | A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
 | No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
 | No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |
