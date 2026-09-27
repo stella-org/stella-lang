@@ -25,6 +25,7 @@ import Test.Stella.Compiler.Elaborate.Loop as ElaborateLoop
 import Test.Stella.Compiler.Elaborate.Obligation as ElaborateObligation
 import Test.Stella.Compiler.Elaborate.Run as ElaborateRun
 import Test.Stella.Compiler.Elaborate.Scheduler as ElaborateScheduler
+import Test.Stella.Compiler.Elaborate.Term as ElaborateTerm
 import Test.Stella.Compiler.Elaborate.Unify as Unify
 import Test.Stella.Compiler.TypedCore.RowProperties as RowProperties
 import Test.Stella.Compiler.TypedCore.EffectSlice as EffectSlice
@@ -62,3 +63,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateElab.spec
   ElaborateRun.spec
   ElaborateLoop.spec
+  ElaborateTerm.spec

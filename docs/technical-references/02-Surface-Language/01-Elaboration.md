@@ -12,6 +12,8 @@ e⁺ ::= … | ?m                          term metavariable
          | hole τ                      typed hole, for diagnostics
 ```
 
+**`⟨ τ by f ⟩` is a form elaboration is handed, not one a Core⁺ term holds.** Where it is met it is taken apart into `?m` in the term and the constraint `Synth ?m τ f` beside it ([Synthesis goals](#synthesis-goals)), so the term keeps the goal's metavariable alone and the goal itself is the constraint. Holding both would give one goal two representations.
+
 **Invariant: a term handed to the Core type checker belongs to Core⁺ minus `{?k, ?α, ?m, ⟨…⟩, hole}`.** If any remain after zonking — after applying the accumulated substitution — the goal is unresolved and compilation fails.
 
 ```text
