@@ -2,6 +2,7 @@ package:
   name: cli
   description: CLI common library
   dependencies:
+    - aff
     - ansi
     - argparse-basic
     - compiler
@@ -10,6 +11,8 @@ package:
     - either
     - exceptions
     - maybe
+    - node-buffer
+    - node-fs
     - prelude
     - run
     - typelevel-prelude

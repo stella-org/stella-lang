@@ -5,6 +5,7 @@
         "path": "cli",
         "core": {
           "dependencies": [
+            "aff",
             "ansi",
             "argparse-basic",
             "compiler",
@@ -13,6 +14,8 @@
             "either",
             "exceptions",
             "maybe",
+            "node-buffer",
+            "node-fs",
             "prelude",
             "run",
             "typelevel-prelude"
@@ -68,6 +71,7 @@
             "either",
             "enums",
             "exceptions",
+            "fmt",
             "foldable-traversable",
             "integers",
             "lists",
@@ -88,6 +92,11 @@
           "dependencies": [
             "aff",
             "datetime",
+            "node-buffer",
+            "node-child-process",
+            "node-execa",
+            "node-fs",
+            "partial",
             "spec",
             "spec-node",
             "transformers"
@@ -1124,6 +1133,17 @@
         "prelude"
       ]
     },
+    "fmt": {
+      "type": "registry",
+      "version": "0.2.1",
+      "integrity": "sha256-PB03XVGapVLn6GgwxEeAQ+yldoBlLP9eMdRnCdMIBic=",
+      "dependencies": [
+        "prelude",
+        "record",
+        "type-equality",
+        "typelevel-prelude"
+      ]
+    },
     "foldable-traversable": {
       "type": "registry",
       "version": "6.0.0",
@@ -1299,6 +1319,15 @@
         "prelude"
       ]
     },
+    "js-timers": {
+      "type": "registry",
+      "version": "6.1.0",
+      "integrity": "sha256-mYEL4zjFOzrDeVCnR9Hg3pcZaBZilB6zPGaZ4fzRmzg=",
+      "dependencies": [
+        "effect",
+        "prelude"
+      ]
+    },
     "lazy": {
       "type": "registry",
       "version": "6.0.0",
@@ -1396,6 +1425,35 @@
         "unsafe-coerce"
       ]
     },
+    "node-child-process": {
+      "type": "registry",
+      "version": "11.1.0",
+      "integrity": "sha256-Um7g75gXKEX51ZlviJWocTjUENUW1qHgqGqhYKkka74=",
+      "dependencies": [
+        "aff",
+        "datetime",
+        "effect",
+        "either",
+        "exceptions",
+        "foreign",
+        "foreign-object",
+        "functions",
+        "maybe",
+        "node-buffer",
+        "node-event-emitter",
+        "node-fs",
+        "node-os",
+        "node-streams",
+        "nullable",
+        "parallel",
+        "partial",
+        "posix-types",
+        "prelude",
+        "refs",
+        "safe-coerce",
+        "unsafe-coerce"
+      ]
+    },
     "node-event-emitter": {
       "type": "registry",
       "version": "3.0.0",
@@ -1408,6 +1466,51 @@
         "nullable",
         "prelude",
         "unsafe-coerce"
+      ]
+    },
+    "node-execa": {
+      "type": "registry",
+      "version": "5.0.0",
+      "integrity": "sha256-Br4KV8ZhK3dJYnl8VstEhQuJTFGd1yN2aJ72mCus1sg=",
+      "dependencies": [
+        "aff",
+        "arrays",
+        "control",
+        "effect",
+        "either",
+        "exceptions",
+        "foldable-traversable",
+        "foreign",
+        "foreign-object",
+        "functions",
+        "integers",
+        "js-timers",
+        "maybe",
+        "node-buffer",
+        "node-child-process",
+        "node-event-emitter",
+        "node-fs",
+        "node-human-signals",
+        "node-os",
+        "node-path",
+        "node-process",
+        "node-streams",
+        "nullable",
+        "numbers",
+        "ordered-collections",
+        "parallel",
+        "parsing",
+        "partial",
+        "posix-types",
+        "prelude",
+        "record",
+        "refs",
+        "safe-coerce",
+        "strings",
+        "tailrec",
+        "tuples",
+        "unsafe-coerce",
+        "unsafe-reference"
       ]
     },
     "node-fs": {
@@ -1432,6 +1535,43 @@
         "partial",
         "prelude",
         "strings"
+      ]
+    },
+    "node-human-signals": {
+      "type": "registry",
+      "version": "1.0.0",
+      "integrity": "sha256-3Uet4N3iU8qXqVD5isYv54tS+v5fqd5zbhJ7ntQLjR4=",
+      "dependencies": [
+        "arrays",
+        "control",
+        "foreign-object",
+        "maybe",
+        "ordered-collections",
+        "prelude"
+      ]
+    },
+    "node-os": {
+      "type": "registry",
+      "version": "5.1.0",
+      "integrity": "sha256-UtQiPiZy5ouV832ubww/U8KlpVYny9xsW8WWfYOEgtA=",
+      "dependencies": [
+        "arrays",
+        "bifunctors",
+        "control",
+        "datetime",
+        "effect",
+        "either",
+        "exceptions",
+        "foreign",
+        "foreign-object",
+        "functions",
+        "maybe",
+        "node-buffer",
+        "nullable",
+        "partial",
+        "posix-types",
+        "prelude",
+        "unsafe-coerce"
       ]
     },
     "node-path": {
@@ -1620,6 +1760,38 @@
         "profunctor",
         "refs",
         "transformers"
+      ]
+    },
+    "parsing": {
+      "type": "registry",
+      "version": "11.0.0",
+      "integrity": "sha256-N88gb/XbM29vw/Uop83shuMFT4wieQCz4wlQAct5eMs=",
+      "dependencies": [
+        "arrays",
+        "control",
+        "effect",
+        "either",
+        "enums",
+        "foldable-traversable",
+        "functions",
+        "identity",
+        "integers",
+        "lazy",
+        "lists",
+        "maybe",
+        "newtype",
+        "nullable",
+        "numbers",
+        "partial",
+        "prelude",
+        "st",
+        "strings",
+        "tailrec",
+        "transformers",
+        "tuples",
+        "unfoldable",
+        "unicode",
+        "unsafe-coerce"
       ]
     },
     "partial": {
@@ -1967,6 +2139,14 @@
       "version": "6.0.0",
       "integrity": "sha256-0L1QsaY20OILjfU5TV72d3U/tSjhmL9hJ32WMp857Lk=",
       "dependencies": []
+    },
+    "unsafe-reference": {
+      "type": "registry",
+      "version": "5.0.0",
+      "integrity": "sha256-ttSJTQUnK8AK2eGOsfRxLUJEDPL6pnmExjbiOqfwC6I=",
+      "dependencies": [
+        "prelude"
+      ]
     },
     "variant": {
       "type": "registry",
