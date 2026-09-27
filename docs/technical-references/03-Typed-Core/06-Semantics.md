@@ -269,7 +269,7 @@ The third class is what a mutable array behind a pure interface is: `Base.Array.
 
   (3) for each (M.f : σκ = δ_f) ∈ G, and for every spine ς that is saturated
       for M.f with cursorΣ(M.f, ς) = ⟨ σ ; θ ⟩  (see The spine cursor below),
-      writing v̄ = values(ς):
+      writing v̄ = values(ς), and **where the ABI preconditions of M.f hold**:
         δ_f(v̄) is defined
         δ_f(v̄) is either a value of type θ(σ) or a fault
         δ_f(v̄) performs no proper effect, and runs no reified computation
@@ -280,6 +280,23 @@ The third class is what a mutable array behind a pure interface is: `Base.Array.
                rather than a fault,
                where Σ records #observ(none) for M.f
 ```
+
+#### An ABI precondition is where condition (3) stops asking
+
+**An entry may be specified with a precondition, and where one is violated the ABI fixes nothing.** Condition (3) is quantified over the calls that respect it, which is what the clause added to it says, and the effect of that is narrow and deliberate: for a violating call an implementation owes no value of the result type, owes no fault, and owes nothing in common with another implementation.
+
+**One entry of `stella-base-0.1` has such a precondition, and it covers one case of that entry.** `Base.Array.unsafeIndex` faults on an index outside the array, as every backend must; the precondition is reached only after the index is found to be in range, and it is that the slot has been written. A slot `Base.Array.unsafeNew` left unwritten is one the ABI does not say how to read ([Prim and Base](../06-Modules/02-Prim-and-Base.md)). Requiring a fault there instead would oblige every backend to carry an initialization bit and to check it on every read, and that check would stand on the hot path of the one operation a portable array library is built out of — which is why it is not required. It is not forbidden either: a backend that pays for the check is conformant, and a program violating the precondition then runs there and nowhere else. The cost of the precondition is this paragraph and the premise below; the cost of removing it is paid by every array read in every program.
+
+**A precondition is not an observational effect, and confusing the two loses both.**
+
+| | What it asks | What it is read by |
+| --- | --- | --- |
+| `#observ(none)` | may a call be dropped, duplicated, or moved | an optimizer |
+| **an ABI precondition** | does this call, on these arguments and in this state, have a specified meaning at all | whoever writes the call |
+
+`Base.Array.unsafeSet` carries no precondition at all — an index outside the array faults — and it is observational all the same, because it writes; and `unsafeIndex` on an unwritten slot is a precondition violation whether or not anything would have optimized it. Neither answers the other's question.
+
+**Discharging a precondition belongs to the program and to nothing that checks it.** No type records one, no analysis here decides one, and a machine is neither obliged to detect a violation nor forbidden from doing so; what discharges it is the library standing over the entry. `Data.Array` writes every slot of an array before it returns one, and an application reaching `unsafeIndex` through that library never reaches an unwritten slot. **A program that violates one is outside the guarantees below, type safety included**, which is the whole of what `unsafe` names in these entries.
 
 **`Σ ⊨ G` is what every implementation owes, and it is not what this relation needs.** A second condition sits beside it, and the two are kept apart because they bind different parties: conformance is owed by whoever supplies a `δ_f`, while the one below says which environments the rules below describe at all.
 
@@ -309,6 +326,25 @@ G is Core-modelled   when for each (M.f : σκ = δ_f) ∈ G, and for every spin
 **An entry may conform without being Core-modelled**, and `Base.Array.unsafeSet` is the case: it satisfies `Σ ⊨ G` — it returns what it claims, runs no reified computation, applies no Stella function, terminates, and asserts no `#observ(none)` it would be breaching — while it writes to a store the reduction relation records nowhere. Such an entry is admissible, and a machine runs it; what it is not is described by the reduction relation (D41).
 
 **Faulting does not cost an entry its place here.** A `δ_f` that faults on exactly the arguments it always faults on is a function like any other, so `Base.String.codePointAt` is Core-modelled and the fault branch of progress is reached by it. What the condition excludes is a hidden read, a write, and an identity the arguments do not determine, observable or not — and nothing else.
+
+**The third condition is on the term rather than on the environment**, and it is what the precondition above costs.
+
+```text
+e respects preconditions under G
+                     when no saturated foreign invocation reached from e by
+                     the relation below violates the ABI precondition of the
+                     entry it invokes
+```
+
+**This one is not decided anywhere, and saying so is part of stating it.** Whether a program ever reads an unwritten slot is not settled by its type, by any analysis in these documents, or by anything a machine does at run time. What discharges it is the library that owns the unsafe entry, and what a violation costs is everything below: a term that violates one has no guarantee of preservation, of progress, or of anything else this section states.
+
+**The three conditions fail in three different ways**, which is why none of them absorbs another.
+
+| | Who it binds | What its failure does |
+| --- | --- | --- |
+| `Σ ⊨ G` | whoever supplies a `δ_f` | an implementation is in breach; the environment is not one any backend may offer |
+| Core-modelled | nothing, being a property of `G` | the rule below gives a saturated `foreign` no step, so the term is unmodelled rather than wrong |
+| preconditions respected | the program, and the library standing over the entry | the step is taken and what it yields is unspecified, so the properties below say nothing about what follows |
 
 Condition (2) applies to the entries a `rec` group installs as well. Each `v_i` is checked under its own `k̄_i` and refers to its neighbours through `Σ`, which the declaration rules populated before any value declaration was checked.
 
@@ -562,11 +598,12 @@ An unsaturated spine absorbs the argument its cursor calls for; a saturated fore
   (M.g ς) α                →  M.g (ς, α)           when ς is not saturated for M.g
                                                     and cursorΣ(M.g, (ς, α)) is defined
 
-  M.f ς                    →  δ_f( values(ς) )     when ς is saturated for M.f
-                                                    and G is Core-modelled
+  M.f ς                    →  δ_f( values(ς) )     when ς is saturated for M.f,
+                                                    G is Core-modelled, and the
+                                                    ABI preconditions of M.f hold
 ```
 
-**The premise on the second rule is not decoration.** `δ_f( values(ς) )` names the outcome the arguments determine, so the rule says nothing where they determine nothing (above). An implementation reading hidden state is one this rule gives no step to, and that is the whole of what "outside the relation" means. The premise is written here because this is the one rule where the difference bites; every rule is read against such a `G`.
+**The premises on the second rule are not decoration, and the two say different things.** `δ_f( values(ς) )` names the outcome the arguments determine, so the rule says nothing where they determine nothing (above): an implementation reading hidden state is one this rule gives no step to, and that is the whole of what "outside the relation" means. The precondition premise is narrower and fails at one call rather than for a whole environment — a `Base.Array.unsafeIndex` reading a slot nothing wrote has a step taken in any real machine and no step here, because what that step yields is what the ABI declined to fix. Both are written on this rule because this is the one rule where either bites; every rule is read against such a `G` and such a term.
 
 `[[κ̄]]` is absent from `α` because the whole kind vector is consumed at formation and a kind scheme is prenex, so no second kind instantiation can arise.
 
@@ -920,26 +957,28 @@ A variant value loses its `weaken` wrappers, so an erased `switchKey` dispatches
 
 The following are stated as the properties the implementation is expected to have. They are not proved here. [Implementation Plan](../01-Introduction/04-Implementation-Plan.md) describes how each becomes a property test.
 
-Every property assumes `Σ ⊨ G` **and that `G` is Core-modelled**, and the two do different work. Without conformance the global environment may supply an ill-typed definition or a `δ_f` that returns the wrong thing. Without the second the relation gives a saturated `foreign` no step at all, so there is no reduction sequence for a property to quantify over — which is why an environment holding `Base.Array.unsafeSet` is outside every statement below, and one holding `Base.String.codePointAt` is not (above).
+Every property assumes three things, and each does work the others do not (above). Without `Σ ⊨ G` the global environment may supply an ill-typed definition or a `δ_f` that returns the wrong thing. Without `G` being **Core-modelled** the relation gives a saturated `foreign` no step at all, so there is no reduction sequence to quantify over — which is why an environment holding `Base.Array.unsafeSet` is outside every statement below, and one holding `Base.String.codePointAt` is not. Without `e` **respecting preconditions** a step is reached whose outcome the ABI declined to fix, so what follows it is not a term these statements describe.
 
-**Preservation.** If `Σ ⊨ G`, `G` is Core-modelled, `Γ; Δ ⊢ e : τ ! ρ`, and `G ⊢ e → e2` for a **term** `e2`, then `Γ; Δ ⊢ e2 : τ ! ρ`.
+**The third is the one a reader is likely to want narrower, and it cannot be.** It is not a condition on `G`, since the same environment runs a program that reads only written slots and one that does not; and it is not decidable here, since nothing in these documents analyses which slots a program has written. **What it is, is a debt the library owes**, and `Data.Array` is where it is paid: an array leaves its constructors with every slot written, and an application reaching `Base.Array.unsafeIndex` through that library is a term that respects preconditions without its author having thought about it.
+
+**Preservation.** If `Σ ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `Γ; Δ ⊢ e : τ ! ρ`, and `G ⊢ e → e2` for a **term** `e2`, then `Γ; Δ ⊢ e2 : τ ! ρ`.
 
 A step to `fault φ` is outside the statement: a fault carries no type.
 
 Both the type and the ambient row are preserved exactly. Widening is never discarded by a step: applying through an `openEff` moves it to `openEffC`, and `openEffC` is discharged only against a value, whose type does not mention the ambient row. Handling an operation likewise leaves the row unchanged, since the clause body is typed at the residual row that the `handle` already had.
 
-**Progress.** If `Σ ⊨ G`, `G` is Core-modelled, and `·; · ⊢ e : τ ! ()`, then `e` is a value, or there exists `e2` with `G ⊢ e → e2`, or `G ⊢ e → fault φ` for some fault φ.
+**Progress.** If `Σ ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, and `·; · ⊢ e : τ ! ()`, then `e` is a value, or there exists `e2` with `G ⊢ e → e2`, or `G ⊢ e → fault φ` for some fault φ.
 
 The third case is what admitting faults in condition (3) of `Σ ⊨ G` buys. A saturated `foreign` whose implementation fails would otherwise be neither a value nor a redex.
 
 Condition (1) of `Σ ⊨ G` is what linking establishes. Without it a global name has nothing to unfold to, and the property fails for a reason unrelated to the type system.
 
-**Effect safety.** If `Σ ⊨ G`, `G` is Core-modelled, and `·; · ⊢ e : τ ! ()`, then no reduction sequence from `e` reaches a term of the form `Ev_k[ perform k.op [σ̄] v ]` in which no handler of key `k` encloses the hole.
+**Effect safety.** If `Σ ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, and `·; · ⊢ e : τ ! ()`, then no reduction sequence from `e` reaches a term of the form `Ev_k[ perform k.op [σ̄] v ]` in which no handler of key `k` encloses the hole.
 
 The claim is **not** that operations are never performed. A term may be well typed at ambient row `()` and still perform operations internally: `handle (perform E.op v) with h` is such a term, and its reduction does reach the clause for `op`. What the empty row guarantees is that no operation **escapes**: every `perform` that runs is enclosed by a handler for its key, so evaluation never gets stuck on an unhandled operation.
 
 This is the property the whole design rests on, and it is the one that testing is least likely to reveal. A violation does not crash: it produces a program that silently performs effects it declared it would not. D7 places effect rows on arrows, D20 keeps `IO` out of the effect world, and D23 forbids effectful `foreign` arrows, all in service of this single statement. Note that D23 alone is not sufficient: a conforming `δ_f`, condition (3) of `Σ ⊨ G`, is equally required, since `handle` intercepts only `perform` while a `foreign` application calls its implementation directly.
 
-**Erasure.** If `Σ ⊨ G`, `G` is Core-modelled, and `G ⊢ e → e2`, then `⌊e⌋` reduces to `⌊e2⌋` in zero or one steps under the erased relation, the zero-step case being a step that only introduced or discharged a coercion. If `G ⊢ e → fault φ` then `⌊e⌋` reduces to the same fault `φ`; an erased evaluator and a typed one fail identically. The value restriction is what makes this hold: the body of a type or constraint abstraction is already a value, so erasing the abstraction cannot move evaluation to a different point.
+**Erasure.** If `Σ ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, and `G ⊢ e → e2`, then `⌊e⌋` reduces to `⌊e2⌋` in zero or one steps under the erased relation, the zero-step case being a step that only introduced or discharged a coercion. If `G ⊢ e → fault φ` then `⌊e⌋` reduces to the same fault `φ`; an erased evaluator and a typed one fail identically. The value restriction is what makes this hold: the body of a type or constraint abstraction is already a value, so erasing the abstraction cannot move evaluation to a different point.
 
 **Non-conformance of the v0.1 backends.** The reduction rule for a `full` clause places no bound on applications of `k_i`, so a term applying it twice is well typed and has a defined reduction sequence. The v0.1 JavaScript and Wasm backends do not reproduce that sequence; they raise a run-time error at the second application. This is the precise content of the soundness gap recorded above.

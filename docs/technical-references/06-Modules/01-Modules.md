@@ -193,6 +193,8 @@ The restrictions above follow from a single principle.
 
 ```text
 foreign Base.Array.length      : forall a. Array a -> Int
+foreign Base.Array.unsafeNew   : forall a. Int -> Array a
+foreign Base.Array.unsafeSet   : forall a. Int -> a -> Array a -> Unit
 foreign Base.Array.unsafeIndex : forall a. Array a -> Int -> a
 ```
 

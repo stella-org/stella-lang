@@ -298,7 +298,10 @@ Base.Int.sub                 : Int -> Int -> Int
 Base.String.length           : String -> Int
 Base.String.codePointAt      : Int -> String -> Char    -- faults out of range
 Base.Array.Array             : Type -> Type            -- manifest intrinsic
-Base.Array.unsafeIndex       : forall a. Array a -> Int -> a
+Base.Array.length            : forall a. Array a -> Int
+Base.Array.unsafeNew         : forall a. Int -> Array a          -- faults on a negative count
+Base.Array.unsafeSet         : forall a. Int -> a -> Array a -> Unit   -- faults out of range
+Base.Array.unsafeIndex       : forall a. Array a -> Int -> a     -- faults out of range
 Base.Function.Uncurried.Fn2  : Type -> Type -> Type -> Type   -- manifest intrinsic
 Base.IO.pure                 : forall a. a -> IO a
 Base.IO.bind                 : forall a b. IO a -> (a -> IO b) -> IO b
@@ -489,7 +492,7 @@ Three stages then divide the work, and none of them duplicates another.
 | --- | --- |
 | type checking | the declared type is well-kinded and every arrow is pure (D23) |
 | target validation | the backend manifest records every entry the program uses — each `Base` ABI entry, through a profile it claims or beyond them, and each target ABI entry — and every target root the program imports is the selected target's |
-| linking | `Σ ⊨ G` condition (3): each `δ_f` returns what it claims, performs no proper effect and runs no reified computation it constructs, applies no Stella function value, terminates, and has no observational effect — faulting among them — where its declaration asserts `#observ(none)` ([Semantics](../03-Typed-Core/06-Semantics.md)) |
+| linking | `Σ ⊨ G` condition (3): each `δ_f` returns what it claims, performs no proper effect and runs no reified computation it constructs, applies no Stella function value, terminates, and has no observational effect — faulting among them — where its declaration asserts `#observ(none)`, all of it asked of the calls respecting the entry's ABI preconditions (D42) ([Semantics](../03-Typed-Core/06-Semantics.md)) |
 
 **An unsupported entry is rejected at target validation, not at run time.** A
 program naming an ABI entry the chosen backend does not implement fails to
@@ -540,7 +543,7 @@ any, should enforce this is open ([Open Questions](../99-Open-Questions/01-Open-
 
 ### The operations of `stella-base-0.1`
 
-Five entries of this version are **operations**: a `.dmo` names one by a code rather
+Eight entries of this version are **operations**: a `.dmo` names one by a code rather
 than through its foreign table, and whatever executes it carries the entry out
 itself ([Encoding](../05-Backend/02-Encoding.md)). Their meaning is fixed here, in
 terms that name no backend, and so is which of them may fault.
@@ -550,13 +553,43 @@ terms that name no backend, and so is which of them may fault.
 | `Base.Int.add`, `Base.Int.sub` | addition and subtraction **modulo 2³², the result read as a 32-bit signed integer** (D37) | never | yes |
 | `Base.String.length` | the number of Unicode scalar values in the string (D27) | never | yes |
 | `Base.String.codePointAt` | the scalar value at a **scalar index**, counting from zero | on an index outside the string | no |
+| `Base.Array.length` | the number of slots the array has, which is the count it was created with | never | yes |
+| `Base.Array.unsafeNew` | an array of that many slots, none of them written | on a negative count | no |
+| `Base.Array.unsafeSet` | write the element into that slot of the array, and return `Unit` | on an index outside the array | no |
 | `Base.Array.unsafeIndex` | the element at an index | on an index outside the array | no |
 
-**The last column follows from the one before it and from nothing else here.** Each
-of these five entries depends on its arguments alone and mutates nothing, so what
-decides the annotation is whether the specification fixes the entry as faulting: the
-three that never fault carry it, and the two that do cannot
-([Modules](01-Modules.md)). An indexing entry is therefore a barrier to an
+**A negative count faults rather than being left undefined**, and this is not
+symmetry for its own sake. It is the one place every backend has to do something
+deliberate anyway — a host whose allocator rejects a negative length would otherwise
+raise something of its own, which is not a fault and does not propagate like one —
+and the check happens once per allocation rather than once per read, so it costs
+what the entry costs nothing to pay. A count of zero is an array of no slots and is
+not an error.
+
+**`Base.Array.length` is an operation like the rest, and it is the entry that shows
+a mutable structure does not make every entry over it observational.** A slot count
+is fixed where the array is created and no entry of this version changes it, so
+reading one is reading an immutable property of the argument, exactly as
+`Base.String.length` is. It faults on nothing, writes nothing, and creates nothing,
+so it carries the annotation and is Core-modelled besides
+([Semantics](../03-Typed-Core/06-Semantics.md)). **It is an operation for the same
+reason as its siblings**: what a slot count is belongs to the ABI, and whatever holds
+the array is what can read it, so nothing outside the machine could carry it out
+without being told the representation.
+
+**The last column happens to agree with the one before it in this version, and does
+not follow from it.** What the annotation asserts is the absence of an
+**observational effect** — a hidden read or write, an observable identity, a fault —
+and faulting is one of three ([Modules](01-Modules.md), D41). For the five entries
+that touch nothing the agreement is the whole story: each depends on its arguments
+alone, so faulting is the only thing that could exclude it. For the unsafe three it
+is a coincidence. Each of them faults, so reading the column off faulting gives the
+right answer; each of them would be excluded anyway — `unsafeNew` hands back an array
+a program can tell from every other one, `unsafeSet` writes, and `unsafeIndex` reads
+what that write left. **No entry of this version separates the two**, so the rule is
+stated rather than demonstrated, and an entry that is total and
+still excluded is a case a later version should expect rather than be surprised by.
+An indexing entry is therefore a barrier to an
 optimizer, which is the price of its being partial, and a total wrapper written over
 it in a portable library is an ordinary Stella function with no such standing.
 
@@ -569,6 +602,66 @@ between them would be comparing nothing.
 **An index is a scalar index and not an index of code units**, which is the split
 `String` already rests on: a backend holding UTF-16 counts and indexes scalar values
 all the same.
+
+#### `unsafeIndex` carries the one precondition of this version
+
+`unsafeNew n` produces an array of `n` slots and writes none of them, so
+`unsafeIndex` has a case its specification above does not cover: an index inside the
+array, naming a slot nothing has written.
+
+**That case is a precondition rather than a behaviour**, and **only** that case is.
+The range is decided first and is fully specified either way; the precondition
+applies to what is left ([Semantics](../03-Typed-Core/06-Semantics.md), D42).
+
+```text
+unsafeIndex xs i    out of range             a fault, on every backend
+                    in range, written        the element
+                    in range, not written    the precondition, violated
+```
+
+**Being out of range is not a precondition violation**, and the distinction is what
+every backend's obligation rests on: an index outside the array faults, and a
+backend that did anything else there would be non-conformant. What is unspecified is
+narrower than "outside the specified case" — it is the third line alone, reached only
+after the index has been found to be in range.
+
+**A violating program is outside the language's guarantees, type safety included.**
+This is not a licence granted to backends so much as a boundary drawn around what
+the specification claims: preservation, progress, and the rest are stated over terms
+that respect preconditions, and a term that does not is one they say nothing about.
+Stating it here is what keeps "undefined" from being read as "unspecified but safe".
+
+**No implementation is obliged to detect a violation, and none is forbidden from
+doing so.** A backend may carry, on each array, which of its slots have been written
+and fault on a read of one that has not; that backend is conformant, and a program
+violating the precondition then runs there and nowhere else — which is precisely the
+difference an unspecified case admits. **Neither behaviour may be made a conformance
+condition**, in either direction.
+
+**What the specification declines to do is require the check**, and the reason is
+where it would stand: on every read, which is the operation a portable array library
+is built out of. Nor is it generally removable — an optimizer would have to prove a
+slot written, which is the analysis this specification declines to require. A
+backend willing to pay for the diagnostic is free to.
+
+**The obligation is discharged one layer up, not by every author.** `Data.Array`
+hands back no array with a slot left unwritten — its `mapArray` writes every slot of
+the array it allocated before returning it — so an application reaching `unsafeIndex`
+through that library respects the precondition without knowing there is one. That is
+what `unsafe` names in these entries, and why they are exported for a library to wrap
+rather than for a program to reach.
+
+**A fill would remove the precondition and cost more than it removes.** An
+`unsafeNew : Int -> a -> Array a` is total and loses nothing in expressiveness — an
+array with elements needs an element — but it obliges a builder to have one before it
+has computed any, and a fill written and then overwritten is work every allocation
+pays.
+
+**The negative count is the same trade answered the other way**, and the difference
+is instructive. That check is once per allocation rather than once per read; a host
+whose allocator rejects a negative length would otherwise raise something of its own,
+so backends genuinely diverge there rather than merely being unconstrained. So it
+faults, and this one does not.
 
 ### `Base.IO.pure` and `Base.IO.bind`
 
@@ -716,16 +809,36 @@ module Base.Function.Uncurried
 The operations are ordinary source, written in the module the manifest names.
 
 ```purescript
-module Base.Array (Array, length, unsafeIndex) where
+module Base.Array (Array, length, unsafeNew, unsafeSet, unsafeIndex) where
   foreign length      :: forall a. Array a -> Int
+  foreign unsafeNew   :: forall a. Int -> Array a
+  foreign unsafeSet   :: forall a. Int -> a -> Array a -> Unit
   foreign unsafeIndex :: forall a. Array a -> Int -> a
 ```
 
+**`length` is an operation too**, so all four entries of this module are carried out by whatever executes the code rather than by a host table: an array is an opaque value whose representation belongs to the implementation holding it, and a slot count is as unreachable from outside as an element is.
+
+**The construction entries are these two and no more**, and what they are is settled
+by what a portable `mapArray` has to be written over: somewhere to put the elements,
+and a way to put them there. Everything above that — a literal, a conversion, a
+builder that grows — is a portable library's, written in Stella over these.
+
+**None of the three is pure in the sense the type suggests, and none returns `IO`.**
+An array is reached through the program's own values rather than through the world,
+so the division that sends an entry to `IO` does not send these there; what they have
+instead is an **observational effect**, which appears in no type (D41). `unsafeNew`
+creates an identity a program can tell from another, `unsafeSet` writes, and
+`unsafeIndex` reads what that write left. This is exactly why a pure `mapArray` can
+be written at all, and exactly why none of the three carries `#observ(none)`.
+
+**`unsafeSet` takes the array last and returns `Unit`.** The order is what makes a
+partial application useful over the array rather than over the index, and the result
+is `Unit` because there is nothing else to return: the array a caller has is the
+array that was written.
+
 **`fromList` is not among them.** `List` belongs to `Prelude`, and a `Base`
 signature mentions only `Prim` types and portable manifest intrinsics, so a conversion between
-the two is `Data.Array`. Which construction entries `Base.Array` does supply, and
-whether each is pure or returns `IO`, is part of the ABI content that remains
-open ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
+the two is `Data.Array`.
 
 Splitting it this way keeps the manifest to what only it can express. A `foreign` is checked wherever it is written — every arrow pure (D23), the type well-kinded — and a manifest entry would either duplicate that or become a trusted input for no reason. It also leaves the module free to hold Stella code beside its primitives, which a portable library needs: `Data.Array.mapArray` is written in Stella and uses `unsafeIndex` ([Modules](01-Modules.md)).
 

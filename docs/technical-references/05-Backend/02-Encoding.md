@@ -292,12 +292,18 @@ means beside them ([Prim and Base](../06-Modules/02-Prim-and-Base.md)).
 | `0x10` | `Base.String.length` |
 | `0x11` | `Base.String.codePointAt` |
 | `0x20` | `Base.Array.unsafeIndex` |
+| `0x21` | `Base.Array.unsafeNew` |
+| `0x22` | `Base.Array.unsafeSet` |
+| `0x23` | `Base.Array.length` |
 
 Three rules hold of the table, and they are what let a code stand in a file.
 
 **A code is written, never derived.** It is not a position in a list, an
 alphabetical rank, or the order a compiler happens to declare its operations in:
 any of those would change a published file's meaning when an operation is added.
+The array family is where the table already shows it: `unsafeIndex` holds `0x20`
+because it was written first, and the two entries added beside it took the codes
+after rather than the order a reader would group them in.
 
 **A code is fixed for the life of an ABI version, and a removed operation's code
 is not reused.** A later version may drop an operation, and a reader of that

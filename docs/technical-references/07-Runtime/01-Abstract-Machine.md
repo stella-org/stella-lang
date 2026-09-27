@@ -462,6 +462,7 @@ the registry as it was still leaves that write standing.
 | the slots the candidate's globals stood in | unwound with it, however many were filled before the failure |
 | an interned identity | **not** unwound, and this is deliberate: an identity belongs to a name rather than to a module, so what is left is one nothing refers to and a later module declaring that name is given the same one |
 | host state a foreign body wrote before it refused | **not** unwound, and nothing here can unwind it. The write is outside what the interpreter holds |
+| anything at all, after a call violating an ABI precondition | **no promise**. What such a call did is unspecified, so what is left to unwind is unknown (D42) |
 
 **The last row is a limit on the promise and not a defect to be fixed.** Undoing it
 would need the host to offer a transaction over whatever a body touched, which is
@@ -474,6 +475,13 @@ writes an adapter: a body that may refuse should refuse before it writes. Nothin
 checks that, for the same reason nothing checks `#observ(none)` — the assertion is a
 contract on the implementer, kept by conformance tests
 ([Semantics](../03-Typed-Core/06-Semantics.md)).
+
+**The last row is a different kind of limit from the one above it, and the two
+should not be read together.** A refusal after a write is a specified outcome whose
+effects the interpreter cannot reach; a precondition violation is not a specified
+outcome at all, so "the session answers the next input" is not a promise that
+survives one. **The session's promise is to programs that respect preconditions**,
+which is the same restriction the four properties carry (D42).
 
 ### What a report answers with
 
@@ -811,10 +819,42 @@ settled, at which point the two share one.
 
 `PRIMS` names operations, and executing a `PRIM` is carrying out the `Base` entry
 its code stands for. **What each one means, and which of them fault, is the ABI's
-and is one meaning for every backend** — the five the format carries are fixed in
+and is one meaning for every backend** — the eight the format carries are fixed in
 [Prim and Base](../06-Modules/02-Prim-and-Base.md) — so the interpreter implements
 what is written there and decides nothing of its own. A code it does not implement
 is a load error rather than something discovered when a `PRIM` runs.
+
+**Carrying one out reaches the host, and the array operations are why.** Four of the
+eight compute from scalar arguments alone, and it would be possible to carry those
+out without leaving the interpreter; every entry of `Base.Array` reaches the payload
+of an array instead — `unsafeNew` allocates one, `unsafeSet` writes into it,
+`unsafeIndex` reads what that write left, and even `length` reads a count held
+there — so the operation boundary is the same kind of boundary as the foreign one. **It is the same boundary
+and not a second**: an operation is how an entry is carried out and not a way of not
+being one (D41), so what an adapter owes an operation owes, and the interpreter
+holds both behind one path.
+
+**An array is an opaque value.** `Base.Array.Array` is an `intrinsic opaque`, so an
+array is carried, returned, and handed back to an operation, and nothing else in the
+interpreter takes one apart ([Semantics](../03-Typed-Core/06-Semantics.md)). What
+the payload is belongs to the interpreter and to no `.dmo`: a snapshot of one reads
+the value's own form and descends no further ([Structural](#printing-one)), and
+nothing compares two.
+
+**Reading a slot `unsafeNew` left unwritten violates the precondition of
+`unsafeIndex`** ([Prim and Base](../06-Modules/02-Prim-and-Base.md), D42). Nothing
+is owed there in either direction: an implementation may detect it and fault, and
+may equally not, and both are conformant.
+
+**This interpreter does not detect it**, and that is a decision of its own rather
+than a reading of the ABI. Tracking which slots have been written would put a check
+on every read, which is the operation a portable array library is built out of, and
+what is bought is a diagnostic the specification does not ask for. So no array here
+carries an initialization bit and no read consults one. What such a read produces is
+consequently not a promise — a reader should not take it for the specification, and
+**a backend faulting there is not in breach of anything this document says**. An
+index outside the array is a different matter and faults on every backend, the range
+being decided before the precondition is reached.
 
 ## Executing an `IO`
 
