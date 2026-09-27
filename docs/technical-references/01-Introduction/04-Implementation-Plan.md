@@ -489,6 +489,15 @@ no identifier is at once ready and blocked
 | A job completed while registered | Held by no table afterwards |
 | A job woken, then taken from the ready queue, then attempted | Attempted as any other job is. Just after `takeReady` is one of the two points at which a job may be attempted, the other being just after `create` |
 | An attempt of a job still on the ready queue, or still registered under a metavariable | A defect, and the job is not run. The first would run it again when the loop takes it, and the second would register it twice |
+| A job submitted and attempted at once | No fuel spent. Fuel bounds the scheduler's retries, and a first attempt is none |
+| A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
+| No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
+| No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |
+| A retry that fails, with other jobs still ready | The loop stops at that diagnostic. The jobs after it would be retried without what the failed equation would have told them |
+| A retry that fails | Reported at the site of the job that failed, not at the site of the equation whose assignment woke it |
+| Quiescence, with a job awaiting a metavariable it is not registered under | A defect, not a report of insufficient information. That assignment would never wake it, which says nothing about the program |
+| Quiescence, with a job awaiting nothing and on no queue | A defect likewise, checked before anything is reported as waiting |
+| Quiescence, with several jobs waiting | Each is reported with its site, its job, and what it awaits, in the order the jobs were created |
 | A `Lacks` assumed of a flexible tail | Yields no atomic fact, and yields one at the attempt after that tail is solved to a row with a rigid one |
 | The same assumption, where the solution carries the key | Rejected. Which store rejects it is the obligation's and not the context's, the facts derived from a site being silent about a metavariable |
 | A `Disjoint` between two flexible tails | Watched under both. A record per metavariable cannot hold one, there being no one metavariable it belongs to |

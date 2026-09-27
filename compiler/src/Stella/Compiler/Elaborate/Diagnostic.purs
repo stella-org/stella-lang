@@ -20,9 +20,11 @@ import Prelude
 import Stella.Compiler.Elaborate.Context (Origin)
 import Stella.Compiler.Elaborate.Obligation (Basis, Breach)
 import Stella.Compiler.Elaborate.Pending (Job, PendingId)
+import Stella.Compiler.Elaborate.Scheduler (Invariant)
 import Stella.Compiler.Elaborate.Type (MetaVar)
 import Stella.Compiler.Elaborate.Row (XRowError)
 import Stella.Compiler.Elaborate.Unify (UnifyError)
+import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Generic.Rep (class Generic)
 import Data.Show.Generic (genericShow)
 
@@ -88,6 +90,15 @@ data Defect
   -- | awaiting a metavariable. Attempting it would leave it to run again, or
   -- | register it a second time.
   | PendingStillScheduled PendingId
+  -- | Jobs left at quiescence that no assignment can reach: `pending` holds
+  -- | them, they await nothing, and the ready queue is empty. The loop has
+  -- | lost them, which says nothing about the program. In identifier order.
+  | UnreachablePending (NonEmptyArray PendingId)
+  -- | The scheduler's tables disagree at quiescence, in the order `invariants`
+  -- | lists them. A job registered under a metavariable its `awaiting` does not
+  -- | name, or awaiting one it is not registered under, is one no assignment
+  -- | wakes, so reporting it as waiting would blame the program for the loop.
+  | SchedulerBroken (NonEmptyArray Invariant)
 
 -- | Why a postponement cannot be admitted, read against `Ψ` as the rollback
 -- | leaves it.

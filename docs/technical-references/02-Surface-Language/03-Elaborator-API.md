@@ -333,17 +333,30 @@ A **failure** reports the diagnostic and nothing else. The whole equation is rol
 ### The loop
 
 ```text
+submit(job):
+    create it, and attempt it at once              no fuel is spent
+
 while the ready queue is not empty:
-    take an id, and attempt it
+    no fuel left                stop, naming the job at the front; it stays there
+    take an id, spend a unit of fuel, and attempt it
+        solved, or postponed    go on
+        failed                  stop, and report that diagnostic
+        defect                  stop, and report the defect
 
 on quiescence:
-    every pending solved        zonk, and hand the term to the Core type checker
-    pendings remain             report insufficient information, naming the
-                                metavariables each awaits
-    any pending Failed          report that diagnostic
+    the tables disagree         a defect: a registration and an awaiting set
+                                that do not match leave a job no assignment wakes
+    a job that awaits nothing   a defect: no assignment can reach it
+    no job left                 zonk, and hand the term to the Core type checker
+    jobs remain                 report insufficient information, naming each
+                                job and the metavariables it awaits
 ```
 
 The three-way outcome is what separates "unsolvable" from "not enough information yet", and it is the same split at each of the three job kinds.
+
+**The loop stops at the first failure.** A failed attempt is rolled back, so the jobs retried after it would be retried without what the failed equation would have told them, and nothing yet tells a failure of their own from one that follows from it. Collecting several diagnostics waits on a rule for recovering from one, and where it arrives, what the mechanism reports keeps the jobs still waiting beside the diagnostics; which of them an author is shown is the presentation's to decide.
+
+**Fuel is spent by a retry and by nothing else.** A first attempt, made where a job is submitted, spends none. A job the fuel does not reach stays on the ready queue and is named where the loop stops, and one that has been attempted has spent its unit whatever it came to.
 
 ### Which job may be attempted
 
