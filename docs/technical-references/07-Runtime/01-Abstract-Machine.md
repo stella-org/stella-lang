@@ -75,7 +75,12 @@ loads them in the order it was given before executing that entry point.
 **The entry point is named, not found.** Several modules may declare a `main`, a
 `.dmo` carries no types and marks no entry point, and a list in dependency order says
 nothing about which of them was meant — so the name comes with the list, as a
-qualified name or as the module whose own `main` is meant. It is read from the
+qualified name or as the module whose own `main` is meant. **A front end may default
+the name rather than ask for it** — the `steam` command defaults to the module called
+`Main` (below) — which is naming it too: what is settled before anything is looked
+up is the module, and only that module's globals are then consulted. **What no front
+end may do is make a duplicate `main` a condition of loading**, since a global of
+that name is an ordinary global and a session wants no entry point at all. It is read from the
 declaring module's globals and **not** through its exports: an entry point need not
 be exported. What a process makes of the run afterwards — an exit status, and what it
 is for a fault — belongs to the runtime ABI and is not settled
@@ -89,6 +94,213 @@ given. A module's `imports` is read as a **condition** — every one of them is
 already in the registry, or the load fails — and never as a way to find anything.
 Ordering is the front end's, which is where the source, the search paths, and the
 build plan are.
+
+### The `steam` Command Line Interface
+
+**What Steam provides is the wiring the Stella CLI runs a program through; the
+`steam` command is a standalone wrapper over that wiring.** The two are not
+competing front ends and they are not the same path either — the application calls
+the wiring and does not start the command, for the reason below. The dependency
+direction is what makes there be a command at all.
+
+```text
+compiler                         the language: checking, lowering, the container
+cli      → compiler              a library of what a command line needs
+steam    → compiler, cli         this interpreter, which is also a command
+stella   → compiler, steam       the application a user runs
+```
+
+**`cli` here is a shared library and not the application.** Both this interpreter's
+command and the one above it are built out of it, which is why `steam → cli` is an
+edge: it says nothing about who integrates whom.
+
+**`stella` is the integration point, and it is the only package that may be.**
+`compiler → steam` would be a cycle, so the compiler cannot call the interpreter as
+a library; `stella` depends on both and on nothing that depends on it, so it is where
+the two meet. That asymmetry is what decides the paragraph below.
+
+**What the command and the application share is the wiring and not the process.**
+Running a program is a function of three things — the modules in order, the entry point, and
+the foreign table — and both reach it.
+
+| | The table it passes |
+| --- | --- |
+| the `steam run` command | **empty.** A command line carries paths and names, and a host function is neither |
+| `stella run` | the one it assembled, **calling the wiring directly** rather than starting this command |
+
+**The table is why `stella` calls rather than starts.** Assembling one means resolving
+a module name to a module specifier and importing it
+([Foreign implementations](#foreign-implementations)), and what comes back is host
+functions — which no argument vector, and no framing built for names and bytes, can
+carry. An application that started this command would be handing over an empty table
+and could then run only what the command can.
+
+**So `steam run` is the wiring with nothing plugged in, and that is its use**: a
+`.dmo` already built can be run without rebuilding it, and the interpreter is usable
+end to end while the CLI above it is still being written. It is not the path a user's
+program takes to the machine.
+
+**The session is the other way round**, and for a reason that does not apply here: a
+long-lived session is what the compiler talks to, the compiler cannot link the
+interpreter, so `stella` starts one and brokers between them. Run has no such
+constraint, since nothing below `stella` needs to reach it.
+
+```text
+steam run --entry Main  base/Base.Int.dmo  lib/Lib.dmo  main/Main.dmo
+```
+
+**The files are given in dependency order and the command sorts nothing.** That is
+the rule above read at the command line: the arguments are loaded left to right, a
+module whose imports are not already loaded is refused, and no path is searched and
+no name resolved to a file. **A wrong order is a load error and not a reordering** —
+the command has no import graph to sort by, and inventing one here would put a second
+answer beside the build plan's.
+
+**The entry point is named by two options, one for each half**, and each has a
+default. The global is read from the named module's own globals and not through its
+exports (above).
+
+| | Names | Default |
+| --- | --- | --- |
+| `--entry` | the module | `Main` |
+| `--entry-global` | the global within it | `main` |
+
+**One option carrying both halves would be ambiguous, and the ambiguity is not
+resolvable.** A module name has dots in it, so `A.B` reads as the module `A.B` and
+as the global `B` of the module `A`, and nothing in the spelling separates them.
+**Deciding by looking at which modules were loaded is the one answer to rule out**:
+the same argument would mean different things for different sets of files, so a
+command line that worked would stop working when a module was added.
+
+**Two options say it without a separator to invent.** A qualified name could be
+spelled with something other than a dot — `Main::main`, say — but `::` already means
+something in the language, any other choice is a private convention of this command,
+and the split matches what is actually being said: the module is settled first, and
+only then is a global looked up inside it.
+
+**Nothing is ever searched for across modules**, and that is the whole of why the
+question of a duplicate does not arise. The entry module is settled before anything
+is looked up — by the default or by the flag — and only its own globals are
+consulted, so a second module declaring a `main` is not a competitor, not an
+ambiguity, and not consulted at all.
+
+| | |
+| --- | --- |
+| a module declaring a global called `main` | **loads**, wherever it stands. Nothing about the name is reserved, and a session that never wants an entry point is not refused one |
+| two of them | likewise. The entry module is named, so which one is meant was never in question |
+| no module named `Main`, and no `--entry` | a failure of `run`, and of nothing below it |
+
+**Making a duplicate a load error instead would reserve `main` across everything
+that links together.** A `.dmo` carries no type, so what a loader could compare is
+the name and nothing else: a library with a global called `main` — for its own
+reasons, and legitimately — would then refuse every program that imported it. The
+cost would fall on library authors, and it buys nothing that naming the module does
+not already give.
+
+**An `@[entrypoint]` attribute would be resolved above the interpreter and never
+here.** A `.dmo` carries no attribute, and the runtime reads no `.dmi`
+([Bytecode](../05-Backend/01-Bytecode.md), [Interface](../05-Backend/03-Interface.md)),
+so nothing Steam is given would let it search for one. What the attribute changes is
+therefore the front end's question, and what reaches Steam is what reaches it now: a
+resolved module and global, which is what the two options above carry. **That the entry
+point is named rather than found holds unchanged**, which is the point of routing it
+this way rather than teaching the runtime a new input.
+
+**Nor is the entry point written into the module as code to run.** `GLOBALS` is
+already the initialization section — a `run` entry is evaluated once as the module
+loads — so the place to put such code exists; what does not exist is the stage that
+would put it there. **Deciding which of many modules is a program's entry is a
+linker's question**, and lowering answers a different one: it is handed one module
+and knows nothing of the program it will be linked into. Steam is given the modules
+unlinked and in dependency order, so there is no linking stage to carry the
+decision, and a module that ran its own entry point as it loaded would run it in a
+session too — which is what loading must not do (D25).
+
+**The search the attribute implies stays inside the entry module**, and that is the
+front end's rule to keep. A dependency may carry the attribute — a library that is
+also runnable is an ordinary thing to write — and a search that ranged over
+everything linked would find it. What is under the program's control is the entry
+module, so that is what is asked; what the runtime then receives is one name and no
+question at all.
+
+**The foreign table is empty**, so a program declaring a foreign the interpreter does
+not claim will not load. Assembling a table is the work of whoever calls `load` —
+resolving a module name to a module specifier and importing it is the Stella CLI's
+([Foreign implementations](#foreign-implementations)) — and this command does none of
+it. **What that leaves runnable is a program over `Base` alone**, which is enough to
+carry the interpreter end to end and not enough to print anything: a console reaches
+the world through a target entry, which is a host foreign. This is a limitation of
+the command and not of the interpreter, and it is where an assembled table plugs in.
+
+**The long-lived command is `session`, and it waits.** A session is answered through
+a request naming what to report, and what carries the two — a pipe with a framing of
+its own, a socket, the two in one process — is open
+([Open Questions](../99-Open-Questions/01-Open-Questions.md)). The `run` mode needs
+none of that: it is given its modules at once and answers by exiting.
+
+**It is `session` rather than `eval` because evaluating is one of the things it is
+for.** The other is the compile-time use: a synthesizer named by a `⟨ τ by f ⟩` is
+guest Stella, the compiler cannot call the interpreter as a library (the cycle
+above), so the CLI starts a long-lived Steam and brokers between the two
+([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)). **One process mode
+serves both, and what separates them is a profile fixed when the session opens** —
+what a REPL may ask for and what an elaboration may ask for are different sets, and
+a REPL reaching a compiler's metavariables is what keeping them apart prevents.
+
+**What that costs the `run` command is nothing, and what it costs the framing is one
+decision now.** The messages a session carries will grow — a request that yields
+back to the host mid-attempt is what the elaboration profile needs, and it does not
+exist yet — so the framing is tagged from the first version rather than being a
+single request and a single answer that a later kind has to be squeezed into.
+
+#### What the process makes of the outcome
+
+**This is the interpreter's own convention and not the ABI's**, which fixes only that
+the `IO` is executed to completion or that a fault ends the run, and leaves what a
+process reports open (above). What follows is what this command does, so that a shell
+can act on it; a different front end may choose differently without being
+non-conformant.
+
+**Two questions decide the status, and asking them in order makes it total.** Was it
+an interpreter bug? If so, `3`, wherever it arose. Otherwise, had the entry point
+begun to run?
+
+| | Exit status |
+| --- | --- |
+| the `IO` ran to its end | `0` |
+| **an interpreter bug**, anywhere — while a module initialized, or while the entry point ran | `3` |
+| **anything that stopped the program before the entry point ran**: a file that could not be read, bytes the decoder rejected, a module that did not load, a module that faulted while initializing, no entry module, no such global in it, a global holding something that is not an `IO` | `1` |
+| **a fault while the entry point ran** | `2` |
+
+Everything but `0` is reported on standard error.
+
+**The split is between what happened and whose it is, and the order is what keeps
+them from overlapping.** A bug is asked about first because it is a statement about
+the defect rather than about the moment — the program is not what went wrong, and a
+script should hear that whether it happened during initialization or during the run.
+What is left divides by the moment: **`1` is a program that never started**, which a
+caller acts on by fixing what it handed over, and `2` is a program that started and
+reached something the ABI admits may fail. Collapsing the three would leave a script
+unable to tell a broken build from a program that ran and failed.
+
+**Initialization is where the two questions visibly cross**, which is why it is
+named in two rows: a module whose global faults as it is evaluated did not load, so
+the program never started and the status is `1`; a bug reached in the same place is
+still a bug and is `3`.
+
+#### What the entry point produced is not reported
+
+**The value is discarded and nothing is printed of it.** A front end that type
+checks knows the entry point is `IO Unit`, and the value is then the one value there
+is; but that is the front end's knowledge and not the command's.
+
+**What the command can check is that the global holds an `IO`, and it checks exactly
+that.** A `.dmo` carries no type ([Bytecode](../05-Backend/01-Bytecode.md)), so
+`IO Unit` is not a thing to verify here — and the drive loop answers with whatever
+the chain produced, which for a program the front end accepted is `Prim.Unit` and
+for one it did not is anything at all. **Requiring it to be `Prim.Unit` is not done**:
+it would be a type check performed with no types, catching a case a front end already
+refuses and refusing a hand-written `.dmo` that a test legitimately wants to run.
 
 ## Scope
 

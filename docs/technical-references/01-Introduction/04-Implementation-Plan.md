@@ -440,6 +440,36 @@ Executing an `IO` is the one place the host side enters the interpreter, and it 
 
 **Order is what most of these are really about.** A loop that applied a continuation before the action it was bound to, or that ran two actions of a chain in the wrong order, gives the right answer for `Pure` and for a chain of length one. A case asserting the **sequence** — actions that record their order in the host, and a chain long enough to distinguish — is what separates a loop that works from one that happens to.
 
+### The `run` command (step 5, interpreter 7)
+
+What the command adds over the pieces below it is the wiring — reading files, loading them in the order given, finding the entry point, executing it, and turning what came back into an exit status ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
+
+| Input | Required outcome |
+| --- | --- |
+| Modules in dependency order, with an entry point whose `IO` ends in a value | Exit status `0`, and nothing printed of the value |
+| The same modules in an order an import does not admit | Status `1`. **Nothing is sorted**: the command has no import graph, and a wrong order is the front end's mistake to hear about |
+| A file that is not a `.dmo`, or one the decoder rejects | Status `1`, reported as the decoding failure it is rather than as a missing module |
+| No `--entry`, with a module named `Main` among those given | That module's `main` is the entry point |
+| No `--entry`, and no module named `Main` | Status `1`, whatever else was loaded |
+| `--entry` naming a module that was not given | Status `1`, naming what was asked for |
+| `--entry` naming a module that has no `main` | Status `1`. The global is read from the module's own globals and not through its exports |
+| `--entry-global` naming another global of the entry module | That global is the entry point, whatever it is called. This is how an `@[entrypoint]` resolved above the interpreter arrives |
+| `--entry-global` naming a global the entry module does not have | Status `1` |
+| An argument that could read as a module or as a qualified global, such as `A.B` | Not a case: the two halves are separate options, so nothing has to be disambiguated |
+| Two modules declaring `main`, one of them the entry module | Loaded and run. **Nothing is searched across modules**, so the other is not a competitor and not an ambiguity |
+| A dependency declaring `main`, where the entry module does not | Status `1`. Nothing looks outside the entry module, which is what keeps a runnable library from being picked up |
+| An entry point whose global holds something that is not an `IO` | Status `1`, before anything is executed |
+| An entry point whose `IO` produced something other than `Prim.Unit` | Status `0`. The value is discarded, and **requiring it would be a type check performed with no types** |
+| A program declaring a foreign the interpreter does not claim | Status `1`. The command assembles no table, and this is the limitation to state rather than to work around |
+| A module that faults while initializing | Status `1`: the program never started, which is what a caller must act on |
+| A fault while the entry point runs | Status `2`, the fault on standard error |
+| An interpreter bug while a module initializes | Status `3` and not `1`. The question asked first is whose the defect is, not when it happened |
+| An interpreter bug while the entry point runs | Status `3` likewise |
+
+**Totality is the property worth testing here, not any one row.** Two questions decide the status — was it a bug, and had the entry point begun — and a case for each leaf is what shows nothing falls between them. A command that left one path unclassified would exit `0` on it, which is the worst of the four answers.
+
+**A test of this is a test of a process and not of a function**, so what it asserts is the exit status and the streams. Asserting the value `main` produced would be asserting what the command deliberately does not report.
+
 ### Kind and type unification (step 7, division 2)
 
 These need no surface language: an equation is written by hand, as a Core module is in step 4 ([Elaboration](../02-Surface-Language/01-Elaboration.md)).
