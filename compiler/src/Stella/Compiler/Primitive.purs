@@ -42,6 +42,9 @@ data PrimOp
   | IntSub
   | StringLength
   | StringCodePointAt
+  | ArrayLength
+  | ArrayUnsafeNew
+  | ArrayUnsafeSet
   | ArrayUnsafeIndex
 
 -- | What an operation realizes, and what a consumer owes it.
@@ -75,6 +78,9 @@ entryOfOp = case _ of
   IntSub -> base "Base.Int" "sub"
   StringLength -> base "Base.String" "length"
   StringCodePointAt -> base "Base.String" "codePointAt"
+  ArrayLength -> base "Base.Array" "length"
+  ArrayUnsafeNew -> base "Base.Array" "unsafeNew"
+  ArrayUnsafeSet -> base "Base.Array" "unsafeSet"
   ArrayUnsafeIndex -> base "Base.Array" "unsafeIndex"
   where
   base moduleName name = Qualified (ModuleName moduleName) (Ident name)
@@ -94,6 +100,9 @@ codeOfOp = case _ of
   StringLength -> 0x10
   StringCodePointAt -> 0x11
   ArrayUnsafeIndex -> 0x20
+  ArrayUnsafeNew -> 0x21
+  ArrayUnsafeSet -> 0x22
+  ArrayLength -> 0x23
 
 -- | The operation a code names, where this ABI version names one. A reader of a
 -- | code it does not hold rejects the file: what an operation realizes is not
@@ -110,6 +119,9 @@ arityOfOp = case _ of
   StringLength -> 1
   StringCodePointAt -> 2
   ArrayUnsafeIndex -> 2
+  ArrayUnsafeNew -> 1
+  ArrayUnsafeSet -> 3
+  ArrayLength -> 1
 
 primTable :: P.Array PrimEntry
 primTable = map (\op -> { op, entry: entryOfOp op, arity: arityOfOp op })
@@ -118,6 +130,9 @@ primTable = map (\op -> { op, entry: entryOfOp op, arity: arityOfOp op })
   , StringLength
   , StringCodePointAt
   , ArrayUnsafeIndex
+  , ArrayUnsafeNew
+  , ArrayUnsafeSet
+  , ArrayLength
   ]
 
 -- | The operation a `Base` entry is, where it is one.

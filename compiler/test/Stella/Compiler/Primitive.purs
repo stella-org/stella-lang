@@ -12,7 +12,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Primitive (PrimOp(..), entryOfOp)
+import Stella.Compiler.Primitive (PrimOp(..), arityOfOp, codeOfOp, entryOfOp, opOfCode, primTable)
 import Stella.Compiler.Bytecode (CalleeEntry(..), Dmo, LowerError, lower)
 import Stella.Compiler.Interface (noImports)
 import Stella.Compiler.MiddleEnd (TranslateError(..), translate)
@@ -141,8 +141,54 @@ bareDecl scheme = DeclNonRec 1
   , attributes: []
   }
 
+-- | The manifest of `stella-base-0.1`, written out.
+-- |
+-- | **A second copy is the point of it.** `codeOfOp`, `arityOfOp`, and
+-- | `entryOfOp` are one definition each, and an encode followed by a decode reads
+-- | that same definition from both sides, so a wrong code round-trips perfectly. A
+-- | published table is fixed for the life of a version
+-- | ([Encoding](../../../../docs/technical-references/05-Backend/02-Encoding.md)),
+-- | which is what makes writing it twice worth the duplication rather than a smell.
+manifestOf01 :: P.Array { code :: P.Int, entry :: Qualified Ident, arity :: P.Int }
+manifestOf01 =
+  [ { code: 0x01, entry: base "Base.Int" "add", arity: 2 }
+  , { code: 0x02, entry: base "Base.Int" "sub", arity: 2 }
+  , { code: 0x10, entry: base "Base.String" "length", arity: 1 }
+  , { code: 0x11, entry: base "Base.String" "codePointAt", arity: 2 }
+  , { code: 0x20, entry: base "Base.Array" "unsafeIndex", arity: 2 }
+  , { code: 0x21, entry: base "Base.Array" "unsafeNew", arity: 1 }
+  , { code: 0x22, entry: base "Base.Array" "unsafeSet", arity: 3 }
+  , { code: 0x23, entry: base "Base.Array" "length", arity: 1 }
+  ]
+  where
+  base m n = Qualified (ModuleName m) (Ident n)
+
 spec :: Spec Unit
 spec = describe "Stella.Compiler.Abi » operations of the Base surface" do
+
+  describe "the manifest of stella-base-0.1" do
+
+    it "holds these operations and no others" do
+      Array.length primTable `shouldEqual` Array.length manifestOf01
+      map _.entry primTable `shouldEqual` map _.entry manifestOf01
+
+    it "gives each the code, the entry, and the arity the version fixes" do
+      let
+        written = map
+          (\op -> { code: codeOfOp op, entry: entryOfOp op, arity: arityOfOp op })
+          (map _.op primTable)
+      written `shouldEqual` manifestOf01
+
+    -- a code is written rather than derived, and a version that reused one would
+    -- leave a published file with two readings
+    it "gives no two operations one code" do
+      let codes = map (\op -> codeOfOp op) (map _.op primTable)
+      Array.length (Array.nub codes) `shouldEqual` Array.length codes
+
+    it "reads each code back as the operation it names" do
+      let ops = map _.op primTable
+      map (\op -> opOfCode (codeOfOp op)) ops `shouldEqual` map Just ops
+      opOfCode 0x7F `shouldEqual` Nothing
 
   describe "an operation short of its arguments" do
 
