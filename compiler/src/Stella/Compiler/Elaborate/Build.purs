@@ -53,22 +53,18 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Catalog (lookupEntry)
-import Stella.Compiler.Elaborate.BuildScope (built, constraintIn, issueBuilt, kindIn, kinded, kindingScopeOf, rejected, requiredIn, siteOf, usableIn)
+import Stella.Compiler.Elaborate.BuildScope (built, constraintIn, issueBuilt, kindIn, kinded, kindingScopeOf, rejected, requiredIn, siteOf, usableIn, foldChildren, mapChildren, schemeAt)
 import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Context (bindTyVar)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..))
 import Stella.Compiler.Elaborate.Elab (Elab, Release(..), askEnv, assume, break, currentMetas, freshBinderName, freshScopeId, holdOpen, issue, postpone, release, resolveBinder, resolveScope, resolveType)
 import Stella.Compiler.Elaborate.Handle (BinderObject(..), Handle, HandleObject(..), ScopeId(..), ScopeObject)
-import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (checkKind, quantifiable)
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..), freeRigids, metasOf, xRowEntryKey)
 import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, lookupMeta, substitute)
 import Stella.Compiler.Elaborate.View (ConstraintView, KindView, PayloadView(..))
-import Stella.Compiler.TypedCore (Ident, KindVar, Qualified, RowKey(..), TyName, TyVar(..))
-import Data.Array as Array
+import Stella.Compiler.TypedCore (Ident, Qualified, RowKey(..), TyName, TyVar(..))
 import Data.Either (Either(..))
-import Data.Foldable (foldMap, for_)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
@@ -154,7 +150,7 @@ openForall scopeHandle hint kindView = do
   case quantifiable kind of
     Left fault -> rejected (IllKinded fault)
     Right _ -> pure unit
-  name <- freshBinderName hint
+  name <- freshBinderName (Map.keys scope.context.tyVars) hint
   childId <- freshScopeId
   let
     child =
@@ -225,7 +221,8 @@ closeConstraint scopeHandle binderHandle bodyHandle = do
 -- |
 -- | Both sides are zonked first. The substitution is capture-avoiding: a binder
 -- | of the body that the argument mentions free is renamed, to a name drawn from
--- | the host's supply of fresh binder names, which nothing else mentions.
+-- | the host's supply of fresh binder names that neither side, nor the scope,
+-- | mentions.
 -- |
 -- | **An unsolved metavariable that could come to mention a variable the
 -- | substitution treats specially postpones the instantiation until it is
@@ -255,11 +252,15 @@ instantiateForall scopeHandle forallHandle argumentHandle = do
               Set.filter (mayMention metas (Set.insert a capturing)) (metasOf body)
                 <> Set.filter (mayMention metas binders) (metasOf argument)
           unless (Set.isEmpty reaching) (postpone reaching)
-          renames <- traverse renamed (Set.toUnfoldable capturing :: P.Array TyVar)
+          let
+            -- A new name must capture nothing the renamed binder's body, the
+            -- argument, or the scope mentions.
+            taken = Set.unions [ Map.keys scope.context.tyVars, binders, freeRigids body, freeRigids argument, Set.singleton a ]
+          renames <- traverse (renamed taken) (Set.toUnfoldable capturing :: P.Array TyVar)
           built scope (substituteTyVar a argument (Map.fromFoldable renames) body)
     _ -> rejected (NotAForall forallHandle)
   where
-  renamed b@(TyVar hint) = Tuple b <$> freshBinderName hint
+  renamed taken b@(TyVar hint) = Tuple b <$> freshBinderName taken hint
 
 -- | A catalog entry's scheme at the kinds given: `forall k̄. τ` with `k̄ := κ̄`.
 -- |
@@ -275,26 +276,8 @@ instantiateForall scopeHandle forallHandle argumentHandle = do
 instantiateScheme :: Handle -> Qualified Ident -> P.Array KindView -> Elab Handle
 instantiateScheme scopeHandle name kinds = do
   scope <- resolveScope scopeHandle
-  env <- askEnv
-  case lookupEntry env.session.catalog name of
-    Nothing -> rejected (UnknownScheme name)
-    Just entry
-      | Array.length entry.scheme.kindVars /= Array.length kinds ->
-          rejected (SchemeArity name (Array.length entry.scheme.kindVars) (Array.length kinds))
-      | otherwise -> do
-          metas <- currentMetas
-          let
-            declared = { kindVars: Set.fromFoldable entry.scheme.kindVars, tyVars: Map.empty }
-          case checkKind env.session.kinding declared metas XKType (substitute metas entry.scheme.body) of
-            Left fault -> break (KindingFailed fault)
-            Right _ -> pure unit
-          ks <- traverse (kindIn scope) kinds
-          for_ ks \k -> case quantifiable k of
-            Left fault -> rejected (IllKinded fault)
-            Right _ -> pure unit
-          let
-            instantiation = Map.fromFoldable (Array.zip entry.scheme.kindVars ks)
-          built scope (substituteKindVars instantiation entry.scheme.body)
+  instantiated <- schemeAt scope name kinds
+  built scope instantiated.type
 
 -- What closing a binder checks, whatever sort it is: that it was opened in this
 -- scope, that its body is built where its own scope or this one can use it, and
@@ -370,60 +353,3 @@ bindersOf :: XType -> Set TyVar
 bindersOf = case _ of
   XForall b _ body -> Set.insert b (bindersOf body)
   other -> foldChildren bindersOf other
-
--- | `τ[k̄ := κ̄]` over the kinds written in a type.
-substituteKindVars :: Map KindVar XKind -> XType -> XType
-substituteKindVars instantiation = go
-  where
-  kind = case _ of
-    XKVar v -> case Map.lookup v instantiation of
-      Just k -> k
-      Nothing -> XKVar v
-    XKFun a b -> XKFun (kind a) (kind b)
-    other -> other
-
-  go = case _ of
-    XCon name kinds -> XCon name (map kind kinds)
-    XForall b k body -> XForall b (kind k) (go body)
-    other -> mapChildren go other
-
--- | A function applied to the immediate type children of a type, binders and
--- | kinds left as they are.
-mapChildren :: (XType -> XType) -> XType -> XType
-mapChildren f = case _ of
-  XApp g a -> XApp (f g) (f a)
-  XForall b k body -> XForall b k (f body)
-  XConstrained c body -> XConstrained (constraint c) (f body)
-  XRowExtend entry rest -> XRowExtend (entryOf entry) (f rest)
-  XRowUnion l r -> XRowUnion (f l) (f r)
-  other -> other
-  where
-  constraint = case _ of
-    XLacks key row -> XLacks key (f row)
-    XDisjoint l r -> XDisjoint (f l) (f r)
-
-  entryOf = case _ of
-    XRowTypeEntry key ty -> XRowTypeEntry key (f ty)
-    XRowEffectEntry e args -> XRowEffectEntry e (map f args)
-    XRowLabelledEffectEntry s e args -> XRowLabelledEffectEntry s e (map f args)
-    XRowRegionEntry var cells -> XRowRegionEntry (f var) (f cells)
-
--- | The immediate type children of a type, folded.
-foldChildren :: forall m. Monoid m => (XType -> m) -> XType -> m
-foldChildren f = case _ of
-  XApp g a -> f g <> f a
-  XForall _ _ body -> f body
-  XConstrained c body -> constraint c <> f body
-  XRowExtend entry rest -> entryOf entry <> f rest
-  XRowUnion l r -> f l <> f r
-  _ -> mempty
-  where
-  constraint = case _ of
-    XLacks _ row -> f row
-    XDisjoint l r -> f l <> f r
-
-  entryOf = case _ of
-    XRowTypeEntry _ ty -> f ty
-    XRowEffectEntry _ args -> foldMap f args
-    XRowLabelledEffectEntry _ _ args -> foldMap f args
-    XRowRegionEntry var cells -> f var <> f cells

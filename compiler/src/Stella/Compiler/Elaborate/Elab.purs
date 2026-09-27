@@ -57,6 +57,7 @@ module Stella.Compiler.Elaborate.Elab
   , resolveBinder
   , freshScopeId
   , freshBinderName
+  , freshIdent
   , holdOpen
   , release
   , Release(..)
@@ -84,7 +85,7 @@ import Stella.Compiler.Elaborate.Term (TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
 import Stella.Compiler.Elaborate.TermMeta as TermMeta
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint, XType(..))
-import Stella.Compiler.TypedCore (TyVar(..))
+import Stella.Compiler.TypedCore (Ident(..), TyVar(..))
 import Stella.Compiler.Elaborate.Unify (MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupTermMeta, substitute, unifyType)
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
@@ -141,7 +142,7 @@ type Tentative =
   , scheduler :: Scheduler
   , written :: Set MetaVar
   , arena :: Arena
-  , names :: { nextScope :: P.Int, nextBinder :: P.Int }
+  , names :: { nextScope :: P.Int, nextBinder :: P.Int, nextIdent :: P.Int }
   , open :: Map ScopeId (Set ScopeId)
   }
 
@@ -261,7 +262,7 @@ initialState session fuel =
       , scheduler: emptyScheduler
       , written: Set.empty
       , arena: emptyArena
-      , names: { nextScope: 1, nextBinder: 0 }
+      , names: { nextScope: 1, nextBinder: 0, nextIdent: 0 }
       , open: Map.empty
       }
   , retained: { session, nextGeneration: 0, fuel }
@@ -386,13 +387,38 @@ freshScopeId = Elab \_ s ->
   Tuple (Done (ScopeId s.tentative.names.nextScope))
     (s { tentative { names { nextScope = s.tentative.names.nextScope + 1 } } })
 
--- | A type variable a builder binds, named after the hint given. The `#` no
--- | source identifier holds keeps it apart from every name an author wrote, and
--- | the number from every other name a builder took.
-freshBinderName :: P.String -> Elab TyVar
-freshBinderName hint = Elab \_ s ->
-  Tuple (Done (TyVar (hint <> "#" <> show s.tentative.names.nextBinder)))
-    (s { tentative { names { nextBinder = s.tentative.names.nextBinder + 1 } } })
+-- | A type variable a builder binds: the hint, `#`, and a number, the first the
+-- | set given does not hold.
+-- |
+-- | **Freshness is checked against where the name is bound**, the set being the
+-- | type variables in scope there. That no source identifier holds `#` keeps a
+-- | name apart from what an author wrote and nothing more: a context may hold
+-- | one another operation of the host generated, and the numbers are a supply
+-- | a rollback restores. A number skipped is spent, so the supply only advances.
+freshBinderName :: Set TyVar -> P.String -> Elab TyVar
+freshBinderName taken hint = Elab \_ s ->
+  let
+    Tuple k name = firstFree (\i -> TyVar (hint <> "#" <> show i)) (\v -> Set.member v taken) s.tentative.names.nextBinder
+  in
+    Tuple (Done name) (s { tentative { names { nextBinder = k + 1 } } })
+
+-- | A value variable a builder binds, by the rule `freshBinderName` follows, from
+-- | a supply of its own: the value variables in scope where it is bound are the
+-- | set given.
+freshIdent :: Set Ident -> P.String -> Elab Ident
+freshIdent taken hint = Elab \_ s ->
+  let
+    Tuple k name = firstFree (\i -> Ident (hint <> "#" <> show i)) (\v -> Set.member v taken) s.tentative.names.nextIdent
+  in
+    Tuple (Done name) (s { tentative { names { nextIdent = k + 1 } } })
+
+-- The first number from the one given whose name is not taken, and that name.
+firstFree :: forall a. (P.Int -> a) -> (a -> P.Boolean) -> P.Int -> Tuple P.Int a
+firstFree make taken i =
+  let
+    name = make i
+  in
+    if taken name then firstFree make taken (i + 1) else Tuple i name
 
 -- | Hold a binder open, by the scope its body is built in and that scope's
 -- | ancestors.

@@ -203,6 +203,8 @@ data BuildError
   | AnyRowAsKind
   -- | A type variable the scope does not bind.
   | UnboundTypeVariable TyVar
+  -- | A value variable the scope does not bind.
+  | UnboundVariable Ident
   -- | A name the catalog does not hold.
   | UnknownScheme (Qualified Ident)
   -- | A scheme instantiated with another number of kinds than it binds.
