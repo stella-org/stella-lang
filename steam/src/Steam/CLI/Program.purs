@@ -31,7 +31,6 @@ import Steam.Load as Load
 import Steam.Value (IOValue, Value(..))
 import Stella.CLI.Effect.FS (FS, readBytes)
 import Stella.CLI.Effect.Log (LOG)
-import Stella.CLI.Effect.Log as Log
 import Stella.Compiler.Bytecode (Dmo, decode)
 import Stella.Compiler.TypedCore.Name (Qualified(..))
 import Type.Row (type (+))
