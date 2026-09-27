@@ -25,6 +25,8 @@ jobs:
             code:
               - 'compiler/**'
               - 'cli/**'
+              - 'steam/**'
+              - 'stella/**'
               - 'spago.yaml'
               - 'spago.lock'
               - 'flake.nix'
