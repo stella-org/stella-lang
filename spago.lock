@@ -39,6 +39,7 @@
             "ordered-collections",
             "prelude",
             "strings",
+            "tailrec",
             "tuples"
           ]
         },
@@ -56,6 +57,8 @@
         "path": "steam",
         "core": {
           "dependencies": [
+            "aff",
+            "aff-promise",
             "argparse-basic",
             "arrays",
             "cli",
@@ -67,6 +70,7 @@
             "exceptions",
             "foldable-traversable",
             "integers",
+            "lists",
             "maybe",
             "node-process",
             "ordered-collections",
@@ -83,8 +87,10 @@
         "test": {
           "dependencies": [
             "aff",
+            "datetime",
             "spec",
-            "spec-node"
+            "spec-node",
+            "transformers"
           ]
         }
       },
@@ -802,6 +808,21 @@
         "tailrec",
         "transformers",
         "unsafe-coerce"
+      ]
+    },
+    "aff-promise": {
+      "type": "registry",
+      "version": "4.0.0",
+      "integrity": "sha256-Jgp3y+NWuuAmwz2V3LlWoX+AvxqfVglY77N5zTw8xnI=",
+      "dependencies": [
+        "aff",
+        "control",
+        "effect",
+        "either",
+        "exceptions",
+        "foreign",
+        "prelude",
+        "transformers"
       ]
     },
     "ansi": {

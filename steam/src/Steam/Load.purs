@@ -59,7 +59,7 @@ import Steam.Foreign as Foreign
 import Steam.Module (CalleeTarget(..), CtorRef, ForeignRef, GlobalSlot, HandlerRef, Loaded, Prepared, Registry, prepare)
 import Steam.Op as Op
 import Steam.Structural (RuntimeNames)
-import Steam.Value (Closure, CtorId(..), Foreign(..), KeyId(..), ModuleId(..), OpId(..), Value(..))
+import Steam.Value (Closure, CtorId(..), Foreign(..), KeyId(..), ModuleId(..), OpId(..), Value(..), arityOfIO, entryOfIO, ioEntries)
 import Stella.Compiler.Bytecode.Instr (CalleeIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), Function, GlobalIx(..), Instr(..), Join, JoinName, KeyIx(..), Node, OpIx(..), PrimIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (CalleeEntry(..), Dmo, GlobalInit(..), HandlerEntry, Key)
 import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp)
@@ -230,11 +230,14 @@ data LoadError
   -- | foreigns are incomplete does not start, however little of it reaches the
   -- | declaration.
   | ForeignWithoutImplementation (Qualified Ident)
-  -- | A foreign the interpreter claims, declared at an arity other than the one the
-  -- | ABI gives that operation, as the ABI's and the declaration's. **The source is
-  -- | selected by the name**, so nothing else may answer for it and the declaration
-  -- | is not of the entry it names.
-  | OperationDeclaredAtWrongArity (Qualified Ident) P.Int P.Int
+  -- | A foreign the interpreter claims — an operation, or one of the two `Base.IO`
+  -- | entries — declared at an arity other than the one the ABI gives it, as the
+  -- | ABI's and the declaration's. **The source is selected by the name**, so
+  -- | nothing else may answer for it and the declaration is not of the entry it
+  -- | names. The two kinds share a refusal because they share that rule; what
+  -- | separates them is only that an operation carries a code and an IO entry does
+  -- | not.
+  | InterpreterEntryDeclaredAtWrongArity (Qualified Ident) P.Int P.Int
   -- | A foreign the host's table holds at an arity other than the one declared, as
   -- | the declaration's and the table's. **Reported as the disagreement it is
   -- | rather than as an absence**: an implementation is there, and a call site is
@@ -514,18 +517,28 @@ implementationOf store entry =
       | arityOfOp op == entry.arity ->
           pure (Tuple entry.name { carriedOutBy: ForeignOperation op, arity: entry.arity })
       | otherwise ->
-          refuse (OperationDeclaredAtWrongArity entry.name (arityOfOp op) entry.arity)
-    Nothing -> case Foreign.lookup entry.name store.hostForeigns of
-      Just held
-        | held.arity == entry.arity ->
-            pure
-              ( Tuple entry.name
-                  { carriedOutBy: ForeignHosted entry.name held.body
-                  , arity: entry.arity
-                  }
-              )
-        | otherwise -> refuse (ForeignArityDisagrees entry.name entry.arity held.arity)
-      Nothing -> refuse (ForeignWithoutImplementation entry.name)
+          refuse (InterpreterEntryDeclaredAtWrongArity entry.name (arityOfOp op) entry.arity)
+    Nothing -> case Array.find (\io -> entryOfIO io == entry.name) ioEntries of
+      -- `Base.IO.pure` and `Base.IO.bind` are the interpreter's like an operation,
+      -- and are not operations: each returns `IO`, so no code stands for it
+      Just io
+        | arityOfIO io == entry.arity ->
+            pure (Tuple entry.name { carriedOutBy: ForeignIO io, arity: entry.arity })
+        | otherwise ->
+            refuse (InterpreterEntryDeclaredAtWrongArity entry.name (arityOfIO io) entry.arity)
+      Nothing -> hosted
+  where
+  hosted = case Foreign.lookup entry.name store.hostForeigns of
+    Just held
+      | held.arity == entry.arity ->
+          pure
+            ( Tuple entry.name
+                { carriedOutBy: ForeignHosted entry.name held.body
+                , arity: entry.arity
+                }
+            )
+      | otherwise -> refuse (ForeignArityDisagrees entry.name entry.arity held.arity)
+    Nothing -> refuse (ForeignWithoutImplementation entry.name)
 
 resolveGlobal :: forall r. Store -> Scope -> Qualified Ident -> Run (LOAD r) GlobalSlot
 resolveGlobal store scope name = do

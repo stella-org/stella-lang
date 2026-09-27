@@ -2,6 +2,8 @@ package:
   name: steam
   description: The Stella abstract machine
   dependencies:
+    - aff
+    - aff-promise
     - argparse-basic
     - arrays
     - cli
@@ -13,6 +15,7 @@ package:
     - exceptions
     - foldable-traversable
     - integers
+    - lists
     - maybe
     - node-process
     - ordered-collections
@@ -30,5 +33,7 @@ package:
     main: Test.Steam
     dependencies:
       - aff
+      - datetime
       - spec
       - spec-node
+      - transformers

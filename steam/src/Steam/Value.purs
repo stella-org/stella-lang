@@ -28,6 +28,11 @@ module Steam.Value
   , Opaque
   , IOValue(..)
   , NativeAction
+  , ActionOutcome(..)
+  , IOEntry(..)
+  , entryOfIO
+  , arityOfIO
+  , ioEntries
   , Closure
   , Callee(..)
   , Pap
@@ -54,6 +59,7 @@ import Data.Map (Map)
 import Data.Maybe (Maybe(..))
 import Data.Show.Generic (genericShow)
 import Data.Tuple (Tuple(..))
+import Control.Promise (Promise)
 import Effect (Effect)
 import Effect.Uncurried (EffectFn1)
 import Effect.Ref (Ref)
@@ -64,7 +70,7 @@ import Stella.Compiler.Bytecode.Module (Constant(..))
 import Stella.Compiler.MiddleEnd.IR (ClauseForm)
 import Stella.Compiler.Primitive (PrimOp)
 import Stella.Compiler.TypedCore.Domain (ScalarString, ScalarValue, sameNumber, textOf)
-import Stella.Compiler.TypedCore.Name (Ident, Qualified)
+import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..))
 
 -- Identities --------------------------------------------------------------------
 
@@ -95,7 +101,39 @@ newtype OpId = OpId P.Int
 -- | where it came from.
 data Foreign
   = ForeignOperation PrimOp
+  -- | `Base.IO.pure` or `Base.IO.bind`, which the interpreter claims like an
+  -- | operation and which is not one: each returns `IO`, so a call of it is an
+  -- | `FFI` rather than a `PRIM` and no operation code stands for it.
+  | ForeignIO IOEntry
   | ForeignHosted (Qualified Ident) ForeignBody
+
+-- | The two entries of `core-runtime`.
+-- |
+-- | **Each constructs and executes nothing** (D25). What is reserved to the
+-- | interpreter is the structure — `IOPure` and `IOBind` are the two shapes the
+-- | drive loop is written against ([Drive](Drive.purs)) — and not the building of
+-- | `IO` values as such: a hosted entry returning `IO` builds an `IONative` and
+-- | does so all the time.
+data IOEntry
+  = IOPureEntry
+  | IOBindEntry
+
+-- | The `Base` name each realizes, and how many arguments saturate it. Both are the
+-- | ABI's ([Prim and Base](../../../docs/technical-references/06-Modules/02-Prim-and-Base.md)),
+-- | and each is written once so that a loader and a reader cannot disagree.
+entryOfIO :: IOEntry -> Qualified Ident
+entryOfIO = case _ of
+  IOPureEntry -> Qualified (ModuleName "Base.IO") (Ident "pure")
+  IOBindEntry -> Qualified (ModuleName "Base.IO") (Ident "bind")
+
+arityOfIO :: IOEntry -> P.Int
+arityOfIO = case _ of
+  IOPureEntry -> 1
+  IOBindEntry -> 2
+
+-- | The entries of `core-runtime`, which every interpreter claims.
+ioEntries :: P.Array IOEntry
+ioEntries = [ IOPureEntry, IOBindEntry ]
 
 -- | A host implementation, as the interpreter calls it.
 -- |
@@ -140,7 +178,28 @@ foreign import data Opaque :: P.Type
 
 -- | An action of the host, which is what a target entry constructs. Performing one
 -- | is the drive loop's, and what it does belongs to the host.
-foreign import data NativeAction :: P.Type
+-- |
+-- | **An `Effect` is a host function of no arguments**, so performing one is calling
+-- | it and there is no earlier moment at which it could throw outside what catches
+-- | — the same property `ForeignBody` needs an `EffectFn1` to get.
+type NativeAction = Effect ActionOutcome
+
+-- | What performing an action answers with.
+-- |
+-- | **Whether an action is asynchronous is the action's to say.** A form carries it,
+-- | so nothing asks whether a returned value is thenable: a test like that would
+-- | misread a value the host gave a `then` field, and would make a synchronous
+-- | action pay for an asynchrony it does not have.
+-- |
+-- | A refusal is reachable on both paths, which is what the third form holding an
+-- | `ActionOutcome` again is for. **A resolved outcome is not `ActionAwaiting`
+-- | again**: one that awaits twice is a body in breach rather than a chain the loop
+-- | unrolls, and `IOBind` already serves what it would have been for
+-- | ([Abstract Machine](../../../docs/technical-references/07-Runtime/01-Abstract-Machine.md)).
+data ActionOutcome
+  = ActionProduced Value
+  | ActionRefused P.String
+  | ActionAwaiting (Promise ActionOutcome)
 
 data Value
   -- | Always an int32 (D37).
@@ -406,11 +465,19 @@ derive instance Eq OpId
 derive instance Ord OpId
 derive newtype instance Show OpId
 
+derive instance Eq IOEntry
+derive instance Ord IOEntry
+derive instance Generic IOEntry _
+
+instance Show IOEntry where
+  show = genericShow
+
 -- | **Two foreigns are equal when they are carried out by the same thing**, and a
 -- | hosted entry is compared by the name it was resolved for: a body is a host
 -- | function, which nothing compares.
 instance Eq Foreign where
   eq (ForeignOperation a) (ForeignOperation b) = a == b
+  eq (ForeignIO a) (ForeignIO b) = a == b
   eq (ForeignHosted a _) (ForeignHosted b _) = a == b
   eq _ _ = false
 

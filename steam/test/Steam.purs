@@ -7,6 +7,7 @@ import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess)
 import Test.Steam.Arrays as Arrays
 import Test.Steam.Calls as Calls
+import Test.Steam.Drive as Drive
 import Test.Steam.Eval as Eval
 import Test.Steam.Effectful as Effectful
 import Test.Steam.Foreign as Foreign
@@ -27,4 +28,5 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   Foreign.spec
   Handlers.spec
   Effectful.spec
+  Drive.spec
   Structural.spec

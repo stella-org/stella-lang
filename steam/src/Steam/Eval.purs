@@ -29,6 +29,7 @@ module Steam.Eval
   , Failure(..)
   , EVAL
   , enter
+  , applyFunction
   ) where
 
 import Prelude
@@ -54,7 +55,7 @@ import Run.Except as Except
 import Steam.Fault (Fault(..))
 import Steam.Module (CalleeTarget(..), CtorRef, ForeignRef, GlobalSlot, HandlerRef, Loaded, Prepared, Registry)
 import Steam.Op as Op
-import Steam.Value (Activation, Callee(..), Cell, Clause, Closure, Continuation(..), CtorId, Foreign(..), ForeignOutcome(..), KeyId, Marker, MarkerKind(..), ModuleId, StackEntry(..), Value(..), matchesConstant, reinstate, valueOfConstant)
+import Steam.Value (Activation, Callee(..), Cell, Clause, Closure, Continuation(..), CtorId, Foreign(..), ForeignOutcome(..), IOEntry(..), IOValue(..), KeyId, Marker, MarkerKind(..), ModuleId, StackEntry(..), Value(..), matchesConstant, reinstate, valueOfConstant)
 import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName, KeyIx(..), OpIx(..), PrimIx(..), Reg(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Constant)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
@@ -71,6 +72,8 @@ data Class
   | AVariant
   | AClosure
   | ACallable
+  -- | An `IO` value, which `Base.IO.bind` takes as its first argument.
+  | AnIO
 
 -- | A state no `.dmo` admits. Reaching one is a defect in the interpreter, in
 -- | lowering, or in a check a loader owes.
@@ -126,6 +129,10 @@ data Bug
   -- | A handler installed with a number of clauses or of initial values its table
   -- | does not state.
   | WrongHandlerShape HandlerIx
+  -- | A `Base.IO` entry applied to a count it does not take, as the entry and the
+  -- | count. Its arity is the ABI's and a loader checked it, so this is what a
+  -- | `.dmo` that got past that would produce.
+  | WrongIOArity IOEntry P.Int
   -- | An application supplying no argument, which nothing produces.
   | NoArgument
   -- | A field of a constructor value the constructor does not have.
@@ -141,6 +148,13 @@ data Bug
   -- | dispatch whose cases exhaust needs none, and one whose cases do not was
   -- | given one.
   | NoBranchTaken
+  -- | A registry holding no module, which a run has nothing to be against: even
+  -- | the one `Prim.Unit` every module carries is not there to be taken.
+  | RegistryEmpty
+  -- | A `Bind` whose function returned what is not an `IO`. Its type says it does,
+  -- | and a `.dmo` carries no type: the culprit is a lowering or an adapter in
+  -- | breach, and the machine cannot tell which.
+  | NotAnIOFromContinuation
   -- | `VABS`, whose operand's type is uninhabited, so nothing reaches it.
   | Unreachable
 
@@ -379,6 +393,27 @@ enter registry closure args = do
   let machine = { registry, stack, unit }
   activation <- activationOf machine closure args
   loop machine (Running activation)
+
+-- | Apply a function value to arguments, as a run of its own.
+-- |
+-- | **This is what the drive loop does with the function a `Bind` holds**
+-- | ([Drive](Drive.purs)), and it is the only way the host side enters the
+-- | interpreter. A run of its own means a stack of its own: the application makes
+-- | one, finishes with it, and the loop goes round again — the two never interleave.
+-- |
+-- | The callee is a function value rather than a closure in particular, `a -> IO b`
+-- | admitting a closure, a partial application, and a continuation alike.
+applyFunction :: forall r. Registry -> Value -> P.Array Value -> Run (EVAL r) Value
+applyFunction registry callee args = do
+  -- every loaded module holds the one `Prim.Unit` the registry assigned, so which
+  -- of them it is taken from does not matter
+  unit <- case Map.findMin registry of
+    Just { value: loaded } -> pure loaded.unit
+    Nothing -> bug RegistryEmpty
+  stack <- liftEffect (Ref.new [])
+  let machine = { registry, stack, unit }
+  state <- applyTo machine callee args
+  loop machine state
 
 loop :: forall r. Machine -> State -> Run (EVAL r) Value
 loop machine state = case state of
@@ -922,6 +957,20 @@ carryOutForeign machine carriedOutBy args = case carriedOutBy of
       Right (Produced value) -> pure (Returning value)
       Right (Refused reason) -> fault (ForeignRefused name reason)
       Left thrown -> fault (ForeignThrew name (message thrown))
+
+  -- **constructing is all either does** (D25): neither performs anything, and the
+  -- function a `Bind` holds is not applied here but by the drive loop
+  ForeignIO IOPureEntry -> case args of
+    [ value ] -> pure (Returning (VIO (IOPure value)))
+    _ -> bug (WrongIOArity IOPureEntry (Array.length args))
+
+  ForeignIO IOBindEntry -> case args of
+    [ VIO io, k ] -> pure (Returning (VIO (IOBind io k)))
+    -- a `.dmo` carries no type, and the first argument of a `bind` that is not an
+    -- `IO` is a lowering or an adapter in breach — neither is a failure the ABI
+    -- admits, so it is not a fault
+    [ _, _ ] -> bug (NotOfClass AnIO)
+    _ -> bug (WrongIOArity IOBindEntry (Array.length args))
 
 -- | Carry out an operation, which is a `Base` entry the interpreter claims.
 -- |

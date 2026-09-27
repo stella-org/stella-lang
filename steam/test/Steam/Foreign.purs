@@ -67,6 +67,15 @@ intModule = ModuleName "Base.Int"
 intAdd :: Qualified Ident
 intAdd = Qualified intModule (Ident "add")
 
+ioModule :: ModuleName
+ioModule = ModuleName "Base.IO"
+
+ioPure :: Qualified Ident
+ioPure = Qualified ioModule (Ident "pure")
+
+ioAction :: Qualified Ident
+ioAction = Qualified ioModule (Ident "action")
+
 intSum :: Qualified Ident
 intSum = Qualified intModule (Ident "sum")
 
@@ -183,6 +192,27 @@ intDmo arity = (bare intModule)
   }
   where
   argsOf n = Array.mapWithIndex (\i _ -> Reg (min i 1)) (Array.replicate n unit)
+
+-- | `module Base.IO where foreign pure`, with a global that applies it.
+-- |
+-- | The interpreter claims the name like an operation and it is not one: it returns
+-- | `IO`, so the call is an `FFI` and no operation code stands for it.
+ioDmo :: P.Int -> Dmo
+ioDmo arity = (bare ioModule)
+  { constants = [ CInt 1 ]
+  , foreigns = [ { name: ioPure, arity } ]
+  , foreignRefs = [ ioPure ]
+  , functions =
+      [ plain 2
+          ( returning
+              [ LOADK (Reg 0) (ConstIx 0)
+              , FFI (Reg 1) (ForeignIx 0) (Array.replicate arity (Reg 0))
+              ]
+              (Reg 1)
+          )
+      ]
+  , globals = [ { name: ioAction, init: GRun (FuncIx 0) } ]
+  }
 
 -- Running a load --------------------------------------------------------------------
 
@@ -536,7 +566,34 @@ spec = describe "Steam.Foreign" do
       store <- liftEffect (fresh emptyTable)
       outcome <- loads store (intDmo 3)
       map (const unit) outcome
-        `shouldEqual` Left (OperationDeclaredAtWrongArity intAdd (arityOfOp IntAdd) 3)
+        `shouldEqual` Left (InterpreterEntryDeclaredAtWrongArity intAdd (arityOfOp IntAdd) 3)
+
+    -- `Base.IO.pure` and `Base.IO.bind` are the interpreter's like an operation and
+    -- are not operations, and the rule that selects the source is the same one
+    it "carries out a Base.IO entry itself, at the arity the ABI gives it" do
+      store <- liftEffect (fresh emptyTable)
+      outcome <- loads store (ioDmo 1)
+      case outcome of
+        Left err -> fail (show err)
+        Right _ -> pure unit
+
+    it "refuses a Base.IO entry declared at another arity" do
+      store <- liftEffect (fresh emptyTable)
+      outcome <- loads store (ioDmo 2)
+      map (const unit) outcome
+        `shouldEqual` Left (InterpreterEntryDeclaredAtWrongArity ioPure 1 2)
+
+    it "never consults the host's table for a Base.IO entry" do
+      calls <- liftEffect (Ref.new 0)
+      let
+        table = insert ioPure
+          { arity: 1, body: counting calls (const (Produced (VInt 0))) }
+          emptyTable
+      store <- liftEffect (fresh table)
+      outcome <- loads store (ioDmo 1)
+      case outcome of
+        Left err -> fail (show err)
+        Right _ -> liftEffect (Ref.read calls) >>= (_ `shouldEqual` 0)
 
     -- selecting the source on the name **together with** an arity is what would let
     -- a host implementation stand where the ABI fixes an operation's meaning
@@ -546,7 +603,7 @@ spec = describe "Steam.Foreign" do
       store <- liftEffect (fresh table)
       outcome <- loads store (intDmo 3)
       map (const unit) outcome
-        `shouldEqual` Left (OperationDeclaredAtWrongArity intAdd (arityOfOp IntAdd) 3)
+        `shouldEqual` Left (InterpreterEntryDeclaredAtWrongArity intAdd (arityOfOp IntAdd) 3)
       liftEffect (Ref.read calls) >>= (_ `shouldEqual` 0)
 
   describe "calling what the table held" do
