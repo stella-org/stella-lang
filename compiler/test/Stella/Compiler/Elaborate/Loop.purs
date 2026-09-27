@@ -12,12 +12,12 @@ import Prelude
 
 import Stella.Compiler.Elaborate.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Elab (SolverState, initialState, postpone, unify)
+import Stella.Compiler.Elaborate.Elab (SolverState, createSynthesis, initialState, postpone, unify)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Loop (RunResult(..), run, runWith, submitEquality, submitWith)
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), PendingId, Site)
 import Stella.Compiler.Elaborate.Run as Run
-import Stella.Compiler.Elaborate.Scheduler (Invariant(..), create, lookupPending)
+import Stella.Compiler.Elaborate.Scheduler (Invariant(..), create, lookupPending, readyIds)
 import Stella.Compiler.Elaborate.Type (MetaVar(..), XRowEntry(..), XType(..))
 import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, MetaInfo, UnifyError(..), emptyContext, freshMeta, lookupMeta, substitute)
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
@@ -54,6 +54,10 @@ rigidR :: TyVar
 rigidR = TyVar "r"
 
 -- | Where the equations that solve things stand.
+-- | A synthesizer, by the name resolution gave it.
+resolver :: Qualified Ident
+resolver = Qualified (ModuleName "Typeclass") (Ident "resolve")
+
 here :: Origin
 here = InDeclaration (Qualified prim (Ident "decl"))
 
@@ -182,7 +186,7 @@ spec = describe "Elaborate.Loop" do
         Tuple result s = run s0
       result `shouldEqual` Exhausted
         { id, origin: elsewhere, job: JobUnify stuck, awaiting: Set.empty }
-      s.tentative.scheduler.ready `shouldEqual` [ id ]
+      (readyIds s.tentative.scheduler) `shouldEqual` [ id ]
 
     it "retries a woken job to completion, spending one unit" do
       let
@@ -221,7 +225,7 @@ spec = describe "Elaborate.Loop" do
       first.attempt `shouldEqual` Run.Registered (Set.singleton metas.v)
       result `shouldEqual` Exhausted
         { id: second.id, origin: elsewhere, job: waitsOnV, awaiting: Set.empty }
-      s.tentative.scheduler.ready `shouldEqual` [ second.id ]
+      (readyIds s.tentative.scheduler) `shouldEqual` [ second.id ]
 
     it "halts on a defect in a retry" do
       let
@@ -257,3 +261,26 @@ spec = describe "Elaborate.Loop" do
             { id: first.id, origin: elsewhere, job: waitsOnV, awaiting: Set.singleton metas.w }
             [ { id: second.id, origin: here, job: waitsOnV, awaiting: Set.singleton metas.v } ]
         )
+
+    it "runs a job created inside an attempt without spending fuel on its first attempt" do
+      let
+        creating p = void (createSynthesis p.site tA resolver)
+        Tuple created s1 = submitWith creating waitingSite waitsOnV (sessionWith 0)
+        Tuple result s = runWith (\_ -> pure unit) s1
+      created.attempt `shouldEqual` Run.Committed
+      result `shouldEqual` Completed
+      s.counters.fuel `shouldEqual` 0
+
+    it "spends fuel on a retry and not on a first attempt queued beside it" do
+      let
+        creating p = void (createSynthesis p.site tA resolver)
+        Tuple waiting s1 = submitWith (\_ -> postpone (Set.singleton metas.v)) waitingSite waitsOnV (sessionWith 0)
+        Tuple _ s2 = submitWith creating waitingSite waitsOnV s1
+        Tuple _ s3 = submitEquality site (solvable metas.v) s2
+        Tuple withFuel _ = runWith (\_ -> pure unit) (s3 { counters { fuel = 1 } })
+        Tuple withoutFuel s = runWith (\_ -> pure unit) s3
+      withFuel `shouldEqual` Completed
+      -- The first attempt runs; the retry after it is what the fuel does not reach.
+      withoutFuel `shouldEqual` Exhausted
+        { id: waiting.id, origin: elsewhere, job: waitsOnV, awaiting: Set.empty }
+      (readyIds s.tentative.scheduler) `shouldEqual` [ waiting.id ]

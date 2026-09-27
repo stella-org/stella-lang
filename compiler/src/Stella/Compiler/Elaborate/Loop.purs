@@ -22,7 +22,7 @@ import Stella.Compiler.Elaborate.Context (Origin)
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), Pending, PendingId, Site)
 import Stella.Compiler.Elaborate.Run (Attempt, Runner, attemptPendingWith, hostRunner)
 import Stella.Compiler.Elaborate.Run as Run
-import Stella.Compiler.Elaborate.Scheduler (create, invariants, lookupPending, takeReady, unwakeable)
+import Stella.Compiler.Elaborate.Scheduler (Phase(..), create, invariants, lookupPending, nextReady, takeReady, unwakeable)
 import Stella.Compiler.Elaborate.Type (MetaVar)
 import Control.Monad.Rec.Class (Step(..), tailRec)
 import Data.Array as Array
@@ -97,9 +97,11 @@ run = runWith hostRunner
 -- | Retry the jobs on the ready queue until it is empty, or until something
 -- | stops the loop.
 -- |
--- | **Fuel is checked before a job is taken, and spent once it is.** A job the
--- | fuel does not reach stays on the ready queue and is named, and one that has
--- | been attempted has spent a unit whatever it came to. The loop is a `tailRec`,
+-- | **Fuel is checked before a retry is taken, and spent once it is.** A retry
+-- | the fuel does not reach stays on the ready queue and is named, and one that
+-- | has been attempted has spent a unit whatever it came to. A job on the queue
+-- | for its first attempt — one created inside another attempt — spends none,
+-- | as a job submitted and attempted at once spends none. The loop is a `tailRec`,
 -- | since the number of retries is bounded by fuel rather than by the stack.
 -- |
 -- | At quiescence, a scheduler whose tables disagree, and a job awaiting
@@ -107,20 +109,21 @@ run = runWith hostRunner
 runWith :: Runner -> SolverState -> Tuple RunResult SolverState
 runWith runner = tailRec step
   where
-  step s = case Array.head s.tentative.scheduler.ready of
+  step s = case nextReady s.tentative.scheduler of
     Nothing ->
       Done (Tuple (quiesce s) s)
     Just next
-      | s.counters.fuel <= 0 ->
-          Done (Tuple (exhausted s next) s)
+      | next.phase == Retry && s.counters.fuel <= 0 ->
+          Done (Tuple (exhausted s next.id) s)
       | otherwise -> case takeReady s.tentative.scheduler of
           Nothing ->
             Done (Tuple (quiesce s) s)
           Just (Tuple id scheduler) ->
             let
+              spent = if next.phase == Retry then 1 else 0
               taken = s
                 { tentative { scheduler = scheduler }
-                , counters { fuel = s.counters.fuel - 1 }
+                , counters { fuel = s.counters.fuel - spent }
                 }
             in
               case attemptPendingWith runner id taken of

@@ -54,7 +54,7 @@ Site =
   }
 
 job = JobUnify           EqualityGoal    { kind, τ1, τ2 }
-    | JobSynthesis       GoalRecord      { targetTermMeta, expectedType, synthesizer }
+    | JobSynthesis       GoalRecord      { target, expectedType, synthesizer }
     | JobImplicitHandler HandlerGoal     { sourceRow, targetRow, thunk, Ξ }
 ```
 
@@ -333,12 +333,16 @@ A **failure** reports the diagnostic and nothing else. The whole equation is rol
 ### The loop
 
 ```text
-submit(job):
+submit(job), outside any attempt:
     create it, and attempt it at once              no fuel is spent
 
+create(job), inside an attempt:
+    create it, and queue it for its first attempt   owned by the attempt
+
 while the ready queue is not empty:
-    no fuel left                stop, naming the job at the front; it stays there
-    take an id, spend a unit of fuel, and attempt it
+    a retry at the front, and no fuel left
+                                stop, naming that job; it stays there
+    take an id, spend a unit of fuel if it is a retry, and attempt it
         solved, or postponed    go on
         failed                  stop, and report that diagnostic
         defect                  stop, and report the defect
@@ -356,15 +360,16 @@ The three-way outcome is what separates "unsolvable" from "not enough informatio
 
 **The loop stops at the first failure.** A failed attempt is rolled back, so the jobs retried after it would be retried without what the failed equation would have told them, and nothing yet tells a failure of their own from one that follows from it. Collecting several diagnostics waits on a rule for recovering from one, and where it arrives, what the mechanism reports keeps the jobs still waiting beside the diagnostics; which of them an author is shown is the presentation's to decide.
 
-**Fuel is spent by a retry and by nothing else.** A first attempt, made where a job is submitted, spends none. A job the fuel does not reach stays on the ready queue and is named where the loop stops, and one that has been attempted has spent its unit whatever it came to.
+**Fuel is spent by a retry and by nothing else.** A first attempt spends none, whether it is made where a job is submitted or taken from the ready queue a job created inside an attempt was put on; the queue marks each entry as a first attempt or a retry, and a wake is what queues a retry. A retry the fuel does not reach stays on the ready queue and is named where the loop stops, and one that has been attempted has spent its unit whatever it came to.
 
 ### Which job may be attempted
 
 **A job is attempted only while no queue holds it**: `pending` holds it, it awaits nothing, and it is not on the ready queue. There are two points at which a job is in that state, and they are the only two entries to an attempt.
 
 ```text
-first attempt     just after create, before the job has been queued anywhere
-another attempt   just after takeReady, once a wake has put the job on the ready queue
+just after create        a job submitted outside any attempt, attempted at once
+just after takeReady     a job queued for its first attempt by the attempt that
+                         created it, or queued for a retry by a wake
 ```
 
 **Attempting a job the scheduler still holds is a defect.** One still on the ready queue would run again when the loop takes it, and one still registered under a metavariable would be registered a second time by the postponement its attempt admits. Neither is a statement about the program, so neither is a diagnostic.
@@ -399,6 +404,115 @@ A handle is session-local: it means nothing outside the compile-time session tha
 **A handle is generation-tagged, and a rollback invalidates the handles to what it deleted.** Presenting an invalid one is reported as a defect in the synthesizer and is never resolved to whatever occupies that place now. This is what keeps the guest's half of the contract from failing silently: a synthesizer is obliged to hold nothing across an attempt, and a cache that does so anyway is caught at the first handle it reuses rather than by the wrong term reaching Core.
 
 **The generation is drawn from a counter no rollback restores**, which is the whole of what makes that true: a slot freed by a rollback and filled again by the next attempt receives a generation that has never been issued, so the old handle matches nothing. A counter restored with everything else would hand the new object the number the old handle carries. It is a safety counter and not part of the state an attempt owns, and it is kept apart from the supply of fresh names for that reason.
+
+### What a handle holds
+
+**A `Type` holds the kind it stands at**, and an `Expr` holds the type it is claimed to have.
+
+```text
+Type  =  { type : τ⁺ , kind : κ⁺ }
+Expr  =  { term : e⁺ , claimed : τ⁺ }        the term held without annotations
+Goal  =  the goal the current attempt runs
+```
+
+**`kindOf` and `typeOf` read what the handle holds; neither infers anything.** Unification is directed by a kind it is given rather than one it synthesizes ([Elaboration](01-Elaboration.md)), so `unify` takes the two handles' kinds, refuses where they differ, and hands that kind to type unification; a kernel that recomputed a kind would need `Σ` and a kinding judgement over Core⁺, which the mechanism has nowhere else. A term's claimed type is what the operation that built the term said of it. **A claim the term does not bear out is not caught here**: an elaborator may construct an ill-typed term, and the Core type checker rejects it once the term is zonked. Rechecking Core⁺ in the kernel would be a second checker, and the trusted one is the only one there needs to be.
+
+A term is held without annotations for the reason a term metavariable's solution is: where it lands, it takes the annotation of the place it lands in ([Elaboration](01-Elaboration.md)).
+
+**What a goal's expected type is called is settled once.** `expectedType` is a field of the goal record below, and `goalType` is the operation that reads it; there is no second observation of the same thing.
+
+### What a synthesis job holds
+
+```text
+GoalRecord =
+  { target     ?m, the term metavariable the result is assigned to
+  , expectedType  τ⁺, the type the goal is written at; its kind is Type
+  , synthesizer  SynthRef
+  }
+
+Job = JobUnify EqualityGoal | JobSynthesis GoalRecord
+```
+
+**The record holds what is particular to the goal, and the envelope holds where it stands.** The context and the origin are the `Site` every job carries, so the record repeats neither. **One operation is the supported way to make a record, its `?m`, and its job**: it creates `?m` at `expectedType` under the site's context, registers the job naming it, and queues that job for its first attempt, all in one act. **The runner checks the target independently**, inside the attempt and before any synthesizer runs: `?m` is held unsolved, stands at `expectedType` once both are zonked against the current `Ψ`, and has a scope within what the site binds — within rather than equal, a target standing in another solution being narrowed with it. A job failing the check is a defect of the host: no synthesizer runs, and the attempt rolls back.
+
+**A synthesizer's result is assigned by the runner, not by the synthesizer.** It returns an `Expr`; the runner unifies that term's claimed type with `expectedType` at `Type` and then assigns the term to `?m`, both inside the attempt, so a result that fails either is the attempt failing and rolls back with it. Unifying the claim is what lets a goal's type be learned from the candidate chosen, and what refuses a candidate claiming a type the goal does not have before its term reaches anything.
+
+### The frame an attempt runs in
+
+**The runner sets the current site and goal before the attempt begins, and nothing inside the attempt changes them.** Every kernel operation that depends on where it stands reads them from there.
+
+```text
+Frame = { catalog, site, goal }        read-only for the length of the attempt
+```
+
+| Reads the frame | For |
+| --- | --- |
+| `goalType`, the `Goal` a synthesizer is applied to | the goal |
+| `localContext`, `localConstraints` | the site's context, as its two views |
+| `freshMetaType`, `subgoal` | the scope a metavariable is created under |
+| `entails` | the facts the site's assumptions give against the current `Ψ` |
+| `require` | the site an obligation carries |
+| `lookupGlobal`, `declsWithAttr` | the catalog |
+
+**No kernel operation takes a context or a scope from its caller.** A caller that could state one could state a wider one than it stands in, and admit a solution the site has no variable for. The mechanism's own operations — what the elaborator walking a term uses as it enters binders — do take one; they are not the kernel, and no synthesizer reaches them.
+
+An equality job runs under a frame with no goal, and it runs no synthesizer, so nothing in it asks for one. A kernel operation reading a goal where the frame holds none is a defect of the host that called it.
+
+### Who fills a term metavariable
+
+**The kernel creates no term metavariable without saying what fills it.** A bare `?m` handed to a synthesizer could be filled by nothing the synthesizer can reach — the kernel offers no assignment of a term — so it would stand in the result until the boundary refused it.
+
+```text
+subgoal : Type -> SynthRef -> Elab Expr
+```
+
+`subgoal τ f` is `⟨ τ by f ⟩` asked from inside an attempt: it creates `?m` under the current site's context and a synthesis job for it at the current site, and returns the `Expr` `?m` claimed at `τ`. **The job is queued and not attempted.** Attempting it at once would open an attempt inside the one that asked for it; it is placed on the ready queue for its first attempt, which spends no fuel ([above](#the-loop)), and like everything else the attempt did, it goes if the attempt rolls back. A synthesizer composing a dictionary from another is the ordinary case: `dictShowArray [?a] (subgoal (Show ?a) resolve)`.
+
+A synthesizer that wants a candidate's sub-result now rather than later calls itself, as any function does; `subgoal` is for what is to be decided by the scheduler. **The bare term metavariable remains the mechanism's**, where the elaborator knows what will fill it, and what fills one the elaborator creates is always written down beside it.
+
+### The catalog
+
+`lookupGlobal` and `declsWithAttr` read one immutable catalog, assembled before the first job exists ([above](#the-module-environment-is-built-once-before-any-job-exists)).
+
+```text
+CatalogEntry = { name : QIdent , sort : value | foreign | constructor
+               , scheme : forall k̄. τ⁺ , attributes : [Attribute] }
+```
+
+It holds the entries the interfaces of the imported modules publish and every top-level value name this module declares, and it holds the value namespace: what `lookupGlobal` resolves is a name a term can refer to. **The domain is fixed and a provisional scheme sharpens**: a scheme still being inferred carries metavariables, which are zonked against the current `Ψ` at each read, and which names exist never changes. `declsWithAttr` lists the names in ascending order of their qualified names, so that a search over them has one order whatever order the interfaces were read in.
+
+### Messages, `throw`, and `warn`
+
+**A synthesizer reports in a message it builds, and the host makes the diagnostic.**
+
+```text
+Message = [ Text String | Type Type | Term Expr | Name QIdent ]
+
+throw : Message -> Elab a        a failure: this candidate, or this goal, does not hold
+warn  : Message -> Elab Unit     a warning, which does not end the attempt
+```
+
+A guest cannot build the host's diagnostic, which names sites and holds Core⁺; what it can say is a message over the handles it holds, and the host resolves those handles when the request is made — a handle the rollback later invalidates leaves no dangling reference in a report. The host wraps a thrown message into a diagnostic naming the goal's origin and the synthesizer.
+
+**A warning is part of what an attempt owns.** One raised by a candidate that failed, or by an attempt that postponed, is rolled back with it, so a goal re-run from its beginning reports each warning once. What commits is reported with the result the loop reaches.
+
+**There is no `withFuel` in the kernel.** Two budgets exist, and neither is it: the scheduler's fuel bounds retries and is the loop's, and an instruction budget bounds a guest computation inside one attempt and is Steam's. A bound on a synthesizer's own search — a depth for recursive instance search — is policy, and the guest carries it as an ordinary argument, which keeps it an input rather than hidden state.
+
+### What goes wrong, and whose it is
+
+| | Examples | Outcome | Caught by `transact` |
+| --- | --- | --- | --- |
+| **program diagnostic** | an equation no substitution satisfies; an obligation broken or rejected; a result escaping its scope; a result whose claim the goal's type refutes; a `throw` | `Failed` | yes |
+| **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session | `Broke`, naming the synthesizer and the goal | no |
+| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; the mechanism's own invariants | `Broke` | no |
+
+**A `SynthRef` with no implementation is the host's defect and not the program's.** Name resolution resolved it against `Σ` where the goal was written ([above](#what-a-synthesis-goal-carries)), so the name exists; a session unable to run what it names was set up without it.
+
+### What this does not settle
+
+- **How a request reaches Steam**: the transport, the instruction budget, cancellation, and how a guest fault becomes a report belong to the compile-time session protocol ([Open Questions](../99-Open-Questions/01-Open-Questions.md)). The requests themselves are the ones fixed here, whichever runner answers them.
+- **Type-level entries in the catalog**, which a derive mechanism over a data type needs. The catalog above holds the value namespace.
+- **What becomes of a subgoal left unsolved where a declaration is generalized.** That belongs with the design of inference, as the interleaving of generalization with the scheduler does ([above](#the-dependency-graph-is-settled-after-elaboration-not-before-it)).
 
 ## What a compile-time session asks of Steam
 

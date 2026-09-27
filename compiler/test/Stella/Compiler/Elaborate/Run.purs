@@ -12,22 +12,25 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Context (Origin(..), emptyXContext)
-import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..), Inadmissible(..))
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, freshTypeMeta, initialState, postpone, spendFuel, throw, unify)
+import Stella.Compiler.Elaborate.Context (Origin(..), bindVar, emptyXContext)
+import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..), Inadmissible(..), MalformedGoal(..))
+import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, assignTerm, createSynthesis, freshTypeMeta, freshTermMeta, initialState, postpone, runElab, spendFuel, throw, transact, unify)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), PendingId(..), Site)
+import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), PendingId(..), Site, goalOf, newGoal)
+import Stella.Compiler.Elaborate.Term (XExpr(..))
+import Stella.Compiler.Elaborate.TermMeta (termScopeOf)
 import Stella.Compiler.Elaborate.Run (Attempt(..), admit, attemptPending, attemptPendingWith, runAttempt)
-import Stella.Compiler.Elaborate.Scheduler (Scheduler, blockedOn, create, emptyScheduler, invariants, lookupPending, reblock, takeReady, wake)
+import Stella.Compiler.Elaborate.Scheduler (Scheduler, blockedOn, create, emptyScheduler, invariants, isInitial, lookupPending, reblock, takeReady, wake, readyIds)
 import Stella.Compiler.Elaborate.Type (MetaVar(..), XRowEntry(..), XType(..))
-import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, MetaInfo, UnifyError(..), emptyContext, freshMeta, lookupMeta, substitute)
-import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
+import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, MetaInfo, TermBinding(..), UnifyError(..), emptyContext, freshMeta, lookupMeta, lookupTermMeta, substitute)
+import Stella.Compiler.TypedCore (Ident(..), Literal(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
 import Data.Maybe (Maybe(..))
 import Data.Either (Either(..))
+import Data.Map as Map
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
 import Test.Spec (Spec, describe, it)
-import Test.Spec.Assertions (shouldEqual)
+import Test.Spec.Assertions (fail, shouldEqual)
 
 prim :: ModuleName
 prim = ModuleName "Prim"
@@ -52,6 +55,10 @@ keyC = SymbolKey (Symbol "c")
 
 rigidR :: TyVar
 rigidR = TyVar "r"
+
+-- | A synthesizer, by the name resolution gave it.
+resolver :: Qualified Ident
+resolver = Qualified (ModuleName "Typeclass") (Ident "resolve")
 
 here :: Origin
 here = InDeclaration (Qualified prim (Ident "decl"))
@@ -272,7 +279,7 @@ spec = describe "Elaborate.Run" do
         Tuple id s0 = holdingJob stuck
         Tuple _ s1 = attemptPending id s0
         Tuple _ s2 = runAttempt (unify site (solvable metas.v)) s1
-      s2.tentative.scheduler.ready `shouldEqual` [ id ]
+      (readyIds s2.tentative.scheduler) `shouldEqual` [ id ]
       invariants s2.tentative.scheduler `shouldEqual` []
 
     it "leaves an earlier committed job's assignments out of a later registration" do
@@ -310,7 +317,7 @@ spec = describe "Elaborate.Run" do
         queued = wake metas.r (blockedUnder metas.r id s0.tentative.scheduler)
       case takeReady queued of
         Nothing ->
-          queued.ready `shouldEqual` [ id ]
+          (readyIds queued) `shouldEqual` [ id ]
         Just (Tuple taken rest) -> do
           taken `shouldEqual` id
           let
@@ -391,3 +398,119 @@ spec = describe "Elaborate.Run" do
         Tuple result s = attemptPendingWith (\_ -> assigning) id s0
       result `shouldEqual` Registered (Set.singleton metas.r)
       solutionOf s.tentative.metas metas.r `shouldEqual` Nothing
+
+  describe "a synthesis job" do
+    it "is created together with its target, at the goal's type and under the site's context" do
+      let
+        bound = { context: bindVar emptyXContext (Ident "d") tA, origin: here }
+        Tuple outcome s = runElab session (createSynthesis bound tB resolver)
+      case outcome of
+        Done (Tuple id target) -> do
+          lookupTermMeta s.tentative.metas target `shouldEqual`
+            Just (TermUnsolved { ty: tB, scope: termScopeOf bound.context })
+          map _.site (lookupPending s.tentative.scheduler id) `shouldEqual` Just bound
+          map (jobTarget <<< _.job) (lookupPending s.tentative.scheduler id) `shouldEqual` Just (Just target)
+          (readyIds s.tentative.scheduler) `shouldEqual` [ id ]
+          isInitial s.tentative.scheduler id `shouldEqual` true
+        _ -> fail ("the job was not created: " <> show outcome)
+
+    it "is rolled back together with its target" do
+      let
+        attempt :: Elab Unit
+        attempt = createSynthesis site tB resolver *> throw failure
+        Tuple _ s = runElab session (transact attempt)
+      s.tentative.metas.nextTerm `shouldEqual` 0
+      Map.size s.tentative.metas.termBindings `shouldEqual` 0
+      Map.size s.tentative.scheduler.pending `shouldEqual` 0
+      (readyIds s.tentative.scheduler) `shouldEqual` []
+
+    it "halts under the host runner, which holds no synthesizer, and stays pending" do
+      let
+        Tuple outcome s0 = runElab session (createSynthesis site tB resolver)
+      case outcome, takeReady s0.tentative.scheduler of
+        Done (Tuple id _), Just (Tuple _ taken) -> do
+          let
+            Tuple result s = attemptPending id (s0 { tentative { scheduler = taken } })
+          result `shouldEqual` Halted (SynthesizerUnavailable resolver)
+          map _.id (lookupPending s.tentative.scheduler id) `shouldEqual` Just id
+        _, _ -> fail ("the job was not created: " <> show outcome)
+  describe "the check of a synthesis job's target" do
+    it "passes a target whose scope a narrowing made smaller than its site's" do
+      let
+        bound = { context: bindVar emptyXContext (Ident "d") tA, origin: here }
+        narrowing = do
+          Tuple id target <- createSynthesis bound tB resolver
+          outer <- freshTermMeta emptyXContext tB
+          assignTerm site outer (ETermMeta 0 target)
+          pure id
+        Tuple outcome s0 = runElab session narrowing
+      case outcome of
+        Done id -> fst (attemptTaken id s0) `shouldEqual` Halted (SynthesizerUnavailable resolver)
+        _ -> fail ("the job was not created: " <> show outcome)
+
+    it "halts on a target Ψ does not hold, running nothing and changing nothing" do
+      let
+        Tuple record _ = newGoal site tB resolver metas.ctx
+        Tuple id scheduler = create site (JobSynthesis record) emptyScheduler
+        Tuple result s = attemptPending id (sessionWith scheduler)
+      result `shouldEqual` Halted (MalformedSynthesisJob id (TargetAbsent (goalOf record).target))
+      s.tentative.metas `shouldEqual` metas.ctx
+
+    it "halts on a target solved already" do
+      let
+        solving = do
+          Tuple id target <- createSynthesis site tB resolver
+          assignTerm site target (ELit 0 (LitInt 0))
+          pure (Tuple id target)
+        Tuple outcome s0 = runElab session solving
+      case outcome of
+        Done (Tuple id target) ->
+          fst (attemptTaken id s0) `shouldEqual` Halted (MalformedSynthesisJob id (TargetSolved target))
+        _ -> fail ("the job was not created: " <> show outcome)
+
+    it "halts on a target at another type, and on one scoped wider than its site" do
+      let
+        Tuple record ctx = newGoal site tB resolver metas.ctx
+        target = (goalOf record).target
+        Tuple id scheduler = create site (JobSynthesis record) emptyScheduler
+        retyped = rebound target (\info -> info { ty = tA }) ctx
+        widened = rebound target (\info -> info { scope { values = Set.singleton (Ident "zz") } }) ctx
+        attemptWith c = fst (attemptPending id ((sessionWith scheduler) { tentative { metas = c } }))
+      attemptWith retyped `shouldEqual` Halted (MalformedSynthesisJob id (TargetTypeDiffers tA tB))
+      attemptWith widened `shouldEqual` Halted (MalformedSynthesisJob id (TargetScopeWider target))
+
+    it "compares the two types as the current Ψ zonks them" do
+      -- The goal is written at `?α` and the target stands at `B`, as a narrowing
+      -- that substituted its type leaves it. They agree once `?α` is `B`, and
+      -- not while it is `A`.
+      let
+        Tuple alpha ctx0 = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty } } metas.ctx
+        Tuple record ctx1 = newGoal site (XMeta alpha) resolver ctx0
+        target = (goalOf record).target
+        Tuple id scheduler = create site (JobSynthesis record) emptyScheduler
+        standingAtB = rebound target (\info -> info { ty = tB }) ctx1
+        solvedAs ty = standingAtB { bindings = Map.insert alpha (Assigned ty) standingAtB.bindings }
+        attemptWith c = fst (attemptPending id ((sessionWith scheduler) { tentative { metas = c } }))
+      attemptWith (solvedAs tB) `shouldEqual` Halted (SynthesizerUnavailable resolver)
+      attemptWith (solvedAs tA) `shouldEqual` Halted (MalformedSynthesisJob id (TargetTypeDiffers tB tA))
+
+  where
+  jobTarget = case _ of
+    JobSynthesis goal -> Just (goalOf goal).target
+    JobUnify _ -> Nothing
+
+  -- Attempt a job queued for its first attempt, taking it from the queue first.
+  attemptTaken id s0 = case takeReady s0.tentative.scheduler of
+    Just (Tuple _ taken) -> attemptPending id (s0 { tentative { scheduler = taken } })
+    Nothing -> attemptPending id s0
+
+  -- Rewrite what `Ψ` records of an unsolved term metavariable.
+  rebound target f ctx = ctx
+    { termBindings = Map.update
+        ( case _ of
+            TermUnsolved info -> Just (TermUnsolved (f info))
+            other -> Just other
+        )
+        target
+        ctx.termBindings
+    }

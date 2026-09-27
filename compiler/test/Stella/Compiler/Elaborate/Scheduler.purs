@@ -16,7 +16,7 @@ import Stella.Compiler.Elaborate.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Pending (Job(..), PendingId(..), Site)
 import Stella.Compiler.Elaborate.Type (MetaVar(..), XType(..))
-import Stella.Compiler.Elaborate.Scheduler (Invariant(..), Scheduler, blockedOn, complete, create, emptyScheduler, invariants, lookupPending, reblock, takeReady, unwakeable, wake)
+import Stella.Compiler.Elaborate.Scheduler (Invariant(..), Phase(..), Queued, Scheduler, blockedOn, complete, create, emptyScheduler, enqueueInitial, invariants, isInitial, lookupPending, readyIds, reblock, takeReady, unwakeable, wake)
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..), TyName(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
@@ -68,6 +68,10 @@ waitingOn ms = case lookupPending s (fst oneJob) of
 awaitingOf :: Scheduler -> PendingId -> Maybe (Set MetaVar)
 awaitingOf s id = map _.awaiting (lookupPending s id)
 
+-- | A ready queue entry for a retry.
+retrying :: PendingId -> Queued
+retrying id = { id, phase: Retry }
+
 pendingCount :: Scheduler -> P.Int
 pendingCount s = Map.size s.pending
 
@@ -77,7 +81,7 @@ spec = describe "Elaborate.Scheduler" do
     it "holds the job while neither queue does" do
       let
         Tuple id s = oneJob
-      s.ready `shouldEqual` []
+      (readyIds s) `shouldEqual` []
       Map.isEmpty s.blocked `shouldEqual` true
       awaitingOf s id `shouldEqual` Just Set.empty
       invariants s `shouldEqual` []
@@ -95,13 +99,13 @@ spec = describe "Elaborate.Scheduler" do
       invariants s `shouldEqual` []
 
     it "leaves it off the ready queue" do
-      (waitingOn (Set.fromFoldable [ metaA, metaB ])).ready `shouldEqual` []
+      readyIds (waitingOn (Set.fromFoldable [ metaA, metaB ])) `shouldEqual` []
 
   describe "waking a job removes every registration it had" do
     it "puts it on the ready queue once and leaves nothing blocked" do
       let
         s = wake metaA (waitingOn (Set.fromFoldable [ metaA, metaB ]))
-      s.ready `shouldEqual` [ fst oneJob ]
+      (readyIds s) `shouldEqual` [ fst oneJob ]
       Map.isEmpty s.blocked `shouldEqual` true
       awaitingOf s (fst oneJob) `shouldEqual` Just Set.empty
       invariants s `shouldEqual` []
@@ -109,7 +113,7 @@ spec = describe "Elaborate.Scheduler" do
     it "does not queue it a second time when the other metavariable is assigned" do
       let
         s = wake metaB (wake metaA (waitingOn (Set.fromFoldable [ metaA, metaB ])))
-      s.ready `shouldEqual` [ fst oneJob ]
+      (readyIds s) `shouldEqual` [ fst oneJob ]
       invariants s `shouldEqual` []
 
     it "names nothing once woken, which is what a report at quiescence reads" do
@@ -138,9 +142,9 @@ spec = describe "Elaborate.Scheduler" do
             reblock q (Set.singleton metaA) (reblock p (Set.singleton metaA) s2)
           _ -> s2
         s = wake metaA blocked
-      s.ready `shouldEqual` [ first, second ]
+      (readyIds s) `shouldEqual` [ first, second ]
       map fst (takeReady s) `shouldEqual` Just first
-      map (_.ready <<< snd) (takeReady s) `shouldEqual` Just [ second ]
+      map (readyIds <<< snd) (takeReady s) `shouldEqual` Just [ second ]
       invariants s `shouldEqual` []
 
   describe "a job that is done leaves nothing behind" do
@@ -149,7 +153,7 @@ spec = describe "Elaborate.Scheduler" do
         s = complete (fst oneJob) (waitingOn (Set.fromFoldable [ metaA, metaB ]))
       pendingCount s `shouldEqual` 0
       Map.isEmpty s.blocked `shouldEqual` true
-      s.ready `shouldEqual` []
+      (readyIds s) `shouldEqual` []
       invariants s `shouldEqual` []
 
   describe "the invariants are checked rather than assumed" do
@@ -168,7 +172,7 @@ spec = describe "Elaborate.Scheduler" do
     it "reports a job that is at once ready and blocked" do
       let
         s = waitingOn (Set.singleton metaA)
-        broken = s { ready = [ fst oneJob ] }
+        broken = s { ready = [ retrying (fst oneJob) ] }
       invariants broken
         `shouldEqual`
           [ ReadyAndBlocked (fst oneJob), AwaitingWhileReady (fst oneJob) ]
@@ -176,9 +180,35 @@ spec = describe "Elaborate.Scheduler" do
     it "reports one identifier twice on the ready queue" do
       let
         woken = wake metaA (waitingOn (Set.singleton metaA))
-        broken = woken { ready = [ fst oneJob, fst oneJob ] }
+        broken = woken { ready = [ retrying (fst oneJob), retrying (fst oneJob) ] }
       invariants broken `shouldEqual` [ DuplicateOnReady (fst oneJob) ]
 
     it "reports a queued identifier no pending answers to" do
-      invariants (emptyScheduler { ready = [ PendingId 7 ] })
+      invariants (emptyScheduler { ready = [ retrying (PendingId 7) ] })
         `shouldEqual` [ UnknownPending (PendingId 7) ]
+
+  describe "a job queued for its first attempt" do
+    it "is on the ready queue and marked as never attempted" do
+      let
+        Tuple id s0 = oneJob
+        s = enqueueInitial id s0
+      (readyIds s) `shouldEqual` [ id ]
+      isInitial s id `shouldEqual` true
+      invariants s `shouldEqual` []
+
+    it "is no longer marked once taken" do
+      let
+        Tuple id s0 = oneJob
+      map (\(Tuple _ s) -> isInitial s id) (takeReady (enqueueInitial id s0)) `shouldEqual` Just false
+
+    it "is marked by nothing once completed" do
+      let
+        Tuple id s0 = oneJob
+        s = complete id (enqueueInitial id s0)
+      isInitial s id `shouldEqual` false
+      invariants s `shouldEqual` []
+
+    it "is not what a wake queues" do
+      let
+        Tuple id _ = oneJob
+      isInitial (wake metaA (waitingOn (Set.singleton metaA))) id `shouldEqual` false

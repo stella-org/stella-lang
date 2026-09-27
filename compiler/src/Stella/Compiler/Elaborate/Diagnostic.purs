@@ -13,16 +13,18 @@ module Stella.Compiler.Elaborate.Diagnostic
   ( Diagnostic(..)
   , Defect(..)
   , Inadmissible(..)
+  , MalformedGoal(..)
   ) where
 
 import Prelude
 
 import Stella.Compiler.Elaborate.Context (Origin)
 import Stella.Compiler.Elaborate.Obligation (Basis, Breach)
-import Stella.Compiler.Elaborate.Pending (Job, PendingId)
+import Stella.Compiler.Elaborate.Pending (Job, PendingId, SynthRef)
 import Stella.Compiler.Elaborate.Scheduler (Invariant)
 import Stella.Compiler.Elaborate.TermMeta (TermError)
-import Stella.Compiler.Elaborate.Type (MetaVar)
+import Stella.Compiler.Elaborate.Term (TermMetaVar)
+import Stella.Compiler.Elaborate.Type (MetaVar, XType)
 import Stella.Compiler.Elaborate.Row (XRowError)
 import Stella.Compiler.Elaborate.Unify (UnifyError)
 import Data.Array.NonEmpty (NonEmptyArray)
@@ -91,6 +93,13 @@ data Defect
       , job :: Job
       , reason :: Inadmissible
       }
+  -- | A synthesis goal whose synthesizer the session has no implementation for.
+  -- | Name resolution resolved the name where the goal was written, so the name
+  -- | exists; a session unable to run it was set up without it.
+  | SynthesizerUnavailable SynthRef
+  -- | A synthesis job whose target is not what the one operation that creates
+  -- | the two would have made. Nothing the author wrote produces one.
+  | MalformedSynthesisJob PendingId MalformedGoal
   -- | A job attempted under an identifier `pending` does not hold.
   | PendingAbsent PendingId
   -- | A job attempted while the scheduler still holds it: on the ready queue, or
@@ -106,6 +115,21 @@ data Defect
   -- | name, or awaiting one it is not registered under, is one no assignment
   -- | wakes, so reporting it as waiting would blame the program for the loop.
   | SchedulerBroken (NonEmptyArray Invariant)
+
+-- | How a synthesis job's target disagrees with its goal, read against `Ψ` as
+-- | it stands where the job is about to be attempted.
+data MalformedGoal
+  -- | A target `Ψ` does not hold.
+  = TargetAbsent TermMetaVar
+  -- | A target solved already. The runner assigns it and completes the job in
+  -- | one attempt, so a job still pending has an unsolved one.
+  | TargetSolved TermMetaVar
+  -- | A target at a type other than the goal's, compared once both are zonked.
+  | TargetTypeDiffers XType XType
+  -- | A target whose scope admits what the site's context does not bind. A scope
+  -- | narrower than the site's is admitted: a target standing in another
+  -- | solution is narrowed with it.
+  | TargetScopeWider TermMetaVar
 
 -- | Why a postponement cannot be admitted, read against `Ψ` as the rollback
 -- | leaves it.
@@ -131,6 +155,12 @@ derive instance Eq Defect
 derive instance Generic Defect _
 
 instance Show Defect where
+  show x = genericShow x
+
+derive instance Eq MalformedGoal
+derive instance Generic MalformedGoal _
+
+instance Show MalformedGoal where
   show x = genericShow x
 
 derive instance Eq Inadmissible

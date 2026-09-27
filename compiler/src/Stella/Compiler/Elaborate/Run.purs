@@ -17,8 +17,8 @@ module Stella.Compiler.Elaborate.Run
 import Prelude
 
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic, Inadmissible(..))
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, runElab, unify)
-import Stella.Compiler.Elaborate.Pending (Job(..), Pending, PendingId)
+import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, break, checkSynthesisTarget, runElab, unify)
+import Stella.Compiler.Elaborate.Pending (Job(..), Pending, PendingId, goalOf)
 import Stella.Compiler.Elaborate.Scheduler (complete, lookupPending, reblock, unwakeable)
 import Stella.Compiler.Elaborate.Type (MetaVar)
 import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, lookupMeta)
@@ -113,10 +113,12 @@ admit metas = case _ of
 -- | runners handed to the one boundary.
 type Runner = Pending -> Elab Unit
 
--- | The host's runner, for the jobs the mechanism itself carries out.
+-- | The host's runner, for the jobs the mechanism itself carries out. It holds
+-- | no synthesizer, so a synthesis job is one it cannot run.
 hostRunner :: Runner
 hostRunner p = case p.job of
   JobUnify goal -> unify p.site goal
+  JobSynthesis goal -> break (SynthesizerUnavailable (goalOf goal).synthesizer)
 
 -- | `attemptPendingWith hostRunner`.
 attemptPending :: PendingId -> SolverState -> Tuple Attempt SolverState
@@ -145,7 +147,7 @@ attemptPendingWith runner id s0 = case lookupPending s0.tentative.scheduler id o
         Tuple (Halted (PendingStillScheduled id)) s0
     | otherwise -> attempted p
   where
-  attempted p = case runAttempt (runner p) s0 of
+  attempted p = case runAttempt (checked p *> runner p) s0 of
     Tuple (Done _) s ->
       Tuple Committed (finish s)
     Tuple (Failed diagnostic) s ->
@@ -161,6 +163,12 @@ attemptPendingWith runner id s0 = case lookupPending s0.tentative.scheduler id o
         Tuple (Registered ms) (s { tentative { scheduler = reblock p ms s.tentative.scheduler } })
 
   finish s = s { tentative { scheduler = complete id s.tentative.scheduler } }
+
+  -- A synthesis job's target is checked inside the attempt and before the
+  -- runner, so a job that fails it runs no synthesizer and is rolled back.
+  checked p = case p.job of
+    JobSynthesis goal -> checkSynthesisTarget p.id p.site goal
+    JobUnify _ -> pure unit
 
 derive instance Eq Attempt
 derive instance Generic Attempt _

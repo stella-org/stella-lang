@@ -310,6 +310,8 @@ Case (d) of row unification joins the same queue, and so does the search for an 
 
 ```text
 -- observation
+goalType        : Goal -> Elab Type
+viewType        : Type -> Elab TypeView
 whnf            : Type -> Elab Type
 normalizeRow    : Type -> Elab RowNormalForm
 kindOf          : Type -> Elab Kind
@@ -321,7 +323,7 @@ declsWithAttr   : AttrKey -> Elab (Array QIdent)
 
 -- metavariables
 freshMetaType   : Kind -> Elab Type
-freshMetaTerm   : Type -> Elab Expr
+subgoal         : Type -> SynthRef -> Elab Expr
 isAssigned      : Meta -> Elab Boolean
 
 -- constraints
@@ -337,16 +339,15 @@ freshIdent      : Elab Ident
 -- control
 transact        : Elab a -> Elab (Either Diagnostic a)
 postpone        : Set Meta -> Elab a
-withFuel        : Int -> Elab a -> Elab a
-throw           : Diagnostic -> Elab a
-warn            : Diagnostic -> Elab Unit
+throw           : Message -> Elab a
+warn            : Message -> Elab Unit
 ```
 
 **Quotation and antiquotation are syntactic forms producing a `Syntax`, not operations of this table.** They belong with the Surface AST, as `check` and `infer` do.
 
 **The table divides by what it depends on.** Observation, the metavariable operations, the constraints, and control are the **kernel**, which a synthesizer needs and a parser is not required for. `check`, `infer`, quotation, and hygiene require a Surface AST and are separate, which is what lets the first guest synthesizer run before a parser exists ([Elaborator API](03-Elaborator-API.md)).
 
-**A `Type`, an `Expr`, and a `Goal` reach a metaprogram as opaque handles**, and what it does with one it does through a view rather than by matching on a representation. Publishing Core⁺'s own representation would make an internal one part of an interface the compiler could no longer change.
+**A `Type`, an `Expr`, and a `Goal` reach a metaprogram as opaque handles**, and what it does with one it does through a view rather than by matching on a representation. Publishing Core⁺'s own representation would make an internal one part of an interface the compiler could no longer change. A `Type` holds the kind it stands at and an `Expr` the type it is claimed to have, which is what `kindOf` and `typeOf` read; what a goal, an operation that depends on where it stands, and a message are is fixed with the kernel ([Elaborator API](03-Elaborator-API.md)).
 
 `transact` supports trying candidates transactionally. A rollback restores `Ψ`, the constraint set, the queues, and any terms constructed. Running one goal is the outermost such transaction and is not written anywhere (D40).
 
@@ -360,7 +361,7 @@ warn            : Diagnostic -> Elab Unit
 
 `localConstraints` exposes row constraints to elaborators, so that a derive mechanism working over rows can consult which Lacks constraints are already assumed.
 
-Residual computation over an unknown tail takes this shape: `normalizeRow` extracts the known elements and the unknown tail, an encoder is assembled recursively over the known part, and where the tail `T` is non-empty the corresponding evidence is requested with `freshMetaTerm` and pushed out to the caller. **Closing the row is never required.**
+Residual computation over an unknown tail takes this shape: `normalizeRow` extracts the known elements and the unknown tail, an encoder is assembled recursively over the known part, and where the tail `T` is non-empty the corresponding evidence is requested as a `subgoal`, to be decided by whatever the site it stands at can supply. **Closing the row is never required.**
 
 ## What an elaborator may and may not do
 

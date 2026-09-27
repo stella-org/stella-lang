@@ -25,7 +25,7 @@ import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce)
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), PendingId, Site)
-import Stella.Compiler.Elaborate.Scheduler (Scheduler, blockedOn, create, emptyScheduler, lookupPending, reblock)
+import Stella.Compiler.Elaborate.Scheduler (Scheduler, blockedOn, create, emptyScheduler, lookupPending, reblock, readyIds)
 import Stella.Compiler.Elaborate.Type (MetaVar(..), XConstraint(..), XRowEntry(..), XType(..))
 import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, MetaInfo, UnifyError(..), emptyContext, freshMeta, lookupMeta, substitute)
 import Stella.Compiler.Elaborate.Row (XRowError(..), xnf)
@@ -340,7 +340,7 @@ spec = describe "Elaborate.Elab" do
         Tuple id scheduler = blocked metas.r
         Tuple outcome s = runElab (sessionWith emptyStore scheduler) (unify site (solvable metas.r))
       outcome `shouldEqual` Done unit
-      s.tentative.scheduler.ready `shouldEqual` [ id ]
+      (readyIds s.tentative.scheduler) `shouldEqual` [ id ]
       blockedOn s.tentative.scheduler metas.r `shouldEqual` Set.empty
       map _.awaiting (lookupPending s.tentative.scheduler id) `shouldEqual` Just Set.empty
 
@@ -381,7 +381,7 @@ spec = describe "Elaborate.Elab" do
           (unify site { kind: XKRow RowType, left: XMeta metas.r, right: field keyA tA XRowEmpty })
       solutionOf s.tentative.metas metas.r `shouldEqual` Nothing
       s.tentative.written `shouldEqual` Set.empty
-      s.tentative.scheduler.ready `shouldEqual` []
+      (readyIds s.tentative.scheduler) `shouldEqual` []
       blockedOn s.tentative.scheduler metas.r `shouldEqual` Set.singleton id
       obligationCount s.tentative.obligations `shouldEqual` 1
 
@@ -435,7 +435,7 @@ spec = describe "Elaborate.Elab" do
       solutionOf s.tentative.metas metas.r `shouldEqual` Nothing
       s.tentative.metas.next `shouldEqual` metas.ctx.next
       s.tentative.written `shouldEqual` Set.empty
-      s.tentative.scheduler.ready `shouldEqual` []
+      (readyIds s.tentative.scheduler) `shouldEqual` []
       blockedOn s.tentative.scheduler metas.r `shouldEqual` Set.singleton id
       map _.awaiting (lookupPending s.tentative.scheduler id) `shouldEqual` Just (Set.singleton metas.r)
 

@@ -2,7 +2,7 @@
 -- | between them.
 -- |
 -- | ```text
--- | ready   : [PendingId]
+-- | ready   : [(PendingId, Phase)]
 -- | blocked : Meta ⇀ Set PendingId
 -- | pending : PendingId ⇀ Pending
 -- | ```
@@ -17,9 +17,15 @@
 -- | it: a wake an abandoned attempt made goes back to waiting where it was.
 module Stella.Compiler.Elaborate.Scheduler
   ( Scheduler
+  , Phase(..)
+  , Queued
   , Invariant(..)
   , emptyScheduler
   , create
+  , enqueueInitial
+  , readyIds
+  , nextReady
+  , isInitial
   , reblock
   , wake
   , takeReady
@@ -47,8 +53,23 @@ import Data.Set as Set
 import Data.Show.Generic (genericShow)
 import Data.Tuple (Tuple(..))
 
+-- | Why a job is on the ready queue.
+data Phase
+  -- | For its first attempt: it was created inside an attempt, which may not
+  -- | run it there. Fuel bounds retries, so the loop spends none on it.
+  = Initial
+  -- | For another attempt, a wake having put it there.
+  | Retry
+
+-- | An entry of the ready queue. The phase is carried by the entry itself, so
+-- | whether a job is a first attempt is read from one place.
+type Queued =
+  { id :: PendingId
+  , phase :: Phase
+  }
+
 type Scheduler =
-  { ready :: P.Array PendingId
+  { ready :: P.Array Queued
   , blocked :: Map MetaVar (Set PendingId)
   , pending :: Map PendingId Pending
   , nextId :: P.Int
@@ -94,6 +115,23 @@ create site job s =
   where
   id = PendingId s.nextId
 
+-- | Queue a job just created for its first attempt, as the attempt that created
+-- | it may not run it.
+enqueueInitial :: PendingId -> Scheduler -> Scheduler
+enqueueInitial id s = s { ready = Array.snoc s.ready { id, phase: Initial } }
+
+-- | The identifiers on the ready queue, front first.
+readyIds :: Scheduler -> P.Array PendingId
+readyIds s = map _.id s.ready
+
+-- | The entry `takeReady` would take.
+nextReady :: Scheduler -> Maybe Queued
+nextReady s = Array.head s.ready
+
+-- | Whether a job is on the ready queue for its first attempt.
+isInitial :: Scheduler -> PendingId -> P.Boolean
+isInitial s id = Array.any (\q -> q.id == id && q.phase == Initial) s.ready
+
 -- | Register a job under each metavariable it waits on.
 -- |
 -- | The caller has admitted the set: every metavariable in it is one `Ψ` holds
@@ -115,7 +153,8 @@ reblock p ms s =
 -- | queue that is already on it.
 -- |
 -- | Where one assignment wakes several jobs, they are queued in the order they
--- | were created, an identifier being allocated in that order.
+-- | were created, an identifier being allocated in that order. Each is queued for
+-- | a retry.
 wake :: MetaVar -> Scheduler -> Scheduler
 wake m s = foldl (\acc id -> wakeOne id acc) s ids
   where
@@ -131,7 +170,7 @@ wake m s = foldl (\acc id -> wakeOne id acc) s ids
         { blocked = foldr (unregister id) acc.blocked
             (Set.toUnfoldable p.awaiting :: P.Array MetaVar)
         , pending = Map.insert id (p { awaiting = Set.empty }) acc.pending
-        , ready = Array.snoc acc.ready id
+        , ready = Array.snoc acc.ready { id, phase: Retry }
         }
 
 -- | The next job to attempt.
@@ -142,7 +181,7 @@ wake m s = foldl (\acc id -> wakeOne id acc) s ids
 takeReady :: Scheduler -> Maybe (Tuple PendingId Scheduler)
 takeReady s = case Array.uncons s.ready of
   Nothing -> Nothing
-  Just { head, tail } -> Just (Tuple head (s { ready = tail }))
+  Just { head, tail } -> Just (Tuple head.id (s { ready = tail }))
 
 -- | A job that is solved, or that has failed.
 -- |
@@ -156,7 +195,7 @@ complete id s = case Map.lookup id s.pending of
       { pending = Map.delete id s.pending
       , blocked = foldr (unregister id) s.blocked
           (Set.toUnfoldable p.awaiting :: P.Array MetaVar)
-      , ready = Array.filter (_ /= id) s.ready
+      , ready = Array.filter (\q -> q.id /= id) s.ready
       }
 
 lookupPending :: Scheduler -> PendingId -> Maybe Pending
@@ -174,7 +213,7 @@ blockedOn s m = fromMaybe Set.empty (Map.lookup m s.blocked)
 unwakeable :: Scheduler -> P.Array PendingId
 unwakeable s = do
   Tuple id p <- Map.toUnfoldable s.pending
-  if Set.isEmpty p.awaiting && not (Array.elem id s.ready) then [ id ] else []
+  if Set.isEmpty p.awaiting && not (Array.elem id (readyIds s)) then [ id ] else []
 
 -- | Both directions of the registration equivalence are walked. The table and
 -- | the set each name what the other is read through, so a check of one
@@ -189,6 +228,8 @@ invariants s =
     , duplicates
     ]
   where
+  ready = readyIds s
+
   registrations = do
     Tuple m ids <- Map.toUnfoldable s.blocked
     id <- Set.toUnfoldable ids
@@ -196,7 +237,7 @@ invariants s =
       Nothing -> [ UnknownPending id ]
       Just p
         | not (Set.member m p.awaiting) -> [ RegistrationDiffers m id ]
-        | Array.elem id s.ready -> [ ReadyAndBlocked id ]
+        | Array.elem id ready -> [ ReadyAndBlocked id ]
         | otherwise -> []
 
   awaited = do
@@ -205,7 +246,7 @@ invariants s =
     if Set.member id (blockedOn s m) then [] else [ RegistrationDiffers m id ]
 
   readyEntries = do
-    id <- s.ready
+    id <- ready
     case Map.lookup id s.pending of
       Nothing -> [ UnknownPending id ]
       Just p
@@ -214,7 +255,7 @@ invariants s =
 
   duplicates =
     map DuplicateOnReady
-      (Array.nub (Array.filter (\id -> Array.length (Array.filter (_ == id) s.ready) > 1) s.ready))
+      (Array.nub (Array.filter (\id -> Array.length (Array.filter (_ == id) ready) > 1) ready))
 
 register :: PendingId -> MetaVar -> Map MetaVar (Set PendingId) -> Map MetaVar (Set PendingId)
 register id m blocked =
@@ -230,6 +271,12 @@ unregister id m blocked = case Map.lookup m blocked of
       rest = Set.delete id ids
     in
       if Set.isEmpty rest then Map.delete m blocked else Map.insert m rest blocked
+
+derive instance Eq Phase
+derive instance Generic Phase _
+
+instance Show Phase where
+  show x = genericShow x
 
 derive instance Eq Invariant
 derive instance Generic Invariant _

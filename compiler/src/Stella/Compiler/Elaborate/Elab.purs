@@ -34,6 +34,8 @@ module Stella.Compiler.Elaborate.Elab
   , unify
   , freshTypeMeta
   , freshTermMeta
+  , createSynthesis
+  , checkSynthesisTarget
   , assignTerm
   , zonkTerm
   , assume
@@ -48,17 +50,17 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Context (XContext)
 import Stella.Compiler.Elaborate.Context as Context
-import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
+import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..), MalformedGoal(..))
 import Stella.Compiler.Elaborate.Kind (XKind)
 import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce, recheck)
-import Stella.Compiler.Elaborate.Pending (EqualityGoal, Site)
+import Stella.Compiler.Elaborate.Pending (EqualityGoal, GoalRecord, Job(..), PendingId, Site, SynthRef, goalOf, newGoal)
 import Stella.Compiler.Elaborate.Row (XRowError)
-import Stella.Compiler.Elaborate.Scheduler (Scheduler, emptyScheduler, wake)
+import Stella.Compiler.Elaborate.Scheduler (Scheduler, create, emptyScheduler, enqueueInitial, wake)
 import Stella.Compiler.Elaborate.Term (TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
 import Stella.Compiler.Elaborate.TermMeta as TermMeta
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint, XType(..))
-import Stella.Compiler.Elaborate.Unify (MetaContext, UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, substitute, unifyType)
+import Stella.Compiler.Elaborate.Unify (MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupTermMeta, substitute, unifyType)
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
 import Data.Generic.Rep (class Generic)
@@ -392,6 +394,56 @@ freshTermMeta context ty = Elab \s ->
     Tuple m metas = TermMeta.freshTermMeta { ty, scope: termScopeOf context } s.tentative.metas
   in
     Tuple (Done m) (s { tentative { metas = metas } })
+
+-- | `⟨ τ by f ⟩` at a site: a term metavariable at `τ` under the site's context,
+-- | and the synthesis job that fills it, created together and queued for a first
+-- | attempt.
+-- |
+-- | The job is queued rather than attempted, since it may be created inside an
+-- | attempt, and attempting it there would open one inside another. Both belong
+-- | to what the current attempt owns, so a rollback removes the two together.
+-- | The metavariable is returned for the caller to place as `ETermMeta`.
+createSynthesis :: Site -> XType -> SynthRef -> Elab (Tuple PendingId TermMetaVar)
+createSynthesis site expectedType synthesizer = Elab \s ->
+  let
+    Tuple goal metas = newGoal site expectedType synthesizer s.tentative.metas
+    Tuple id created = create site (JobSynthesis goal) s.tentative.scheduler
+  in
+    Tuple (Done (Tuple id (goalOf goal).target))
+      (s { tentative { metas = metas, scheduler = enqueueInitial id created } })
+
+-- | Check a synthesis job's target against the current `Ψ` and the job's site,
+-- | before anything runs the synthesizer.
+-- |
+-- | `createSynthesis` is the one supported way to make a job and its target; this
+-- | is the independent check of what it guarantees. The target must be held
+-- | unsolved, stand at the goal's type once both are zonked against the current
+-- | `Ψ`, and have a scope within what the site binds — within and not equal,
+-- | since a target standing in another solution is narrowed with it. A violation
+-- | is a defect of the host and not of the program.
+checkSynthesisTarget :: PendingId -> Site -> GoalRecord -> Elab Unit
+checkSynthesisTarget id site record = Elab \s ->
+  let
+    goal = goalOf record
+    metas = s.tentative.metas
+    malformed = case lookupTermMeta metas goal.target of
+      Nothing -> Just (TargetAbsent goal.target)
+      Just (TermAssigned _) -> Just (TargetSolved goal.target)
+      Just (TermUnsolved info)
+        | substitute metas info.ty /= substitute metas goal.expectedType ->
+            Just (TargetTypeDiffers (substitute metas info.ty) (substitute metas goal.expectedType))
+        | not (within info.scope (termScopeOf site.context)) ->
+            Just (TargetScopeWider goal.target)
+        | otherwise -> Nothing
+  in
+    case malformed of
+      Just reason -> Tuple (Broke (MalformedSynthesisJob id reason)) s
+      Nothing -> Tuple (Done unit) s
+  where
+  within inner outer =
+    Set.subset inner.values outer.values
+      && Set.subset inner.types outer.types
+      && Set.subset inner.kinds outer.kinds
 
 -- | `?m := e`, reported at the site given.
 -- |

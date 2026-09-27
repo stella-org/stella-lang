@@ -19,6 +19,7 @@ import Test.Stella.Compiler.TypedCore.Declare as Declare
 import Test.Stella.Compiler.TypedCore.Domain as Domain
 import Test.Stella.Compiler.TypedCore.Kinding as Kinding
 import Test.Stella.Compiler.TypedCore.Row as Row
+import Test.Stella.Compiler.Elaborate.Catalog as ElaborateCatalog
 import Test.Stella.Compiler.Elaborate.Context as ElaborateContext
 import Test.Stella.Compiler.Elaborate.Elab as ElaborateElab
 import Test.Stella.Compiler.Elaborate.Loop as ElaborateLoop
@@ -70,3 +71,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateTerm.spec
   ElaborateTermMeta.spec
   ElaborateVertical.spec
+  ElaborateCatalog.spec

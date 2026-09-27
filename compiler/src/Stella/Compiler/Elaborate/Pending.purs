@@ -8,6 +8,10 @@ module Stella.Compiler.Elaborate.Pending
   ( PendingId(..)
   , Site
   , EqualityGoal
+  , SynthRef
+  , GoalRecord
+  , newGoal
+  , goalOf
   , Job(..)
   , Pending
   ) where
@@ -18,10 +22,15 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Context (Origin, XContext)
 import Stella.Compiler.Elaborate.Kind (XKind)
+import Stella.Compiler.Elaborate.Term (TermMetaVar)
+import Stella.Compiler.Elaborate.TermMeta (freshTermMeta, termScopeOf)
+import Stella.Compiler.Elaborate.Unify (MetaContext)
 import Stella.Compiler.Elaborate.Type (MetaVar, XType)
+import Stella.Compiler.TypedCore (Ident, Qualified)
 
 import Data.Generic.Rep (class Generic)
 import Data.Set (Set)
+import Data.Tuple (Tuple(..))
 import Data.Show.Generic (genericShow)
 
 -- | What the blocked table registers.
@@ -63,7 +72,44 @@ type EqualityGoal =
   , right :: XType
   }
 
-data Job = JobUnify EqualityGoal
+-- | A synthesizer, as name resolution settled it: a fully qualified global name
+-- | rather than a host function, so one Core⁺ term means one thing however it
+-- | travels.
+type SynthRef = Qualified Ident
+
+-- | `Synth ?m τ f`: what is particular to one synthesis goal.
+-- |
+-- | Where it stands is the envelope's `Site`, which the record does not repeat.
+-- | `expectedType` stands at `Type`.
+-- |
+-- | Its constructor is not exported. `createSynthesis` is the one supported way
+-- | to make a record together with its job, and the runner checks the target
+-- | against the current `Ψ` and the job's site before running a synthesizer.
+newtype GoalRecord = GoalRecord
+  { target :: TermMetaVar
+  , expectedType :: XType
+  , synthesizer :: SynthRef
+  }
+
+-- | A goal, and the term metavariable its result is assigned to, created
+-- | together at `expectedType` under the site's context.
+-- |
+-- | A trusted helper of `createSynthesis`, which installs the context returned
+-- | and registers the job in the same act. Used on its own it is outside the
+-- | contract: a record paired with any other `Ψ` names a target that `Ψ` may not
+-- | hold, which the runner reports as a defect.
+newGoal :: Site -> XType -> SynthRef -> MetaContext -> Tuple GoalRecord MetaContext
+newGoal site expectedType synthesizer ctx =
+  Tuple (GoalRecord { target, expectedType, synthesizer }) ctx'
+  where
+  Tuple target ctx' = freshTermMeta { ty: expectedType, scope: termScopeOf site.context } ctx
+
+goalOf :: GoalRecord -> { target :: TermMetaVar, expectedType :: XType, synthesizer :: SynthRef }
+goalOf (GoalRecord goal) = goal
+
+data Job
+  = JobUnify EqualityGoal
+  | JobSynthesis GoalRecord
 
 -- | `awaiting` is the metavariables the job last postponed on.
 -- |
@@ -82,6 +128,11 @@ type Pending =
 derive instance Eq PendingId
 derive instance Ord PendingId
 derive newtype instance Show PendingId
+
+derive instance Eq GoalRecord
+
+instance Show GoalRecord where
+  show (GoalRecord goal) = "(GoalRecord " <> show goal <> ")"
 
 derive instance Eq Job
 derive instance Generic Job _

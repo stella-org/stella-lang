@@ -521,6 +521,9 @@ no identifier is at once ready and blocked
 | A job woken, then taken from the ready queue, then attempted | Attempted as any other job is. Just after `takeReady` is one of the two points at which a job may be attempted, the other being just after `create` |
 | An attempt of a job still on the ready queue, or still registered under a metavariable | A defect, and the job is not run. The first would run it again when the loop takes it, and the second would register it twice |
 | A job submitted and attempted at once | No fuel spent. Fuel bounds the scheduler's retries, and a first attempt is none |
+| A job created inside an attempt | Queued for its first attempt and not attempted there, which would open an attempt inside another. Taken from the queue, that attempt spends no fuel either |
+| A synthesis job and the term metavariable it fills | Created by one operation: the metavariable exists, stands at the goal's type, and is scoped to the site's context. A rollback removes the two together |
+| A synthesis job whose target is absent, solved, at another type once zonked, or scoped wider than its site | A defect of the host, found before the synthesizer runs, and the attempt rolled back. A target scoped narrower than its site passes: one standing in another solution is narrowed with it |
 | A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
 | No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
 | No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |
