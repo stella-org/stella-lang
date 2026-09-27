@@ -17,6 +17,7 @@ module Stella.Compiler.Elaborate.Run
 import Prelude
 
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic, Inadmissible(..))
+import Stella.Compiler.Elaborate.Handle (emptyArena)
 import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, break, checkSynthesisTarget, runElab, unify)
 import Stella.Compiler.Elaborate.Pending (Job(..), Pending, PendingId, goalOf)
 import Stella.Compiler.Elaborate.Scheduler (complete, lookupPending, reblock, unwakeable)
@@ -52,16 +53,21 @@ data Attempt
 -- | therefore needs no emptying of its own, and a committed one is emptied again
 -- | so that nothing it wrote reaches the next job's dependencies.
 -- |
--- | Every outcome but `Done` rolls back, the counters it spent being kept.
+-- | **The arena is emptied at the same two points, for the same reason.** A
+-- | handle lives for the attempt that issued it: what a synthesizer returns is
+-- | resolved before the attempt commits, and one that postpones or fails leaves
+-- | the checkpoint's empty arena behind.
+-- |
+-- | Every outcome but `Done` rolls back, what is retained being kept.
 runAttempt :: forall a. Elab a -> SolverState -> Tuple (Outcome a) SolverState
 runAttempt action s0 =
   case runElab checkpoint action of
     Tuple (Done a) s ->
-      Tuple (Done a) (s { tentative { written = Set.empty } })
+      Tuple (Done a) (s { tentative { written = Set.empty, arena = emptyArena } })
     Tuple outcome s ->
-      Tuple outcome { tentative: checkpoint.tentative, counters: s.counters }
+      Tuple outcome { tentative: checkpoint.tentative, retained: s.retained }
   where
-  checkpoint = s0 { tentative { written = Set.empty } }
+  checkpoint = s0 { tentative { written = Set.empty, arena = emptyArena } }
 
 -- | The metavariables a postponement may be registered under, read against `Ψ`
 -- | as the rollback left it.

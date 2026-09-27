@@ -19,6 +19,7 @@ module Stella.Compiler.Elaborate.Diagnostic
 import Prelude
 
 import Stella.Compiler.Elaborate.Context (Origin)
+import Stella.Compiler.Elaborate.Handle (Handle, HandleError)
 import Stella.Compiler.Elaborate.Obligation (Basis, Breach)
 import Stella.Compiler.Elaborate.Pending (Job, PendingId, SynthRef)
 import Stella.Compiler.Elaborate.Scheduler (Invariant)
@@ -93,6 +94,13 @@ data Defect
       , job :: Job
       , reason :: Inadmissible
       }
+  -- | A handle that names no object of the class it was presented as. What
+  -- | presented it is at fault: a synthesizer holding a handle across an
+  -- | attempt, or a transport that altered one.
+  | InvalidHandle Handle HandleError
+  -- | A session that has issued every generation it can. A generation is never
+  -- | issued twice, which is what an old handle failing to match rests on.
+  | GenerationsExhausted
   -- | A synthesis goal whose synthesizer the session has no implementation for.
   -- | Name resolution resolved the name where the goal was written, so the name
   -- | exists; a session unable to run it was set up without it.

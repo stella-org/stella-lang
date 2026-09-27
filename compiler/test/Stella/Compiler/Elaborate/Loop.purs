@@ -12,6 +12,7 @@ import Prelude
 
 import Stella.Compiler.Elaborate.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
+import Stella.Compiler.Elaborate.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Elab (SolverState, createSynthesis, initialState, postpone, unify)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Loop (RunResult(..), run, runWith, submitEquality, submitWith)
@@ -124,7 +125,7 @@ stuck =
 sessionWith :: Int -> SolverState
 sessionWith fuel = s { tentative = s.tentative { metas = metas.ctx } }
   where
-  s = initialState fuel
+  s = initialState (SessionId 0) fuel
 
 -- | Submit the stuck equation from its own site, then solve `?v` as given, which
 -- | wakes it. Nothing has been retried yet.
@@ -157,7 +158,7 @@ spec = describe "Elaborate.Loop" do
       let
         Tuple submitted s = submitEquality site stuck (sessionWith 3)
       submitted.attempt `shouldEqual` Run.Registered (Set.fromFoldable [ metas.r, metas.s, metas.v, metas.w ])
-      s.counters.fuel `shouldEqual` 3
+      s.retained.fuel `shouldEqual` 3
 
     it "reports one that failed, and removes it" do
       let
@@ -193,7 +194,7 @@ spec = describe "Elaborate.Loop" do
         Tuple _ s0 = wokenAfter (field keyC tC XRowEmpty) 1
         Tuple result s = run s0
       result `shouldEqual` Completed
-      s.counters.fuel `shouldEqual` 0
+      s.retained.fuel `shouldEqual` 0
 
     it "reports a job postponed again, having spent the unit" do
       let
@@ -207,14 +208,14 @@ spec = describe "Elaborate.Loop" do
             , awaiting: Set.fromFoldable [ metas.r, metas.s, metas.w, metas.x ]
             }
         )
-      s.counters.fuel `shouldEqual` 0
+      s.retained.fuel `shouldEqual` 0
 
     it "stops at the first failure, reported at the failing job's own site" do
       let
         Tuple _ s0 = wokenAfter (field keyC tA XRowEmpty) 5
         Tuple result s = run s0
       result `shouldEqual` Rejected (EquationFailed elsewhere (TypeNotEqual tC tA))
-      s.counters.fuel `shouldEqual` 4
+      s.retained.fuel `shouldEqual` 4
 
     it "names the job the fuel did not reach once it has run out" do
       let
@@ -269,7 +270,7 @@ spec = describe "Elaborate.Loop" do
         Tuple result s = runWith (\_ -> pure unit) s1
       created.attempt `shouldEqual` Run.Committed
       result `shouldEqual` Completed
-      s.counters.fuel `shouldEqual` 0
+      s.retained.fuel `shouldEqual` 0
 
     it "spends fuel on a retry and not on a first attempt queued beside it" do
       let
@@ -277,7 +278,7 @@ spec = describe "Elaborate.Loop" do
         Tuple waiting s1 = submitWith (\_ -> postpone (Set.singleton metas.v)) waitingSite waitsOnV (sessionWith 0)
         Tuple _ s2 = submitWith creating waitingSite waitsOnV s1
         Tuple _ s3 = submitEquality site (solvable metas.v) s2
-        Tuple withFuel _ = runWith (\_ -> pure unit) (s3 { counters { fuel = 1 } })
+        Tuple withFuel _ = runWith (\_ -> pure unit) (s3 { retained { fuel = 1 } })
         Tuple withoutFuel s = runWith (\_ -> pure unit) s3
       withFuel `shouldEqual` Completed
       -- The first attempt runs; the retry after it is what the fuel does not reach.

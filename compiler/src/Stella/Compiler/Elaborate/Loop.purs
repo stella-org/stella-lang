@@ -113,7 +113,7 @@ runWith runner = tailRec step
     Nothing ->
       Done (Tuple (quiesce s) s)
     Just next
-      | next.phase == Retry && s.counters.fuel <= 0 ->
+      | next.phase == Retry && s.retained.fuel <= 0 ->
           Done (Tuple (exhausted s next.id) s)
       | otherwise -> case takeReady s.tentative.scheduler of
           Nothing ->
@@ -123,7 +123,7 @@ runWith runner = tailRec step
               spent = if next.phase == Retry then 1 else 0
               taken = s
                 { tentative { scheduler = scheduler }
-                , counters { fuel = s.counters.fuel - spent }
+                , retained { fuel = s.retained.fuel - spent }
                 }
             in
               case attemptPendingWith runner id taken of

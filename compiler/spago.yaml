@@ -2,20 +2,22 @@ package:
   name: compiler
   description: The Stella compiler lib
   dependencies:
-    - either
-    - maybe
+    - argonaut-core
     - arrays
+    - either
+    - enums
     - foldable-traversable
+    - integers
+    - maybe
     - ordered-collections
     - prelude
-    - integers
     - strings
-    - enums
     - tailrec
     - tuples
   test:
     main: Test.Stella.Compiler
     dependencies:
+      - aff
       - arrays
       - effect
       - quickcheck

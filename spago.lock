@@ -33,6 +33,7 @@
         "path": "compiler",
         "core": {
           "dependencies": [
+            "argonaut-core",
             "arrays",
             "either",
             "enums",
@@ -48,6 +49,7 @@
         },
         "test": {
           "dependencies": [
+            "aff",
             "arrays",
             "effect",
             "quickcheck",

@@ -22,6 +22,7 @@ import Test.Stella.Compiler.TypedCore.Row as Row
 import Test.Stella.Compiler.Elaborate.Catalog as ElaborateCatalog
 import Test.Stella.Compiler.Elaborate.Context as ElaborateContext
 import Test.Stella.Compiler.Elaborate.Elab as ElaborateElab
+import Test.Stella.Compiler.Elaborate.Handle as ElaborateHandle
 import Test.Stella.Compiler.Elaborate.Loop as ElaborateLoop
 import Test.Stella.Compiler.Elaborate.Obligation as ElaborateObligation
 import Test.Stella.Compiler.Elaborate.Run as ElaborateRun
@@ -72,3 +73,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateTermMeta.spec
   ElaborateVertical.spec
   ElaborateCatalog.spec
+  ElaborateHandle.spec

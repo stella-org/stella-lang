@@ -20,7 +20,7 @@
 -- | equations; the judgements of `Unify` are reached through it and not directly.
 module Stella.Compiler.Elaborate.Elab
   ( Tentative
-  , Counters
+  , Retained
   , SolverState
   , Cause(..)
   , Outcome(..)
@@ -40,6 +40,11 @@ module Stella.Compiler.Elaborate.Elab
   , zonkTerm
   , assume
   , require
+  , issue
+  , resolveGoal
+  , resolveType
+  , resolveExpr
+  , resolveMeta
   , spendFuel
   , fuelRemaining
   ) where
@@ -52,6 +57,7 @@ import Stella.Compiler.Elaborate.Context (XContext)
 import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..), MalformedGoal(..))
 import Stella.Compiler.Elaborate.Kind (XKind)
+import Stella.Compiler.Elaborate.Handle (Arena, ExprObject, GoalObject, Handle, HandleClass(..), HandleError(..), HandleObject(..), SessionId, TypeObject, emptyArena, issueIn, resolveIn)
 import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce, recheck)
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, GoalRecord, Job(..), PendingId, Site, SynthRef, goalOf, newGoal)
 import Stella.Compiler.Elaborate.Row (XRowError)
@@ -87,34 +93,41 @@ import Data.Tuple (Tuple(..))
 -- | with the rest, so the assignments of a candidate a search tried and discarded
 -- | are none of the goal's dependencies.
 -- |
--- | **It is the one field here that belongs to a single attempt.** Whoever begins
--- | an attempt empties it and whoever ends one empties it again; left standing, the
--- | assignments of a job that has already committed would be among the
--- | dependencies the next postponement is derived from, and a goal would be woken
--- | by work that had nothing to do with it.
+-- | **It and `arena` are the fields here that belong to a single attempt.**
+-- | Whoever begins an attempt empties both and whoever commits one empties them
+-- | again. Left standing, the assignments of a job that has already committed
+-- | would be among the dependencies the next postponement is derived from, and a
+-- | goal would be woken by work that had nothing to do with it; and a handle
+-- | would outlive the attempt a synthesizer is obliged to hold nothing across.
+-- | Inside an attempt both are transactional, as everything else here is.
 type Tentative =
   { metas :: MetaContext
   , obligations :: ObligationStore
   , scheduler :: Scheduler
   , written :: Set MetaVar
+  , arena :: Arena
   }
 
 -- | What a rollback leaves alone.
 -- |
 -- | Fuel bounds the loop's retries, and fuel restored with the rest would let a
--- | goal that postpones unconditionally run forever. Nothing here is part of what
--- | an attempt owns.
+-- | goal that postpones unconditionally run forever. `nextGeneration` is what a
+-- | handle's generation is drawn from, and one restored would hand a new object
+-- | the number a handle to a deleted one carries. `session` is the identity of
+-- | the session and never changes. Nothing here is part of what an attempt owns.
 -- |
 -- | **The split is structural.** A rollback replaces `tentative` and keeps this,
 -- | so which half a field stands in is the whole of what decides its fate, and
 -- | nothing has to remember to save or to skip one.
-type Counters =
-  { fuel :: P.Int
+type Retained =
+  { session :: SessionId
+  , nextGeneration :: P.Int
+  , fuel :: P.Int
   }
 
 type SolverState =
   { tentative :: Tentative
-  , counters :: Counters
+  , retained :: Retained
   }
 
 -- | Why an attempt ended without a result, which is what decides how the
@@ -150,7 +163,7 @@ data Outcome a
 -- | The state is threaded through every outcome and not only through `Done`.
 -- |
 -- | What an abandoned run leaves behind is what a rollback is defined against:
--- | the counters it spent are kept while everything else is restored, so the
+-- | what it spent is kept while everything else is restored, so the
 -- | state a failure or a postponement reached has to reach the frame that
 -- | catches it.
 newtype Elab a = Elab (SolverState -> Tuple (Outcome a) SolverState)
@@ -158,15 +171,18 @@ newtype Elab a = Elab (SolverState -> Tuple (Outcome a) SolverState)
 runElab :: forall a. SolverState -> Elab a -> Tuple (Outcome a) SolverState
 runElab s (Elab f) = f s
 
-initialState :: P.Int -> SolverState
-initialState fuel =
+-- | The state a session begins in. The session manager supplies an identifier
+-- | it issues once for the life of the process running the guest.
+initialState :: SessionId -> P.Int -> SolverState
+initialState session fuel =
   { tentative:
       { metas: emptyContext
       , obligations: emptyStore
       , scheduler: emptyScheduler
       , written: Set.empty
+      , arena: emptyArena
       }
-  , counters: { fuel }
+  , retained: { session, nextGeneration: 0, fuel }
   }
 
 throw :: forall a. Diagnostic -> Elab a
@@ -223,15 +239,64 @@ transact action = Elab \s -> case runElab s action of
   Tuple (Broke defect) s' ->
     Tuple (Broke defect) (rollbackTo s.tentative s')
 
+-- | Place an object in the arena and hand back the handle naming it.
+-- |
+-- | Its generation is the next the session has never issued. A generation is
+-- | never issued twice, so where none is left the session stops rather than
+-- | wrap around to one a handle still carries.
+issue :: HandleObject -> Elab Handle
+issue object = Elab \s ->
+  if s.retained.nextGeneration >= top then
+    Tuple (Broke GenerationsExhausted) s
+  else
+    let
+      Tuple handle arena =
+        issueIn s.retained.session s.retained.nextGeneration object s.tentative.arena
+    in
+      Tuple (Done handle)
+        ( s
+            { tentative { arena = arena }
+            , retained { nextGeneration = s.retained.nextGeneration + 1 }
+            }
+        )
+
+-- | The object a handle names, where it names one of the class expected. A
+-- | handle that names none is a defect of whoever presented it.
+resolveObject :: HandleClass -> Handle -> Elab HandleObject
+resolveObject expected handle = Elab \s ->
+  case resolveIn s.retained.session s.retained.nextGeneration expected handle s.tentative.arena of
+    Left err -> Tuple (Broke (InvalidHandle handle err)) s
+    Right object -> Tuple (Done object) s
+
+resolveGoal :: Handle -> Elab GoalObject
+resolveGoal handle = resolveObject GoalClass handle >>= case _ of
+  GoalObject goal -> pure goal
+  _ -> break (InvalidHandle handle (HandleClassMismatch GoalClass))
+
+resolveType :: Handle -> Elab TypeObject
+resolveType handle = resolveObject TypeClass handle >>= case _ of
+  TypeObject ty -> pure ty
+  _ -> break (InvalidHandle handle (HandleClassMismatch TypeClass))
+
+resolveExpr :: Handle -> Elab ExprObject
+resolveExpr handle = resolveObject ExprClass handle >>= case _ of
+  ExprObject expr -> pure expr
+  _ -> break (InvalidHandle handle (HandleClassMismatch ExprClass))
+
+resolveMeta :: Handle -> Elab MetaVar
+resolveMeta handle = resolveObject MetaClass handle >>= case _ of
+  MetaObject m -> pure m
+  _ -> break (InvalidHandle handle (HandleClassMismatch MetaClass))
+
 -- | One unit of the loop's budget.
 -- |
 -- | What exhaustion means is the loop's to decide; this spends and reports
 -- | nothing.
 spendFuel :: Elab Unit
-spendFuel = Elab \s -> Tuple (Done unit) (s { counters { fuel = s.counters.fuel - 1 } })
+spendFuel = Elab \s -> Tuple (Done unit) (s { retained { fuel = s.retained.fuel - 1 } })
 
 fuelRemaining :: Elab P.Int
-fuelRemaining = Elab \s -> Tuple (Done s.counters.fuel) s
+fuelRemaining = Elab \s -> Tuple (Done s.retained.fuel) s
 
 -- | `Γ ; κ ⊢ τ1 ≡ τ2`, together with everything its assignments owe.
 -- |
@@ -539,10 +604,10 @@ wakeAll :: Set MetaVar -> Scheduler -> Scheduler
 wakeAll ms scheduler =
   foldl (\acc m -> wake m acc) scheduler (Set.toUnfoldable ms :: P.Array MetaVar)
 
--- | The counters are the state the abandoned run left, and everything else is the
+-- | What is retained is the state the abandoned run left, and everything else is the
 -- | checkpoint's.
 rollbackTo :: Tentative -> SolverState -> SolverState
-rollbackTo saved s = { tentative: saved, counters: s.counters }
+rollbackTo saved s = { tentative: saved, retained: s.retained }
 
 instance Functor Elab where
   map f action = Elab \s -> case runElab s action of

@@ -21,6 +21,7 @@ import Prim as P
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindKindVars, bindTyVar, emptyXContext)
 import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
+import Stella.Compiler.Elaborate.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, assume, freshTypeMeta, initialState, postpone, require, runElab, spendFuel, throw, transact, unify)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce)
@@ -167,7 +168,7 @@ sessionWith store scheduler = s
       }
   }
   where
-  s = initialState 100
+  s = initialState (SessionId 0) 100
 
 session :: SolverState
 session = sessionWith emptyStore emptyScheduler
@@ -457,7 +458,7 @@ spec = describe "Elaborate.Elab" do
         spending = spendFuel *> throw failure
 
         Tuple _ s = runElab session (transact spending)
-      s.counters.fuel `shouldEqual` 99
+      s.retained.fuel `shouldEqual` 99
 
     it "keeps it across a postponement that propagated" do
       let
@@ -465,7 +466,7 @@ spec = describe "Elaborate.Elab" do
         spending = spendFuel *> waitingOn metas.r
 
         Tuple _ s = runElab session (transact spending)
-      s.counters.fuel `shouldEqual` 99
+      s.retained.fuel `shouldEqual` 99
 
   describe "a defect is none of the three outcomes" do
     it "reports a metavariable the context does not hold rather than failing" do

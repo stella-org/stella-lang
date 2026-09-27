@@ -15,6 +15,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Context (Origin(..), bindVar, emptyXContext)
+import Stella.Compiler.Elaborate.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), SolverState, assignTerm, freshTermMeta, freshTypeMeta, initialState, runElab, throw, transact)
 import Stella.Compiler.Elaborate.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Elaborate.TermMeta (TermError(..), zonkExpr)
@@ -136,7 +137,7 @@ opened = do
 -- | Open the holes, submit the two equations that decide the types, and run the
 -- | scheduler to where it stops.
 solvedTypes :: Either P.String (Tuple Holes SolverState)
-solvedTypes = case runElab (initialState 10) opened of
+solvedTypes = case runElab (initialState (SessionId 0) 10) opened of
   Tuple (Done holes) s0 ->
     let
       Tuple first s1 = submitEquality site { kind: XKType, left: holes.param, right: listOf xInt } s0

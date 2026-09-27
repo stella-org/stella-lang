@@ -14,6 +14,7 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Context (Origin(..), bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..), Inadmissible(..), MalformedGoal(..))
+import Stella.Compiler.Elaborate.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, assignTerm, createSynthesis, freshTypeMeta, freshTermMeta, initialState, postpone, runElab, spendFuel, throw, transact, unify)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), PendingId(..), Site, goalOf, newGoal)
@@ -130,7 +131,7 @@ sessionWith scheduler = s
       }
   }
   where
-  s = initialState 100
+  s = initialState (SessionId 0) 100
 
 session :: SolverState
 session = sessionWith emptyScheduler
@@ -189,7 +190,7 @@ spec = describe "Elaborate.Run" do
         Tuple outcome s = runAttempt (spendFuel *> unify site (solvable metas.r) *> (throw failure :: Elab Unit)) session
       outcome `shouldEqual` Failed failure
       solutionOf s.tentative.metas metas.r `shouldEqual` Nothing
-      s.counters.fuel `shouldEqual` 99
+      s.retained.fuel `shouldEqual` 99
 
     it "hands a defect back as the outcome it is, rolled back" do
       let
@@ -294,9 +295,9 @@ spec = describe "Elaborate.Run" do
     it "keeps the fuel a postponed attempt spent" do
       let
         Tuple id s0 = holdingJob stuck
-        spent = s0 { counters { fuel = 7 } }
+        spent = s0 { retained { fuel = 7 } }
         Tuple _ s = attemptPending id spent
-      s.counters.fuel `shouldEqual` 7
+      s.retained.fuel `shouldEqual` 7
 
     it "halts on a defect and leaves the job where it was" do
       let

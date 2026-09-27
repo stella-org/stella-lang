@@ -13,6 +13,7 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
+import Stella.Compiler.Elaborate.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), assignTerm, freshTermMeta, initialState, runElab, throw, transact)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Pending (Site)
@@ -213,20 +214,20 @@ spec = describe "Elaborate.TermMeta" do
   describe "through Elab" do
     it "creates a metavariable whose scope is what the context binds" do
       let
-        Tuple outcome s = runElab (initialState 0) (freshTermMeta wideContext xInt)
+        Tuple outcome s = runElab (initialState (SessionId 0) 0) (freshTermMeta wideContext xInt)
       outcome `shouldEqual` Done (TermMetaVar 0)
       lookupTermMeta s.tentative.metas (TermMetaVar 0) `shouldEqual` Just (TermUnsolved { ty: xInt, scope: wide })
 
     it "reports an escaping solution as a failure at the site" do
       let
-        Tuple outcome _ = runElab (initialState 0) do
+        Tuple outcome _ = runElab (initialState (SessionId 0) 0) do
           m <- freshTermMeta emptyXContext xInt
           assignTerm site m (EVar 1 x)
       outcome `shouldEqual` Failed (TermAssignmentFailed here (TermEscapingValue (TermMetaVar 0) x))
 
     it "reports a metavariable Ψ does not hold as a defect" do
       let
-        Tuple outcome _ = runElab (initialState 0) (assignTerm site (TermMetaVar 5) (EVar 1 x))
+        Tuple outcome _ = runElab (initialState (SessionId 0) 0) (assignTerm site (TermMetaVar 5) (EVar 1 x))
       outcome `shouldEqual` Broke (TermMisuse here (TermMetaUnbound (TermMetaVar 5)))
 
     it "rolls back a metavariable, its solution, and the name it took" do
@@ -237,7 +238,7 @@ spec = describe "Elaborate.TermMeta" do
           assignTerm site m (EVar 1 x)
           throw (TermAssignmentFailed here (TermMetaUnbound m))
 
-        Tuple outcome s = runElab (initialState 0) (transact attempt)
+        Tuple outcome s = runElab (initialState (SessionId 0) 0) (transact attempt)
       outcome `shouldEqual` Done (Left (TermAssignmentFailed here (TermMetaUnbound (TermMetaVar 0))))
       s.tentative.metas.nextTerm `shouldEqual` 0
       Map.size s.tentative.metas.termBindings `shouldEqual` 0
