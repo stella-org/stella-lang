@@ -818,6 +818,32 @@ module Base.Array (Array, length, unsafeNew, unsafeSet, unsafeIndex) where
 
 **`length` is an operation too**, so all four entries of this module are carried out by whatever executes the code rather than by a host table: an array is an opaque value whose representation belongs to the implementation holding it, and a slot count is as unreachable from outside as an element is.
 
+### A declaration the ABI manifest fixes ships no implementation
+
+**Every `foreign` of `Base` is an operation or one of the two `Base.IO` entries**, and
+so is carried out by whatever executes the program rather than by anything supplied
+alongside. Nothing is shipped for them, and nothing could usefully be: an operation is
+reached by a code and never through a foreign table, and what `Base.IO.pure` and
+`Base.IO.bind` construct is the executing machine's own representation of an `IO`,
+which is not a published ABI ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
+
+**That is a property of the names and not a privilege of a package** (D43). The rule
+is that a declaration whose name the ABI manifest fixes needs nothing supplied and
+every other `foreign` does, so `Base` is not an exception to how packages work — it is
+the layer that happens to hold exactly those names, and no other layer could declare
+one, a declaration belonging to the module that writes it
+([Modules](01-Modules.md)).
+
+**It is not a coincidence to be watched either.** `Base` is the portable surface, and
+an entry reaching the **world** is one target's rather than every target's, so it
+lives in a target namespace. What is left — portable, and reaching no world — is by
+that description something every backend can carry out itself, which is what an
+operation is.
+
+**The obligation does not vanish with the implementation.** A conformant backend owes
+every entry of the profile it claims (D26), and owing them is what makes them
+reachable; the layer states what is owed, and a backend is where it is met.
+
 **The construction entries are these two and no more**, and what they are is settled
 by what a portable `mapArray` has to be written over: somewhere to put the elements,
 and a way to put them there. Everything above that — a literal, a conversion, a

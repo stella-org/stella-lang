@@ -138,6 +138,7 @@ These serve as architecture tests as well as demonstrations.
 | [§5.1 Bytecode](../05-Backend/01-Bytecode.md) | The instruction set, continuations, and the `.dmo` module object |
 | [§5.2 Encoding](../05-Backend/02-Encoding.md) | The bytes of a `.dmo`: sections, tags, and opcodes |
 | [§5.3 Interface](../05-Backend/03-Interface.md) | The `.dmi`: the definitional arities a downstream module reads |
+| [§5.4 Foreign Manifest](../05-Backend/04-Foreign-Manifest.md) | The `foreign-manifest.json`: where a target reaches a module's implementations |
 | **§6. Modules** | |
 | [§6.1 Modules](../06-Modules/01-Modules.md) | Modules, declarations, FFI, entry point |
 | [§6.2 Prim and Base](../06-Modules/02-Prim-and-Base.md) | The four layers: what `Prim` holds, and what the `Base` ABI surface does |

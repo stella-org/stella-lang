@@ -88,62 +88,69 @@ is for a fault — belongs to the runtime ABI and is not settled
 that the `IO` that global holds is executed to completion, or that a fault ends the
 run.
 
-**Steam resolves no module.** It neither reads an import graph to decide an order
-nor looks for a file: what it is given is what it loads, and in the order it is
-given. A module's `imports` is read as a **condition** — every one of them is
+**Steam resolves no Stella module.** It neither reads an import graph to decide an
+order nor looks for a `.dmo`: what it is given is what it loads, and in the order it
+is given. A module's `imports` is read as a **condition** — every one of them is
 already in the registry, or the load fails — and never as a way to find anything.
 Ordering is the front end's, which is where the source, the search paths, and the
 build plan are.
 
+**A host module is the one thing it does reach for**, and only as a manifest
+dictates (D43): the manifest names what to load and the interpreter loads exactly
+that ([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)). **That is not a
+search either** — nothing is looked for, tried in several places, or inferred from a
+name — so the sentence above holds as written for the modules a program is made of,
+and the thing it excludes is still excluded.
+
 ### The `steam` Command Line Interface
 
-**What Steam provides is the wiring the Stella CLI runs a program through; the
-`steam` command is a standalone wrapper over that wiring.** The two are not
-competing front ends and they are not the same path either — the application calls
-the wiring and does not start the command, for the reason below. The dependency
-direction is what makes there be a command at all.
+**The `steam` command is how a program reaches the interpreter, and the Stella CLI
+starts it.** The two are not competing front ends and not two paths either: there is
+one path, and `stella run` compiles, writes what the command takes, and runs it.
 
 ```text
 compiler                         the language: checking, lowering, the container
 cli      → compiler              a library of what a command line needs
-steam    → compiler, cli         this interpreter, which is also a command
-stella   → compiler, steam       the application a user runs
+steam    → compiler, cli         this interpreter, which is a command
+stella   → compiler              the application a user runs, which starts that command
 ```
 
 **`cli` here is a shared library and not the application.** Both this interpreter's
 command and the one above it are built out of it, which is why `steam → cli` is an
 edge: it says nothing about who integrates whom.
 
-**`stella` is the integration point, and it is the only package that may be.**
-`compiler → steam` would be a cycle, so the compiler cannot call the interpreter as
-a library; `stella` depends on both and on nothing that depends on it, so it is where
-the two meet. That asymmetry is what decides the paragraph below.
+**Nothing links the interpreter, and that is the point of D43.** `compiler → steam`
+would be a cycle, so the compiler could never have called the interpreter as a
+library; the application could have, and no longer needs to. What passes between
+`stella` and `steam` is a command line — paths, a name, and a manifest — so the
+boundary is a process for `run` exactly as it must be for `session`, and one design
+serves both.
 
-**What the command and the application share is the wiring and not the process.**
-Running a program is a function of three things — the modules in order, the entry point, and
-the foreign table — and both reach it.
+**The dependency direction still decides something**, and it is narrower than before:
+it says the compiler may not reach the interpreter, which is why a compile-time
+session is a process and why `session` and `run` cannot differ about who assembles
+the table.
 
-| | The table it passes |
-| --- | --- |
-| the `steam run` command | **empty.** A command line carries paths and names, and a host function is neither |
-| `stella run` | the one it assembled, **calling the wiring directly** rather than starting this command |
+**What crosses between them is a command line, and that is enough** (D43). Running a
+program is a function of three things — the modules in order, the entry point, and the
+foreign table — and the third is **assembled by the interpreter** from a manifest
+naming where the implementations are
+([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)). A path is a thing an
+argument vector carries, so `stella` starts this command rather than linking it.
 
-**The table is why `stella` calls rather than starts.** Assembling one means resolving
-a module name to a module specifier and importing it
-([Foreign implementations](#foreign-implementations)), and what comes back is host
-functions — which no argument vector, and no framing built for names and bytes, can
-carry. An application that started this command would be handing over an empty table
-and could then run only what the command can.
+**The alternative was to hand the table over, and it does not survive the session.**
+A table holds host functions, which no argument vector and no framing built for names
+and bytes can carry, so an application that assembled one would have to link the
+interpreter and call it. That works for `run` and fails for `session`: a long-lived
+session is what the compiler talks to, the compiler cannot link the interpreter
+(the cycle above), so the session is a process — and a process cannot be handed host
+functions either. One of the two modes therefore had to assemble its own table, and
+a rule that held for one mode and not the other would be two designs wearing one
+name (D43).
 
-**So `steam run` is the wiring with nothing plugged in, and that is its use**: a
-`.dmo` already built can be run without rebuilding it, and the interpreter is usable
-end to end while the CLI above it is still being written. It is not the path a user's
-program takes to the machine.
-
-**The session is the other way round**, and for a reason that does not apply here: a
-long-lived session is what the compiler talks to, the compiler cannot link the
-interpreter, so `stella` starts one and brokers between them. Run has no such
-constraint, since nothing below `stella` needs to reach it.
+**So `steam run` is the whole path and not a reduced one**, and the command is what a
+program reaches the machine through. What it adds beyond being that path is that a
+`.dmo` already built can be run without rebuilding it.
 
 ```text
 steam run --entry Main  base/Base.Int.dmo  lib/Lib.dmo  main/Main.dmo
@@ -223,14 +230,20 @@ everything linked would find it. What is under the program's control is the entr
 module, so that is what is asked; what the runtime then receives is one name and no
 question at all.
 
-**The foreign table is empty**, so a program declaring a foreign the interpreter does
-not claim will not load. Assembling a table is the work of whoever calls `load` —
-resolving a module name to a module specifier and importing it is the Stella CLI's
-([Foreign implementations](#foreign-implementations)) — and this command does none of
-it. **What that leaves runnable is a program over `Base` alone**, which is enough to
-carry the interpreter end to end and not enough to print anything: a console reaches
-the world through a target entry, which is a host foreign. This is a limitation of
-the command and not of the interpreter, and it is where an assembled table plugs in.
+**The foreign table is assembled from a manifest the command is pointed at**, and is
+complete for a module before that module is loaded ([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)).
+A program declaring a foreign that neither the interpreter claims nor the manifest
+covers does not load, as before; what has changed is who fills the gap.
+
+```text
+steam run --manifest build/foreign-manifest.json --entry Main  … .dmo
+```
+
+**A manifest is not required, and its absence is not an error.** A program over
+`Base` alone declares no foreign anything needs to supply, so there is nothing for a
+manifest to say; a program that does declare one and was given no manifest is refused
+where that module loads, naming the foreign rather than the missing file — the
+declaration is what was unmet, and the manifest is one way to meet it.
 
 **The long-lived command is `session`, and it waits.** A session is answered through
 a request naming what to report, and what carries the two — a pipe with a framing of
@@ -588,9 +601,9 @@ What loading refuses:
 | A reference to a module this one does not import | **a header says which modules a term may name**, and the order modules happen to be loaded in adds nothing to it. This is not the row above: the module may be loaded and still be one this one never imported |
 | A global or foreign an imported module does not export | `EXPORTS` holds the value names a module publishes, its initialized globals and its foreign declarations alike |
 | A reference that reaches the wrong kind of declaration | a `CTORREFS` entry must reach a constructor, a `FOREIGNREFS` entry a foreign, a `GLOBALREFS` entry a top-level value ([Bytecode](../05-Backend/01-Bytecode.md)) |
-| A foreign with no implementation | resolution happens at load, so a program whose foreigns are incomplete does not start |
+| A foreign with no implementation | resolution happens at load, so a program whose foreigns are incomplete does not start. What could have supplied one is a manifest, and the refusal names the foreign rather than the manifest: the declaration is what was unmet (D43) |
 | A foreign the interpreter claims, declared at an arity other than the one the ABI gives that operation | the source is selected by name, so nothing else may answer for it, and the declaration is not of the entry it names |
-| A foreign the host's table holds at an arity other than the one declared | an adapter is uncurried, so its arity is how many arguments reach it at once, and nothing downstream compares the two |
+| A foreign a **supplied** table holds at an arity other than the one declared | an adapter is uncurried, so its arity is how many arguments reach it at once, and nothing downstream compares the two. A table assembled from a manifest carries no arity of its own, so this cannot arise there (D43) |
 | An operation code the interpreter does not implement | at the profile it claims ([Prim and Base](../06-Modules/02-Prim-and-Base.md)) |
 
 **What a count must be is the declaring module's to say, and this is where the
@@ -673,8 +686,16 @@ the registry as it was still leaves that write standing.
 | the registry, and the candidate module | unwound. The module is not committed, and nothing of it is reachable |
 | the slots the candidate's globals stood in | unwound with it, however many were filled before the failure |
 | an interned identity | **not** unwound, and this is deliberate: an identity belongs to a name rather than to a module, so what is left is one nothing refers to and a later module declaring that name is given the same one |
+| whatever a host module did as it was reached | **not** unwound. Reaching one runs its top-level, and that happens before an export is found missing, before one is found not to be callable, and before the Stella module that required it is loaded (D43) |
 | host state a foreign body wrote before it refused | **not** unwound, and nothing here can unwind it. The write is outside what the interpreter holds |
 | anything at all, after a call violating an ABI precondition | **no promise**. What such a call did is unspecified, so what is left to unwind is unknown (D42) |
+
+**Reaching a host module is the earliest of these, and the least recoverable.** An
+import is not undone, so a module whose top-level opened a socket or wrote a file has
+done it before anything the interpreter could refuse on — a missing export, a value
+that is not callable, the Stella module that required it then failing to load. **A session outlives
+all of that and keeps what was reached**, which is what makes the next input
+cheaper and what makes the effect permanent.
 
 **The last row is a limit on the promise and not a defect to be fixed.** Undoing it
 would need the host to offer a transaction over whatever a body touched, which is
@@ -854,12 +875,77 @@ a form that applied the function and handed back something to be run later would
 a throw at application outside whatever catches one. Applying and running are one
 moment here, and the moment is the interpreter's to enclose.
 
-**The table is the host's to build and the interpreter's to read.** Resolving a
-module name to a module specifier, and an unqualified name to an export of it, is
-the host's, as is whatever it takes to reach that export; the interpreter is handed
-a table already assembled and looks for nothing. It holds an arity beside each body
-because an arity is what a saturated call is, and because it is the one thing a
-loader can check the host's side against.
+**The interpreter assembles the table, and a manifest is what it assembles it from**
+(D43). A manifest says where a module's implementations are, in terms the target it
+names understands; the interpreter reaches them and builds one entry per foreign,
+**each in time for the module that declares it** (below)
+([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)).
+
+**The table holds an arity beside each body because an arity is what a saturated call
+is**, and on the manifest path that arity is **the declared one**. There is no second
+number: a manifest carries none, and none can be read off a reached export — on
+JavaScript, `Function.length` counts neither a rest parameter nor one with a default,
+and an adapter is usually written as one of those.
+
+**So the refusal for a supplied arity that contradicts a declaration does not fire on
+this path**, and that is not the check having been removed. It belongs to a table
+supplied entry by entry with an arity of its own, which is what an embedder
+constructing one in the same process does — a test, above all. Nothing the command
+does supplies one.
+
+**What is fixed here and not in the manifest is the shape of an entry.** A manifest
+names a module; the export an entry comes from is the foreign's own unqualified name,
+so `Js.Console.log` is the export `log` of whatever the manifest says `Js.Console`
+is. That derivation is the target's and is stated with the target, not here.
+
+**What is fixed is when the table must be ready, not when it is built.**
+
+```text
+the table is complete for a module before that module is loaded
+```
+
+**The two modes meet that differently, and they have to.** `run` is given every
+module at once, so it can reach everything its declarations ask for before the first
+load. A session is given modules one at a time and cannot know at the start which
+will arrive, so it reaches for a module's implementations when the module that needs
+them arrives.
+
+| | When the reaching happens |
+| --- | --- |
+| **Run** | once, before the first module is loaded, for the foreigns the given modules declare |
+| **Session** | as each module arrives, for the foreigns that module declares |
+
+**Neither is eager over the manifest.** Reaching every module a manifest names would
+run the top-level of hosts the program never uses, and a session's manifest is
+written for everything a REPL might load rather than for what it did. A manifest
+entry for a module nothing declares against is never reached.
+
+**Reaching the same host module twice is not twice the work.** A host reached once
+stays reached — that is what an import is — so a session paying per arrival pays once
+per host module, not once per Stella module that mentions it.
+
+**Resolution still happens at load and still searches nothing** (below). What changed
+is that the table it consults was built by the same process a moment earlier rather
+than handed to it.
+
+**An entry the ABI manifest fixes is in no foreign manifest.** The operations and the
+two `Base.IO` entries are the interpreter's by name
+([Prim and Base](../06-Modules/02-Prim-and-Base.md)), so a manifest covering them
+would be a second answer to a question the precedence rule below already settles.
+
+What assembling refuses, all of it before the module that needed it is read:
+
+| | |
+| --- | --- |
+| A manifest naming a target that is not this runtime's | the payloads are written for a machine that is not this one, and reading past that would be guessing. The same rule a `.dmo` has for an ABI version it does not hold |
+| A `formatVersion` this reader does not implement | likewise |
+| A manifest that does not read, or that lacks a field the format fixes | the manifest is wrong, and is reported as that rather than as a foreign being absent |
+| A module the manifest names that cannot be reached | named, with what the target said about not reaching it |
+| A module reached that has no export of the foreign's name | named, with the export that was looked for |
+| An export reached that is not callable | the one shape that can be checked, a `.dmo` carrying no type |
+
+**A manifest entry for a module nothing declares against is ignored**, and nothing is
+reached for it. What is assembled is what a declaration asked for.
 
 **An adapter returns an `Outcome`, and a host exception is not one of them.** The
 interpreter catches what a body throws synchronously and produces a fault of its
@@ -961,7 +1047,8 @@ checked afterwards, against whichever source the name selected.
 | --- | --- | --- |
 | the interpreter, as an operation | the arity the ABI gives that operation | refused. The declaration is not of the entry it names, and no other source may answer for it |
 | the interpreter, as a `Base.IO` entry | the arity the ABI gives it — one for `pure`, two for `bind` | refused, for the same reason |
-| the host's table | the arity the declaration states | refused, and reported as the disagreement it is rather than as an absence |
+| the table, where an entry carries an arity of its own | the arity the declaration states | refused, and reported as the disagreement it is rather than as an absence |
+| the table, where it was assembled from a manifest | nothing. The declared arity is adopted, a manifest carrying none and none being readable off a reached export (above) |
 
 **A mismatch is reported as a disagreement because an implementation is there.** An
 adapter is uncurried, so an arity is how many arguments reach it at once, and
@@ -969,17 +1056,28 @@ nothing downstream would find the discrepancy: a call site is checked against th
 declaration, and the declaration is what the other side was supposed to match.
 Reporting an absence instead would send a reader looking for something that exists.
 
+**The fourth row is the one a program takes**, the third being reachable only where
+something in the same process built a table entry by entry. Nothing is lost by it:
+what the third row catches is a table disagreeing with a declaration, and a table
+with no arity of its own cannot.
+
 **What does not load is the module, however little of it the foreign is reached
 by.** A declaration nothing calls stops the load exactly as one on every path does,
 which is what keeps an incomplete program from starting
 ([Bytecode](../05-Backend/01-Bytecode.md)).
 
-**The obligation that falls out of it belongs to whoever calls `load`.** A front end
-that type checks knows which foreigns a module declares and nothing of which
-implementations a host holds, so completeness is not its to establish; what can
-establish it is whatever assembled the table — the CLI for a run or a session, and
-the bootstrap of a compile-time session for elaboration. The table is complete for a
-module before that module is handed over.
+**The obligation that falls out of it is the manifest's to meet** (D43). A front end
+that type checks knows which foreigns a module declares, and a manifest is where it
+writes down what supplies each of them; the interpreter assembles from that in time, so the
+table is complete for a module before that module is read — which a run meets by
+reaching everything first and a session by reaching what each arrival needs.
+
+**Completeness is checked twice, and the two catch different things.** A build that
+emitted a manifest covering every foreign of every module in the program catches an
+omission where the source is, with the module and the entry to hand
+([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)); the loader catches what
+reaches it regardless, since a `.dmo` may arrive from anywhere and a manifest may be
+stale. Neither makes the other unnecessary.
 
 ### The table holds no effect summary, and the interface file does
 

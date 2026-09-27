@@ -365,7 +365,7 @@ The heading of each group names the step of the plan that the group belongs to.
 
 ### The host's foreign table (step 5, interpreter 6)
 
-The interpreter is handed a table already assembled, so these need no host that imports anything: a table written by hand is what a test supplies ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
+These are about the table itself and not about where it came from, so a table written by hand is what a test supplies and nothing here imports anything ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)). **Assembling one from a manifest is a separate group** below (D43): keeping the two apart is what lets a failure in either be read as its own.
 
 | Input | Required outcome |
 | --- | --- |
@@ -470,6 +470,46 @@ What the command adds over the pieces below it is the wiring — reading files, 
 **Totality is the property worth testing here, not any one row.** Two questions decide the status — was it a bug, and had the entry point begun — and a case for each leaf is what shows nothing falls between them. A command that left one path unclassified would exit `0` on it, which is the worst of the four answers.
 
 **A test of this is a test of a process and not of a function**, so what it asserts is the exit status and the streams. Asserting the value `main` produced would be asserting what the command deliberately does not report.
+
+### The foreign manifest (step 5, interpreter 6)
+
+The table is assembled from the manifest, complete for a module before that module is loaded (D43, [Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)). A run reaches everything before the first load; a session reaches a module's implementations as that module arrives.
+
+**What a failure costs depends on the mode, and the rows below say what fails rather than what it costs.** A run exits, so everything here is a refusal before the entry point ran and exits `1`. A session does not exit: it answers the refusal and waits for the next input, which is the whole of what a session is for.
+
+| | A failure reaching a module's implementations |
+| --- | --- |
+| **Run** | status `1`, and the process ends |
+| **Session** | the module is refused, the refusal is the answer, and the session takes the next input |
+
+**The manifest itself is the exception, and it fails once.** It is read when the command starts, so a manifest that does not parse, names a `formatVersion` this reader does not implement, or names another target is a failure to start — `1` for a run, and for a session a failure to open rather than a refusal it could answer. **Keeping the two apart matters**: one says this program cannot be run here, the other says this module could not be, and a session that ended on the second would lose everything it held for a reason that concerns one input.
+
+| Input | Required outcome |
+| --- | --- |
+| A manifest covering the foreigns a program declares | The table holds one entry per foreign, and the program runs |
+| No manifest, and a program over `Base` alone | Runs. There is nothing for a manifest to say, so its absence is not an error |
+| No manifest, and a program declaring a foreign | Refused where that module loads, **naming the foreign** and not the missing file: the declaration is what was unmet |
+| A manifest naming a target that is not this runtime's | Rejected, as a `.dmo` rejects an ABI version it does not hold. Not read past, and not read with unfamiliar fields skipped |
+| A manifest of a `formatVersion` this reader does not implement | Rejected likewise |
+| A relative `specifier`, with the manifest and the working directory in different places | Resolved against the **manifest's** directory. Running the same manifest from elsewhere reaches the same module |
+| A bare `specifier` | Resolved as the host resolves one, starting from the manifest's directory |
+| A manifest that is not readable as JSON, or lacks a field this document fixes | Rejected, reported as the manifest being wrong rather than as a foreign being absent |
+| A module the manifest names that cannot be reached | Rejected, naming the module and what the target said |
+| A module reached that has no export of the foreign's name | Refused, naming the module and the export looked for |
+| An export that is reached but is not callable | Refused likewise. A `.dmo` carries no type, so this is the one shape that can be checked |
+| A manifest entry for a module nothing declares against | Ignored, and nothing is reached for it |
+| A manifest naming one module twice | Rejected. First-wins and last-wins both make the meaning depend on the order of writing |
+| A session, given modules one at a time | Reaches for a module's implementations as that module arrives, the set not being known at the start. The table is complete for a module before that module loads, which is the obligation both modes meet |
+| A session where a host module cannot be reached, or has no such export | The module is refused and **the session continues**, answering the next input. Not an exit |
+| A session opened with a manifest that does not parse, or names another target | A failure to open, and not a refusal it could answer: nothing about it is per-module |
+| A host module two Stella modules declare against, in a session | Reached once. An import stays imported |
+| A host module whose top-level has an effect, where the load then fails | The effect stands. An import is not undone, and it happened before anything the interpreter could refuse on |
+| A manifest entry for a name the ABI manifest fixes | Never consulted. The interpreter is selected by name, so the entry is dead rather than an override |
+| A foreign reached through a manifest, at any arity | The declared arity is adopted, and the refusal for a **supplied** arity that contradicts a declaration cannot fire: nothing on this path supplies one. **A case asserting that it does would be asserting a check that is not there** |
+
+**Coverage is checked twice and the two are not redundant.** A build that omitted a package's mapping is caught where the source is, with the module and the declaration to hand; the loader catches what actually reached it, a `.dmo` being able to arrive from anywhere and a manifest being able to go stale. A test of one is not a test of the other.
+
+**What must not be tested is the payload's meaning.** What a `specifier` is belongs to the target, and a case asserting how one is resolved would be fixing in the compiler what the format exists to keep out of it.
 
 ### Kind and type unification (step 7, division 2)
 
