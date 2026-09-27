@@ -29,6 +29,7 @@ module Stella.Compiler.TypedCore
   , module Stella.Compiler.TypedCore.Declare
   , module Stella.Compiler.TypedCore.Equality
   , module Stella.Compiler.TypedCore.Entailment
+  , module Stella.Compiler.TypedCore.Reference
   ) where
 
 -- Re-exporting `Type` and `Constraint` shadows the `Prim` names of those
@@ -46,6 +47,7 @@ import Stella.Compiler.TypedCore.Kind (Kind(..), KindScheme, RowElemKind(..), Sc
 import Stella.Compiler.TypedCore.Kinding (KindError(..), Synthesized(..), checkKind, kindOf, producesType, quantifiableKind, rowElemKindOf, wellFormedConstraint, wellFormedKey, wellFormedKind)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), JoinName(..), KindVar(..), ModuleName(..), OpName(..), Qualified(..), Symbol(..), Tag(..), TyName(..), TyVar(..), qualifier, unqualified)
 import Stella.Compiler.TypedCore.Prim (asFunction, booleanTy, charTy, fn, functionTy, intTy, ioTy, litType, numberTy, primModule, primSignature, pureFn, recordTy, stringTy, unitCtor, unitTy, variantTy)
+import Stella.Compiler.TypedCore.Reference (globalsOf)
 import Stella.Compiler.TypedCore.Row (RowError(..), RowNormalForm, emptyNormalForm, nf)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), CtorInfo, EffectInfo, Signature, TyConInfo(..), ValueInfo, effectParamKinds, emptySignature, lookupCtor, lookupEffect, lookupOperation, lookupTyCon, lookupValue, tyConKind)
 import Stella.Compiler.TypedCore.Term (Binding, CtorBranch, DecisionTree(..), Expr(..), Handler, Layout, Cell, KeyBranch, LitBranch, Literal(..), OpClause(..), Occurrence(..), Param, ReturnClause, exprAnnotation, opClauseBody, opClauseOp, withAnnotation)

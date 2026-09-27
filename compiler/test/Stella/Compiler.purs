@@ -27,10 +27,12 @@ import Test.Stella.Compiler.Elaborate.Run as ElaborateRun
 import Test.Stella.Compiler.Elaborate.Scheduler as ElaborateScheduler
 import Test.Stella.Compiler.Elaborate.Term as ElaborateTerm
 import Test.Stella.Compiler.Elaborate.TermMeta as ElaborateTermMeta
+import Test.Stella.Compiler.Elaborate.Vertical as ElaborateVertical
 import Test.Stella.Compiler.Elaborate.Unify as Unify
 import Test.Stella.Compiler.TypedCore.RowProperties as RowProperties
 import Test.Stella.Compiler.TypedCore.EffectSlice as EffectSlice
 import Test.Stella.Compiler.TypedCore.HandlerSlice as HandlerSlice
+import Test.Stella.Compiler.TypedCore.Reference as TypedCoreReference
 import Test.Stella.Compiler.TypedCore.VerticalSlice as VerticalSlice
 import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess)
@@ -54,6 +56,7 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   BytecodeSerialize.spec
   Interface.spec
   VerticalSlice.spec
+  TypedCoreReference.spec
   EffectSlice.spec
   HandlerSlice.spec
   RowProperties.spec
@@ -66,3 +69,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateLoop.spec
   ElaborateTerm.spec
   ElaborateTermMeta.spec
+  ElaborateVertical.spec

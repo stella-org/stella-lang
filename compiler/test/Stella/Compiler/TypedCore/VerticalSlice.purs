@@ -16,6 +16,7 @@ module Test.Stella.Compiler.TypedCore.VerticalSlice
   ( spec
   , intModule
   , verticalSlice
+  , listDecl
   ) where
 
 import Prelude
