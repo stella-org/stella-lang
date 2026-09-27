@@ -153,8 +153,34 @@ manifestOf01 :: P.Array { code :: P.Int, entry :: Qualified Ident, arity :: P.In
 manifestOf01 =
   [ { code: 0x01, entry: base "Base.Int" "add", arity: 2 }
   , { code: 0x02, entry: base "Base.Int" "sub", arity: 2 }
+  , { code: 0x03, entry: base "Base.Int" "mul", arity: 2 }
+  , { code: 0x04, entry: base "Base.Int" "quot", arity: 2 }
+  , { code: 0x05, entry: base "Base.Int" "rem", arity: 2 }
+  , { code: 0x06, entry: base "Base.Int" "eq", arity: 2 }
+  , { code: 0x07, entry: base "Base.Int" "lt", arity: 2 }
+  , { code: 0x08, entry: base "Base.Int" "toNumber", arity: 1 }
+  , { code: 0x09, entry: base "Base.Int" "toString", arity: 1 }
+  , { code: 0x30, entry: base "Base.Number" "add", arity: 2 }
+  , { code: 0x31, entry: base "Base.Number" "sub", arity: 2 }
+  , { code: 0x32, entry: base "Base.Number" "mul", arity: 2 }
+  , { code: 0x33, entry: base "Base.Number" "divide", arity: 2 }
+  , { code: 0x34, entry: base "Base.Number" "negate", arity: 1 }
+  , { code: 0x35, entry: base "Base.Number" "eq", arity: 2 }
+  , { code: 0x36, entry: base "Base.Number" "lt", arity: 2 }
+  , { code: 0x37, entry: base "Base.Number" "floor", arity: 1 }
+  , { code: 0x38, entry: base "Base.Number" "ceil", arity: 1 }
+  , { code: 0x39, entry: base "Base.Number" "trunc", arity: 1 }
+  , { code: 0x3A, entry: base "Base.Number" "toInt", arity: 1 }
+  , { code: 0x3B, entry: base "Base.Number" "toString", arity: 1 }
   , { code: 0x10, entry: base "Base.String" "length", arity: 1 }
   , { code: 0x11, entry: base "Base.String" "codePointAt", arity: 2 }
+  , { code: 0x12, entry: base "Base.String" "append", arity: 2 }
+  , { code: 0x13, entry: base "Base.String" "slice", arity: 3 }
+  , { code: 0x14, entry: base "Base.String" "singleton", arity: 1 }
+  , { code: 0x15, entry: base "Base.String" "eq", arity: 2 }
+  , { code: 0x16, entry: base "Base.String" "lt", arity: 2 }
+  , { code: 0x40, entry: base "Base.Char" "toCodePoint", arity: 1 }
+  , { code: 0x41, entry: base "Base.Char" "fromCodePoint", arity: 1 }
   , { code: 0x20, entry: base "Base.Array" "unsafeIndex", arity: 2 }
   , { code: 0x21, entry: base "Base.Array" "unsafeNew", arity: 1 }
   , { code: 0x22, entry: base "Base.Array" "unsafeSet", arity: 3 }

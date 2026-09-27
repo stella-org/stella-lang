@@ -40,8 +40,34 @@ import Data.Show.Generic (genericShow)
 data PrimOp
   = IntAdd
   | IntSub
+  | IntMul
+  | IntQuot
+  | IntRem
+  | IntEq
+  | IntLt
+  | IntToNumber
+  | IntToString
+  | NumberAdd
+  | NumberSub
+  | NumberMul
+  | NumberDivide
+  | NumberNegate
+  | NumberEq
+  | NumberLt
+  | NumberFloor
+  | NumberCeil
+  | NumberTrunc
+  | NumberToInt
+  | NumberToString
   | StringLength
   | StringCodePointAt
+  | StringAppend
+  | StringSlice
+  | StringSingleton
+  | StringEq
+  | StringLt
+  | CharToCodePoint
+  | CharFromCodePoint
   | ArrayLength
   | ArrayUnsafeNew
   | ArrayUnsafeSet
@@ -76,8 +102,34 @@ entryOfOp :: PrimOp -> Qualified Ident
 entryOfOp = case _ of
   IntAdd -> base "Base.Int" "add"
   IntSub -> base "Base.Int" "sub"
+  IntMul -> base "Base.Int" "mul"
+  IntQuot -> base "Base.Int" "quot"
+  IntRem -> base "Base.Int" "rem"
+  IntEq -> base "Base.Int" "eq"
+  IntLt -> base "Base.Int" "lt"
+  IntToNumber -> base "Base.Int" "toNumber"
+  IntToString -> base "Base.Int" "toString"
+  NumberAdd -> base "Base.Number" "add"
+  NumberSub -> base "Base.Number" "sub"
+  NumberMul -> base "Base.Number" "mul"
+  NumberDivide -> base "Base.Number" "divide"
+  NumberNegate -> base "Base.Number" "negate"
+  NumberEq -> base "Base.Number" "eq"
+  NumberLt -> base "Base.Number" "lt"
+  NumberFloor -> base "Base.Number" "floor"
+  NumberCeil -> base "Base.Number" "ceil"
+  NumberTrunc -> base "Base.Number" "trunc"
+  NumberToInt -> base "Base.Number" "toInt"
+  NumberToString -> base "Base.Number" "toString"
   StringLength -> base "Base.String" "length"
   StringCodePointAt -> base "Base.String" "codePointAt"
+  StringAppend -> base "Base.String" "append"
+  StringSlice -> base "Base.String" "slice"
+  StringSingleton -> base "Base.String" "singleton"
+  StringEq -> base "Base.String" "eq"
+  StringLt -> base "Base.String" "lt"
+  CharToCodePoint -> base "Base.Char" "toCodePoint"
+  CharFromCodePoint -> base "Base.Char" "fromCodePoint"
   ArrayLength -> base "Base.Array" "length"
   ArrayUnsafeNew -> base "Base.Array" "unsafeNew"
   ArrayUnsafeSet -> base "Base.Array" "unsafeSet"
@@ -97,12 +149,38 @@ codeOfOp :: PrimOp -> P.Int
 codeOfOp = case _ of
   IntAdd -> 0x01
   IntSub -> 0x02
+  IntMul -> 0x03
+  IntQuot -> 0x04
+  IntRem -> 0x05
+  IntEq -> 0x06
+  IntLt -> 0x07
+  IntToNumber -> 0x08
+  IntToString -> 0x09
   StringLength -> 0x10
   StringCodePointAt -> 0x11
+  StringAppend -> 0x12
+  StringSlice -> 0x13
+  StringSingleton -> 0x14
+  StringEq -> 0x15
+  StringLt -> 0x16
   ArrayUnsafeIndex -> 0x20
   ArrayUnsafeNew -> 0x21
   ArrayUnsafeSet -> 0x22
   ArrayLength -> 0x23
+  NumberAdd -> 0x30
+  NumberSub -> 0x31
+  NumberMul -> 0x32
+  NumberDivide -> 0x33
+  NumberNegate -> 0x34
+  NumberEq -> 0x35
+  NumberLt -> 0x36
+  NumberFloor -> 0x37
+  NumberCeil -> 0x38
+  NumberTrunc -> 0x39
+  NumberToInt -> 0x3A
+  NumberToString -> 0x3B
+  CharToCodePoint -> 0x40
+  CharFromCodePoint -> 0x41
 
 -- | The operation a code names, where this ABI version names one. A reader of a
 -- | code it does not hold rejects the file: what an operation realizes is not
@@ -116,8 +194,34 @@ arityOfOp :: PrimOp -> P.Int
 arityOfOp = case _ of
   IntAdd -> 2
   IntSub -> 2
+  IntMul -> 2
+  IntQuot -> 2
+  IntRem -> 2
+  IntEq -> 2
+  IntLt -> 2
+  IntToNumber -> 1
+  IntToString -> 1
+  NumberAdd -> 2
+  NumberSub -> 2
+  NumberMul -> 2
+  NumberDivide -> 2
+  NumberNegate -> 1
+  NumberEq -> 2
+  NumberLt -> 2
+  NumberFloor -> 1
+  NumberCeil -> 1
+  NumberTrunc -> 1
+  NumberToInt -> 1
+  NumberToString -> 1
   StringLength -> 1
   StringCodePointAt -> 2
+  StringAppend -> 2
+  StringSlice -> 3
+  StringSingleton -> 1
+  StringEq -> 2
+  StringLt -> 2
+  CharToCodePoint -> 1
+  CharFromCodePoint -> 1
   ArrayUnsafeIndex -> 2
   ArrayUnsafeNew -> 1
   ArrayUnsafeSet -> 3
@@ -127,8 +231,34 @@ primTable :: P.Array PrimEntry
 primTable = map (\op -> { op, entry: entryOfOp op, arity: arityOfOp op })
   [ IntAdd
   , IntSub
+  , IntMul
+  , IntQuot
+  , IntRem
+  , IntEq
+  , IntLt
+  , IntToNumber
+  , IntToString
+  , NumberAdd
+  , NumberSub
+  , NumberMul
+  , NumberDivide
+  , NumberNegate
+  , NumberEq
+  , NumberLt
+  , NumberFloor
+  , NumberCeil
+  , NumberTrunc
+  , NumberToInt
+  , NumberToString
   , StringLength
   , StringCodePointAt
+  , StringAppend
+  , StringSlice
+  , StringSingleton
+  , StringEq
+  , StringLt
+  , CharToCodePoint
+  , CharFromCodePoint
   , ArrayUnsafeIndex
   , ArrayUnsafeNew
   , ArrayUnsafeSet
