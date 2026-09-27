@@ -108,6 +108,31 @@ foreign [#observ(none)] f : σκ
 
 The kind scheme is normally empty. The Core type checker does not examine a `foreign`'s implementation; it trusts the declared type.
 
+**The declared type is restricted to what can cross the boundary** (D44). Each
+argument and the result must be a scalar, `Unit`, or an `intrinsic opaque` **other
+than `Prim.IO`**; the result alone may be `IO τ`, for a `τ` that could itself have
+crossed. A data type, a record, a variant, a function, or a continuation is refused
+here.
+
+**`Prim.IO` is excluded from the general case for a reason worth naming**, being an
+`intrinsic opaque` like any other and so admitted by that clause without this. What
+an `IO` value is, though, is the executing machine's own — a shape it takes apart
+(D25) and not a payload a host may be handed — so it is not opaque **to the runtime**
+in the way the word means here. `IO` crosses in one direction and one position: as a
+result, where the host returns an action and the boundary wraps it. **Here is the only place it can be refused**, the type
+existing nowhere downstream: a `.dmo` carries none
+([Bytecode](../05-Backend/01-Bytecode.md)), so a declaration that got past this would
+reach a boundary with nothing to marshal it by.
+
+**What crosses for an abstract type is a wrapper written in Stella.** The discipline
+is the one any backend boundary asks for — declare the transparent thing, and unfold
+the abstract one into it above.
+
+```text
+foreign draw : Picture -> Unit        refused, `Picture` being a data type
+foreign drawAt : Int -> Int -> Unit   declared, and `draw` is written over it
+```
+
 ### `#observ(none)` asserts the absence of an observational effect
 
 An effect belongs to one of three classes — **proper**, which a row carries and a handler deals with; **reified**, a computation a classical monad has made into a value, `IO` among them; and **observational**, whatever a saturated application may do besides returning its value, which appears in no type and which no handler deals with ([Semantics](../03-Typed-Core/06-Semantics.md)). The classes are not exclusive, and the third is what a mutable array behind a pure interface has: `Base.Array.unsafeSet` writes, and its declared type says `Unit`.

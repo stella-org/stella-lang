@@ -962,37 +962,46 @@ where it is applied is the ordinary careless adapter, and it is the case a bound
 drawn one step too late lets through; the `HostFn` above is what puts the
 application itself inside the catch.
 
-**An asynchronous rejection is not this boundary's.** A body is synchronous, and
-what may be awaited is a native action; performing one belongs to the drive loop
-and is answered there.
+**An action performed later is not this boundary's.** A body is synchronous, and so
+is the action it may return; what a throw at the moment that action runs means
+belongs to the drive loop and is answered there.
 
 **An adapter is uncurried.** A saturated call hands it every argument at once, which
 is what the `FFI` instruction does and what a `foreign`'s implementation is written
 as; currying belongs to the declared type, and a partial application is the
 interpreter's to hold ([Modules](../06-Modules/01-Modules.md)).
 
-**Where the interpreter's value is the host's own, an adapter is the
-implementation.** `Int`, `Number`, `Char`, `String`, and `Boolean` are held as host
-values, so an ES module export written against those types is installed as it
-stands — which is what the host does on Node, resolving a module name to a module
-specifier and an unqualified name to an export of it, so `Js.Console.log` is the
-export `log` of whatever `Js.Console` resolves to. The mapping is the host's and the
-core never sees it.
+**No value is held as the host holds it, and the adapter is what bridges that.**
+Every Stella value here is in a shape of the interpreter's own — a scalar included,
+`VInt 1` being a tagged thing and not a host number — so there is no case in which an
+export is the table entry as it stands.
 
-**Anything else needs an adapter written for it.** A data value, a record, a
-closure, or a continuation is held in a shape that is the interpreter's own and is
-not a published ABI, so an implementation taking or returning one is reached through
-an adapter, which is versioned with the interpreter rather than with the `.dmo`. A
-Wasm implementation is one such case: the adapter is JavaScript, the interpreter
-sees the same callable, and how a string or a data value is laid out in Wasm memory
-is that adapter's concern and later the Wasm backend's.
+**What makes one out of an export is marshalling, and it is derived rather than
+written** (D44). The manifest carries, per foreign, how each argument and the result
+crosses ([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)); the boundary
+unwraps on the way in and wraps on the way out by that signature, and what an author
+writes is an ordinary host function of the host's own types.
+
+**So the adapter is versioned with the interpreter and nobody writes one**: an
+implementation is an ordinary function of the arguments the declaration gives it,
+and the layer between it and this interpreter is generated from the type. **What an
+implementation is not is one thing serving every backend** — the manifest matches a
+target to its own implementations, and what a JavaScript one and a Wasm one have in
+common is the discipline rather than the code. **Constructing the `Outcome` above is
+asked of no one**, that being the generated layer's.
+
+**A value with no way to cross is refused at the declaration** rather than reaching
+here. A data value, a record, a variant, a closure, or a continuation is held in a
+shape that is not a published ABI and has nothing to be marshalled to; what crosses
+for one is a wrapper written in Stella over the transparent thing (D44).
 
 **A `.dmo` says nothing about a foreign's type.** `FOREIGNS` holds a name and an
 arity ([Encoding](../05-Backend/02-Encoding.md)), so no check at load can establish
 that an implementation and a declaration agree about what crosses between them.
-Which types a `foreign` declaration may carry is therefore the front end's to
-restrict, where types still exist
-([Open Questions](../99-Open-Questions/01-Open-Questions.md)); what a loader
+**Which types a `foreign` declaration may carry is the front end's to restrict**, and
+it does: only what can be marshalled may be declared, which is checked where the type
+still exists (D44). What reaches here of that decision is the signature the manifest
+carries; what a loader
 establishes is that every name is carried out by something, at the arity its
 declaration states.
 
@@ -1145,7 +1154,7 @@ executes an `IO` value and is outside the reduction relation (D25) — below.
 | | |
 | --- | --- |
 | a foreign invocation | synchronous, and returns a value or faults |
-| executing an `IO` action | may use a promise |
+| executing an `IO` action | synchronous likewise: the action is called, and returns a value or refuses |
 
 The registry is **internal** until the JavaScript backend's own FFI convention is
 settled, at which point the two share one.
@@ -1253,8 +1262,8 @@ interpreter** — the one `VABS` and an uncallable callee reach ([Failures](#fai
 It covers two different culprits and the machine cannot tell them apart: a lowering
 that built a `Bind` over something that is not an `IO`, and an adapter that returned
 what its declaration did not promise, which is a breach of `Σ ⊨ G` condition (3)
-([Semantics](../03-Typed-Core/06-Semantics.md)). **It is not a fault**, since neither
-is a failure the ABI admits.
+([Semantics](../03-Typed-Core/06-Semantics.md)). **It is not a fault**, since neither is a failure an implementation defines — both are
+something above the program having gone wrong.
 
 **What the pending stack holds is continuations and not activations.** Applying one
 enters the interpreter, which makes a stack of its own and has finished with it
@@ -1264,61 +1273,73 @@ before the loop goes round again; the two stacks never interleave.
 
 A native action is the host's, and performing one is calling it.
 
+**What the loop receives is an `ActionOutcome`, and what the host returns is not
+one.** A host implementation returns a plain value or a refusal
+([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)); the layer generated from
+the signature is what turns that into the form below, and it is the same layer that
+checks a host value against the kind it is supposed to be.
+
+```text
+perform(action, k):                         -- k is what `{ "action": k }` carried
+  given = call action
+  refusal given   →  Refused reason
+  otherwise       →  Produced (marshal given by k)
+```
+
+**A refusal is recognised by the helper's own brand**, never by shape. A brand the
+runtime does not know is not a refusal: it is a host value, and the check by `k` is
+what it then faces.
+
 ```text
 HostAction     : HostFn () ActionOutcome         -- performed with no arguments
 
 ActionOutcome  = Produced Value
                | Refused reason                  -- a refusal is a fault
-               | Awaiting (Promise ActionOutcome)
 ```
 
-**Whether an action is asynchronous is the action's to say, not the interpreter's to
-detect.** A form of the outcome carries it, so nothing here asks whether what came
-back is thenable — a test that would misread a `Value` the host happened to give a
-`then` field, and that would leave a synchronous action paying for an asynchrony it
-does not have. An action that is done when it returns says `Produced` and the loop
-goes straight on.
+**Performing an action returns, and there is no form that asks the loop to wait.**
+An action is done when it returns, and the loop goes straight on; the pending stack
+is what carries the rest of a `Bind`, and nothing suspends it.
 
-**A refusal is available on both paths**, which is what the third form being an
-`ActionOutcome` again is for: an action that fails at once refuses, and one that
-fails after awaiting resolves to a refusal. Neither has to throw to report a failure,
-and the contract asks that neither does.
+**That the boundary is synchronous is a decision of the language and not of this
+loop.** Stella fixes no meaning for asynchrony — no type, no effect, and no operation
+says what waiting would be — so an outcome that carried a promise would oblige this
+loop to have an answer the rest of the specification does not
+([Open Questions](../99-Open-Questions/01-Open-Questions.md)). **Nothing here tests
+for a thenable** either: a promise a host hands back is an opaque value like any
+other, which is what lets a handle, a buffer, or a connection cross as itself.
 
-**A resolved outcome is `Produced` or `Refused` and not `Awaiting` again.** One that
-awaits twice is a body in breach rather than a chain the loop unrolls; there is no
-use for it that `Bind` does not already serve.
+**A refusal is how an action fails without throwing**, and the contract asks that it
+be used: an action that cannot produce a value refuses rather than raising.
 
 **`HostAction` is a `HostFn`**, so the rule the foreign boundary settled applies
 unchanged: applying and running are one moment, and that moment is inside what
 catches ([Foreign implementations](#foreign-implementations)).
 
-**Four things end an execution here**, and they are reported apart because they mean
+**Two things end an execution here**, and they are reported apart because they mean
 different things.
 
 | | What it is | What it is not |
 | --- | --- | --- |
-| `Refused` | the failure the ABI admits an action may report, sync or async alike | not a defect in the host |
+| `Refused` | a fault the implementation defines | not a defect in the host, and not confined to entries the ABI specifies as faulting |
 | a throw where the action is performed | the same hazard a foreign body has, and caught the same way | not a refusal: the contract asked for one and got an exception |
-| a rejection of the promise it was awaiting | the asynchronous form of that breach | not the same report as the throw above, the two being reached from different sides |
-| a resolved outcome that is `Awaiting` again | a third way of breaking the same contract, reported apart from the other two | not an interpreter bug, and not something the loop unrolls |
 
-**All four are faults, and the last three are faults of a kind the ABI does not
-admit** — a body in breach rather than a failure it may report. They propagate the
-way every fault does and are reported apart, which is the same shape a refusal and a
-throw already have at the foreign boundary.
+**Both are faults, and the second is the implementation in breach of its contract**
+rather than a fault it defines. They propagate the way every fault does and are
+reported apart, which is the same shape a refusal and a throw already have at the
+foreign boundary.
 
 **Why these are faults where the `IO` boundary above is an interpreter bug** is
 worth stating, since the two look alike and are classified oppositely. **It turns on
 whether the culprit is known.** Only a host action produces an `ActionOutcome`, so a
-throw, a rejection, or a second `Awaiting` is the host's and nothing else's. A
-continuation returning what is not an `IO` could be a lowering's doing or an
-adapter's, and the machine cannot tell — so that one is the class that says the
-defect is above the interpreter without saying whose.
+throw there is the host's and nothing else's. A continuation returning what is not an
+`IO` could be a lowering's doing or an adapter's, and the machine cannot tell — so
+that one is the class that says the defect is above the interpreter without saying
+whose.
 
 **This is the boundary the foreign one deferred to.** A foreign body is synchronous
-and its throw is a fault of its own; what may be awaited is a native action, and the
-four above are what "answered there" meant. **The reduction is not re-entered while
-the loop is waiting**, so nothing of Core observes the wait.
+and its throw is a fault of its own; performing a native action is where an action's
+own throw is answered, and the two above are what "answered there" meant.
 
 **A fault inside an applied continuation ends the whole execution.** The application
 is a run of its own, but a fault discards the stack and ends the run, and the loop
@@ -1333,7 +1354,7 @@ it. Nothing catches one, here as anywhere.
 | | When |
 | --- | --- |
 | a **value** | the chain ran to its end |
-| a **fault** | an action refused, threw where it was performed, rejected what it was awaiting, or resolved to a second `Awaiting`; or a fault was reached inside an applied continuation — an operation or a foreign failing as the ABI says it may |
+| a **fault** | an action refused or threw where it was performed; or a fault was reached inside an applied continuation — an operation or a foreign failing as the ABI says it may |
 | an **interpreter bug** | a state no `.dmo` admits, reached inside an applied continuation or at the `IO` boundary above |
 
 **A load error is not among them.** Loading happens before an `IO` value exists to
@@ -1367,7 +1388,7 @@ Three kinds, reported differently because they mean different things.
 | | What it is | What it means |
 | --- | --- | --- |
 | **Load error** | an unresolved reference, an arity that does not agree, a missing foreign | the module is not loaded, and nothing of it ran |
-| **Fault** | an operation or a foreign failing as the ABI says it may; a native action refusing, on either path; and a native action in breach of its contract — throwing where it is performed, rejecting what it was awaiting, or resolving to a second `Awaiting` | the stack is discarded and the run ends; nothing catches one ([Bytecode](../05-Backend/01-Bytecode.md)). Where a drive loop was executing, its pending continuations are discarded with it |
+| **Fault** | an operation or a foreign failing as it is specified or defined to; a native action refusing; and a native action in breach of its contract, throwing where it is performed | the stack is discarded and the run ends; nothing catches one ([Bytecode](../05-Backend/01-Bytecode.md)). Where a drive loop was executing, its pending continuations are discarded with it |
 | **Interpreter bug** | reaching `VABS`, applying what is not callable, reading a register that holds nothing, a `Bind` over what is not an `IO` | a state no `.dmo` admits. Reaching one is a defect in the interpreter, in lowering, in a check a loader owes, or in an adapter that returned what its declaration did not promise |
 
 The `DEBUG` section is where a report finds a function's name in a file that carries

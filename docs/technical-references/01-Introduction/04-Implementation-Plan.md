@@ -428,12 +428,10 @@ Executing an `IO` is the one place the host side enters the interpreter, and it 
 | Executing `Bind (Pure v) k` | Whatever executing `k v` gives, with `k` applied exactly once |
 | A `Bind` whose function is a partial application, or a continuation | Applied the way any unknown call applies one. `k` is a function value, not a closure in particular |
 | A left-nested chain of a length that would exhaust the host's call stack | The value, and no stack overflow. **This is the case the loop's own pending stack exists for**, and the one a recursive executor passes every other test while failing |
-| A native action answering `Produced` | That value, and no waiting. Whether an action is asynchronous is the outcome's to say, so nothing asks whether the value is thenable |
-| A native action answering `Awaiting` | The value its promise resolves to, awaited before the next continuation is applied |
-| A native action answering `Refused`, on either path | A fault. A failure the ABI admits needs no exception to report it |
+| A native action answering `Produced` | That value, and no waiting. **Nothing here waits at all**, and nothing asks whether the value is thenable |
+| A native action answering `Produced` with a promise, where `k` is `opaque` | That promise, as an ordinary opaque value. It is neither awaited nor rejected, and a program may hold it and pass it back |
+| A native action answering `Refused` | A fault. A failure the ABI admits needs no exception to report it |
 | A native action that throws where it is performed | A fault, and a different report from a refusal |
-| A native action whose promise rejects | A fault, and a different report again: the two breaches are reached from different sides |
-| A resolved outcome that is `Awaiting` again | A fault, reported apart from the throw and the rejection. The loop does not unroll a second wait, and this is **not** an interpreter bug: only a host action produces an outcome, so the culprit is known |
 | A fault inside an applied continuation | Ends the execution. The pending continuations are discarded and nothing after them runs |
 | A continuation returning what is not an `IO`, or a `Bind` over one | An interpreter bug and **not** a fault. The culprit is unknown — a lowering, or an adapter in breach — which is what separates this from an action's breach above |
 | An `IO` value that reaches a register | Written there and nothing more. No instruction examines one, and evaluation continues past it |
@@ -504,12 +502,45 @@ The table is assembled from the manifest, complete for a module before that modu
 | A session opened with a manifest that does not parse, or names another target | A failure to open, and not a refusal it could answer: nothing about it is per-module |
 | A host module two Stella modules declare against, in a session | Reached once. An import stays imported |
 | A host module whose top-level has an effect, where the load then fails | The effect stands. An import is not undone, and it happened before anything the interpreter could refuse on |
+| A `foreigns` signature whose `params` are a different length from the declared arity | Rejected. Both came from the same compiler, so a disagreement is a defect in what produced them |
+| An `int` result and a `number` result from the same host number | Wrapped by the kind the signature gives, not by the value. **`Number.isInteger` deciding it would turn `2.0 :: Number` into an `Int` silently** |
+| A `unit` result | `Prim.Unit` under the identity the registry assigned, whatever the host returned |
+| An `opaque` argument or result | Passed through untouched. There is no host shape to convert an `intrinsic opaque` to, and none is needed |
+| An `action` result | The host returns the action, and the boundary wraps it as the `IO` value a program halts on. **A target entry constructs no `IO` value itself** |
+| An implementation returning `refuse(reason)` | A fault carrying the reason, reported apart from a throw |
+| An action returning `refuse(reason)` | The same |
+| A host value that merely has a `then`, at any kind | **Not awaited, and nothing tests for one.** At `opaque` it crosses as the value; at any other kind it is a host-contract fault by that kind, as any other object would be |
+| An implementation returning a promise where the result is `opaque` | That promise, passed through. The boundary has no waiting to offer and does not pretend to |
+| A marker an implementation built without the helper | Not recognised. The brand is the helper's own and cannot be obtained from outside it |
+| An implementation that only returns values | Imports nothing |
+| A manifest naming a `kind` this reader does not know | Rejected, as an unknown `formatVersion` is. Widening the kinds is what a later version does |
+| An `int` result that is not a whole number, or outside an int32 | A host-contract fault naming the entry, and **not** a value written into a register |
+| A `char` result of more than one scalar value, or half a surrogate pair | The same |
+| A `string` result holding an unpaired surrogate | The same |
+| An `{ "action": k }` result that is not callable | The same |
+| A `refuse` built by a second copy of the helper, where the result is a scalar | Not read as a refusal. The brand is unknown, so it is a host object where a number was owed, and the check by the kind ends the run |
+| The same, where the result is `unit` | **Discarded, and nothing catches it.** Nothing of the host value is read for a `unit` result, so the refusal becomes a success. `IO Unit` is the frequent shape — a console entry — which makes this the principal case of the limit rather than a corner of it |
+| The same, where the result is `opaque` | **Passes as the value, and nothing catches it.** Both this and the row above are fixed as cases so that the limit is not mistaken for an oversight |
 | A manifest entry for a name the ABI manifest fixes | Never consulted. The interpreter is selected by name, so the entry is dead rather than an override |
 | A foreign reached through a manifest, at any arity | The declared arity is adopted, and the refusal for a **supplied** arity that contradicts a declaration cannot fire: nothing on this path supplies one. **A case asserting that it does would be asserting a check that is not there** |
 
 **Coverage is checked twice and the two are not redundant.** A build that omitted a package's mapping is caught where the source is, with the module and the declaration to hand; the loader catches what actually reached it, a `.dmo` being able to arrive from anywhere and a manifest being able to go stale. A test of one is not a test of the other.
 
-**What must not be tested is the payload's meaning.** What a `specifier` is belongs to the target, and a case asserting how one is resolved would be fixing in the compiler what the format exists to keep out of it.
+**What must not be tested is the payload's meaning.** What a `specifier` is belongs to the target, and a case asserting how one is resolved would be fixing in the compiler what the format exists to keep out of it. **A signature is the other way round**: it is target-independent, derived from a type the compiler holds, and is exactly what a case may assert.
+
+### Declaring a foreign (step 7, and step 3 for the check)
+
+Only what can cross the boundary may be declared (D44), and the declaration is the only place with a type to judge it by ([Modules](../06-Modules/01-Modules.md)).
+
+| Input | Required outcome |
+| --- | --- |
+| A `foreign` over scalars | Accepted |
+| One whose result is `IO τ` | Accepted. This is what a target entry constructing a native action is |
+| One over an `intrinsic opaque` | Accepted, in argument and result alike |
+| One taking or returning a data type, a record, or a variant | **Refused at the declaration**, naming the type, since nothing downstream holds one to refuse it later |
+| One taking a function | Refused likewise. A `δ_f` may carry a function value but may not apply one, so what a host would do with it is not a question the boundary has an answer to |
+| `IO τ` in an **argument** | Refused. Only a result may be an action; an argument of one would be a reified computation the host was handed and could not run |
+| The signature the compiler derives | The kinds of the declared type, in order, and a `params` length equal to the arity
 
 ### Kind and type unification (step 7, division 2)
 
