@@ -20,6 +20,7 @@ import Test.Stella.Compiler.TypedCore.Domain as Domain
 import Test.Stella.Compiler.TypedCore.Kinding as Kinding
 import Test.Stella.Compiler.TypedCore.Row as Row
 import Test.Stella.Compiler.Elaborate.Context as ElaborateContext
+import Test.Stella.Compiler.Elaborate.Elab as ElaborateElab
 import Test.Stella.Compiler.Elaborate.Obligation as ElaborateObligation
 import Test.Stella.Compiler.Elaborate.Scheduler as ElaborateScheduler
 import Test.Stella.Compiler.Elaborate.Unify as Unify
@@ -56,3 +57,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateContext.spec
   ElaborateObligation.spec
   ElaborateScheduler.spec
+  ElaborateElab.spec

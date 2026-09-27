@@ -291,11 +291,16 @@ standing basis sitefacts zonk = case _ of
 -- | assumed where the assignment was made.
 -- |
 -- | An `Assumed` one needs no facts at all: what would prove it is itself.
+-- |
+-- | **A breach reports the obligation and not its identifier.** What a diagnostic
+-- | has to name is where the constraint came from, which the obligation carries;
+-- | an identifier names an entry in a store the failure is about to have rolled
+-- | back, and resolving one afterwards is no longer possible.
 recheck
   :: Zonk
   -> Set MetaVar
   -> ObligationStore
-  -> Either (Tuple ObligationId Breach) ObligationStore
+  -> Either (Tuple Obligation Breach) ObligationStore
 recheck zonk assigned store =
   foldM one store affected
   where
@@ -310,7 +315,7 @@ recheck zonk assigned store =
     Nothing ->
       Right acc
     Just entry -> case decide zonk entry.obligation of
-      Left breach -> Left (Tuple id breach)
+      Left breach -> Left (Tuple entry.obligation breach)
       Right Discharged -> Right (forget id entry acc)
       Right (Watching ms) -> Right (rewatch id entry ms acc)
 

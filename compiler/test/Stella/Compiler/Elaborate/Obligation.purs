@@ -209,10 +209,11 @@ spec = describe "Elaborate.Obligation" do
     it "refuses the same assignment where that site does not prove it" do
       let
         elsewhere = assuming [ XLacks keyA (XVar rigidT) ]
-        Tuple id store = holding (obligation Required elsewhere (XLacks keyK (XMeta metas.r)))
+        broken = obligation Required elsewhere (XLacks keyK (XMeta metas.r))
+        Tuple _ store = holding broken
         assigned = solving [ Tuple metas.r (XVar rigidT) ]
       recheck (substitute assigned) (Set.singleton metas.r) store
-        `shouldEqual` Left (Tuple id (LacksUnprovenAtSite keyK rigidT))
+        `shouldEqual` Left (Tuple broken (LacksUnprovenAtSite keyK rigidT))
 
   describe "nothing enters the store undecided" do
     it "refuses a closed requirement its site does not prove" do
@@ -255,7 +256,7 @@ spec = describe "Elaborate.Obligation" do
           { bindings = Map.insert metas.r (Assigned (field keyA tA (XMeta fresh))) ctx.bindings }
       case recheck (substitute assigned) (Set.singleton metas.r) store of
         Left breach ->
-          Left breach `shouldEqual` (Right unit :: Either (Tuple ObligationId Breach) Unit)
+          Left breach `shouldEqual` (Right unit :: Either (Tuple Obligation Breach) Unit)
         Right store' -> do
           touching fresh store' `shouldEqual` Set.singleton id
           touching metas.r store' `shouldEqual` Set.empty
@@ -268,7 +269,7 @@ spec = describe "Elaborate.Obligation" do
         assigned = solving [ Tuple metas.r XRowEmpty ]
       case recheck (substitute assigned) (Set.singleton metas.r) store of
         Left breach ->
-          Left breach `shouldEqual` (Right unit :: Either (Tuple ObligationId Breach) Unit)
+          Left breach `shouldEqual` (Right unit :: Either (Tuple Obligation Breach) Unit)
         Right store' -> do
           obligationOf store' id `shouldEqual` Nothing
           touching metas.r store' `shouldEqual` Set.empty
@@ -280,7 +281,7 @@ spec = describe "Elaborate.Obligation" do
         assigned = solving [ Tuple metas.r XRowEmpty ]
       case recheck (substitute assigned) (Set.singleton metas.r) store of
         Left breach ->
-          Left breach `shouldEqual` (Right unit :: Either (Tuple ObligationId Breach) Unit)
+          Left breach `shouldEqual` (Right unit :: Either (Tuple Obligation Breach) Unit)
         Right store' -> do
           watchedBy store' id `shouldEqual` Set.singleton metas.s
           touching metas.r store' `shouldEqual` Set.empty
@@ -298,8 +299,8 @@ spec = describe "Elaborate.Obligation" do
       let
         Tuple _ store1 = holdingIn (obligation Required emptyXContext (XLacks keyA (XMeta metas.s)))
           emptyStore
-        Tuple broken store2 = holdingIn (obligation Required emptyXContext (XLacks keyK (XMeta metas.r)))
-          store1
+        broken = obligation Required emptyXContext (XLacks keyK (XMeta metas.r))
+        Tuple _ store2 = holdingIn broken store1
         assigned = solving [ Tuple metas.r (field keyK tA XRowEmpty) ]
       recheck (substitute assigned) (Set.fromFoldable [ metas.r, metas.s ]) store2
         `shouldEqual` Left (Tuple broken (SolutionCarriesKey keyK))

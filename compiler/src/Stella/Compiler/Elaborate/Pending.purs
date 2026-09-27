@@ -31,13 +31,21 @@ import Data.Show.Generic (genericShow)
 -- | recognized as one.
 newtype PendingId = PendingId P.Int
 
--- | What a job is decided against.
+-- | What a job is decided against, which the three kinds take different things
+-- | from.
 -- |
--- | An equality is no exception and this is the case easiest to get wrong:
--- | deciding a row substitution requires the constraints the metavariable
--- | carries to hold of the solution, and those are discharged from the atomic
--- | facts of a context. One decided against another site either admits a
--- | substitution the site forbids or rejects one it allows.
+-- | **What an equality takes is the kind variables in scope where it was written**
+-- | — a kind metavariable created while solving it may mention those and no
+-- | others — and the place a failure is reported. One woken far from where it was
+-- | written, creating a kind metavariable under whatever elaboration has since
+-- | reached, would admit a kind variable that is out of scope at the equation or
+-- | refuse one that is in it.
+-- |
+-- | **What a substitution must preserve is decided elsewhere.** The row
+-- | constraints naming a metavariable are obligations, each holding on the
+-- | assumptions of the site **it** came from — several different sites, in
+-- | general, and not necessarily the one the equation stands at
+-- | ([Obligation](Obligation.purs)).
 type Site =
   { context :: XContext
   , origin :: Origin

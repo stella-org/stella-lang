@@ -471,6 +471,7 @@ no identifier is at once ready and blocked
 | A context handed to a unification with assignments nobody has acted on | Refused. Emptying it instead makes losing a wake, and a re-deciding, the quiet default |
 | The fresh tail of a two-sided refinement | Carries its kind and the scope both sides had, and no constraint. What it owes is what the two tails it replaces owed, which zonking their constraints says |
 | What a metavariable's own record holds | Its kind and its scope. A row constraint may relate two metavariables and must be decided against its own site, so neither fits in a record one metavariable owns |
+| What a rollback restores | Everything an attempt owns, and nothing besides. Which half of the session's state a field stands in is the whole of what decides its fate, so no rollback has to remember to save one or to skip one |
 
 ### Handler declarations and implicit insertion (step 7)
 

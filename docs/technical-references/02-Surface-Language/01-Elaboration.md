@@ -294,7 +294,7 @@ Case (d) of row unification joins the same queue, and so does the search for an 
 
 **A postponed equality carries the site it was written at**, as a synthesis goal does. What it takes from that site is the kind variables in scope there — a kind metavariable created while solving it may mention those and no others — and the place a failure is reported.
 
-**What a substitution must preserve is decided elsewhere.** The row constraints naming a metavariable are obligations, and each is discharged from the atomic facts of the site **it** came from, which need not be the site of the equation making the substitution ([Elaborator API](03-Elaborator-API.md)). What a unification reports is the metavariables it assigned; re-deciding what those were watched by is its caller's.
+**What a substitution must preserve is decided elsewhere.** The row constraints naming a metavariable are obligations, and each is discharged from the atomic facts of the site **it** came from, which need not be the site of the equation making the substitution ([Elaborator API](03-Elaborator-API.md)). What a unification reports is the metavariables it assigned, and re-deciding what those were watched by belongs to the operation that installs the substitution rather than to whoever asked for the equation.
 
 ## Operations available to metaprograms
 

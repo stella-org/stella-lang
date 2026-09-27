@@ -145,13 +145,16 @@ Running one pending job is one attempt, and an attempt over the host's mechanism
 
 ```text
 attempt(pending):
-  checkpoint
+  empty the write set, then checkpoint
 
-  Solved x       commit, and record the result
+  Solved x       commit, empty the write set, and record the result
   Stuck cause    rollback, derive the durable dependencies from cause,
                  admit them, and register this pending under each
   Failed d       rollback, and report d
+  Defect         rollback, report it, and run nothing further
 ```
+
+**A defect rolls the attempt back as the other two do, and then the session stops.** An attempt leaves nothing behind but a commit, whatever ended it, and that holds for the outcome that ends the run as much as for the ones it recovers from — one exit rule rather than one per outcome. What follows differs: no dependency is derived, nothing is registered, and no further job is attempted, a defect saying that the mechanism and not the program is at fault.
 
 **`cause` is the postponement with its provenance**, which is what decides how the dependencies are derived: one a synthesizer raised is admitted as it named it, and one the mechanism's own unification raised has them extracted. Both are below.
 
@@ -200,7 +203,7 @@ admit(ms):
 
 **A metavariable already solved would not wake it either**, `assign` having run for it before the attempt began. A synthesizer reaching one has read a type it did not zonk, which is a defect worth reporting where it happens rather than one to wait out.
 
-**A `postpone` failing any of the three is a contract violation**, and the attempt fails with a diagnostic naming the synthesizer. It is not reported as a property of the program being compiled: nothing the author wrote is wrong, and the program may well be solvable by the goal the synthesizer meant to wait on.
+**A `postpone` failing any of the three is a contract violation, and a contract violation is a defect rather than one of the three outcomes.** It is reported at the session, naming the synthesizer, and nothing catches it. Nothing the author wrote is wrong — the program may well be solvable by the goal the synthesizer meant to wait on — so a diagnostic would blame the program for a defect in a synthesizer, and a `transact` around the candidate that raised it would read the whole thing as "not this candidate" and take the next.
 
 **Dropping the inadmissible part silently instead would hide that defect.** A synthesizer that names one metavariable it created among several it did not would be registered and woken, and the reading that produced the bad name — a type it did not zonk, a metavariable it held across an attempt — would never be reported. Refusing the whole postponement is what makes such a reading visible where it happens.
 
@@ -212,7 +215,7 @@ SolverStuck { blockedOn, written }
 durable = (blockedOn ∪ written) ∩ { ?α | Ψ holds ?α unsolved after the rollback }
 ```
 
-`blockedOn` is what the equation could not decide between. `written` is **every metavariable the attempt assigned that existed at the checkpoint**, which is what makes the extraction possible.
+`blockedOn` is what the equation could not decide between. `written` is **every metavariable the attempt has assigned**, recorded as each assignment is made, which is what makes the extraction possible. Nothing filters it as it is collected: a metavariable the attempt created is one `Ψ` no longer holds once the rollback has run, so the intersection above is what removes it, and what the attempt carries is the plain record of what it wrote.
 
 ```text
 Pair { a : A | ?r } { c : C | ?r }  ≡  Pair { b : B | ?s } (?v ⊎ ?w)
@@ -222,6 +225,10 @@ Pair { a : A | ?r } { c : C | ?r }  ≡  Pair { b : B | ?s } (?v ⊎ ?w)
 ```
 
 **`?t` is gone after the rollback and `?r` is not.** Registering under `?t` blocks the job on an assignment nothing can make; refusing the postponement rejects an equation that `?v` or `?w` being solved would decide. What changes the outcome of the re-run is a solution for one of the metavariables whose refinement produced `?t` — and the write set names those without anyone having to say which fresh tail arose from which, since a fresh row tail stands for what two sides share and not for either of them ([Elaboration](01-Elaboration.md)). It is an over-approximation: a wake it causes needlessly costs one attempt, which fuel already bounds.
+
+**Attempt-local is a responsibility and not a shape.** One session holds one write set, and the attempt root empties it where an attempt begins and again where one commits. Left standing, the assignments of a job that has already committed would stand among the dependencies the next job's postponement is derived from, and a goal would be woken by work that has nothing to do with it.
+
+**It is emptied before the checkpoint is taken and not after.** A rollback restores whatever the checkpoint saw, so an attempt that emptied the set afterwards would have the previous job's assignments put back into it by its own rollback — at exactly the moment a postponement is about to read them. The abandoning outcomes need no emptying of their own for the same reason: what the rollback restores is already the empty set.
 
 **The write set is attempt-local, cumulative, and rolled back with an inner `transact`.** A candidate the search tried and discarded assigned what it assigned, and those assignments are not the goal's dependencies: waking the goal because a rejected candidate once touched a metavariable would have the discarded work decide when it runs. It is therefore part of what an attempt owns and not a counter the rollback leaves alone, and it is kept apart from the record of assignments the scheduler drains to wake jobs, which is emptied at each wake where this accumulates until the attempt ends.
 
@@ -238,6 +245,16 @@ Pair { a : A | ?r } { c : C | ?r }  ≡  Pair { b : B | ?s } (?v ⊎ ?w)
 The two outcomes mean opposite things where `transact` is used, and that is the whole of the reason. `Failed` says the candidate under trial is not the one, so the search takes the next. `Stuck` says nothing about the candidate: it says the goal cannot be decided yet. A `transact` returning `Left` for both would have a resolver discard a candidate a later assignment would have accepted and commit to whatever came after it — the three-way split the scheduler rests on, lost inside one attempt.
 
 A propagated postponement is admitted at the attempt root, against that checkpoint rather than the `transact`'s, every inner checkpoint having been rolled back with it.
+
+### A defect in the mechanism is outside the three outcomes
+
+**Not everything that goes wrong is a statement about the program.** The solver driven against its own contract — a dependency named that `Ψ` does not hold, a metavariable it holds solved already, a record of assignments nobody has acted on — and an invariant of its own found broken, such as a row constraint whose subject zonks to something that is not a row, are **defects**. They are reported as what they are, and `transact` does not catch one.
+
+**A defect caught as a failure would be reported nowhere.** `Left` is what a search reads as "not this candidate", so a resolver would pass over the defect on its way to the next one, and what finally reached the author would be a diagnostic about some later candidate, or a successful compilation of a program the mechanism mis-solved. The alternative failure is as bad: reported as a type error, it names a program nothing is wrong with.
+
+**A synthesizer's contract violation is one of these.** A `postpone` naming nothing that can wake the job is admitted nowhere and caught nowhere, for the reason above: the program is not what is wrong with it.
+
+**The two kinds are told apart once per error and never by a default.** Every error a judgement can report is classified explicitly, so that an error added later does not join the ones a search may catch by falling through a wildcard — which is the side of the distinction that hides a defect rather than the side that over-reports one.
 
 ## `postpone` restarts, and saves no continuation
 
@@ -302,6 +319,8 @@ assign(?α := τ):
 ```
 
 **What an assignment owes is that list**, and a unification that assigns several metavariables owes it for each of them. Re-deciding may refuse the assignment, and the equation then **fails** rather than waiting.
+
+**The list is owed by the operation that installs the substitution and not by whoever asked for one.** An equation is put through a single entry, and installing what the unification reached, re-deciding the obligations, refusing on a breach, waking the jobs, and adding to the write set happen there together. An entry that handed its caller a substitution and the set it assigned would be one every caller has to complete correctly, and a caller that completed it partly would accept a solution a row constraint forbids, or leave a job asleep on an assignment already made.
 
 **A unification therefore reports what it assigned whether it solved or became stuck.** It assigns as it descends, so it can refine one metavariable and then meet a sub-equation it cannot decide; an outcome that reported the dependency alone would have an equation that has already broken a constraint read as one that is merely short of information. What is committed is another matter, and only a success is.
 
@@ -392,17 +411,22 @@ Each is a case where a plausible implementation gives the wrong answer, and each
 | --- | --- |
 | A goal that creates metavariables, emits constraints, and raises a warning, then postpones | None of the three survives. A warning that survived would be reported once per attempt |
 | The same goal, run a second time | It creates the same metavariables and emits the same constraints, and neither is duplicated. Reading a counter that the rollback left alone is what makes a second run differ |
-| A `postpone` naming a metavariable the attempt itself created | The attempt fails, naming the synthesizer. Registering the job blocks it on an assignment nothing can make, and quiescence then reports a name `Ψ` does not hold |
-| A `postpone` naming the empty set, or a metavariable already solved | The same failure. Neither can wake a job, and the second is a type that was not zonked |
+| A `postpone` naming a metavariable the attempt itself created | A session-level defect naming the synthesizer, and no diagnostic. Registering the job blocks it on an assignment nothing can make, and quiescence then reports a name `Ψ` does not hold |
+| A `postpone` naming the empty set, or a metavariable already solved | The same defect. Neither can wake a job, and the second is a type that was not zonked |
+| The same `postpone`, raised inside a `transact` | Still a defect, and the checkpoint does not catch it. Caught there, the search takes the next candidate and the synthesizer's contract violation is reported nowhere |
 | A stuck row equation among whose flexible tails is one the attempt created | Registered under the metavariables the attempt assigned that `Ψ` still holds unsolved. Registering under the fresh tail blocks the job on an assignment nothing can make, and refusing the postponement rejects an equation a later solution would decide |
 | The same, with a candidate discarded by a `transact` in between | That candidate's assignments are none of the dependencies. A write set an inner rollback left standing has work the search rejected decide when the goal is woken |
 | A `postpone` inside a `transact` | It rolls that checkpoint back and propagates to the attempt root. A `transact` returning `Left` has a resolver reject a candidate for lack of information and commit to the next |
 | A `throw` inside a `transact` | Caught there, which is what `Either Diagnostic a` says |
+| A unification driven against its contract inside a `transact` — a metavariable `Ψ` does not hold, one it holds solved, a journal nobody has acted on | A defect, and not caught. Read as a failure it sends the search to the next candidate with the defect reported nowhere; read as a type error it blames a program nothing is wrong with |
+| A row constraint whose subject zonks to something that is not a row | The same. Only a row metavariable is named by a row constraint, so nothing the author wrote produces one |
 | A `PendingUnify` whose substitution has to preserve a Lacks assumed at another site | Decided against the facts of the site that assumed it, whatever site the equation stands at. The obligation carries its own context, so nothing is decided by the facts that happen to be at hand |
 | A `PendingUnify` woken far from where it was written | Creates its kind metavariables under the kind variables in scope at its own site. What it needs the snapshot for is that and the place a failure is reported |
 | A handle a rollback invalidated, presented again | Reported as a defect in the synthesizer. Resolving it to whatever occupies that place now is how a guest cache corrupts a later attempt |
 | A different object allocated into a slot a rollback freed, and the old handle presented | Still rejected. A generation counter restored with the rest of the attempt would stamp the new object with the number the old handle carries |
 | An `assign` inside an attempt that goes on to postpone | The substitution and the wakeups it made are both rolled back, and the jobs it woke are waiting where they were. Publishing at the `assign` leaves a job on the ready queue for an assignment that was undone |
+| A stuck equation one of whose assignments broke an obligation | A **failure**, and no registration. Waiting on information repairs nothing about a constraint that is already broken, and a job registered instead is woken to fail later or not at all |
+| Two equations in one attempt, the second reaching what the first assigned | Both solved. An assignment is drained where it is acted on, so what the second is given holds none nobody has acted on; a unification refuses one that does |
 | A goal awaiting `?a` and `?b`, with `?a` assigned | It wakes once, and it is registered under `?b` no longer. Leaving the entry under `?b` runs a job that is already on the ready queue |
 | The same goal, postponing again on `?b` alone | It waits on `?b` and on nothing else. A dependency set accumulated across attempts would wake it on an assignment it no longer cares about |
 | A goal woken far from where it was created | `localContext` and `localConstraints` answer with the goal's own site. Answering with the elaborator's current position is what the snapshot exists to prevent |
