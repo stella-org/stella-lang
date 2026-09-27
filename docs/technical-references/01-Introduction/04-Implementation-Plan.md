@@ -691,6 +691,14 @@ no identifier is at once ready and blocked
 | A `letrec` of two names whose right-hand sides refer to each other, closed with one right-hand side, or with one built outside the group | Built; refused for the count; refused for the scope |
 | A binder of any sort closed by the operation for another, or left open when the attempt succeeds | A defect of the synthesizer |
 | `λ(x#0 : Int). x#0` built by the kernel and handed to the Core type checker | Accepted. The names the host binds pass it |
+| A `letjoin` whose definition jumps to itself, and whose body jumps to it | Built, and accepted by the Core type checker. The join point is in both scopes |
+| A `letjoin` closed with a parameter as its body, or with the body and the definition exchanged | Refused. The definition and the continuation are sibling scopes, the parameters bound in the first alone |
+| A `jump` outside its `letjoin`, or with another number of arguments | Refused |
+| A `jump` inside a `λ`, a `Λ(a)`, or a `Λ(_ : C)` in the continuation, and inside a `let` or a type's `forall` there | Refused, and built. Only an abstraction empties `Δ`: `Λ(a)` binds what `forall` does and empties it where the type's binder does not |
+| A term that jumps, given to `closeLambda` as its body, or to `termApply` inside a `λ` | Refused. It is visible there, built in an ancestor, and would carry the jump under the abstraction |
+| The same term as a `let`'s body in the continuation | Built. A `let` inherits `Δ` |
+| Two join points opened one inside the other | `j#0` and `j#1`, from a supply apart from values' |
+| A join point opened inside a `transact` that fails, and opened again | `j#0` both times. The supply is part of what an attempt owns |
 | A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
 | No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
 | No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |

@@ -626,6 +626,10 @@ closeLet           : Scope -> Binder -> Expr -> Elab Expr
 openLetRec         : Scope -> [ { hint : String, type : Type } ]
                        -> Elab { binder, variables : [Expr], bodyScope }
 closeLetRec        : Scope -> Binder -> [Expr] -> Expr -> Elab Expr
+openJoin           : Scope -> String -> [ { hint : String, type : Type } ] -> Type
+                       -> Elab { binder, join : Join, params : [Expr], definitionScope, bodyScope }
+closeJoin          : Scope -> Binder -> Expr -> Expr -> Elab Expr         the definition, then the body
+jump               : Scope -> Join -> [Expr] -> Elab Expr
 ```
 
 **A term is built in a build scope, as a type is, and is used by the same rule**: only where it was built in the scope given or in one of its ancestors. A term built under a binder mentions what the binder binds or assumes, so it may stand only under the term binder that corresponds.
@@ -643,6 +647,10 @@ closeLetRec        : Scope -> Binder -> [Expr] -> Expr -> Elab Expr
 **`constraintApply` requires the constraint of the scope it is applied in, together with the term**: proved now, watched where a flexible tail leaves it open, and a failure where it is already broken. A constraint abstraction holds its assumption from where it is closed, as `closeConstraint` does.
 
 **A claim the kernel derives is the type the term's syntax has under the Core rule, and no proof that the term satisfies the rule.** What the rules ask beyond the shape of the parts — that an argument stands at the parameter's type, that an abstraction's body is a value and pure, that a `letrec`'s right-hand sides are function values, that an application's arrow row is the ambient row — is the Core type checker's to decide once the term is zonked. A term whose parts disagree is built here and refused there.
+
+**A build scope holds `Δ`, the join points a term built in it may jump to.** The root's is empty: a term standing at a site jumps to no join point around it. A binder's body inherits its scope's `Δ` — a `let`, a `letrec`, a branch, a `letjoin`, and the binder of a type alike — except the body of an abstraction, `λ`, `Λ(a)`, or `Λ(_ : C)`, whose `Δ` is empty: a join point continues the evaluation it stands in, and a body the abstraction delays runs where that continuation is gone. **A term is used, and issued, only where every join point it jumps to is in `Δ`**, so a jump built outside an abstraction does not reach inside it by any builder, and an abstraction is closed only over a body that jumps to none.
+
+**`openJoin` opens two scopes under one binder**: the definition's, binding the parameters and the join point, and the continuation's, binding the join point alone; the definition is closed from the first and the body from the second. The parameter and result types are the synthesizer's, as Core writes them, each one the scope may use at `Type`, and the `letjoin` is claimed at the result. The join point is a handle of its own class, named by the host from a supply apart from values'. **`jump` checks that the join point is in scope and takes as many arguments as it has parameters**, and is claimed at its result; what the arguments are claimed at, and whether the jump is in tail position, are the Core type checker's.
 
 ### The catalog
 
