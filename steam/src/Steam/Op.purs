@@ -16,8 +16,10 @@ import Prelude
 import Prim as P
 
 import Data.Either (Either(..))
+import Data.Int (toNumber)
 import Data.Generic.Rep (class Generic)
-import Data.Maybe (Maybe(..))
+import Data.Array as Array
+import Data.Maybe (Maybe(..), fromJust)
 import Data.Show.Generic (genericShow)
 import Effect (Effect)
 import Effect.Uncurried (runEffectFn1, runEffectFn2, runEffectFn3)
@@ -25,7 +27,8 @@ import Steam.Array as Arr
 import Steam.Fault (Fault(..))
 import Steam.Value (Value(..))
 import Stella.Compiler.Primitive (PrimOp(..), primTable)
-import Stella.Compiler.TypedCore.Domain (scalarAt, scalarLength)
+import Partial.Unsafe (unsafePartial)
+import Stella.Compiler.TypedCore.Domain (ScalarString, codePointOf, compareByScalar, scalarAt, scalarLength, scalarString, scalarStringOf, scalarValue, scalarsOf, textOf)
 
 -- | Why an operation produced no value.
 data Refusal
@@ -50,8 +53,8 @@ implemented = map _.op primTable
 
 -- | What an operation computes from the arguments it is given.
 -- |
--- | **Carrying one out reaches the host**, which the array entries are why: four of
--- | the eight compute from scalar arguments alone, and every entry of `Base.Array`
+-- | **Carrying one out reaches the host**, which the array entries are why: all but
+-- | the four of `Base.Array` compute from scalar arguments alone, and every entry of `Base.Array`
 -- | reaches the payload of an array instead. The operation boundary is the same
 -- | kind of boundary as the foreign one and not a second one (D41).
 -- | **`unit` is passed in rather than built here.** `Prim.Unit` is a constructor
@@ -61,9 +64,42 @@ implemented = map _.op primTable
 carryOut :: Value -> PrimOp -> P.Array Value -> Effect (Either Refusal Value)
 carryOut unit' op args = case op, args of
   -- **32-bit wrapping arithmetic**, which every backend owes whatever its host
-  -- does: neither of these faults.
+  -- does: none of these faults.
   IntAdd, [ VInt a, VInt b ] -> produce (VInt (a + b))
   IntSub, [ VInt a, VInt b ] -> produce (VInt (a - b))
+  IntMul, [ VInt a, VInt b ] -> produce (VInt (mulImpl a b))
+
+  -- **division truncates towards zero**, and `minInt` by `-1` wraps; Euclidean `div`
+  -- and `mod` are `Prelude`'s, written over these two
+  IntQuot, [ VInt a, VInt b ]
+    | b == 0 -> faults (ZeroDivisor a)
+    | otherwise -> produce (VInt (quotImpl a b))
+  IntRem, [ VInt a, VInt b ]
+    | b == 0 -> faults (ZeroDivisor a)
+    | otherwise -> produce (VInt (remImpl a b))
+
+  IntEq, [ VInt a, VInt b ] -> produce (VBoolean (a == b))
+  IntLt, [ VInt a, VInt b ] -> produce (VBoolean (a < b))
+  IntToNumber, [ VInt a ] -> produce (VNumber (toNumber a))
+  IntToString, [ VInt a ] -> produce (VString (numeral (intToStringImpl a)))
+
+  -- **IEEE 754 binary64**, which is what the host's number is: rounding to nearest
+  -- with ties to even, and a zero divisor giving an infinity or NaN
+  NumberAdd, [ VNumber a, VNumber b ] -> produce (VNumber (a + b))
+  NumberSub, [ VNumber a, VNumber b ] -> produce (VNumber (a - b))
+  NumberMul, [ VNumber a, VNumber b ] -> produce (VNumber (a * b))
+  NumberDivide, [ VNumber a, VNumber b ] -> produce (VNumber (a / b))
+  -- `0.0` gives `-0.0`, which no subtraction produces
+  NumberNegate, [ VNumber a ] -> produce (VNumber (negate a))
+  -- **IEEE equality and not literal identity**: NaN equals nothing and the two
+  -- zeros are equal, where a `switchLit` separates the zeros and merges the NaNs
+  NumberEq, [ VNumber a, VNumber b ] -> produce (VBoolean (a == b))
+  NumberLt, [ VNumber a, VNumber b ] -> produce (VBoolean (a < b))
+  NumberFloor, [ VNumber a ] -> produce (VNumber (floorImpl a))
+  NumberCeil, [ VNumber a ] -> produce (VNumber (ceilImpl a))
+  NumberTrunc, [ VNumber a ] -> produce (VNumber (truncImpl a))
+  NumberToInt, [ VNumber a ] -> produce (VInt (toIntImpl a))
+  NumberToString, [ VNumber a ] -> produce (VString (numeral (numberToStringImpl a)))
 
   -- the number of Unicode scalar values, which is what the length of a `String`
   -- is (D27)
@@ -73,6 +109,25 @@ carryOut unit' op args = case op, args of
   StringCodePointAt, [ VInt i, VString s ] -> case scalarAt i s of
     Just scalar -> produce (VChar scalar)
     Nothing -> faults (IndexOutsideString i (scalarLength s))
+
+  StringAppend, [ VString a, VString b ] -> produce (VString (a <> b))
+
+  -- scalar indices, and **no bound is clamped or counted from the end**
+  StringSlice, [ VInt start, VInt end, VString s ]
+    | 0 <= start && start <= end && end <= scalarLength s ->
+        produce (VString (scalarStringOf (Array.slice start end (scalarsOf s))))
+    | otherwise -> faults (SliceOutsideString start end (scalarLength s))
+
+  StringSingleton, [ VChar c ] -> produce (VString (scalarStringOf [ c ]))
+  StringEq, [ VString a, VString b ] -> produce (VBoolean (a == b))
+  -- **by scalar value**, which is not the order of the host's code units
+  StringLt, [ VString a, VString b ] ->
+    produce (VBoolean (compareByScalar (textOf a) (textOf b) == LT))
+
+  CharToCodePoint, [ VChar c ] -> produce (VInt (codePointOf c))
+  CharFromCodePoint, [ VInt code ] -> case scalarValue code of
+    Just c -> produce (VChar c)
+    Nothing -> faults (NotAScalarValue code)
 
   -- a slot count is fixed where the array is created and nothing changes it, so
   -- this reads an immutable property of its argument and faults on nothing
@@ -109,6 +164,21 @@ carryOut unit' op args = case op, args of
   overArray o k = case Arr.fromOpaque o of
     Just array -> k array
     Nothing -> pure (Left WrongOperands)
+
+-- | Text a conversion wrote, which is digits, a sign, a point, an exponent, or one of
+-- | `NaN` and `Infinity`: ASCII throughout, so every code point is a scalar value.
+numeral :: P.String -> ScalarString
+numeral text = unsafePartial (fromJust (scalarString text))
+
+foreign import mulImpl :: P.Int -> P.Int -> P.Int
+foreign import quotImpl :: P.Int -> P.Int -> P.Int
+foreign import remImpl :: P.Int -> P.Int -> P.Int
+foreign import toIntImpl :: P.Number -> P.Int
+foreign import intToStringImpl :: P.Int -> P.String
+foreign import numberToStringImpl :: P.Number -> P.String
+foreign import floorImpl :: P.Number -> P.Number
+foreign import ceilImpl :: P.Number -> P.Number
+foreign import truncImpl :: P.Number -> P.Number
 
 derive instance Eq Refusal
 derive instance Generic Refusal _

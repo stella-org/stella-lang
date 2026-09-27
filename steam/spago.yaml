@@ -19,6 +19,7 @@ package:
     - maybe
     - node-process
     - ordered-collections
+    - partial
     - prelude
     - refs
     - run

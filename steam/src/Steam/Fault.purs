@@ -32,6 +32,15 @@ data Fault
   -- | A negative slot count handed to `Base.Array.unsafeNew`, as the count. A count
   -- | of zero is an array of no slots and is not this.
   | NegativeArrayLength P.Int
+  -- | An integer division or remainder by zero, as the dividend.
+  | ZeroDivisor P.Int
+  -- | A slice whose bounds are not `0 ≤ start ≤ end ≤ length`, as the start, the
+  -- | end, and the number of scalar values the string holds. A negative bound is
+  -- | this too: nothing counts from the end.
+  | SliceOutsideString P.Int P.Int P.Int
+  -- | A code handed to `Base.Char.fromCodePoint` that names no Unicode scalar value:
+  -- | one outside `0` to `0x10FFFF`, or a surrogate.
+  | NotAScalarValue P.Int
   -- | A foreign that produced no value, as the reason its body gave. This is the
   -- | failure the ABI admits an implementation may report.
   | ForeignRefused (Qualified Ident) P.String
