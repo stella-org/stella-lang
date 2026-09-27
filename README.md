@@ -1,5 +1,5 @@
 <p align="center">
-<img src="./stella-logo.svg" width="128" height="128" alt="stella-logo" />
+<img src="https://stella-lang.org/stella-logo.svg" width="128" height="128" alt="stella-logo" />
 </p>
 
 # The Stella Programming Language
