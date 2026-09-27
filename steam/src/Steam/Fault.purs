@@ -42,6 +42,10 @@ data Fault
   -- | the ABI admits while the other is a body in breach of what it owes
   -- | ([Abstract Machine](../../../docs/technical-references/07-Runtime/01-Abstract-Machine.md)).
   | ForeignThrew (Qualified Ident) P.String
+  -- | A foreign whose body answered with a host value its declared result cannot
+  -- | be, as the entry and what was wrong with the value. **A breach of the contract
+  -- | by the implementation**, kept apart from a refusal as a throw is.
+  | ForeignBreached (Qualified Ident) P.String
   -- | A native action that refused, as the reason it gave. This is the failure the
   -- | ABI admits an action may report.
   | NativeRefused P.String
@@ -49,6 +53,9 @@ data Fault
   -- | refused. **Kept apart from a refusal**, for the reason `ForeignThrew` is
   -- | ([Abstract Machine](../../../docs/technical-references/07-Runtime/01-Abstract-Machine.md)).
   | NativeThrew P.String
+  -- | A native action that produced a host value the kind it was declared with
+  -- | cannot be, as the entry that returned the action and what was wrong.
+  | NativeBreached (Qualified Ident) P.String
 
 derive instance Eq Fault
 derive instance Generic Fault _

@@ -161,6 +161,15 @@ type ForeignBody = EffectFn1 (P.Array Value) ForeignOutcome
 data ForeignOutcome
   = Produced Value
   | Refused P.String
+  -- | The host value is not what the result's kind says, as a description of what
+  -- | was owed and what came back. **A breach of the contract by the
+  -- | implementation**, which is a fault naming the entry: letting the value through
+  -- | would put something no Stella type describes into a register.
+  | Breached P.String
+  -- | The argument at that position is not of the kind the signature gives it. The
+  -- | values are the interpreter's own, so this is a state no `.dmo` admits rather
+  -- | than anything the implementation did.
+  | ArgumentNotOfKind P.Int
 
 -- | A function table entry of a loaded module.
 type FuncRef =
@@ -194,6 +203,10 @@ type NativeAction = Effect ActionOutcome
 data ActionOutcome
   = ActionProduced Value
   | ActionRefused P.String
+  -- | What the action produced is not what the kind it was declared with says, as
+  -- | the entry that returned the action and a description of what was wrong. The
+  -- | same breach `Breached` is for a foreign's own result.
+  | ActionBreached (Qualified Ident) P.String
 
 data Value
   -- | Always an int32 (D37).

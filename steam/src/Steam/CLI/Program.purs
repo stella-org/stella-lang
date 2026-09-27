@@ -2,9 +2,10 @@
 -- |
 -- | **This is the wiring and not a second interpreter.** Running a program is a
 -- | function of three things — the modules in order, the entry point, and the
--- | foreign table — and `runProgram` is that function. The command passes an empty
--- | table, a command line carrying paths and names and not host functions; the
--- | application above calls the same wiring with the table it assembled.
+-- | foreign table — and `runProgram` is that function. **The interpreter assembles
+-- | the table itself**, from the manifest the command is pointed at: a table holds
+-- | host functions, which no command line can carry, so whoever builds one must be
+-- | in the process that uses it (D43).
 module Steam.CLI.Program
   ( SteamEffects
   , program
@@ -29,8 +30,7 @@ import Steam.Drive (execute)
 import Stella.Compiler.ForeignManifest (Manifest)
 import Stella.Compiler.ForeignManifest as Manifest
 import Steam.CLI.Assemble as Assemble
-import Steam.Foreign (ForeignTable)
-import Steam.Load (Store, emptyStore, globalNamed, load, moduleNamed, noIdentities, registryOf)
+import Steam.Load (Store, emptyStore, globalNamed, load, moduleNamed, noIdentities, registryOf, unitValue)
 import Steam.Load as Load
 import Steam.Value (IOValue, Value(..))
 import Stella.CLI.Effect.FS (FS, readBytes, readText)
@@ -51,19 +51,22 @@ program opts = case opts.command of
 
 -- | Load the modules given, in the order given, and execute the entry point.
 -- |
--- | The table is a parameter rather than something built here, which is what lets
--- | the application above reach this with one it assembled.
+-- | **The table is complete before the first module is loaded**: a run is given every
+-- | module at once, so it reaches every implementation their declarations ask for
+-- | first.
 runProgram :: RunOptions -> Run SteamEffects Unit
 runProgram options = do
   modules <- traverseA readModule options.modules
   manifest <- readManifest options.manifest
-  -- a run is given every module at once, so everything its declarations ask for is
-  -- reached before the first load; a session reaches per arrival instead (D43)
-  assembled <- Assemble.tableFor (baseOf options.manifest) manifest modules
+  -- the identities every module is loaded against, asked for `Prim.Unit` first so
+  -- that a `unit` result stands for the value those modules compare against
+  identities <- liftEffect (Ref.new noIdentities)
+  primUnit <- liftEffect (unitValue identities)
+  assembled <- Assemble.tableFor (baseOf options.manifest) manifest primUnit modules
   table <- case assembled of
     Left err -> Except.throw (ForeignsUnreachable err)
     Right table -> pure table
-  store <- loadAll table modules
+  store <- loadAll (emptyStore table identities) modules
   action <- entryPoint store options
   outcome <- Except.runExcept (execute (registryOf store) action)
   case outcome of
@@ -93,12 +96,10 @@ readModule path = do
 -- | end's mistake to hear about rather than something to work around here.
 loadAll
   :: forall r
-   . ForeignTable
+   . Store
   -> P.Array Dmo
   -> Run (EXCEPT ErrorType + EFFECT + r) Store
-loadAll table modules = do
-  identities <- liftEffect (Ref.new noIdentities)
-  Array.foldM one (emptyStore table identities) modules
+loadAll empty modules = Array.foldM one empty modules
   where
   one store dmo = do
     outcome <- Except.runExcept (load store dmo)

@@ -91,6 +91,7 @@ perform action = do
     Left thrown -> faults (NativeThrew (message thrown))
     Right (ActionProduced value) -> pure value
     Right (ActionRefused reason) -> faults (NativeRefused reason)
+    Right (ActionBreached name what) -> faults (NativeBreached name what)
   where
   faults :: forall a. Fault -> Run (DRIVE r) a
   faults = Except.throw <<< Faults

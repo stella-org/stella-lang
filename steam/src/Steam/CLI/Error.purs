@@ -161,3 +161,11 @@ unreachable = case _ of
   ExportNotCallable name export ->
     fmt @"`{export}` in the implementations of {name} is not a function."
       { name: unModule name, export }
+
+  NoSignature name foreign' ->
+    fmt @"The foreign manifest does not say how the values of {name}.{foreign} cross.\n  Use the manifest written by the build that produced these bytecode files."
+      { name: unModule name, foreign: foreign' }
+
+  SignatureDisagrees name foreign' declared given ->
+    fmt @"The foreign manifest gives {name}.{foreign} {given} parameters, and its declaration takes {declared}.\n  Use the manifest written by the build that produced these bytecode files."
+      { name: unModule name, foreign: foreign', declared: show declared, given: show given }

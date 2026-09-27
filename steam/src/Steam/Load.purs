@@ -23,6 +23,8 @@ module Steam.Load
   , Identities
   , emptyStore
   , noIdentities
+  , unitValue
+  , claimedByInterpreter
   , registryOf
   , namesOf
   , moduleNamed
@@ -428,22 +430,33 @@ internOp store name = do
       pure id
 
 internCtor :: forall r. Store -> Qualified Ident -> Run (LOAD r) CtorId
-internCtor store name = do
-  identities <- liftEffect (Ref.read store.identities)
+internCtor store name = liftEffect (internCtorIn store.identities name)
+
+internCtorIn :: Ref Identities -> Qualified Ident -> Effect CtorId
+internCtorIn ref name = do
+  identities <- Ref.read ref
   case Map.lookup name identities.ctors of
     Just id -> pure id
     Nothing -> do
       let id = CtorId identities.next
-      liftEffect
-        ( Ref.write
-            identities
-              { ctors = Map.insert name id identities.ctors
-              , ctorNames = Map.insert id name identities.ctorNames
-              , next = identities.next + 1
-              }
-            store.identities
-        )
+      Ref.write
+        identities
+          { ctors = Map.insert name id identities.ctors
+          , ctorNames = Map.insert id name identities.ctorNames
+          , next = identities.next + 1
+          }
+        ref
       pure id
+
+-- | `Prim.Unit`, under the identity every module loaded against these identities
+-- | gives it.
+-- |
+-- | **An identity belongs to a name**, so asking for this one before any module is
+-- | loaded gives the identity each load then finds. That is what lets a value
+-- | built outside a load — the `Prim.Unit` a hosted foreign's `unit` result
+-- | stands for — be the one every module compares against.
+unitValue :: Ref Identities -> Effect Value
+unitValue identities = map (\id -> VData id []) (internCtorIn identities unitCtor)
 
 -- References -----------------------------------------------------------------------
 
@@ -491,6 +504,14 @@ resolveForeign store scope name = do
       exported store scope name
       pure entry
     Nothing -> refuse (NoSuchForeign name)
+
+-- | Whether the interpreter carries out a foreign of this name itself: an operation, or
+-- | `Base.IO.pure` or `Base.IO.bind`. **The name alone decides it**, as it does in
+-- | `implementationOf`, so the host is never asked for such a name.
+claimedByInterpreter :: Qualified Ident -> P.Boolean
+claimedByInterpreter name =
+  Array.any (\op -> entryOfOp op == name) Op.implemented
+    || Array.any (\io -> entryOfIO io == name) ioEntries
 
 -- | What carries out a foreign this module declares.
 -- |

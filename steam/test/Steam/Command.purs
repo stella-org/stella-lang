@@ -29,6 +29,7 @@ import Node.ChildProcess.Types (Exit(..))
 import Node.Encoding (Encoding(..))
 import Node.FS.Aff as FS
 import Node.Library.Execa (execa)
+import Node.Process as Process
 import Stella.Compiler.Bytecode (Dmo, encode, lower)
 import Stella.Compiler.Bytecode.Instr (ConstIx(..), ForeignIx(..), FuncIx(..), Instr(..), Reg(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Constant(..), GlobalInit(..))
@@ -314,6 +315,7 @@ type Fixture =
   , other :: Dmo
   , badInit :: Dmo
   , host :: Dmo
+  , speaker :: Dmo
   }
 
 compiled :: Either P.String Fixture
@@ -340,7 +342,11 @@ compiled = case declareAnnotated primSignature ioModule of
                     Left err -> Left ("Host did not declare: " <> show err.error)
                     Right hostDeclared -> do
                       host <- lowered =<< translated hostModule hostDeclared
-                      pure { io, string, main, other, badInit, host }
+                      case declareAnnotated primSignature speakerModule of
+                        Left err -> Left ("Speaker did not declare: " <> show err.error)
+                        Right speakerDeclared -> do
+                          speaker <- lowered =<< translated speakerModule speakerDeclared
+                          pure { io, string, main, other, badInit, host, speaker }
   where
   translated m declared = case translate noImports m declared of
     Left err -> Left (show err)
@@ -413,7 +419,34 @@ writeModules = case compiled of
     write "Bug" bugModule
     write "BugInit" bugInitModule
     write "Host" dmos.host
+    write "Speaker" dmos.speaker
     writeText (dir <> "/impl.mjs") implementations
+    writeText (dir <> "/speaking.mjs") speakingImpl
+    writeText (dir <> "/silent.mjs") silentImpl
+    writeText (manifestPath "speaking") (speakerManifestFor "./speaking.mjs")
+    writeText (manifestPath "silent") (speakerManifestFor "./silent.mjs")
+    writeText (manifestPath "two-params") (manifestWith "./impl.mjs" """[ "int", "int" ]""")
+    writeText (manifestPath "no-signature")
+      """{ "formatVersion": 1, "target": "javascript",
+           "modules": [ { "module": "Host", "specifier": "./impl.mjs", "foreigns": [] } ] }"""
+    FS.mkdir' (dir <> "/node_modules/stella-fixture-host")
+      { recursive: true, mode: Perms.mkPerms Perms.all Perms.all Perms.all }
+    writeText (dir <> "/node_modules/stella-fixture-host/package.json")
+      """{ "name": "stella-fixture-host", "type": "module", "main": "index.mjs" }"""
+    writeText (dir <> "/node_modules/stella-fixture-host/index.mjs") implementations
+    writeText (manifestPath "bare") (manifestFor "stella-fixture-host")
+    writeText (manifestPath "node-url") (manifestFor "node:fs")
+    here <- liftEffect Process.cwd
+    writeText (manifestPath "file-url")
+      (manifestFor ("file://" <> here <> "/" <> dir <> "/impl.mjs"))
+    writeText (manifestPath "absolute-path")
+      (manifestFor (here <> "/" <> dir <> "/impl.mjs"))
+    -- entries for names the interpreter claims, pointing nowhere and giving no
+    -- signature: an entry the interpreter would consult fails on either
+    writeText (manifestPath "claimed")
+      """{ "formatVersion": 1, "target": "javascript",
+           "modules": [ { "module": "Base.IO", "specifier": "./nowhere.mjs", "foreigns": [] }
+                      , { "module": "Base.String", "specifier": "./nowhere.mjs", "foreigns": [] } ] }"""
     writeText (dir <> "/refusing.mjs") refusingImpl
     writeText (manifestPath "refusing") (manifestFor "./refusing.mjs")
     writeText (dir <> "/not-a-function.mjs") notAFunction
@@ -424,8 +457,8 @@ writeModules = case compiled of
     writeText (manifestPath "wrong-export") (manifestFor "./wrong-export.mjs")
     writeText (manifestPath "twice")
       """{ "formatVersion": 1, "target": "javascript",
-           "modules": [ { "module": "Host", "specifier": "./impl.mjs" }
-                      , { "module": "Host", "specifier": "./impl.mjs" } ] }"""
+           "modules": [ { "module": "Host", "specifier": "./impl.mjs", "foreigns": [] }
+                      , { "module": "Host", "specifier": "./impl.mjs", "foreigns": [] } ] }"""
     writeText (manifestPath "other-target")
       """{ "formatVersion": 1, "target": "wasm", "modules": [] }"""
     writeText (manifestPath "later-version")
@@ -476,15 +509,20 @@ hostModule =
 
 -- | The implementations that module's manifest points at, written where a manifest
 -- | would point at them.
+-- |
+-- | It refuses unless it was handed `1`, as a host number: the argument arrives as an
+-- | argument and not inside an array, and unwrapped by its kind.
 implementations :: P.String
 implementations =
-  "export const greet = (args) =>\n\
-  \  args[0] === 1 ? args[0] : ({ [Symbol.for('stella.refuse')]: 'wrong argument' });\n"
+  "import { refuse } from '@stella-lang/runtime/foreign';\n\
+  \export const greet = (n) => n === 1 ? n : refuse('wrong argument');\n"
 
--- | One that refuses, which is what an adapter does where it cannot produce a value.
+-- | One that refuses, which is what an implementation does where it cannot produce a
+-- | value.
 refusingImpl :: P.String
 refusingImpl =
-  "export const greet = (_args) => ({ [Symbol.for('stella.refuse')]: 'nothing to give' });\n"
+  "import { refuse } from '@stella-lang/runtime/foreign';\n\
+  \export const greet = (_n) => refuse('nothing to give');\n"
 
 -- | An export that is reached and is not a function.
 notAFunction :: P.String
@@ -492,14 +530,69 @@ notAFunction = "export const greet = 41;\n"
 
 -- | An export that is not there.
 wrongExport :: P.String
-wrongExport = "export const hello = (args) => args[0];\n"
+wrongExport = "export const hello = (n) => n;\n"
 
+-- | A manifest for `Host`, giving `greet` the signature its declaration has.
 manifestFor :: P.String -> P.String
-manifestFor specifier =
+manifestFor specifier = manifestWith specifier """[ "int" ]"""
+
+-- | The same, with the `params` given.
+manifestWith :: P.String -> P.String -> P.String
+manifestWith specifier params =
   """{ "formatVersion": 1, "target": "javascript",
        "modules": [ { "module": "Host", "specifier": """"
     <> specifier
-    <> """" } ] }"""
+    <> """", "foreigns": [ { "name": "greet", "params": """
+    <> params
+    <> """, "result": "int" } ] } ] }"""
+
+-- | `module Speaker where foreign say : Int -> IO Unit ; main = say 7`, a program whose
+-- | entry point is an action a host constructs.
+speakerModuleName :: ModuleName
+speakerModuleName = ModuleName "Speaker"
+
+speakerModule :: Module P.Int
+speakerModule =
+  { annotation: 0
+  , name: speakerModuleName
+  , imports: []
+  , exports: []
+  , decls:
+      [ DeclForeign 1
+          { name: Ident "say"
+          , scheme: monoScheme (pureFn (TCon intTy []) (ioOf unit'))
+          , attributes: []
+          }
+      , DeclNonRec 2
+          { name: Ident "main"
+          , scheme: monoScheme (ioOf unit')
+          , value: App 0 (Global 0 (Qualified speakerModuleName (Ident "say")) [])
+              (Lit 0 (LitInt 7))
+          , attributes: []
+          }
+      ]
+  }
+
+-- | An implementation that returns the action rather than performing it. What the
+-- | action writes is what shows it ran, and ran once the entry point was executed.
+speakingImpl :: P.String
+speakingImpl =
+  "export const say = (n) => () => { process.stderr.write(`said ${n}\\n`); };\n"
+
+-- | One whose action refuses, which ends a run that had begun.
+silentImpl :: P.String
+silentImpl =
+  "import { refuse } from '@stella-lang/runtime/foreign';\n\
+  \export const say = (_n) => () => refuse('nothing to say');\n"
+
+speakerManifestFor :: P.String -> P.String
+speakerManifestFor specifier =
+  """{ "formatVersion": 1, "target": "javascript",
+       "modules": [ { "module": "Speaker", "specifier": """"
+    <> specifier
+    <>
+      """", "foreigns":
+            [ { "name": "say", "params": [ "int" ], "result": { "action": "unit" } } ] } ] }"""
 
 writeText :: P.String -> P.String -> Aff Unit
 writeText path text = do
@@ -639,8 +732,9 @@ spec = describe "the steam run command" do
       String.contains (String.Pattern "not an action") outcome.err
         `shouldEqual` true
 
-    -- the adapter refuses unless it was handed `1`, so getting past initialization
-    -- is what shows the argument crossed. `args` holds every argument at once
+    -- the implementation refuses unless it was handed `1` as a host number, so
+    -- getting past initialization is what shows the argument crossed, unwrapped and
+    -- as an argument of its own
     it "hands the arguments to the adapter, all at once" do
       outcome <- invoke
         [ pathOf "Host"
@@ -750,6 +844,96 @@ spec = describe "the steam run command" do
     it "reaches nothing for a manifest entry the program does not use" do
       outcome <- invoke (inOrder <> [ "--manifest", manifestPath "missing-module" ])
       outcome.status `shouldEqual` 0
+
+    -- the manifest and the declaration came from one compiler, so a disagreement is
+    -- refused rather than believed
+    it "refuses a signature whose params disagree with the declared arity" do
+      outcome <- invoke
+        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "two-params" ]
+      outcome.status `shouldEqual` 1
+      String.contains (String.Pattern "gives Host.greet 2 parameters") outcome.err
+        `shouldEqual` true
+
+    it "refuses a foreign the manifest gives no signature" do
+      outcome <- invoke
+        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "no-signature" ]
+      outcome.status `shouldEqual` 1
+      String.contains (String.Pattern "how the values of Host.greet cross") outcome.err
+        `shouldEqual` true
+
+    -- the package stands under the manifest's directory and nowhere this command
+    -- could reach it from, so loading shows where the search started
+    it "resolves a bare specifier from the manifest's directory" do
+      outcome <- invoke
+        [ pathOf "Host"
+        , "--entry"
+        , "Host"
+        , "--entry-global"
+        , "greeted"
+        , "--manifest"
+        , manifestPath "bare"
+        ]
+      String.contains (String.Pattern "not an action") outcome.err
+        `shouldEqual` true
+
+    -- a URL is imported as it stands, so `node:fs` is reached and is simply not
+    -- where `greet` lives; resolved as a package it would not be reached at all
+    it "imports a node: URL as it stands" do
+      outcome <- invoke
+        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "node-url" ]
+      outcome.status `shouldEqual` 1
+      String.contains (String.Pattern "have no `greet`") outcome.err
+        `shouldEqual` true
+
+    it "imports a file: URL as it stands" do
+      outcome <- invoke
+        [ pathOf "Host"
+        , "--entry"
+        , "Host"
+        , "--entry-global"
+        , "greeted"
+        , "--manifest"
+        , manifestPath "file-url"
+        ]
+      String.contains (String.Pattern "not an action") outcome.err
+        `shouldEqual` true
+
+    it "imports an absolute path as it stands" do
+      outcome <- invoke
+        [ pathOf "Host"
+        , "--entry"
+        , "Host"
+        , "--entry-global"
+        , "greeted"
+        , "--manifest"
+        , manifestPath "absolute-path"
+        ]
+      String.contains (String.Pattern "not an action") outcome.err
+        `shouldEqual` true
+
+    -- `Base.IO` and `Base.String` declare only names the interpreter claims, so
+    -- entries for them are dead: neither reached nor asked for a signature
+    it "consults no entry for names the interpreter claims" do
+      outcome <- invoke (inOrder <> [ "--manifest", manifestPath "claimed" ])
+      outcome.status `shouldEqual` 0
+
+  describe "an entry point a host constructs" do
+
+    -- the whole chain: the table from the manifest, the module loaded against it,
+    -- and the action the foreign returned performed where the entry point runs
+    it "performs the action and finishes" do
+      outcome <- invoke
+        [ pathOf "Speaker", "--entry", "Speaker", "--manifest", manifestPath "speaking" ]
+      outcome.status `shouldEqual` 0
+      String.contains (String.Pattern "said 7") outcome.err `shouldEqual` true
+
+    -- a refusal where the action is performed is a fault after the entry point
+    -- began, which is a program that ran and failed
+    it "exits 2 where the action refuses" do
+      outcome <- invoke
+        [ pathOf "Speaker", "--entry", "Speaker", "--manifest", manifestPath "silent" ]
+      outcome.status `shouldEqual` 2
+      String.contains (String.Pattern "nothing to say") outcome.err `shouldEqual` true
 
   describe "the session mode" do
 

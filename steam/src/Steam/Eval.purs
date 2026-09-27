@@ -60,6 +60,7 @@ import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), Fo
 import Stella.Compiler.Bytecode.Module (Constant)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
 import Stella.Compiler.Primitive (PrimOp, arityOfOp)
+import Stella.Compiler.TypedCore.Name (Ident, Qualified)
 import Type.Row (type (+))
 
 -- | What an instruction expected of a register it read. The class of every value
@@ -155,6 +156,11 @@ data Bug
   -- | and a `.dmo` carries no type: the culprit is a lowering or an adapter in
   -- | breach, and the machine cannot tell which.
   | NotAnIOFromContinuation
+  -- | A hosted foreign handed an argument not of the kind its signature gives that
+  -- | position, as the entry and the position. The values are the interpreter's
+  -- | own, so what put it there is a lowering or a signature that does not belong
+  -- | to the declaration.
+  | ForeignArgumentNotOfKind (Qualified Ident) P.Int
   -- | `VABS`, whose operand's type is uninhabited, so nothing reaches it.
   | Unreachable
 
@@ -956,6 +962,8 @@ carryOutForeign machine carriedOutBy args = case carriedOutBy of
     case outcome of
       Right (Produced value) -> pure (Returning value)
       Right (Refused reason) -> fault (ForeignRefused name reason)
+      Right (Breached what) -> fault (ForeignBreached name what)
+      Right (ArgumentNotOfKind position) -> bug (ForeignArgumentNotOfKind name position)
       Left thrown -> fault (ForeignThrew name (message thrown))
 
   -- **constructing is all either does** (D25): neither performs anything, and the
