@@ -7,23 +7,33 @@ import ArgParse.Basic as ArgParser
 import Data.Array as Array
 import Data.Either (Either(..))
 import Effect (Effect)
+import Effect.Aff (Aff, launchAff_)
+import Effect.Class (liftEffect)
 import Effect.Console as Console
 import Node.Process as Process
-import Run (Run, EFFECT, runBaseEffect)
+import Run (AFF, EFFECT, Run, runBaseAff')
 import Run.Except (EXCEPT)
 import Run.Except as Except
-import Steam.CLI.Error (ErrorType)
+import Steam.CLI.Error (ErrorType, exitStatus, report)
 import Steam.CLI.Options as Options
 import Steam.CLI.Program (program)
-import Stella.CLI.Effect.Log (LOG, defaultLoggerConfig)
+import Stella.CLI.Effect.FS (FS)
+import Stella.CLI.Effect.FS as FS
+import Stella.CLI.Effect.Log (LOG)
 import Stella.CLI.Effect.Log as Log
+import Stella.CLI.Runner.Node as Node
 import Type.Row (type (+))
 
-runNode :: forall a. Run (LOG + EXCEPT ErrorType + EFFECT + ()) a -> Effect (Either String a)
-runNode m = m
-  # Log.interpret (Log.terminalHandler (defaultLoggerConfig { minLevel = Log.Info }))
+runNode
+  :: forall a
+   . Log.LoggerConfig
+  -> Run (LOG + FS + EXCEPT ErrorType + AFF + EFFECT + ()) a
+  -> Aff (Either ErrorType a)
+runNode loggerConfig m = m
+  # Log.interpret (Node.jsConsoleHandler loggerConfig)
+  # FS.interpret Node.nodeFsHandler
   # Except.runExcept
-  # runBaseEffect
+  # runBaseAff'
 
 main :: Effect Unit
 main = do
@@ -36,10 +46,21 @@ main = do
     Left err -> do
       Console.error (ArgParser.printArgError err)
       Process.exit' 1
-    Right opts -> run opts
+    Right opts -> launchAff_ (run opts)
   where
   asked err = Console.log (ArgParser.printArgError err)
 
-  run opts = runNode (program opts) >>= case _ of
-    Right _ -> pure unit
-    Left e -> Console.error e
+  -- **The status is read off what ended it**, and the mapping is one definition
+  -- ([Error](Error.purs)). Nothing is printed of what the entry point produced.
+  run opts =
+    let
+      loggerConfig = Log.defaultLoggerConfig
+        { minLevel = opts.logLevel
+        , color = not opts.monochrome
+        }
+    in
+      runNode loggerConfig (program opts) >>= case _ of
+        Right _ -> pure unit
+        Left err -> liftEffect do
+          Console.error (report err)
+          Process.exit' (exitStatus err)

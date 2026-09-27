@@ -4,19 +4,32 @@ import Prelude
 
 import ArgParse.Basic (ArgParser)
 import ArgParse.Basic as ArgParser
+import Data.Array as Array
 import Data.Either (Either)
 import Data.Generic.Rep (class Generic)
 import Data.Show.Generic (genericShow)
 import Stella.CLI.Effect.Log (LogLevel(..))
 import Stella.CLI.Options (loglevel, moduleName)
-import Stella.Compiler.TypedCore (ModuleName(..))
+import Stella.Compiler.TypedCore (Ident(..), ModuleName(..))
 
+-- | What `run` is given: the modules, and where the entry point is.
+-- |
+-- | **The two halves of the entry point are two options.** A module name has dots
+-- | in it, so one option carrying both would leave `A.B` reading as the module
+-- | `A.B` and as the global `B` of the module `A`, with nothing in the spelling to
+-- | separate them. Deciding by which modules were loaded is the answer to avoid:
+-- | the same command line would mean different things for different sets of files.
 type RunOptions =
   { entry :: ModuleName
+  , entryGlobal :: Ident
+  -- | The `.dmo` files, in dependency order. **Nothing here is sorted**: they are
+  -- | loaded left to right, and a module whose imports are not already loaded is
+  -- | refused. No path is searched and no name resolved to a file.
+  , modules :: Array String
   }
 
 data Command
-  = Eval {}
+  = Session {}
   | Run RunOptions
 
 derive instance Eq Command
@@ -26,6 +39,7 @@ instance Show Command where
 
 type Options =
   { logLevel :: LogLevel
+  , monochrome :: Boolean
   , command :: Command
   }
 
@@ -37,15 +51,19 @@ options =
           "Suppress log messages of level lower than"
           # loglevel
           # ArgParser.default Info
+    , monochrome:
+        ArgParser.flag [ "--monochrome" ]
+          "Disable coloring log messages"
+          # ArgParser.boolean
     , command:
         ArgParser.choose "command"
           [ ArgParser.command [ "run" ]
               "Load whole program and execute main once."
               ((Run <$> runOptions) <* ArgParser.flagHelp)
-          , ArgParser.command [ "eval" ]
-              "Evaluates a single module or declaration.\n\
+          , ArgParser.command [ "session" ]
+              "Hold modules across many inputs and answer requests.\n\
               \Intended for use as a REPL backend."
-              ((Eval {}) <$ ArgParser.flagHelp)
+              ((Session {}) <$ ArgParser.flagHelp)
           ]
     }
     <* ArgParser.flagHelp
@@ -53,9 +71,18 @@ options =
   runOptions = ArgParser.fromRecord
     { entry:
         ArgParser.argument [ "--entry", "-e" ]
-          "Entry module name which should contain `main :: IO Unit`"
+          "Module holding the entry point"
           # moduleName
           # ArgParser.default (ModuleName "Main")
+    , entryGlobal:
+        ArgParser.argument [ "--entry-global" ]
+          "Name of the entry point within that module"
+          # map Ident
+          # ArgParser.default (Ident "main")
+    , modules:
+        ArgParser.anyNotFlag "MODULE.dmo" "Bytecode files, in dependency order"
+          # ArgParser.many
+          # map Array.fromFoldable
     }
 
 parse :: Array String -> Either ArgParser.ArgError Options

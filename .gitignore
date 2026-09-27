@@ -12,3 +12,5 @@ _draft
 .vscode
 
 **/.DS_Store
+# bytecode the steam command tests write and run
+steam/.test-dmo

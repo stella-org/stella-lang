@@ -465,6 +465,7 @@ What the command adds over the pieces below it is the wiring — reading files, 
 | A fault while the entry point runs | Status `2`, the fault on standard error |
 | An interpreter bug while a module initializes | Status `3` and not `1`. The question asked first is whose the defect is, not when it happened |
 | An interpreter bug while the entry point runs | Status `3` likewise |
+| The `session` command, before that mode is built | Status `1` and a message. **Not a message and status `0`**: printing a failure while reporting success tells a reader one thing and a shell another |
 
 **Totality is the property worth testing here, not any one row.** Two questions decide the status — was it a bug, and had the entry point begun — and a case for each leaf is what shows nothing falls between them. A command that left one path unclassified would exit `0` on it, which is the worst of the four answers.
 

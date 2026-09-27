@@ -13,6 +13,7 @@ package:
     - either
     - enums
     - exceptions
+    - fmt
     - foldable-traversable
     - integers
     - lists
@@ -34,6 +35,11 @@ package:
     dependencies:
       - aff
       - datetime
+      - node-buffer
+      - node-child-process
+      - node-execa
+      - node-fs
+      - partial
       - spec
       - spec-node
       - transformers
