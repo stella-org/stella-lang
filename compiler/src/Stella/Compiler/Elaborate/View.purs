@@ -48,11 +48,18 @@ data TypeView
 -- | stands at any, having no element and no tail. `known` is in ascending order
 -- | of key, `rigid` of name, and `flexible` of metavariable, so one row has one
 -- | view.
+-- |
+-- | A flexible tail is shown twice over: as the metavariable, which is what
+-- | `postpone` is given, and as the type standing for it, built where the row
+-- | was and at the row's kind, which is what a row is rebuilt from. A metavariable
+-- | alone says nothing of where it was observed, so it could not be turned back
+-- | into a type without letting a part of a type that belongs to no build scope
+-- | into one.
 type RowView =
   { elementKind :: Maybe RowElemKind
   , known :: P.Array { key :: RowKey, payload :: PayloadView }
   , rigid :: P.Array TyVar
-  , flexible :: P.Array Handle
+  , flexible :: P.Array { meta :: Handle, type :: Handle }
   }
 
 -- | What an element carries. At `Row Type` it is a type; at `Row Effect` an

@@ -22,7 +22,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Context (Origin)
-import Stella.Compiler.Elaborate.Handle (Handle, HandleError)
+import Stella.Compiler.Elaborate.Handle (Handle, HandleError, ScopeId)
 import Stella.Compiler.Elaborate.Kinding (KindingFault)
 import Stella.Compiler.Elaborate.Obligation (Basis, Breach)
 import Stella.Compiler.Elaborate.Pending (Job, PendingId, SynthRef)
@@ -32,9 +32,10 @@ import Stella.Compiler.Elaborate.Term (TermMetaVar)
 import Stella.Compiler.Elaborate.Type (MetaVar, XType)
 import Stella.Compiler.Elaborate.Row (XRowError)
 import Stella.Compiler.Elaborate.Unify (UnifyError)
-import Stella.Compiler.TypedCore (Ident, Qualified, TyVar)
+import Stella.Compiler.TypedCore (Ident, Qualified, RowKey, TyVar)
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Generic.Rep (class Generic)
+import Data.Set (Set)
 import Data.Show.Generic (genericShow)
 
 data Diagnostic
@@ -110,6 +111,11 @@ data Defect
   -- | kernel, not a candidate that does not fit, which is what `unify` inside a
   -- | `transact` decides.
   | BuildRejected BuildError
+  -- | An attempt ending in success with binders still open, named by the scopes
+  -- | their bodies are built in. What was built under one — an obligation proved
+  -- | from its assumption, a job, a metavariable — would commit without the
+  -- | type that carries it.
+  | BindersLeftOpen (Set ScopeId)
   -- | A kernel operation that reads where it stands, run with no frame: outside
   -- | any attempt. The host called it where it had no site to give.
   | NoFrame
@@ -174,8 +180,18 @@ data BuildError
   | IllKinded KindingFault
   -- | `instantiateForall` given a type that is not a `forall`.
   | NotAForall Handle
-  -- | A binder closed in a scope other than the one it was opened in.
+  -- | A binder closed in a scope other than the one it was opened in, or by the
+  -- | operation that closes another sort of binder.
   | BinderMisuse Handle
+  -- | A binder closed a second time.
+  | BinderClosed Handle
+  -- | A binder closed while one opened inside its body is still open.
+  | EnclosesOpenBinder Handle
+  -- | A row element whose payload is not of the sort its key admits.
+  | EntryMismatch RowKey
+  -- | A region element. Only the handler owning a region introduces or removes
+  -- | one.
+  | RegionEntryForbidden
   -- | `KindAnyRow` given where a kind is asked for. It is evidence a row may
   -- | carry, and no kind.
   | AnyRowAsKind

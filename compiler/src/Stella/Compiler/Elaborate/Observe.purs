@@ -216,7 +216,12 @@ rowView handle builtIn vars evidence row = do
       known <- traverse
         (\(Tuple key entry) -> { key, payload: _ } <$> payloadView builtIn vars entry)
         (Map.toUnfoldable n.known :: P.Array (Tuple RowKey XRowEntry))
-      flexible <- traverse (issue <<< MetaObject) (Set.toUnfoldable n.flexible)
+      flexible <- traverse
+        ( \m -> { meta: _, type: _ }
+            <$> issue (MetaObject m)
+            <*> issueTypeAt builtIn vars (XKRow <$> elementKind) (XMeta m)
+        )
+        (Set.toUnfoldable n.flexible)
       pure { elementKind, known, rigid: Set.toUnfoldable n.rigid, flexible }
 
 payloadView :: Maybe ScopeId -> KindingScope -> XRowEntry -> Elab PayloadView

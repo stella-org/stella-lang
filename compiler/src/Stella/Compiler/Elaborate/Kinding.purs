@@ -21,6 +21,7 @@ module Stella.Compiler.Elaborate.Kinding
   , emptyKindingEnv
   , kindingOf
   , synthKind
+  , checkConstraint
   , checkKind
   , settled
   , settledIn
@@ -126,7 +127,31 @@ settledIn scope metas kind = do
 
 -- | The kind evidence of a type, under the scope given.
 synthKind :: KindingEnv -> KindingScope -> MetaContext -> XType -> Either KindingFault KindEvidence
-synthKind env scope metas ty = synth scope.tyVars (substitute metas ty)
+synthKind env scope metas ty = (judgement env scope metas).synth scope.tyVars (substitute metas ty)
+
+-- | `Γ ⊢ C ok`, under the scope given: each row is a row, a `Lacks`'s key is
+-- | well-formed for its row, and a `Disjoint`'s sides stand at one row kind.
+-- |
+-- | This is the one judgement of a constraint's well-formedness. A constrained
+-- | type is kinded through it, and so is every constraint a kernel operation is
+-- | given.
+checkConstraint :: KindingEnv -> KindingScope -> MetaContext -> XConstraint -> Either KindingFault Unit
+checkConstraint env scope metas c = (judgement env scope metas).constraint scope.tyVars zonked
+  where
+  zonked = case c of
+    XLacks key row -> XLacks key (substitute metas row)
+    XDisjoint l r -> XDisjoint (substitute metas l) (substitute metas r)
+
+-- The judgement over types and over constraints, which are kinded through each
+-- other.
+judgement
+  :: KindingEnv
+  -> KindingScope
+  -> MetaContext
+  -> { synth :: Map TyVar XKind -> XType -> Either KindingFault KindEvidence
+     , constraint :: Map TyVar XKind -> XConstraint -> Either KindingFault Unit
+     }
+judgement env scope metas = { synth, constraint }
   where
   wellFormed = settledIn scope metas
 

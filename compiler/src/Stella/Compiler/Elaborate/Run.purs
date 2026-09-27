@@ -18,7 +18,7 @@ import Prelude
 
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic, Inadmissible(..))
 import Stella.Compiler.Elaborate.Handle (emptyArena)
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SessionEnv, SolverState, break, checkSynthesisTarget, runElabIn, unify, withFrame)
+import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SessionEnv, SolverState, break, checkSynthesisTarget, requireClosed, runElabIn, unify, withFrame)
 import Stella.Compiler.Elaborate.Pending (Job(..), Pending, PendingId, goalOf)
 import Stella.Compiler.Elaborate.Scheduler (complete, lookupPending, reblock, unwakeable)
 import Stella.Compiler.Elaborate.Type (MetaVar)
@@ -58,12 +58,17 @@ data Attempt
 -- | resolved before the attempt commits, and one that postpones or fails leaves
 -- | the checkpoint's empty arena behind.
 -- |
+-- | **An action ending in success with a binder still open is a defect**, and
+-- | rolls back as one. What was built under the binder would otherwise commit
+-- | without the type that carries it, so every attempt is held to this here,
+-- | whoever runs it.
+-- |
 -- | Every outcome but `Done` rolls back, what is retained being kept. The action
 -- | reads the session given and no frame; `attemptPendingWith` is what runs one
 -- | under a job's frame.
 runAttempt :: forall a. SessionEnv -> Elab a -> SolverState -> Tuple (Outcome a) SolverState
 runAttempt session action s0 =
-  case runElabIn session checkpoint action of
+  case runElabIn session checkpoint (action <* requireClosed) of
     Tuple (Done a) s ->
       Tuple (Done a) (s { tentative { written = Set.empty, arena = emptyArena } })
     Tuple outcome s ->

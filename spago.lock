@@ -38,6 +38,7 @@
             "either",
             "enums",
             "foldable-traversable",
+            "foreign-object",
             "integers",
             "maybe",
             "ordered-collections",

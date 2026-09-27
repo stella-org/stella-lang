@@ -49,7 +49,7 @@ import Stella.Compiler.Elaborate.Kind (XKind)
 import Stella.Compiler.Elaborate.Kinding (KindEvidence, KindingScope)
 import Stella.Compiler.Elaborate.Pending (GoalRecord, PendingId)
 import Stella.Compiler.Elaborate.Term (XExpr)
-import Stella.Compiler.Elaborate.Type (MetaVar, XType)
+import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint, XType)
 import Stella.Compiler.TypedCore (TyVar)
 import Data.Either (Either(..))
 import Data.Generic.Rep (class Generic)
@@ -106,14 +106,23 @@ type ScopeObject =
   , context :: XContext
   }
 
--- | What an open operation hands back to be closed: the binder a `forall` was
--- | opened with, the scope it was opened in, and the scope its body is built in.
-data BinderObject = ForallBinder
-  { name :: TyVar
-  , kind :: XKind
-  , parent :: ScopeId
-  , body :: ScopeId
-  }
+-- | What an open operation hands back to be closed: what was opened, the scope
+-- | it was opened in, and the scope its body is built in. The body's scope also
+-- | identifies the binder among those an attempt holds open.
+data BinderObject
+  -- | A `forall (name : kind)`.
+  = ForallBinder
+      { name :: TyVar
+      , kind :: XKind
+      , parent :: ScopeId
+      , body :: ScopeId
+      }
+  -- | A `constraint =>`, assumed in the body's scope.
+  | AssumedConstraint
+      { constraint :: XConstraint
+      , parent :: ScopeId
+      , body :: ScopeId
+      }
 
 -- | The identity of a build scope within an attempt. The root, opened on the
 -- | site of the running job, is 0.

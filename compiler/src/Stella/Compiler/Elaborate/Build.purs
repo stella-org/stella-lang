@@ -3,11 +3,11 @@
 -- |
 -- | **A type is built in a build scope**, an opaque handle naming what the type
 -- | may mention. The root is opened on the site of the running job; opening a
--- | `forall` gives a child scope whose body is built in it. A builder uses a type
--- | only where the type was built in the scope given or in one of its ancestors,
--- | and never merges the scopes of the types it is given: two binders that share
--- | a name and a kind are still two binders, and only the scope a type was built
--- | in says which one it mentions.
+-- | `forall` or a constraint gives a child scope whose body is built in it. A
+-- | builder uses a type only where the type was built in the scope given or in
+-- | one of its ancestors, and never merges the scopes of the types it is given:
+-- | two binders that share a name and a kind are still two binders, and only the
+-- | scope a type was built in says which one it mentions.
 -- |
 -- | **A type observed rather than built carries the scope it came from.** What the
 -- | site gives is the root's; a part of a type is the scope of the whole; the body
@@ -15,9 +15,18 @@
 -- | scope and reach a builder only through the operation that opens them —
 -- | `instantiateForall` for a type, `instantiateScheme` for a scheme.
 -- |
--- | **The host ABI is first order.** Opening a `forall` hands back a binder, the
--- | variable it binds, and the scope its body is built in; closing it takes the
--- | three back. No request of the host waits on a guest closure.
+-- | **The host ABI is first order.** Opening a binder hands back the binder and
+-- | the scope its body is built in, and closing it takes both back, in the scope
+-- | it was opened in. No request of the host waits on a guest closure. **Every
+-- | binder opened is closed exactly once, inside out, before the attempt
+-- | succeeds**: what is built under one — an obligation proved from its assumption, a job, a
+-- | metavariable — would otherwise commit without the type carrying it.
+-- |
+-- | **A row is sharp by construction.** Kinding judges a row's shape; that no key
+-- | occurs twice is what extending and joining a row require of it, and each
+-- | builder introduces that requirement together with the row, as an obligation
+-- | decided against the facts of the scope it is built in. A row it breaks is a
+-- | failure, as any constraint a candidate breaks is.
 -- |
 -- | Every result is kinded by the read-only kinding judgement under its scope. A
 -- | builder asked for what cannot be built — a kind that does not fit, a type
@@ -30,8 +39,12 @@ module Stella.Compiler.Elaborate.Build
   , typeConstructor
   , applyType
   , emptyRow
+  , extendRow
+  , unionRow
   , openForall
   , closeForall
+  , openConstraint
+  , closeConstraint
   , instantiateForall
   , instantiateScheme
   ) where
@@ -41,16 +54,18 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Catalog (lookupEntry)
+import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Context (bindTyVar)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..))
-import Stella.Compiler.Elaborate.Elab (Elab, askEnv, break, currentMetas, freshBinderName, freshScopeId, issue, postpone, resolveBinder, resolveScope, resolveType)
+import Stella.Compiler.Elaborate.Elab (Elab, askEnv, assume, break, currentMetas, freshBinderName, freshScopeId, holdOpen, issue, postpone, release, Release(..), require, resolveBinder, resolveScope, resolveType)
 import Stella.Compiler.Elaborate.Handle (BinderObject(..), Handle, HandleObject(..), ScopeId(..), ScopeObject, TypeObject)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Kinding (KindingScope, checkKind, quantifiable, settledIn, synthKind)
-import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..), freeRigids, metasOf)
+import Stella.Compiler.Elaborate.Kinding (KindEvidence, KindingScope, checkConstraint, checkKind, quantifiable, settledIn, synthKind)
+import Stella.Compiler.Elaborate.Pending (Site)
+import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..), freeRigids, metasOf, xRowEntryKey)
 import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, lookupMeta, substitute)
-import Stella.Compiler.Elaborate.View (KindView(..))
-import Stella.Compiler.TypedCore (Ident, KindVar, Qualified, TyName, TyVar(..))
+import Stella.Compiler.Elaborate.View (ConstraintView(..), KindView(..), PayloadView(..))
+import Stella.Compiler.TypedCore (Ident, KindVar, Qualified, RowKey(..), TyName, TyVar(..))
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (foldMap, for_)
@@ -98,6 +113,31 @@ emptyRow scopeHandle = do
   scope <- resolveScope scopeHandle
   built scope XRowEmpty
 
+-- | `( key : payload | rest )`, requiring `key ∉ rest`.
+-- |
+-- | The key says which element the payload makes: a structural key a field of a
+-- | type, `EffectKey E` an unlabelled `E`, and a `SymbolKey` over an effect a
+-- | labelled one. A region element is refused: only the handler owning a region
+-- | introduces or removes one.
+extendRow :: Handle -> RowKey -> PayloadView -> Handle -> Elab Handle
+extendRow scopeHandle key payload restHandle = do
+  scope <- resolveScope scopeHandle
+  entry <- entryIn scope key payload
+  rest <- usableIn scope restHandle
+  row <- kinded scope (XRowExtend entry rest.type)
+  requiredIn scope (XLacks (xRowEntryKey entry) rest.type)
+  issueBuilt scope row
+
+-- | `left ⊎ right`, requiring `left # right`.
+unionRow :: Handle -> Handle -> Handle -> Elab Handle
+unionRow scopeHandle leftHandle rightHandle = do
+  scope <- resolveScope scopeHandle
+  left <- usableIn scope leftHandle
+  right <- usableIn scope rightHandle
+  row <- kinded scope (XRowUnion left.type right.type)
+  requiredIn scope (XDisjoint left.type right.type)
+  issueBuilt scope row
+
 -- | Open `forall (a : κ)`: a binder, the variable it binds as a type built in the
 -- | body's scope, and that scope.
 -- |
@@ -123,6 +163,7 @@ openForall scopeHandle hint kindView = do
       , context: bindTyVar scope.context name kind
       }
   binder <- issue (BinderObject (ForallBinder { name, kind, parent: scope.id, body: childId }))
+  holdOpen childId child.ancestors
   variable <- built child (XVar name)
   bodyScope <- issue (ScopeObject child)
   pure { binder, variable, bodyScope }
@@ -132,15 +173,53 @@ openForall scopeHandle hint kindView = do
 closeForall :: Handle -> Handle -> Handle -> Elab Handle
 closeForall scopeHandle binderHandle bodyHandle = do
   scope <- resolveScope scopeHandle
-  ForallBinder b <- resolveBinder binderHandle
-  when (b.parent /= scope.id) (rejected (BinderMisuse binderHandle))
-  body <- resolveType bodyHandle
+  resolveBinder binderHandle >>= case _ of
+    ForallBinder b -> do
+      body <- closing scope binderHandle b bodyHandle
+      built scope (XForall b.name b.kind body)
+    AssumedConstraint _ -> rejected (BinderMisuse binderHandle)
+
+-- | Open `constraint =>`: a binder, and the scope its body is built in, which
+-- | assumes the constraint.
+-- |
+-- | The constraint is judged well-formed here, and nothing more. **Whether it
+-- | can hold is decided where it is closed**, where the assumption is held as an
+-- | obligation; a constraint that cannot hold makes every requirement built
+-- | under it fail on the facts of its scope, and the binder must be closed
+-- | before the attempt succeeds.
+openConstraint :: Handle -> ConstraintView -> Elab { assumption :: Handle, bodyScope :: Handle }
+openConstraint scopeHandle view = do
+  scope <- resolveScope scopeHandle
+  constraint <- constraintIn scope view
+  childId <- freshScopeId
   let
-    visible = case body.builtIn of
-      Just id -> id == b.body || id == scope.id || Set.member id scope.ancestors
-      Nothing -> false
-  if visible then built scope (XForall b.name b.kind body.type)
-  else rejected (ScopeViolation bodyHandle)
+    child =
+      { id: childId
+      , ancestors: Set.insert scope.id scope.ancestors
+      , context: Context.assume scope.context constraint
+      }
+  assumption <- issue (BinderObject (AssumedConstraint { constraint, parent: scope.id, body: childId }))
+  holdOpen childId child.ancestors
+  bodyScope <- issue (ScopeObject child)
+  pure { assumption, bodyScope }
+
+-- | Close a constraint opened in this scope, over a body built in the body's
+-- | scope or in one this scope can use, holding the assumption from here on.
+-- |
+-- | **The assumption is held as an obligation where it is closed**: an
+-- | assignment making it unsatisfiable is refused from then on, and one it
+-- | already cannot satisfy is a failure now.
+closeConstraint :: Handle -> Handle -> Handle -> Elab Handle
+closeConstraint scopeHandle binderHandle bodyHandle = do
+  scope <- resolveScope scopeHandle
+  resolveBinder binderHandle >>= case _ of
+    AssumedConstraint b -> do
+      body <- closing scope binderHandle b bodyHandle
+      constrained <- kinded scope (XConstrained b.constraint body)
+      site <- siteOf scope
+      _ <- assume site b.constraint
+      issueBuilt scope constrained
+    ForallBinder _ -> rejected (BinderMisuse binderHandle)
 
 -- | `forall (a : κ). body` applied to a type at `κ`: `body[a := argument]`.
 -- |
@@ -227,15 +306,90 @@ usableIn scope handle = do
 
 -- Issue a type built in the scope, once the kinding judgement admits it.
 built :: ScopeObject -> XType -> Elab Handle
-built scope ty = do
+built scope ty = kinded scope ty >>= issueBuilt scope
+
+-- A type zonked, with the kind evidence the judgement gives it in the scope.
+kinded :: ScopeObject -> XType -> Elab { type :: XType, kind :: KindEvidence }
+kinded scope ty = do
   env <- askEnv
   metas <- currentMetas
   let
     zonked = substitute metas ty
-    kinding = kindingScopeOf scope
-  case synthKind env.session.kinding kinding metas zonked of
+  case synthKind env.session.kinding (kindingScopeOf scope) metas zonked of
     Left fault -> rejected (IllKinded fault)
-    Right kind -> issue (TypeObject { type: zonked, kind, scope: kinding, builtIn: Just scope.id })
+    Right kind -> pure { type: zonked, kind }
+
+issueBuilt :: ScopeObject -> { type :: XType, kind :: KindEvidence } -> Elab Handle
+issueBuilt scope typed =
+  issue (TypeObject { type: typed.type, kind: typed.kind, scope: kindingScopeOf scope, builtIn: Just scope.id })
+
+-- What closing a binder checks, whatever sort it is: that it was opened in this
+-- scope, that its body is built where its own scope or this one can use it, and
+-- that it is still open with nothing opened inside its body still open, which
+-- closing it ends. The body's type is the answer.
+closing
+  :: forall r
+   . ScopeObject
+  -> Handle
+  -> { parent :: ScopeId, body :: ScopeId | r }
+  -> Handle
+  -> Elab XType
+closing scope binderHandle binder bodyHandle = do
+  when (binder.parent /= scope.id) (rejected (BinderMisuse binderHandle))
+  body <- resolveType bodyHandle
+  let
+    visible = case body.builtIn of
+      Just id -> id == binder.body || id == scope.id || Set.member id scope.ancestors
+      Nothing -> false
+  unless visible (rejected (ScopeViolation bodyHandle))
+  release binder.body >>= case _ of
+    Released -> pure unit
+    NotOpen -> rejected (BinderClosed binderHandle)
+    EnclosesOpen _ -> rejected (EnclosesOpenBinder binderHandle)
+  pure body.type
+
+-- The site an obligation built in the scope carries: the scope's context, which
+-- holds every assumption opened around it, and the origin of the running job.
+siteOf :: ScopeObject -> Elab Site
+siteOf scope = do
+  env <- askEnv
+  case env.frame of
+    Nothing -> break NoFrame
+    Just frame -> pure { context: scope.context, origin: frame.site.origin }
+
+-- Require what a row being built needs, of the scope it is built in.
+requiredIn :: ScopeObject -> XConstraint -> Elab Unit
+requiredIn scope constraint = do
+  site <- siteOf scope
+  require site constraint
+
+-- The element a key and a payload make, from types the scope may use.
+entryIn :: ScopeObject -> RowKey -> PayloadView -> Elab XRowEntry
+entryIn scope key = case _ of
+  RegionPayload _ _ -> rejected RegionEntryForbidden
+  TypePayload h -> case key of
+    SymbolKey _ -> XRowTypeEntry key <$> typeIn h
+    TagKey _ -> XRowTypeEntry key <$> typeIn h
+    PositionKey _ -> XRowTypeEntry key <$> typeIn h
+    _ -> rejected (EntryMismatch key)
+  EffectPayload e args -> case key of
+    EffectKey e' | e' == e -> XRowEffectEntry e <$> traverse typeIn args
+    SymbolKey s -> XRowLabelledEffectEntry s e <$> traverse typeIn args
+    _ -> rejected (EntryMismatch key)
+  where
+  typeIn h = _.type <$> usableIn scope h
+
+-- A constraint from types the scope may use, judged well-formed there.
+constraintIn :: ScopeObject -> ConstraintView -> Elab XConstraint
+constraintIn scope view = do
+  constraint <- case view of
+    LacksView key row -> XLacks key <<< _.type <$> usableIn scope row
+    DisjointView l r -> XDisjoint <$> (_.type <$> usableIn scope l) <*> (_.type <$> usableIn scope r)
+  env <- askEnv
+  metas <- currentMetas
+  case checkConstraint env.session.kinding (kindingScopeOf scope) metas constraint of
+    Left fault -> rejected (IllKinded fault)
+    Right _ -> pure constraint
 
 kindingScopeOf :: ScopeObject -> KindingScope
 kindingScopeOf scope = { kindVars: scope.context.kindVars, tyVars: scope.context.tyVars }

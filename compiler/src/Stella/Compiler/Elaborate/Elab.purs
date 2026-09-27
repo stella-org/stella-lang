@@ -57,6 +57,10 @@ module Stella.Compiler.Elaborate.Elab
   , resolveBinder
   , freshScopeId
   , freshBinderName
+  , holdOpen
+  , release
+  , Release(..)
+  , requireClosed
   , spendFuel
   , fuelRemaining
   ) where
@@ -85,6 +89,8 @@ import Stella.Compiler.Elaborate.Unify (MetaContext, TermBinding(..), UnifyError
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
 import Data.Generic.Rep (class Generic)
+import Data.Array as Array
+import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set (Set)
@@ -120,6 +126,15 @@ import Data.Tuple (Tuple(..))
 -- | from. They are restored by a rollback like every other supply of names, so
 -- | a goal run twice against the same state opens the same scopes and binds the
 -- | same names; what tells a handle from a stale one is the generation, not these.
+-- |
+-- | `open` holds the binders an attempt has opened and not yet closed, each
+-- | named by the scope its body is built in and holding that scope's ancestors.
+-- | An attempt may not end in success with one still open, and a binder may not
+-- | be closed while one opened inside its body is: in either case what was built
+-- | under the inner one — an obligation proved from an assumption, a job, a
+-- | metavariable — would commit without a type that carries it. A rollback
+-- | restores it with the rest, so a binder opened by a discarded candidate is no
+-- | longer held.
 type Tentative =
   { metas :: MetaContext
   , obligations :: ObligationStore
@@ -127,6 +142,7 @@ type Tentative =
   , written :: Set MetaVar
   , arena :: Arena
   , names :: { nextScope :: P.Int, nextBinder :: P.Int }
+  , open :: Map ScopeId (Set ScopeId)
   }
 
 -- | What a rollback leaves alone.
@@ -246,6 +262,7 @@ initialState session fuel =
       , written: Set.empty
       , arena: emptyArena
       , names: { nextScope: 1, nextBinder: 0 }
+      , open: Map.empty
       }
   , retained: { session, nextGeneration: 0, fuel }
   }
@@ -376,6 +393,38 @@ freshBinderName :: P.String -> Elab TyVar
 freshBinderName hint = Elab \_ s ->
   Tuple (Done (TyVar (hint <> "#" <> show s.tentative.names.nextBinder)))
     (s { tentative { names { nextBinder = s.tentative.names.nextBinder + 1 } } })
+
+-- | Hold a binder open, by the scope its body is built in and that scope's
+-- | ancestors.
+holdOpen :: ScopeId -> Set ScopeId -> Elab Unit
+holdOpen body ancestors = Elab \_ s ->
+  Tuple (Done unit) (s { tentative { open = Map.insert body ancestors s.tentative.open } })
+
+-- | What closing a binder came to.
+data Release
+  = Released
+  -- | Not held open: closed already, or opened by a candidate a rollback
+  -- | discarded.
+  | NotOpen
+  -- | A binder opened inside its body, named by that body's scope, is open
+  -- | still. Closing around it would fix the type that carries the outer binder
+  -- | while the inner one can still build under it.
+  | EnclosesOpen ScopeId
+
+-- | Close a binder held open, once nothing opened inside its body is.
+release :: ScopeId -> Elab Release
+release body = Elab \_ s -> case Map.lookup body s.tentative.open of
+  Nothing -> Tuple (Done NotOpen) s
+  Just _ -> case Array.find (\(Tuple _ ancestors) -> Set.member body ancestors) (Map.toUnfoldable s.tentative.open :: P.Array (Tuple ScopeId (Set ScopeId))) of
+    Just (Tuple inner _) -> Tuple (Done (EnclosesOpen inner)) s
+    Nothing -> Tuple (Done Released) (s { tentative { open = Map.delete body s.tentative.open } })
+
+-- | Refuse to go on while a binder is still open. What an attempt built under
+-- | an open binder would otherwise commit without it.
+requireClosed :: Elab Unit
+requireClosed = Elab \_ s ->
+  if Map.isEmpty s.tentative.open then Tuple (Done unit) s
+  else Tuple (Broke (BindersLeftOpen (Map.keys s.tentative.open))) s
 
 -- | One unit of the loop's budget.
 -- |

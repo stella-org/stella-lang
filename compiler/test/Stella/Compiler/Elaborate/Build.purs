@@ -14,25 +14,29 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Build (applyType, closeForall, emptyRow, instantiateForall, instantiateScheme, openForall, rootScope, typeConstructor, typeVariable)
+import Stella.Compiler.Elaborate.Build (applyType, closeConstraint, closeForall, emptyRow, extendRow, instantiateForall, instantiateScheme, openConstraint, openForall, rootScope, typeConstructor, typeVariable, unionRow)
 import Stella.Compiler.Elaborate.Catalog (EntrySort(..), catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, issue, resolveType, runElabIn, throw, transact, withFrame)
+import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, issue, resolveType, runElabIn, throw, transact, unify, withFrame)
 import Stella.Compiler.Elaborate.Handle (Handle, HandleObject(..), ScopeId(..), SessionId(..), TypeObject)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), KindingEnv, KindingFault(..))
 import Stella.Compiler.Elaborate.Observe (localContext, lookupGlobal, normalizeRow, viewType)
-import Stella.Compiler.Elaborate.Pending (Site)
-import Stella.Compiler.Elaborate.Type (XConstraint(..), XRowEntry(..), XType(..))
-import Stella.Compiler.Elaborate.Unify (MetaBinding(..), UnifyError(..), emptyContext, freshMeta)
+import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..))
+import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), Pending, Site)
+import Stella.Compiler.Elaborate.Run (Attempt(..), attemptPendingWith, runAttempt)
+import Stella.Compiler.Elaborate.Scheduler (create, emptyScheduler)
+import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..))
+import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, UnifyError(..), emptyContext, freshMeta)
 import Stella.Compiler.Elaborate.View (ConstraintView(..), KindView(..), PayloadView(..), TypeView(..))
 import Stella.Compiler.TypedCore as Core
-import Stella.Compiler.TypedCore (Ident(..), Kind(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore (EffName(..), Ident(..), Kind(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
+import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set as Set
-import Data.Tuple (Tuple(..), fst)
+import Data.Tuple (Tuple(..), fst, snd)
 import Effect.Aff (Aff)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -62,8 +66,11 @@ kinding =
       , Tuple (tyName "List") { kindVars: [], body: KFun KType KType }
       , Tuple (tyName "Record") { kindVars: [], body: KFun (KRow RowType) KType }
       ]
-  , effects: Map.empty
+  , effects: Map.fromFoldable [ Tuple state [ KType ] ]
   }
+
+state :: Qualified EffName
+state = Qualified (ModuleName "Main") (EffName "State")
 
 global :: P.String -> Qualified Ident
 global name = Qualified (ModuleName "Main") (Ident name)
@@ -126,7 +133,10 @@ builds s action check = case outcomeOf s (action >>= resolveType) of
 
 -- | What a builder refuses, as the defect it reports.
 refuses :: forall a. Show a => Elab a -> (BuildError -> Aff Unit) -> Aff Unit
-refuses action check = case outcomeOf start action of
+refuses = refusesIn start
+
+refusesIn :: forall a. Show a => SolverState -> Elab a -> (BuildError -> Aff Unit) -> Aff Unit
+refusesIn s action check = case outcomeOf s action of
   Broke (BuildRejected err) -> check err
   other -> fail ("the builder did not refuse: " <> show other)
 
@@ -232,13 +242,13 @@ spec = describe "Elaborate.Build" do
   describe "scopes" do
     it "lets a child use what its ancestors built" do
       let
-        nested = do
+        grandchild = do
           root <- rootScope
           l <- list root
           outer <- openForall root "t" KindType
           inner <- openForall outer.bodyScope "u" KindType
           applyType inner.bodyScope l outer.variable
-      builds start nested \object -> do
+      builds start grandchild \object -> do
         object.type `shouldEqual` listOf (XVar t0)
         object.builtIn `shouldEqual` Just (ScopeId 2)
 
@@ -441,3 +451,349 @@ spec = describe "Elaborate.Build" do
           object.type `shouldEqual` XVar t0
           object.builtIn `shouldEqual` Just (ScopeId 1)
         other -> fail (show other)
+
+  describe "extendRow" do
+    it "builds an element over a row, at the row's kind" do
+      builds start (rootScope >>= \root -> emptyRow root >>= withN root) \object -> do
+        object.type `shouldEqual` XRowExtend (XRowTypeEntry keyN xInt) XRowEmpty
+        object.kind `shouldEqual` ExactKind (XKRow RowType)
+
+    it "makes an effect unlabelled under its own key, and labelled under a symbol" do
+      let
+        effect key = do
+          root <- rootScope
+          i <- int root
+          emptyRow root >>= extendRow root key (EffectPayload state [ i ])
+      builds start (effect (EffectKey state)) \object ->
+        object.type `shouldEqual` XRowExtend (XRowEffectEntry state [ xInt ]) XRowEmpty
+      builds start (effect (SymbolKey (Symbol "cache"))) \object ->
+        object.type `shouldEqual` XRowExtend (XRowLabelledEffectEntry (Symbol "cache") state [ xInt ]) XRowEmpty
+
+    it "refuses a payload its key does not admit, and any region" do
+      let
+        extended key payload = do
+          root <- rootScope
+          i <- int root
+          e <- emptyRow root
+          extendRow root key (payload i e) e
+      refuses (extended (EffectKey state) \i _ -> TypePayload i) (_ `shouldEqual` EntryMismatch (EffectKey state))
+      refuses (extended keyN \_ _ -> EffectPayload state []) case _ of
+        IllKinded _ -> pure unit
+        other -> fail ("not ill-kinded: " <> show other)
+      refuses (extended (TagKey (Tag "Ok")) \i _ -> EffectPayload state [ i ]) (_ `shouldEqual` EntryMismatch (TagKey (Tag "Ok")))
+      refuses (extended RegionKey RegionPayload) (_ `shouldEqual` RegionEntryForbidden)
+
+    it "fails on a key the row already has" do
+      rejectsObligation start (rootScope >>= \root -> emptyRow root >>= withN root >>= withN root) Required (SolutionCarriesKey keyN)
+
+    it "fails on a rigid tail its scope does not prove lacks the key" do
+      rejectsObligation start (rootScope >>= \root -> typeVariable root r >>= withN root) Required (LacksUnprovenAtSite keyN r)
+
+    it "holds the requirement over a flexible tail, which an assignment must then keep" do
+      let
+        solving = do
+          root <- rootScope
+          _ <- tailType >>= withN root
+          unify site solvedWithN
+      case outcomeOf withTail solving of
+        Failed (ObligationBroken broken) -> do
+          broken.basis `shouldEqual` Required
+          broken.breach `shouldEqual` SolutionCarriesKey keyN
+        other -> fail ("expected the obligation to break: " <> show other)
+
+    it "leaves no obligation behind where it fails" do
+      let
+        Tuple outcome s = runElabIn session withTail
+          ( withFrame frame do
+              root <- rootScope
+              row <- tailType >>= withN root
+              transact (withN root row)
+          )
+      case outcome of
+        Done (Left _) -> Map.size s.tentative.obligations.entries `shouldEqual` 1
+        other -> fail ("expected a caught failure: " <> show other)
+
+  describe "unionRow" do
+    it "joins rows that share no key" do
+      let
+        joined = do
+          root <- rootScope
+          e <- emptyRow root
+          n <- withN root e
+          m <- int root >>= \i -> extendRow root keyM (TypePayload i) e
+          unionRow root n m
+      builds start joined \object -> object.kind `shouldEqual` ExactKind (XKRow RowType)
+
+    it "fails where the sides share a key, or a key is not proved absent from a rigid tail" do
+      let
+        shared = do
+          root <- rootScope
+          e <- emptyRow root
+          n <- withN root e
+          n' <- withN root e
+          unionRow root n n'
+        overRigid = do
+          root <- rootScope
+          n <- emptyRow root >>= withN root
+          typeVariable root r >>= unionRow root n
+      rejectsObligation start shared Required (SidesShareKey keyN)
+      rejectsObligation start overRigid Required (LacksUnprovenAtSite keyN r)
+
+  describe "constraints" do
+    it "are assumed in their body, which reaches the root only once closed" do
+      let
+        underLacks = do
+          root <- rootScope
+          rv <- typeVariable root r
+          opened <- openConstraint root (LacksView keyN rv)
+          row <- withN opened.bodyScope rv
+          pure { root, opened, row }
+        closed = do
+          c <- underLacks
+          record <- typeConstructor c.opened.bodyScope (tyName "Record") []
+          body <- applyType c.opened.bodyScope record c.row
+          closeConstraint c.root c.opened.assumption body
+        escaping = do
+          c <- underLacks
+          record <- typeConstructor c.root (tyName "Record") []
+          applyType c.root record c.row
+      builds start closed \object -> do
+        object.type `shouldEqual` XConstrained (XLacks keyN (XVar r)) (recordOf (XRowExtend (XRowTypeEntry keyN xInt) (XVar r)))
+        object.builtIn `shouldEqual` Just (ScopeId 0)
+      refuses escaping scopeViolation
+
+    it "hold their assumption from where they are closed, and not before" do
+      let
+        opening = do
+          root <- rootScope
+          tv <- tailType
+          opened <- openConstraint root (LacksView keyN tv)
+          pure { root, opened }
+        openOnly = opening *> unify site solvedWithN
+        closed = do
+          c <- opening
+          i <- int c.opened.bodyScope
+          _ <- closeConstraint c.root c.opened.assumption i
+          unify site solvedWithN
+      case outcomeOf withTail openOnly of
+        Done _ -> pure unit
+        other -> fail ("expected the assignment to pass: " <> show other)
+      case outcomeOf withTail closed of
+        Failed (ObligationBroken broken) -> broken.basis `shouldEqual` Assumed
+        other -> fail ("expected the assumption to refuse it: " <> show other)
+
+    it "fail where one that cannot hold is closed" do
+      let
+        contradiction = do
+          root <- rootScope
+          n <- emptyRow root >>= withN root
+          opened <- openConstraint root (LacksView keyN n)
+          int root >>= closeConstraint root opened.assumption
+      rejectsObligation start contradiction Assumed (SolutionCarriesKey keyN)
+
+    it "refuse one that is not well-formed, or taken from where no build scope reaches" do
+      let
+        illFormed = do
+          root <- rootScope
+          n <- emptyRow root >>= withN root
+          openConstraint root (LacksView (EffectKey state) n)
+        underBinder = do
+          root <- rootScope
+          let
+            q = TyVar "q"
+          whole <- observed (XForall q (XKRow RowType) (XConstrained (XLacks keyN (XVar q)) xInt)) (ExactKind XKType)
+          viewType whole >>= case _ of
+            ForallType _ _ body -> viewType body >>= case _ of
+              ConstrainedType c _ -> openConstraint root c
+              _ -> throw failure
+            _ -> throw failure
+      refuses illFormed case _ of
+        IllKinded (KeyNotOfRowKind _ _) -> pure unit
+        other -> fail ("not KeyNotOfRowKind: " <> show other)
+      refuses underBinder scopeViolation
+
+  describe "binders" do
+    it "refuse being closed by the operation for the other sort" do
+      let
+        forallAsConstraint = do
+          root <- rootScope
+          opened <- openForall root "t" KindType
+          int root >>= closeConstraint root opened.binder
+        constraintAsForall = do
+          root <- rootScope
+          opened <- typeVariable root r >>= \rv -> openConstraint root (LacksView keyN rv)
+          int root >>= closeForall root opened.assumption
+        misuse = case _ of
+          BinderMisuse _ -> pure unit
+          other -> fail ("not a binder misuse: " <> show other)
+      refuses forallAsConstraint misuse
+      refuses constraintAsForall misuse
+
+    it "refuse being closed twice" do
+      let
+        twice = do
+          root <- rootScope
+          opened <- openForall root "t" KindType
+          _ <- closeForall root opened.binder opened.variable
+          closeForall root opened.binder opened.variable
+      refuses twice case _ of
+        BinderClosed _ -> pure unit
+        other -> fail ("not BinderClosed: " <> show other)
+
+  describe "an attempt the runner ends in success" do
+    it "halts with a binder still open, of either sort" do
+      attemptWith (\_ -> void (rootScope >>= \root -> openForall root "t" KindType))
+        `shouldEqual` Halted (BindersLeftOpen (Set.singleton (ScopeId 1)))
+      attemptWith (\_ -> void (rootScope >>= \root -> typeVariable root r >>= \rv -> openConstraint root (LacksView keyN rv)))
+        `shouldEqual` Halted (BindersLeftOpen (Set.singleton (ScopeId 1)))
+
+    it "commits once every binder is closed, a discarded candidate's included" do
+      attemptWith (\_ -> void forallList) `shouldEqual` Committed
+      attemptWith (\_ -> void (rootScope >>= \root -> transact (openForall root "t" KindType *> throw failure)))
+        `shouldEqual` Committed
+
+    it "commits nested binders closed inside out, and siblings closed in either order" do
+      let
+        insideOut = do
+          c <- nested openLacks openLacks
+          _ <- int c.inner.bodyScope >>= c.inner.close c.outer.bodyScope
+          void (int c.outer.bodyScope >>= c.outer.close c.root)
+        siblings = do
+          root <- rootScope
+          left <- openLacks root
+          right <- openLacks root
+          _ <- int root >>= left.close root
+          void (int root >>= right.close root)
+      attemptWith (\_ -> insideOut) `shouldEqual` Committed
+      attemptWith (\_ -> siblings) `shouldEqual` Committed
+
+    it "is held to it by runAttempt itself, whoever runs the attempt" do
+      case fst (runAttempt session (withFrame frame (rootScope >>= \root -> openForall root "t" KindType)) start) of
+        Broke (BindersLeftOpen open) -> open `shouldEqual` Set.singleton (ScopeId 1)
+        other -> fail ("expected the attempt to halt: " <> show other)
+
+  describe "a binder enclosing one still open" do
+    it "refuses to close, for either sort around either sort" do
+      let
+        -- Close the outer binder over a body from its own scope, the inner one
+        -- still open; then close the inner one, which would empty the ledger.
+        outerFirst outer inner = do
+          c <- nested outer inner
+          _ <- int c.root >>= c.outer.close c.root
+          int c.inner.bodyScope >>= c.inner.close c.outer.bodyScope
+        enclosing = case _ of
+          EnclosesOpenBinder _ -> pure unit
+          other -> fail ("not EnclosesOpenBinder: " <> show other)
+      refuses (outerFirst openLacks openLacks) enclosing
+      refuses (outerFirst openT openLacks) enclosing
+      refuses (outerFirst openLacks openT) enclosing
+      refuses (outerFirst openT openT) enclosing
+
+    it "halts the attempt rather than commit what was built under the inner one" do
+      let
+        outerFirst = do
+          c <- nested openLacks openLacks
+          _ <- int c.root >>= c.outer.close c.root
+          void (int c.inner.bodyScope >>= c.inner.close c.outer.bodyScope)
+      case attemptWith (\_ -> outerFirst) of
+        Halted (BuildRejected (EnclosesOpenBinder _)) -> pure unit
+        other -> fail ("expected the attempt to halt: " <> show other)
+
+  describe "a row view's flexible tail" do
+    it "is also a type, built where the row was and at its kind" do
+      let
+        rebuilt = do
+          root <- rootScope
+          row <- observed (XRowExtend (XRowTypeEntry keyN xInt) (XMeta tail)) (ExactKind (XKRow RowType))
+          view <- normalizeRow row
+          case view.flexible of
+            [ flexible ] -> do
+              object <- resolveType flexible.type
+              extended <- int root >>= \i -> extendRow root keyM (TypePayload i) flexible.type
+              pure (Tuple object extended)
+            _ -> throw failure
+      case outcomeOf withTail rebuilt of
+        Done (Tuple object _) -> do
+          object.type `shouldEqual` XMeta tail
+          object.kind `shouldEqual` ExactKind (XKRow RowType)
+          object.builtIn `shouldEqual` Just (ScopeId 0)
+        other -> fail (show other)
+
+    it "is in no build scope where the row is in none" do
+      let
+        underBinder = do
+          root <- rootScope
+          whole <- observed (XForall (TyVar "q") XKType (recordOf (XRowExtend (XRowTypeEntry keyN xInt) (XMeta tail)))) (ExactKind XKType)
+          viewType whole >>= case _ of
+            ForallType _ _ body -> viewType body >>= case _ of
+              AppType _ row -> normalizeRow row >>= \view -> case view.flexible of
+                [ flexible ] -> int root >>= \i -> extendRow root keyM (TypePayload i) flexible.type
+                _ -> throw failure
+              _ -> throw failure
+            _ -> throw failure
+      refusesIn withTail underBinder scopeViolation
+
+keyM :: RowKey
+keyM = SymbolKey (Symbol "m")
+
+-- | `( n : Int | rest )`, built in the scope.
+withN :: Handle -> Handle -> Elab Handle
+withN scope rest = int scope >>= \i -> extendRow scope keyN (TypePayload i) rest
+
+-- | A flexible row tail `?t : Row Type`, created under the site's variables.
+tailed :: Tuple MetaVar MetaContext
+tailed = freshMeta { kind: XKRow RowType, scope: { types: Set.fromFoldable [ a, r ], kinds: Set.empty } } emptyContext
+
+tail :: MetaVar
+tail = fst tailed
+
+withTail :: SolverState
+withTail = start { tentative = start.tentative { metas = snd tailed } }
+
+-- | `?t`, as the site gives it.
+tailType :: Elab Handle
+tailType = observed (XMeta tail) (ExactKind (XKRow RowType))
+
+-- | `?t ≡ ( n : Int )`.
+solvedWithN :: EqualityGoal
+solvedWithN = { kind: XKRow RowType, left: XMeta tail, right: XRowExtend (XRowTypeEntry keyN xInt) XRowEmpty }
+
+-- | What an action fails with, where an obligation it introduced is rejected.
+rejectsObligation :: forall a. Show a => SolverState -> Elab a -> Basis -> Breach -> Aff Unit
+rejectsObligation s action basis breach = case outcomeOf s action of
+  Failed (ObligationRejected rejected) -> do
+    rejected.basis `shouldEqual` basis
+    rejected.breach `shouldEqual` breach
+  other -> fail ("expected a rejected obligation: " <> show other)
+
+-- | What attempting an equality job with the runner given comes to.
+attemptWith :: (Pending -> Elab Unit) -> Attempt
+attemptWith runner = fst (attemptPendingWith session runner id held)
+  where
+  Tuple id scheduler = create site (JobUnify { kind: XKType, left: xInt, right: xInt }) emptyScheduler
+  held = start { tentative = start.tentative { scheduler = scheduler } }
+
+-- | A binder opened in a scope: the scope its body is built in, and how to close
+-- | it in a scope over a body.
+type Opened = { bodyScope :: Handle, close :: Handle -> Handle -> Elab Handle }
+
+-- | `forall (t : Type)`.
+openT :: Handle -> Elab Opened
+openT scope = do
+  opened <- openForall scope "t" KindType
+  pure { bodyScope: opened.bodyScope, close: \s body -> closeForall s opened.binder body }
+
+-- | `n ∉ r =>`.
+openLacks :: Handle -> Elab Opened
+openLacks scope = do
+  rv <- typeVariable scope r
+  opened <- openConstraint scope (LacksView keyN rv)
+  pure { bodyScope: opened.bodyScope, close: \s body -> closeConstraint s opened.assumption body }
+
+-- | One binder opened in the root, and another inside its body.
+nested :: (Handle -> Elab Opened) -> (Handle -> Elab Opened) -> Elab { root :: Handle, outer :: Opened, inner :: Opened }
+nested openOuter openInner = do
+  root <- rootScope
+  outer <- openOuter root
+  inner <- openInner outer.bodyScope
+  pure { root, outer, inner }
