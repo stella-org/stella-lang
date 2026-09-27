@@ -13,6 +13,7 @@ module Stella.CLI.Effect.FS
   , _fs
   , interpret
   , readBytes
+  , readText
   ) where
 
 import Prelude
@@ -28,7 +29,12 @@ import Type.Row (type (+))
 -- | **A failure is answered rather than thrown.** What a command makes of a file
 -- | it could not read is the command's — one may refuse, another may go on — so the
 -- | effect reports and does not decide.
-data FileSystem a = ReadBytes P.String (Either P.String Bytes -> a)
+data FileSystem a
+  = ReadBytes P.String (Either P.String Bytes -> a)
+  -- | The same file as text. **Two operations and not one with a decoding above
+  -- | it**: what an encoding is belongs to the host, and a caller that wanted text
+  -- | should not have to know which one this host writes.
+  | ReadText P.String (Either P.String P.String -> a)
 
 derive instance Functor FileSystem
 
@@ -43,4 +49,7 @@ interpret handler = Run.interpret (Run.on _fs handler Run.send)
 -- | The bytes of that file, or what the host said about not giving them.
 readBytes :: forall r. P.String -> Run (FS + r) (Either P.String Bytes)
 readBytes path = Run.lift _fs (ReadBytes path identity)
+
+readText :: forall r. P.String -> Run (FS + r) (Either P.String P.String)
+readText path = Run.lift _fs (ReadText path identity)
 

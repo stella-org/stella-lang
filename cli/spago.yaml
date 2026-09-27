@@ -3,16 +3,22 @@ package:
   description: CLI common library
   dependencies:
     - aff
+    - aff-promise
     - ansi
+    - argonaut-core
     - argparse-basic
+    - bifunctors
     - compiler
     - console
     - dodo-printer
+    - effect
     - either
     - exceptions
+    - foreign-object
     - maybe
     - node-buffer
     - node-fs
+    - ordered-collections
     - prelude
     - run
     - typelevel-prelude
