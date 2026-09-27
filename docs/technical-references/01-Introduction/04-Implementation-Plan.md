@@ -403,6 +403,7 @@ Four of the eight operations of `stella-base-0.1` are `Base.Array` entries, and 
 | A snapshot of an array value | Stops at it, the way it stops at a continuation or an action. Nothing descends into the payload ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)) |
 | A `PAP` over an array operation, completed later | The operation is carried out once, when the last argument arrives, as with any other callee |
 | A module naming an operation code this interpreter does not implement | Refused at load, which is unchanged by there being more codes |
+
 **What the end-to-end case is, at this stage, is `Base.Array` and a module written over it**, carried from Core to a value: the manifest supplying an `intrinsic opaque`, four `foreign` declarations, a lowering that makes each a `prim` rather than an `ffi`, a loader resolving them to the interpreter, and a program that allocates, writes every slot, and reads one back. That is the chain this step owes, and it needs no library above it.
 
 **`Data.Array.mapArray` is not that case and does not belong to this step.** The loop it is written as tests `i < length xs`, and `stella-base-0.1` holds no comparison: `Base.Int` has `add` and `sub`, so nothing decides an ordering on `Int`. The writes are unrolled instead, which reaches the same entries by the same route. **The surface is what is unfinished here, not the interpreter** — the entries settled so far were chosen by what the machine needed, and what a program needs is a different list, which is the ABI's own work and follows this one ([Prim and Base](../06-Modules/02-Prim-and-Base.md), [Open Questions](../99-Open-Questions/01-Open-Questions.md)).
@@ -412,6 +413,32 @@ Four of the eight operations of `stella-base-0.1` are `Base.Array` entries, and 
 **Nor is the converse testable.** A backend that tracks which slots are written and faults on an unwritten read is **conformant**: the ABI obliges no one to detect a violation and equally forbids no one from doing so, and a program that runs there and nowhere else is exactly the difference an unspecified case admits. So "no initialization bit is kept, and no read consults one" is **not** a conformance property and must not be asserted as one. It is a performance decision of this interpreter — the check would stand on the hot path of the operation a portable array library is built out of — and belongs in the interpreter's own notes rather than in a test.
 
 What is testable around the precondition is only what holds on either side of it: an in-range written read gives the element, an out-of-range read faults, and a program that writes every slot before reading gives the same answer whatever the allocation left.
+
+### The drive loop (step 5, interpreter 8)
+
+Executing an `IO` is the one place the host side enters the interpreter, and it is a second entry point rather than a step of evaluation ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
+
+| Input | Required outcome |
+| --- | --- |
+| `Base.IO.pure` applied to a value | An `IO` value, and **nothing performed**. Reduction halts on it (D25), and a test that only executed the result would not see the difference |
+| `Base.IO.bind` applied to an `IO` and a function | The same: an `IO` value holding both, with the function **not applied** |
+| A module declaring either at an arity the ABI does not give it | Refused at load. The interpreter claims the name, so the arity is checked against the ABI's and against nothing else |
+| The host's table holding `Base.IO.pure` | Never consulted, and the interpreter's own is what carries it out |
+| Executing `Pure v` | `v` |
+| Executing `Bind (Pure v) k` | Whatever executing `k v` gives, with `k` applied exactly once |
+| A `Bind` whose function is a partial application, or a continuation | Applied the way any unknown call applies one. `k` is a function value, not a closure in particular |
+| A left-nested chain of a length that would exhaust the host's call stack | The value, and no stack overflow. **This is the case the loop's own pending stack exists for**, and the one a recursive executor passes every other test while failing |
+| A native action answering `Produced` | That value, and no waiting. Whether an action is asynchronous is the outcome's to say, so nothing asks whether the value is thenable |
+| A native action answering `Awaiting` | The value its promise resolves to, awaited before the next continuation is applied |
+| A native action answering `Refused`, on either path | A fault. A failure the ABI admits needs no exception to report it |
+| A native action that throws where it is performed | A fault, and a different report from a refusal |
+| A native action whose promise rejects | A fault, and a different report again: the two breaches are reached from different sides |
+| A resolved outcome that is `Awaiting` again | A fault, reported apart from the throw and the rejection. The loop does not unroll a second wait, and this is **not** an interpreter bug: only a host action produces an outcome, so the culprit is known |
+| A fault inside an applied continuation | Ends the execution. The pending continuations are discarded and nothing after them runs |
+| A continuation returning what is not an `IO`, or a `Bind` over one | An interpreter bug and **not** a fault. The culprit is unknown — a lowering, or an adapter in breach — which is what separates this from an action's breach above |
+| An `IO` value that reaches a register | Written there and nothing more. No instruction examines one, and evaluation continues past it |
+
+**Order is what most of these are really about.** A loop that applied a continuation before the action it was bound to, or that ran two actions of a chain in the wrong order, gives the right answer for `Pure` and for a chain of length one. A case asserting the **sequence** — actions that record their order in the host, and a chain long enough to distinguish — is what separates a loop that works from one that happens to.
 
 ### Kind and type unification (step 7, division 2)
 

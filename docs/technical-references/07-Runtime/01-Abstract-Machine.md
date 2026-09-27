@@ -709,9 +709,33 @@ decided by the name alone**.
 
 | The declared name | What carries it out |
 | --- | --- |
-| one the interpreter claims as a `Base` ABI entry | the interpreter itself, and the host's table is not consulted for that name at all |
+| one the interpreter claims as an **operation** | the interpreter itself, and the host's table is not consulted for that name at all |
+| `Base.IO.pure` or `Base.IO.bind` | the interpreter itself, likewise. Each **constructs** an `IO` value and executes nothing (D25) |
 | anything else the table holds | that entry's body |
 | anything else | nothing, and the module does not load |
+
+**The two `Base.IO` entries are claimed by the interpreter and are not operations**,
+and the rule that separates them is the same one everywhere: an entry returning `IO`
+names an implementation rather than being carried out by a code
+([Mid IR](../04-MiddleEnd/01-Mid-IR.md)). So a call of either is an `FFI` and not a
+`PRIM`, it reaches `FOREIGNREFS` rather than `PRIMS`, and no operation code stands
+for it. What makes them the interpreter's all the same is that **their meaning is
+`core-runtime`** — executing anything at all requires them
+([Prim and Base](../06-Modules/02-Prim-and-Base.md)) — and that what they construct
+is the **structure** of an `IO` value rather than a leaf of one.
+
+**A host builds `IO` values too, and that is not the same thing.** An entry whose
+declared type returns `IO` returns one, a native action wrapped as an `IO` value, so
+the `Native` form is the host's to make and is made all the time. What is reserved
+here is the other two forms and what they mean: `Pure` and `Bind` are how a program
+sequences actions, the drive loop below is written against exactly those two shapes,
+and a host supplying its own `pure` or `bind` would be supplying the loop's own
+semantics from outside it.
+
+**Constructing is all either does.** `Base.IO.pure v` is an `IO` value holding `v`,
+and `Base.IO.bind io k` is one holding both; neither performs anything, neither
+applies `k`, and reduction halts on what they return (D25). Applying `k` is the
+drive loop's, below.
 
 **A name the interpreter claims is never reached by the host's table**, whatever
 arity either side gives it. Selecting on the name together with an arity would leave
@@ -723,7 +747,8 @@ checked afterwards, against whichever source the name selected.
 
 | The name selected | The arity is checked against | A mismatch |
 | --- | --- | --- |
-| the interpreter | the arity the ABI gives that operation | refused. The declaration is not of the entry it names, and no other source may answer for it |
+| the interpreter, as an operation | the arity the ABI gives that operation | refused. The declaration is not of the entry it names, and no other source may answer for it |
+| the interpreter, as a `Base.IO` entry | the arity the ABI gives it — one for `pure`, two for `bind` | refused, for the same reason |
 | the host's table | the arity the declaration states | refused, and reported as the disagreement it is rather than as an absence |
 
 **A mismatch is reported as a disagreement because an implementation is there.** An
@@ -865,20 +890,157 @@ things, which are what the runtime ABI builds.
 ```text
 IOValue
   = Pure Value
-  | Bind IOValue Closure
+  | Bind IOValue FunctionValue
   | Native host action
 ```
 
 The **drive loop** executes one: `Pure v` yields `v`; a native action is performed
-and yields what it gives; `Bind io k` executes `io`, **applies the Stella closure
+and yields what it gives; `Bind io k` executes `io`, **applies the Stella function
 `k`** to the value that comes out — re-entering the interpreter — and executes the
 `IO` that returns. Each such application is a run of its own, and it is the only
 way the host side enters the interpreter: `k` is a pure arrow (D23), so it performs
 no effect of its own and reaches no marker outside that run.
 
-**A native action may be asynchronous.** The loop awaits it before applying the
-continuation, and nothing of Core observes the wait: executing an `IO` is outside
-the reduction, and the reduction is not re-entered while the loop is waiting.
+**`k` is a function value and not a closure in particular.** `Base.IO.bind` takes
+whatever the type `a -> IO b` admits, which is a closure, a partial application, or
+a continuation alike; the loop applies it the way any unknown call applies one.
+
+### The loop is iterative, and this is an obligation rather than a preference
+
+**A `Bind` chain has no bound, and the shape a program builds is the left-nested
+one.** `m >>= f >>= g >>= h` is `Bind (Bind (Bind m f) g) h`, so executing the
+outermost first descends through every one before anything runs. An executor written
+as a recursive function descends the host's own call stack and dies on a chain long
+enough — and every small test passes, because the chains a test writes are short.
+
+**So the loop holds its own stack of pending continuations**, and descends and
+resumes by pushing and popping it rather than by calling itself.
+
+```text
+execute(io):
+  pending = []
+  loop:
+    Bind inner k  →  push k;  io = inner
+    Pure v        →  deliver v
+    Native a      →  deliver (perform a)
+
+  deliver v:
+    pending empty  →  v is the answer
+    otherwise      →  k = pop
+                      w = apply k to v, which is a run of its own
+                      VIO next  →  io = next
+                      otherwise →  a state no `.dmo` admits
+```
+
+**The last line is a boundary and not a formality.** `k` has type `a -> IO b`, so
+what it returns is an `IO`; but a `.dmo` carries no types, and this loop runs beside
+hosted foreigns that may be in breach of theirs, so nothing here may assume it. The
+same holds of the first argument of `Base.IO.bind`: a value that is not an `IO`
+reaches the same classification rather than a second one.
+
+**What that classification is: the class that says the defect is above the
+interpreter** — the one `VABS` and an uncallable callee reach ([Failures](#failures)).
+It covers two different culprits and the machine cannot tell them apart: a lowering
+that built a `Bind` over something that is not an `IO`, and an adapter that returned
+what its declaration did not promise, which is a breach of `Σ ⊨ G` condition (3)
+([Semantics](../03-Typed-Core/06-Semantics.md)). **It is not a fault**, since neither
+is a failure the ABI admits.
+
+**What the pending stack holds is continuations and not activations.** Applying one
+enters the interpreter, which makes a stack of its own and has finished with it
+before the loop goes round again; the two stacks never interleave.
+
+### Performing a native action
+
+A native action is the host's, and performing one is calling it.
+
+```text
+HostAction     : HostFn () ActionOutcome         -- performed with no arguments
+
+ActionOutcome  = Produced Value
+               | Refused reason                  -- a refusal is a fault
+               | Awaiting (Promise ActionOutcome)
+```
+
+**Whether an action is asynchronous is the action's to say, not the interpreter's to
+detect.** A form of the outcome carries it, so nothing here asks whether what came
+back is thenable — a test that would misread a `Value` the host happened to give a
+`then` field, and that would leave a synchronous action paying for an asynchrony it
+does not have. An action that is done when it returns says `Produced` and the loop
+goes straight on.
+
+**A refusal is available on both paths**, which is what the third form being an
+`ActionOutcome` again is for: an action that fails at once refuses, and one that
+fails after awaiting resolves to a refusal. Neither has to throw to report a failure,
+and the contract asks that neither does.
+
+**A resolved outcome is `Produced` or `Refused` and not `Awaiting` again.** One that
+awaits twice is a body in breach rather than a chain the loop unrolls; there is no
+use for it that `Bind` does not already serve.
+
+**`HostAction` is a `HostFn`**, so the rule the foreign boundary settled applies
+unchanged: applying and running are one moment, and that moment is inside what
+catches ([Foreign implementations](#foreign-implementations)).
+
+**Four things end an execution here**, and they are reported apart because they mean
+different things.
+
+| | What it is | What it is not |
+| --- | --- | --- |
+| `Refused` | the failure the ABI admits an action may report, sync or async alike | not a defect in the host |
+| a throw where the action is performed | the same hazard a foreign body has, and caught the same way | not a refusal: the contract asked for one and got an exception |
+| a rejection of the promise it was awaiting | the asynchronous form of that breach | not the same report as the throw above, the two being reached from different sides |
+| a resolved outcome that is `Awaiting` again | a third way of breaking the same contract, reported apart from the other two | not an interpreter bug, and not something the loop unrolls |
+
+**All four are faults, and the last three are faults of a kind the ABI does not
+admit** — a body in breach rather than a failure it may report. They propagate the
+way every fault does and are reported apart, which is the same shape a refusal and a
+throw already have at the foreign boundary.
+
+**Why these are faults where the `IO` boundary above is an interpreter bug** is
+worth stating, since the two look alike and are classified oppositely. **It turns on
+whether the culprit is known.** Only a host action produces an `ActionOutcome`, so a
+throw, a rejection, or a second `Awaiting` is the host's and nothing else's. A
+continuation returning what is not an `IO` could be a lowering's doing or an
+adapter's, and the machine cannot tell — so that one is the class that says the
+defect is above the interpreter without saying whose.
+
+**This is the boundary the foreign one deferred to.** A foreign body is synchronous
+and its throw is a fault of its own; what may be awaited is a native action, and the
+four above are what "answered there" meant. **The reduction is not re-entered while
+the loop is waiting**, so nothing of Core observes the wait.
+
+**A fault inside an applied continuation ends the whole execution.** The application
+is a run of its own, but a fault discards the stack and ends the run, and the loop
+has nothing to deliver to what is pending — so the pending stack is discarded with
+it. Nothing catches one, here as anywhere.
+
+### What executing is given, and what it answers
+
+**The loop is asked for rather than reached.** What it takes is the registry and an
+`IO` value; what it answers is one of three things.
+
+| | When |
+| --- | --- |
+| a **value** | the chain ran to its end |
+| a **fault** | an action refused, threw where it was performed, rejected what it was awaiting, or resolved to a second `Awaiting`; or a fault was reached inside an applied continuation — an operation or a foreign failing as the ABI says it may |
+| an **interpreter bug** | a state no `.dmo` admits, reached inside an applied continuation or at the `IO` boundary above |
+
+**A load error is not among them.** Loading happens before an `IO` value exists to
+execute, and a registry is what this is handed; a module that did not load is one
+whose globals hold nothing to run ([Failures](#failures)).
+
+**The latter two are the failures; the value is the normal answer.** That they are
+the failures an evaluation run may return is not a coincidence — applying a
+continuation is a run, so what a run can end with is what this can end with, less
+the load error, which happens before either.
+
+**It is not part of evaluating a term**, and nothing in the instruction set reaches
+it: a `FFI` constructing an `IO` writes that value into a register and the
+evaluation continues past it (D25). So the two are separate entry points, and which
+of them a mode uses is the mode's business — a session answers with the value a
+global holds and executes one only where a request asks, and the run mode executes
+the entry point's.
 
 **A session does not execute an `IO` of its own accord.** Recognizing one is not the
 difficulty — an `IO` value is one of the three forms above, and the interpreter can
@@ -895,8 +1057,8 @@ Three kinds, reported differently because they mean different things.
 | | What it is | What it means |
 | --- | --- | --- |
 | **Load error** | an unresolved reference, an arity that does not agree, a missing foreign | the module is not loaded, and nothing of it ran |
-| **Fault** | an operation or a foreign failing as the ABI says it may | the stack is discarded and the run ends; nothing catches one ([Bytecode](../05-Backend/01-Bytecode.md)) |
-| **Interpreter bug** | reaching `VABS`, applying what is not callable, reading a register that holds nothing | a state no `.dmo` admits. Reaching one is a defect in the interpreter, in lowering, or in a check a loader owes |
+| **Fault** | an operation or a foreign failing as the ABI says it may; a native action refusing, on either path; and a native action in breach of its contract — throwing where it is performed, rejecting what it was awaiting, or resolving to a second `Awaiting` | the stack is discarded and the run ends; nothing catches one ([Bytecode](../05-Backend/01-Bytecode.md)). Where a drive loop was executing, its pending continuations are discarded with it |
+| **Interpreter bug** | reaching `VABS`, applying what is not callable, reading a register that holds nothing, a `Bind` over what is not an `IO` | a state no `.dmo` admits. Reaching one is a defect in the interpreter, in lowering, in a check a loader owes, or in an adapter that returned what its declaration did not promise |
 
 The `DEBUG` section is where a report finds a function's name in a file that carries
 one ([Bytecode](../05-Backend/01-Bytecode.md)). How much more a report holds — a
