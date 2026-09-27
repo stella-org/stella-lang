@@ -18,7 +18,7 @@ import Prelude
 
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic, Inadmissible(..))
 import Stella.Compiler.Elaborate.Handle (emptyArena)
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, break, checkSynthesisTarget, runElab, unify)
+import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SessionEnv, SolverState, break, checkSynthesisTarget, runElabIn, unify, withFrame)
 import Stella.Compiler.Elaborate.Pending (Job(..), Pending, PendingId, goalOf)
 import Stella.Compiler.Elaborate.Scheduler (complete, lookupPending, reblock, unwakeable)
 import Stella.Compiler.Elaborate.Type (MetaVar)
@@ -58,10 +58,12 @@ data Attempt
 -- | resolved before the attempt commits, and one that postpones or fails leaves
 -- | the checkpoint's empty arena behind.
 -- |
--- | Every outcome but `Done` rolls back, what is retained being kept.
-runAttempt :: forall a. Elab a -> SolverState -> Tuple (Outcome a) SolverState
-runAttempt action s0 =
-  case runElab checkpoint action of
+-- | Every outcome but `Done` rolls back, what is retained being kept. The action
+-- | reads the session given and no frame; `attemptPendingWith` is what runs one
+-- | under a job's frame.
+runAttempt :: forall a. SessionEnv -> Elab a -> SolverState -> Tuple (Outcome a) SolverState
+runAttempt session action s0 =
+  case runElabIn session checkpoint action of
     Tuple (Done a) s ->
       Tuple (Done a) (s { tentative { written = Set.empty, arena = emptyArena } })
     Tuple outcome s ->
@@ -127,8 +129,8 @@ hostRunner p = case p.job of
   JobSynthesis goal -> break (SynthesizerUnavailable (goalOf goal).synthesizer)
 
 -- | `attemptPendingWith hostRunner`.
-attemptPending :: PendingId -> SolverState -> Tuple Attempt SolverState
-attemptPending = attemptPendingWith hostRunner
+attemptPending :: SessionEnv -> PendingId -> SolverState -> Tuple Attempt SolverState
+attemptPending session = attemptPendingWith session hostRunner
 
 -- | Attempt the pending job named with the runner given, and act on the outcome.
 -- |
@@ -144,8 +146,8 @@ attemptPending = attemptPendingWith hostRunner
 -- | `Ψ` that rollback left, so no postponement reaches the scheduler unchecked. A
 -- | solved or failed job is removed from every table, and a defect leaves the
 -- | state as the rollback left it.
-attemptPendingWith :: Runner -> PendingId -> SolverState -> Tuple Attempt SolverState
-attemptPendingWith runner id s0 = case lookupPending s0.tentative.scheduler id of
+attemptPendingWith :: SessionEnv -> Runner -> PendingId -> SolverState -> Tuple Attempt SolverState
+attemptPendingWith session runner id s0 = case lookupPending s0.tentative.scheduler id of
   Nothing ->
     Tuple (Halted (PendingAbsent id)) s0
   Just p
@@ -153,7 +155,7 @@ attemptPendingWith runner id s0 = case lookupPending s0.tentative.scheduler id o
         Tuple (Halted (PendingStillScheduled id)) s0
     | otherwise -> attempted p
   where
-  attempted p = case runAttempt (checked p *> runner p) s0 of
+  attempted p = case runAttempt session (withFrame (frameOf p) (checked p *> runner p)) s0 of
     Tuple (Done _) s ->
       Tuple Committed (finish s)
     Tuple (Failed diagnostic) s ->
@@ -172,6 +174,15 @@ attemptPendingWith runner id s0 = case lookupPending s0.tentative.scheduler id o
 
   -- A synthesis job's target is checked inside the attempt and before the
   -- runner, so a job that fails it runs no synthesizer and is rolled back.
+  -- The site the job was created at, and its goal where it has one. Nothing
+  -- inside the attempt changes either.
+  frameOf p =
+    { site: p.site
+    , goal: case p.job of
+        JobSynthesis goal -> Just { id: p.id, goal }
+        JobUnify _ -> Nothing
+    }
+
   checked p = case p.job of
     JobSynthesis goal -> checkSynthesisTarget p.id p.site goal
     JobUnify _ -> pure unit

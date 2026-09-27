@@ -564,6 +564,13 @@ no identifier is at once ready and blocked
 | A job created inside an attempt | Queued for its first attempt and not attempted there, which would open an attempt inside another. Taken from the queue, that attempt spends no fuel either |
 | A synthesis job and the term metavariable it fills | Created by one operation: the metavariable exists, stands at the goal's type, and is scoped to the site's context. A rollback removes the two together |
 | A synthesis job whose target is absent, solved, at another type once zonked, or scoped wider than its site | A defect of the host, found before the synthesizer runs, and the attempt rolled back. A target scoped narrower than its site passes: one standing in another solution is narrowed with it |
+| A type a view takes apart | Every part is a handle whose kind evidence the read-only kinding judgement gave, under the kind variables and type variables the site or the catalog scheme binds, and the binders the view descended under |
+| A kind variable no site or scheme binds, standing as a binder's kind or a constructor's kind argument | Refused as unbound, not given a kind. A kind-polymorphic scheme is kinded under the kind variables it declares and under no others |
+| A negative `PositionKey`, as an element's key or in a constraint | Refused. Every key is judged by one rule, whichever it keys |
+| A goal observed through a handle to a goal other than the one running, or where no goal runs | A defect of the host. The scope a goal's type is read under is the running goal's site |
+| The empty row, where its place fixes a row kind, and where nothing does | That row kind, and `AnyRow`: `()` stands at both row kinds and neither is chosen for it |
+| A kind metavariable reachable from what a synthesizer observes | A defect of the host. A synthesizer can neither name one nor wait on it |
+| An observation | Changes the arena and the generation and nothing else: no metavariable, obligation, job, or fuel |
 | A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
 | No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
 | No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |
@@ -584,6 +591,8 @@ no identifier is at once ready and blocked
 | The fresh tail of a two-sided refinement | Carries its kind and the scope both sides had, and no constraint. What it owes is what the two tails it replaces owed, which zonking their constraints says |
 | What a metavariable's own record holds | Its kind and its scope. A row constraint may relate two metavariables and must be decided against its own site, so neither fits in a record one metavariable owns |
 | What a rollback restores | Everything an attempt owns, and nothing besides. Which half of the session's state a field stands in is the whole of what decides its fate, so no rollback has to remember to save one or to skip one |
+
+**The catalog's entries come from the module's own declarations and from the interfaces of its imports, and the second is not yet possible.** A `.dmi` carries arities and no scheme or attribute ([Interface](../05-Backend/03-Interface.md)), so until it does, a resolver finds an instance a module declares itself and none an import declares. The kernel reads a catalog however it was assembled, so nothing above waits on it; what waits is an imported instance working in practice.
 
 ### Handler declarations and implicit insertion (step 7)
 

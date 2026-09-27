@@ -16,7 +16,7 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Context (Origin(..), bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Handle (SessionId(..))
-import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), SolverState, assignTerm, freshTermMeta, freshTypeMeta, initialState, runElab, throw, transact)
+import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), SolverState, assignTerm, emptySessionEnv, freshTermMeta, freshTypeMeta, initialState, runElab, throw, transact)
 import Stella.Compiler.Elaborate.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Elaborate.TermMeta (TermError(..), zonkExpr)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
@@ -134,15 +134,15 @@ opened = do
   callee <- freshTermMeta emptyXContext (fromCore (pureFn listInt int))
   pure { param, nilAt, recursion, callee }
 
--- | Open the holes, submit the two equations that decide the types, and run the
+-- | Open the holes, submit the two equations that decide the types, and run emptySessionEnv the
 -- | scheduler to where it stops.
 solvedTypes :: Either P.String (Tuple Holes SolverState)
 solvedTypes = case runElab (initialState (SessionId 0) 10) opened of
   Tuple (Done holes) s0 ->
     let
-      Tuple first s1 = submitEquality site { kind: XKType, left: holes.param, right: listOf xInt } s0
-      Tuple second s2 = submitEquality site { kind: XKType, left: holes.nilAt, right: xInt } s1
-      Tuple result s3 = run s2
+      Tuple first s1 = submitEquality emptySessionEnv site { kind: XKType, left: holes.param, right: listOf xInt } s0
+      Tuple second s2 = submitEquality emptySessionEnv site { kind: XKType, left: holes.nilAt, right: xInt } s1
+      Tuple result s3 = run emptySessionEnv s2
     in
       if first.attempt /= Run.Committed || second.attempt /= Run.Committed then
         Left "an equation was not solved where it was submitted"

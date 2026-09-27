@@ -15,7 +15,7 @@ import Prim as P
 import Stella.Compiler.Elaborate.Context (Origin(..), bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..), Inadmissible(..), MalformedGoal(..))
 import Stella.Compiler.Elaborate.Handle (SessionId(..))
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, assignTerm, createSynthesis, freshTypeMeta, freshTermMeta, initialState, postpone, runElab, spendFuel, throw, transact, unify)
+import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, assignTerm, createSynthesis, emptySessionEnv, freshTermMeta, freshTypeMeta, initialState, postpone, runElab, spendFuel, throw, transact, unify)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), PendingId(..), Site, goalOf, newGoal)
 import Stella.Compiler.Elaborate.Term (XExpr(..))
@@ -159,7 +159,7 @@ spec = describe "Elaborate.Run" do
   describe "an attempt" do
     it "commits a success and leaves the write set empty" do
       let
-        Tuple outcome s = runAttempt (unify site (solvable metas.r)) session
+        Tuple outcome s = runAttempt emptySessionEnv (unify site (solvable metas.r)) session
       outcome `shouldEqual` Done unit
       solutionOf s.tentative.metas metas.r `shouldEqual` Just XRowEmpty
       s.tentative.written `shouldEqual` Set.empty
@@ -169,7 +169,7 @@ spec = describe "Elaborate.Run" do
       -- otherwise put back, just as a postponement is about to be admitted.
       let
         stale = session { tentative { written = Set.singleton metas.x } }
-        Tuple outcome s = runAttempt (unify site (solvable metas.r) *> (postpone (Set.singleton metas.s) :: Elab Unit)) stale
+        Tuple outcome s = runAttempt emptySessionEnv (unify site (solvable metas.r) *> (postpone (Set.singleton metas.s) :: Elab Unit)) stale
       outcome `shouldEqual` Postponed (ExplicitPostponement (Set.singleton metas.s))
       s.tentative.written `shouldEqual` Set.empty
       solutionOf s.tentative.metas metas.r `shouldEqual` Nothing
@@ -177,7 +177,7 @@ spec = describe "Elaborate.Run" do
     it "reports only this attempt's assignments beside what an equation is stuck on" do
       let
         stale = session { tentative { written = Set.singleton metas.x } }
-        Tuple outcome _ = runAttempt (unify site stuck) stale
+        Tuple outcome _ = runAttempt emptySessionEnv (unify site stuck) stale
       outcome `shouldEqual` Postponed
         ( SolverStuck
             { blockedOn: Set.fromFoldable [ freshTail, metas.v, metas.w ]
@@ -187,7 +187,7 @@ spec = describe "Elaborate.Run" do
 
     it "rolls a failure back and keeps the fuel it spent" do
       let
-        Tuple outcome s = runAttempt (spendFuel *> unify site (solvable metas.r) *> (throw failure :: Elab Unit)) session
+        Tuple outcome s = runAttempt emptySessionEnv (spendFuel *> unify site (solvable metas.r) *> (throw failure :: Elab Unit)) session
       outcome `shouldEqual` Failed failure
       solutionOf s.tentative.metas metas.r `shouldEqual` Nothing
       s.retained.fuel `shouldEqual` 99
@@ -195,7 +195,7 @@ spec = describe "Elaborate.Run" do
     it "hands a defect back as the outcome it is, rolled back" do
       let
         absent = MetaVar 99
-        Tuple outcome s = runAttempt (unify site (solvable metas.r) *> unify site (solvable absent)) session
+        Tuple outcome s = runAttempt emptySessionEnv (unify site (solvable metas.r) *> unify site (solvable absent)) session
       outcome `shouldEqual` Broke (UnifierMisuse here (MetaUnbound absent))
       solutionOf s.tentative.metas metas.r `shouldEqual` Nothing
 
@@ -215,7 +215,7 @@ spec = describe "Elaborate.Run" do
 
     it "refuses a metavariable already solved" do
       let
-        Tuple _ s = runAttempt (unify site (solvable metas.r)) session
+        Tuple _ s = runAttempt emptySessionEnv (unify site (solvable metas.r)) session
       admit s.tentative.metas (ExplicitPostponement (Set.singleton metas.r))
         `shouldEqual` Left (AwaitsSolved metas.r)
 
@@ -228,7 +228,7 @@ spec = describe "Elaborate.Run" do
             XMeta m -> postpone (Set.singleton m)
             _ -> throw failure
 
-        Tuple outcome s = runAttempt naming session
+        Tuple outcome s = runAttempt emptySessionEnv naming session
       case outcome of
         Postponed cause -> admit s.tentative.metas cause `shouldEqual` Left (AwaitsAbsent freshTail)
         _ -> outcome `shouldEqual` Postponed (ExplicitPostponement (Set.singleton freshTail))
@@ -236,7 +236,7 @@ spec = describe "Elaborate.Run" do
   describe "admitting a postponement the mechanism raised" do
     it "keeps what the rollback left unsolved and drops the fresh tail" do
       let
-        Tuple outcome s = runAttempt (unify site stuck) session
+        Tuple outcome s = runAttempt emptySessionEnv (unify site stuck) session
       case outcome of
         Postponed cause ->
           admit s.tentative.metas cause
@@ -251,7 +251,7 @@ spec = describe "Elaborate.Run" do
     it "commits a solved job and removes it from every table" do
       let
         Tuple id s0 = holdingJob (solvable metas.r)
-        Tuple result s = attemptPending id s0
+        Tuple result s = attemptPending emptySessionEnv id s0
       result `shouldEqual` Committed
       lookupPending s.tentative.scheduler id `shouldEqual` Nothing
       solutionOf s.tentative.metas metas.r `shouldEqual` Just XRowEmpty
@@ -259,14 +259,14 @@ spec = describe "Elaborate.Run" do
     it "reports a failed job, installs nothing, and removes it" do
       let
         Tuple id s0 = holdingJob mismatched
-        Tuple result s = attemptPending id s0
+        Tuple result s = attemptPending emptySessionEnv id s0
       result `shouldEqual` Rejected failure
       lookupPending s.tentative.scheduler id `shouldEqual` Nothing
 
     it "registers a stuck job under what can wake it" do
       let
         Tuple id s0 = holdingJob stuck
-        Tuple result s = attemptPending id s0
+        Tuple result s = attemptPending emptySessionEnv id s0
         durable = Set.fromFoldable [ metas.r, metas.s, metas.v, metas.w ]
       result `shouldEqual` Registered durable
       map _.awaiting (lookupPending s.tentative.scheduler id) `shouldEqual` Just durable
@@ -278,8 +278,8 @@ spec = describe "Elaborate.Run" do
     it "is woken by an assignment to a metavariable that existed before it" do
       let
         Tuple id s0 = holdingJob stuck
-        Tuple _ s1 = attemptPending id s0
-        Tuple _ s2 = runAttempt (unify site (solvable metas.v)) s1
+        Tuple _ s1 = attemptPending emptySessionEnv id s0
+        Tuple _ s2 = runAttempt emptySessionEnv (unify site (solvable metas.v)) s1
       (readyIds s2.tentative.scheduler) `shouldEqual` [ id ]
       invariants s2.tentative.scheduler `shouldEqual` []
 
@@ -287,8 +287,8 @@ spec = describe "Elaborate.Run" do
       let
         Tuple first sched1 = create site (JobUnify (solvable metas.x)) emptyScheduler
         Tuple second sched2 = create site (JobUnify stuck) sched1
-        Tuple r1 s1 = attemptPending first (sessionWith sched2)
-        Tuple r2 _ = attemptPending second s1
+        Tuple r1 s1 = attemptPending emptySessionEnv first (sessionWith sched2)
+        Tuple r2 _ = attemptPending emptySessionEnv second s1
       r1 `shouldEqual` Committed
       r2 `shouldEqual` Registered (Set.fromFoldable [ metas.r, metas.s, metas.v, metas.w ])
 
@@ -296,20 +296,20 @@ spec = describe "Elaborate.Run" do
       let
         Tuple id s0 = holdingJob stuck
         spent = s0 { retained { fuel = 7 } }
-        Tuple _ s = attemptPending id spent
+        Tuple _ s = attemptPending emptySessionEnv id spent
       s.retained.fuel `shouldEqual` 7
 
     it "halts on a defect and leaves the job where it was" do
       let
         absent = MetaVar 99
         Tuple id s0 = holdingJob (solvable absent)
-        Tuple result s = attemptPending id s0
+        Tuple result s = attemptPending emptySessionEnv id s0
       result `shouldEqual` Halted (UnifierMisuse here (MetaUnbound absent))
       map _.awaiting (lookupPending s.tentative.scheduler id) `shouldEqual` Just Set.empty
 
     it "halts on an identifier pending does not hold" do
       let
-        Tuple result _ = attemptPending (PendingId 7) session
+        Tuple result _ = attemptPending emptySessionEnv (PendingId 7) session
       result `shouldEqual` Halted (PendingAbsent (PendingId 7))
 
     it "attempts a job woken and then taken from the ready queue" do
@@ -322,7 +322,7 @@ spec = describe "Elaborate.Run" do
         Just (Tuple taken rest) -> do
           taken `shouldEqual` id
           let
-            Tuple result s = attemptPending id (s0 { tentative { scheduler = rest } })
+            Tuple result s = attemptPending emptySessionEnv id (s0 { tentative { scheduler = rest } })
           result `shouldEqual` Committed
           lookupPending s.tentative.scheduler id `shouldEqual` Nothing
           invariants s.tentative.scheduler `shouldEqual` []
@@ -331,28 +331,28 @@ spec = describe "Elaborate.Run" do
       let
         Tuple id s0 = holdingJob (solvable metas.r)
         queued = wake metas.r (blockedUnder metas.r id s0.tentative.scheduler)
-        Tuple result _ = attemptPending id (s0 { tentative { scheduler = queued } })
+        Tuple result _ = attemptPending emptySessionEnv id (s0 { tentative { scheduler = queued } })
       result `shouldEqual` Halted (PendingStillScheduled id)
 
     it "halts on a job still registered under a metavariable" do
       let
         Tuple id s0 = holdingJob (solvable metas.r)
         blocked = blockedUnder metas.r id s0.tentative.scheduler
-        Tuple result _ = attemptPending id (s0 { tentative { scheduler = blocked } })
+        Tuple result _ = attemptPending emptySessionEnv id (s0 { tentative { scheduler = blocked } })
       result `shouldEqual` Halted (PendingStillScheduled id)
 
   describe "a runner given" do
     it "registers what an admissible postponement names" do
       let
         Tuple id s0 = holdingJob (solvable metas.r)
-        Tuple result s = attemptPendingWith (\_ -> postpone (Set.singleton metas.v)) id s0
+        Tuple result s = attemptPendingWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) id s0
       result `shouldEqual` Registered (Set.singleton metas.v)
       blockedOn s.tentative.scheduler metas.v `shouldEqual` Set.singleton id
 
     it "halts on a postponement naming nothing, naming the job" do
       let
         Tuple id s0 = holdingJob (solvable metas.r)
-        Tuple result s = attemptPendingWith (\_ -> postpone Set.empty) id s0
+        Tuple result s = attemptPendingWith emptySessionEnv (\_ -> postpone Set.empty) id s0
       result `shouldEqual` Halted
         ( PostponementInadmissible
             { origin: here
@@ -370,7 +370,7 @@ spec = describe "Elaborate.Run" do
           case t of
             XMeta m -> postpone (Set.singleton m)
             _ -> throw failure
-        Tuple result _ = attemptPendingWith (\_ -> naming) id s0
+        Tuple result _ = attemptPendingWith emptySessionEnv (\_ -> naming) id s0
       result `shouldEqual` Halted
         ( PostponementInadmissible
             { origin: here
@@ -382,8 +382,8 @@ spec = describe "Elaborate.Run" do
     it "halts on a postponement naming a metavariable solved before the attempt" do
       let
         Tuple id s0 = holdingJob (solvable metas.x)
-        Tuple _ solved = runAttempt (unify site (solvable metas.r)) s0
-        Tuple result _ = attemptPendingWith (\_ -> postpone (Set.singleton metas.r)) id solved
+        Tuple _ solved = runAttempt emptySessionEnv (unify site (solvable metas.r)) s0
+        Tuple result _ = attemptPendingWith emptySessionEnv (\_ -> postpone (Set.singleton metas.r)) id solved
       result `shouldEqual` Halted
         ( PostponementInadmissible
             { origin: here
@@ -396,7 +396,7 @@ spec = describe "Elaborate.Run" do
       let
         Tuple id s0 = holdingJob (solvable metas.x)
         assigning = unify site (solvable metas.r) *> postpone (Set.singleton metas.r)
-        Tuple result s = attemptPendingWith (\_ -> assigning) id s0
+        Tuple result s = attemptPendingWith emptySessionEnv (\_ -> assigning) id s0
       result `shouldEqual` Registered (Set.singleton metas.r)
       solutionOf s.tentative.metas metas.r `shouldEqual` Nothing
 
@@ -431,7 +431,7 @@ spec = describe "Elaborate.Run" do
       case outcome, takeReady s0.tentative.scheduler of
         Done (Tuple id _), Just (Tuple _ taken) -> do
           let
-            Tuple result s = attemptPending id (s0 { tentative { scheduler = taken } })
+            Tuple result s = attemptPending emptySessionEnv id (s0 { tentative { scheduler = taken } })
           result `shouldEqual` Halted (SynthesizerUnavailable resolver)
           map _.id (lookupPending s.tentative.scheduler id) `shouldEqual` Just id
         _, _ -> fail ("the job was not created: " <> show outcome)
@@ -453,7 +453,7 @@ spec = describe "Elaborate.Run" do
       let
         Tuple record _ = newGoal site tB resolver metas.ctx
         Tuple id scheduler = create site (JobSynthesis record) emptyScheduler
-        Tuple result s = attemptPending id (sessionWith scheduler)
+        Tuple result s = attemptPending emptySessionEnv id (sessionWith scheduler)
       result `shouldEqual` Halted (MalformedSynthesisJob id (TargetAbsent (goalOf record).target))
       s.tentative.metas `shouldEqual` metas.ctx
 
@@ -476,7 +476,7 @@ spec = describe "Elaborate.Run" do
         Tuple id scheduler = create site (JobSynthesis record) emptyScheduler
         retyped = rebound target (\info -> info { ty = tA }) ctx
         widened = rebound target (\info -> info { scope { values = Set.singleton (Ident "zz") } }) ctx
-        attemptWith c = fst (attemptPending id ((sessionWith scheduler) { tentative { metas = c } }))
+        attemptWith c = fst (attemptPending emptySessionEnv id ((sessionWith scheduler) { tentative { metas = c } }))
       attemptWith retyped `shouldEqual` Halted (MalformedSynthesisJob id (TargetTypeDiffers tA tB))
       attemptWith widened `shouldEqual` Halted (MalformedSynthesisJob id (TargetScopeWider target))
 
@@ -491,7 +491,7 @@ spec = describe "Elaborate.Run" do
         Tuple id scheduler = create site (JobSynthesis record) emptyScheduler
         standingAtB = rebound target (\info -> info { ty = tB }) ctx1
         solvedAs ty = standingAtB { bindings = Map.insert alpha (Assigned ty) standingAtB.bindings }
-        attemptWith c = fst (attemptPending id ((sessionWith scheduler) { tentative { metas = c } }))
+        attemptWith c = fst (attemptPending emptySessionEnv id ((sessionWith scheduler) { tentative { metas = c } }))
       attemptWith (solvedAs tB) `shouldEqual` Halted (SynthesizerUnavailable resolver)
       attemptWith (solvedAs tA) `shouldEqual` Halted (MalformedSynthesisJob id (TargetTypeDiffers tB tA))
 
@@ -502,8 +502,8 @@ spec = describe "Elaborate.Run" do
 
   -- Attempt a job queued for its first attempt, taking it from the queue first.
   attemptTaken id s0 = case takeReady s0.tentative.scheduler of
-    Just (Tuple _ taken) -> attemptPending id (s0 { tentative { scheduler = taken } })
-    Nothing -> attemptPending id s0
+    Just (Tuple _ taken) -> attemptPending emptySessionEnv id (s0 { tentative { scheduler = taken } })
+    Nothing -> attemptPending emptySessionEnv id s0
 
   -- Rewrite what `Ψ` records of an unsolved term metavariable.
   rebound target f ctx = ctx

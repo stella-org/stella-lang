@@ -14,9 +14,10 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Context (Origin(..))
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), SolverState, initialState, issue, postpone, resolveExpr, resolveMeta, resolveType, runElab, throw, transact)
+import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), SolverState, emptySessionEnv, initialState, issue, postpone, resolveExpr, resolveMeta, resolveType, runElab, throw, transact)
 import Stella.Compiler.Elaborate.Handle (Handle(..), HandleClass(..), HandleError(..), HandleObject(..), SessionId(..))
 import Stella.Compiler.Elaborate.Kind (XKind(..))
+import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), emptyScope)
 import Stella.Compiler.Elaborate.Run (runAttempt)
 import Stella.Compiler.Elaborate.Type (MetaVar(..), XType(..))
 import Stella.Compiler.Elaborate.Unify (UnifyError(..))
@@ -37,10 +38,10 @@ tB :: XType
 tB = XCon (Qualified prim (TyName "B")) []
 
 typeA :: HandleObject
-typeA = TypeObject { type: tA, kind: XKType }
+typeA = TypeObject { type: tA, kind: ExactKind XKType, scope: emptyScope }
 
 typeB :: HandleObject
-typeB = TypeObject { type: tB, kind: XKType }
+typeB = TypeObject { type: tB, kind: ExactKind XKType, scope: emptyScope }
 
 session :: SolverState
 session = initialState (SessionId 0) 10
@@ -78,7 +79,7 @@ spec = describe "Elaborate.Handle" do
   describe "resolving" do
     it "gives back the object a handle names, as the class it was issued for" do
       produced (runElab session (issue typeA >>= resolveType)) \object _ ->
-        object `shouldEqual` { type: tA, kind: XKType }
+        object `shouldEqual` { type: tA, kind: ExactKind XKType, scope: emptyScope }
 
     it "refuses a handle presented as another class" do
       produced (runElab session (issue typeA)) \h s ->
@@ -110,7 +111,7 @@ spec = describe "Elaborate.Handle" do
           before <- issue typeA
           issuedAndDiscarded
           resolveType before
-      produced (runElab session action) \object _ -> object `shouldEqual` { type: tA, kind: XKType }
+      produced (runElab session action) \object _ -> object `shouldEqual` { type: tA, kind: ExactKind XKType, scope: emptyScope }
 
     it "loses a handle issued inside a transact that rolled back" do
       -- The discarded candidate was the first thing issued a handle. Presenting
@@ -128,7 +129,7 @@ spec = describe "Elaborate.Handle" do
         fields.slot `shouldEqual` 0
         fields.generation `shouldEqual` 1
         fst (runElab s (resolveType (first TypeClass))) `shouldEqual` Broke (InvalidHandle (first TypeClass) StaleHandle)
-        fst (runElab s (resolveType new)) `shouldEqual` Done { type: tB, kind: XKType }
+        fst (runElab s (resolveType new)) `shouldEqual` Done { type: tB, kind: ExactKind XKType, scope: emptyScope }
 
     it "does not give back a generation when it rolls back" do
       produced (runElab session issuedAndDiscarded) \_ s ->
@@ -137,16 +138,16 @@ spec = describe "Elaborate.Handle" do
   describe "across attempts" do
     it "invalidates a handle once the attempt that issued it has committed" do
       let
-        Tuple outcome s = runAttempt (issue typeA) session
+        Tuple outcome s = runAttempt emptySessionEnv (issue typeA) session
       case outcome of
-        Done h -> fst (runAttempt (resolveType h) s) `shouldEqual` Broke (InvalidHandle h StaleHandle)
+        Done h -> fst (runAttempt emptySessionEnv (resolveType h) s) `shouldEqual` Broke (InvalidHandle h StaleHandle)
         _ -> fail ("the attempt did not commit: " <> show outcome)
 
     it "invalidates one issued by an attempt that postponed, keeping its generation spent" do
       let
         issuing = issue (MetaObject (MetaVar 0)) *> (postpone (Set.singleton (MetaVar 0)) :: Elab Unit)
-        Tuple _ s = runAttempt issuing session
-      fst (runAttempt (resolveMeta (first MetaClass)) s)
+        Tuple _ s = runAttempt emptySessionEnv issuing session
+      fst (runAttempt emptySessionEnv (resolveMeta (first MetaClass)) s)
         `shouldEqual` Broke (InvalidHandle (first MetaClass) StaleHandle)
       s.retained.nextGeneration `shouldEqual` 1
 

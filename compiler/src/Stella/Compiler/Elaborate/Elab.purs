@@ -25,7 +25,15 @@ module Stella.Compiler.Elaborate.Elab
   , Cause(..)
   , Outcome(..)
   , Elab
+  , ElabEnv
+  , SessionEnv
+  , Frame
+  , emptySessionEnv
   , runElab
+  , runElabIn
+  , withFrame
+  , askEnv
+  , currentMetas
   , initialState
   , throw
   , break
@@ -53,10 +61,12 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.Elaborate.Catalog (ModuleCatalog, catalogOf)
 import Stella.Compiler.Elaborate.Context (XContext)
 import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..), MalformedGoal(..))
 import Stella.Compiler.Elaborate.Kind (XKind)
+import Stella.Compiler.Elaborate.Kinding (KindingEnv, emptyKindingEnv)
 import Stella.Compiler.Elaborate.Handle (Arena, ExprObject, GoalObject, Handle, HandleClass(..), HandleError(..), HandleObject(..), SessionId, TypeObject, emptyArena, issueIn, resolveIn)
 import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce, recheck)
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, GoalRecord, Job(..), PendingId, Site, SynthRef, goalOf, newGoal)
@@ -166,10 +176,53 @@ data Outcome a
 -- | what it spent is kept while everything else is restored, so the
 -- | state a failure or a postponement reached has to reach the frame that
 -- | catches it.
-newtype Elab a = Elab (SolverState -> Tuple (Outcome a) SolverState)
+newtype Elab a = Elab (ElabEnv -> SolverState -> Tuple (Outcome a) SolverState)
 
+-- | What an `Elab` action reads and never changes.
+-- |
+-- | `session` is fixed for the whole session, assembled before the first job:
+-- | the value catalog and the type-level environment. `frame` is the site and
+-- | goal of the attempt running, which the runner sets and nothing inside the
+-- | attempt changes; an action run outside any attempt has none.
+type ElabEnv =
+  { session :: SessionEnv
+  , frame :: Maybe Frame
+  }
+
+type SessionEnv =
+  { catalog :: ModuleCatalog
+  , kinding :: KindingEnv
+  }
+
+-- | Where the running attempt stands. An equality job has a site and no goal.
+type Frame =
+  { site :: Site
+  , goal :: Maybe GoalObject
+  }
+
+emptySessionEnv :: SessionEnv
+emptySessionEnv = { catalog: catalogOf [], kinding: emptyKindingEnv }
+
+-- | Run an action outside any attempt, reading the session given.
+runElabIn :: forall a. SessionEnv -> SolverState -> Elab a -> Tuple (Outcome a) SolverState
+runElabIn session s (Elab f) = f { session, frame: Nothing } s
+
+-- | Run an action with an empty session and no frame, as the mechanism's own
+-- | operations are run.
 runElab :: forall a. SolverState -> Elab a -> Tuple (Outcome a) SolverState
-runElab s (Elab f) = f s
+runElab = runElabIn emptySessionEnv
+
+-- | Run an action under the frame given. The frame is read and never written,
+-- | so whatever the action reaches, the frame outside is the one it was.
+withFrame :: forall a. Frame -> Elab a -> Elab a
+withFrame frame (Elab f) = Elab \env s -> f (env { frame = Just frame }) s
+
+-- | What the action is run under.
+askEnv :: Elab ElabEnv
+askEnv = Elab \env s -> Tuple (Done env) s
+
+runWithin :: forall a. ElabEnv -> SolverState -> Elab a -> Tuple (Outcome a) SolverState
+runWithin env s (Elab f) = f env s
 
 -- | The state a session begins in. The session manager supplies an identifier
 -- | it issues once for the life of the process running the guest.
@@ -186,7 +239,7 @@ initialState session fuel =
   }
 
 throw :: forall a. Diagnostic -> Elab a
-throw diagnostic = Elab \s -> Tuple (Failed diagnostic) s
+throw diagnostic = Elab \_ s -> Tuple (Failed diagnostic) s
 
 -- | Report a defect, which nothing catches.
 -- |
@@ -194,7 +247,7 @@ throw diagnostic = Elab \s -> Tuple (Failed diagnostic) s
 -- | continue: the mechanism driven against its contract, or an invariant of its
 -- | own found broken.
 break :: forall a. Defect -> Elab a
-break defect = Elab \s -> Tuple (Broke defect) s
+break defect = Elab \_ s -> Tuple (Broke defect) s
 
 -- | Abandon the attempt until one of the metavariables named is assigned.
 -- |
@@ -205,7 +258,7 @@ postpone :: forall a. Set MetaVar -> Elab a
 postpone ms = postponeWith (ExplicitPostponement ms)
 
 postponeWith :: forall a. Cause -> Elab a
-postponeWith cause = Elab \s -> Tuple (Postponed cause) s
+postponeWith cause = Elab \_ s -> Tuple (Postponed cause) s
 
 -- | A checkpoint over what an attempt owns, for trying something that may not
 -- | work out.
@@ -229,7 +282,7 @@ postponeWith cause = Elab \s -> Tuple (Postponed cause) s
 -- | back is the state, so the writes of a candidate that **failed** are absent
 -- | from the cause of a later postponement.
 transact :: forall a. Elab a -> Elab (Either Diagnostic a)
-transact action = Elab \s -> case runElab s action of
+transact action = Elab \env s -> case runWithin env s action of
   Tuple (Done a) s' ->
     Tuple (Done (Right a)) s'
   Tuple (Failed diagnostic) s' ->
@@ -245,7 +298,7 @@ transact action = Elab \s -> case runElab s action of
 -- | never issued twice, so where none is left the session stops rather than
 -- | wrap around to one a handle still carries.
 issue :: HandleObject -> Elab Handle
-issue object = Elab \s ->
+issue object = Elab \_ s ->
   if s.retained.nextGeneration >= top then
     Tuple (Broke GenerationsExhausted) s
   else
@@ -263,7 +316,7 @@ issue object = Elab \s ->
 -- | The object a handle names, where it names one of the class expected. A
 -- | handle that names none is a defect of whoever presented it.
 resolveObject :: HandleClass -> Handle -> Elab HandleObject
-resolveObject expected handle = Elab \s ->
+resolveObject expected handle = Elab \_ s ->
   case resolveIn s.retained.session s.retained.nextGeneration expected handle s.tentative.arena of
     Left err -> Tuple (Broke (InvalidHandle handle err)) s
     Right object -> Tuple (Done object) s
@@ -293,10 +346,10 @@ resolveMeta handle = resolveObject MetaClass handle >>= case _ of
 -- | What exhaustion means is the loop's to decide; this spends and reports
 -- | nothing.
 spendFuel :: Elab Unit
-spendFuel = Elab \s -> Tuple (Done unit) (s { retained { fuel = s.retained.fuel - 1 } })
+spendFuel = Elab \_ s -> Tuple (Done unit) (s { retained { fuel = s.retained.fuel - 1 } })
 
 fuelRemaining :: Elab P.Int
-fuelRemaining = Elab \s -> Tuple (Done s.retained.fuel) s
+fuelRemaining = Elab \_ s -> Tuple (Done s.retained.fuel) s
 
 -- | `Γ ; κ ⊢ τ1 ≡ τ2`, together with everything its assignments owe.
 -- |
@@ -380,7 +433,7 @@ misuse = case _ of
 -- | the equation, and a job queued before it was found would be left on the ready
 -- | queue by an equation that never happened.
 settle :: Site -> UnifyProgress -> Elab Unit
-settle site progress = Elab \s ->
+settle site progress = Elab \_ s ->
   let
     installed = s.tentative { metas = progress.metas }
   in
@@ -437,7 +490,7 @@ invariantBreach = case _ of
 -- | solution may mention. The name it takes comes from the supply in `Ψ`, which
 -- | a rollback restores.
 freshTypeMeta :: XContext -> XKind -> Elab XType
-freshTypeMeta context kind = Elab \s ->
+freshTypeMeta context kind = Elab \_ s ->
   let
     scope =
       { types: Map.keys context.tyVars
@@ -454,7 +507,7 @@ freshTypeMeta context kind = Elab \s ->
 -- | not have in scope. The caller places it in a term as `ETermMeta`, with the
 -- | annotation of the place it stands.
 freshTermMeta :: XContext -> XType -> Elab TermMetaVar
-freshTermMeta context ty = Elab \s ->
+freshTermMeta context ty = Elab \_ s ->
   let
     Tuple m metas = TermMeta.freshTermMeta { ty, scope: termScopeOf context } s.tentative.metas
   in
@@ -469,7 +522,7 @@ freshTermMeta context ty = Elab \s ->
 -- | to what the current attempt owns, so a rollback removes the two together.
 -- | The metavariable is returned for the caller to place as `ETermMeta`.
 createSynthesis :: Site -> XType -> SynthRef -> Elab (Tuple PendingId TermMetaVar)
-createSynthesis site expectedType synthesizer = Elab \s ->
+createSynthesis site expectedType synthesizer = Elab \_ s ->
   let
     Tuple goal metas = newGoal site expectedType synthesizer s.tentative.metas
     Tuple id created = create site (JobSynthesis goal) s.tentative.scheduler
@@ -487,7 +540,7 @@ createSynthesis site expectedType synthesizer = Elab \s ->
 -- | since a target standing in another solution is narrowed with it. A violation
 -- | is a defect of the host and not of the program.
 checkSynthesisTarget :: PendingId -> Site -> GoalRecord -> Elab Unit
-checkSynthesisTarget id site record = Elab \s ->
+checkSynthesisTarget id site record = Elab \_ s ->
   let
     goal = goalOf record
     metas = s.tentative.metas
@@ -516,7 +569,7 @@ checkSynthesisTarget id site record = Elab \s ->
 -- | search may take another candidate. One naming a metavariable `Ψ` does not
 -- | hold, or holds solved, is a defect in whoever assigns.
 assignTerm :: forall a. Site -> TermMetaVar -> XExpr a -> Elab Unit
-assignTerm site m solution = Elab \s ->
+assignTerm site m solution = Elab \_ s ->
   case assignTermMeta s.tentative.metas m solution of
     Left err
       | termMisuse err -> Tuple (Broke (TermMisuse site.origin err)) s
@@ -526,7 +579,7 @@ assignTerm site m solution = Elab \s ->
 
 -- | A term with everything `Ψ` has solved applied to it.
 zonkTerm :: forall a. XExpr a -> Elab (XExpr a)
-zonkTerm e = Elab \s -> Tuple (Done (zonkExpr s.tentative.metas e)) s
+zonkTerm e = Elab \_ s -> Tuple (Done (zonkExpr s.tentative.metas e)) s
 
 -- | Listed one by one for the reason `misuse` is.
 termMisuse :: TermError -> P.Boolean
@@ -569,7 +622,7 @@ require site constraint =
 -- | normal form is a defect, and anything else is a diagnostic naming the site
 -- | the constraint came from.
 take :: Obligation -> Elab Unit
-take obligation = Elab \s ->
+take obligation = Elab \_ s ->
   case introduce (substitute s.tentative.metas) obligation s.tentative.obligations of
     Left breach -> case invariantBreach breach of
       Just err ->
@@ -595,10 +648,15 @@ take obligation = Elab \s ->
 -- | unification's refusal of an undrained journal a statement about a caller
 -- | outside this module.
 metaContext :: Elab MetaContext
-metaContext = Elab \s -> Tuple (Done s.tentative.metas) s
+metaContext = Elab \_ s -> Tuple (Done s.tentative.metas) s
+
+-- | `Ψ` as it stands, for the host's observations to read. Nothing a synthesizer
+-- | receives is this; what it receives is a handle and a view.
+currentMetas :: Elab MetaContext
+currentMetas = metaContext
 
 writtenSoFar :: Elab (Set MetaVar)
-writtenSoFar = Elab \s -> Tuple (Done s.tentative.written) s
+writtenSoFar = Elab \_ s -> Tuple (Done s.tentative.written) s
 
 wakeAll :: Set MetaVar -> Scheduler -> Scheduler
 wakeAll ms scheduler =
@@ -610,7 +668,7 @@ rollbackTo :: Tentative -> SolverState -> SolverState
 rollbackTo saved s = { tentative: saved, retained: s.retained }
 
 instance Functor Elab where
-  map f action = Elab \s -> case runElab s action of
+  map f action = Elab \env s -> case runWithin env s action of
     Tuple (Done a) s' -> Tuple (Done (f a)) s'
     Tuple (Postponed cause) s' -> Tuple (Postponed cause) s'
     Tuple (Failed diagnostic) s' -> Tuple (Failed diagnostic) s'
@@ -620,11 +678,11 @@ instance Apply Elab where
   apply = ap
 
 instance Applicative Elab where
-  pure a = Elab \s -> Tuple (Done a) s
+  pure a = Elab \_ s -> Tuple (Done a) s
 
 instance Bind Elab where
-  bind action f = Elab \s -> case runElab s action of
-    Tuple (Done a) s' -> runElab s' (f a)
+  bind action f = Elab \env s -> case runWithin env s action of
+    Tuple (Done a) s' -> runWithin env s' (f a)
     Tuple (Postponed cause) s' -> Tuple (Postponed cause) s'
     Tuple (Failed diagnostic) s' -> Tuple (Failed diagnostic) s'
     Tuple (Broke defect) s' -> Tuple (Broke defect) s'

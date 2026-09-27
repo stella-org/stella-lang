@@ -17,7 +17,7 @@ module Stella.Compiler.Elaborate.Loop
 import Prelude
 
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic)
-import Stella.Compiler.Elaborate.Elab (SolverState)
+import Stella.Compiler.Elaborate.Elab (SessionEnv, SolverState)
 import Stella.Compiler.Elaborate.Context (Origin)
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), Pending, PendingId, Site)
 import Stella.Compiler.Elaborate.Run (Attempt, Runner, attemptPendingWith, hostRunner)
@@ -78,21 +78,21 @@ data RunResult
 -- | Just after `create` is one of the two points at which a job may be
 -- | attempted. A first attempt spends no fuel, fuel bounding the scheduler's
 -- | retries alone.
-submitWith :: Runner -> Site -> Job -> SolverState -> Tuple Submitted SolverState
-submitWith runner site job s0 =
+submitWith :: SessionEnv -> Runner -> Site -> Job -> SolverState -> Tuple Submitted SolverState
+submitWith session runner site job s0 =
   let
     Tuple id scheduler = create site job s0.tentative.scheduler
-    Tuple attempt s = attemptPendingWith runner id (s0 { tentative { scheduler = scheduler } })
+    Tuple attempt s = attemptPendingWith session runner id (s0 { tentative { scheduler = scheduler } })
   in
     Tuple { id, attempt } s
 
 -- | `submitWith hostRunner`, for an equation.
-submitEquality :: Site -> EqualityGoal -> SolverState -> Tuple Submitted SolverState
-submitEquality site goal = submitWith hostRunner site (JobUnify goal)
+submitEquality :: SessionEnv -> Site -> EqualityGoal -> SolverState -> Tuple Submitted SolverState
+submitEquality session site goal = submitWith session hostRunner site (JobUnify goal)
 
 -- | `runWith hostRunner`.
-run :: SolverState -> Tuple RunResult SolverState
-run = runWith hostRunner
+run :: SessionEnv -> SolverState -> Tuple RunResult SolverState
+run session = runWith session hostRunner
 
 -- | Retry the jobs on the ready queue until it is empty, or until something
 -- | stops the loop.
@@ -104,10 +104,13 @@ run = runWith hostRunner
 -- | as a job submitted and attempted at once spends none. The loop is a `tailRec`,
 -- | since the number of retries is bounded by fuel rather than by the stack.
 -- |
+-- | The session environment is given once and every attempt of the loop reads
+-- | that one; it is assembled before the first job and never changes.
+-- |
 -- | At quiescence, a scheduler whose tables disagree, and a job awaiting
 -- | nothing, are defects; otherwise every job left is reported as blocked.
-runWith :: Runner -> SolverState -> Tuple RunResult SolverState
-runWith runner = tailRec step
+runWith :: SessionEnv -> Runner -> SolverState -> Tuple RunResult SolverState
+runWith session runner = tailRec step
   where
   step s = case nextReady s.tentative.scheduler of
     Nothing ->
@@ -126,7 +129,7 @@ runWith runner = tailRec step
                 , retained { fuel = s.retained.fuel - spent }
                 }
             in
-              case attemptPendingWith runner id taken of
+              case attemptPendingWith session runner id taken of
                 Tuple Run.Committed s' -> Loop s'
                 Tuple (Run.Registered _) s' -> Loop s'
                 Tuple (Run.Rejected diagnostic) s' -> Done (Tuple (Rejected diagnostic) s')

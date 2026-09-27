@@ -7,7 +7,7 @@
 -- | pair of stuck cases differing only in what the store holds is what holds that
 -- | in place. And **a rollback restores what an attempt owns and nothing else**:
 -- | the assignments, the obligations, the wakes and the write set go back, while
--- | the fuel the abandoned run spent stays spent.
+-- | the fuel the abandoned run emptySessionEnv spent stays spent.
 -- |
 -- | Introducing a row constraint is decided where it happens: an assumption or a
 -- | requirement that does not hold is rejected naming the one site it came from,

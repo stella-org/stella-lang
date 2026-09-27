@@ -41,7 +41,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Kind (XKind)
+import Stella.Compiler.Elaborate.Kinding (KindEvidence, KindingScope)
 import Stella.Compiler.Elaborate.Pending (GoalRecord, PendingId)
 import Stella.Compiler.Elaborate.Term (XExpr)
 import Stella.Compiler.Elaborate.Type (MetaVar, XType)
@@ -76,10 +76,15 @@ type GoalObject =
   , goal :: GoalRecord
   }
 
--- | A type, with the kind it stands at.
+-- | A type, with the kind evidence it stands at and the scope it is kinded under:
+-- | the rigid kind variables and the type variables it may mention free. A
+-- | type from a site has the site's; one a view reached under a binder has that
+-- | binder added; a catalog scheme has its own kind variables. Holding it is what
+-- | lets a type be kinded again wherever it is taken apart.
 type TypeObject =
   { type :: XType
-  , kind :: XKind
+  , kind :: KindEvidence
+  , scope :: KindingScope
   }
 
 -- | A term, held without annotations, with the type it is claimed to have.

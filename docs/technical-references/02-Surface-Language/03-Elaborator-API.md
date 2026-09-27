@@ -405,17 +405,52 @@ A handle is session-local: it means nothing outside the compile-time session tha
 
 **The generation is drawn from a counter no rollback restores**, which is the whole of what makes that true: a slot freed by a rollback and filled again by the next attempt receives a generation that has never been issued, so the old handle matches nothing. A counter restored with everything else would hand the new object the number the old handle carries. It is a safety counter and not part of the state an attempt owns, and it is kept apart from the supply of fresh names for that reason.
 
-### What a handle holds
+**A generation is never issued twice in a session**, which is the premise of all of the above. A session that has issued every generation it can stops rather than wrap around to one a handle may still carry.
 
-**A `Type` holds the kind it stands at**, and an `Expr` holds the type it is claimed to have.
+**The arena lives for one attempt, and what it holds is transactional.** An attempt begins with it empty and commits with it emptied again; an attempt that fails, postpones, or breaks is rolled back to the checkpoint's, which is empty. Inside the attempt an inner `transact` is an ordinary checkpoint: a handle issued before it survives its rollback, and one issued inside it is gone. Nothing needs a handle to outlive its attempt — what a synthesizer returns, the message it throws, and the metavariables it postpones on are resolved into the host's own values before the attempt ends — and a slot is free to be reused by the next attempt, the generation being what tells an old handle from a new one.
+
+**A session is identified once for the life of the process running the guest.** A long-lived interpreter serves session after session, and a handle held over from an earlier one must be refused rather than resolved against a later session's arena.
+
+**Every field of a presented handle is untrusted**, a handle crossing the boundary as a token. Resolving one checks, in order:
 
 ```text
-Type  =  { type : τ⁺ , kind : κ⁺ }
-Expr  =  { term : e⁺ , claimed : τ⁺ }        the term held without annotations
-Goal  =  the goal the current attempt runs
+issued by another session                      foreign
+a generation this session never issued         unknown
+no object in its slot, or one of another
+  generation                                   stale
+a class other than the one expected, whether
+  as the handle states it or as the object is  class mismatch
 ```
 
-**`kindOf` and `typeOf` read what the handle holds; neither infers anything.** Unification is directed by a kind it is given rather than one it synthesizes ([Elaboration](01-Elaboration.md)), so `unify` takes the two handles' kinds, refuses where they differ, and hands that kind to type unification; a kernel that recomputed a kind would need `Σ` and a kinding judgement over Core⁺, which the mechanism has nowhere else. A term's claimed type is what the operation that built the term said of it. **A claim the term does not bear out is not caught here**: an elaborator may construct an ill-typed term, and the Core type checker rejects it once the term is zonked. Rechecking Core⁺ in the kernel would be a second checker, and the trusted one is the only one there needs to be.
+The generation is read before the slot, so a forged generation is reported as unknown rather than as stale; and the class the handle states is compared as well as the class of the object its slot holds, so rewriting a valid handle's class does not turn one kind of object into another. All four are defects of whoever presented the handle, and none is a statement about the program.
+
+### What a handle holds
+
+**A `Type` holds the kind evidence it stands at**, and an `Expr` holds the type it is claimed to have.
+
+```text
+Type  =  { type : τ⁺ , kind : KindEvidence , scope : the rigid kind variables and
+                                              the type variables, with their kinds,
+                                              it may mention free }
+Expr  =  { term : e⁺ , claimed : τ⁺ }        the term held without annotations
+Goal  =  the goal the current attempt runs
+
+KindEvidence = ExactKind κ⁺  |  AnyRow
+```
+
+**`AnyRow` is what the empty row stands at**, `()` being a `Row Type` and a `Row Effect` alike; it is a statement of all that is true of such a row rather than a kind left undecided, and where the place a row stands at fixes its kind — the argument of `Record`, the tail of a row with an element — the handle carries that kind instead. An `ExactKind` holds a kind that is zonked and mentions no kind metavariable.
+
+**The evidence is given when the handle is issued, by a read-only kinding judgement.**
+
+```text
+Σκ ; Γ ; Ψ ⊢ τ⁺ ⇒ KindEvidence
+```
+
+`Σκ` is the type-level environment of the session — the kind scheme of each type constructor and the parameter kinds of each effect — and `Γ` is the scope the handle records: for a type from a site, the site's kind variables and type variables; for one a view reached under a binder, that binder besides; for a catalog scheme, the kind variables the scheme declares. The judgement checks as well as synthesizes: every kind it reads mentions only kind variables `Γ` binds, an argument stands at the kind its head's arrow asks, a binder at a quantifiable kind, a body at `Type`, an effect's arguments at its declared parameter kinds, a row's tail and a union's sides at one row kind, and every key — an element's or a constraint's, by one rule — is well-formed for the row it keys: a position non-negative, an effect declared. **It changes nothing and creates nothing**, which is what separates it from unification; a type it refuses is one no synthesizer is shown, and meeting one is a defect of the host.
+
+**What a synthesizer is shown holds no unsettled kind.** A kind metavariable reachable from a type, a constraint, or a declaration a synthesizer observes — a variable's kind, a constructor's kind argument, a binder, a kind being synthesized — is refused as not settled. A synthesis job runs after the kinds of what it reads are decided, and a kind metavariable is nothing a synthesizer could name, solve, or wait on.
+
+**`kindOf` and `typeOf` read what the handle holds; neither infers anything anew.** Unification is directed by a kind it is given rather than one it synthesizes ([Elaboration](01-Elaboration.md)), so `unify` takes the two handles' kind evidence, refuses where it disagrees, and hands the kind to type unification. A term's claimed type is what the operation that built the term said of it. **A claim the term does not bear out is not caught here**: an elaborator may construct an ill-typed term, and the Core type checker rejects it once the term is zonked. Rechecking Core⁺ in the kernel would be a second checker, and the trusted one is the only one there needs to be.
 
 A term is held without annotations for the reason a term metavariable's solution is: where it lands, it takes the annotation of the place it lands in ([Elaboration](01-Elaboration.md)).
 
@@ -442,17 +477,20 @@ Job = JobUnify EqualityGoal | JobSynthesis GoalRecord
 **The runner sets the current site and goal before the attempt begins, and nothing inside the attempt changes them.** Every kernel operation that depends on where it stands reads them from there.
 
 ```text
-Frame = { catalog, site, goal }        read-only for the length of the attempt
+SessionEnv = { catalog, kinding }      fixed for the session, before the first job
+Frame      = { site, goal }            read-only for the length of the attempt
 ```
+
+**Both are read and never written.** The session environment is assembled once and every attempt of a loop reads the one it was given; the frame is set for one attempt, and an action running under it ends with the frame outside as it was, whichever way it ends. Neither is part of what a rollback restores, there being nothing in either to restore.
 
 | Reads the frame | For |
 | --- | --- |
-| `goalType`, the `Goal` a synthesizer is applied to | the goal |
+| `goalType`, the `Goal` a synthesizer is applied to | the goal: the handle must name the goal the frame is running, and a frame with no goal has none to observe |
 | `localContext`, `localConstraints` | the site's context, as its two views |
 | `freshMetaType`, `subgoal` | the scope a metavariable is created under |
 | `entails` | the facts the site's assumptions give against the current `Ψ` |
 | `require` | the site an obligation carries |
-| `lookupGlobal`, `declsWithAttr` | the catalog |
+| `lookupGlobal`, `declsWithAttr` | the catalog, which the session environment holds rather than the frame |
 
 **No kernel operation takes a context or a scope from its caller.** A caller that could state one could state a wider one than it stands in, and admit a solution the site has no variable for. The mechanism's own operations — what the elaborator walking a term uses as it enters binders — do take one; they are not the kernel, and no synthesizer reaches them.
 
@@ -469,6 +507,28 @@ subgoal : Type -> SynthRef -> Elab Expr
 `subgoal τ f` is `⟨ τ by f ⟩` asked from inside an attempt: it creates `?m` under the current site's context and a synthesis job for it at the current site, and returns the `Expr` `?m` claimed at `τ`. **The job is queued and not attempted.** Attempting it at once would open an attempt inside the one that asked for it; it is placed on the ready queue for its first attempt, which spends no fuel ([above](#the-loop)), and like everything else the attempt did, it goes if the attempt rolls back. A synthesizer composing a dictionary from another is the ordinary case: `dictShowArray [?a] (subgoal (Show ?a) resolve)`.
 
 A synthesizer that wants a candidate's sub-result now rather than later calls itself, as any function does; `subgoal` is for what is to be decided by the scheduler. **The bare term metavariable remains the mechanism's**, where the elaborator knows what will fill it, and what fills one the elaborator creates is always written down beside it.
+
+### What an observation shows
+
+A view is one level of a thing, and each part that is itself a type is handed out as a `Type` handle carrying its own evidence.
+
+```text
+TypeView        = VarType a | MetaType Meta | ConType T [KindView]
+                | AppType Type Type | ForallType a KindView Type
+                | ConstrainedType ConstraintView Type | NormalRow RowView
+RowView         = { elementKind : Maybe (Type | Effect)
+                  , known : [ (RowKey, PayloadView) ], rigid : [a], flexible : [Meta] }
+PayloadView     = TypePayload Type | EffectPayload E [Type] | RegionPayload Type Type
+KindView        = KindType | KindEffect | KindRow ε | KindFun KindView KindView
+                | KindVar k | KindAnyRow
+ConstraintView  = LacksView RowKey Type | DisjointView Type Type
+```
+
+**A row is shown as its normal form**, `elementKind` being `Nothing` for one that stands at any row kind. Two rows are one row exactly when their normal forms agree, so how a row was written is nothing a synthesizer can rely on; `known`, `rigid`, and `flexible` come in ascending order of key, of name, and of metavariable, so one row has one view.
+
+**An unsolved type metavariable is shown as a `Meta` handle**, which is the only way to come by one: it names a metavariable a type actually stands for, and it is what `postpone` is given. **Each observation zonks against the current `Ψ` first**, so one `Type` handle shows `MetaType` before its metavariable is solved and the solution after.
+
+**An observation changes the arena and nothing else.** It issues handles for the parts it shows; no metavariable, obligation, job, or unit of fuel is touched, so reading is never what makes two runs of one goal differ.
 
 ### The catalog
 

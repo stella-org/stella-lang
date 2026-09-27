@@ -20,6 +20,7 @@ import Prelude
 
 import Stella.Compiler.Elaborate.Context (Origin)
 import Stella.Compiler.Elaborate.Handle (Handle, HandleError)
+import Stella.Compiler.Elaborate.Kinding (KindingFault)
 import Stella.Compiler.Elaborate.Obligation (Basis, Breach)
 import Stella.Compiler.Elaborate.Pending (Job, PendingId, SynthRef)
 import Stella.Compiler.Elaborate.Scheduler (Invariant)
@@ -101,6 +102,22 @@ data Defect
   -- | A session that has issued every generation it can. A generation is never
   -- | issued twice, which is what an old handle failing to match rests on.
   | GenerationsExhausted
+  -- | A kernel operation that reads where it stands, run with no frame: outside
+  -- | any attempt. The host called it where it had no site to give.
+  | NoFrame
+  -- | A goal observed where the frame holds none: an equality job's attempt, or
+  -- | none at all.
+  | NoGoal
+  -- | A goal handle presented for one goal while the frame runs another. The
+  -- | scope a goal's type is read under is the running goal's site.
+  | GoalNotCurrent PendingId PendingId
+  -- | A type the read-only kinding judgement refused, or one whose kind it could
+  -- | not settle. What reaches a synthesizer is well-kinded and settled, whoever
+  -- | built it, so meeting another is the host's fault.
+  | KindingFailed KindingFault
+  -- | A row observation asked of a type that stands at no row kind, or of a row
+  -- | with no normal form.
+  | NotARowType Handle
   -- | A synthesis goal whose synthesizer the session has no implementation for.
   -- | Name resolution resolved the name where the goal was written, so the name
   -- | exists; a session unable to run it was set up without it.
