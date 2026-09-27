@@ -1388,7 +1388,7 @@ Three kinds, reported differently because they mean different things.
 | | What it is | What it means |
 | --- | --- | --- |
 | **Load error** | an unresolved reference, an arity that does not agree, a missing foreign | the module is not loaded, and nothing of it ran |
-| **Fault** | an operation or a foreign failing as it is specified or defined to; a native action refusing; and a native action in breach of its contract, throwing where it is performed | the stack is discarded and the run ends; nothing catches one ([Bytecode](../05-Backend/01-Bytecode.md)). Where a drive loop was executing, its pending continuations are discarded with it |
+| **Fault** | an operation or a foreign failing as it is specified or defined to; a native action refusing; a native action in breach of its contract, throwing where it is performed; and a foreign or a native action answering with a host value the kind its signature gives cannot be, which names the entry ([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)) | the stack is discarded and the run ends; nothing catches one ([Bytecode](../05-Backend/01-Bytecode.md)). Where a drive loop was executing, its pending continuations are discarded with it |
 | **Interpreter bug** | reaching `VABS`, applying what is not callable, reading a register that holds nothing, a `Bind` over what is not an `IO` | a state no `.dmo` admits. Reaching one is a defect in the interpreter, in lowering, in a check a loader owes, or in an adapter that returned what its declaration did not promise |
 
 The `DEBUG` section is where a report finds a function's name in a file that carries
