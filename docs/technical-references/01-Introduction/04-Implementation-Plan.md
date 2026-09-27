@@ -642,6 +642,12 @@ no identifier is at once ready and blocked
 | `subgoal` in a `forall` body's scope | A job whose site binds the body's variable, queued for a first attempt, and an `Expr` built in that scope whose claimed type is built there too |
 | `subgoal` at a type not standing at `Type`, or at one the scope may not use | A defect of the synthesizer |
 | `subgoal` inside a `transact` that fails | The job and its target are both gone |
+| `localVariable` of a name the scope does not bind | Refused. Only the scope's bindings can be referred to by name, so none is made up |
+| `globalRef` of an absent entry, at the wrong number of kinds, at a kind that is not quantifiable, or of a scheme mentioning a variable it does not declare | What `instantiateScheme` does for each, by the one procedure the two share |
+| A leaf's `typeOf` | The type the host claimed it at, with the scope it was built in and the variables that scope binds |
+| A term built in a child scope, used in the child's descendant, in its parent, and in its sibling | Used, refused, and refused. A term built in no build scope is refused everywhere |
+| A fresh name whose first candidate the context already binds, for a value and for a type variable | The next number, and the skipped one is spent. `#` keeps a name only from what an author wrote |
+| A fresh name drawn inside a `transact` that fails, and drawn again | The same name. The supply is part of what an attempt owns |
 | A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
 | No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
 | No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |

@@ -334,7 +334,9 @@ require         : Scope -> ConstraintView -> Elab Unit
 -- construction
 check           : Syntax -> Type -> Elab Expr
 infer           : Syntax -> Elab (Tuple Expr Type)
-freshIdent      : Elab Ident
+localVariable   : Scope -> Ident -> Elab Expr
+globalRef       : Scope -> QIdent -> [KindView] -> Elab Expr
+literal         : Scope -> Literal -> Elab Expr
 
 -- control
 transact        : Elab a -> Elab (Either Diagnostic a)
