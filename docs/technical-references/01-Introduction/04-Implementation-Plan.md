@@ -200,7 +200,7 @@ The heading of each group names the step of the plan that the group belongs to.
 | A handler omitting an operation of `E` | Rejected. `handle` removes the keyed element, so an operation without a clause has nowhere to go |
 | A handler clause that does not respect an operation's own `forall b̄` | Rejected |
 | An interpreter sequencing a native action before resuming a continuation, the residual row not being closed | Rejected. That continuation is `a -{ρ}-> IO r`, which the pure arrow of `Base.IO.bind` does not take. Abandoning the continuation, or resuming it first, is admitted |
-| A pure global applied where the ambient row is not empty, as `Base.Int.add n 1` is under `( State Int | e )` | Rejected without `openEff`. An application requires the arrow to carry the ambient row and containment is never inserted (D8); currying makes it one `openEff` per argument consumed |
+| A pure global applied where the ambient row is not empty, as `Base.Int.add n 1` is under `( State Int \| e )` | Rejected without `openEff`. An application requires the arrow to carry the ambient row and containment is never inserted (D8); currying makes it one `openEff` per argument consumed |
 | A data constructor applied in a handler clause, the row outside the handle not being empty | Rejected for the same reason. Constructor arrows are pure by declaration, so one is widened like any other pure global. An instantiation such as `Prelude.Nothing [a]` needs no widening, applying nothing |
 | `handle (perform E.op v) with h` at ambient row `()` | **Accepted.** Effect safety is not "no operation is performed" |
 | A `λ` whose body jumps to a join point bound outside it | Rejected. The join point context is discarded at a lambda |
@@ -460,6 +460,8 @@ no identifier is at once ready and blocked
 | A job woken and not yet postponed again | Awaits nothing, which is what a report at quiescence reads |
 | One assignment waking several jobs | Queued in the order they were created |
 | A job completed while registered | Held by no table afterwards |
+| A job woken, then taken from the ready queue, then attempted | Attempted as any other job is. Just after `takeReady` is one of the two points at which a job may be attempted, the other being just after `create` |
+| An attempt of a job still on the ready queue, or still registered under a metavariable | A defect, and the job is not run. The first would run it again when the loop takes it, and the second would register it twice |
 | A `Lacks` assumed of a flexible tail | Yields no atomic fact, and yields one at the attempt after that tail is solved to a row with a rigid one |
 | The same assumption, where the solution carries the key | Rejected. Which store rejects it is the obligation's and not the context's, the facts derived from a site being silent about a metavariable |
 | A `Disjoint` between two flexible tails | Watched under both. A record per metavariable cannot hold one, there being no one metavariable it belongs to |

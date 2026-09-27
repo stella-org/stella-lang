@@ -345,6 +345,19 @@ on quiescence:
 
 The three-way outcome is what separates "unsolvable" from "not enough information yet", and it is the same split at each of the three job kinds.
 
+### Which job may be attempted
+
+**A job is attempted only while no queue holds it**: `pending` holds it, it awaits nothing, and it is not on the ready queue. There are two points at which a job is in that state, and they are the only two entries to an attempt.
+
+```text
+first attempt     just after create, before the job has been queued anywhere
+another attempt   just after takeReady, once a wake has put the job on the ready queue
+```
+
+**Attempting a job the scheduler still holds is a defect.** One still on the ready queue would run again when the loop takes it, and one still registered under a metavariable would be registered a second time by the postponement its attempt admits. Neither is a statement about the program, so neither is a diagnostic.
+
+What is checked directly is `awaiting` and the ready queue. That the blocked table does not hold the job either is not read off the table: it follows from the invariant the scheduler keeps between its tables, `id ∈ blocked[?α] ⟺ ?α ∈ pending[id].awaiting` ([Implementation Plan](../01-Introduction/04-Implementation-Plan.md)), an empty `awaiting` leaving no metavariable the job can be registered under.
+
 **Termination rests on fuel rather than on a measure.** The number of unsolved metavariables is not decreasing: refining two flexible tails introduces a fresh one ([Elaboration](01-Elaboration.md)), so a loop of assignments can create as much work as it discharges. Fuel is what bounds it, which is why it is the one thing a rollback leaves alone.
 
 **What fuel bounds is the scheduler's retries, and not a guest computation.** A synthesizer that loops inside one attempt returns no outcome for fuel to count, so stopping it is Steam's — an instruction budget, or a cancellation the host raises. The two answer separate questions and neither stands in for the other.

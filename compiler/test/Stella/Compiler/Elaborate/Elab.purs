@@ -8,23 +8,28 @@
 -- | in place. And **a rollback restores what an attempt owns and nothing else**:
 -- | the assignments, the obligations, the wakes and the write set go back, while
 -- | the fuel the abandoned run spent stays spent.
+-- |
+-- | Introducing a row constraint is decided where it happens: an assumption or a
+-- | requirement that does not hold is rejected naming the one site it came from,
+-- | and leaves neither a context nor an obligation behind.
 module Test.Stella.Compiler.Elaborate.Elab (spec) where
 
 import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Context (Origin(..), emptyXContext)
+import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindKindVars, bindTyVar, emptyXContext)
+import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, initialState, postpone, runElab, spendFuel, throw, transact, unify)
+import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, assume, freshTypeMeta, initialState, postpone, require, runElab, spendFuel, throw, transact, unify)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce)
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), PendingId, Site)
 import Stella.Compiler.Elaborate.Scheduler (Scheduler, blockedOn, create, emptyScheduler, lookupPending, reblock)
 import Stella.Compiler.Elaborate.Type (MetaVar(..), XConstraint(..), XRowEntry(..), XType(..))
 import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, MetaInfo, UnifyError(..), emptyContext, freshMeta, lookupMeta, substitute)
-import Stella.Compiler.Elaborate.Row (xnf)
-import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
+import Stella.Compiler.Elaborate.Row (XRowError(..), xnf)
+import Stella.Compiler.TypedCore (Ident(..), KindVar(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
 import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
@@ -184,8 +189,132 @@ knownKeysOf ctx m = case solutionOf ctx m of
     Left _ -> Nothing
     Right n -> Just (Set.toUnfoldable (Set.fromFoldable (Map.keys n.known)))
 
+-- | A site elsewhere, whose context binds the rigid row variable `r` and the kind
+-- | variable `k`.
+elsewhereSite :: Site
+elsewhereSite = { context: binding, origin: elsewhere }
+
+binding :: XContext
+binding = bindKindVars (bindTyVar emptyXContext rigidR (XKRow RowType)) [ KindVar "k" ]
+
+-- | The same site, assuming `k ∉ r`.
+assumingKNotInR :: Site
+assumingKNotInR = elsewhereSite { context = Context.assume binding (XLacks keyK (XVar rigidR)) }
+
+doneOf :: forall a. Outcome a -> Maybe a
+doneOf = case _ of
+  Done a -> Just a
+  _ -> Nothing
+
 spec :: Spec Unit
 spec = describe "Elaborate.Elab" do
+  describe "a fresh type metavariable" do
+    it "is created at the kind given, under what the context binds" do
+      let
+        Tuple outcome s = runElab session (freshTypeMeta binding (XKRow RowEffect))
+        fresh = MetaVar metas.ctx.next
+      outcome `shouldEqual` Done (XMeta fresh)
+      lookupMeta s.tentative.metas fresh `shouldEqual` Just
+        ( Unsolved
+            { kind: XKRow RowEffect
+            , scope: { types: Set.singleton rigidR, kinds: Set.singleton (KindVar "k") }
+            }
+        )
+
+    it "takes its name from a supply a rollback restores" do
+      let
+        Tuple first s = runElab session (transact (freshTypeMeta binding XKType *> (throw failure :: Elab Unit)))
+        Tuple second _ = runElab s (freshTypeMeta binding XKType)
+        Tuple unrolled _ = runElab session (freshTypeMeta binding XKType)
+      first `shouldEqual` Done (Left failure)
+      s.tentative.metas.next `shouldEqual` metas.ctx.next
+      second `shouldEqual` unrolled
+
+  describe "an assumption" do
+    it "returns the context carrying it and holds it against assignment" do
+      let
+        constraint = XLacks keyA (XMeta metas.r)
+        Tuple outcome s = runElab session do
+          context <- assume elsewhereSite constraint
+          unify site { kind: XKRow RowType, left: XMeta metas.r, right: field keyA tA XRowEmpty }
+          pure context
+      outcome `shouldEqual` Failed
+        ( ObligationBroken
+            { equation: here
+            , obligation: elsewhere
+            , basis: Assumed
+            , breach: SolutionCarriesKey keyA
+            }
+        )
+      solutionOf s.tentative.metas metas.r `shouldEqual` Nothing
+
+    it "is recorded in the context it returns" do
+      let
+        constraint = XLacks keyA (XMeta metas.r)
+        Tuple outcome _ = runElab session (assume elsewhereSite constraint)
+      map _.assumed (doneOf outcome) `shouldEqual` Just [ constraint ]
+
+    it "is rejected where it is already unsatisfiable, changing nothing" do
+      let
+        store = holding (assumed (XLacks keyK (XMeta metas.s)))
+        Tuple outcome s = runElab (sessionWith store emptyScheduler)
+          (assume elsewhereSite (XLacks keyA (field keyA tA (XMeta metas.r))))
+      map _.assumed (doneOf outcome) `shouldEqual` Nothing
+      outcome `shouldEqual` Failed
+        ( ObligationRejected
+            { obligation: elsewhere
+            , basis: Assumed
+            , breach: SolutionCarriesKey keyA
+            }
+        )
+      s.tentative.obligations `shouldEqual` store
+
+    it "is rejected inside a transaction without leaving an obligation behind" do
+      let
+        Tuple outcome s = runElab session
+          (transact (assume elsewhereSite (XLacks keyA (field keyA tA (XMeta metas.r)))))
+      map (map _.assumed) (doneOf outcome) `shouldEqual` Just
+        ( Left
+            ( ObligationRejected
+                { obligation: elsewhere
+                , basis: Assumed
+                , breach: SolutionCarriesKey keyA
+                }
+            )
+        )
+      obligationCount s.tentative.obligations `shouldEqual` 0
+
+  describe "a requirement" do
+    it "is rejected where its site does not prove it of a rigid tail" do
+      let
+        Tuple outcome s = runElab session (require elsewhereSite (XLacks keyK (XVar rigidR)))
+      outcome `shouldEqual` Failed
+        ( ObligationRejected
+            { obligation: elsewhere
+            , basis: Required
+            , breach: LacksUnprovenAtSite keyK rigidR
+            }
+        )
+      obligationCount s.tentative.obligations `shouldEqual` 0
+
+    it "is settled where its site proves it, and not held" do
+      let
+        Tuple outcome s = runElab session (require assumingKNotInR (XLacks keyK (XVar rigidR)))
+      outcome `shouldEqual` Done unit
+      obligationCount s.tentative.obligations `shouldEqual` 0
+
+    it "is held where a flexible tail leaves it open" do
+      let
+        Tuple outcome s = runElab session (require elsewhereSite (XLacks keyK (XMeta metas.r)))
+      outcome `shouldEqual` Done unit
+      obligationCount s.tentative.obligations `shouldEqual` 1
+
+    it "reports a subject with no row normal form as a defect" do
+      let
+        Tuple outcome s = runElab session (require elsewhereSite (XLacks keyK tA))
+      outcome `shouldEqual` Broke (ObligationSubjectNotARow elsewhere (XNotARow tA))
+      obligationCount s.tentative.obligations `shouldEqual` 0
+
   describe "what an assignment owes, in one entry" do
     it "installs what a solved equation assigned" do
       let

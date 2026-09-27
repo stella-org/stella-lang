@@ -12,12 +12,15 @@
 module Stella.Compiler.Elaborate.Diagnostic
   ( Diagnostic(..)
   , Defect(..)
+  , Inadmissible(..)
   ) where
 
 import Prelude
 
 import Stella.Compiler.Elaborate.Context (Origin)
 import Stella.Compiler.Elaborate.Obligation (Basis, Breach)
+import Stella.Compiler.Elaborate.Pending (Job, PendingId)
+import Stella.Compiler.Elaborate.Type (MetaVar)
 import Stella.Compiler.Elaborate.Row (XRowError)
 import Stella.Compiler.Elaborate.Unify (UnifyError)
 import Data.Generic.Rep (class Generic)
@@ -36,6 +39,15 @@ data Diagnostic
   | ObligationBroken
       { equation :: Origin
       , obligation :: Origin
+      , basis :: Basis
+      , breach :: Breach
+      }
+  -- | A row constraint that does not hold where it is introduced: an assumption
+  -- | already unsatisfiable, or a requirement its site does not prove. No
+  -- | equation is involved, so the one place named is the site the constraint
+  -- | came from.
+  | ObligationRejected
+      { obligation :: Origin
       , basis :: Basis
       , breach :: Breach
       }
@@ -61,6 +73,35 @@ data Defect
   -- | is the site the obligation came from, that being where the constraint was
   -- | taken on.
   | ObligationSubjectNotARow Origin XRowError
+  -- | A postponement no assignment could ever wake, naming the job that raised
+  -- | it and the site that job stands at. What is wrong is whoever postponed —
+  -- | a synthesizer that read a type it did not zonk, or held a metavariable
+  -- | across an attempt — and not the program.
+  | PostponementInadmissible
+      { origin :: Origin
+      , job :: Job
+      , reason :: Inadmissible
+      }
+  -- | A job attempted under an identifier `pending` does not hold.
+  | PendingAbsent PendingId
+  -- | A job attempted while the scheduler still holds it: on the ready queue, or
+  -- | awaiting a metavariable. Attempting it would leave it to run again, or
+  -- | register it a second time.
+  | PendingStillScheduled PendingId
+
+-- | Why a postponement cannot be admitted, read against `Ψ` as the rollback
+-- | leaves it.
+data Inadmissible
+  -- | A postponement naming no metavariable at all.
+  = AwaitsNothing
+  -- | A metavariable `Ψ` does not hold. After the rollback this is also what a
+  -- | metavariable the attempt itself created is.
+  | AwaitsAbsent MetaVar
+  -- | A metavariable `Ψ` holds solved already, whose assignment has happened.
+  | AwaitsSolved MetaVar
+  -- | A postponement the mechanism raised, none of whose dependencies survived
+  -- | the rollback unsolved.
+  | NothingDurable
 
 derive instance Eq Diagnostic
 derive instance Generic Diagnostic _
@@ -72,4 +113,10 @@ derive instance Eq Defect
 derive instance Generic Defect _
 
 instance Show Defect where
+  show x = genericShow x
+
+derive instance Eq Inadmissible
+derive instance Generic Inadmissible _
+
+instance Show Inadmissible where
   show x = genericShow x

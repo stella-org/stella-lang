@@ -22,6 +22,7 @@ import Test.Stella.Compiler.TypedCore.Row as Row
 import Test.Stella.Compiler.Elaborate.Context as ElaborateContext
 import Test.Stella.Compiler.Elaborate.Elab as ElaborateElab
 import Test.Stella.Compiler.Elaborate.Obligation as ElaborateObligation
+import Test.Stella.Compiler.Elaborate.Run as ElaborateRun
 import Test.Stella.Compiler.Elaborate.Scheduler as ElaborateScheduler
 import Test.Stella.Compiler.Elaborate.Unify as Unify
 import Test.Stella.Compiler.TypedCore.RowProperties as RowProperties
@@ -58,3 +59,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateObligation.spec
   ElaborateScheduler.spec
   ElaborateElab.spec
+  ElaborateRun.spec

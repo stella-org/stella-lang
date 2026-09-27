@@ -32,6 +32,9 @@ module Stella.Compiler.Elaborate.Elab
   , postpone
   , transact
   , unify
+  , freshTypeMeta
+  , assume
+  , require
   , spendFuel
   , fuelRemaining
   ) where
@@ -40,16 +43,20 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.Elaborate.Context (XContext)
+import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Obligation (Breach(..), Obligation, ObligationStore, emptyStore, recheck)
+import Stella.Compiler.Elaborate.Kind (XKind)
+import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce, recheck)
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, Site)
 import Stella.Compiler.Elaborate.Row (XRowError)
 import Stella.Compiler.Elaborate.Scheduler (Scheduler, emptyScheduler, wake)
-import Stella.Compiler.Elaborate.Type (MetaVar)
-import Stella.Compiler.Elaborate.Unify (MetaContext, UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, substitute, unifyType)
+import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint, XType(..))
+import Stella.Compiler.Elaborate.Unify (MetaContext, UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, substitute, unifyType)
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
 import Data.Generic.Rep (class Generic)
+import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set (Set)
 import Data.Set as Set
@@ -350,6 +357,70 @@ invariantBreach = case _ of
   SidesShareKey _ -> Nothing
   DisjointUnprovenAtSite _ _ -> Nothing
   SiteFactsFailed _ -> Nothing
+
+-- | A type metavariable at the kind given, created under the context given.
+-- |
+-- | Its scope is the type and kind variables that context binds, which is what a
+-- | solution may mention. The name it takes comes from the supply in `Ψ`, which
+-- | a rollback restores.
+freshTypeMeta :: XContext -> XKind -> Elab XType
+freshTypeMeta context kind = Elab \s ->
+  let
+    scope =
+      { types: Map.keys context.tyVars
+      , kinds: context.kindVars
+      }
+    Tuple m metas = freshMeta { kind, scope } s.tentative.metas
+  in
+    Tuple (Done (XMeta m)) (s { tentative { metas = metas } })
+
+-- | Assume a row constraint at a site, returning the context that carries it.
+-- |
+-- | **Recording the assumption and holding it are one act.** The context is what
+-- | a site's facts are derived from, and the `Assumed` obligation is what refuses
+-- | an assignment making the constraint unsatisfiable, which no fact derived from
+-- | a flexible tail does. Where the constraint is already unsatisfiable the
+-- | assumption is rejected, and neither the context nor the store changes.
+assume :: Site -> XConstraint -> Elab XContext
+assume site constraint = do
+  let
+    context = Context.assume site.context constraint
+  take { constraint, basis: Assumed, context, origin: site.origin }
+  pure context
+
+-- | Require a row constraint of what the site builds.
+-- |
+-- | The obligation carries the site's context, and a rigid tail entering the
+-- | constraint has to be proved from that context's facts. Where it is not, the
+-- | requirement is rejected and the store does not change.
+require :: Site -> XConstraint -> Elab Unit
+require site constraint =
+  take { constraint, basis: Required, context: site.context, origin: site.origin }
+
+-- | Introduce an obligation, decided against what `Ψ` has solved now.
+-- |
+-- | A breach is classified as `broken` classifies one: a subject with no row
+-- | normal form is a defect, and anything else is a diagnostic naming the site
+-- | the constraint came from.
+take :: Obligation -> Elab Unit
+take obligation = Elab \s ->
+  case introduce (substitute s.tentative.metas) obligation s.tentative.obligations of
+    Left breach -> case invariantBreach breach of
+      Just err ->
+        Tuple (Broke (ObligationSubjectNotARow obligation.origin err)) s
+      Nothing ->
+        Tuple
+          ( Failed
+              ( ObligationRejected
+                  { obligation: obligation.origin
+                  , basis: obligation.basis
+                  , breach
+                  }
+              )
+          )
+          s
+    Right (Tuple _ obligations) ->
+      Tuple (Done unit) (s { tentative { obligations = obligations } })
 
 -- | What a unification is given.
 -- |
