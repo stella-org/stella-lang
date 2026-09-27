@@ -128,10 +128,15 @@ data BinderObject
 -- | site of the running job, is 0.
 newtype ScopeId = ScopeId P.Int
 
--- | A term, held without annotations, with the type it is claimed to have.
+-- | A term, held without annotations, with the type it is claimed to have, the
+-- | scope that type is kinded under, and the build scope the term was built in.
+-- | The last is what says where the term may be placed, as a type's says where
+-- | it may be used.
 type ExprObject =
   { term :: XExpr Unit
   , claimed :: XType
+  , scope :: KindingScope
+  , builtIn :: Maybe ScopeId
   }
 
 -- | What a slot holds. Objects are immutable: what changes is issued anew.

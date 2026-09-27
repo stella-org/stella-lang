@@ -120,12 +120,12 @@ kindOf handle = do
     AnyRow -> pure KindAnyRow
     ExactKind k -> kindView object.scope k
 
--- | The type a term is claimed to have, standing at `Type`.
+-- | The type a term is claimed to have, standing at `Type`, in the scope the
+-- | term was built in.
 typeOf :: Handle -> Elab Handle
 typeOf handle = do
   object <- resolveExpr handle
-  frame <- currentFrame
-  issueTypeAt root (siteScope frame) (Just XKType) object.claimed
+  issueTypeAt object.builtIn object.scope (Just XKType) object.claimed
 
 -- | The site's bindings, in ascending order of name, each with its type.
 localContext :: Elab (P.Array ContextEntry)
@@ -176,8 +176,7 @@ currentFrame = do
     Nothing -> break NoFrame
 
 -- | The root build scope, opened on the site of the running job. What the site
--- | gives — its bindings, its assumptions, the goal's type, a term's claimed
--- | type — is built in it.
+-- | gives — its bindings, its assumptions, the goal's type — is built in it.
 root :: Maybe ScopeId
 root = Just (ScopeId 0)
 

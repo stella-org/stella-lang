@@ -13,6 +13,9 @@ module Stella.Compiler.ForeignManifest
   ( Manifest
   , ManifestEntry
   , ManifestError(..)
+  , ResultKind(..)
+  , Signature
+  , ValueKind(..)
   , formatVersion
   , parse
   , entryFor
@@ -33,6 +36,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Show.Generic (genericShow)
 import Data.Traversable (traverse)
+import Data.Tuple (Tuple(..))
 import Foreign.Object as Object
 import Stella.Compiler.TypedCore.Name (ModuleName(..))
 
@@ -45,6 +49,37 @@ type Manifest =
   , entries :: Map ModuleName ManifestEntry
   }
 
+-- | How one value crosses the boundary.
+-- |
+-- | **A signature is derived from the declared type and written down because the
+-- | runtime cannot derive it.** A `.dmo` carries no type, so without this the
+-- | boundary would have to guess — and for a host value that is a number there is
+-- | nothing to guess from, `Int` and `Number` being one host representation and two
+-- | Stella values (D37).
+data ValueKind
+  = AsInt
+  | AsNumber
+  | AsChar
+  | AsString
+  | AsBoolean
+  | AsUnit
+  | AsOpaque
+
+-- | How a result crosses. **An action stands here and nowhere else**: `IO (IO τ)` is
+-- | not writable because it is not declarable (D44), and an argument of type `IO τ`
+-- | is excluded the same way.
+data ResultKind
+  = AsValue ValueKind
+  -- | What the action produces, `IO τ` losing its `τ` otherwise and the drive loop
+  -- | having nothing to make a value out of once the action has run.
+  | AsAction ValueKind
+
+-- | How each argument and the result of one foreign crosses.
+type Signature =
+  { params :: P.Array ValueKind
+  , result :: ResultKind
+  }
+
 -- | One module's implementations, as the target it was written for describes them.
 -- |
 -- | `payload` is the entry with `module` still in it, handed on whole: the handler
@@ -52,6 +87,7 @@ type Manifest =
 -- | and there needs to.
 type ManifestEntry =
   { module :: ModuleName
+  , foreigns :: Map P.String Signature
   , payload :: Json
   }
 
@@ -68,6 +104,13 @@ data ManifestError
   -- | depend on the order of writing**, which a hand-edited or half-updated file
   -- | cannot be trusted about.
   | ModuleTwice ModuleName
+  -- | One foreign named twice inside one entry, for the reason above read one level
+  -- | down: an array makes order meaningful where order means nothing.
+  | ForeignTwice ModuleName P.String
+  -- | A `kind` this reader does not implement. **Rejected as an unknown
+  -- | `formatVersion` is**: widening the kinds is what a later version does, and
+  -- | reading past one would be guessing what it meant.
+  | UnknownKind P.String
 
 -- | Read a manifest, for a runtime that is the target named.
 parse :: P.String -> P.String -> Either ManifestError Manifest
@@ -89,7 +132,44 @@ parse target source = do
   entry json = do
     fields <- object "a module entry" json
     name <- stringField fields "module"
-    pure { module: ModuleName name, payload: json }
+    let named = ModuleName name
+    raw <- arrayField fields "foreigns"
+    signatures <- traverse signature raw
+    foreigns <- foldM (insertForeign named) Map.empty signatures
+    pure { module: named, foreigns, payload: json }
+
+  insertForeign named acc (Tuple name sig)
+    | Map.member name acc = Left (ForeignTwice named name)
+    | otherwise = Right (Map.insert name sig acc)
+
+  signature json = do
+    fields <- object "a foreign entry" json
+    name <- stringField fields "name"
+    params <- traverse valueKind =<< arrayField fields "params"
+    result <- resultKind =<< field fields "result"
+    pure (Tuple name { params, result })
+
+  -- **the two grammars are separate so that the restriction is the format**: an
+  -- action stands in a result and what it produces is a plain value
+  resultKind json = case toString json of
+    Just spelled -> map AsValue (kindNamed spelled)
+    Nothing -> do
+      fields <- object "a result" json
+      map AsAction (valueKind =<< field fields "action")
+
+  valueKind json = do
+    spelled <- note (MalformedManifest "a kind is not a string") (toString json)
+    kindNamed spelled
+
+  kindNamed = case _ of
+    "int" -> Right AsInt
+    "number" -> Right AsNumber
+    "char" -> Right AsChar
+    "string" -> Right AsString
+    "boolean" -> Right AsBoolean
+    "unit" -> Right AsUnit
+    "opaque" -> Right AsOpaque
+    other -> Left (UnknownKind other)
 
   insert acc e
     | Map.member e.module acc = Left (ModuleTwice e.module)
@@ -126,6 +206,18 @@ arrayField :: Object.Object Json -> P.String -> Either ManifestError (P.Array Js
 arrayField fields name = do
   json <- field fields name
   note (MalformedManifest ("`" <> name <> "` is not an array")) (toArray json)
+
+derive instance Eq ValueKind
+derive instance Generic ValueKind _
+
+instance Show ValueKind where
+  show = genericShow
+
+derive instance Eq ResultKind
+derive instance Generic ResultKind _
+
+instance Show ResultKind where
+  show = genericShow
 
 derive instance Eq ManifestError
 derive instance Generic ManifestError _

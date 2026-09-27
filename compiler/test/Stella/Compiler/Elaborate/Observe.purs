@@ -19,7 +19,7 @@ import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.Elab (Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, issue, runElabIn, throw, withFrame)
 import Stella.Compiler.Elaborate.Handle (Handle, HandleClass(..), HandleError(..), HandleObject(..), ScopeId(..), SessionId(..))
 import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), KindingEnv, KindingFault(..))
+import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), KindingEnv, KindingFault(..), KindingScope)
 import Stella.Compiler.Elaborate.Observe (declsWithAttr, goalType, kindOf, localConstraints, localContext, lookupGlobal, normalizeRow, typeOf, viewType)
 import Stella.Compiler.Elaborate.Pending (Job(..), PendingId(..), Site, newGoal)
 import Stella.Compiler.Elaborate.Run (Attempt(..), attemptPendingWith)
@@ -122,6 +122,11 @@ observing s action k = case runElabIn session s (withFrame frame action) of
 
 outcomeOf :: forall a. SolverState -> Elab a -> Outcome a
 outcomeOf s action = fst (runElabIn session s (withFrame frame action))
+
+-- | The site's kind and type variables, which a type observed there is kinded
+-- | under.
+siteVariables :: KindingScope
+siteVariables = { kindVars: context.kindVars, tyVars: context.tyVars }
 
 -- | A handle to a type standing at the kind evidence given, under the site's
 -- | variables.
@@ -266,7 +271,7 @@ spec = describe "Elaborate.Observe" do
         running = frame { goal = Just { id: PendingId 0, goal } }
         action = do
           g <- issue (GoalObject { id: PendingId 0, goal })
-          e <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt })
+          e <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt, scope: siteVariables, builtIn: Just (ScopeId 0) })
           gv <- goalType g >>= viewType
           ev <- typeOf e >>= viewType
           pure (Tuple gv ev)
@@ -290,7 +295,7 @@ spec = describe "Elaborate.Observe" do
     it "refuses a handle of the wrong class rather than answering nothing" do
       let
         action = do
-          e <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt })
+          e <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt, scope: siteVariables, builtIn: Just (ScopeId 0) })
           Tuple e <$> viewType e
       case outcomeOf start action of
         Broke (InvalidHandle _ (HandleClassMismatch TypeClass)) -> pure unit

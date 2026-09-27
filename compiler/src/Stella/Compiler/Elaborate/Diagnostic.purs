@@ -107,10 +107,16 @@ data Defect
   -- | A session that has issued every generation it can. A generation is never
   -- | issued twice, which is what an old handle failing to match rests on.
   | GenerationsExhausted
-  -- | A builder asked for what cannot be built: a synthesizer's misuse of the
-  -- | kernel, not a candidate that does not fit, which is what `unify` inside a
-  -- | `transact` decides.
+  -- | A request over types asked for what it cannot do — a builder for what
+  -- | cannot be built, an equation or a goal over types no build scope admits or
+  -- | at kinds that cannot meet: a synthesizer's misuse of the kernel, not a
+  -- | candidate that does not fit, which is what `unify` inside a `transact`
+  -- | decides.
   | BuildRejected BuildError
+  -- | A metavariable handle naming what `Ψ` does not hold. A handle is issued for
+  -- | a metavariable `Ψ` holds and is invalidated by the rollback that could
+  -- | remove it, so this is an invariant of the host broken.
+  | MetaAbsent MetaVar
   -- | An attempt ending in success with binders still open, named by the scopes
   -- | their bodies are built in. What was built under one — an obligation proved
   -- | from its assumption, a job, a metavariable — would commit without the
@@ -170,7 +176,7 @@ data MalformedGoal
   -- | solution is narrowed with it.
   | TargetScopeWider TermMetaVar
 
--- | Why a builder refused.
+-- | Why a request over types refused.
 data BuildError
   -- | A type built in a scope that is neither the one given nor one of its
   -- | ancestors, or observed where no builder may use it: under a binder, or in a
@@ -201,6 +207,12 @@ data BuildError
   | UnknownScheme (Qualified Ident)
   -- | A scheme instantiated with another number of kinds than it binds.
   | SchemeArity (Qualified Ident) P.Int P.Int
+  -- | An equation between types whose kind evidence cannot meet: two exact kinds
+  -- | that differ, or a row against something that is not one. Every kind a
+  -- | handle holds is settled, so this is known before anything is unified.
+  | KindsDiffer Handle Handle
+  -- | A type that a goal is asked at which does not stand at `Type`.
+  | NotAType Handle
 
 -- | Why a postponement cannot be admitted, read against `Ψ` as the rollback
 -- | leaves it.

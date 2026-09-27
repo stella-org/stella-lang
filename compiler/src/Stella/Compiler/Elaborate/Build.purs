@@ -54,17 +54,17 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Catalog (lookupEntry)
+import Stella.Compiler.Elaborate.BuildScope (built, constraintIn, issueBuilt, kindIn, kinded, kindingScopeOf, rejected, requiredIn, siteOf, usableIn)
 import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Context (bindTyVar)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..))
-import Stella.Compiler.Elaborate.Elab (Elab, askEnv, assume, break, currentMetas, freshBinderName, freshScopeId, holdOpen, issue, postpone, release, Release(..), require, resolveBinder, resolveScope, resolveType)
-import Stella.Compiler.Elaborate.Handle (BinderObject(..), Handle, HandleObject(..), ScopeId(..), ScopeObject, TypeObject)
+import Stella.Compiler.Elaborate.Elab (Elab, Release(..), askEnv, assume, break, currentMetas, freshBinderName, freshScopeId, holdOpen, issue, postpone, release, resolveBinder, resolveScope, resolveType)
+import Stella.Compiler.Elaborate.Handle (BinderObject(..), Handle, HandleObject(..), ScopeId(..), ScopeObject)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Kinding (KindEvidence, KindingScope, checkConstraint, checkKind, quantifiable, settledIn, synthKind)
-import Stella.Compiler.Elaborate.Pending (Site)
+import Stella.Compiler.Elaborate.Kinding (checkKind, quantifiable)
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..), freeRigids, metasOf, xRowEntryKey)
 import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, lookupMeta, substitute)
-import Stella.Compiler.Elaborate.View (ConstraintView(..), KindView(..), PayloadView(..))
+import Stella.Compiler.Elaborate.View (ConstraintView, KindView, PayloadView(..))
 import Stella.Compiler.TypedCore (Ident, KindVar, Qualified, RowKey(..), TyName, TyVar(..))
 import Data.Array as Array
 import Data.Either (Either(..))
@@ -296,33 +296,6 @@ instantiateScheme scopeHandle name kinds = do
             instantiation = Map.fromFoldable (Array.zip entry.scheme.kindVars ks)
           built scope (substituteKindVars instantiation entry.scheme.body)
 
--- A type the scope may use: one built in it or in one of its ancestors.
-usableIn :: ScopeObject -> Handle -> Elab TypeObject
-usableIn scope handle = do
-  object <- resolveType handle
-  case object.builtIn of
-    Just id | id == scope.id || Set.member id scope.ancestors -> pure object
-    _ -> rejected (ScopeViolation handle)
-
--- Issue a type built in the scope, once the kinding judgement admits it.
-built :: ScopeObject -> XType -> Elab Handle
-built scope ty = kinded scope ty >>= issueBuilt scope
-
--- A type zonked, with the kind evidence the judgement gives it in the scope.
-kinded :: ScopeObject -> XType -> Elab { type :: XType, kind :: KindEvidence }
-kinded scope ty = do
-  env <- askEnv
-  metas <- currentMetas
-  let
-    zonked = substitute metas ty
-  case synthKind env.session.kinding (kindingScopeOf scope) metas zonked of
-    Left fault -> rejected (IllKinded fault)
-    Right kind -> pure { type: zonked, kind }
-
-issueBuilt :: ScopeObject -> { type :: XType, kind :: KindEvidence } -> Elab Handle
-issueBuilt scope typed =
-  issue (TypeObject { type: typed.type, kind: typed.kind, scope: kindingScopeOf scope, builtIn: Just scope.id })
-
 -- What closing a binder checks, whatever sort it is: that it was opened in this
 -- scope, that its body is built where its own scope or this one can use it, and
 -- that it is still open with nothing opened inside its body still open, which
@@ -348,21 +321,6 @@ closing scope binderHandle binder bodyHandle = do
     EnclosesOpen _ -> rejected (EnclosesOpenBinder binderHandle)
   pure body.type
 
--- The site an obligation built in the scope carries: the scope's context, which
--- holds every assumption opened around it, and the origin of the running job.
-siteOf :: ScopeObject -> Elab Site
-siteOf scope = do
-  env <- askEnv
-  case env.frame of
-    Nothing -> break NoFrame
-    Just frame -> pure { context: scope.context, origin: frame.site.origin }
-
--- Require what a row being built needs, of the scope it is built in.
-requiredIn :: ScopeObject -> XConstraint -> Elab Unit
-requiredIn scope constraint = do
-  site <- siteOf scope
-  require site constraint
-
 -- The element a key and a payload make, from types the scope may use.
 entryIn :: ScopeObject -> RowKey -> PayloadView -> Elab XRowEntry
 entryIn scope key = case _ of
@@ -378,42 +336,6 @@ entryIn scope key = case _ of
     _ -> rejected (EntryMismatch key)
   where
   typeIn h = _.type <$> usableIn scope h
-
--- A constraint from types the scope may use, judged well-formed there.
-constraintIn :: ScopeObject -> ConstraintView -> Elab XConstraint
-constraintIn scope view = do
-  constraint <- case view of
-    LacksView key row -> XLacks key <<< _.type <$> usableIn scope row
-    DisjointView l r -> XDisjoint <$> (_.type <$> usableIn scope l) <*> (_.type <$> usableIn scope r)
-  env <- askEnv
-  metas <- currentMetas
-  case checkConstraint env.session.kinding (kindingScopeOf scope) metas constraint of
-    Left fault -> rejected (IllKinded fault)
-    Right _ -> pure constraint
-
-kindingScopeOf :: ScopeObject -> KindingScope
-kindingScopeOf scope = { kindVars: scope.context.kindVars, tyVars: scope.context.tyVars }
-
--- A kind view as a kind the scope can write.
-kindIn :: ScopeObject -> KindView -> Elab XKind
-kindIn scope view = case toKind view of
-  Nothing -> rejected AnyRowAsKind
-  Just kind -> do
-    metas <- currentMetas
-    case settledIn (kindingScopeOf scope) metas kind of
-      Left fault -> rejected (IllKinded fault)
-      Right k -> pure k
-  where
-  toKind = case _ of
-    KindType -> Just XKType
-    KindEffect -> Just XKEffect
-    KindRow e -> Just (XKRow e)
-    KindFun a b -> XKFun <$> toKind a <*> toKind b
-    KindVar v -> Just (XKVar v)
-    KindAnyRow -> Nothing
-
-rejected :: forall a. BuildError -> Elab a
-rejected err = break (BuildRejected err)
 
 -- | Whether an unsolved metavariable's scope holds any of the variables given.
 mayMention :: MetaContext -> Set TyVar -> MetaVar -> P.Boolean
