@@ -1,0 +1,9 @@
+{
+  "name": "@stella-lang/workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "js-runtime",
+    "stella"
+  ]
+}
