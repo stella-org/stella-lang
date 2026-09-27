@@ -18,7 +18,6 @@ import Prelude
 
 import Prim as P
 
-import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Generic.Rep (class Generic)
 import Data.Maybe (Maybe(..))
