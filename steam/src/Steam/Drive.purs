@@ -18,21 +18,19 @@ import Prelude
 
 import Prim as P
 
-import Control.Promise (toAff)
 import Data.Either (Either(..))
 import Data.List (List(..), (:))
-import Effect.Aff (attempt)
 import Effect.Exception (message, try)
-import Run (AFF, Run, liftAff, liftEffect)
+import Run (Run, liftEffect)
 import Steam.Eval (Bug(..), EVAL, Failure(..), applyFunction)
 import Steam.Fault (Fault(..))
 import Steam.Module (Registry)
 import Steam.Value (ActionOutcome(..), IOValue(..), NativeAction, Value(..))
 import Run.Except as Except
-import Type.Row (type (+))
 
--- | Executing reaches the host and may wait, which evaluation never does.
-type DRIVE r = (AFF + EVAL r)
+-- | Executing reaches the host, which evaluation does not. **It does not wait**:
+-- | performing an action is calling it, and what it answers with it has already.
+type DRIVE r = EVAL r
 
 -- | Run an `IO` value to the value it produces, or to what ended it.
 -- |
@@ -74,12 +72,13 @@ execute registry initial = descend Nil initial
 -- a cons list and not an array: a chain is descended one `Bind` at a time, and an
 -- array would copy the whole of what is pending at every one of them
 
--- | Perform one action, awaiting it where it says it must be awaited.
+-- | Perform one action.
 -- |
--- | **Whether an action is asynchronous is the action's to say.** Nothing here asks
--- | whether what came back is thenable: such a test would misread a value the host
--- | gave a `then` field, and would make a synchronous action pay for an asynchrony
--- | it does not have.
+-- | **Performing an action returns, and nothing here waits.** Stella fixes no meaning
+-- | for asynchrony, so there is no form that asks the loop to wait and nothing tests
+-- | for a thenable: a promise a host hands back crosses as an opaque value like any
+-- | other
+-- | ([Open Questions](../../../docs/technical-references/99-Open-Questions/01-Open-Questions.md)).
 -- |
 -- | **A throw where the action is performed is caught**, as one from a foreign body
 -- | is: letting it escape would end the run outside the fault path, with the stack
@@ -92,15 +91,6 @@ perform action = do
     Left thrown -> faults (NativeThrew (message thrown))
     Right (ActionProduced value) -> pure value
     Right (ActionRefused reason) -> faults (NativeRefused reason)
-    Right (ActionAwaiting promise) -> do
-      resolved <- liftAff (attempt (toAff promise))
-      case resolved of
-        -- the asynchronous form of the same breach, reported apart from the throw
-        Left rejected -> faults (NativeRejected (message rejected))
-        Right (ActionProduced value) -> pure value
-        Right (ActionRefused reason) -> faults (NativeRefused reason)
-        -- a second wait is a body in breach rather than a chain to unroll
-        Right (ActionAwaiting _) -> faults NativeAwaitedTwice
   where
   faults :: forall a. Fault -> Run (DRIVE r) a
   faults = Except.throw <<< Faults

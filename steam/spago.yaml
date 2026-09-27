@@ -3,7 +3,6 @@ package:
   description: The Stella abstract machine
   dependencies:
     - aff
-    - aff-promise
     - argparse-basic
     - arrays
     - cli
@@ -34,7 +33,6 @@ package:
     main: Test.Steam
     dependencies:
       - aff
-      - datetime
       - node-buffer
       - node-child-process
       - node-execa
@@ -42,4 +40,3 @@ package:
       - partial
       - spec
       - spec-node
-      - transformers

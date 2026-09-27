@@ -945,8 +945,8 @@ expectCaptures loaded func given = do
 -- | letting one escape instead would end the run outside the fault path, with the
 -- | stack undiscarded and a session's promise to outlive a failed entry unkept
 -- | ([Abstract Machine](../../../docs/technical-references/07-Runtime/01-Abstract-Machine.md)).
--- | Only a synchronous throw is this boundary's: a body is synchronous, and what
--- | may be awaited is a native action the drive loop performs.
+-- | Only a throw at this moment is this boundary's: a native action a body returned
+-- | is called later, and a throw there is the drive loop's to answer.
 carryOutForeign :: forall r. Machine -> Foreign -> P.Array Value -> Run (EVAL r) State
 carryOutForeign machine carriedOutBy args = case carriedOutBy of
   ForeignOperation op -> carryOutOp machine op args

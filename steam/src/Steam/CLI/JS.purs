@@ -18,6 +18,8 @@ import Steam.CLI.Error (ErrorType, exitStatus, report)
 import Steam.CLI.Options as Options
 import Steam.CLI.Program (program)
 import Stella.CLI.Effect.FS (FS)
+import Stella.CLI.Effect.Foreigns (FOREIGNS)
+import Stella.CLI.Effect.Foreigns as Foreigns
 import Stella.CLI.Effect.FS as FS
 import Stella.CLI.Effect.Log (LOG)
 import Stella.CLI.Effect.Log as Log
@@ -27,11 +29,12 @@ import Type.Row (type (+))
 runNode
   :: forall a
    . Log.LoggerConfig
-  -> Run (LOG + FS + EXCEPT ErrorType + AFF + EFFECT + ()) a
+  -> Run (LOG + FS + FOREIGNS + EXCEPT ErrorType + AFF + EFFECT + ()) a
   -> Aff (Either ErrorType a)
 runNode loggerConfig m = m
   # Log.interpret (Node.jsConsoleHandler loggerConfig)
   # FS.interpret Node.nodeFsHandler
+  # Foreigns.interpret Node.nodeForeignsHandler
   # Except.runExcept
   # runBaseAff'
 

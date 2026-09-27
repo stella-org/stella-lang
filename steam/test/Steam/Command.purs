@@ -313,6 +313,7 @@ type Fixture =
   , main :: Dmo
   , other :: Dmo
   , badInit :: Dmo
+  , host :: Dmo
   }
 
 compiled :: Either P.String Fixture
@@ -335,7 +336,11 @@ compiled = case declareAnnotated primSignature ioModule of
                 Left err -> Left ("BadInit did not declare: " <> show err.error)
                 Right badDeclared -> do
                   badInit <- lowered =<< translated badInitModule badDeclared
-                  pure { io, string, main, other, badInit }
+                  case declareAnnotated primSignature hostModule of
+                    Left err -> Left ("Host did not declare: " <> show err.error)
+                    Right hostDeclared -> do
+                      host <- lowered =<< translated hostModule hostDeclared
+                      pure { io, string, main, other, badInit, host }
   where
   translated m declared = case translate noImports m declared of
     Left err -> Left (show err)
@@ -358,6 +363,23 @@ type Outcome =
 -- | it.
 invoke :: P.Array P.String -> Aff Outcome
 invoke = invokeCommand "run"
+
+-- | The same, run from another directory, which is what shows a relative specifier
+-- | is resolved against the manifest and not the working directory.
+invokeFrom :: P.String -> P.Array P.String -> Aff Outcome
+invokeFrom cwd args = do
+  result <- execa "node" ([ "index.dev.js", "run" ] <> args) (_ { cwd = Just cwd })
+    >>= _.getResult
+  pure
+    { status: case result.exit of
+        Normally code -> code
+        BySignal _ -> -1
+    , err: result.stderr
+    }
+
+-- | A path as it reads from inside `steam`.
+pathOfIn :: P.String -> P.String
+pathOfIn name = ".test-dmo/" <> name <> ".dmo"
 
 invokeCommand :: P.String -> P.Array P.String -> Aff Outcome
 invokeCommand command args = do
@@ -390,6 +412,25 @@ writeModules = case compiled of
     write "BadInit" dmos.badInit
     write "Bug" bugModule
     write "BugInit" bugInitModule
+    write "Host" dmos.host
+    writeText (dir <> "/impl.mjs") implementations
+    writeText (dir <> "/refusing.mjs") refusingImpl
+    writeText (manifestPath "refusing") (manifestFor "./refusing.mjs")
+    writeText (dir <> "/not-a-function.mjs") notAFunction
+    writeText (dir <> "/wrong-export.mjs") wrongExport
+    writeText (manifestPath "good") (manifestFor "./impl.mjs")
+    writeText (manifestPath "missing-module") (manifestFor "./nowhere.mjs")
+    writeText (manifestPath "not-a-function") (manifestFor "./not-a-function.mjs")
+    writeText (manifestPath "wrong-export") (manifestFor "./wrong-export.mjs")
+    writeText (manifestPath "twice")
+      """{ "formatVersion": 1, "target": "javascript",
+           "modules": [ { "module": "Host", "specifier": "./impl.mjs" }
+                      , { "module": "Host", "specifier": "./impl.mjs" } ] }"""
+    writeText (manifestPath "other-target")
+      """{ "formatVersion": 1, "target": "wasm", "modules": [] }"""
+    writeText (manifestPath "later-version")
+      """{ "formatVersion": 2, "target": "javascript", "modules": [] }"""
+    writeText (manifestPath "garbage") "{ not json"
     -- a file that is not bytecode, which is a different thing to be told
     buffer <- liftEffect (Buffer.fromString "not a dmo" UTF8)
     FS.writeFile (pathOf "Garbage") buffer
@@ -403,6 +444,70 @@ writeModules = case compiled of
 -- | The modules in the order an import admits.
 inOrder :: P.Array P.String
 inOrder = [ pathOf "Base.IO", pathOf "Base.String", pathOf "Main" ]
+
+-- Manifests --------------------------------------------------------------------------
+
+-- | `module Host where foreign greet : Int -> Int`, a module whose foreign nothing
+-- | but a manifest can supply.
+hostModuleName :: ModuleName
+hostModuleName = ModuleName "Host"
+
+hostModule :: Module P.Int
+hostModule =
+  { annotation: 0
+  , name: hostModuleName
+  , imports: []
+  , exports: []
+  , decls:
+      [ DeclForeign 1
+          { name: Ident "greet"
+          , scheme: monoScheme (pureFn (TCon intTy []) (TCon intTy []))
+          , attributes: []
+          }
+      , DeclNonRec 2
+          { name: Ident "greeted"
+          , scheme: monoScheme (TCon intTy [])
+          , value: App 0 (Global 0 (Qualified hostModuleName (Ident "greet")) [])
+              (Lit 0 (LitInt 1))
+          , attributes: []
+          }
+      ]
+  }
+
+-- | The implementations that module's manifest points at, written where a manifest
+-- | would point at them.
+implementations :: P.String
+implementations =
+  "export const greet = (args) =>\n\
+  \  args[0] === 1 ? args[0] : ({ [Symbol.for('stella.refuse')]: 'wrong argument' });\n"
+
+-- | One that refuses, which is what an adapter does where it cannot produce a value.
+refusingImpl :: P.String
+refusingImpl =
+  "export const greet = (_args) => ({ [Symbol.for('stella.refuse')]: 'nothing to give' });\n"
+
+-- | An export that is reached and is not a function.
+notAFunction :: P.String
+notAFunction = "export const greet = 41;\n"
+
+-- | An export that is not there.
+wrongExport :: P.String
+wrongExport = "export const hello = (args) => args[0];\n"
+
+manifestFor :: P.String -> P.String
+manifestFor specifier =
+  """{ "formatVersion": 1, "target": "javascript",
+       "modules": [ { "module": "Host", "specifier": """"
+    <> specifier
+    <> """" } ] }"""
+
+writeText :: P.String -> P.String -> Aff Unit
+writeText path text = do
+  buffer <- liftEffect (Buffer.fromString text UTF8)
+  FS.writeFile path buffer
+
+manifestPath :: P.String -> P.String
+manifestPath name = dir <> "/" <> name <> ".json"
 
 spec :: Spec Unit
 spec = describe "the steam run command" do
@@ -514,6 +619,137 @@ spec = describe "the steam run command" do
         [ pathOf "Base.IO", pathOf "Base.String", pathOf "BadInit", pathOf "Main" ]
       bug.status `shouldEqual` 3
       fault.status `shouldEqual` 1
+
+  describe "the foreign manifest" do
+
+    -- what the manifest is for: a foreign nothing else can supply
+    it "supplies a foreign the interpreter does not claim" do
+      outcome <- invoke
+        [ pathOf "Host"
+        , "--entry"
+        , "Host"
+        , "--entry-global"
+        , "greeted"
+        , "--manifest"
+        , manifestPath "good"
+        ]
+      -- `greeted` is not an action, so the run stops there — after the table was
+      -- assembled and the module loaded, which is what this is about
+      outcome.status `shouldEqual` 1
+      String.contains (String.Pattern "not an action") outcome.err
+        `shouldEqual` true
+
+    -- the adapter refuses unless it was handed `1`, so getting past initialization
+    -- is what shows the argument crossed. `args` holds every argument at once
+    it "hands the arguments to the adapter, all at once" do
+      outcome <- invoke
+        [ pathOf "Host"
+        , "--entry"
+        , "Host"
+        , "--entry-global"
+        , "greeted"
+        , "--manifest"
+        , manifestPath "good"
+        ]
+      String.contains (String.Pattern "wrong argument") outcome.err
+        `shouldEqual` false
+
+    -- a refusal is a fault the ABI admits, and needs no exception to report it
+    it "makes a refusal a fault, with the reason the adapter gave" do
+      outcome <- invoke
+        [ pathOf "Host"
+        , "--entry"
+        , "Host"
+        , "--entry-global"
+        , "greeted"
+        , "--manifest"
+        , manifestPath "refusing"
+        ]
+      -- reached during initialization, so the program never started
+      outcome.status `shouldEqual` 1
+      String.contains (String.Pattern "nothing to give") outcome.err
+        `shouldEqual` true
+
+    it "refuses the module where no manifest was given" do
+      outcome <- invoke [ pathOf "Host", "--entry", "Host" ]
+      outcome.status `shouldEqual` 1
+      -- the foreign is what was unmet, not the file that was not given
+      String.contains (String.Pattern "greet") outcome.err `shouldEqual` true
+
+    it "runs a program over Base alone with no manifest at all" do
+      outcome <- invoke inOrder
+      outcome.status `shouldEqual` 0
+
+    it "refuses a module the manifest names that cannot be reached" do
+      outcome <- invoke
+        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "missing-module" ]
+      outcome.status `shouldEqual` 1
+      String.contains (String.Pattern "Cannot reach") outcome.err `shouldEqual` true
+
+    it "refuses an export that is not there, naming what was looked for" do
+      outcome <- invoke
+        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "wrong-export" ]
+      outcome.status `shouldEqual` 1
+      String.contains (String.Pattern "have no `greet`") outcome.err
+        `shouldEqual` true
+
+    -- the one shape that can be checked, a `.dmo` carrying no type
+    it "refuses an export that is reached and is not a function" do
+      outcome <- invoke
+        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "not-a-function" ]
+      outcome.status `shouldEqual` 1
+      String.contains (String.Pattern "is not a function") outcome.err
+        `shouldEqual` true
+
+    -- first-wins and last-wins both make the meaning depend on the order of writing
+    it "rejects a manifest naming one module twice" do
+      outcome <- invoke
+        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "twice" ]
+      outcome.status `shouldEqual` 1
+      String.contains (String.Pattern "ModuleTwice") outcome.err `shouldEqual` true
+
+    -- a manifest for another target describes a machine that is not this one, so it
+    -- is rejected rather than read past
+    it "rejects a manifest written for another target" do
+      outcome <- invoke
+        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "other-target" ]
+      outcome.status `shouldEqual` 1
+      String.contains (String.Pattern "WrongTarget") outcome.err `shouldEqual` true
+
+    it "rejects a formatVersion it does not implement" do
+      outcome <- invoke
+        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "later-version" ]
+      outcome.status `shouldEqual` 1
+      String.contains (String.Pattern "UnknownFormatVersion") outcome.err
+        `shouldEqual` true
+
+    it "rejects a manifest that does not read as one" do
+      outcome <- invoke
+        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "garbage" ]
+      outcome.status `shouldEqual` 1
+      String.contains (String.Pattern "Not readable as a foreign manifest") outcome.err
+        `shouldEqual` true
+
+    -- a relative specifier is resolved against the manifest's directory, so the same
+    -- manifest reaches the same module from anywhere
+    it "resolves a relative specifier against the manifest and not the directory" do
+      outcome <- invokeFrom "steam"
+        [ pathOfIn "Host"
+        , "--entry"
+        , "Host"
+        , "--entry-global"
+        , "greeted"
+        , "--manifest"
+        , ".test-dmo/good.json"
+        ]
+      -- reached and loaded: the failure is the entry not being an action
+      String.contains (String.Pattern "not an action") outcome.err
+        `shouldEqual` true
+
+    -- nothing is reached for a module no declaration asks about
+    it "reaches nothing for a manifest entry the program does not use" do
+      outcome <- invoke (inOrder <> [ "--manifest", manifestPath "missing-module" ])
+      outcome.status `shouldEqual` 0
 
   describe "the session mode" do
 

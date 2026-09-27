@@ -59,7 +59,6 @@ import Data.Map (Map)
 import Data.Maybe (Maybe(..))
 import Data.Show.Generic (genericShow)
 import Data.Tuple (Tuple(..))
-import Control.Promise (Promise)
 import Effect (Effect)
 import Effect.Uncurried (EffectFn1)
 import Effect.Ref (Ref)
@@ -139,8 +138,8 @@ ioEntries = [ IOPureEntry, IOBindEntry ]
 -- |
 -- | **Uncurried and synchronous.** A saturated call hands it every argument at
 -- | once, which is what the `FFI` instruction does; currying belongs to the
--- | declared type, and a partial application is the interpreter's to hold. What may
--- | be awaited is a native action, and performing one belongs to the drive loop
+-- | declared type, and a partial application is the interpreter's to hold. A native
+-- | action it returns is called later, by the drive loop, and synchronously there
 -- | ([Abstract Machine](../../../docs/technical-references/07-Runtime/01-Abstract-Machine.md)).
 -- |
 -- | It is an `EffectFn1` and not `Array Value -> Effect ForeignOutcome`, and the
@@ -186,20 +185,15 @@ type NativeAction = Effect ActionOutcome
 
 -- | What performing an action answers with.
 -- |
--- | **Whether an action is asynchronous is the action's to say.** A form carries it,
--- | so nothing asks whether a returned value is thenable: a test like that would
--- | misread a value the host gave a `then` field, and would make a synchronous
--- | action pay for an asynchrony it does not have.
--- |
--- | A refusal is reachable on both paths, which is what the third form holding an
--- | `ActionOutcome` again is for. **A resolved outcome is not `ActionAwaiting`
--- | again**: one that awaits twice is a body in breach rather than a chain the loop
--- | unrolls, and `IOBind` already serves what it would have been for
--- | ([Abstract Machine](../../../docs/technical-references/07-Runtime/01-Abstract-Machine.md)).
+-- | **Performing an action returns, and nothing here waits.** Stella fixes no
+-- | meaning for asynchrony, so there is no form that asks the loop to wait and
+-- | nothing tests for a thenable: a promise a host hands back is an opaque value
+-- | like any other
+-- | ([Abstract Machine](../../../docs/technical-references/07-Runtime/01-Abstract-Machine.md),
+-- | [Open Questions](../../../docs/technical-references/99-Open-Questions/01-Open-Questions.md)).
 data ActionOutcome
   = ActionProduced Value
   | ActionRefused P.String
-  | ActionAwaiting (Promise ActionOutcome)
 
 data Value
   -- | Always an int32 (D37).

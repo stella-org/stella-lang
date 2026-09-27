@@ -5,6 +5,7 @@ import Prelude
 import ArgParse.Basic (ArgParser)
 import ArgParse.Basic as ArgParser
 import Data.Array as Array
+import Data.Maybe (Maybe)
 import Data.Either (Either)
 import Data.Generic.Rep (class Generic)
 import Data.Show.Generic (genericShow)
@@ -21,6 +22,10 @@ import Stella.Compiler.TypedCore (Ident(..), ModuleName(..))
 -- | the same command line would mean different things for different sets of files.
 type RunOptions =
   { entry :: ModuleName
+  -- | The manifest saying where the implementations of the foreigns this program
+  -- | declares are. **Absent is not an error**: a program over `Base` alone declares
+  -- | nothing for one to say.
+  , manifest :: Maybe String
   , entryGlobal :: Ident
   -- | The `.dmo` files, in dependency order. **Nothing here is sorted**: they are
   -- | loaded left to right, and a module whose imports are not already loaded is
@@ -79,6 +84,10 @@ options =
           "Name of the entry point within that module"
           # map Ident
           # ArgParser.default (Ident "main")
+    , manifest:
+        ArgParser.argument [ "--manifest" ]
+          "Where the foreign manifest is"
+          # ArgParser.optional
     , modules:
         ArgParser.anyNotFlag "MODULE.dmo" "Bytecode files, in dependency order"
           # ArgParser.many

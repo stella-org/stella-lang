@@ -16,8 +16,6 @@ import Prelude
 
 import Prim as P
 
-import Control.Monad.Error.Class (throwError)
-import Control.Promise (Promise, fromAff)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
@@ -25,8 +23,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
-import Data.Time.Duration (Milliseconds(..))
-import Effect.Aff (Aff, delay)
+import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
 import Effect.Exception (error, throwException)
 import Effect.Uncurried (mkEffectFn1)
@@ -38,7 +35,7 @@ import Steam.Drive (execute)
 import Steam.Eval (Bug(..), Failure(..), enter)
 import Steam.Fault (Fault(..))
 import Steam.Module (Loaded, Registry, prepare)
-import Steam.Value (ActionOutcome(..), Callee(..), Continuation(..), CtorId(..), Foreign(..), ForeignOutcome(..), IOEntry(..), IOValue(..), KeyId(..), MarkerKind(..), ModuleId(..), NativeAction, StackEntry(..), Value(..))
+import Steam.Value (ActionOutcome(..), Callee(..), Continuation(..), CtorId(..), Foreign(..), ForeignOutcome(..), IOEntry(..), IOValue(..), KeyId(..), MarkerKind(..), ModuleId(..), NativeAction, Opaque, StackEntry(..), Value(..))
 import Stella.Compiler.Bytecode.Instr (ConstIx(..), ForeignIx(..), FuncIx(..), Function, Instr(..), Node, PrimIx(..), Reg(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Constant(..))
 import Stella.Compiler.MiddleEnd.Rep (Rep(..))
@@ -136,31 +133,19 @@ continuation i = do
 
 -- Native actions ---------------------------------------------------------------------
 
+foreign import aPromise :: Opaque
+
+foreign import isThePromise :: Opaque -> P.Boolean
+
 -- | An action done when it returns, recording that it ran.
 produces :: Ref (P.Array P.String) -> P.String -> Value -> NativeAction
 produces trail name value = do
   Ref.modify_ (_ <> [ name ]) trail
   pure (ActionProduced value)
 
--- | One that says it must be awaited.
--- |
--- | **It records inside the `Aff` and not before returning the promise.** Recording
--- | first would mark the action as having run at the moment it was performed, and
--- | an executor that never awaited would produce the same trail — which is the
--- | thing the case exists to tell apart.
--- |
--- | **The delay is what makes it a test.** `fromAff` starts the computation, and one
--- | with no asynchronous boundary would run to its end before the promise was even
--- | handed back — so the recording would happen whether the loop awaited or not.
--- | Yielding first puts it after the current turn, which only an executor that
--- | actually waits will see before the next action.
-awaits :: Ref (P.Array P.String) -> P.String -> Value -> NativeAction
-awaits trail name value = do
-  promise <- fromAff do
-    delay (Milliseconds 0.0)
-    liftEffect (Ref.modify_ (_ <> [ name ]) trail)
-    pure (ActionProduced value)
-  pure (ActionAwaiting promise)
+-- | An action answering with a promise, which the loop neither awaits nor inspects.
+givesPromise :: NativeAction
+givesPromise = pure (ActionProduced (VOpaque aPromise))
 
 -- | A continuation that ignores its argument and hands back an `IO` holding a
 -- | native action, which is what lets **one** chain carry two actions.
@@ -201,16 +186,6 @@ refuses = pure (ActionRefused "nothing to give")
 throws :: NativeAction
 throws = throwException (error "thrown where it was performed")
 
-rejects :: NativeAction
-rejects = map ActionAwaiting (fromAff (throwError (error "rejected while awaited")))
-
--- | An awaited outcome that is itself awaiting, which the contract forbids.
-awaitsTwice :: NativeAction
-awaitsTwice = do
-  inner <- fromAff (pure (ActionProduced (VInt 1)))
-  outer <- fromAff (pure (ActionAwaiting inner)) :: Effect (Promise ActionOutcome)
-  pure (ActionAwaiting outer)
-
 -- Running ------------------------------------------------------------------------------
 
 runs :: IOValue -> Aff (Either Failure Value)
@@ -219,6 +194,7 @@ runs io = runBaseAff' (Except.runExcept (execute registry io))
 -- | What a run left, as far as a case reads it.
 data Held
   = AnInt P.Int
+  | ThePromise
   | Elsewhere
 
 derive instance Eq Held
@@ -226,11 +202,13 @@ derive instance Eq Held
 instance Show Held where
   show = case _ of
     AnInt n -> "AnInt " <> show n
+    ThePromise -> "ThePromise"
     Elsewhere -> "Elsewhere"
 
 held :: Either Failure Value -> Either Failure Held
 held = map case _ of
   VInt n -> AnInt n
+  VOpaque o | isThePromise o -> ThePromise
   _ -> Elsewhere
 
 spec :: Spec Unit
@@ -249,6 +227,18 @@ spec = describe "Steam.Drive" do
       held <$> runs (IONative (produces trail "one" (VInt 3)))
         >>= (_ `shouldEqual` Right (AnInt 3))
       liftEffect (Ref.read trail) >>= (_ `shouldEqual` [ "one" ])
+
+    -- **the case that catches a thenable test being reintroduced.** Stella fixes no
+    -- meaning for asynchrony, so a promise is an opaque host value like any other;
+    -- a loop that awaited would answer with what it resolved to, or fault
+    it "answers with a promise as it stands, and does not await it" do
+      held <$> runs (IONative givesPromise) >>= (_ `shouldEqual` Right ThePromise)
+
+    -- the same value reaching the function of a `Bind`, which is where a loop that
+    -- waited between the two steps would show itself
+    it "hands a promise to what is bound after it, still unawaited" do
+      held <$> runs (IOBind (IONative givesPromise) papOverPure)
+        >>= (_ `shouldEqual` Right ThePromise)
 
     it "applies the function of a Bind to what the inner IO produced" do
       wrap <- liftEffect (continuation 0)
@@ -316,16 +306,6 @@ spec = describe "Steam.Drive" do
       _ <- runs chain
       liftEffect (Ref.read trail) >>= (_ `shouldEqual` [ "first", "second" ])
 
-    -- the recording happens inside the `Aff`, so a loop that did not await would
-    -- reach the second action first and record `[ after, awaited ]`
-    it "awaits an action before running the one bound after it" do
-      trail <- liftEffect (Ref.new [])
-      let
-        after = continuationGiving (produces trail "after" (VInt 2))
-        chain = IOBind (IONative (awaits trail "awaited" (VInt 1))) after
-      _ <- runs chain
-      liftEffect (Ref.read trail) >>= (_ `shouldEqual` [ "awaited", "after" ])
-
     -- a chain of three, so that a loop popping its pending functions in the wrong
     -- order is caught as well as one running them at the wrong time
     it "keeps the order over a chain of three actions" do
@@ -355,14 +335,6 @@ spec = describe "Steam.Drive" do
     it "faults where an action throws, and reports it apart from a refusal" do
       held <$> runs (IONative throws)
         >>= (_ `shouldEqual` Left (Faults (NativeThrew "thrown where it was performed")))
-
-    it "faults where what it awaited rejects, and reports that apart again" do
-      held <$> runs (IONative rejects)
-        >>= (_ `shouldEqual` Left (Faults (NativeRejected "rejected while awaited")))
-
-    it "faults where a resolved outcome is awaiting again" do
-      held <$> runs (IONative awaitsTwice)
-        >>= (_ `shouldEqual` Left (Faults NativeAwaitedTwice))
 
     -- the value the pending continuations would have produced is not what comes
     -- back: they are discarded with the stack the fault threw away

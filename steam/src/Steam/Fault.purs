@@ -43,18 +43,12 @@ data Fault
   -- | ([Abstract Machine](../../../docs/technical-references/07-Runtime/01-Abstract-Machine.md)).
   | ForeignThrew (Qualified Ident) P.String
   -- | A native action that refused, as the reason it gave. This is the failure the
-  -- | ABI admits an action may report, on the synchronous path and on the awaited
-  -- | one alike.
+  -- | ABI admits an action may report.
   | NativeRefused P.String
-  -- | A native action in breach of its contract, which has three forms. Each is
-  -- | reported apart: they propagate alike, and a reader chasing one should not be
-  -- | shown another
+  -- | A native action in breach of its contract, having thrown where it should have
+  -- | refused. **Kept apart from a refusal**, for the reason `ForeignThrew` is
   -- | ([Abstract Machine](../../../docs/technical-references/07-Runtime/01-Abstract-Machine.md)).
   | NativeThrew P.String
-  | NativeRejected P.String
-  -- | An awaited outcome that was itself awaiting. `IOBind` already serves what a
-  -- | second wait would have been for, so the loop does not unroll one.
-  | NativeAwaitedTwice
 
 derive instance Eq Fault
 derive instance Generic Fault _

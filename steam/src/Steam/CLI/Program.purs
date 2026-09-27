@@ -24,22 +24,27 @@ import Run.Except (EXCEPT)
 import Run.Except as Except
 import Steam.CLI.Error (ErrorType(..))
 import Steam.CLI.Options (Command(..), Options, RunOptions)
+import Data.String as String
 import Steam.Drive (execute)
-import Steam.Foreign (ForeignTable, emptyTable)
+import Stella.Compiler.ForeignManifest (Manifest)
+import Stella.Compiler.ForeignManifest as Manifest
+import Steam.CLI.Assemble as Assemble
+import Steam.Foreign (ForeignTable)
 import Steam.Load (Store, emptyStore, globalNamed, load, moduleNamed, noIdentities, registryOf)
 import Steam.Load as Load
 import Steam.Value (IOValue, Value(..))
-import Stella.CLI.Effect.FS (FS, readBytes)
+import Stella.CLI.Effect.FS (FS, readBytes, readText)
+import Stella.CLI.Effect.Foreigns (FOREIGNS)
 import Stella.CLI.Effect.Log (LOG)
 import Stella.Compiler.Bytecode (Dmo, decode)
 import Stella.Compiler.TypedCore.Name (Qualified(..))
 import Type.Row (type (+))
 
-type SteamEffects = (LOG + FS + EXCEPT ErrorType + AFF + EFFECT + ())
+type SteamEffects = (LOG + FS + FOREIGNS + EXCEPT ErrorType + AFF + EFFECT + ())
 
 program :: Options -> Run SteamEffects Unit
 program opts = case opts.command of
-  Run runOptions -> runProgram emptyTable runOptions
+  Run runOptions -> runProgram runOptions
   -- **a refusal and not a message**: a command that printed a failure and exited
   -- zero would tell a reader one thing and a shell another
   Session _ -> Except.throw SessionUnavailable
@@ -48,9 +53,16 @@ program opts = case opts.command of
 -- |
 -- | The table is a parameter rather than something built here, which is what lets
 -- | the application above reach this with one it assembled.
-runProgram :: ForeignTable -> RunOptions -> Run SteamEffects Unit
-runProgram table options = do
+runProgram :: RunOptions -> Run SteamEffects Unit
+runProgram options = do
   modules <- traverseA readModule options.modules
+  manifest <- readManifest options.manifest
+  -- a run is given every module at once, so everything its declarations ask for is
+  -- reached before the first load; a session reaches per arrival instead (D43)
+  assembled <- Assemble.tableFor (baseOf options.manifest) manifest modules
+  table <- case assembled of
+    Left err -> Except.throw (ForeignsUnreachable err)
+    Right table -> pure table
   store <- loadAll table modules
   action <- entryPoint store options
   outcome <- Except.runExcept (execute (registryOf store) action)
@@ -132,3 +144,38 @@ traverseA
 traverseA f = Array.foldM step []
   where
   step acc a = map (\b -> acc <> [ b ]) (f a)
+
+-- | The manifest, where one was named.
+-- |
+-- | **Absent is not an error.** A program over `Base` alone declares no foreign
+-- | anything supplies, so there is nothing for a manifest to say; a program that
+-- | does declare one and was given no manifest is refused where that module loads,
+-- | naming the foreign rather than the missing file.
+readManifest
+  :: forall r
+   . Maybe P.String
+  -> Run (FS + EXCEPT ErrorType + r) (Maybe Manifest)
+readManifest = case _ of
+  Nothing -> pure Nothing
+  Just path -> do
+    read <- readText path
+    case read of
+      Left reason -> Except.throw (FileUnreadable path reason)
+      Right source -> case Manifest.parse thisTarget source of
+        Left err -> Except.throw (ManifestRefused path err)
+        Right manifest -> pure (Just manifest)
+
+-- | The target this runtime is. A manifest naming another describes a machine that
+-- | is not this one, and is rejected rather than read past.
+thisTarget :: P.String
+thisTarget = "javascript"
+
+-- | The directory a manifest's relative parts are resolved against, which is the
+-- | directory the manifest itself was read from — the one base that makes a file
+-- | mean the same thing wherever it is read from.
+baseOf :: Maybe P.String -> P.String
+baseOf = case _ of
+  Nothing -> "."
+  Just path -> case String.lastIndexOf (String.Pattern "/") path of
+    Nothing -> "."
+    Just i -> String.take i path

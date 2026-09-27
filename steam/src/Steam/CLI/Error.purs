@@ -21,7 +21,9 @@ import Fmt (fmt)
 import Prim as P
 
 import Steam.Eval (Bug, Failure(..))
+import Steam.CLI.Assemble (AssembleError(..))
 import Steam.Load (LoadError)
+import Stella.Compiler.ForeignManifest (ManifestError)
 import Stella.Compiler.Bytecode (DecodeError)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..))
 
@@ -43,6 +45,13 @@ data ErrorType
   -- | execute. What it does hold is not reported: a `.dmo` carries no type, and
   -- | naming a class here would suggest one was checked.
   | EntryNotAnAction (Qualified Ident)
+  -- | A manifest that does not read as one, as the path and what was wrong. **It
+  -- | fails once and before anything else**: it is read when the command starts, so
+  -- | this is a failure to start rather than a refusal of one module.
+  | ManifestRefused P.String ManifestError
+  -- | Implementations the manifest named that could not be reached, or that were
+  -- | reached and were not what a foreign needs.
+  | ForeignsUnreachable AssembleError
   -- | The entry point ran and failed.
   | RunFailed Failure
   -- | The long-lived mode, which is not built yet. **A refusal and not a notice**:
@@ -65,6 +74,8 @@ exitStatus = case _ of
   NoEntryModule _ -> 1
   NoEntryGlobal _ -> 1
   EntryNotAnAction _ -> 1
+  ManifestRefused _ _ -> 1
+  ForeignsUnreachable _ -> 1
   SessionUnavailable -> 1
   RunFailed _ -> 2
 
@@ -100,6 +111,13 @@ report = case _ of
     fmt @"{name} is not an action, so there is nothing to run."
       { name: qualified name }
 
+  ManifestRefused path err ->
+    fmt @"Not readable as a foreign manifest: {path}\n  {reason}"
+      { path, reason: show err }
+
+  ForeignsUnreachable err ->
+    unreachable err
+
   RunFailed failure ->
     describe failure
 
@@ -126,3 +144,20 @@ qualified (Qualified m (Ident name)) = unModule m <> "." <> name
 
 unModule :: ModuleName -> P.String
 unModule (ModuleName name) = name
+
+-- | **What a reader is told is the module and the export**, which is what a manifest
+-- | or a host module has to be fixed by. The specifier is not named: what one is
+-- | belongs to the target, and a reader who wrote the manifest has it to hand.
+unreachable :: AssembleError -> P.String
+unreachable = case _ of
+  ModuleUnreachable name reason ->
+    fmt @"Cannot reach the implementations of {name}: {reason}"
+      { name: unModule name, reason }
+
+  NoSuchExport name export ->
+    fmt @"The implementations of {name} have no `{export}`.\n  A foreign is supplied by the export of its own name."
+      { name: unModule name, export }
+
+  ExportNotCallable name export ->
+    fmt @"`{export}` in the implementations of {name} is not a function."
+      { name: unModule name, export }

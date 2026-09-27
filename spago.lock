@@ -64,7 +64,6 @@
         "core": {
           "dependencies": [
             "aff",
-            "aff-promise",
             "argparse-basic",
             "arrays",
             "cli",
@@ -94,15 +93,13 @@
         "test": {
           "dependencies": [
             "aff",
-            "datetime",
             "node-buffer",
             "node-child-process",
             "node-execa",
             "node-fs",
             "partial",
             "spec",
-            "spec-node",
-            "transformers"
+            "spec-node"
           ]
         }
       },
