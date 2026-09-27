@@ -21,6 +21,7 @@ import Stella.Compiler.Elaborate.Context (Origin)
 import Stella.Compiler.Elaborate.Obligation (Basis, Breach)
 import Stella.Compiler.Elaborate.Pending (Job, PendingId)
 import Stella.Compiler.Elaborate.Scheduler (Invariant)
+import Stella.Compiler.Elaborate.TermMeta (TermError)
 import Stella.Compiler.Elaborate.Type (MetaVar)
 import Stella.Compiler.Elaborate.Row (XRowError)
 import Stella.Compiler.Elaborate.Unify (UnifyError)
@@ -53,6 +54,9 @@ data Diagnostic
       , basis :: Basis
       , breach :: Breach
       }
+  -- | A term metavariable's solution that mentions what its scope excludes, or
+  -- | would contain the metavariable itself, reported at the site assigning it.
+  | TermAssignmentFailed Origin TermError
 
 -- | Something the mechanism, or whoever drove it, got wrong.
 -- |
@@ -75,6 +79,9 @@ data Defect
   -- | is the site the obligation came from, that being where the constraint was
   -- | taken on.
   | ObligationSubjectNotARow Origin XRowError
+  -- | A term metavariable assigned that `Ψ` does not hold or holds solved
+  -- | already. Another candidate repairs neither.
+  | TermMisuse Origin TermError
   -- | A postponement no assignment could ever wake, naming the job that raised
   -- | it and the site that job stands at. What is wrong is whoever postponed —
   -- | a synthesizer that read a type it did not zonk, or held a metavariable

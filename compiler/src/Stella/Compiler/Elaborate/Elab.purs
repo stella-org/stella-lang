@@ -33,6 +33,9 @@ module Stella.Compiler.Elaborate.Elab
   , transact
   , unify
   , freshTypeMeta
+  , freshTermMeta
+  , assignTerm
+  , zonkTerm
   , assume
   , require
   , spendFuel
@@ -51,6 +54,9 @@ import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..), Obligation, 
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, Site)
 import Stella.Compiler.Elaborate.Row (XRowError)
 import Stella.Compiler.Elaborate.Scheduler (Scheduler, emptyScheduler, wake)
+import Stella.Compiler.Elaborate.Term (TermMetaVar, XExpr)
+import Stella.Compiler.Elaborate.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
+import Stella.Compiler.Elaborate.TermMeta as TermMeta
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint, XType(..))
 import Stella.Compiler.Elaborate.Unify (MetaContext, UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, substitute, unifyType)
 import Data.Either (Either(..))
@@ -373,6 +379,49 @@ freshTypeMeta context kind = Elab \s ->
     Tuple m metas = freshMeta { kind, scope } s.tentative.metas
   in
     Tuple (Done (XMeta m)) (s { tentative { metas = metas } })
+
+-- | A term metavariable at the type given, created under the context given.
+-- |
+-- | Its scope is what that context binds, read by `termScopeOf` rather than
+-- | stated by the caller, so no caller can admit a solution the context does
+-- | not have in scope. The caller places it in a term as `ETermMeta`, with the
+-- | annotation of the place it stands.
+freshTermMeta :: XContext -> XType -> Elab TermMetaVar
+freshTermMeta context ty = Elab \s ->
+  let
+    Tuple m metas = TermMeta.freshTermMeta { ty, scope: termScopeOf context } s.tentative.metas
+  in
+    Tuple (Done m) (s { tentative { metas = metas } })
+
+-- | `?m := e`, reported at the site given.
+-- |
+-- | A solution that escapes the scope of `?m`, or contains it, is a failure: a
+-- | search may take another candidate. One naming a metavariable `Ψ` does not
+-- | hold, or holds solved, is a defect in whoever assigns.
+assignTerm :: forall a. Site -> TermMetaVar -> XExpr a -> Elab Unit
+assignTerm site m solution = Elab \s ->
+  case assignTermMeta s.tentative.metas m solution of
+    Left err
+      | termMisuse err -> Tuple (Broke (TermMisuse site.origin err)) s
+      | otherwise -> Tuple (Failed (TermAssignmentFailed site.origin err)) s
+    Right metas ->
+      Tuple (Done unit) (s { tentative { metas = metas } })
+
+-- | A term with everything `Ψ` has solved applied to it.
+zonkTerm :: forall a. XExpr a -> Elab (XExpr a)
+zonkTerm e = Elab \s -> Tuple (Done (zonkExpr s.tentative.metas e)) s
+
+-- | Listed one by one for the reason `misuse` is.
+termMisuse :: TermError -> P.Boolean
+termMisuse = case _ of
+  TermMetaUnbound _ -> true
+  TermMetaAlreadyAssigned _ -> true
+  TermNarrowing err -> misuse err
+  TermOccursCheck _ -> false
+  TermEscapingValue _ _ -> false
+  TermEscapingType _ _ -> false
+  TermEscapingKind _ _ -> false
+  TermCapturesJoin _ _ -> false
 
 -- | Assume a row constraint at a site, returning the context that carries it.
 -- |

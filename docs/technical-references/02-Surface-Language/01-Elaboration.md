@@ -23,13 +23,19 @@ e⁺ ::= … | ?m                          term metavariable
     | Ψ, ?k := κ            solved
     | Ψ, ?α : κ [Γτ; Γκ]    unresolved; the variables of either class it may mention
     | Ψ, ?α := τ            solved
-    | Ψ, ?m : τ [Γτ; Γκ]
-    | Ψ, ?m := e
+    | Ψ, ?m : τ [Γx; Γτ; Γκ] unresolved; the values, types, and kinds it may mention
+    | Ψ, ?m := e            solved
 ```
 
-Recording the variables a metavariable was created under allows the scope check that decides whether a solution mentioning local variables may be assigned to it. A type metavariable records **both classes**, since a kind variable of an inner declaration escapes as readily as a type variable does — `?α`'s kind and the kinds inside its solution are where a kind variable reaches it. A kind metavariable records the kind variables alone: kinds and types are separate classes and no kind mentions a type variable (D2).
+Recording the variables a metavariable was created under allows the scope check that decides whether a solution mentioning local variables may be assigned to it. A type metavariable records **both classes**, since a kind variable of an inner declaration escapes as readily as a type variable does — `?α`'s kind and the kinds inside its solution are where a kind variable reaches it. A kind metavariable records the kind variables alone: kinds and types are separate classes and no kind mentions a type variable (D2). A term metavariable records all three, value variables among them, since a solution such as a dictionary a resolver found may be a local of the site the goal stood at.
 
 **A substitution narrows what the metavariables inside it may mention.** A metavariable standing in a solution mentions none of the variables it was created under until it is solved, so assigning `?α := τ` restricts every metavariable of `τ` to `?α`'s own scope — and refuses the assignment where the kind such a metavariable stands at lies outside it. Without that, `?α` created outside a binder and solved to a type mentioning `?β` would admit whatever `?β` was later solved to, binder and all.
+
+**A term metavariable records no join point.** A join point does not cross a function boundary, and a solution supplied from elsewhere is in the same position: it may jump only to a join point it binds itself. What a synthesizer is shown of its site, `localContext`, holds none either.
+
+**The narrowing reaches term metavariables too.** Assigning `?m := e` restricts every term metavariable of `e` to the intersection of its own scope and `?m`'s, and refuses the assignment where that metavariable's own type mentions what the intersection excludes; the type and kind metavariables of `e` are restricted to `?m`'s as a type's are. **A solution is not type checked where it is assigned** — an elaborator may construct an ill-typed term, and the Core type checker is what rejects one — so scope is the whole of what an assignment decides.
+
+**A solution is held without its annotations**, and zonking puts it where `?m` stood, every node of it taking the annotation that `?m` carried: the place the goal was written.
 
 `R` is settled with [kind unification](#kind-unification) below.
 

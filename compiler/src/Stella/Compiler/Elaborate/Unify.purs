@@ -35,6 +35,9 @@ module Stella.Compiler.Elaborate.Unify
   , KindRequirement(..)
   , KindMetaInfo
   , KindMetaBinding(..)
+  , TermScope
+  , TermMetaInfo
+  , TermBinding(..)
   , MetaContext
   , UnifyEnv
   , UnifyProgress
@@ -45,6 +48,8 @@ module Stella.Compiler.Elaborate.Unify
   , freshKindMeta
   , lookupMeta
   , lookupKindMeta
+  , lookupTermMeta
+  , narrowMetas
   , substitute
   , substituteKind
   , requireQuantifiable
@@ -60,8 +65,9 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Kind (KindMetaVar(..), XKind(..), kindMetasOf, kindVarsOf, occursInKind)
 import Stella.Compiler.Elaborate.Row (XRowError, XRowNormalForm, payloadEquations, rebuild, xnf)
+import Stella.Compiler.Elaborate.Term (TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.Type (MetaVar(..), Scope, XConstraint(..), XRowEntry(..), XType(..), freeRigids, kindMetasOfType, metasOf, occursIn, outOfScope)
-import Stella.Compiler.TypedCore (KindVar, RowElemKind(..), RowKey(..), TyVar)
+import Stella.Compiler.TypedCore (Ident, KindVar, RowElemKind(..), RowKey(..), TyVar)
 import Data.Array as Array
 
 import Data.Either (Either(..))
@@ -123,6 +129,30 @@ data KindMetaBinding
   = KindUnsolved KindMetaInfo
   | KindAssigned XKind
 
+-- | What a term metavariable's solution may mention: the value, type, and kind
+-- | variables in scope where it was created.
+-- |
+-- | Join points are not among them. A solution may jump only to a join point it
+-- | binds itself, so no join point of the place it stands in is in scope.
+type TermScope =
+  { values :: Set Ident
+  , types :: Set TyVar
+  , kinds :: Set KindVar
+  }
+
+-- | What `Ψ` records of an unsolved term metavariable, that is, `?m : τ [Γ]`.
+type TermMetaInfo =
+  { ty :: XType
+  , scope :: TermScope
+  }
+
+-- | A term metavariable's solution is held without annotations. Where it is
+-- | zonked into a term it takes the annotation of the `?m` it replaces, which is
+-- | the place the goal stood.
+data TermBinding
+  = TermUnsolved TermMetaInfo
+  | TermAssigned (XExpr Unit)
+
 -- | `Ψ`, together with the journal of one unification.
 -- |
 -- | `assigned` is the type metavariables assigned since a unification began. It
@@ -140,8 +170,10 @@ data KindMetaBinding
 type MetaContext =
   { bindings :: Map MetaVar MetaBinding
   , kindBindings :: Map KindMetaVar KindMetaBinding
+  , termBindings :: Map TermMetaVar TermBinding
   , next :: P.Int
   , nextKind :: P.Int
+  , nextTerm :: P.Int
   , assigned :: Set MetaVar
   }
 
@@ -245,8 +277,10 @@ emptyContext :: MetaContext
 emptyContext =
   { bindings: Map.empty
   , kindBindings: Map.empty
+  , termBindings: Map.empty
   , next: 0
   , nextKind: 0
+  , nextTerm: 0
   , assigned: Set.empty
   }
 
@@ -288,6 +322,9 @@ lookupMeta ctx m = Map.lookup m ctx.bindings
 
 lookupKindMeta :: MetaContext -> KindMetaVar -> Maybe KindMetaBinding
 lookupKindMeta ctx k = Map.lookup k ctx.kindBindings
+
+lookupTermMeta :: MetaContext -> TermMetaVar -> Maybe TermBinding
+lookupTermMeta ctx m = Map.lookup m ctx.termBindings
 
 -- | Apply what is already solved. Normalizing without this would leave an
 -- | assigned metavariable in the flexible tail, where the case analysis would
@@ -953,15 +990,25 @@ kindAgrees ctx m info solution = case rowKindOf solution of
 -- | metavariable standing at a kind its new scope excludes. Refusing is why this
 -- | reports rather than returning a context.
 narrowScopes :: MetaContext -> Scope -> XType -> Either UnifyError MetaContext
-narrowScopes ctx scope solution = do
+narrowScopes ctx scope solution =
+  -- Substituting first leaves only unsolved metavariables to narrow, so the
+  -- fold reaches what a solution stands on rather than what it was written with.
+  narrowMetas ctx scope (metasOf substituted) (kindMetasOfType substituted)
+  where
+  substituted = substitute ctx solution
+
+-- | Narrow the type and kind metavariables given to a scope, as a solution
+-- | standing in that scope requires of every metavariable it holds unsolved.
+-- |
+-- | The caller substitutes first, so what is given is unsolved; a type
+-- | metavariable solved already is a caller error.
+narrowMetas :: MetaContext -> Scope -> Set MetaVar -> Set KindMetaVar -> Either UnifyError MetaContext
+narrowMetas ctx scope typeMetas kindMetas = do
   narrowed <- foldM narrowType ctx types
   foldM (narrowKindTo scope.kinds) narrowed kinds
   where
-  -- Substituting first leaves only unsolved metavariables to narrow, so the
-  -- fold reaches what a solution stands on rather than what it was written with.
-  substituted = substitute ctx solution
-  types = Set.toUnfoldable (metasOf substituted) :: P.Array MetaVar
-  kinds = Set.toUnfoldable (kindMetasOfType substituted) :: P.Array KindMetaVar
+  types = Set.toUnfoldable typeMetas :: P.Array MetaVar
+  kinds = Set.toUnfoldable kindMetas :: P.Array KindMetaVar
 
   narrowType acc t = case Map.lookup t acc.bindings of
     Just (Unsolved tInfo) ->
@@ -1064,6 +1111,12 @@ derive instance Generic KindRequirement _
 
 instance Show KindRequirement where
   show = genericShow
+
+derive instance Eq TermBinding
+derive instance Generic TermBinding _
+
+instance Show TermBinding where
+  show x = genericShow x
 
 derive instance Eq KindMetaBinding
 derive instance Generic KindMetaBinding _
