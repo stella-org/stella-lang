@@ -184,8 +184,17 @@ data BuildError
   = ScopeViolation Handle
   -- | What was asked for is not well-kinded.
   | IllKinded KindingFault
-  -- | `instantiateForall` given a type that is not a `forall`.
+  -- | `instantiateForall` given a type that is not a `forall`, or `typeApply` a
+  -- | term claimed at one.
   | NotAForall Handle
+  -- | `termApply` given a term claimed at a type that is not a function.
+  | NotAFunction Handle
+  -- | `constraintApply` given a term claimed at a type that is not constrained.
+  | NotConstrained Handle
+  -- | A lambda closed with an effect row that is not a row of effects.
+  | NotAnEffectRow Handle
+  -- | A `letrec` closed with another number of right-hand sides than it binds.
+  | LetRecArity Handle P.Int P.Int
   -- | A binder closed in a scope other than the one it was opened in, or by the
   -- | operation that closes another sort of binder.
   | BinderMisuse Handle

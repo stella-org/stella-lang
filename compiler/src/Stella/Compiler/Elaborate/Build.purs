@@ -53,25 +53,22 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.BuildScope (built, constraintIn, issueBuilt, kindIn, kinded, kindingScopeOf, rejected, requiredIn, siteOf, usableIn, foldChildren, mapChildren, schemeAt)
+import Stella.Compiler.Elaborate.BuildScope (built, childOf, closedOver, constraintIn, instantiatedAt, issueBuilt, kindIn, kinded, rejected, requiredIn, schemeAt, siteOf, usableIn)
 import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Context (bindTyVar)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..))
-import Stella.Compiler.Elaborate.Elab (Elab, Release(..), askEnv, assume, break, currentMetas, freshBinderName, freshScopeId, holdOpen, issue, postpone, release, resolveBinder, resolveScope, resolveType)
+import Stella.Compiler.Elaborate.Elab (Elab, askEnv, assume, break, currentMetas, freshBinderName, holdOpen, issue, resolveBinder, resolveScope, resolveType)
 import Stella.Compiler.Elaborate.Handle (BinderObject(..), Handle, HandleObject(..), ScopeId(..), ScopeObject)
-import Stella.Compiler.Elaborate.Kinding (checkKind, quantifiable)
-import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..), freeRigids, metasOf, xRowEntryKey)
-import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, lookupMeta, substitute)
+import Stella.Compiler.Elaborate.Kinding (quantifiable)
+import Stella.Compiler.Elaborate.Type (XConstraint(..), XRowEntry(..), XType(..), xRowEntryKey)
+import Stella.Compiler.Elaborate.Unify (substitute)
 import Stella.Compiler.Elaborate.View (ConstraintView, KindView, PayloadView(..))
-import Stella.Compiler.TypedCore (Ident, Qualified, RowKey(..), TyName, TyVar(..))
+import Stella.Compiler.TypedCore (Ident, Qualified, RowKey(..), TyName, TyVar)
 import Data.Either (Either(..))
-import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Data.Set (Set)
 import Data.Set as Set
 import Data.Traversable (traverse)
-import Data.Tuple (Tuple(..))
 
 -- | The root build scope, opened on the site of the running job.
 rootScope :: Elab Handle
@@ -151,15 +148,9 @@ openForall scopeHandle hint kindView = do
     Left fault -> rejected (IllKinded fault)
     Right _ -> pure unit
   name <- freshBinderName (Map.keys scope.context.tyVars) hint
-  childId <- freshScopeId
-  let
-    child =
-      { id: childId
-      , ancestors: Set.insert scope.id scope.ancestors
-      , context: bindTyVar scope.context name kind
-      }
-  binder <- issue (BinderObject (ForallBinder { name, kind, parent: scope.id, body: childId }))
-  holdOpen childId child.ancestors
+  child <- childOf scope (bindTyVar scope.context name kind)
+  binder <- issue (BinderObject (ForallBinder { name, kind, parent: scope.id, body: child.id }))
+  holdOpen child.id child.ancestors
   variable <- built child (XVar name)
   bodyScope <- issue (ScopeObject child)
   pure { binder, variable, bodyScope }
@@ -171,9 +162,17 @@ closeForall scopeHandle binderHandle bodyHandle = do
   scope <- resolveScope scopeHandle
   resolveBinder binderHandle >>= case _ of
     ForallBinder b -> do
-      body <- closing scope binderHandle b bodyHandle
-      built scope (XForall b.name b.kind body)
-    AssumedConstraint _ -> rejected (BinderMisuse binderHandle)
+      body <- resolveType bodyHandle
+      closedOver scope binderHandle b body.builtIn bodyHandle
+      built scope (XForall b.name b.kind body.type)
+    AssumedConstraint _ -> misuse
+    LambdaBinder _ -> misuse
+    TypeAbsBinder _ -> misuse
+    ConstraintAbsBinder _ -> misuse
+    LetBinder _ -> misuse
+    LetRecGroup _ -> misuse
+  where
+  misuse = rejected (BinderMisuse binderHandle)
 
 -- | Open `constraint =>`: a binder, and the scope its body is built in, which
 -- | assumes the constraint.
@@ -187,15 +186,9 @@ openConstraint :: Handle -> ConstraintView -> Elab { assumption :: Handle, bodyS
 openConstraint scopeHandle view = do
   scope <- resolveScope scopeHandle
   constraint <- constraintIn scope view
-  childId <- freshScopeId
-  let
-    child =
-      { id: childId
-      , ancestors: Set.insert scope.id scope.ancestors
-      , context: Context.assume scope.context constraint
-      }
-  assumption <- issue (BinderObject (AssumedConstraint { constraint, parent: scope.id, body: childId }))
-  holdOpen childId child.ancestors
+  child <- childOf scope (Context.assume scope.context constraint)
+  assumption <- issue (BinderObject (AssumedConstraint { constraint, parent: scope.id, body: child.id }))
+  holdOpen child.id child.ancestors
   bodyScope <- issue (ScopeObject child)
   pure { assumption, bodyScope }
 
@@ -210,57 +203,34 @@ closeConstraint scopeHandle binderHandle bodyHandle = do
   scope <- resolveScope scopeHandle
   resolveBinder binderHandle >>= case _ of
     AssumedConstraint b -> do
-      body <- closing scope binderHandle b bodyHandle
-      constrained <- kinded scope (XConstrained b.constraint body)
+      body <- resolveType bodyHandle
+      closedOver scope binderHandle b body.builtIn bodyHandle
+      constrained <- kinded scope (XConstrained b.constraint body.type)
       site <- siteOf scope
       _ <- assume site b.constraint
       issueBuilt scope constrained
-    ForallBinder _ -> rejected (BinderMisuse binderHandle)
+    ForallBinder _ -> misuse
+    LambdaBinder _ -> misuse
+    TypeAbsBinder _ -> misuse
+    ConstraintAbsBinder _ -> misuse
+    LetBinder _ -> misuse
+    LetRecGroup _ -> misuse
+  where
+  misuse = rejected (BinderMisuse binderHandle)
 
--- | `forall (a : κ). body` applied to a type at `κ`: `body[a := argument]`.
--- |
--- | Both sides are zonked first. The substitution is capture-avoiding: a binder
--- | of the body that the argument mentions free is renamed, to a name drawn from
--- | the host's supply of fresh binder names that neither side, nor the scope,
--- | mentions.
--- |
--- | **An unsolved metavariable that could come to mention a variable the
--- | substitution treats specially postpones the instantiation until it is
--- | solved**: one in the body whose scope holds the binder or a binder being
--- | renamed, and one in the argument whose scope holds a binder of the body. A
--- | substitution stops at an unsolved metavariable, so the first's later solution
--- | could mention a binder the result no longer has, and the second's could be
--- | captured by a binder that was not renamed.
+-- | `forall (a : κ). body` applied to a type at `κ`: `body[a := argument]`, both
+-- | zonked first, by the capture-avoiding substitution `instantiatedAt` makes,
+-- | which waits on a metavariable it cannot see past.
 instantiateForall :: Handle -> Handle -> Handle -> Elab Handle
 instantiateForall scopeHandle forallHandle argumentHandle = do
   scope <- resolveScope scopeHandle
   whole <- usableIn scope forallHandle
-  argumentObject <- usableIn scope argumentHandle
+  argument <- usableIn scope argumentHandle
   metas <- currentMetas
-  let
-    argument = substitute metas argumentObject.type
   case substitute metas whole.type of
-    XForall a kind body -> do
-      env <- askEnv
-      case checkKind env.session.kinding (kindingScopeOf scope) metas kind argument of
-        Left fault -> rejected (IllKinded fault)
-        Right _ -> do
-          let
-            binders = bindersOf body
-            capturing = Set.intersection binders (freeRigids argument)
-            reaching =
-              Set.filter (mayMention metas (Set.insert a capturing)) (metasOf body)
-                <> Set.filter (mayMention metas binders) (metasOf argument)
-          unless (Set.isEmpty reaching) (postpone reaching)
-          let
-            -- A new name must capture nothing the renamed binder's body, the
-            -- argument, or the scope mentions.
-            taken = Set.unions [ Map.keys scope.context.tyVars, binders, freeRigids body, freeRigids argument, Set.singleton a ]
-          renames <- traverse (renamed taken) (Set.toUnfoldable capturing :: P.Array TyVar)
-          built scope (substituteTyVar a argument (Map.fromFoldable renames) body)
+    XForall a kind body ->
+      instantiatedAt scope a kind body (substitute metas argument.type) >>= built scope
     _ -> rejected (NotAForall forallHandle)
-  where
-  renamed taken b@(TyVar hint) = Tuple b <$> freshBinderName taken hint
 
 -- | A catalog entry's scheme at the kinds given: `forall k̄. τ` with `k̄ := κ̄`.
 -- |
@@ -279,31 +249,6 @@ instantiateScheme scopeHandle name kinds = do
   instantiated <- schemeAt scope name kinds
   built scope instantiated.type
 
--- What closing a binder checks, whatever sort it is: that it was opened in this
--- scope, that its body is built where its own scope or this one can use it, and
--- that it is still open with nothing opened inside its body still open, which
--- closing it ends. The body's type is the answer.
-closing
-  :: forall r
-   . ScopeObject
-  -> Handle
-  -> { parent :: ScopeId, body :: ScopeId | r }
-  -> Handle
-  -> Elab XType
-closing scope binderHandle binder bodyHandle = do
-  when (binder.parent /= scope.id) (rejected (BinderMisuse binderHandle))
-  body <- resolveType bodyHandle
-  let
-    visible = case body.builtIn of
-      Just id -> id == binder.body || id == scope.id || Set.member id scope.ancestors
-      Nothing -> false
-  unless visible (rejected (ScopeViolation bodyHandle))
-  release binder.body >>= case _ of
-    Released -> pure unit
-    NotOpen -> rejected (BinderClosed binderHandle)
-    EnclosesOpen _ -> rejected (EnclosesOpenBinder binderHandle)
-  pure body.type
-
 -- The element a key and a payload make, from types the scope may use.
 entryIn :: ScopeObject -> RowKey -> PayloadView -> Elab XRowEntry
 entryIn scope key = case _ of
@@ -319,37 +264,3 @@ entryIn scope key = case _ of
     _ -> rejected (EntryMismatch key)
   where
   typeIn h = _.type <$> usableIn scope h
-
--- | Whether an unsolved metavariable's scope holds any of the variables given.
-mayMention :: MetaContext -> Set TyVar -> MetaVar -> P.Boolean
-mayMention metas vars m = case lookupMeta metas m of
-  Just (Unsolved info) -> not (Set.isEmpty (Set.intersection info.scope.types vars))
-  _ -> false
-
--- | `τ[a := σ]`, with each binder of `τ` the map names renamed to the fresh name
--- | it gives.
--- |
--- | Renaming by name is sound because every new name is fresh: two binders
--- | sharing a name get one new name, and the inner still shadows the outer. Below
--- | a binder named `a` nothing is substituted, and only the renaming continues.
-substituteTyVar :: TyVar -> XType -> Map TyVar TyVar -> XType -> XType
-substituteTyVar a argument renames = go false Map.empty
-  where
-  go shadowed inScope = case _ of
-    XVar v
-      | not shadowed && v == a -> argument
-      | otherwise -> case Map.lookup v inScope of
-          Just v' -> XVar v'
-          Nothing -> XVar v
-    XForall b k body
-      | b == a -> XForall b k (go true (Map.delete b inScope) body)
-      | otherwise -> case Map.lookup b renames of
-          Just b' -> XForall b' k (go shadowed (Map.insert b b' inScope) body)
-          Nothing -> XForall b k (go shadowed (Map.delete b inScope) body)
-    other -> mapChildren (go shadowed inScope) other
-
--- | The type variables a `forall` inside the type binds.
-bindersOf :: XType -> Set TyVar
-bindersOf = case _ of
-  XForall b _ body -> Set.insert b (bindersOf body)
-  other -> foldChildren bindersOf other

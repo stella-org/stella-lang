@@ -22,6 +22,14 @@ module Stella.Compiler.Elaborate.BuildScope
   , schemeAt
   , mapChildren
   , foldChildren
+  , childOf
+  , visibleUnder
+  , closedOver
+  , Shape(..)
+  , functionShape
+  , forallShape
+  , constrainedShape
+  , instantiatedAt
   ) where
 
 import Prelude
@@ -30,24 +38,28 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..))
-import Stella.Compiler.Elaborate.Elab (Elab, askEnv, break, currentMetas, issue, require, resolveExpr, resolveType)
-import Stella.Compiler.Elaborate.Handle (ExprObject, Handle, HandleObject(..), ScopeObject, TypeObject)
+import Stella.Compiler.Elaborate.Context (XContext)
+import Stella.Compiler.Elaborate.Elab (Elab, Release(..), askEnv, break, currentMetas, freshBinderName, freshScopeId, issue, postpone, release, require, resolveExpr, resolveType)
+import Stella.Compiler.Elaborate.Handle (ExprObject, Handle, HandleObject(..), ScopeId, ScopeObject, TypeObject)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (KindEvidence, KindingScope, checkConstraint, checkKind, quantifiable, settledIn, synthKind)
 import Stella.Compiler.Elaborate.Pending (Site)
 import Stella.Compiler.Elaborate.Term (XExpr)
-import Stella.Compiler.Elaborate.Type (XConstraint(..), XRowEntry(..), XType(..))
-import Stella.Compiler.Elaborate.Unify (substitute)
+import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..), freeRigids, metasOf)
+import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, lookupMeta, substitute, substituteKind)
 import Stella.Compiler.Elaborate.View (ConstraintView(..), KindView(..))
-import Stella.Compiler.TypedCore (Ident, KindVar, Qualified)
+import Stella.Compiler.TypedCore (Ident, KindVar, Qualified, RowElemKind(..), TyVar(..))
+import Stella.Compiler.TypedCore.Prim (functionTy)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (foldMap, for_)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
+import Data.Set (Set)
 import Data.Set as Set
 import Data.Traversable (traverse)
+import Data.Tuple (Tuple(..))
 
 -- | A type the scope may use: one built in it or in one of its ancestors.
 usableIn :: ScopeObject -> Handle -> Elab TypeObject
@@ -242,3 +254,185 @@ foldChildren f = case _ of
     XRowEffectEntry _ args -> foldMap f args
     XRowLabelledEffectEntry _ _ args -> foldMap f args
     XRowRegionEntry var cells -> f var <> f cells
+
+-- | A child of the scope, with the context given: a build scope for a binder's
+-- | body, drawn from the attempt's supply of scopes.
+childOf :: ScopeObject -> XContext -> Elab ScopeObject
+childOf scope context = do
+  id <- freshScopeId
+  pure { id, ancestors: Set.insert scope.id scope.ancestors, context }
+
+-- | Whether what was built in the scope named is visible under a binder closed
+-- | in the scope given: built in the binder's own body scope, in the scope, or
+-- | in one of its ancestors.
+visibleUnder :: forall r. ScopeObject -> { body :: ScopeId | r } -> Maybe ScopeId -> P.Boolean
+visibleUnder scope binder = case _ of
+  Just id -> id == binder.body || id == scope.id || Set.member id scope.ancestors
+  Nothing -> false
+
+-- | What closing a binder checks, whatever its sort: that it was opened in this
+-- | scope, that its body is visible under it, and that it is still open with
+-- | nothing opened inside its body still open, which closing it ends.
+closedOver
+  :: forall r
+   . ScopeObject
+  -> Handle
+  -> { parent :: ScopeId, body :: ScopeId | r }
+  -> Maybe ScopeId
+  -> Handle
+  -> Elab Unit
+closedOver scope binderHandle binder builtIn bodyHandle = do
+  when (binder.parent /= scope.id) (rejected (BinderMisuse binderHandle))
+  unless (visibleUnder scope binder builtIn) (rejected (ScopeViolation bodyHandle))
+  release binder.body >>= case _ of
+    Released -> pure unit
+    NotOpen -> rejected (BinderClosed binderHandle)
+    EnclosesOpen _ -> rejected (EnclosesOpenBinder binderHandle)
+
+-- | What a type read for a shape comes to.
+data Shape a
+  -- | The shape is there.
+  = Seen a
+  -- | It is not there yet, and these metavariables are what decide whether it
+  -- | will be.
+  | Blocked (Set MetaVar)
+  -- | It is not there, and no solution can put it there.
+  | Otherwise
+
+-- | A function type's three parts, read off the zonked type.
+-- |
+-- | A function type is an application spine headed by `Function`. **A spine
+-- | headed by an unsolved metavariable may become one only where the two are
+-- | compatible with `Function` partially applied**: at most three arguments, and
+-- | the metavariable's kind that of `Function` with the arguments the spine does
+-- | not supply already given — `?f : Type -> Type` applied to one argument can
+-- | be solved to `Function τ ρ`, and `?f : Row Type -> Type` applied to one can
+-- | be solved to nothing that makes it an arrow. Only a compatible head is waited
+-- | on; waiting on another would register a job under a metavariable whose
+-- | solution could never give it the shape. Once the head is `Function`, what
+-- | its arguments hold is not waited on.
+functionShape :: MetaContext -> XType -> Shape { argument :: XType, row :: XType, result :: XType }
+functionShape metas ty = case spine (substitute metas ty) [] of
+  { head: XCon name [], args: [ argument, row, result ] }
+    | name == functionTy -> Seen { argument, row, result }
+  { head: XMeta m, args } -> case lookupMeta metas m of
+    Just (Unsolved info)
+      | Array.length args <= 3
+      , compatible (substituteKind metas info.kind) (dropArrows (3 - Array.length args) functionKind) ->
+          Blocked (Set.singleton m)
+    _ -> Otherwise
+  _ -> Otherwise
+  where
+  -- `Function : Type -> Row Effect -> Type -> Type`, as `Prim` declares it.
+  functionKind = XKFun XKType (XKFun (XKRow RowEffect) (XKFun XKType XKType))
+
+  dropArrows i k = case i, k of
+    0, _ -> k
+    _, XKFun _ rest -> dropArrows (i - 1) rest
+    _, _ -> k
+
+  -- A kind metavariable left in the head's kind rules nothing out.
+  compatible actual expected = case actual, expected of
+    XKMeta _, _ -> true
+    XKFun a1 r1, XKFun a2 r2 -> compatible a1 a2 && compatible r1 r2
+    _, _ -> actual == expected
+
+  spine t args = case t of
+    XApp f a -> spine f (Array.cons a args)
+    head -> { head, args }
+
+-- | A `forall`'s binder, kind, and body, read off the zonked type. Only an
+-- | unsolved metavariable at the root is waited on.
+forallShape :: MetaContext -> XType -> Shape { binder :: TyVar, kind :: XKind, body :: XType }
+forallShape metas ty = case substitute metas ty of
+  XForall binder kind body -> Seen { binder, kind, body }
+  XMeta m -> blockedOn metas m
+  _ -> Otherwise
+
+-- | A constrained type's constraint and body, read off the zonked type. Only an
+-- | unsolved metavariable at the root is waited on.
+constrainedShape :: MetaContext -> XType -> Shape { constraint :: XConstraint, body :: XType }
+constrainedShape metas ty = case substitute metas ty of
+  XConstrained constraint body -> Seen { constraint, body }
+  XMeta m -> blockedOn metas m
+  _ -> Otherwise
+
+-- A zonked type's metavariable is unsolved; one `Ψ` does not hold is no
+-- shape at all.
+blockedOn :: forall a. MetaContext -> MetaVar -> Shape a
+blockedOn metas m = case lookupMeta metas m of
+  Just (Unsolved _) -> Blocked (Set.singleton m)
+  Just (Assigned _) -> Otherwise
+  Nothing -> Otherwise
+
+-- | `body[a := argument]` in the scope, for `forall (a : kind). body` and an
+-- | argument the scope may use, zonked.
+-- |
+-- | The argument must stand at `kind`. The substitution is capture-avoiding: a
+-- | binder of the body that the argument mentions free is renamed, to a name
+-- | drawn from the host's supply of fresh binder names that neither side, nor
+-- | the scope, mentions.
+-- |
+-- | **An unsolved metavariable that could come to mention a variable the
+-- | substitution treats specially postpones the instantiation until it is
+-- | solved**: one in the body whose scope holds the binder or a binder being
+-- | renamed, and one in the argument whose scope holds a binder of the body. A
+-- | substitution stops at an unsolved metavariable, so the first's later solution
+-- | could mention a binder the result no longer has, and the second's could be
+-- | captured by a binder that was not renamed.
+instantiatedAt :: ScopeObject -> TyVar -> XKind -> XType -> XType -> Elab XType
+instantiatedAt scope a kind body argument = do
+  env <- askEnv
+  metas <- currentMetas
+  case checkKind env.session.kinding (kindingScopeOf scope) metas kind argument of
+    Left fault -> rejected (IllKinded fault)
+    Right _ -> pure unit
+  let
+    binders = bindersOf body
+    capturing = Set.intersection binders (freeRigids argument)
+    reaching =
+      Set.filter (mayMention metas (Set.insert a capturing)) (metasOf body)
+        <> Set.filter (mayMention metas binders) (metasOf argument)
+  unless (Set.isEmpty reaching) (postpone reaching)
+  let
+    -- A new name must capture nothing the renamed binder's body, the argument,
+    -- or the scope mentions.
+    taken = Set.unions [ Map.keys scope.context.tyVars, binders, freeRigids body, freeRigids argument, Set.singleton a ]
+  renames <- traverse (renamed taken) (Set.toUnfoldable capturing :: P.Array TyVar)
+  pure (substituteTyVar a argument (Map.fromFoldable renames) body)
+  where
+  renamed taken b@(TyVar hint) = Tuple b <$> freshBinderName taken hint
+
+-- | Whether an unsolved metavariable's scope holds any of the variables given.
+mayMention :: MetaContext -> Set TyVar -> MetaVar -> P.Boolean
+mayMention metas vars m = case lookupMeta metas m of
+  Just (Unsolved info) -> not (Set.isEmpty (Set.intersection info.scope.types vars))
+  _ -> false
+
+-- | `τ[a := σ]`, with each binder of `τ` the map names renamed to the fresh name
+-- | it gives.
+-- |
+-- | Renaming by name is sound because every new name is fresh: two binders
+-- | sharing a name get one new name, and the inner still shadows the outer. Below
+-- | a binder named `a` nothing is substituted, and only the renaming continues.
+substituteTyVar :: TyVar -> XType -> Map TyVar TyVar -> XType -> XType
+substituteTyVar a argument renames = go false Map.empty
+  where
+  go shadowed inScope = case _ of
+    XVar v
+      | not shadowed && v == a -> argument
+      | otherwise -> case Map.lookup v inScope of
+          Just v' -> XVar v'
+          Nothing -> XVar v
+    XForall b k body
+      | b == a -> XForall b k (go true (Map.delete b inScope) body)
+      | otherwise -> case Map.lookup b renames of
+          Just b' -> XForall b' k (go shadowed (Map.insert b b' inScope) body)
+          Nothing -> XForall b k (go shadowed (Map.delete b inScope) body)
+    other -> mapChildren (go shadowed inScope) other
+
+-- | The type variables a `forall` inside the type binds.
+bindersOf :: XType -> Set TyVar
+bindersOf = case _ of
+  XForall b _ body -> Set.insert b (bindersOf body)
+  other -> foldChildren bindersOf other

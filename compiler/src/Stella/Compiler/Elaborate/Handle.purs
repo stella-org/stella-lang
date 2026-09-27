@@ -50,7 +50,7 @@ import Stella.Compiler.Elaborate.Kinding (KindEvidence, KindingScope)
 import Stella.Compiler.Elaborate.Pending (GoalRecord, PendingId)
 import Stella.Compiler.Elaborate.Term (XExpr)
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint, XType)
-import Stella.Compiler.TypedCore (TyVar)
+import Stella.Compiler.TypedCore (Ident, TyVar)
 import Data.Either (Either(..))
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
@@ -120,6 +120,40 @@ data BinderObject
   -- | A `constraint =>`, assumed in the body's scope.
   | AssumedConstraint
       { constraint :: XConstraint
+      , parent :: ScopeId
+      , body :: ScopeId
+      }
+  -- | A `λ(name : type)`.
+  | LambdaBinder
+      { name :: Ident
+      , type :: XType
+      , parent :: ScopeId
+      , body :: ScopeId
+      }
+  -- | A `Λ(name : kind)`.
+  | TypeAbsBinder
+      { name :: TyVar
+      , kind :: XKind
+      , parent :: ScopeId
+      , body :: ScopeId
+      }
+  -- | A `Λ(_ : constraint)`, assumed in the body's scope.
+  | ConstraintAbsBinder
+      { constraint :: XConstraint
+      , parent :: ScopeId
+      , body :: ScopeId
+      }
+  -- | A `let name : type = rhs in`, the right-hand side built in the parent.
+  | LetBinder
+      { name :: Ident
+      , type :: XType
+      , rhs :: XExpr Unit
+      , parent :: ScopeId
+      , body :: ScopeId
+      }
+  -- | A `letrec`, every name bound in every right-hand side and in the body.
+  | LetRecGroup
+      { bindings :: P.Array { name :: Ident, type :: XType }
       , parent :: ScopeId
       , body :: ScopeId
       }

@@ -21,23 +21,44 @@ module Stella.Compiler.Elaborate.BuildTerm
   ( localVariable
   , globalRef
   , literal
+  , termApply
+  , typeApply
+  , constraintApply
+  , openLambda
+  , closeLambda
+  , openTypeAbs
+  , closeTypeAbs
+  , openConstraintAbs
+  , closeConstraintAbs
+  , openLet
+  , closeLet
+  , openLetRec
+  , closeLetRec
   ) where
 
 import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.BuildScope (issueTerm, rejected, schemeAt)
+import Stella.Compiler.Elaborate.BuildScope (Shape(..), built, childOf, closedOver, constrainedShape, constraintIn, forallShape, functionShape, instantiatedAt, issueTerm, kindIn, rejected, requiredIn, schemeAt, siteOf, usableIn, usableTermIn, visibleUnder)
+import Stella.Compiler.Elaborate.Context (bindTyVar, bindVar)
+import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..))
-import Stella.Compiler.Elaborate.Elab (Elab, resolveScope)
-import Stella.Compiler.Elaborate.Handle (Handle)
+import Stella.Compiler.Elaborate.Elab (Elab, assume, currentMetas, freshBinderName, freshIdent, holdOpen, issue, postpone, resolveBinder, resolveExpr, resolveScope)
+import Stella.Compiler.Elaborate.Handle (BinderObject(..), Handle, HandleObject(..), ScopeObject)
+import Stella.Compiler.Elaborate.Kind (XKind(..))
+import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), quantifiable)
 import Stella.Compiler.Elaborate.Term (XExpr(..))
-import Stella.Compiler.Elaborate.Type (fromCore)
-import Stella.Compiler.Elaborate.View (KindView)
-import Stella.Compiler.TypedCore (Ident, Literal, Qualified)
-import Stella.Compiler.TypedCore.Prim (litType)
+import Stella.Compiler.Elaborate.Type (XType(..), fromCore)
+import Stella.Compiler.Elaborate.Unify (substitute)
+import Stella.Compiler.Elaborate.View (ConstraintView, KindView)
+import Stella.Compiler.TypedCore (Ident, Literal, Qualified, RowElemKind(..))
+import Stella.Compiler.TypedCore.Prim (functionTy, litType)
+import Data.Array as Array
+import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
+import Data.Traversable (traverse)
 
 -- | A value variable the scope binds, at the type it is bound at.
 -- |
@@ -64,3 +85,278 @@ literal :: Handle -> Literal -> Elab Handle
 literal scopeHandle lit = do
   scope <- resolveScope scopeHandle
   issueTerm scope (ELit unit lit) (fromCore (litType lit))
+
+-- | `f x`, claimed at the result of the function type `f` is claimed at.
+-- |
+-- | What `x` is claimed at is not compared with the function's parameter: that
+-- | is the Core type checker's. A claim for `f` whose head is still an unsolved
+-- | metavariable waits on it; one that can never be a function type is a misuse.
+termApply :: Handle -> Handle -> Handle -> Elab Handle
+termApply scopeHandle functionHandle argumentHandle = do
+  scope <- resolveScope scopeHandle
+  function <- usableTermIn scope functionHandle
+  argument <- usableTermIn scope argumentHandle
+  metas <- currentMetas
+  case functionShape metas function.claimed of
+    Seen fn -> issueTerm scope (EApp unit function.term argument.term) fn.result
+    Blocked ms -> postpone ms
+    Otherwise -> rejected (NotAFunction functionHandle)
+
+-- | `e [σ]`, claimed at `τ[a := σ]` where `e` is claimed at `forall (a : κ). τ`,
+-- | by the substitution `instantiateForall` makes. `σ` must stand at `κ`.
+typeApply :: Handle -> Handle -> Handle -> Elab Handle
+typeApply scopeHandle termHandle argumentHandle = do
+  scope <- resolveScope scopeHandle
+  term <- usableTermIn scope termHandle
+  argument <- usableIn scope argumentHandle
+  metas <- currentMetas
+  case forallShape metas term.claimed of
+    Seen whole -> do
+      let
+        σ = substitute metas argument.type
+      instantiatedAt scope whole.binder whole.kind whole.body σ
+        >>= issueTerm scope (ETyApp unit term.term σ)
+    Blocked ms -> postpone ms
+    Otherwise -> rejected (NotAForall termHandle)
+
+-- | `e [•]`, claimed at `τ` where `e` is claimed at `C => τ`, requiring `C` of
+-- | the scope together with the term: proved now, watched where a flexible tail
+-- | leaves it open, and a failure where it is already broken.
+constraintApply :: Handle -> Handle -> Elab Handle
+constraintApply scopeHandle termHandle = do
+  scope <- resolveScope scopeHandle
+  term <- usableTermIn scope termHandle
+  metas <- currentMetas
+  case constrainedShape metas term.claimed of
+    Seen constrained -> do
+      requiredIn scope constrained.constraint
+      issueTerm scope (EConstraintApp unit term.term) constrained.body
+    Blocked ms -> postpone ms
+    Otherwise -> rejected (NotConstrained termHandle)
+
+-- | Open `λ(x : τ)`: a binder, the variable it binds as a term built in the
+-- | body's scope, and that scope. `τ` must be a type the scope may use, at
+-- | `Type`; the name is the host's, fresh where it is bound.
+openLambda
+  :: Handle
+  -> P.String
+  -> Handle
+  -> Elab { binder :: Handle, variable :: Handle, bodyScope :: Handle }
+openLambda scopeHandle hint typeHandle = do
+  scope <- resolveScope scopeHandle
+  ty <- valueType scope typeHandle
+  name <- freshIdent (Map.keys scope.context.vars) hint
+  child <- childOf scope (bindVar scope.context name ty)
+  binder <- issue (BinderObject (LambdaBinder { name, type: ty, parent: scope.id, body: child.id }))
+  holdOpen child.id child.ancestors
+  variable <- issueTerm child (EVar unit name) ty
+  bodyScope <- issue (ScopeObject child)
+  pure { binder, variable, bodyScope }
+
+-- | Close a lambda opened in this scope over a body visible under it, claimed at
+-- | `τ -{ρ}-> σ` where `σ` is what the body is claimed at.
+-- |
+-- | `ρ` is the row the body's effects go on, which no claim records and the
+-- | synthesizer gives: a type this scope may use, standing at `Row Effect`. A
+-- | row built inside the body's scope does not leave it this way; an effect
+-- | metavariable the row needs is created here before the lambda is opened.
+closeLambda :: Handle -> Handle -> Handle -> Handle -> Elab Handle
+closeLambda scopeHandle binderHandle bodyHandle rowHandle = do
+  scope <- resolveScope scopeHandle
+  resolveBinder binderHandle >>= case _ of
+    LambdaBinder b -> do
+      body <- resolveExpr bodyHandle
+      closedOver scope binderHandle b body.builtIn bodyHandle
+      row <- usableIn scope rowHandle
+      case row.kind of
+        ExactKind (XKRow RowEffect) -> pure unit
+        AnyRow -> pure unit
+        _ -> rejected (NotAnEffectRow rowHandle)
+      issueTerm scope (ELam unit b.name b.type body.term) (functionType b.type row.type body.claimed)
+    ForallBinder _ -> misuse
+    AssumedConstraint _ -> misuse
+    TypeAbsBinder _ -> misuse
+    ConstraintAbsBinder _ -> misuse
+    LetBinder _ -> misuse
+    LetRecGroup _ -> misuse
+  where
+  misuse = rejected (BinderMisuse binderHandle)
+
+-- | Open `Λ(a : κ)`: a binder, the variable it binds as a type built in the
+-- | body's scope, and that scope. `κ` must be quantifiable.
+openTypeAbs
+  :: Handle
+  -> P.String
+  -> KindView
+  -> Elab { binder :: Handle, variable :: Handle, bodyScope :: Handle }
+openTypeAbs scopeHandle hint kindView = do
+  scope <- resolveScope scopeHandle
+  kind <- kindIn scope kindView
+  case quantifiable kind of
+    Left fault -> rejected (IllKinded fault)
+    Right _ -> pure unit
+  name <- freshBinderName (Map.keys scope.context.tyVars) hint
+  child <- childOf scope (bindTyVar scope.context name kind)
+  binder <- issue (BinderObject (TypeAbsBinder { name, kind, parent: scope.id, body: child.id }))
+  holdOpen child.id child.ancestors
+  variable <- built child (XVar name)
+  bodyScope <- issue (ScopeObject child)
+  pure { binder, variable, bodyScope }
+
+-- | Close a type abstraction opened in this scope over a body visible under it,
+-- | claimed at `forall (a : κ). σ` where `σ` is what the body is claimed at.
+closeTypeAbs :: Handle -> Handle -> Handle -> Elab Handle
+closeTypeAbs scopeHandle binderHandle bodyHandle = do
+  scope <- resolveScope scopeHandle
+  resolveBinder binderHandle >>= case _ of
+    TypeAbsBinder b -> do
+      body <- resolveExpr bodyHandle
+      closedOver scope binderHandle b body.builtIn bodyHandle
+      issueTerm scope (ETyLam unit b.name b.kind body.term) (XForall b.name b.kind body.claimed)
+    ForallBinder _ -> misuse
+    AssumedConstraint _ -> misuse
+    LambdaBinder _ -> misuse
+    ConstraintAbsBinder _ -> misuse
+    LetBinder _ -> misuse
+    LetRecGroup _ -> misuse
+  where
+  misuse = rejected (BinderMisuse binderHandle)
+
+-- | Open `Λ(_ : C)`: a binder, and the scope its body is built in, which assumes
+-- | `C`. The constraint is judged well-formed here; whether it can hold is
+-- | decided where the abstraction is closed, as for `openConstraint`.
+openConstraintAbs :: Handle -> ConstraintView -> Elab { binder :: Handle, bodyScope :: Handle }
+openConstraintAbs scopeHandle view = do
+  scope <- resolveScope scopeHandle
+  constraint <- constraintIn scope view
+  child <- childOf scope (Context.assume scope.context constraint)
+  binder <- issue (BinderObject (ConstraintAbsBinder { constraint, parent: scope.id, body: child.id }))
+  holdOpen child.id child.ancestors
+  bodyScope <- issue (ScopeObject child)
+  pure { binder, bodyScope }
+
+-- | Close a constraint abstraction opened in this scope over a body visible
+-- | under it, claimed at `C => σ` where `σ` is what the body is claimed at, and
+-- | holding `C` as an assumption from here on.
+closeConstraintAbs :: Handle -> Handle -> Handle -> Elab Handle
+closeConstraintAbs scopeHandle binderHandle bodyHandle = do
+  scope <- resolveScope scopeHandle
+  resolveBinder binderHandle >>= case _ of
+    ConstraintAbsBinder b -> do
+      body <- resolveExpr bodyHandle
+      closedOver scope binderHandle b body.builtIn bodyHandle
+      site <- siteOf scope
+      _ <- assume site b.constraint
+      issueTerm scope (EConstraintLam unit b.constraint body.term) (XConstrained b.constraint body.claimed)
+    ForallBinder _ -> misuse
+    AssumedConstraint _ -> misuse
+    LambdaBinder _ -> misuse
+    TypeAbsBinder _ -> misuse
+    LetBinder _ -> misuse
+    LetRecGroup _ -> misuse
+  where
+  misuse = rejected (BinderMisuse binderHandle)
+
+-- | Open `let x = rhs in`: a binder, the variable it binds as a term built in
+-- | the body's scope, and that scope. The right-hand side is a term this scope
+-- | may use, and `x` is bound at what it is claimed at; a right-hand side built
+-- | in the body's scope cannot be given, so none refers to `x`.
+openLet
+  :: Handle
+  -> P.String
+  -> Handle
+  -> Elab { binder :: Handle, variable :: Handle, bodyScope :: Handle }
+openLet scopeHandle hint rhsHandle = do
+  scope <- resolveScope scopeHandle
+  rhs <- usableTermIn scope rhsHandle
+  name <- freshIdent (Map.keys scope.context.vars) hint
+  child <- childOf scope (bindVar scope.context name rhs.claimed)
+  binder <- issue (BinderObject (LetBinder { name, type: rhs.claimed, rhs: rhs.term, parent: scope.id, body: child.id }))
+  holdOpen child.id child.ancestors
+  variable <- issueTerm child (EVar unit name) rhs.claimed
+  bodyScope <- issue (ScopeObject child)
+  pure { binder, variable, bodyScope }
+
+-- | Close a `let` opened in this scope over a body visible under it, claimed at
+-- | what the body is claimed at.
+closeLet :: Handle -> Handle -> Handle -> Elab Handle
+closeLet scopeHandle binderHandle bodyHandle = do
+  scope <- resolveScope scopeHandle
+  resolveBinder binderHandle >>= case _ of
+    LetBinder b -> do
+      body <- resolveExpr bodyHandle
+      closedOver scope binderHandle b body.builtIn bodyHandle
+      issueTerm scope (ELet unit b.name b.type b.rhs body.term) body.claimed
+    ForallBinder _ -> misuse
+    AssumedConstraint _ -> misuse
+    LambdaBinder _ -> misuse
+    TypeAbsBinder _ -> misuse
+    ConstraintAbsBinder _ -> misuse
+    LetRecGroup _ -> misuse
+  where
+  misuse = rejected (BinderMisuse binderHandle)
+
+-- | Open a `letrec` group: a binder, each variable it binds as a term built in
+-- | the body's scope, and that scope, which binds them all. Each declared type
+-- | must be one this scope may use, at `Type`.
+openLetRec
+  :: Handle
+  -> P.Array { hint :: P.String, type :: Handle }
+  -> Elab { binder :: Handle, variables :: P.Array Handle, bodyScope :: Handle }
+openLetRec scopeHandle declared = do
+  scope <- resolveScope scopeHandle
+  types <- traverse (valueType scope <<< _.type) declared
+  names <- traverse (\d -> freshIdent (Map.keys scope.context.vars) d.hint) declared
+  let
+    bindings = Array.zipWith { name: _, type: _ } names types
+  child <- childOf scope (Array.foldl (\ctx b -> bindVar ctx b.name b.type) scope.context bindings)
+  binder <- issue (BinderObject (LetRecGroup { bindings, parent: scope.id, body: child.id }))
+  holdOpen child.id child.ancestors
+  variables <- traverse (\b -> issueTerm child (EVar unit b.name) b.type) bindings
+  bodyScope <- issue (ScopeObject child)
+  pure { binder, variables, bodyScope }
+
+-- | Close a `letrec` group opened in this scope, with one right-hand side for
+-- | each name it binds, in order, and a body; each is visible under the group.
+-- | Claimed at what the body is claimed at.
+closeLetRec :: Handle -> Handle -> P.Array Handle -> Handle -> Elab Handle
+closeLetRec scopeHandle binderHandle rhsHandles bodyHandle = do
+  scope <- resolveScope scopeHandle
+  resolveBinder binderHandle >>= case _ of
+    LetRecGroup g -> do
+      when (g.parent /= scope.id) misuse
+      when (Array.length rhsHandles /= Array.length g.bindings)
+        (rejected (LetRecArity binderHandle (Array.length g.bindings) (Array.length rhsHandles)))
+      rhss <- traverse (visibleUnderGroup scope g) rhsHandles
+      body <- resolveExpr bodyHandle
+      closedOver scope binderHandle g body.builtIn bodyHandle
+      let
+        values = Array.zipWith (\b rhs -> { name: b.name, ty: b.type, value: rhs.term }) g.bindings rhss
+      issueTerm scope (ELetRec unit values body.term) body.claimed
+    ForallBinder _ -> misuse
+    AssumedConstraint _ -> misuse
+    LambdaBinder _ -> misuse
+    TypeAbsBinder _ -> misuse
+    ConstraintAbsBinder _ -> misuse
+    LetBinder _ -> misuse
+  where
+  misuse :: forall a. Elab a
+  misuse = rejected (BinderMisuse binderHandle)
+
+  visibleUnderGroup scope g handle = do
+    rhs <- resolveExpr handle
+    if visibleUnder scope g rhs.builtIn then pure rhs
+    else rejected (ScopeViolation handle)
+
+-- A type a value may be bound at: one the scope may use, standing at `Type`.
+valueType :: ScopeObject -> Handle -> Elab XType
+valueType scope handle = do
+  ty <- usableIn scope handle
+  case ty.kind of
+    ExactKind XKType -> pure ty.type
+    _ -> rejected (NotAType handle)
+
+-- `argument -{row}-> result`.
+functionType :: XType -> XType -> XType -> XType
+functionType argument row result =
+  XApp (XApp (XApp (XCon functionTy []) argument) row) result
