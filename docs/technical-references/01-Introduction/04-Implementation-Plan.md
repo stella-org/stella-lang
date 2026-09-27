@@ -571,6 +571,17 @@ no identifier is at once ready and blocked
 | The empty row, where its place fixes a row kind, and where nothing does | That row kind, and `AnyRow`: `()` stands at both row kinds and neither is chosen for it |
 | A kind metavariable reachable from what a synthesizer observes | A defect of the host. A synthesizer can neither name one nor wait on it |
 | An observation | Changes the arena and the generation and nothing else: no metavariable, obligation, job, or fuel |
+| A type built in a child build scope, given to a builder in its parent, or in a sibling | A defect of the synthesizer. Two binders alike in name and kind are still two binders, and only the scope a type was built in says which one it mentions |
+| A type built in the root, or observed at the site, given to a builder in a child scope | Accepted. A scope may use whatever its ancestors may |
+| A part a view takes of a catalog scheme — its head, an argument, a row's payload | In no build scope, as the scheme is, until `instantiateScheme` opens the scheme. A part inheriting the root's scope would let a scheme's variables reach a type without being instantiated |
+| The body a view takes of a `forall` or of a constraint | In no build scope. Its binder or its assumption is not the scope's, and `instantiateForall` is how a `forall` body is reached |
+| Two binders opened with one hint | Two names. The host draws each from a supply a rollback restores, so a re-run attempt draws the same names |
+| A binder closed in a scope other than the one it was opened in | A defect of the synthesizer, and not a `forall` over whatever the binder happens to be named |
+| `instantiateForall` over a body one of whose binders the argument mentions free | That binder renamed first. A substitution that walked under it would capture the argument's variable |
+| `instantiateForall` at an argument that is a metavariable solved to a variable one of the body's binders is named | That binder renamed. Read before zonking, the argument mentions nothing, no binder is renamed, and the zonk of the result is what captures |
+| `instantiateForall` over a body holding an unsolved metavariable whose scope has the binder | Postponed on that metavariable. The substitution stops at it, and its later solution could mention a binder the result no longer has |
+| `instantiateForall` at an argument holding an unsolved metavariable whose scope has a binder of the body | Postponed on that metavariable. Its later solution could be captured by a binder nothing renamed |
+| `instantiateScheme` of a scheme mentioning a type or kind variable it does not declare, the caller's scope binding one of that name | A defect of the host. Judged only in the caller's scope, after substitution, the caller's variable would vouch for the scheme's |
 | A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
 | No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
 | No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |

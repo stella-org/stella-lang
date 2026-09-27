@@ -431,7 +431,8 @@ The generation is read before the slot, so a forged generation is reported as un
 ```text
 Type  =  { type : τ⁺ , kind : KindEvidence , scope : the rigid kind variables and
                                               the type variables, with their kinds,
-                                              it may mention free }
+                                              it may mention free
+         , builtIn : the build scope it was built in, if any }
 Expr  =  { term : e⁺ , claimed : τ⁺ }        the term held without annotations
 Goal  =  the goal the current attempt runs
 
@@ -530,6 +531,43 @@ ConstraintView  = LacksView RowKey Type | DisjointView Type Type
 
 **An observation changes the arena and nothing else.** It issues handles for the parts it shows; no metavariable, obligation, job, or unit of fuel is touched, so reading is never what makes two runs of one goal differ.
 
+### Types are built in a build scope
+
+```text
+rootScope         : Elab Scope
+typeVariable      : Scope -> a -> Elab Type
+typeConstructor   : Scope -> T -> [KindView] -> Elab Type
+applyType         : Scope -> Type -> Type -> Elab Type
+emptyRow          : Scope -> Elab Type
+openForall        : Scope -> String -> KindView
+                      -> Elab { binder : Binder, variable : Type, bodyScope : Scope }
+closeForall       : Scope -> Binder -> Type -> Elab Type
+instantiateForall : Scope -> Type -> Type -> Elab Type
+instantiateScheme : Scope -> QIdent -> [KindView] -> Elab Type
+```
+
+**A `Scope` is an opaque handle naming what a type built in it may mention.** The root is the running site's context; `openForall` gives a child scope binding one variable more. `Scope` and `Binder` are handle classes like the others, attempt-scoped and resolved by the same checks. Every `Type` records the build scope it was built in, and **a builder uses a type only where it was built in the scope given or in one of its ancestors** — never in a descendant, where a variable the type mentions is not bound, and never in a sibling.
+
+**No builder merges the scopes of the types it is given.** Two binders opened alike, with one kind and one hint, are still two binders, and only the scope a type was built in says which one it mentions; a builder that merged scopes would let a type from one `forall` body be closed under the other.
+
+**A type observed rather than built carries the scope it came from.**
+
+| Observed | Build scope |
+| --- | --- |
+| `goalType`, `typeOf`, `localContext`, `localConstraints` | the root |
+| a catalog scheme, from `lookupGlobal` | none |
+| `whnf` of a type | the type's |
+| a part a view takes — a head, an argument, a row's payload, a constraint's row | the whole's |
+| the body of a `forall`, or of a constraint | none |
+
+A type in no build scope reaches a builder only through the operation that opens it: **`instantiateForall`** for a `forall`, and **`instantiateScheme`** for a scheme, which reads the entry from the catalog by name and judges it in its own scope — at `Type`, under the kind variables it declares and no type variable, as `lookupGlobal` does — before the caller's scope is involved. A variable free in the scheme would otherwise be taken for one of the caller's sharing its name, and a scheme failing that judgement is a defect of the host, whose catalog it is. A scheme's parts inheriting the root's scope would let its kind variables reach a type without being instantiated, and a `forall` body inheriting its parent's would let its binder escape.
+
+**The host ABI is first order.** Opening a `forall` hands back a binder, the variable it binds, and the scope its body is built in, and closing it takes the three back, in the scope it was opened in; no request of the host waits on a guest closure. The variable is named after the hint and drawn from a supply of fresh names that is part of what an attempt owns, so a rolled-back attempt returns the names and scopes it drew, and a re-run draws the same ones.
+
+**`instantiateForall` zonks both sides, then substitutes capture-avoidingly**: a binder of the body that the argument mentions free is renamed, to a name drawn from the same supply of fresh binder names, before the substitution passes it. Zonking the argument first is what lets a binder named only by a solved metavariable's solution be seen. **An unsolved metavariable that could come to mention a variable the substitution treats specially postpones the instantiation until it is solved** — one in the body whose scope has the binder or a binder being renamed, and one in the argument whose scope has a binder of the body. The substitution stops at an unsolved metavariable, so the first's later solution could mention a binder the result no longer has, and the second's could be captured by a binder that was not renamed. This is waiting for information and not a defect: which substitution is safe is decided by a solution not yet made.
+
+**Every result is kinded by the read-only kinding judgement under its scope**, and a kind a builder is given must be settled there: `KindAnyRow` is evidence rather than a kind, and cannot be written. A builder asked for what cannot be built — a kind that does not fit, a type from another scope, a binder closed where it was not opened, a scheme the catalog lacks or given the wrong number of kinds — refuses it as a defect of the synthesizer. Whether a candidate fits a goal is `unify`'s to decide, and a candidate a builder refuses is not one.
+
 ### The catalog
 
 `lookupGlobal` and `declsWithAttr` read one immutable catalog, assembled before the first job exists ([above](#the-module-environment-is-built-once-before-any-job-exists)).
@@ -563,8 +601,8 @@ A guest cannot build the host's diagnostic, which names sites and holds Core⁺;
 | | Examples | Outcome | Caught by `transact` |
 | --- | --- | --- | --- |
 | **program diagnostic** | an equation no substitution satisfies; an obligation broken or rejected; a result escaping its scope; a result whose claim the goal's type refutes; a `throw` | `Failed` | yes |
-| **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session | `Broke`, naming the synthesizer and the goal | no |
-| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; the mechanism's own invariants | `Broke` | no |
+| **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session; a builder asked for what cannot be built | `Broke`, naming the synthesizer and the goal | no |
+| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; a catalog scheme ill-formed under what it declares; the mechanism's own invariants | `Broke` | no |
 
 **A `SynthRef` with no implementation is the host's defect and not the program's.** Name resolution resolved it against `Σ` where the goal was written ([above](#what-a-synthesis-goal-carries)), so the name exists; a session unable to run what it names was set up without it.
 

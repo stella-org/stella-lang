@@ -28,6 +28,9 @@ module Stella.Compiler.Elaborate.Handle
   , GoalObject
   , TypeObject
   , ExprObject
+  , ScopeObject
+  , BinderObject(..)
+  , ScopeId(..)
   , HandleObject(..)
   , Arena
   , HandleError(..)
@@ -41,15 +44,19 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.Elaborate.Context (XContext)
+import Stella.Compiler.Elaborate.Kind (XKind)
 import Stella.Compiler.Elaborate.Kinding (KindEvidence, KindingScope)
 import Stella.Compiler.Elaborate.Pending (GoalRecord, PendingId)
 import Stella.Compiler.Elaborate.Term (XExpr)
 import Stella.Compiler.Elaborate.Type (MetaVar, XType)
+import Stella.Compiler.TypedCore (TyVar)
 import Data.Either (Either(..))
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
+import Data.Set (Set)
 import Data.Show.Generic (genericShow)
 import Data.Tuple (Tuple(..))
 
@@ -62,6 +69,8 @@ data HandleClass
   | TypeClass
   | ExprClass
   | MetaClass
+  | ScopeClass
+  | BinderClass
 
 newtype Handle = Handle
   { session :: SessionId
@@ -85,7 +94,30 @@ type TypeObject =
   { type :: XType
   , kind :: KindEvidence
   , scope :: KindingScope
+  , builtIn :: Maybe ScopeId
   }
+
+-- | A build scope: where a builder assembles types. `ancestors` are the scopes
+-- | it was opened inside, and `context` is what it binds, which is what a type
+-- | built in it is kinded under.
+type ScopeObject =
+  { id :: ScopeId
+  , ancestors :: Set ScopeId
+  , context :: XContext
+  }
+
+-- | What an open operation hands back to be closed: the binder a `forall` was
+-- | opened with, the scope it was opened in, and the scope its body is built in.
+data BinderObject = ForallBinder
+  { name :: TyVar
+  , kind :: XKind
+  , parent :: ScopeId
+  , body :: ScopeId
+  }
+
+-- | The identity of a build scope within an attempt. The root, opened on the
+-- | site of the running job, is 0.
+newtype ScopeId = ScopeId P.Int
 
 -- | A term, held without annotations, with the type it is claimed to have.
 type ExprObject =
@@ -102,6 +134,8 @@ data HandleObject
   | TypeObject TypeObject
   | ExprObject ExprObject
   | MetaObject MetaVar
+  | ScopeObject ScopeObject
+  | BinderObject BinderObject
 
 type Arena =
   { slots :: Map P.Int { generation :: P.Int, object :: HandleObject }
@@ -131,6 +165,8 @@ objectClass = case _ of
   TypeObject _ -> TypeClass
   ExprObject _ -> ExprClass
   MetaObject _ -> MetaClass
+  ScopeObject _ -> ScopeClass
+  BinderObject _ -> BinderClass
 
 -- | Place an object in the next slot, under the generation given. The caller
 -- | supplies a generation no handle has carried before.
@@ -171,6 +207,16 @@ instance Show HandleClass where
 
 derive instance Eq Handle
 derive newtype instance Show Handle
+
+derive instance Eq ScopeId
+derive instance Ord ScopeId
+derive newtype instance Show ScopeId
+
+derive instance Eq BinderObject
+derive instance Generic BinderObject _
+
+instance Show BinderObject where
+  show x = genericShow x
 
 derive instance Eq HandleObject
 derive instance Generic HandleObject _

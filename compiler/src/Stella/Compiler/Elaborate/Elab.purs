@@ -53,6 +53,10 @@ module Stella.Compiler.Elaborate.Elab
   , resolveType
   , resolveExpr
   , resolveMeta
+  , resolveScope
+  , resolveBinder
+  , freshScopeId
+  , freshBinderName
   , spendFuel
   , fuelRemaining
   ) where
@@ -67,7 +71,7 @@ import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..), MalformedGoal(..))
 import Stella.Compiler.Elaborate.Kind (XKind)
 import Stella.Compiler.Elaborate.Kinding (KindingEnv, emptyKindingEnv)
-import Stella.Compiler.Elaborate.Handle (Arena, ExprObject, GoalObject, Handle, HandleClass(..), HandleError(..), HandleObject(..), SessionId, TypeObject, emptyArena, issueIn, resolveIn)
+import Stella.Compiler.Elaborate.Handle (Arena, ExprObject, GoalObject, Handle, HandleClass(..), HandleError(..), HandleObject(..), BinderObject, ScopeId(..), ScopeObject, SessionId, TypeObject, emptyArena, issueIn, resolveIn)
 import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce, recheck)
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, GoalRecord, Job(..), PendingId, Site, SynthRef, goalOf, newGoal)
 import Stella.Compiler.Elaborate.Row (XRowError)
@@ -76,6 +80,7 @@ import Stella.Compiler.Elaborate.Term (TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
 import Stella.Compiler.Elaborate.TermMeta as TermMeta
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint, XType(..))
+import Stella.Compiler.TypedCore (TyVar(..))
 import Stella.Compiler.Elaborate.Unify (MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupTermMeta, substitute, unifyType)
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
@@ -110,12 +115,18 @@ import Data.Tuple (Tuple(..))
 -- | goal would be woken by work that had nothing to do with it; and a handle
 -- | would outlive the attempt a synthesizer is obliged to hold nothing across.
 -- | Inside an attempt both are transactional, as everything else here is.
+-- |
+-- | `names` are the supplies build scopes and the binders a builder opens draw
+-- | from. They are restored by a rollback like every other supply of names, so
+-- | a goal run twice against the same state opens the same scopes and binds the
+-- | same names; what tells a handle from a stale one is the generation, not these.
 type Tentative =
   { metas :: MetaContext
   , obligations :: ObligationStore
   , scheduler :: Scheduler
   , written :: Set MetaVar
   , arena :: Arena
+  , names :: { nextScope :: P.Int, nextBinder :: P.Int }
   }
 
 -- | What a rollback leaves alone.
@@ -234,6 +245,7 @@ initialState session fuel =
       , scheduler: emptyScheduler
       , written: Set.empty
       , arena: emptyArena
+      , names: { nextScope: 1, nextBinder: 0 }
       }
   , retained: { session, nextGeneration: 0, fuel }
   }
@@ -340,6 +352,30 @@ resolveMeta :: Handle -> Elab MetaVar
 resolveMeta handle = resolveObject MetaClass handle >>= case _ of
   MetaObject m -> pure m
   _ -> break (InvalidHandle handle (HandleClassMismatch MetaClass))
+
+resolveScope :: Handle -> Elab ScopeObject
+resolveScope handle = resolveObject ScopeClass handle >>= case _ of
+  ScopeObject scope -> pure scope
+  _ -> break (InvalidHandle handle (HandleClassMismatch ScopeClass))
+
+resolveBinder :: Handle -> Elab BinderObject
+resolveBinder handle = resolveObject BinderClass handle >>= case _ of
+  BinderObject binder -> pure binder
+  _ -> break (InvalidHandle handle (HandleClassMismatch BinderClass))
+
+-- | The identity of a build scope opened in this attempt. The root is 0.
+freshScopeId :: Elab ScopeId
+freshScopeId = Elab \_ s ->
+  Tuple (Done (ScopeId s.tentative.names.nextScope))
+    (s { tentative { names { nextScope = s.tentative.names.nextScope + 1 } } })
+
+-- | A type variable a builder binds, named after the hint given. The `#` no
+-- | source identifier holds keeps it apart from every name an author wrote, and
+-- | the number from every other name a builder took.
+freshBinderName :: P.String -> Elab TyVar
+freshBinderName hint = Elab \_ s ->
+  Tuple (Done (TyVar (hint <> "#" <> show s.tentative.names.nextBinder)))
+    (s { tentative { names { nextBinder = s.tentative.names.nextBinder + 1 } } })
 
 -- | One unit of the loop's budget.
 -- |

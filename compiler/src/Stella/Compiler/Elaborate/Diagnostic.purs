@@ -14,9 +14,12 @@ module Stella.Compiler.Elaborate.Diagnostic
   , Defect(..)
   , Inadmissible(..)
   , MalformedGoal(..)
+  , BuildError(..)
   ) where
 
 import Prelude
+
+import Prim as P
 
 import Stella.Compiler.Elaborate.Context (Origin)
 import Stella.Compiler.Elaborate.Handle (Handle, HandleError)
@@ -29,6 +32,7 @@ import Stella.Compiler.Elaborate.Term (TermMetaVar)
 import Stella.Compiler.Elaborate.Type (MetaVar, XType)
 import Stella.Compiler.Elaborate.Row (XRowError)
 import Stella.Compiler.Elaborate.Unify (UnifyError)
+import Stella.Compiler.TypedCore (Ident, Qualified, TyVar)
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Generic.Rep (class Generic)
 import Data.Show.Generic (genericShow)
@@ -102,6 +106,10 @@ data Defect
   -- | A session that has issued every generation it can. A generation is never
   -- | issued twice, which is what an old handle failing to match rests on.
   | GenerationsExhausted
+  -- | A builder asked for what cannot be built: a synthesizer's misuse of the
+  -- | kernel, not a candidate that does not fit, which is what `unify` inside a
+  -- | `transact` decides.
+  | BuildRejected BuildError
   -- | A kernel operation that reads where it stands, run with no frame: outside
   -- | any attempt. The host called it where it had no site to give.
   | NoFrame
@@ -156,6 +164,28 @@ data MalformedGoal
   -- | solution is narrowed with it.
   | TargetScopeWider TermMetaVar
 
+-- | Why a builder refused.
+data BuildError
+  -- | A type built in a scope that is neither the one given nor one of its
+  -- | ancestors, or observed where no builder may use it: under a binder, or in a
+  -- | catalog scheme not yet instantiated.
+  = ScopeViolation Handle
+  -- | What was asked for is not well-kinded.
+  | IllKinded KindingFault
+  -- | `instantiateForall` given a type that is not a `forall`.
+  | NotAForall Handle
+  -- | A binder closed in a scope other than the one it was opened in.
+  | BinderMisuse Handle
+  -- | `KindAnyRow` given where a kind is asked for. It is evidence a row may
+  -- | carry, and no kind.
+  | AnyRowAsKind
+  -- | A type variable the scope does not bind.
+  | UnboundTypeVariable TyVar
+  -- | A name the catalog does not hold.
+  | UnknownScheme (Qualified Ident)
+  -- | A scheme instantiated with another number of kinds than it binds.
+  | SchemeArity (Qualified Ident) P.Int P.Int
+
 -- | Why a postponement cannot be admitted, read against `Ψ` as the rollback
 -- | leaves it.
 data Inadmissible
@@ -180,6 +210,12 @@ derive instance Eq Defect
 derive instance Generic Defect _
 
 instance Show Defect where
+  show x = genericShow x
+
+derive instance Eq BuildError
+derive instance Generic BuildError _
+
+instance Show BuildError where
   show x = genericShow x
 
 derive instance Eq MalformedGoal

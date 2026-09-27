@@ -26,6 +26,7 @@ import Test.Stella.Compiler.Elaborate.Handle as ElaborateHandle
 import Test.Stella.Compiler.Elaborate.Kinding as ElaborateKinding
 import Test.Stella.Compiler.Elaborate.Loop as ElaborateLoop
 import Test.Stella.Compiler.Elaborate.Obligation as ElaborateObligation
+import Test.Stella.Compiler.Elaborate.Build as ElaborateBuild
 import Test.Stella.Compiler.Elaborate.Observe as ElaborateObserve
 import Test.Stella.Compiler.Elaborate.Run as ElaborateRun
 import Test.Stella.Compiler.Elaborate.Scheduler as ElaborateScheduler
@@ -78,3 +79,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateHandle.spec
   ElaborateKinding.spec
   ElaborateObserve.spec
+  ElaborateBuild.spec

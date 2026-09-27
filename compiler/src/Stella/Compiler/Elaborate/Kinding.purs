@@ -24,6 +24,7 @@ module Stella.Compiler.Elaborate.Kinding
   , checkKind
   , settled
   , settledIn
+  , quantifiable
   , wellFormedKey
   ) where
 

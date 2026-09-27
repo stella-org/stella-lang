@@ -22,6 +22,7 @@ import Stella.Compiler.Elaborate.Run (runAttempt)
 import Stella.Compiler.Elaborate.Type (MetaVar(..), XType(..))
 import Stella.Compiler.Elaborate.Unify (UnifyError(..))
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..), TyName(..))
+import Data.Maybe (Maybe(..))
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst)
 import Effect.Aff (Aff)
@@ -38,10 +39,10 @@ tB :: XType
 tB = XCon (Qualified prim (TyName "B")) []
 
 typeA :: HandleObject
-typeA = TypeObject { type: tA, kind: ExactKind XKType, scope: emptyScope }
+typeA = TypeObject { type: tA, kind: ExactKind XKType, scope: emptyScope, builtIn: Nothing }
 
 typeB :: HandleObject
-typeB = TypeObject { type: tB, kind: ExactKind XKType, scope: emptyScope }
+typeB = TypeObject { type: tB, kind: ExactKind XKType, scope: emptyScope, builtIn: Nothing }
 
 session :: SolverState
 session = initialState (SessionId 0) 10
@@ -79,7 +80,7 @@ spec = describe "Elaborate.Handle" do
   describe "resolving" do
     it "gives back the object a handle names, as the class it was issued for" do
       produced (runElab session (issue typeA >>= resolveType)) \object _ ->
-        object `shouldEqual` { type: tA, kind: ExactKind XKType, scope: emptyScope }
+        object `shouldEqual` { type: tA, kind: ExactKind XKType, scope: emptyScope, builtIn: Nothing }
 
     it "refuses a handle presented as another class" do
       produced (runElab session (issue typeA)) \h s ->
@@ -111,7 +112,7 @@ spec = describe "Elaborate.Handle" do
           before <- issue typeA
           issuedAndDiscarded
           resolveType before
-      produced (runElab session action) \object _ -> object `shouldEqual` { type: tA, kind: ExactKind XKType, scope: emptyScope }
+      produced (runElab session action) \object _ -> object `shouldEqual` { type: tA, kind: ExactKind XKType, scope: emptyScope, builtIn: Nothing }
 
     it "loses a handle issued inside a transact that rolled back" do
       -- The discarded candidate was the first thing issued a handle. Presenting
@@ -129,7 +130,7 @@ spec = describe "Elaborate.Handle" do
         fields.slot `shouldEqual` 0
         fields.generation `shouldEqual` 1
         fst (runElab s (resolveType (first TypeClass))) `shouldEqual` Broke (InvalidHandle (first TypeClass) StaleHandle)
-        fst (runElab s (resolveType new)) `shouldEqual` Done { type: tB, kind: ExactKind XKType, scope: emptyScope }
+        fst (runElab s (resolveType new)) `shouldEqual` Done { type: tB, kind: ExactKind XKType, scope: emptyScope, builtIn: Nothing }
 
     it "does not give back a generation when it rolls back" do
       produced (runElab session issuedAndDiscarded) \_ s ->

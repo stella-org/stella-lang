@@ -35,7 +35,7 @@ import Prim as P
 import Stella.Compiler.Elaborate.Catalog (lookupEntry, namesWithAttr)
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..))
 import Stella.Compiler.Elaborate.Elab (Elab, Frame, askEnv, break, currentMetas, issue, resolveExpr, resolveGoal, resolveType)
-import Stella.Compiler.Elaborate.Handle (Handle, HandleObject(..))
+import Stella.Compiler.Elaborate.Handle (Handle, HandleObject(..), ScopeId(..))
 import Stella.Compiler.Elaborate.Kind (XKind(..), fromCoreKind)
 import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), KindingFault(..), KindingScope, settledIn, synthKind)
 import Stella.Compiler.Elaborate.Pending (goalOf)
@@ -43,10 +43,9 @@ import Stella.Compiler.Elaborate.Row (xnf)
 import Stella.Compiler.Elaborate.Type (XConstraint(..), XRowEntry(..), XType(..))
 import Stella.Compiler.Elaborate.Unify (substitute)
 import Stella.Compiler.Elaborate.View (ConstraintView(..), ContextEntry, DeclView, KindView(..), PayloadView(..), RowView, TypeView(..))
-import Stella.Compiler.TypedCore (Ident, Qualified, RowElemKind(..), RowKey(..), TyVar)
+import Stella.Compiler.TypedCore (Ident, Qualified, RowElemKind(..), RowKey(..))
 import Data.Array as Array
 import Data.Either (Either(..))
-import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set as Set
@@ -67,7 +66,7 @@ goalType handle = do
     Nothing -> break NoGoal
     Just current
       | current.id /= goal.id -> break (GoalNotCurrent goal.id current.id)
-      | otherwise -> issueTypeAt (siteScope frame) (Just XKType) (goalOf current.goal).expectedType
+      | otherwise -> issueTypeAt root (siteScope frame) (Just XKType) (goalOf current.goal).expectedType
 
 -- | A type one level deep, zonked first.
 viewType :: Handle -> Elab TypeView
@@ -76,6 +75,7 @@ viewType handle = do
   metas <- currentMetas
   let
     vars = object.scope
+    builtIn = object.builtIn
   case substitute metas object.type of
     XVar a -> pure (VarType a)
     XMeta m -> MetaType <$> issue (MetaObject m)
@@ -85,16 +85,16 @@ viewType handle = do
       case headKind of
         ExactKind (XKFun domain result) ->
           AppType
-            <$> issueTypeAt vars (Just (XKFun domain result)) f
-            <*> issueTypeAt vars (Just domain) a
+            <$> issueTypeAt builtIn vars (Just (XKFun domain result)) f
+            <*> issueTypeAt builtIn vars (Just domain) a
         ExactKind other -> break (KindingFailed (NotAFunctionKind other))
         AnyRow -> break (KindingFailed (KindMismatch AnyRow (XKFun XKType XKType)))
     XForall a kind body -> do
       k <- settledKind vars kind
-      ForallType a <$> kindView vars k <*> issueTypeAt (vars { tyVars = Map.insert a k vars.tyVars }) (Just XKType) body
+      ForallType a <$> kindView vars k <*> issueTypeAt Nothing (vars { tyVars = Map.insert a k vars.tyVars }) (Just XKType) body
     XConstrained c body ->
-      ConstrainedType <$> constraintView vars c <*> issueTypeAt vars (Just XKType) body
-    row -> NormalRow <$> rowView handle vars object.kind row
+      ConstrainedType <$> constraintView builtIn vars c <*> issueTypeAt Nothing vars (Just XKType) body
+    row -> NormalRow <$> rowView handle builtIn vars object.kind row
 
 -- | The same type, zonked. There is no computation at the type level (D1), so
 -- | the weak head normal form of a type is the type with what `Ψ` has solved
@@ -110,7 +110,7 @@ normalizeRow :: Handle -> Elab RowView
 normalizeRow handle = do
   object <- resolveType handle
   metas <- currentMetas
-  rowView handle object.scope object.kind (substitute metas object.type)
+  rowView handle object.builtIn object.scope object.kind (substitute metas object.type)
 
 -- | The kind evidence a type handle holds.
 kindOf :: Handle -> Elab KindView
@@ -125,7 +125,7 @@ typeOf :: Handle -> Elab Handle
 typeOf handle = do
   object <- resolveExpr handle
   frame <- currentFrame
-  issueTypeAt (siteScope frame) (Just XKType) object.claimed
+  issueTypeAt root (siteScope frame) (Just XKType) object.claimed
 
 -- | The site's bindings, in ascending order of name, each with its type.
 localContext :: Elab (P.Array ContextEntry)
@@ -134,14 +134,14 @@ localContext = do
   let
     vars = siteScope frame
   traverse
-    (\(Tuple name ty) -> { name, type: _ } <$> issueTypeAt vars (Just XKType) ty)
+    (\(Tuple name ty) -> { name, type: _ } <$> issueTypeAt root vars (Just XKType) ty)
     (Map.toUnfoldable frame.site.context.vars :: P.Array (Tuple Ident XType))
 
 -- | The row constraints the site assumes, in the order they were assumed.
 localConstraints :: Elab (P.Array ConstraintView)
 localConstraints = do
   frame <- currentFrame
-  traverse (constraintView (siteScope frame)) frame.site.context.assumed
+  traverse (constraintView root (siteScope frame)) frame.site.context.assumed
 
 -- | A catalog entry, with its scheme's body at `Type`, zonked when read.
 lookupGlobal :: Qualified Ident -> Elab (Maybe DeclView)
@@ -150,7 +150,7 @@ lookupGlobal name = do
   case lookupEntry env.session.catalog name of
     Nothing -> pure Nothing
     Just entry -> do
-      scheme <- issueTypeAt { kindVars: Set.fromFoldable entry.scheme.kindVars, tyVars: Map.empty } (Just XKType) entry.scheme.body
+      scheme <- issueTypeAt Nothing { kindVars: Set.fromFoldable entry.scheme.kindVars, tyVars: Map.empty } (Just XKType) entry.scheme.body
       pure
         ( Just
             { name: entry.name
@@ -175,6 +175,12 @@ currentFrame = do
     Just frame -> pure frame
     Nothing -> break NoFrame
 
+-- | The root build scope, opened on the site of the running job. What the site
+-- | gives — its bindings, its assumptions, the goal's type, a term's claimed
+-- | type — is built in it.
+root :: Maybe ScopeId
+root = Just (ScopeId 0)
+
 siteScope :: Frame -> KindingScope
 siteScope frame = { kindVars: frame.site.context.kindVars, tyVars: frame.site.context.tyVars }
 
@@ -184,8 +190,8 @@ siteScope frame = { kindVars: frame.site.context.kindVars, tyVars: frame.site.co
 -- | it refines what the judgement alone says of a row standing at any row kind.
 -- | A type the judgement refuses, or one not standing at the kind given, is a
 -- | defect.
-issueTypeAt :: KindingScope -> Maybe XKind -> XType -> Elab Handle
-issueTypeAt vars expected ty = do
+issueTypeAt :: Maybe ScopeId -> KindingScope -> Maybe XKind -> XType -> Elab Handle
+issueTypeAt builtIn vars expected ty = do
   metas <- currentMetas
   let
     zonked = substitute metas ty
@@ -195,11 +201,11 @@ issueTypeAt vars expected ty = do
     AnyRow, Just k@(XKRow _) -> pure (ExactKind k)
     ExactKind k, Just k' | k == k' -> pure evidence
     _, Just k -> break (KindingFailed (KindMismatch evidence k))
-  issue (TypeObject { type: zonked, kind, scope: vars })
+  issue (TypeObject { type: zonked, kind, scope: vars, builtIn })
 
 -- | A row view of a type at the kind evidence given.
-rowView :: Handle -> KindingScope -> KindEvidence -> XType -> Elab RowView
-rowView handle vars evidence row = do
+rowView :: Handle -> Maybe ScopeId -> KindingScope -> KindEvidence -> XType -> Elab RowView
+rowView handle builtIn vars evidence row = do
   elementKind <- case evidence of
     ExactKind (XKRow e) -> pure (Just e)
     AnyRow -> pure Nothing
@@ -208,31 +214,31 @@ rowView handle vars evidence row = do
     Left _ -> break (NotARowType handle)
     Right n -> do
       known <- traverse
-        (\(Tuple key entry) -> { key, payload: _ } <$> payloadView vars entry)
+        (\(Tuple key entry) -> { key, payload: _ } <$> payloadView builtIn vars entry)
         (Map.toUnfoldable n.known :: P.Array (Tuple RowKey XRowEntry))
       flexible <- traverse (issue <<< MetaObject) (Set.toUnfoldable n.flexible)
       pure { elementKind, known, rigid: Set.toUnfoldable n.rigid, flexible }
 
-payloadView :: KindingScope -> XRowEntry -> Elab PayloadView
-payloadView vars = case _ of
-  XRowTypeEntry _ ty -> TypePayload <$> issueTypeAt vars (Just XKType) ty
+payloadView :: Maybe ScopeId -> KindingScope -> XRowEntry -> Elab PayloadView
+payloadView builtIn vars = case _ of
+  XRowTypeEntry _ ty -> TypePayload <$> issueTypeAt builtIn vars (Just XKType) ty
   XRowEffectEntry e args -> EffectPayload e <$> effectArgs e args
   XRowLabelledEffectEntry _ e args -> EffectPayload e <$> effectArgs e args
   XRowRegionEntry var cells ->
     RegionPayload
-      <$> issueTypeAt vars (Just XKType) var
-      <*> issueTypeAt vars (Just (XKRow RowType)) cells
+      <$> issueTypeAt builtIn vars (Just XKType) var
+      <*> issueTypeAt builtIn vars (Just (XKRow RowType)) cells
   where
   effectArgs e args = do
     env <- askEnv
     case Map.lookup e env.session.kinding.effects of
       Nothing -> break (KindingFailed (UnknownEffect e))
       Just params ->
-        traverse (\(Tuple k a) -> issueTypeAt vars (Just (fromCoreKind k)) a) (Array.zip params args)
+        traverse (\(Tuple k a) -> issueTypeAt builtIn vars (Just (fromCoreKind k)) a) (Array.zip params args)
 
-constraintView :: KindingScope -> XConstraint -> Elab ConstraintView
-constraintView vars = case _ of
-  XLacks key row -> LacksView key <$> issueTypeAt vars (keyRowKind key) row
+constraintView :: Maybe ScopeId -> KindingScope -> XConstraint -> Elab ConstraintView
+constraintView builtIn vars = case _ of
+  XLacks key row -> LacksView key <$> issueTypeAt builtIn vars (keyRowKind key) row
   XDisjoint l r -> do
     left <- synthAt vars l
     right <- synthAt vars r
@@ -241,7 +247,7 @@ constraintView vars = case _ of
         ExactKind k, _ -> Just k
         _, ExactKind k -> Just k
         _, _ -> Nothing
-    DisjointView <$> issueTypeAt vars shared l <*> issueTypeAt vars shared r
+    DisjointView <$> issueTypeAt builtIn vars shared l <*> issueTypeAt builtIn vars shared r
 
 keyRowKind :: RowKey -> Maybe XKind
 keyRowKind = case _ of

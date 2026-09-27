@@ -17,7 +17,7 @@ import Stella.Compiler.Elaborate.Catalog (EntrySort(..), catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, assume, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.Elab (Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, issue, runElabIn, throw, withFrame)
-import Stella.Compiler.Elaborate.Handle (Handle, HandleClass(..), HandleError(..), HandleObject(..), SessionId(..))
+import Stella.Compiler.Elaborate.Handle (Handle, HandleClass(..), HandleError(..), HandleObject(..), ScopeId(..), SessionId(..))
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), KindingEnv, KindingFault(..))
 import Stella.Compiler.Elaborate.Observe (declsWithAttr, goalType, kindOf, localConstraints, localContext, lookupGlobal, normalizeRow, typeOf, viewType)
@@ -126,7 +126,7 @@ outcomeOf s action = fst (runElabIn session s (withFrame frame action))
 -- | A handle to a type standing at the kind evidence given, under the site's
 -- | variables.
 typeHandle :: XType -> KindEvidence -> Elab Handle
-typeHandle ty kind = issue (TypeObject { type: ty, kind, scope: { kindVars: context.kindVars, tyVars: context.tyVars } })
+typeHandle ty kind = issue (TypeObject { type: ty, kind, scope: { kindVars: context.kindVars, tyVars: context.tyVars }, builtIn: Just (ScopeId 0) })
 
 -- | The type of `y`, from the local context.
 typeOfY :: Elab Handle
