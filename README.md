@@ -47,12 +47,17 @@ This particular idea was inspired by F*.
 
 ## Roadmap
 
-- The kind-and-type checking around the functional core of the language
-- MiddleEnd: IR design and optimization
-- Frontend: Surface language syntax, parser
-- Typeclasses over syntax macro system
-- Core package: `Base` and `Prelude`
-- The first backend: JavaScript and WebAssembly
-- Standard libraries
-- Build system: the Lazuli package manager
-- Ecosystem: LSP, ide support, formatter and coding agent plugins
+- ✅️ `TypedCore`, the central representation with explicit types and kinds
+- ✅️ Bytecode compiler
+- ✅️ STEAM, the bytecode interpreter with multi-shot continuation over explicit stack
+- ☑️ Core⁺ and Elaborator API ... *WIP*
+- ☑️ The first two backend: JavaScript and WebAssembly ... *WIP*
+- ☑️ CST parser, Macro Expander and SurfaceAST
+- ☑️ MiddleEnd: IR design and optimization
+- ☑️ Suspension and concurrent primitives, `Async` effect
+- ☑️ First-class Parser API
+- ☑️ The standard library `Prelude`
+- ☑️ portable libraries around `Prelude`
+- ☑️ Typeclasses over syntax macro system
+- ☑️ Build system: the Lazuli package manager
+- ☑️ Ecosystem: LSP, IDE support, Formatter and Coding Agent Plugins
