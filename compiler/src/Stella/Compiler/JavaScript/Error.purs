@@ -10,7 +10,6 @@ import Prim as P
 import Data.Generic.Rep (class Generic)
 import Data.Show.Generic (genericShow)
 import Stella.Compiler.Bytecode.Bytes (EncodeError)
-import Stella.Compiler.Primitive (PrimOp)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, ModuleName, Qualified)
 
 data JsError
@@ -21,10 +20,6 @@ data JsError
   -- | handed across without its bytes is accepted exactly where its bytes would
   -- | have been written and read back.
   | NotEncodable EncodeError
-  -- | An operation this backend does not carry out yet. `PRIMS` holds every
-  -- | operation a module carries out, saturated or waiting in a partial
-  -- | application, so one is refused whether or not anything saturates it.
-  | OperationNotImplemented PrimOp
   -- | A module under a name the implicit environment holds. `Prim` is Core's own
   -- | vocabulary and no file declares it.
   | ReservedModuleName ModuleName

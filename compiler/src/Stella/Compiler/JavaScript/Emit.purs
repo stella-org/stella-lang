@@ -112,7 +112,8 @@ emit options fm = do
 
   initTop i g = S.Statement case g.init of
     GFunc (FuncIx f) -> S.Assign (S.Ident (globalName i)) (S.New (rtMember "Closure") [ S.Ident (fnName f), S.Array [] ])
-    GRun (FuncIx f) -> S.Assign (S.Ident (globalName i)) (rtCall "runGlobal" [ S.Ident (fnName f) ])
+    -- a fault ending initialization says which global it ended at
+    GRun (FuncIx f) -> S.Assign (S.Ident (globalName i)) (rtCall "initialize" [ S.String (qualifiedText g.name), S.Ident (fnName f) ])
 
   ownGlobalIndex q = Array.findIndex (\g -> g.name == q) dmo.globals
 
@@ -322,10 +323,7 @@ expr fm = case _ of
   Prim op args -> operation op (map reg args)
 
 operation :: PrimOp -> P.Array S.Expr -> S.Expr
-operation op args = case inline op of
-  Just f -> f args
-  -- refused while the module was cut into segments
-  Nothing -> rtCall "unreachable" [ S.String ("the operation " <> qualifiedText (entryOfOp op)) ]
+operation op args = inline op args
 
 target :: FrameModule -> Target -> S.Expr
 target fm = case _ of

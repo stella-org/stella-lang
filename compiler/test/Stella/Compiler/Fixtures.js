@@ -57,6 +57,7 @@ export const parseManifestImpl = (k) => (text) => {
     modules: m.modules,
     loads: "loads" in m.outcome,
     mentions: "refusedAtLoad" in m.outcome ? m.outcome.refusedAtLoad.mentions : "",
+    faults: "faultsAtLoad" in m.outcome ? m.outcome.faultsAtLoad.global : "",
     observe: m.observe.map((o) => ({ global: o.global, value: value(o.value) })),
   };
 };

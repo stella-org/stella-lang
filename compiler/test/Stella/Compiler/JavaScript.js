@@ -19,14 +19,22 @@ export const importGeneratedImpl = (files) => (entry) => (onError, onSuccess) =>
   return (cancelError, onCancelerError, onCancelerSuccess) => onCancelerSuccess();
 };
 
-// The message of whatever importing the entry module threw, or "" where it loaded.
+// How importing the entry module ended: whether it loaded, and where it did not,
+// the message of what it threw, whether that was a Stella fault, and the global
+// whose initialization a fault ended.
 export const importFailureImpl = (files) => (entry) => (onError, onSuccess) => {
   try {
     const dir = mkdtempSync(join(tmpdir(), "stella-js-"));
     for (const file of files) writeFileSync(join(dir, file.name), file.source);
     import(pathToFileURL(join(dir, entry)).href).then(
-      () => onSuccess(""),
-      (e) => onSuccess(String(e && e.message)),
+      () => onSuccess({ loaded: true, message: "", fault: false, global: "" }),
+      (e) =>
+        onSuccess({
+          loaded: false,
+          message: String(e && e.message),
+          fault: !!e && e.name === "StellaFault",
+          global: (e && e.global) || "",
+        }),
     );
   } catch (e) {
     onError(e);

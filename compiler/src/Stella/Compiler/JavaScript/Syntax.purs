@@ -74,10 +74,10 @@ type Module = P.Array Top
 -- Printing -------------------------------------------------------------------------
 
 print :: Module -> P.String
-print tops = String.joinWith "\n" (map top tops) <> "\n"
+print tops = String.joinWith "\n" (map topLevel tops) <> "\n"
 
-top :: Top -> P.String
-top = case _ of
+topLevel :: Top -> P.String
+topLevel = case _ of
   ImportNamed names from ->
     "import { " <> String.joinWith ", " (map (\(Tuple ext local) -> stringLiteral ext <> " as " <> local) names)
       <> " } from "

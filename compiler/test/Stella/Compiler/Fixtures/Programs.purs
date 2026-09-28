@@ -39,9 +39,14 @@ module Test.Stella.Compiler.Fixtures.Programs
   , mainModule
   , without
   , refsOnly
-  , numberModule
-  , papOnly
   , expected
+  , abiSignature
+  , baseModules
+  , opsModule
+  , opsExpected
+  , FaultCase
+  , faultCases
+  , faultModule
   ) where
 
 import Prelude
@@ -49,10 +54,14 @@ import Prelude
 import Prim as P
 
 import Data.Array as Array
+import Data.Enum (toEnum)
+import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
+import Data.String.CodePoints as CodePoints
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.TypedCore (CtorBranch, Decl(..), DecisionTree(..), Export(..), Expr(..), Ident(..), JoinName(..), Kind(..), LitBranch, Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), monoScheme, scalarString, scalarStringOf, scalarValue)
-import Stella.Compiler.TypedCore.Prim (booleanTy, intTy, numberTy, pureFn, recordTy, unitCtor, unitTy, variantTy)
+import Stella.Compiler.TypedCore (CtorBranch, Decl(..), DecisionTree(..), Export(..), Expr(..), Ident(..), JoinName(..), Kind(..), LitBranch, Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), monoScheme, primSignature, scalarString, scalarStringOf, scalarValue)
+import Stella.Compiler.TypedCore.Prim (booleanTy, charTy, intTy, numberTy, pureFn, recordTy, stringTy, unitCtor, unitTy, variantTy)
+import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
 import Test.Stella.Compiler.Fixtures.Value (Expected(..), ExpectedKey(..))
 
 -- Names --------------------------------------------------------------------------------
@@ -153,18 +162,36 @@ litCase scrutinee branches default =
 
 -- The modules ----------------------------------------------------------------------------
 
+-- | `Base.Int`, every entry of `stella-base-0.1`. Each is an operation, so what
+-- | carries it out is settled by its name where the module is used.
 intModule :: Module P.Int
-intModule =
+intModule = baseModule intName
+  [ Tuple "add" (fn2 int int int)
+  , Tuple "sub" (fn2 int int int)
+  , Tuple "mul" (fn2 int int int)
+  , Tuple "quot" (fn2 int int int)
+  , Tuple "rem" (fn2 int int int)
+  , Tuple "eq" (fn2 int int bool)
+  , Tuple "lt" (fn2 int int bool)
+  , Tuple "toNumber" (pureFn int number)
+  , Tuple "toString" (pureFn int string)
+  ]
+
+-- | A module of `foreign` declarations, one per entry, all exported.
+baseModule :: ModuleName -> P.Array (Tuple P.String Type) -> Module P.Int
+baseModule name entries =
   { annotation: 0
-  , name: intName
+  , name
   , imports: []
-  , exports: map (ExportValue <<< Ident) [ "add", "sub", "mul", "eq", "lt" ]
+  , exports: map (\(Tuple x _) -> ExportValue (Ident x)) entries
   , decls:
-      [ op 1 "add" int, op 2 "sub" int, op 3 "mul" int, op 4 "eq" bool, op 5 "lt" bool ]
+      Array.mapWithIndex
+        (\i (Tuple x ty) -> DeclForeign (i + 1) { name: Ident x, scheme: monoScheme ty, attributes: [] })
+        entries
   }
-  where
-  op at name result = DeclForeign at
-    { name: Ident name, scheme: monoScheme (pureFn int (pureFn int result)), attributes: [] }
+
+fn2 :: Type -> Type -> Type -> Type
+fn2 a b r = pureFn a (pureFn b r)
 
 -- | `data Box = Box Int`, `unbox`, and `addTo`, whose definitional arity is two.
 libModule :: Module P.Int
@@ -406,35 +433,249 @@ refsOnly =
       ]
   }
 
--- | `module Base.Number where foreign add : Number -> Number -> Number`, which the
--- | ABI fixes as an operation this backend does not carry out yet.
-numberModule :: Module P.Int
-numberModule =
-  { annotation: 0
-  , name: ModuleName "Base.Number"
-  , imports: []
-  , exports: [ ExportValue (Ident "add") ]
-  , decls:
-      [ DeclForeign 1
-          { name: Ident "add", scheme: monoScheme (pureFn number (pureFn number number)), attributes: [] }
-      ]
-  }
+-- The operations ----------------------------------------------------------------------------
+
+numberName :: ModuleName
+numberName = ModuleName "Base.Number"
+
+stringName :: ModuleName
+stringName = ModuleName "Base.String"
+
+charName :: ModuleName
+charName = ModuleName "Base.Char"
+
+arrayName :: ModuleName
+arrayName = ModuleName "Base.Array"
 
 number :: Type
 number = TCon numberTy []
 
--- | `plusOne = Base.Number.add 1.0`: the operation applied short of its arity, and
--- | saturated nowhere in the module.
-papOnly :: Module P.Int
-papOnly =
+string :: Type
+string = TCon stringTy []
+
+char' :: Type
+char' = TCon charTy []
+
+unitType :: Type
+unitType = TCon unitTy []
+
+arrayTyName :: Qualified TyName
+arrayTyName = Qualified arrayName (TyName "Array")
+
+arrayOf :: Type -> Type
+arrayOf t = TApp (TCon arrayTyName []) t
+
+-- | `Σ_Prim` with what the ABI manifest supplies to `Base.Array`: the type
+-- | constructor `Array`, an intrinsic of the opaque class. No declaration produces
+-- | it ([Prim and Base](../../../../../docs/technical-references/06-Modules/02-Prim-and-Base.md)).
+abiSignature :: Signature
+abiSignature = primSignature
+  { types = Map.insert arrayTyName
+      (IntrinsicTyCon (monoScheme (KFun KType KType)) CanonicalOpaque)
+      primSignature.types
+  }
+
+numberModule :: Module P.Int
+numberModule = baseModule numberName
+  [ Tuple "add" (fn2 number number number)
+  , Tuple "sub" (fn2 number number number)
+  , Tuple "mul" (fn2 number number number)
+  , Tuple "divide" (fn2 number number number)
+  , Tuple "negate" (pureFn number number)
+  , Tuple "eq" (fn2 number number bool)
+  , Tuple "lt" (fn2 number number bool)
+  , Tuple "floor" (pureFn number number)
+  , Tuple "ceil" (pureFn number number)
+  , Tuple "trunc" (pureFn number number)
+  , Tuple "toInt" (pureFn number int)
+  , Tuple "toString" (pureFn number string)
+  ]
+
+stringModule :: Module P.Int
+stringModule = baseModule stringName
+  [ Tuple "length" (pureFn string int)
+  , Tuple "codePointAt" (fn2 int string char')
+  , Tuple "append" (fn2 string string string)
+  , Tuple "slice" (pureFn int (fn2 int string string))
+  , Tuple "singleton" (pureFn char' string)
+  , Tuple "eq" (fn2 string string bool)
+  , Tuple "lt" (fn2 string string bool)
+  ]
+
+charModule :: Module P.Int
+charModule = baseModule charName
+  [ Tuple "toCodePoint" (pureFn char' int)
+  , Tuple "fromCodePoint" (pureFn int char')
+  ]
+
+-- | `Base.Array`. A kind scheme binds kind variables only (D3), so the type-level
+-- | `forall` is part of each type.
+arrayModule :: Module P.Int
+arrayModule = baseModule arrayName
+  [ Tuple "length" (forallA (pureFn (arrayOf a) int))
+  , Tuple "unsafeNew" (forallA (pureFn int (arrayOf a)))
+  , Tuple "unsafeSet" (forallA (pureFn int (fn2 a (arrayOf a) unitType)))
+  , Tuple "unsafeIndex" (forallA (fn2 (arrayOf a) int a))
+  ]
+  where
+  a = TVar (TyVar "a")
+  forallA = TForall (TyVar "a") KType
+
+baseModules :: P.Array (Module P.Int)
+baseModules = [ intModule, numberModule, stringModule, charModule, arrayModule ]
+
+call :: ModuleName -> P.String -> P.Array (Expr P.Int) -> Expr P.Int
+call m x = app (global (Qualified m (Ident x)))
+
+-- | An entry of `Base.Array` at `Int`.
+arrayCall :: P.String -> P.Array (Expr P.Int) -> Expr P.Int
+arrayCall x = app (TyApp 0 (global (Qualified arrayName (Ident x))) int)
+
+text :: P.String -> Expr P.Int
+text = Lit 0 <<< str
+
+-- | The string of one scalar value, written by its code rather than in the source.
+scalar :: P.Int -> P.String
+scalar c = fromMaybe "" (CodePoints.singleton <$> toEnum c)
+
+minInt :: P.Int
+minInt = -2147483648
+
+maxInt :: P.Int
+maxInt = 2147483647
+
+nan :: P.Number
+nan = 0.0 / 0.0
+
+-- | One value of `Main` over the operations: its name, type, right-hand side, and
+-- | what it holds, fixed from the ABI's meaning by hand
+-- | ([Prim and Base](../../../../../docs/technical-references/06-Modules/02-Prim-and-Base.md)).
+type OpValue = { name :: P.String, ty :: Type, value :: Expr P.Int, holds :: Expected }
+
+opValues :: P.Array OpValue
+opValues =
+  [ v "intAddWraps" int (call intName "add" [ lit maxInt, lit 1 ]) (EInt minInt)
+  , v "intSubWraps" int (call intName "sub" [ lit minInt, lit 1 ]) (EInt maxInt)
+  , v "intMulWraps" int (call intName "mul" [ lit 65536, lit 65536 ]) (EInt 0)
+  -- the exact product needs more than 53 bits; `(a * b) | 0` would give 0
+  , v "intMulWide" int (call intName "mul" [ lit maxInt, lit maxInt ]) (EInt 1)
+  , v "quotOverflows" int (call intName "quot" [ lit minInt, lit (-1) ]) (EInt minInt)
+  , v "remOverflows" int (call intName "rem" [ lit minInt, lit (-1) ]) (EInt 0)
+  , v "quotTruncates" int (call intName "quot" [ lit 7, lit (-2) ]) (EInt (-3))
+  , v "remTakesDividendSign" int (call intName "rem" [ lit (-7), lit 2 ]) (EInt (-1))
+  , v "intEq" bool (call intName "eq" [ lit 3, lit 3 ]) (EBoolean true)
+  , v "intLt" bool (call intName "lt" [ lit 3, lit 2 ]) (EBoolean false)
+  , v "intToNumber" number (call intName "toNumber" [ lit (-5) ]) (ENumber (-5.0))
+  -- negating first would overflow and print a second minus sign or none
+  , v "intToStringMin" string (call intName "toString" [ lit minInt ]) (EString "-2147483648")
+  , v "numberAdd" number (call numberName "add" [ num 0.1, num 0.2 ]) (ENumber (0.1 + 0.2))
+  , v "subZero" number (call numberName "sub" [ num 0.0, num 0.0 ]) (ENumber 0.0)
+  , v "negateZero" number (call numberName "negate" [ num 0.0 ]) (ENumber (-0.0))
+  , v "divideByZero" number (call numberName "divide" [ num 1.0, num 0.0 ]) (ENumber (1.0 / 0.0))
+  , v "numberMul" number (call numberName "mul" [ num 0.1, num 3.0 ]) (ENumber (0.1 * 3.0))
+  , v "eqNaN" bool (call numberName "eq" [ num nan, num nan ]) (EBoolean false)
+  , v "eqZeros" bool (call numberName "eq" [ num 0.0, num (-0.0) ]) (EBoolean true)
+  , v "ltNaN" bool (call numberName "lt" [ num nan, num 1.0 ]) (EBoolean false)
+  , v "floorNegative" number (call numberName "floor" [ num (-0.5) ]) (ENumber (-1.0))
+  , v "ceilPositive" number (call numberName "ceil" [ num 0.2 ]) (ENumber 1.0)
+  , v "truncNegative" number (call numberName "trunc" [ num (-0.5) ]) (ENumber (-0.0))
+  , v "toIntNaN" int (call numberName "toInt" [ num nan ]) (EInt 0)
+  -- saturating; a conversion by `| 0` gives 1410065408
+  , v "toIntLarge" int (call numberName "toInt" [ num 1.0e10 ]) (EInt maxInt)
+  , v "toIntNegative" int (call numberName "toInt" [ num (-2.9) ]) (EInt (-2))
+  , v "toStringExponent" string (call numberName "toString" [ num 1.0e21 ]) (EString "1e+21")
+  , v "toStringPositional" string (call numberName "toString" [ num 1.0e20 ]) (EString "100000000000000000000")
+  , v "toStringSmall" string (call numberName "toString" [ num 1.0e-7 ]) (EString "1e-7")
+  , v "toStringTenth" string (call numberName "toString" [ num 0.1 ]) (EString "0.1")
+  , v "toStringNegativeZero" string (call numberName "toString" [ num (-0.0) ]) (EString "0")
+  , v "stringLength" int (call stringName "length" [ text ("a" <> smile <> "bc") ]) (EInt 4)
+  , v "codePointAtAstral" char' (call stringName "codePointAt" [ lit 1, text ("a" <> smile <> "bc") ]) (EChar 0x1F600)
+  , v "appendStrings" string (call stringName "append" [ text "ab", text "c" ]) (EString "abc")
+  , v "sliceScalars" string (call stringName "slice" [ lit 1, lit 3, text ("a" <> smile <> "bc") ]) (EString (smile <> "b"))
+  , v "singletonAstral" string (call stringName "singleton" [ call charName "fromCodePoint" [ lit 0x1F600 ] ]) (EString smile)
+  , v "stringEq" bool (call stringName "eq" [ text "a", text "a" ]) (EBoolean true)
+  -- by scalar value; JavaScript's `<` over code units says false
+  , v "ltAstral" bool (call stringName "lt" [ text (scalar 0xE000), text smile ]) (EBoolean true)
+  , v "ltPrefix" bool (call stringName "lt" [ text "ab", text "abc" ]) (EBoolean true)
+  , v "ltSame" bool (call stringName "lt" [ text "abc", text "abc" ]) (EBoolean false)
+  , v "charRoundTrip" int (call charName "toCodePoint" [ call charName "fromCodePoint" [ lit 0x1F600 ] ]) (EInt 0x1F600)
+  -- every slot written before one is read, so the precondition of `unsafeIndex`
+  -- holds (D42)
+  , v "arrayReadBack" int
+      ( let' "xs" (arrayOf int) (arrayCall "unsafeNew" [ lit 2 ])
+          $ let' "w0" unitType (arrayCall "unsafeSet" [ lit 0, lit 10, var "xs" ])
+          $ let' "w1" unitType (arrayCall "unsafeSet" [ lit 1, lit 20, var "xs" ])
+          $ arrayCall "unsafeIndex" [ var "xs", lit 1 ]
+      )
+      (EInt 20)
+  , v "arrayLength" int (arrayCall "length" [ arrayCall "unsafeNew" [ lit 3 ] ]) (EInt 3)
+  -- an operation applied short of its arity is carried out once, when the last
+  -- argument arrives
+  , v "arraySetLater" int
+      ( let' "setFirst" (fn2 int (arrayOf int) unitType) (arrayCall "unsafeSet" [ lit 0 ])
+          $ let' "xs" (arrayOf int) (arrayCall "unsafeNew" [ lit 1 ])
+          $ let' "w" unitType (app (var "setFirst") [ lit 7, var "xs" ])
+          $ arrayCall "unsafeIndex" [ var "xs", lit 0 ]
+      )
+      (EInt 7)
+  , v "numberAddLater" number
+      (let' "plus" (pureFn number number) (call numberName "add" [ num 1.5 ]) (app (var "plus") [ num 1.0 ]))
+      (ENumber 2.5)
+  ]
+  where
+  v name ty value holds = { name, ty, value, holds }
+  smile = scalar 0x1F600
+
+-- | `Main` over every operation, each value computing one from literals.
+opsModule :: Module P.Int
+opsModule =
   { annotation: 0
   , name: mainName
-  , imports: [ ModuleName "Base.Number" ]
-  , exports: [ ExportValue (Ident "plusOne") ]
-  , decls:
-      [ nonrec 1 "plusOne" (pureFn number number) $
-          app (global (Qualified (ModuleName "Base.Number") (Ident "add"))) [ num 1.0 ]
-      ]
+  , imports: map _.name baseModules
+  , exports: map (\o -> ExportValue (Ident o.name)) opValues
+  , decls: Array.mapWithIndex (\i o -> nonrec (i + 1) o.name o.ty o.value) opValues
+  }
+
+opsExpected :: P.Array (Tuple P.String Expected)
+opsExpected = map (\o -> Tuple o.name o.holds) opValues
+
+-- | One way an operation faults: a `Main` whose one global carries it out on
+-- | inputs the ABI says it faults on, so initializing that global is where the
+-- | fault must end loading.
+type FaultCase = { name :: P.String, description :: P.String, ty :: Type, value :: Expr P.Int }
+
+faultCases :: P.Array FaultCase
+faultCases =
+  [ f "fault-quot-zero" "Base.Int.quot by zero" int (call intName "quot" [ lit 1, lit 0 ])
+  , f "fault-rem-zero" "Base.Int.rem by zero" int (call intName "rem" [ lit 1, lit 0 ])
+  , f "fault-code-point-at-outside" "Base.String.codePointAt at an index past the last scalar value" char'
+      (call stringName "codePointAt" [ lit 4, text ("a" <> scalar 0x1F600 <> "bc") ])
+  , f "fault-slice-reversed" "Base.String.slice with its start past its end" string (call stringName "slice" [ lit 2, lit 1, text "abc" ])
+  , f "fault-slice-past-end" "Base.String.slice with its end past the length" string (call stringName "slice" [ lit 0, lit 4, text "abc" ])
+  , f "fault-slice-negative" "Base.String.slice with a negative start, which is not counted from the end" string (call stringName "slice" [ lit (-1), lit 2, text "abc" ])
+  , f "fault-from-code-point-surrogate" "Base.Char.fromCodePoint of a surrogate" char' (call charName "fromCodePoint" [ lit 0xD800 ])
+  , f "fault-from-code-point-above" "Base.Char.fromCodePoint past 0x10FFFF" char' (call charName "fromCodePoint" [ lit 0x110000 ])
+  , f "fault-from-code-point-negative" "Base.Char.fromCodePoint of a negative number" char' (call charName "fromCodePoint" [ lit (-1) ])
+  , f "fault-array-new-negative" "Base.Array.unsafeNew with a negative count" (arrayOf int) (arrayCall "unsafeNew" [ lit (-1) ])
+  , f "fault-array-set-outside" "Base.Array.unsafeSet at an index outside the array" unitType
+      (let' "xs" (arrayOf int) (arrayCall "unsafeNew" [ lit 1 ]) (arrayCall "unsafeSet" [ lit 1, lit 5, var "xs" ]))
+  , f "fault-array-index-outside" "Base.Array.unsafeIndex at an index outside the array" int
+      ( let' "xs" (arrayOf int) (arrayCall "unsafeNew" [ lit 1 ])
+          $ let' "w" unitType (arrayCall "unsafeSet" [ lit 0, lit 5, var "xs" ])
+          $ arrayCall "unsafeIndex" [ var "xs", lit 1 ]
+      )
+  ]
+  where
+  f name description ty value = { name, description, ty, value }
+
+-- | The `Main` of a fault case: the one global, called `faulted`.
+faultModule :: FaultCase -> Module P.Int
+faultModule c =
+  { annotation: 0
+  , name: mainName
+  , imports: map _.name baseModules
+  , exports: []
+  , decls: [ nonrec 1 "faulted" c.ty c.value ]
   }
 
 -- | `Lib` exporting everything but `unbox`.

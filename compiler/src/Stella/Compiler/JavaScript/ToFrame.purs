@@ -28,7 +28,7 @@ import Data.Array as Array
 import Data.Either (Either(..), note)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), isNothing)
+import Data.Maybe (Maybe(..))
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), FuncIx(..), GlobalIx(..), Instr(..), JoinName(..), KeyIx(..), Node, PrimIx(..), Tail(..))
@@ -37,7 +37,6 @@ import Stella.Compiler.Bytecode.Module (Constant(..), Dmo, GlobalInit(..), Key(.
 import Stella.Compiler.Bytecode.Module as M
 import Stella.Compiler.JavaScript.Error (JsError(..))
 import Stella.Compiler.JavaScript.Frame (Block, Callee(..), CtorRef(..), Exit(..), Expr(..), FrameFunction, GlobalRef(..), Literal(..), Segment, SegmentId(..), Stmt(..), Target(..))
-import Stella.Compiler.JavaScript.Operation (inline)
 import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp)
 import Stella.Compiler.TypedCore.Domain (codePointOf)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..))
@@ -374,7 +373,6 @@ instrStmt scope = case _ of
     op <- primAt scope p
     when (Array.length args /= arityOfOp op)
       (Left (ArityMismatch (showName (entryOfOp op)) (arityOfOp op) (Array.length args)))
-    when (isNothing (inline op)) (Left (OperationNotImplemented op))
     pure (Set d (Prim op (regs args)))
   FFI _ _ _ -> Left (Unsupported "a foreign call")
   PERF _ _ _ _ -> Left (Unsupported "an effect operation")

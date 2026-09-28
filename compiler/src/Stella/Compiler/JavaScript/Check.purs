@@ -1,8 +1,9 @@
 -- | What a loader establishes of one module, established before code is generated.
 -- |
 -- | A decoder hands on every module whose bytes it can read; whether the module's
--- | declarations are its own, whether its globals are installable, and whether its
--- | operations are carried out are properties of the module and not of its bytes
+-- | declarations are its own, whether its globals are installable, and whether a
+-- | foreign the ABI fixes is declared as that entry are properties of the module and
+-- | not of its bytes
 -- | ([Encoding](../../../../../docs/technical-references/05-Backend/02-Encoding.md)).
 -- | Steam checks them where a module is loaded. Generated code has no such moment
 -- | for what one module decides alone, so this checks it here, and what another
@@ -23,7 +24,6 @@ import Data.Tuple (Tuple(..))
 import Stella.Compiler.Bytecode.Instr (FuncIx(..))
 import Stella.Compiler.Bytecode.Module (Dmo, GlobalInit(..))
 import Stella.Compiler.JavaScript.Error (JsError(..))
-import Stella.Compiler.JavaScript.Operation (inline)
 import Stella.Compiler.Primitive (lookupPrim)
 import Stella.Compiler.TypedCore.Name (ModuleName(..), Qualified(..))
 
@@ -62,9 +62,6 @@ check dmo = do
     Just entry | entry.arity /= f.arity -> Left (OperationDeclaredAtWrongArity f.name entry.arity f.arity)
     _ -> Right unit
 
-  for_ dmo.prims \op -> case inline op of
-    Nothing -> Left (OperationNotImplemented op)
-    Just _ -> Right unit
   where
   own :: forall a. Qualified a -> P.Boolean
   own q = qualifier q == dmo.name

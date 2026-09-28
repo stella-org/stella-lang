@@ -39,10 +39,11 @@ import Effect.Class (liftEffect)
 import Stella.Compiler.Bytecode (Dmo, decode, encode, lower)
 import Stella.Compiler.Interface (Dmi, importsOf, interfaceOf)
 import Stella.Compiler.MiddleEnd (translate)
-import Stella.Compiler.TypedCore (Ident(..), Module, ModuleName(..), Qualified(..), declareAnnotated, primSignature)
+import Stella.Compiler.Primitive (primTable)
+import Stella.Compiler.TypedCore (Ident(..), Module, ModuleName(..), Qualified(..), declareAnnotated)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Stella.Compiler.Fixtures.Programs (expected, intModule, libModule, libRenamed, libShrunk, libUnexported, mainModule, mainName, refsOnly, without)
+import Test.Stella.Compiler.Fixtures.Programs (abiSignature, baseModules, expected, faultCases, faultModule, intModule, libModule, libRenamed, libShrunk, libUnexported, mainModule, mainName, opsExpected, opsModule, refsOnly, without)
 import Test.Stella.Compiler.Fixtures.Value (Expected(..), ExpectedKey(..), jsonString, toJson)
 
 -- Reading and writing --------------------------------------------------------------
@@ -83,6 +84,7 @@ type Manifest =
   , modules :: P.Array P.String
   , loads :: P.Boolean
   , mentions :: P.String
+  , faults :: P.String
   , observe :: P.Array { global :: P.String, value :: Expected }
   }
 
@@ -112,7 +114,7 @@ type Compiled = { dmo :: Dmo, dmi :: Dmi }
 -- | Each module checked against the signatures before it and translated against
 -- | the interfaces of those it imports, then carried through the container.
 compileAll :: P.Array (Module P.Int) -> Either P.String (P.Array Compiled)
-compileAll modules = _.out <$> foldM step { signature: primSignature, dmis: [], out: [] } modules
+compileAll modules = _.out <$> foldM step { signature: abiSignature, dmis: [], out: [] } modules
   where
   step acc m = do
     declared <- stage "declare" (declareAnnotated acc.signature m)
@@ -135,6 +137,8 @@ data Outcome
   = Loads
   -- | Refused where the modules load, naming what is given.
   | RefusedAtLoad P.String
+  -- | Faulting where the modules load, as the named global is initialized.
+  | FaultsAtLoad P.String
 
 type Fixture =
   { name :: P.String
@@ -176,7 +180,22 @@ fixtures =
     , outcome: RefusedAtLoad "Box"
     , observe: []
     }
+  , { name: "operations"
+    , description: "Every operation of stella-base-0.1, including inputs where a host's own operator gives another answer, and operations applied short of their arity and saturated later"
+    , modules: map (map _.dmo) (compileAll (baseModules <> [ opsModule ]))
+    , outcome: Loads
+    , observe: opsExpected
+    }
   ]
+    <> map faultFixture faultCases
+  where
+  faultFixture c =
+    { name: c.name
+    , description: c.description <> ", which faults as Main.faulted is initialized"
+    , modules: map (map _.dmo) (compileAll (baseModules <> [ faultModule c ]))
+    , outcome: FaultsAtLoad "Main.faulted"
+    , observe: []
+    }
 
 -- | `main` compiled against `Lib` as written, loaded beside `lib` instead.
 against :: Module P.Int -> Module P.Int -> Either P.String (P.Array Dmo)
@@ -204,6 +223,7 @@ manifestText f dmos = String.joinWith "\n"
   outcomeJson = case f.outcome of
     Loads -> "{\"loads\": true}"
     RefusedAtLoad name -> "{\"refusedAtLoad\": {\"mentions\": " <> jsonString name <> "}}"
+    FaultsAtLoad global -> "{\"faultsAtLoad\": {\"global\": " <> jsonString global <> "}}"
 
   observed i (Tuple name value) =
     let
@@ -230,6 +250,18 @@ filesOf f = do
 
 spec :: Spec Unit
 spec = describe "the bytecode fixtures" do
+  -- `PRIMS` is the set of operations a module carries out, so an operation the
+  -- version holds and the fixture never uses is one no backend is checked on
+  it "carry out every operation of the version in the operations fixture" do
+    case compileAll (baseModules <> [ opsModule ]) of
+      Left err -> fail err
+      Right compiled -> case Array.last compiled of
+        Nothing -> fail "nothing compiled"
+        Just main ->
+          Array.filter (\entry -> not (Array.elem entry.op main.dmo.prims)) primTable
+            <#> (\entry -> show entry.op)
+            # (_ `shouldEqual` [])
+
   it "are what compiling their source gives now" do
     update <- liftEffect updating
     case traverse (\f -> map (Tuple f.name) (filesOf f)) fixtures of

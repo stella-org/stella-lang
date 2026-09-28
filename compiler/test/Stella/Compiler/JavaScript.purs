@@ -27,17 +27,16 @@ import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
 import Effect.Aff.Compat (EffectFnAff, fromEffectFnAff)
 import Effect.Class (liftEffect)
-import Stella.Compiler.Bytecode (CalleeEntry(..), CalleeIx(..), Dmo, EncodeError(..), FuncIx(..), GlobalInit(..), Instr(..), decode, encode)
+import Stella.Compiler.Bytecode (Dmo, EncodeError(..), FuncIx(..), GlobalInit(..), Instr(..), decode, encode)
 import Stella.Compiler.Bytecode as B
 import Stella.Compiler.JavaScript (JsError(..), fileName, generate)
-import Stella.Compiler.Primitive (PrimOp(..))
 import Stella.Compiler.TypedCore (Decl(..), Ident(..), ModuleName(..), Qualified(..), TyName(..), monoScheme)
 import Stella.Compiler.TypedCore.Prim (intTy, pureFn)
 import Stella.Compiler.TypedCore (Type(..)) as T
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 import Test.Stella.Compiler.Fixtures (Manifest, caseNames, compileAll, fixturesRoot, readBytes, readManifest)
-import Test.Stella.Compiler.Fixtures.Programs (inInt, inMain, intModule, libModule, mainModule, numberModule, papOnly)
+import Test.Stella.Compiler.Fixtures.Programs (inInt, inMain, intModule, libModule, mainModule)
 import Test.Stella.Compiler.Fixtures.Value (Expected(..), ExpectedKey(..))
 
 -- Running generated code ---------------------------------------------------------------
@@ -51,7 +50,9 @@ foreign import importGeneratedImpl
   :: P.Array { name :: P.String, source :: P.String } -> P.String -> EffectFnAff Namespace
 
 foreign import importFailureImpl
-  :: P.Array { name :: P.String, source :: P.String } -> P.String -> EffectFnAff P.String
+  :: P.Array { name :: P.String, source :: P.String }
+  -> P.String
+  -> EffectFnAff { loaded :: P.Boolean, message :: P.String, fault :: P.Boolean, global :: P.String }
 
 foreign import shapeOfImpl
   :: { number :: P.Number -> Shape
@@ -186,11 +187,15 @@ fixtureMismatches name = do
         )
         manifest.observe
     else do
-      message <- fromEffectFnAff (importFailureImpl files entry)
+      ended <- fromEffectFnAff (importFailureImpl files entry)
       pure
-        if message == "" then [ name <> ": loaded, and a refusal naming " <> manifest.mentions <> " was expected" ]
-        else if String.contains (String.Pattern manifest.mentions) message then []
-        else [ name <> ": refused as \"" <> message <> "\", not naming " <> manifest.mentions ]
+        if ended.loaded then [ name <> ": loaded, where the manifest says it does not" ]
+        -- a fault the manifest expects is one the named global's initialization ended at
+        else if manifest.faults /= "" then
+          if ended.fault && ended.global == manifest.faults then []
+          else [ name <> ": ended as \"" <> ended.message <> "\", not as a fault initializing " <> manifest.faults ]
+        else if not ended.fault && String.contains (String.Pattern manifest.mentions) ended.message then []
+        else [ name <> ": refused as \"" <> ended.message <> "\", not naming " <> manifest.mentions ]
 
   unqualified g = case String.lastIndexOf (String.Pattern ".") g of
     Just i -> String.drop (i + 1) g
@@ -249,17 +254,6 @@ spec = describe "the JavaScript backend" do
         Left err -> fail err
 
   describe "what the backend does not carry out yet" do
-    it "refuses an operation a partial application waits on, where nothing saturates it" do
-      case compileAll [ numberModule, papOnly ] of
-        Right [ _, main ] -> do
-          -- the module really holds a partial application of the operation
-          papOfNumberAdd main.dmo `shouldEqual` true
-          case generate { runtime: runtimeSpecifier } main.dmo of
-            Left (OperationNotImplemented NumberAdd) -> pure unit
-            other -> fail ("expected the operation to be refused, got " <> show (map (const unit) other))
-        Right _ -> fail "not two modules"
-        Left err -> fail err
-
     it "refuses a foreign it does not yet reach" do
       let
         withForeign = libModule
@@ -380,12 +374,6 @@ loaderRefusals =
         GlobalExpectsCaptures _ _ -> true
         _ -> false
     }
-  , { name: "an unimplemented operation only PRIMS holds"
-    , change: \m -> m.main { prims = m.main.prims <> [ NumberAdd ] }
-    , refusal: case _ of
-        OperationNotImplemented NumberAdd -> true
-        _ -> false
-    }
   , { name: "an operation declared at another arity"
     , change: \m -> m.int { foreigns = map (\f -> if f.name == inInt "add" then f { arity = 3 } else f) m.int.foreigns }
     , refusal: case _ of
@@ -400,10 +388,3 @@ installing :: P.String -> (P.Int -> GlobalInit) -> (B.Function -> P.Boolean) -> 
 installing name how which dmo = case Array.findIndex which dmo.functions of
   Nothing -> dmo
   Just i -> dmo { globals = map (\g -> if g.name == inMain name then g { init = how i } else g) dmo.globals }
-
-papOfNumberAdd :: Dmo -> P.Boolean
-papOfNumberAdd dmo = Array.any (\f -> Array.any isPap f.body.code) dmo.functions
-  where
-  isPap = case _ of
-    PAP _ (CalleeIx i) _ -> Array.index dmo.callees i == Just (CalleePrim NumberAdd)
-    _ -> false
