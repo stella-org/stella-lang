@@ -752,6 +752,11 @@ no identifier is at once ready and blocked
 | A literal built in the outer clause, and a handler there reading only its own cells, placed in the inner one | Built, both. Neither depends on a region |
 | A handler built in the outer clause whose own clause is a goal asked for there, unsolved, and solved to `readCell n`, placed in the inner one | Built, both. The goal is filled in the handler's own region, so neither depends on the outer one, and the scheduler's progress changes nothing |
 | A handler owning cells, built by the kernel and declared at its answer | Accepted by the Core type checker |
+| Every form of Core⁺ — term, decision tree, occurrence, and operation clause — built by the kernel's requests alone | Every form reached but `EHole`, which is the Surface elaborator's alone; `ETermMeta` by `subgoal` only. The forms are named by a function matching every constructor, so a new one is placed before anything compiles |
+| The target of a goal not yet run, crossing the boundary | Reported as a residue |
+| A kernel-built term committed as a goal's solution, zonked, crossed, and walked for references | Accepted by the Core type checker, its references the committed term's |
+| The same, after a candidate that opened a lambda and assigned the target a reference to another global, then failed inside a `transact` | The same term, and none of the candidate's references. The assignment, the names, and the handles went with the rollback |
+| `(λ(x : Int). x) true`, kernel-built and claimed at the goal's `Int`, committed as its solution | Committed, and refused by the Core type checker. A derived claim reads the syntax and proves nothing |
 | A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
 | No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
 | No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |

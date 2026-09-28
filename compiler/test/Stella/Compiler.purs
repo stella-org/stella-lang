@@ -34,6 +34,8 @@ import Test.Stella.Compiler.Elaborate.Joins as ElaborateJoins
 import Test.Stella.Compiler.Elaborate.Trees as ElaborateTrees
 import Test.Stella.Compiler.Elaborate.Records as ElaborateRecords
 import Test.Stella.Compiler.Elaborate.Handlers as ElaborateHandlers
+import Test.Stella.Compiler.Elaborate.Coverage as ElaborateCoverage
+import Test.Stella.Compiler.Elaborate.KernelVertical as ElaborateKernelVertical
 import Test.Stella.Compiler.Elaborate.Observe as ElaborateObserve
 import Test.Stella.Compiler.Elaborate.Run as ElaborateRun
 import Test.Stella.Compiler.Elaborate.Scheduler as ElaborateScheduler
@@ -94,3 +96,5 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateTrees.spec
   ElaborateRecords.spec
   ElaborateHandlers.spec
+  ElaborateCoverage.spec
+  ElaborateKernelVertical.spec

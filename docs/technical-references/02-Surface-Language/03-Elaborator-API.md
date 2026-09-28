@@ -723,6 +723,31 @@ writeCell   : Scope -> RowKey -> Expr -> Elab Expr
 
 **A term that depends on its region stands only in the region it was built in.** A cell is named by its key alone and means the innermost region's, so a `readCell n` built in one handler's clause and placed in a clause of another handler holding an `n` would read the other's cell. An `Expr` records the region its scope stands in, and a term depends on it where it reads or writes a cell outside every handler owning cells it binds, or holds, outside those handlers' clauses, an unsolved term metavariable created in a region — a goal asked for there, which a solution reading a cell may fill. **A goal asked for in a clause of a handler inside the term is filled in that handler's region, which the term binds itself**, so it is no dependence, solved or not: whether a term may be placed does not turn on how far the scheduler has got. Such a term is refused wherever it is used, and wherever a binder is closed over it, in another region. A term depending on none — pure, or a handler whose cells are all its own — stands anywhere its scope allows.
 
+### Every form of Core⁺, and the request that builds it
+
+| Form | Request |
+| --- | --- |
+| `EVar`, `EGlobal`, `ELit` | `localVariable`, `globalRef`, `literal` |
+| `ELam`, `EApp` | `openLambda` and `closeLambda`, `termApply` |
+| `ETyLam`, `ETyApp` | `openTypeAbs` and `closeTypeAbs`, `typeApply` |
+| `EConstraintLam`, `EConstraintApp` | `openConstraintAbs` and `closeConstraintAbs`, `constraintApply` |
+| `ELet`, `ELetRec` | `openLet` and `closeLet`, `openLetRec` and `closeLetRec` |
+| `ELetJoin`, `EJump` | `openJoin` and `closeJoin`, `jump` |
+| `ECase` | `openCase` and `closeCase` |
+| `XLeaf`, `XGuard`, `XBind` | `leaf`, `guard`, `openBind` and `closeBind` |
+| `XSwitchCtor`, `XSwitchLit`, `XSwitchKey` | `openSwitchCtor`, `openSwitchLit`, `openSwitchKey`, each closed by `closeSwitch` |
+| `OccScrutinee`, `OccField`, `OccVariantPayload`, `OccRecordField` | `openCase`'s scrutinees, `openSwitchCtor`'s fields, `openSwitchKey`'s payloads, `recordField`; an occurrence is never written by a synthesizer |
+| `ERecordEmpty`, `ERecordExtend`, `ERecordSelect`, `ERecordRestrict`, `ERecordUpdate`, `ERecordMerge` | `recordEmpty`, `recordExtend`, `recordSelect`, `recordRestrict`, `recordUpdate`, `recordMerge` |
+| `EVariantInject`, `EVariantWeaken`, `EVariantAbsurd` | `variantInject`, `variantWeaken`, `variantAbsurd` |
+| `EOpenEff` | `openEff` |
+| `EPerform` | `perform` |
+| `EHandle`, `XFullClause`, `XFastClause` | `openHandle` and `closeHandle`, a clause `full` or not |
+| `EReadCell`, `EWriteCell` | `readCell`, `writeCell` |
+| `ETermMeta` | `subgoal`, and nothing else: a term metavariable is made together with the job that fills it |
+| `EHole` | none. A typed hole is the Surface elaborator's, for reporting and recovery |
+
+The table is complete, and a test holds it so: it builds every form but `EHole` by these requests alone — a term, a decision tree, an occurrence, and an operation clause — and names the forms by functions matching every constructor, so a form added to Core⁺ is placed on one side or the other before anything compiles. **What a request builds reaches the Core type checker only through the target it is committed to**: a candidate a `transact` discarded leaves no term, name, or reference behind, what does not resolve is reported as a residue, and a term in scope whose claim it does not bear out is built and committed here and refused there.
+
 ### The catalog
 
 `lookupGlobal` and `declsWithAttr` read one immutable catalog, assembled before the first job exists ([above](#the-module-environment-is-built-once-before-any-job-exists)).
