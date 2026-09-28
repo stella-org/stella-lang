@@ -1,11 +1,12 @@
 // What code the JavaScript backend generates runs on.
 //
 // A Stella function is generated as a set of *segments*: an entry segment, and one
-// for what follows each non-tail call. A segment runs to the next call and returns
-// a code saying what the run loop does next, so the host's call stack never holds
-// more than one segment. Activations live in frames on a stack of the runtime's
-// own, which is what lets a tail call push nothing and a deep recursion run in
-// bounded host stack.
+// for what follows each non-tail call, perform, and handler installation. A segment
+// runs to the next of those and returns a code saying what the run loop does next,
+// so the host's call stack never holds more than one segment. Activations live in
+// frames on a stack of the runtime's own, which is what lets a tail call push
+// nothing, a deep recursion run in bounded host stack, and a continuation be a run
+// of that stack taken off and re-pushed.
 //
 // Values are held as follows. The representation is this runtime's own and is not
 // a published ABI.
@@ -18,6 +19,7 @@
 //   variant            a `Variant`
 //   closure            a `Closure` over a function descriptor
 //   partial app        a `Pap`
+//   continuation       a `Continuation`
 
 // The codes a segment returns --------------------------------------------------
 
@@ -30,6 +32,17 @@ export const CALL = 1;
 export const TAIL = 2;
 // Continue the current frame at segment `m.seg`.
 export const RUN = 3;
+// Perform operation `m.op` of the effect keyed `m.key` with the argument `m.value`;
+// the value it gives goes into register `m.dest`, and the frame continues at
+// `m.resume`.
+export const PERF = 4;
+// Install the handler `m.handler` with the return clause `m.ret`, the operation
+// clauses `m.args`, and the initial cell values `m.cells`, and call the body
+// `m.callee`; the value goes into register `m.dest`, and the frame continues at
+// `m.resume`.
+export const HNDL = 5;
+// The same in tail position, pushing nothing for the current frame.
+export const TAILHNDL = 6;
 
 // Values ------------------------------------------------------------------------
 
@@ -59,6 +72,19 @@ export class Variant {
   constructor(k, v) {
     this.k = k;
     this.v = v;
+  }
+}
+
+// A captured run of stack entries, from the frame that performed an operation up to
+// and including the marker that answered it. The last entry is the top, so index 0
+// is that marker. It takes one argument, the value the perform gives.
+//
+// The captured entries are never the ones that run: each application re-pushes a
+// copy of them (`reinstate`), so a continuation may be applied any number of times
+// and each application proceeds from the state that was captured (D33).
+export class Continuation {
+  constructor(entries) {
+    this.entries = entries;
   }
 }
 
@@ -106,6 +132,15 @@ export const ctor = (name, arity) => {
   if (arity === 0) c.value = new Data(c, []);
   return c;
 };
+
+// A handler of the handler table: the key of the effect it answers, the key of each
+// cell of its region in order, and its operation clauses in the order a `HNDL`
+// supplies them, each `[op, fast]` with `fast` true for a `fast` clause.
+export const handler = (key, cells, clauses) => ({
+  key,
+  cells,
+  clauses: clauses.map(([op, fast]) => ({ op, fast })),
+});
 
 // A `Base` operation standing as a callee, for a partial application of it.
 export const prim = (name, arity, apply) => ({ kind: "prim", name, arity, apply });
@@ -156,10 +191,53 @@ class Resume {
   }
 }
 
-// Apply the value to `args`. An over-application leaves one behind.
+// Apply the value to `args`. An over-application leaves one behind, and so does a
+// continuation applied to more than one argument.
 class ApplyRemaining {
   constructor(args) {
     this.args = args;
+  }
+}
+
+// An installed handler: the key it answers, a clause per operation name, and the
+// return clause every value passes through.
+//
+// `owner` and `ownsRegion` are two facts. Installing a handler makes an owner, and
+// applying a continuation re-pushes the marker at its bottom as one that is not
+// (`reinstate`). `ownsRegion` says whether the entry directly below is the region
+// this marker opened: an owner of a handler with no cells owns none, and whatever
+// stands below it belongs to someone else.
+class Marker {
+  constructor(owner, ownsRegion, key, clauses, ret) {
+    this.owner = owner;
+    this.ownsRegion = ownsRegion;
+    this.key = key;
+    this.clauses = clauses;
+    this.ret = ret;
+  }
+}
+
+// A region of cells, which stands below the marker of the handler owning it. It is
+// part of the stack and not a store, so a captured segment carries the values its
+// cells held at the capture (D36). A cell is `{k, v}`: its key, and what it holds.
+class Region {
+  constructor(cells) {
+    this.cells = cells;
+  }
+}
+
+// Where a `fast` clause's body begins. Core binds that body outside the handler
+// that answered and outside everything between that handler and the `perform`
+// (D28), so a search for a marker or a cell that reaches this entry continues
+// directly below that handler's marker, which stands `dist` entries further down.
+//
+// The distance is relative, not a position: a `full` operation the body performs
+// may capture a segment holding this entry and re-push it anywhere, and the
+// handler's marker travels in the same segment. A value reaching it passes down
+// unchanged.
+class Boundary {
+  constructor(dist) {
+    this.dist = dist;
   }
 }
 
@@ -177,8 +255,103 @@ export class Machine {
     this.args = undefined;
     this.dest = 0;
     this.resume = null;
+    this.key = undefined;
+    this.op = undefined;
+    this.handler = undefined;
+    this.ret = undefined;
+    this.cells = undefined;
   }
 }
+
+// The first entry, from the top down, at which `test` answers with something, with
+// where it stands.
+//
+// **A `Boundary` is jumped over, together with everything below it down to and
+// including the marker of the handler whose `fast` clause is running**: the walk
+// continues directly below that marker, so what stood between the handler and the
+// `perform` is not seen, while the handler's own region, standing below its marker,
+// is. A marker search and a cell search read the stack by this one walk, which is
+// what keeps a perform and a cell access reaching the same context.
+const visible = (stack, test) => {
+  for (let i = stack.length - 1; i >= 0; ) {
+    const e = stack[i];
+    if (e instanceof Boundary) {
+      i -= e.dist + 1;
+      continue;
+    }
+    const found = test(e);
+    if (found !== undefined) return { at: i, found };
+    i--;
+  }
+  return undefined;
+};
+
+// The cell keyed thus of the innermost visible region declaring it.
+const cellOf = (m, key) => {
+  const hit = visible(m.stack, (e) => (e instanceof Region ? e.cells.find((c) => c.k === key) : undefined));
+  if (hit === undefined) bug(`no region declares the cell ${key}`);
+  return hit.found;
+};
+
+// The entries one application of a continuation pushes.
+//
+// What a segment holds that an application can change is the register array of
+// each frame in it and the cell slots of each region, so each is copied, holding
+// what it held at the capture; copying the array of entries alone would leave every
+// application sharing them, and the second would begin where the first stopped.
+// This relies on a frame being referred to by nothing but the one `Resume` holding
+// it and, while it runs, `m.frame`. The values those slots hold are shared, never
+// copied: an application reads the same value whichever copy holds it, and a value
+// written into in place, such as an array, is one value before the capture and
+// after.
+//
+// **The marker at the bottom is re-pushed as one that owns nothing**, whatever it
+// was captured as. The region its `handle` opened stayed behind when the segment
+// was taken, and closing it belongs to whoever holds it now; a marker left as the
+// owner would, on finishing, close whatever stands below it instead.
+const reinstate = (entries) =>
+  entries.map((e, i) => {
+    if (e instanceof Resume) return new Resume({ caps: e.frame.caps, r: e.frame.r.slice() }, e.dest, e.seg);
+    if (e instanceof Region) return new Region(e.cells.map((c) => ({ k: c.k, v: c.v })));
+    if (i === 0 && e instanceof Marker) return new Marker(false, false, e.key, e.clauses, e.ret);
+    return e;
+  });
+
+// Install a handler and call its body: its region, where it declares cells, and
+// above it the marker, which owns that region.
+const install = (m) => {
+  const h = m.handler;
+  const clauseValues = m.args;
+  const initial = m.cells;
+  if (clauseValues.length !== h.clauses.length || initial.length !== h.cells.length) {
+    bug(`the handler of ${h.key} installed with ${clauseValues.length} clause(s) and ${initial.length} cell(s)`);
+  }
+  const clauses = new Map(h.clauses.map((c, i) => [c.op, { fast: c.fast, clause: clauseValues[i] }]));
+  const owns = h.cells.length > 0;
+  if (owns) m.stack.push(new Region(h.cells.map((k, i) => ({ k, v: initial[i] }))));
+  m.stack.push(new Marker(true, owns, h.key, clauses, m.ret));
+  return apply(m, m.callee, []);
+};
+
+// Perform an operation: the innermost visible marker of the key answers, and the
+// form of its clause for the operation decides how (D28).
+const perform = (m) => {
+  const arg = m.value;
+  const hit = visible(m.stack, (e) => (e instanceof Marker && e.key === m.key ? e : undefined));
+  if (hit === undefined) bug(`no handler of ${m.key} is installed`);
+  const clause = hit.found.clauses.get(m.op);
+  if (clause === undefined) bug(`the handler of ${m.key} has no clause for ${m.op}`);
+  if (clause.fast) {
+    // the clause returns to the perform with its value, its body running outside
+    // the handler and outside what stands above it; the distance is measured from
+    // where the boundary stands, above the `Resume` just pushed
+    m.stack.push(new Boundary(m.stack.length - hit.at));
+    return apply(m, clause.clause, [arg]);
+  }
+  // the continuation begins at the perform, so the frame's `Resume` is part of it
+  const segment = m.stack.splice(hit.at);
+  return apply(m, clause.clause, [arg, new Continuation(segment)]);
+};
 
 // Apply a value to arguments, entering a frame or producing a value.
 //
@@ -209,6 +382,16 @@ const apply = (m, callee, args) => {
       args = callee.args.concat(args);
       callee = callee.callee;
       continue;
+    }
+    // the segment is re-pushed and the first argument reaches its top, the frame
+    // that performed; the rest is work pending on what the segment returns, so it
+    // stands below
+    if (callee instanceof Continuation) {
+      if (args.length === 0) bug("a continuation applied to nothing");
+      if (args.length > 1) m.stack.push(new ApplyRemaining(args.slice(1)));
+      for (const e of reinstate(callee.entries)) m.stack.push(e);
+      m.value = args[0];
+      return RET;
     }
     if (callee === null || typeof callee !== "object") bug("applying what is not callable");
     switch (callee.kind) {
@@ -256,6 +439,18 @@ const run = (m, code) => {
       case TAIL:
         code = apply(m, m.callee, m.args);
         break;
+      case PERF:
+        m.stack.push(new Resume(m.frame, m.dest, m.resume));
+        code = perform(m);
+        break;
+      case HNDL:
+        m.stack.push(new Resume(m.frame, m.dest, m.resume));
+        code = install(m);
+        break;
+      // in tail position nothing waits for the return clause's value
+      case TAILHNDL:
+        code = install(m);
+        break;
       case RET: {
         const entry = m.stack.pop();
         if (entry === undefined) return m.value;
@@ -264,9 +459,16 @@ const run = (m, code) => {
           m.frame = entry.frame;
           m.seg = entry.seg;
           code = RUN;
-        } else {
+        } else if (entry instanceof ApplyRemaining) {
           code = apply(m, m.value, entry.args);
+        } else if (entry instanceof Marker) {
+          // an owner closes the region it opened before its return clause runs; a
+          // marker owning none leaves what is below to whoever it belongs to
+          if (entry.ownsRegion && !(m.stack.pop() instanceof Region)) bug("no region below the marker owning it");
+          code = apply(m, entry.ret, [m.value]);
         }
+        // a region no marker owns closes with no return clause, and a `fast` clause's
+        // value passes its boundary on to the perform below
         break;
       }
       default:
@@ -352,6 +554,18 @@ export const payload = (variant, key) => {
 };
 
 export const unreachable = (what) => bug(what);
+
+// What the cell keyed thus holds, in the innermost region visible from the running
+// frame. The cell is found afresh each time: an application of a continuation
+// copies the regions it re-pushes, so a cell found before it is not the one after.
+export const cget = (m, key) => cellOf(m, key).v;
+
+// Replace what that cell holds. A write has no result of its own, so it gives
+// `Prim.Unit`.
+export const cset = (m, key, value) => {
+  cellOf(m, key).v = value;
+  return PrimUnit.value;
+};
 
 // Literal identity of a `Number` (D37): the bit pattern, with every NaN taken as one.
 // `0.0` and `-0.0` are two literals and a NaN is one, which strict equality gets wrong
