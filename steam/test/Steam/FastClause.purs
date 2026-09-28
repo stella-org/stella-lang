@@ -101,13 +101,13 @@ layoutRow :: Type
 layoutRow = TRowExtend (RowTypeEntry cellKey int) TRowEmpty
 
 layoutOver :: P.String -> Layout
-layoutOver var = { var: TyVar var, cells: [ { key: cellKey, ty: int } ] }
+layoutOver region = { var: TyVar region, cells: [ { key: cellKey, ty: int } ] }
 
 -- | `( region r ( n : Int ) | residual )`, the row a clause of a handler owning a
 -- | region stands at.
 clauseRowOver :: P.String -> Type -> Type
-clauseRowOver var residual =
-  TRowExtend (RowRegionEntry (TVar (TyVar var)) layoutRow) residual
+clauseRowOver region residual =
+  TRowExtend (RowRegionEntry (TVar (TyVar region)) layoutRow) residual
 
 -- | `Unit -{ ( Trigger ) }-> Int`, the type of every function that installs
 -- | something inside `Ev_k`.

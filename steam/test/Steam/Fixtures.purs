@@ -28,7 +28,8 @@ import Effect.Ref as Ref
 import Run (runBaseEffect)
 import Run.Except as Except
 import Steam.Foreign (emptyTable)
-import Steam.Load (Store, emptyStore, globalNamed, load, namesOf, noIdentities)
+import Steam.Eval (Failure(..))
+import Steam.Load (LoadError(..), Store, emptyStore, globalNamed, load, namesOf, noIdentities)
 import Steam.Structural (NumberAtom(..), StructuralValue(..), defaultLimits, inspect)
 import Stella.Compiler.Bytecode (decode)
 import Stella.Compiler.TypedCore (EffName(..), Ident(..), ModuleName(..), Qualified(..), RowKey(..), Symbol(..), Tag(..), codePointOf, sameNumber, textOf)
@@ -63,6 +64,7 @@ type Manifest =
   , modules :: P.Array P.String
   , loads :: P.Boolean
   , mentions :: P.String
+  , faults :: P.String
   , observe :: P.Array { global :: P.String, value :: Expected }
   }
 
@@ -162,12 +164,21 @@ fixtureMismatches name = liftEffect do
       case loaded of
         Left err
           | manifest.loads -> pure [ name <> ": refused as " <> show err ]
+          -- a fault the manifest expects is one the named global's initialization ended at
+          | manifest.faults /= "" -> pure case err of
+              InitializationFailed q (Faults _) | qualifiedText q == manifest.faults -> []
+              _ -> [ name <> ": ended as " <> show err <> ", not as a fault initializing " <> manifest.faults ]
+          | isFault err -> pure [ name <> ": faulted as " <> show err <> ", where a refusal naming " <> manifest.mentions <> " was expected" ]
           | String.contains (String.Pattern manifest.mentions) (show err) -> pure []
           | otherwise -> pure [ name <> ": refused as " <> show err <> ", not naming " <> manifest.mentions ]
         Right loadedStore
           | not manifest.loads -> pure [ name <> ": loaded, and a refusal naming " <> manifest.mentions <> " was expected" ]
           | otherwise -> map Array.catMaybes (traverse (observed loadedStore) manifest.observe)
   where
+  isFault = case _ of
+    InitializationFailed _ (Faults _) -> true
+    _ -> false
+
   observed :: Store -> { global :: P.String, value :: Expected } -> Effect (Maybe P.String)
   observed store o = do
     names <- namesOf store
@@ -188,3 +199,6 @@ spec = describe "Steam, over the bytecode fixtures" do
     when (Array.null names) (fail "no fixtures found")
     mismatches <- traverse fixtureMismatches names
     Array.concat mismatches `shouldEqual` []
+
+qualifiedText :: Qualified Ident -> P.String
+qualifiedText (Qualified (ModuleName m) (Ident x)) = m <> "." <> x
