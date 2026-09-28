@@ -25,6 +25,7 @@ module Stella.Compiler.Elaborate.Run
   , beginTransaction
   , commitTransaction
   , finishAttempt
+  , abandon
   ) where
 
 import Prelude
@@ -32,8 +33,8 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic, Inadmissible(..))
-import Stella.Compiler.Elaborate.Handle (emptyArena)
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, Tentative, break, checkSynthesisTarget, requireClosed, runElabIn, unify, withFrame)
+import Stella.Compiler.Elaborate.Handle (Handle, HandleObject(..), emptyArena)
+import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, Tentative, break, checkSynthesisTarget, issue, requireClosed, runElabIn, unify, withFrame)
 import Stella.Compiler.Elaborate.Protocol (ConversationId(..), TransactionToken(..))
 import Stella.Compiler.Elaborate.Pending (Job(..), Pending, PendingId, goalOf)
 import Stella.Compiler.Elaborate.Scheduler (complete, lookupPending, reblock, unwakeable)
@@ -46,7 +47,7 @@ import Data.Maybe (Maybe(..))
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
-import Data.Tuple (Tuple(..))
+import Data.Tuple (Tuple(..), uncurry)
 
 -- | What attempting a pending job came to, once the scheduler has acted on it.
 data Attempt
@@ -173,7 +174,8 @@ attemptPendingWith session runner id s0 = case openAttempt session id s0 of
 -- | queue, and holds the checkpoint of its attempt, the frame it runs under, and
 -- | the transactions open inside it. Those are the host's to control and none of
 -- | them is rolled back: the checkpoints hold what a rollback restores. The
--- | transactions stand innermost first.
+-- | transactions stand innermost first. A synthesis job's goal is issued a Goal
+-- | handle as the attempt opens, which the synthesizer is given.
 type Conversation =
   { id :: ConversationId
   , session :: SessionEnv
@@ -181,6 +183,7 @@ type Conversation =
   , frame :: Frame
   , root :: Tentative
   , state :: SolverState
+  , goal :: Maybe Handle
   , transactions :: P.Array { token :: TransactionToken, checkpoint :: Tentative }
   , nextSerial :: P.Int
   }
@@ -245,6 +248,7 @@ openAttempt session id s0 = case lookupPending s0.tentative.scheduler id of
             , session
             , pending: p
             , frame: frameOf p
+            , goal: Nothing
             , root
             , state: s0 { tentative = root, retained { nextConversation = s0.retained.nextConversation + 1 } }
             , transactions: []
@@ -252,14 +256,16 @@ openAttempt session id s0 = case lookupPending s0.tentative.scheduler id of
             }
         in
           case request (envelopeOf conversation) (checked p) conversation of
-            Answered _ opened -> Opened opened
+            Answered (Returned goal) opened -> Opened (opened { goal = goal })
+            Answered (CandidateFailed token _) opened -> uncurry OpenStopped (abandon opened (UnmatchedCandidateFailure token))
             Finished attempt s -> OpenStopped attempt s
   where
   -- A synthesis job's target is checked inside the attempt and before any
-  -- request, so a job that fails it runs no synthesizer and is rolled back.
+  -- request, so a job that fails it runs no synthesizer and is rolled back. The
+  -- goal is then issued its handle.
   checked p = case p.job of
-    JobSynthesis goal -> checkSynthesisTarget p.id p.site goal
-    JobUnify _ -> pure unit
+    JobSynthesis goal -> checkSynthesisTarget p.id p.site goal *> (Just <$> issue (GoalObject { id: p.id, goal }))
+    JobUnify _ -> pure Nothing
 
   -- The site the job was created at, and its goal where it has one. Nothing
   -- inside the attempt changes either.
@@ -353,6 +359,11 @@ mismatch envelope conversation
   | envelope.transaction /= innermost conversation =
       Just (TransactionMismatch { holding: innermost conversation, named: envelope.transaction })
   | otherwise = Nothing
+
+-- | End the attempt with the defect given, rolled back to its checkpoint: where
+-- | whoever drives the conversation finds the host at fault.
+abandon :: Conversation -> Defect -> Tuple Attempt SolverState
+abandon conversation defect = ended conversation (Broke defect) conversation.state
 
 finished :: forall a. Conversation -> Outcome Unit -> SolverState -> Step a
 finished conversation outcome s = case ended conversation outcome s of

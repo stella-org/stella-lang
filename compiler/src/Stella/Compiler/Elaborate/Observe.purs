@@ -35,7 +35,7 @@ import Prim as P
 import Stella.Compiler.Elaborate.Catalog (lookupEntry, namesWithAttr)
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..))
 import Stella.Compiler.Elaborate.Elab (Elab, Frame, askEnv, break, currentMetas, issue, resolveExpr, resolveGoal, resolveType)
-import Stella.Compiler.Elaborate.Handle (Handle, HandleObject(..), ScopeId(..))
+import Stella.Compiler.Elaborate.Handle (Handle, HandleObject(..), ScopeId, rootScopeId)
 import Stella.Compiler.Elaborate.Kind (XKind(..), fromCoreKind)
 import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), KindingFault(..), KindingScope, settledIn, synthKind)
 import Stella.Compiler.Elaborate.Pending (goalOf)
@@ -178,7 +178,7 @@ currentFrame = do
 -- | The root build scope, opened on the site of the running job. What the site
 -- | gives — its bindings, its assumptions, the goal's type — is built in it.
 root :: Maybe ScopeId
-root = Just (ScopeId 0)
+root = Just rootScopeId
 
 siteScope :: Frame -> KindingScope
 siteScope frame = { kindVars: frame.site.context.kindVars, tyVars: frame.site.context.tyVars }

@@ -27,6 +27,7 @@ import Stella.Compiler.Elaborate.Context (Origin)
 import Stella.Compiler.Elaborate.Handle (Handle, HandleError, ScopeId)
 import Stella.Compiler.Elaborate.Message (FrozenMessagePart, GoalSummary)
 import Stella.Compiler.Elaborate.Protocol (ConversationId, TransactionToken)
+import Stella.Compiler.Elaborate.Request (KernelAnswer, KernelRequest)
 import Stella.Compiler.Elaborate.Kinding (KindingFault)
 import Stella.Compiler.Elaborate.Obligation (Basis, Breach)
 import Stella.Compiler.Elaborate.Pending (Job, PendingId, SynthRef)
@@ -148,6 +149,16 @@ data Defect
   -- | A conversation that has issued every transaction token it can, for the
   -- | reason `ConversationsExhausted` gives.
   | TransactionsExhausted
+  -- | A candidate failure answered in a transaction the script driving the
+  -- | conversation has not opened: the driver and the conversation disagree on
+  -- | which transactions are open, an invariant of the host broken.
+  | UnmatchedCandidateFailure TransactionToken
+  -- | A kernel request answered in another shape than the request is answered
+  -- | in: a defect of whoever answered it.
+  | AnswerShapeMismatch KernelRequest KernelAnswer
+  -- | A synthesizer's result not built in the root scope of its goal. Only
+  -- | there does what the result may mention agree with where the goal stands.
+  | ResultNotAtRoot Handle
   -- | A term issued in a scope whose join points do not include one it jumps to.
   -- | Every builder checks what it is given against the scope, so this is an
   -- | invariant of the host broken.

@@ -36,6 +36,7 @@ module Stella.Compiler.Elaborate.Handle
   , SwitchBranches(..)
   , BinderObject(..)
   , ScopeId(..)
+  , rootScopeId
   , HandleObject(..)
   , Arena
   , HandleError(..)
@@ -274,8 +275,12 @@ data BinderObject
       }
 
 -- | The identity of a build scope within an attempt. The root, opened on the
--- | site of the running job, is 0.
+-- | site of the running job, is `rootScopeId`; every other is drawn from a
+-- | supply starting after it.
 newtype ScopeId = ScopeId P.Int
+
+rootScopeId :: ScopeId
+rootScopeId = ScopeId 0
 
 -- | A term, held without annotations, with the type it is claimed to have, the
 -- | scope that type is kinded under, the build scope the term was built in, and

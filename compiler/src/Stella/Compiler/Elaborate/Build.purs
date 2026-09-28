@@ -58,7 +58,7 @@ import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Context (bindTyVar)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..))
 import Stella.Compiler.Elaborate.Elab (Elab, askEnv, assume, break, currentMetas, freshBinderName, holdOpen, issue, resolveBinder, resolveScope, resolveType)
-import Stella.Compiler.Elaborate.Handle (BinderObject(..), Handle, HandleObject(..), ScopeId(..), ScopeObject)
+import Stella.Compiler.Elaborate.Handle (BinderObject(..), Handle, HandleObject(..), ScopeId(..), ScopeObject, rootScopeId)
 import Stella.Compiler.Elaborate.Kinding (quantifiable)
 import Stella.Compiler.Elaborate.Pending (goalOf)
 import Stella.Compiler.Elaborate.Type (XConstraint(..), XRowEntry(..), XType(..), xRowEntryKey)
@@ -81,7 +81,7 @@ rootScope = do
     Just frame ->
       issue
         ( ScopeObject
-            { id: ScopeId 0
+            { id: rootScopeId
             , ancestors: Set.empty
             , context: frame.site.context
             , joins: Map.empty
