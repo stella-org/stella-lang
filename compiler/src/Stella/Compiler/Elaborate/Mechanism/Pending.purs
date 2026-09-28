@@ -84,9 +84,12 @@ type SynthRef = Qualified Ident
 -- | `expectedType` stands at `Type`, and `region` is the region of cells the goal
 -- | was asked for in.
 -- |
--- | Its constructor is not exported. `createSynthesis` is the one supported way
--- | to make a record together with its job, and the runner checks the target
--- | against the current `Ψ` and the job's site before running a synthesizer.
+-- | Its constructor is not exported. **A synthesis goal's target and job are
+-- | installed in one state transition, with the `Ψ` holding the target**:
+-- | `createSynthesis` queues the job, from inside an attempt, and
+-- | `submitSynthesis` attempts it at once, from outside every attempt. The runner
+-- | checks the target against the current `Ψ` and the job's site before running
+-- | a synthesizer.
 newtype GoalRecord = GoalRecord
   { target :: TermMetaVar
   , expectedType :: XType
@@ -103,9 +106,9 @@ newtype GoalRecord = GoalRecord
 -- | which cells a result may read and write is known only where the goal was
 -- | asked for, and is carried here to be restored where the goal is attempted.
 -- |
--- | A trusted helper of `createSynthesis`, which installs the context returned
--- | and registers the job in the same act. Used on its own it is outside the
--- | contract: a record paired with any other `Ψ` names a target that `Ψ` may not
+-- | A trusted helper of `createSynthesis` and `submitSynthesis`, each of which
+-- | installs the context returned and creates the job in the same state
+-- | transition. Used on its own it is outside the contract: a record paired with any other `Ψ` names a target that `Ψ` may not
 -- | hold, which the runner reports as a defect.
 newGoal :: Site -> XType -> SynthRef -> Maybe Region -> MetaContext -> Tuple GoalRecord MetaContext
 newGoal site expectedType synthesizer region ctx =

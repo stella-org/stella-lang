@@ -10,8 +10,11 @@ module Stella.Compiler.Elaborate.Driver.Loop
   , PendingReport
   , RunResult(..)
   , RunReport
+  , Attempter
+  , submitAttempting
   , submitWith
   , submitEquality
+  , runAttempting
   , runWith
   , run
   ) where
@@ -95,22 +98,32 @@ data RunResult
   -- | A defect, on submission or on a retry. Nothing further is attempted.
   | Halted Defect
 
--- | Create a job and attempt it at once, with the runner given.
+-- | How the driver attempts the job named: one attempt, from a state in which no
+-- | queue holds the job, with the scheduler acted on as the attempt comes to.
+-- | Which job is attempted, and the fuel a retry spends, are the driver's; how
+-- | the job is carried out is the attempter's.
+type Attempter = PendingId -> SolverState -> Tuple Attempt SolverState
+
+-- | Create a job and attempt it at once, with the attempter given.
 -- |
 -- | Just after `create` is one of the two points at which a job may be
 -- | attempted. A first attempt spends no fuel, fuel bounding the scheduler's
 -- | retries alone.
-submitWith :: SessionEnv -> Runner -> Site -> Job -> SolverState -> Tuple Submission SolverState
-submitWith session runner site job s0 = case attempt of
+submitAttempting :: Attempter -> Site -> Job -> SolverState -> Tuple Submission SolverState
+submitAttempting attempter site job s0 = case attempt of
   Run.Rejected diagnostic -> stop (Rejected diagnostic)
   Run.Halted defect -> stop (Halted defect)
   Run.Committed -> Tuple (Continue { id, attempt }) s
   Run.Registered _ -> Tuple (Continue { id, attempt }) s
   where
   Tuple id scheduler = create site job s0.tentative.scheduler
-  Tuple attempt s = attemptPendingWith session runner id (s0 { tentative { scheduler = scheduler } })
+  Tuple attempt s = attempter id (s0 { tentative { scheduler = scheduler } })
   stop result = case stopped result s of
     Tuple stoppedWith s' -> Tuple (Stop stoppedWith) s'
+
+-- | `submitAttempting`, each job carried out by the runner given.
+submitWith :: SessionEnv -> Runner -> Site -> Job -> SolverState -> Tuple Submission SolverState
+submitWith session runner = submitAttempting (attemptPendingWith session runner)
 
 -- | `submitWith hostRunner`, for an equation.
 submitEquality :: SessionEnv -> Site -> EqualityGoal -> SolverState -> Tuple Submission SolverState
@@ -123,6 +136,9 @@ run session = runWith session hostRunner
 -- | Retry the jobs on the ready queue until it is empty, or until something
 -- | stops the loop.
 -- |
+-- | **The loop records no trace of its own**: a trace is the attempts', kept
+-- | where they record it, and the loop neither reads nor drains it.
+-- |
 -- | **Fuel is checked before a retry is taken, and spent once it is.** A retry
 -- | the fuel does not reach stays on the ready queue and is named, and one that
 -- | has been attempted has spent a unit whatever it came to. A job on the queue
@@ -130,8 +146,8 @@ run session = runWith session hostRunner
 -- | as a job submitted and attempted at once spends none. The loop is a `tailRec`,
 -- | since the number of retries is bounded by fuel rather than by the stack.
 -- |
--- | The session environment is given once and every attempt of the loop reads
--- | that one; it is assembled before the first job and never changes.
+-- | The attempter is given once and every attempt of the loop is its: the
+-- | session it reads is assembled before the first job and never changes.
 -- |
 -- | At quiescence, a scheduler whose tables disagree, and a job awaiting
 -- | nothing, are defects; otherwise every job left is reported as blocked.
@@ -140,8 +156,8 @@ run session = runWith session hostRunner
 -- | that committed made, those made before the loop by a job submitted and
 -- | attempted at once among them, into the report and out of the state: a
 -- | driver reading them reads them once.
-runWith :: SessionEnv -> Runner -> SolverState -> Tuple RunReport SolverState
-runWith session runner s0 =
+runAttempting :: Attempter -> SolverState -> Tuple RunReport SolverState
+runAttempting attempter s0 =
   let
     Tuple result s = tailRec step s0
   in
@@ -164,7 +180,7 @@ runWith session runner s0 =
                 , retained { fuel = s.retained.fuel - spent }
                 }
             in
-              case attemptPendingWith session runner id taken of
+              case attempter id taken of
                 Tuple Run.Committed s' -> Loop s'
                 Tuple (Run.Registered _) s' -> Loop s'
                 Tuple (Run.Rejected diagnostic) s' -> Done (Tuple (Rejected diagnostic) s')
@@ -173,6 +189,10 @@ runWith session runner s0 =
   exhausted s id = case lookupPending s.tentative.scheduler id of
     Just p -> Exhausted (report p)
     Nothing -> Halted (PendingAbsent id)
+
+-- | `runAttempting`, each job carried out by the runner given.
+runWith :: SessionEnv -> Runner -> SolverState -> Tuple RunReport SolverState
+runWith session runner = runAttempting (attemptPendingWith session runner)
 
 -- | The report of a driver stopping with the result given, the warnings
 -- | committed so far drained into it and out of the state.

@@ -713,8 +713,8 @@ createSynthesis site expectedType synthesizer region = Elab \_ s ->
 -- | Check a synthesis job's target against the current `Ψ` and the job's site,
 -- | before anything runs the synthesizer.
 -- |
--- | `createSynthesis` is the one supported way to make a job and its target; this
--- | is the independent check of what it guarantees. The target must be held
+-- | `createSynthesis` and `submitSynthesis` install a job and its target
+-- | together; this is the independent check of what they guarantee. The target must be held
 -- | unsolved, stand at the goal's type once both are zonked against the current
 -- | `Ψ`, and have a scope within what the site binds and the goal's region
 -- | holds — within and not equal,

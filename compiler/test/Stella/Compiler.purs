@@ -41,6 +41,7 @@ import Test.Stella.Compiler.Elaborate.Reports as ElaborateReports
 import Test.Stella.Compiler.Elaborate.Conversations as ElaborateConversations
 import Test.Stella.Compiler.Elaborate.Facade as ElaborateFacade
 import Test.Stella.Compiler.Elaborate.Traces as ElaborateTraces
+import Test.Stella.Compiler.Elaborate.Synthesis as ElaborateSynthesis
 import Test.Stella.Compiler.Elaborate.Observe as ElaborateObserve
 import Test.Stella.Compiler.Elaborate.Run as ElaborateRun
 import Test.Stella.Compiler.Elaborate.Scheduler as ElaborateScheduler
@@ -108,3 +109,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateConversations.spec
   ElaborateFacade.spec
   ElaborateTraces.spec
+  ElaborateSynthesis.spec

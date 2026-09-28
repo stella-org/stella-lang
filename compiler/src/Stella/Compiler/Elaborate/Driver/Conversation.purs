@@ -10,6 +10,7 @@ module Stella.Compiler.Elaborate.Driver.Conversation
   ( openConversation
   , command
   , runSynthesizer
+  , runSynthesizerWith
   ) where
 
 import Prelude
@@ -20,7 +21,8 @@ import Stella.Compiler.Elaborate.Kernel.Elab (SessionEnv, SolverState)
 import Stella.Compiler.Elaborate.Protocol.Facade (Synthesizer)
 import Stella.Compiler.Elaborate.Protocol.Facade.Internal (Facade(..))
 import Stella.Compiler.Elaborate.Protocol.Interpret (interpret)
-import Stella.Compiler.Elaborate.Mechanism.Pending (PendingId)
+import Stella.Compiler.Elaborate.Mechanism.Pending (Job(..), PendingId, SynthRef, goalOf)
+import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle)
 import Stella.Compiler.Elaborate.Vocabulary.Envelope (Envelope, TransactionToken)
 import Stella.Compiler.Elaborate.Vocabulary.Request (Command(..), CommandAnswer(..))
 import Stella.Compiler.Elaborate.Driver.Attempt (Attempt, Conversation, OpenResult(..), Response(..), Step(..), abandon, beginTransaction, commitTransaction, envelopeOf, finishAttempt, openAttempt, request)
@@ -63,24 +65,44 @@ command envelope sent c = recorded case sent of
   record reply = traced c.session
     (CommandHandled { conversation: c.id, pending: c.pending.id, envelope, command: sent, reply })
 
--- | Attempt the synthesis job named with the synthesizer given: the attempt
--- | opened, the synthesizer given its goal and run as the commands it makes,
--- | and the Expr it ends in sent to finish the attempt with.
--- |
--- | A job with no goal has nothing to give a synthesizer, and is a defect of
--- | whoever asked for one to be run.
+-- | `runSynthesizerWith` with the synthesizer given, which is run whatever
+-- | synthesizer the goal names.
 runSynthesizer :: SessionEnv -> Synthesizer -> PendingId -> SolverState -> Tuple Attempt SolverState
-runSynthesizer session synthesizer id s0 = case openConversation session id s0 of
+runSynthesizer session synthesizer = runSynthesizerWith session (const (Just synthesizer))
+
+-- | Attempt the synthesis job named: the attempt opened, the synthesizer its
+-- | goal names resolved, given the goal and run as the commands it makes, and
+-- | the Expr it ends in sent to finish the attempt with.
+-- |
+-- | **The name is resolved after the attempt opens and its target is checked**,
+-- | so a job whose target is malformed is reported as that first. Where the
+-- | lookup finds no synthesizer, the session was set up without it: that is a
+-- | defect, and the attempt is abandoned before any command is sent. A job with
+-- | no goal has nothing to give a synthesizer, and is a defect of whoever asked
+-- | for one to be run.
+runSynthesizerWith :: SessionEnv -> (SynthRef -> Maybe Synthesizer) -> PendingId -> SolverState -> Tuple Attempt SolverState
+runSynthesizerWith session resolve id s0 = case openConversation session id s0 of
   OpenStopped attempt s -> Tuple attempt s
-  Opened conversation -> case conversation.goal of
-    Nothing -> abandoned conversation NoGoal
-    Just goal -> case run conversation (synthesizer goal) of
-      Completed result c -> case command (envelopeOf c) (Finish result) c of
-        Finished attempt s -> Tuple attempt s
-        Answered (Returned answer) c' -> abandoned c' (CommandAnswerMismatch (Finish result) answer)
-        Answered (CandidateFailed token _) c' -> abandoned c' (UnmatchedCandidateFailure token)
-      Aborted token _ c -> abandoned c (UnmatchedCandidateFailure token)
-      Stopped attempt s -> Tuple attempt s
+  Opened conversation -> case conversation.pending.job, conversation.goal of
+    JobSynthesis record, Just goal ->
+      let
+        named = (goalOf record).synthesizer
+      in
+        case resolve named of
+          Nothing -> abandoned conversation (SynthesizerUnavailable named)
+          Just synthesizer -> driven conversation (synthesizer goal)
+    _, _ -> abandoned conversation NoGoal
+
+-- Run the script given in the conversation, and finish the attempt with the
+-- Expr it ends in.
+driven :: Conversation -> Facade Handle -> Tuple Attempt SolverState
+driven conversation script = case run conversation script of
+  Completed result c -> case command (envelopeOf c) (Finish result) c of
+    Finished attempt s -> Tuple attempt s
+    Answered (Returned answer) c' -> abandoned c' (CommandAnswerMismatch (Finish result) answer)
+    Answered (CandidateFailed token _) c' -> abandoned c' (UnmatchedCandidateFailure token)
+  Aborted token _ c -> abandoned c (UnmatchedCandidateFailure token)
+  Stopped attempt s -> Tuple attempt s
 
 -- Where running a script leaves the conversation.
 data Run a
