@@ -334,20 +334,20 @@ forwarded =
             $ intOpAt (rowOf [ trigger, ask ]) "add" (var "a") (var "b")
         )
 
--- | `handle (fork ()) with { full fork u k -> k 3 4 + 0 ; return x -> λy. x * 10 + y }`.
+-- | `(handle (fork ()) with { full fork u k -> λz. k 3 4 + z ; return x -> λy. x * 10 + y }) 0`.
 -- |
 -- | The answer is a function, so the continuation is applied to its resumption
 -- | value and to what the answer then takes: the body gives 3, the return clause
--- | `λy. 30 + y`, and that applied to 4 gives 34.
+-- | `λy. 30 + y`, and that applied to 4 gives 34, to which the clause adds 0.
 contOverApplied :: Expr P.Int
-contOverApplied =
+contOverApplied = flip (App 0) (lit 0) $
   handle fork Nothing
     { binder: Ident "x"
     , ty: int
     , body: lam "y" int (intOp "add" (intOp "mul" (var "x") (lit 10)) (var "y"))
     }
     [ full "fork" int TRowEmpty intToInt
-        (intOp "add" (app (var "k") [ lit 3, lit 4 ]) (lit 0))
+        (lam "z" int (intOp "add" (app (var "k") [ lit 3, lit 4 ]) (var "z")))
     ]
     (perform fork "fork")
   where
