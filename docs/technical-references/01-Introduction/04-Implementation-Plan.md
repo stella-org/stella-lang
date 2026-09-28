@@ -810,6 +810,17 @@ no identifier is at once ready and blocked
 | A misuse after a failed candidate | The conversation ends with the defect, told apart from the failure answered before it |
 | A goal that postpones on its type's metavariable, the host solving it between two conversations, and the retry | The retry sends the same commands as the first attempt up to the first reply that differs, compared with handles renamed by first appearance: the reply to `viewType` shows the metavariable, then the constructor, and the commands part after it. What is reproduced is that common prefix, not the first attempt's commands entire |
 | The same goal carried on: after the retry, a candidate its type refutes, then `Main.one` | Committed, zonked, crossed, and accepted by the Core type checker, its only reference `Main.one` |
+| A synthesis submitted from outside every attempt, its synthesizer, held in the registry — a `Map` from the goal's name to a host script — answering | Committed on submission, the target assigned and the job gone |
+| The same, the synthesizer failing | The submission stops with the failure, the target held unsolved, and no job left in any table |
+| A queued goal, run by the loop with the registry | Completed, the target assigned |
+| A queued goal whose synthesizer fails | The loop stops with the failure, no job left in any table, and the target held unsolved |
+| A goal whose synthesizer misuses the kernel, queued before one that would answer | The loop stops with the defect; the second job is still first on the ready queue, and both targets are held unsolved |
+| A goal at `?a` that waits while `?a` is unsolved, then an equation `?a ≡ Int` submitted through the same attempter, then the loop again | Blocked, then the equation committed by the host's runner, then Completed with the target assigned |
+| A synthesizer asking a subgoal of another in the registry | The loop runs the subgoal with the same registry, and the goal that asked zonks to its answer |
+| The same, the asking attempt then failing | The subgoal is rolled back with it: no job is left in any table, on a queue or off one |
+| An attempt of a job the scheduler does not hold, in a session that traces | Reported by the host's runner, and nothing traced: a job whose kind is not known is not a synthesis attempt |
+| A goal naming a synthesizer the registry does not hold | A defect of the session. The trace holds the attempt opened and abandoned, and no command |
+| The same goal, its target solved before it is attempted | The malformed target is reported, and the trace holds the attempt as not opened: the target is checked before the synthesizer is resolved |
 | An attempt finished with a transaction open | A defect naming the transaction, and nothing committed |
 | An attempt finished with a binder open, and an acceptance that would fail | The binder defect. The binders are checked before anything is accepted |
 | An attempt whose requests assigned and warned, finished with an acceptance that fails | Rejected, and neither kept. The acceptance runs inside the attempt, before it commits |

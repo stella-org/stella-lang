@@ -362,6 +362,10 @@ The three-way outcome is what separates "unsolvable" from "not enough informatio
 
 **Fuel is spent by a retry and by nothing else.** A first attempt spends none, whether it is made where a job is submitted or taken from the ready queue a job created inside an attempt was put on; the queue marks each entry as a first attempt or a retry, and a wake is what queues a retry. A retry the fuel does not reach stays on the ready queue and is named where the loop stops, and one that has been attempted has spent its unit whatever it came to.
 
+**How a job is attempted is delegated.** The loop and a submission choose which job is attempted, and spend the fuel; one attempt is carried out by what they are given: an equation by the host's own runner, and a synthesis job by a conversation with the synthesizer its goal names. A synthesis goal submitted from outside every attempt has its target and its job installed in one state transition, as one created inside an attempt does.
+
+**A synthesizer is resolved once its attempt has opened.** A job whose target is malformed is reported as that, and no attempt opens; a name the session holds no synthesizer for is a defect of the session, and the attempt that opened is abandoned having asked nothing. The loop records no trace of its own, and neither reads nor drains one.
+
 ### Which job may be attempted
 
 **A job is attempted only while no queue holds it**: `pending` holds it, it awaits nothing, and it is not on the ready queue. There are two points at which a job is in that state, and they are the only two entries to an attempt.
