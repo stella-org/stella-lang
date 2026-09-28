@@ -1,9 +1,9 @@
 -- | What a loader establishes of one module, established before code is generated.
 -- |
 -- | A decoder hands on every module whose bytes it can read; whether the module's
--- | declarations are its own, whether its globals are installable, and whether a
--- | foreign the ABI fixes is declared as that entry are properties of the module and
--- | not of its bytes
+-- | declarations are its own, whether its globals are installable, whether a
+-- | foreign the ABI fixes is declared as that entry, and whether its handlers and
+-- | their installations agree are properties of the module and not of its bytes
 -- | ([Encoding](../../../../../docs/technical-references/05-Backend/02-Encoding.md)).
 -- | Steam checks them where a module is loaded. Generated code has no such moment
 -- | for what one module decides alone, so this checks it here, and what another
@@ -20,12 +20,14 @@ import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (for_)
 import Data.Maybe (Maybe(..))
+import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.Bytecode.Instr (FuncIx(..))
+import Stella.Compiler.Bytecode.Instr (FuncIx(..), Function, HandlerIx(..), Instr(..), KeyIx(..), Node, OpIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Dmo, GlobalInit(..))
 import Stella.Backend.JavaScript.Error (JsError(..))
+import Stella.Backend.JavaScript.ToFrame (keyString)
 import Stella.Compiler.Primitive (lookupPrim)
-import Stella.Compiler.TypedCore.Name (ModuleName(..), Qualified(..))
+import Stella.Compiler.TypedCore.Name (ModuleName(..), OpName(..), Qualified(..))
 
 check :: Dmo -> Either JsError Unit
 check dmo = do
@@ -62,7 +64,44 @@ check dmo = do
     Just entry | entry.arity /= f.arity -> Left (OperationDeclaredAtWrongArity f.name entry.arity f.arity)
     _ -> Right unit
 
+  -- a cell is found by its key and a clause by its operation, so either standing
+  -- twice would leave which one a cell access or a perform means to the order of a
+  -- table
+  for_ dmo.handlers \h -> do
+    cells <- traverse keyText h.cells
+    firstTwice cells CellKeyTwice
+    ops <- traverse (\c -> opText c.op) h.opClauses
+    firstTwice ops ClauseTwice
+
+  -- every installation supplies one clause per clause of its handler entry and one
+  -- initial value per cell, wherever in a function it stands
+  for_ dmo.functions \f -> for_ (nodesOf f) \node -> do
+    for_ node.code case _ of
+      HNDL _ ix _ _ clauses cells -> operands ix clauses cells
+      _ -> Right unit
+    case node.tail of
+      TAILHNDL ix _ _ clauses cells -> operands ix clauses cells
+      _ -> Right unit
+
   where
+  keyText (KeyIx i) = case Array.index dmo.keys i of
+    Just key -> Right (keyString key)
+    Nothing -> Left (NoSuchIndex "KEYS" i)
+
+  opText (OpIx i) = case Array.index dmo.ops i of
+    Just (OpName op) -> Right op
+    Nothing -> Left (NoSuchIndex "OPS" i)
+
+  operands :: forall a b. HandlerIx -> P.Array a -> P.Array b -> Either JsError Unit
+  operands (HandlerIx i) clauses cells = case Array.index dmo.handlers i of
+    Nothing -> Left (NoSuchIndex "HANDLERS" i)
+    Just h -> do
+      key <- keyText h.key
+      when (Array.length clauses /= Array.length h.opClauses)
+        (Left (HandlerClausesDisagree key (Array.length h.opClauses) (Array.length clauses)))
+      when (Array.length cells /= Array.length h.cells)
+        (Left (HandlerCellsDisagree key (Array.length h.cells) (Array.length cells)))
+
   own :: forall a. Qualified a -> P.Boolean
   own q = qualifier q == dmo.name
 
@@ -82,3 +121,17 @@ check dmo = do
     case Array.find (\(Tuple i x) -> Array.elemIndex x xs /= Just i) (Array.mapWithIndex Tuple xs) of
       Just (Tuple _ x) -> Left (refusal x)
       Nothing -> Right unit
+
+-- | Every node of a function: its body, the body of each join point, and the nodes
+-- | a branch holds inline.
+nodesOf :: Function -> P.Array Node
+nodesOf f = Array.concatMap expand ([ f.body ] <> map _.body f.joins)
+  where
+  expand node = [ node ] <> Array.concatMap expand (inline node.tail)
+
+  inline = case _ of
+    BRIF _ a b -> [ a, b ]
+    BRC _ cases fallback -> map _.body cases <> Array.fromFoldable fallback
+    BRL _ cases fallback -> map _.body cases <> [ fallback ]
+    BRK _ cases fallback -> map _.body cases <> Array.fromFoldable fallback
+    _ -> []

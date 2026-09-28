@@ -10,6 +10,7 @@
 -- | | `iK_arities` | that module's table of definitional arities |
 -- | | `cI` | the descriptor of the `I`-th constructor this module declares |
 -- | | `pI` | the `I`-th operation of `PRIMS`, standing as a callee |
+-- | | `hI` | the `I`-th handler of `HANDLERS` |
 -- | | `fnI` | the descriptor of the `I`-th function |
 -- | | `fI_sJ` | segment `J` of that function |
 -- | | `gI` | the `I`-th global |
@@ -78,6 +79,7 @@ emit options fm = do
       <> map S.Statement importChecks
       <> Array.mapWithIndex ctorTop dmo.ctors
       <> Array.mapWithIndex primTop dmo.prims
+      <> Array.mapWithIndex handlerTop fm.resolved.handlers
       <> Array.concat functionsOut
       <> Array.mapWithIndex (\i _ -> S.Statement (S.Let (globalName i) Nothing)) dmo.globals
       <> Array.mapWithIndex initTop dmo.globals
@@ -87,8 +89,8 @@ emit options fm = do
   dmo = fm.dmo
 
   -- A foreign this module declares is carried out by the backend where the ABI
-  -- fixes it as an operation, and needs nothing emitted; any other is supplied by
-  -- a host implementation, which this backend does not reach yet.
+  -- fixes it as an operation, and needs nothing emitted; any other needs a host
+  -- implementation, and this backend refuses it.
   foreignsChecked = case Array.find (\f -> lookupPrim f.name == Nothing) dmo.foreigns of
     Just f -> Left (Unsupported ("the foreign declaration " <> qualifiedText f.name))
     Nothing -> Right unit
@@ -109,6 +111,17 @@ emit options fm = do
                 ]
             )
         )
+
+  handlerTop i h =
+    S.Statement
+      ( S.Const (handlerName i)
+          ( rtCall "handler"
+              [ S.String h.key
+              , S.Array (map S.String h.cells)
+              , S.Array (map (\c -> S.Array [ S.String c.op, S.Boolean c.fast ]) h.clauses)
+              ]
+          )
+      )
 
   initTop i g = S.Statement case g.init of
     GFunc (FuncIx f) -> S.Assign (S.Ident (globalName i)) (S.New (rtMember "Closure") [ S.Ident (fnName f), S.Array [] ])
@@ -255,6 +268,24 @@ exit fm = case _ of
       , S.Assign (mField "args") (S.Array (map reg c.args))
       , S.Return (rtMember "TAIL")
       ]
+  Perform p ->
+    pure
+      [ S.Assign (mField "key") (S.String p.key)
+      , S.Assign (mField "op") (S.String p.op)
+      , S.Assign (mField "value") (reg p.arg)
+      , S.Assign (mField "dest") (S.Number (show p.dest))
+      , S.Assign (mField "resume") (S.Ident (segmentName p.resume))
+      , S.Return (rtMember "PERF")
+      ]
+  Handle h ->
+    pure $ installing h.handler h.operands
+      <>
+        [ S.Assign (mField "dest") (S.Number (show h.dest))
+        , S.Assign (mField "resume") (S.Ident (segmentName h.resume))
+        , S.Return (rtMember "HNDL")
+        ]
+  TailHandle h ->
+    pure $ installing h.handler h.operands <> [ S.Return (rtMember "TAILHNDL") ]
   -- the arguments are read before any parameter is written, since an argument
   -- register may be a parameter of the join point too
   Jump j ->
@@ -283,6 +314,14 @@ exit fm = case _ of
       if Array.all (isNumber <<< fst) cs then [ numberDispatch s cs d ]
       else [ S.Switch (reg s) (map (\(Tuple l body) -> { label: literal l, body }) cs) (Just d) ]
   where
+  installing h o =
+    [ S.Assign (mField "handler") (S.Ident (handlerName h))
+    , S.Assign (mField "callee") (reg o.body)
+    , S.Assign (mField "ret") (reg o.ret)
+    , S.Assign (mField "args") (S.Array (map reg o.clauses))
+    , S.Assign (mField "cells") (S.Array (map reg o.cells))
+    ]
+
   defaultBlock default what = case default of
     Just b -> block fm b
     Nothing -> pure [ S.ExprStmt (rtCall "unreachable" [ S.String what ]) ]
@@ -321,6 +360,8 @@ expr fm = case _ of
   Inject k s -> S.New (rtMember "Variant") [ S.String k, reg s ]
   Payload k s -> rtCall "payload" [ reg s, S.String k ]
   Prim op args -> operation op (map reg args)
+  CellGet k -> rtCall "cget" [ S.Ident "m", S.String k ]
+  CellSet k s -> rtCall "cset" [ S.Ident "m", S.String k, reg s ]
 
 operation :: PrimOp -> P.Array S.Expr -> S.Expr
 operation op args = inline op args
@@ -457,6 +498,9 @@ fnName i = "fn" <> show i
 
 globalName :: P.Int -> P.String
 globalName i = "g" <> show i
+
+handlerName :: P.Int -> P.String
+handlerName i = "h" <> show i
 
 segmentName :: SegmentId -> P.String
 segmentName (SegmentId s) = "f" <> show s.func <> "_s" <> show s.index

@@ -1,18 +1,20 @@
 -- | A `.dmo` resolved and cut into segments: the frame strategy's lower IR.
 -- |
 -- | **Resolution** turns every index into what it names — a key into its
--- | canonical string, a constructor or a global into a reference to this module's
--- | declaration or to an imported one — and checks what one module can decide on
+-- | canonical string, an operation into its name, a constructor or a global into a
+-- | reference to this module's declaration or to an imported one — and checks what
+-- | one module can decide on
 -- | its own: that a reference names a module this one imports, that a reference
 -- | into this module names a declaration of the kind its table calls for, and that
 -- | every call, construction, and partial application of something this module
 -- | declares supplies a count its callee admits. What another module declares is
 -- | checked where the generated modules are loaded together.
 -- |
--- | **Segmentation** cuts each function at its non-tail calls
--- | ([Frame](Frame.purs)). A `JMP` targets a join point's own segment, so a loop
--- | written with join points runs through the run loop rather than the host's
--- | call stack.
+-- | **Segmentation** cuts each function at its non-tail calls, its performs, and
+-- | its handler installations: the run loop carries each out and then continues the
+-- | frame at the segment after it ([Frame](Frame.purs)). A `JMP` targets a join
+-- | point's own segment, so a loop written with join points runs through the run
+-- | loop rather than the host's call stack.
 module Stella.Backend.JavaScript.ToFrame
   ( Resolved
   , FrameModule
@@ -31,15 +33,16 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), FuncIx(..), GlobalIx(..), Instr(..), JoinName(..), KeyIx(..), Node, PrimIx(..), Tail(..))
+import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Instr as B
 import Stella.Compiler.Bytecode.Module (Constant(..), Dmo, GlobalInit(..), Key(..))
 import Stella.Compiler.Bytecode.Module as M
 import Stella.Backend.JavaScript.Error (JsError(..))
-import Stella.Backend.JavaScript.Frame (Block, Callee(..), CtorRef(..), Exit(..), Expr(..), FrameFunction, GlobalRef(..), Literal(..), Segment, SegmentId(..), Stmt(..), Target(..))
+import Stella.Backend.JavaScript.Frame (Block, Callee(..), CtorRef(..), Exit(..), Expr(..), FrameFunction, GlobalRef(..), HandleOperands, Handler, Literal(..), Segment, SegmentId(..), Stmt(..), Target(..))
 import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp)
 import Stella.Compiler.TypedCore.Domain (codePointOf)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..))
+import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), OpName(..), Qualified(..), Symbol(..), Tag(..))
 
 -- | Every index of the module turned into what it names.
 type Resolved =
@@ -48,6 +51,7 @@ type Resolved =
   , globals :: P.Array GlobalRef
   , callees :: P.Array Callee
   , prims :: P.Array PrimOp
+  , handlers :: P.Array Handler
   }
 
 type FrameModule =
@@ -81,9 +85,11 @@ resolve dmo = do
   globals <- traverse globalRef dmo.globalRefs
   let
     prims = dmo.prims
-    resolvedSoFar = { keys: map keyString dmo.keys, ctors, globals, callees: [], prims }
+    keys = map keyString dmo.keys
+    resolvedSoFar = { keys, ctors, globals, callees: [], prims, handlers: [] }
   callees <- traverse (callee resolvedSoFar) dmo.callees
-  pure resolvedSoFar { callees = callees }
+  handlers <- traverse (handler keys) dmo.handlers
+  pure resolvedSoFar { callees = callees, handlers = handlers }
   where
   own (Qualified m _) = m == dmo.name
 
@@ -106,6 +112,21 @@ resolve dmo = do
     M.CalleePrim op -> case Array.elemIndex op soFar.prims of
       Just ix -> Right (CalleePrim ix)
       Nothing -> Left (NoSuchIndex "PRIMS" (-1))
+
+  -- a key becomes its canonical string and an operation its name, which is what a
+  -- clause is found by once the marker is found by its key
+  handler keys entry = do
+    key <- keyOf entry.key
+    cells <- traverse keyOf entry.cells
+    clauses <- traverse clause entry.opClauses
+    pure { key, cells, clauses }
+    where
+    keyOf (KeyIx i) = at "KEYS" keys i
+
+    clause c = do
+      let OpIx i = c.op
+      OpName op <- at "OPS" dmo.ops i
+      pure { op, fast: c.form == ClauseFast }
 
 showName :: Qualified Ident -> P.String
 showName (Qualified (ModuleName m) (Ident x)) = m <> "." <> x
@@ -254,17 +275,26 @@ cutNode scope next0 node = go [] 0
         checkKnownCall scope.dmo target (Array.length args)
         breakAt acc i (TargetGlobal target) (regs args) d
       CALLU (B.Reg d) (B.Reg s) args -> breakAt acc i (TargetReg s) (regs args) d
+      PERF (B.Reg d) k op (B.Reg s) -> do
+        key <- keyAt scope k
+        opName <- opAt scope op
+        cutAt acc i \resume -> Perform { key, op: opName, arg: s, dest: d, resume }
+      HNDL (B.Reg d) h body ret clauses cells -> do
+        handler <- handlerAt scope h
+        cutAt acc i \resume -> Handle { handler, operands: handleOperands body ret clauses cells, dest: d, resume }
       _ -> do
         stmt <- instrStmt scope instr
         go (Array.snoc acc stmt) (i + 1)
 
-  -- the rest of the node, from the instruction after the call, is a segment of its
-  -- own; the call ends this block and names it
-  breakAt acc i target args dest = do
+  breakAt acc i target args dest = cutAt acc i \resume -> Call { target, args, dest, resume }
+
+  -- the rest of the node, from the instruction after the transfer, is a segment of
+  -- its own; the transfer ends this block and names it
+  cutAt acc i exitTo = do
     let resume = SegmentId { func: scope.func, index: next0 }
     rest <- cutNode scope (next0 + 1) { code: Array.drop (i + 1) node.code, tail: node.tail }
     pure
-      { block: { stmts: acc, exit: Call { target, args, dest, resume } }
+      { block: { stmts: acc, exit: exitTo resume }
       , segments: [ { id: resume, body: rest.block } ] <> rest.segments
       , next: rest.next
       }
@@ -278,7 +308,9 @@ cutTail scope next0 = case _ of
     leaf (TailCall { target: TargetGlobal target, args: regs args })
   TAILU (B.Reg s) args -> leaf (TailCall { target: TargetReg s, args: regs args })
   TAILFFI _ _ -> Left (Unsupported "a tail call to a foreign")
-  TAILHNDL _ _ _ _ _ -> Left (Unsupported "a handler")
+  TAILHNDL h body ret clauses cells -> do
+    handler <- handlerAt scope h
+    leaf (TailHandle { handler, operands: handleOperands body ret clauses cells })
   JMP (JoinName name) args -> case Map.lookup name scope.joins of
     Nothing -> Left (NoSuchJoin scope.func name)
     Just j ->
@@ -375,12 +407,20 @@ instrStmt scope = case _ of
       (Left (ArityMismatch (showName (entryOfOp op)) (arityOfOp op) (Array.length args)))
     pure (Set d (Prim op (regs args)))
   FFI _ _ _ -> Left (Unsupported "a foreign call")
-  PERF _ _ _ _ -> Left (Unsupported "an effect operation")
-  HNDL _ _ _ _ _ _ -> Left (Unsupported "a handler")
-  CGET _ _ -> Left (Unsupported "a cell read")
-  CSET _ _ _ -> Left (Unsupported "a cell write")
+  CGET (B.Reg d) k -> do
+    key <- keyAt scope k
+    pure (Set d (CellGet key))
+  CSET (B.Reg d) k (B.Reg s) -> do
+    key <- keyAt scope k
+    pure (Set d (CellSet key s))
   CALLK _ _ _ -> Left (Unsupported "a call standing where no segment can be cut")
   CALLU _ _ _ -> Left (Unsupported "a call standing where no segment can be cut")
+  PERF _ _ _ _ -> Left (Unsupported "a perform standing where no segment can be cut")
+  HNDL _ _ _ _ _ _ -> Left (Unsupported "a handler standing where no segment can be cut")
+
+handleOperands :: B.Reg -> B.Reg -> P.Array B.Reg -> P.Array B.Reg -> HandleOperands
+handleOperands body ret clauses cells =
+  { body: regIndex body, ret: regIndex ret, clauses: regs clauses, cells: regs cells }
 
 -- Table lookups ----------------------------------------------------------------------------
 
@@ -408,6 +448,14 @@ globalAt scope (GlobalIx i) = at "GLOBALREFS" scope.resolved.globals i
 
 calleeAt :: Scope -> CalleeIx -> Either JsError Callee
 calleeAt scope (CalleeIx i) = at "CALLEES" scope.resolved.callees i
+
+opAt :: Scope -> OpIx -> Either JsError P.String
+opAt scope (OpIx i) = do
+  OpName op <- at "OPS" scope.dmo.ops i
+  pure op
+
+handlerAt :: Scope -> HandlerIx -> Either JsError P.Int
+handlerAt scope (HandlerIx i) = at "HANDLERS" scope.resolved.handlers i $> i
 
 primAt :: Scope -> PrimIx -> Either JsError PrimOp
 primAt scope (PrimIx i) = at "PRIMS" scope.resolved.prims i

@@ -255,30 +255,26 @@ generatedOrRefused = traverse \dmo -> case generate { runtime: runtimeSpecifier 
 
 -- What a fixture's generation may end at ------------------------------------------------
 
--- | The fixtures this backend refuses as unsupported, each with the refusal it
--- | gives. A fixture listed here is refused with exactly that `Unsupported` and
--- | nothing else; one that generates, or is refused otherwise, fails.
--- |
--- | **This table is looked at before `generationRefusals`.** A handler refusal
--- | fixture holds a handler, which is what this backend refuses it for.
-knownUnsupported :: P.Array { name :: P.String, unsupported :: P.String }
-knownUnsupported = map (\name -> { name, unsupported: "a handler" })
-  [ "effects"
-  , "handler-cell-twice"
-  , "handler-cell-aliased"
-  , "handler-clause-twice"
-  , "handler-clause-aliased"
-  , "handler-hndl-clauses"
-  , "handler-hndl-cells"
-  , "handler-tailhndl-clauses"
-  , "handler-tailhndl-cells"
-  ]
-
 -- | The fixtures whose manifest says they are refused where they load, and which
 -- | this backend refuses where it generates, with the refusal each must be. Any
 -- | other refusal at generation fails, and so does such a fixture generating.
+-- |
+-- | Each refusal is pinned whole, since the manifest's `mentions` does not tell
+-- | them apart: every shape refusal names the same effect.
 generationRefusals :: P.Array { name :: P.String, refusal :: JsError -> P.Boolean }
-generationRefusals = []
+generationRefusals =
+  [ { name: "handler-cell-twice", refusal: (_ == CellKeyTwice "s:reading") }
+  , { name: "handler-cell-aliased", refusal: (_ == CellKeyTwice "s:reading") }
+  , { name: "handler-clause-twice", refusal: (_ == ClauseTwice "bump") }
+  , { name: "handler-clause-aliased", refusal: (_ == ClauseTwice "bump") }
+  -- the handler entry holds two of each and the instruction supplies one
+  , { name: "handler-hndl-clauses", refusal: (_ == HandlerClausesDisagree meter 2 1) }
+  , { name: "handler-tailhndl-clauses", refusal: (_ == HandlerClausesDisagree meter 2 1) }
+  , { name: "handler-hndl-cells", refusal: (_ == HandlerCellsDisagree meter 2 1) }
+  , { name: "handler-tailhndl-cells", refusal: (_ == HandlerCellsDisagree meter 2 1) }
+  ]
+  where
+  meter = "e:Main:Meter"
 
 spec :: Spec Unit
 spec = describe "the JavaScript backend" do
@@ -288,13 +284,11 @@ spec = describe "the JavaScript backend" do
     mismatches <- traverse fixtureMismatches names
     Array.concat mismatches `shouldEqual` []
 
-  -- a name left behind when its fixture is renamed or removed would exempt nothing
-  -- and hide that it is stale
-  it "lists only fixtures that exist as unsupported or refused at generation" do
+  -- a name left behind when its fixture is renamed or removed would check nothing
+  it "lists only fixtures that exist as refused at generation" do
     names <- liftEffect (caseNames fixturesRoot)
-    Array.filter (\n -> not (Array.elem n names)) (map _.name knownUnsupported <> map _.name generationRefusals)
+    Array.filter (\n -> not (Array.elem n names)) (map _.name generationRefusals)
       `shouldEqual` []
-
   describe "what the generated code holds" do
     it "captures a computed local, and the closure reads it through CAPT" do
       programs <- fixtureModules "programs"
@@ -340,8 +334,8 @@ spec = describe "the JavaScript backend" do
         Right _ -> fail "not three modules"
         Left err -> fail err
 
-  describe "what the backend does not carry out yet" do
-    it "refuses a foreign it does not yet reach" do
+  describe "what the backend refuses" do
+    it "refuses a foreign that needs a host implementation" do
       programs <- fixtureModules "programs"
       case programs of
         Right [ _, lib, _ ] -> do
@@ -487,22 +481,16 @@ fixtureMismatches name = do
     Left err -> pure [ err ]
     Right dmos -> case generatedOrRefused dmos of
       Left err
-        | Just k <- known -> pure
-            if err == Unsupported k.unsupported then []
-            else [ name <> ": refused as " <> show err <> ", not as " <> show (Unsupported k.unsupported) ]
         | Just r <- refusedAtGeneration -> pure
             if refusedAtLoad manifest && r.refusal err && String.contains (String.Pattern manifest.mentions) (show err) then []
             else [ name <> ": refused as " <> show err <> ", not as the refusal naming " <> manifest.mentions <> " it is listed for" ]
         | otherwise -> pure [ name <> ": not generated: " <> show err ]
       Right files
-        | Just _ <- known -> pure [ name <> ": generated, where it is listed as unsupported" ]
         | Just _ <- refusedAtGeneration -> pure [ name <> ": generated, where it is listed as refused" ]
         | otherwise -> case Array.last manifest.modules of
             Nothing -> pure [ name <> ": no modules" ]
             Just entry -> run manifest files (entry <> ".js")
   where
-  known = Array.find (\k -> k.name == name) knownUnsupported
-
   refusedAtGeneration = Array.find (\r -> r.name == name) generationRefusals
 
   refusedAtLoad m = not m.loads && m.faults == ""

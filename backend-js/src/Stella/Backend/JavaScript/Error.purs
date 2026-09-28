@@ -13,8 +13,7 @@ import Stella.Compiler.Bytecode.Bytes (EncodeError)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, ModuleName, Qualified)
 
 data JsError
-  -- | A construct this backend does not generate code for yet, named by what it
-  -- | is.
+  -- | A construct this backend does not generate, named by what it is.
   = Unsupported P.String
   -- | A module an encoder refuses to write, for the reason it gives. A module
   -- | handed across without its bytes is accepted exactly where its bytes would
@@ -62,6 +61,16 @@ data JsError
   -- | declares twice.
   | NoSuchJoin P.Int P.Int
   | JoinTwice P.Int P.Int
+  -- | A handler declaring one cell twice, as the key's canonical string, or holding
+  -- | two clauses for one operation, as its name. Two indices may hold one key or
+  -- | one name, so what is compared is what they hold.
+  | CellKeyTwice P.String
+  | ClauseTwice P.String
+  -- | A `HNDL` or `TAILHNDL` supplying another count of clauses, or of initial cell
+  -- | values, than its handler entry holds: the canonical string of the handler's
+  -- | key, the entry's count, and the instruction's.
+  | HandlerClausesDisagree P.String P.Int P.Int
+  | HandlerCellsDisagree P.String P.Int P.Int
 
 derive instance Eq JsError
 derive instance Generic JsError _

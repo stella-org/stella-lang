@@ -54,7 +54,7 @@ export const shapeOfImpl = (k) => (namespace) => (name) => {
     const kind = v.constructor && v.constructor.name;
     if (kind === "Data") return k.data(v.c.name)(v.f.map(go));
     if (kind === "Variant") return k.variant(v.k)(go(v.v));
-    if (kind === "Closure" || kind === "Pap") return k.fn;
+    if (kind === "Closure" || kind === "Pap" || kind === "Continuation") return k.fn;
     return k.record(
       Object.keys(v)
         .sort()
