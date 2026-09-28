@@ -783,6 +783,22 @@ no identifier is at once ready and blocked
 | A commit with no transaction open | A defect of its own, and not a mismatch: nothing is named that differs from what the host holds |
 | An attempt opened where every conversation identifier has been issued | A defect, and the state left as it was. Wrapping around issues an identifier a late request may still carry |
 | A transaction opened where its conversation has issued every token | A defect, rolled back to the attempt's checkpoint, for the same reason |
+| Every public kernel operation, called once as a host script's operation | Each makes the request of its own name, and the requests are the 77 operations. The requests are named by a function matching every constructor, so a request added does not compile until it is named |
+| Every operation, given an answer of every shape | It takes back the one shape `expectedAnswerShape` gives its request, and none for `throw` and `postpone`. The table and the operations agree by test, and the interpreter holds every answer to the table, on the wire as for a script |
+| A script taking back an answer of another shape | A defect of the host, and the attempt rolled back |
+| A synthesizer reading its goal's type through the Goal handle it is given, and returning a literal built at the root | Committed, the literal assigned to the goal's target and the job gone |
+| A goal at `?a`, and a result claimed at `Int` | `?a := Int`, and the result assigned. The claim is unified before the term is assigned |
+| A result whose claim the goal's type refutes | Rejected, the target unassigned and the job gone |
+| A goal at `Record (?r ∪ ?s)`, and a result at `Record (n : Int)` | Registered under `?r` and `?s`, and nothing assigned. The claim's equation waits, and acceptance waits with it |
+| A job standing where `x : Int` is bound, its target where nothing is, its goal at `?a`, and a result `x` | Rejected at the assignment, and `?a` unsolved: the claim's equation is rolled back with the attempt |
+| A result built in a lambda's body, the lambda closed | A defect of the synthesizer, and nothing assigned |
+| A candidate that warns and throws inside `transact`, then a warning and a result after it | `Left` with the failure, only the second warning kept, and the result committed |
+| A failure inside two nested `transact`s | Caught by the inner one alone; the outer one commits |
+| A synthesizer postponing on the metavariable its goal's type shows | Registered under it |
+| A synthesizer postponing on nothing | A defect |
+| The same attempt driven by commands — a transaction begun, the root and a literal requested, the transaction committed, the attempt finished | Each command answered in its shape, and the literal committed as the goal's solution |
+| A failure requested inside a transaction by command | Answered with the failure and the transaction it closed |
+| A synthesizer run on an equality job | A defect: the job has no goal to give it |
 | An attempt finished with a transaction open | A defect naming the transaction, and nothing committed |
 | An attempt finished with a binder open, and an acceptance that would fail | The binder defect. The binders are checked before anything is accepted |
 | An attempt whose requests assigned and warned, finished with an acceptance that fails | Rejected, and neither kept. The acceptance runs inside the attempt, before it commits |

@@ -786,6 +786,39 @@ postpone : [Meta] -> Elab a
 
 **A synthesizer's `postpone` names metavariables by their handles**, and whether each can wake the goal is decided where the attempt ends, against `Ψ` as its rollback leaves it, and not when the request is made. A metavariable the attempt solved is unsolved again after the rollback, and as good a thing to wait on as any; one the attempt created, one solved before it, and an empty set are the defects [above](#a-defect-in-the-mechanism-is-outside-the-three-outcomes).
 
+### Requests, answers, and commands
+
+**Every kernel operation is a request, and every request is first-order data**: the operation's name and its arguments — handles, views, names, literals — and never a function or a host representation. The requests form one closed sum, split by the part of the kernel they belong to, and one interpreter per part answers them. A request carries no session and no frame: the runner has set both, so a synthesizer cannot answer under another.
+
+```text
+KernelRequest = BuildRequest … | TermRequest … | TreeRequest … | RecordRequest …
+              | HandlerRequest … | SolveRequest … | ObserveRequest … | ReportRequest …
+KernelAnswer  = Unit | Handle | Boolean | TypeView | RowView | KindView | Context | Constraints
+              | Decl | Names | Binder | Assumption | ConstraintAbs | LetRec | Join | Case
+              | SwitchCtor | SwitchLit | SwitchKey | Handler
+Command       = Kernel KernelRequest | BeginTransaction | CommitTransaction | Finish Expr
+CommandAnswer = KernelAnswered KernelAnswer | TransactionBegun TransactionToken | TransactionCommitted
+```
+
+**An answer is classified by its shape, and not by the request it answers**: operations answering alike share a constructor. **Which shape a request is answered in is one table**, `expectedAnswerShape`, and `throw` and `postpone` are answered in none. Every answer the host gives passes through the interpreter, which holds it to the table, so a script and a guest on the wire are answered alike, and an answer out of shape is a defect of the host on both. The boundary holds raw handles throughout, the class of each checked by the host where it is resolved, which is the one place it is checked.
+
+**A command is what drives a conversation**: a kernel request, the opening and closing of a transaction, or the end of the attempt with a result. The sequence of commands is what a guest on Steam sends and what a record of a conversation holds.
+
+**A synthesizer written in the host is a script over the same requests**: each operation makes the request its name says and takes back only the shape that request is answered in, which the same table fixes, and `transact` is the one form not made of requests — the driver opens a transaction where it starts, commits it where it ends, and resumes the script after it with the diagnostic where a failure is answered inside it, matching the failure to the transaction by its token. The synthesizer is given its goal as a Goal handle, issued as the attempt opens, and ends in the Expr handle it offers. The driver runs it against the conversation with the same operations the commands are answered by. **A script's representation is not the synthesizer's**: the operations and `transact` are all it is given, so it cannot make a request of its own or refuse an answer the host gives.
+
+### Accepting a result
+
+**A result is accepted inside the attempt, before it commits**, where no transaction and no binder is open:
+
+```text
+1. the Expr handle resolved
+2. built in the goal's root scope — otherwise a defect of the synthesizer
+3. its claim unified with the goal's type — a failure, or a postponement where the equation waits
+4. the term assigned to the goal's target — a failure where it escapes the target's scope
+```
+
+Only in the root scope does what the term may mention agree with where the goal stands. Unifying the claim first is what lets the goal's type be learned from the result, as [above](#what-a-synthesis-job-holds). Whatever acceptance comes to, it comes to inside the attempt, so a result it refuses is rolled back with everything the synthesizer did.
+
 ### Messages, `throw`, and `warn`
 
 **A synthesizer reports in a message it builds, and the host makes the diagnostic.**
@@ -818,8 +851,8 @@ The mechanism's own failure is `raiseDiagnostic`, which takes a diagnostic it ha
 | | Examples | Outcome | Caught by `transact` |
 | --- | --- | --- | --- |
 | **program diagnostic** | an equation no substitution satisfies; an obligation broken or rejected; a result escaping its scope; a result whose claim the goal's type refutes; a `throw` | `Failed` | yes |
-| **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session; a builder asked for what cannot be built; a binder left open by an attempt that succeeds, or closed twice; an equation between kinds that cannot meet, or a goal not at `Type`; an occurrence read outside its branch or its `case`, or a constructor the session does not know; an operation its effect does not declare, a handler's clauses naming one twice or missing one, or a cell read where no region holds it; a request naming another conversation, or a transaction other than the innermost, or an attempt finished with a transaction open, or a commit with none open | `Broke`, naming the synthesizer and the goal | no |
-| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; a catalog scheme ill-formed under what it declares; a name the catalog calls a constructor and the constructor table does not hold; an effect the kinding environment declares and the effect table does not hold; a handler's answer type or residual row mentioning the region variable it binds; a session or a conversation that has issued every identifier it can; the mechanism's own invariants | `Broke` | no |
+| **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session; a builder asked for what cannot be built; a binder left open by an attempt that succeeds, or closed twice; an equation between kinds that cannot meet, or a goal not at `Type`; an occurrence read outside its branch or its `case`, or a constructor the session does not know; an operation its effect does not declare, a handler's clauses naming one twice or missing one, or a cell read where no region holds it; a request naming another conversation, or a transaction other than the innermost, or an attempt finished with a transaction open, or a commit with none open; a result not built in its goal's root scope | `Broke`, naming the synthesizer and the goal | no |
+| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; a catalog scheme ill-formed under what it declares; a name the catalog calls a constructor and the constructor table does not hold; an effect the kinding environment declares and the effect table does not hold; a handler's answer type or residual row mentioning the region variable it binds; a session or a conversation that has issued every identifier it can; a kernel request answered in another shape than its own, or a candidate failure answered in a transaction the driver did not open; the mechanism's own invariants | `Broke` | no |
 
 **A `SynthRef` with no implementation is the host's defect and not the program's.** Name resolution resolved it against `Σ` where the goal was written ([above](#what-a-synthesis-goal-carries)), so the name exists; a session unable to run what it names was set up without it.
 
