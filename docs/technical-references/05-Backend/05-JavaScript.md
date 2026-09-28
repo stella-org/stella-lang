@@ -105,7 +105,9 @@ them is not.
 ## A `fast` clause, and purity
 
 **A `fast` clause is cheap and does not make its context one-shot.** It constructs
-no continuation (D28), so the backend lowers it as a call. But its body may
+no continuation (D28), so the backend lowers it as a call — one whose body looks for
+handlers and cells below the answering handler, past what stands between it and
+the `perform`, as Core binds it ([Bytecode](01-Bytecode.md)). But its body may
 perform an operation whose `full` handler resumes more than once, and the
 evaluation context around the `perform` is then re-entered
 ([Effects](../03-Typed-Core/03-Effects.md)). A representation that is safe only

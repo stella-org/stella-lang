@@ -81,7 +81,7 @@ What sharpness gives is narrower and static: **no row holds one key twice**, so 
 
 **Core imposes no limit** (D18). A continuation `k_i` is an ordinary function value, and its type `τ_i' -{ρ}-> β` says nothing about how often it is used. The reference semantics is therefore multi-shot.
 
-The question belongs to `full` clauses, which are the ones that bind a continuation. A `fast` clause binds none and constructs none (D28), so implementing one asks nothing of a backend beyond ordinary evaluation. That is a statement about the clause: a program containing one is not thereby one-shot, since the clause's body may perform an operation of the residual row whose `full` handler resumes several times.
+The question belongs to `full` clauses, which are the ones that bind a continuation. A `fast` clause binds none and constructs none (D28), so implementing one asks no continuation of a backend. That is a statement about the clause: a program containing one is not thereby one-shot, since the clause's body may perform an operation of the residual row whose `full` handler resumes several times.
 
 - calling it zero times abandons the computation, as an interpreter of `Partial` into `Maybe` does
 - calling it once is ordinary resumption
@@ -853,7 +853,7 @@ Three things are visible in the `full` rule.
 
 **The `fast` rule constructs no continuation** (D28). The clause body is bound by a `let` and the handler rebuilt around the same `Ev_k` with that binding in the hole, so control reaches the handled computation again without a function value ever being made. The `let` is what reconciles the two rows: the body stands at the row a clause is typed at, the hole at the handled computation's, and a variable is at home in either.
 
-That the body runs outside the handler is not observable. A clause body's row lacks `key(ent)` by sharpness, so it cannot perform on the key being handled wherever it runs.
+**The body runs outside `Ev_k` as well as outside the handler, and the first is observable.** That it stands outside the handler itself changes nothing, since a clause body's row lacks `key(ent)` by sharpness and it cannot perform on the key being handled wherever it runs. `Ev_k` is another matter: it may install a handler of some other key, or open a region declaring a cell key the body names — a function that handles an effect internally is pure to its caller, and one reached through `openEff` from under `h` puts its handler and its region inside `Ev_k`. The body reaches neither. What it installs itself is inside the body and is reached first, as usual; past that, what it looks for is found outside `h`. An operation it performs is answered by a handler outside `h`, and a cell it reads or writes is found outside `h` too — in `h`'s own region where `h` owns one, that region standing outside `h`, and otherwise in whichever region further out declares the key. A machine that runs the body on top of the whole continuation, rather than beside it, therefore passes over `Ev_k` whenever the body looks for a handler or a cell ([Bytecode](../05-Backend/01-Bytecode.md)).
 
 A body that never reaches a value leaves the handled computation unfinished. The rule says what becomes of a value the body produces and requires no value of it; diverging, faulting, and performing an operation of `ρ` that is never resumed are the three ways that happens, the last of them recorded in the row ([Effects](03-Effects.md)).
 

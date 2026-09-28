@@ -407,7 +407,7 @@ What holds an id rather than an index:
 | --- | --- |
 | a record's fields, and a variant's key | `RSEL`, `RRES`, `RUPD`, `BRK` compare ids |
 | a handler marker's key, and the clauses under it | `PERF` finds a marker by id and a clause by an operation's id |
-| a region frame's cell keys | `CGET` and `CSET` find the innermost frame declaring an id |
+| a region frame's cell keys | `CGET` and `CSET` find the innermost visible frame declaring an id |
 
 **A constructor resolves the same way.** A data value holds the identity a loader
 resolved — the declaring module's name with the constructor's own — and not an index
@@ -471,9 +471,11 @@ HNDL d, …        push Resume { current activation, d }, then a region frame wh
 TAILHNDL …       the same without the Resume
 
 PERF d, key, op, s
-                 the innermost marker whose key is key
-                   fast clause   push Resume { …, d } and call the clause with the
-                                 argument; the stack otherwise stands
+                 the innermost visible marker whose key is key
+                   fast clause   push Resume { …, d }, then a ClauseBoundary
+                                 over the distance down to that marker, and call
+                                 the clause with the argument; the stack
+                                 otherwise stands
                    full clause   push Resume { current activation, resuming after
                                  this PERF, d }, then split at the marker
                                  inclusive — that entry among the removed — and
@@ -495,6 +497,7 @@ StackEntry
   | ApplyRemaining  { args }
   | HandlerMarker   { key, clauses, return clause, owner }
   | RegionFrame     { cells }
+  | ClauseBoundary  { distance to the answering marker }
 ```
 
 `Resume` is the only entry that carries a destination register. A tail call pushes
@@ -508,8 +511,9 @@ none, which is the whole of what makes it a tail call, and `TAILHNDL` differs fr
 | an **owner** marker | the region frame below the marker closes first, then the return clause runs with the value, and what the clause produces reaches the entry below |
 | a **reinstatement** marker | the marker pops alone and its return clause runs with the value; the frame it stood in is untouched, and what the clause produces reaches the entry below |
 | a `RegionFrame` whose owner is gone | it pops with no return clause, and the value reaches the entry below |
+| a `ClauseBoundary` | it pops, and the value — a `fast` clause's — reaches the entry below, the `Resume` of the `PERF` it answers |
 
-The last three are the three completion paths, and a marker's `owner` flag is what
+The three rows about a marker and a frame are the three completion paths, and a marker's `owner` flag is what
 distinguishes them ([Bytecode](../05-Backend/01-Bytecode.md)). Nothing in a `.dmo`
 carries that flag: an owner marker is one `HNDL` pushed, and a reinstatement is one
 that arrived at the bottom of a re-pushed segment.
@@ -519,6 +523,22 @@ of each activation in it, the markers, and the region frames it contains — not
 values those hold, which are immutable and shared. This is the one thing a light
 interpreter cannot leave out: re-pushing the captured entries instead would let one
 application write over the state the next one needs.
+
+**A `fast` clause's body runs on top of the stack and is searched past what it runs
+outside.** Core binds the body outside the handler that answered and outside `Ev_k`
+between that handler and the `perform`, while the machine leaves both where they
+stand, since nothing is captured (D28). The `ClauseBoundary` pushed above the
+`PERF`'s `Resume` is what reconciles the two: a search for a marker or a cell
+reaching it continues directly below the answering marker, so a handler or a
+region `Ev_k` installed is not found, the handler's own region — below its marker
+— is, and whatever the body installs above the boundary is found as usual. `PERF`,
+`CGET`, and `CSET` read the stack by that one walk ([Bytecode](../05-Backend/01-Bytecode.md)).
+
+**The boundary holds a distance and not a position.** A `full` operation the body
+performs may be answered below the handler, and the segment it captures then holds
+the boundary together with the marker it measures to; applying that continuation
+re-pushes both at another depth, as many times as it is applied, and a position
+recorded at the first push would name the wrong entry afterwards.
 
 **A continuation takes one argument, and may be applied to more.** A `handle`'s
 answer type is a type like any other and may be a function type, so `k x y` is well

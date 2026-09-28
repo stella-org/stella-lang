@@ -475,12 +475,22 @@ backend lowers them differently.
 
 | Form | What the backend does |
 | --- | --- |
-| `fast` | Call the clause with the operation's argument, the handler still installed. Control returns to the `perform` with the clause's value. **No continuation is constructed** |
+| `fast` | Call the clause with the operation's argument. Control returns to the `perform` with the clause's value. **No continuation is constructed** |
 | `full` | Capture the continuation up to and including this handler, call the clause with the argument and that continuation. The clause's value is the value of the `handle` |
 
 **A `fast` clause is the reason the two are kept apart.** Implementing one asks
-nothing of a backend beyond an ordinary call, so the cost of a continuation is
-reserved for `full` alone.
+no continuation of a backend, so the cost of a continuation is reserved for `full`
+alone.
+
+**Either way the body runs outside the handler and outside what stands between it
+and the `perform`**, as Core binds it ([Semantics](../03-Typed-Core/06-Semantics.md)).
+A `full` clause gets that from the capture, which removes exactly those. A `fast`
+clause removes nothing, and the handlers and regions installed in between stay
+where they are; what the body performs, and the cells it reaches, are found below
+the answering handler all the same, while what the body installs itself is found
+as usual. A lowering that calls the clause on top of everything and searches from
+the top reaches a handler or a cell Core's rule places out of reach
+([Bytecode](../05-Backend/01-Bytecode.md)).
 
 ### Continuations are not one-shot
 

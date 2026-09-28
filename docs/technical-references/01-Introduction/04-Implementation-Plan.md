@@ -279,6 +279,8 @@ The heading of each group names the step of the plan that the group belongs to.
 | `bind x = o in guard (p x) …` | The substitution happens before descending, so the guard's condition has no free `x` |
 | That call, once it is evaluated | The innermost handler of the key is chosen: `Ev_k` lets no `handle` of that key stand between it and the hole |
 | `H Ev_k[perform k.op v] with h` whose clause for `op` is `fast` | Binds the body with a `let` and rebuilds the handler around `Ev_k` with that binding in the hole. No continuation value is built, and the `let` is what reconciles the clause's row with the handled computation's |
+| A `fast` clause body performing an operation that a handler inside `Ev_k` also handles | Answered by a handler outside `h`. The body stands outside `Ev_k`, so a handler a function reached through `openEff` installed there is not in its context |
+| A `fast` clause body reading or writing a cell whose key a region inside `Ev_k` also declares | Reaches the region outside `h` declaring the key — `h`'s own where it owns one, that region standing outside `h`. The region inside `Ev_k` is neither read nor written |
 | A `perform` reaching a handler whose `key(ent)` differs | Does not arise. Both rules require `key(ent) = k`; `Ev_k` says only that no nearer handler carries it |
 | `handle e with h @ ( v̄ )` where `h` declares cells | Steps to `region [r'] (k̄ ↦ v̄) in ( handleO e with h[r := r'] )` for a globally fresh `r'`. The region stands **outside** the handler, which is what a clause body — placed outside it too — needs in order to reach a cell |
 | The term after that step | Type checks. `handleO` is a run-time form with a rule of its own, at `ρ'`; without one, preservation fails at the first step |
@@ -356,6 +358,7 @@ The heading of each group names the step of the plan that the group belongs to.
 | A group of mutually capturing closures | `CLOSN` for every member before any `SETCAP`. Filling one capture list first reads a closure that does not exist yet |
 | A continuation applied twice | Two independent runs, each resuming from the state that was captured, so that what the first did does not reach the second. Each application returns to the `CALLU` that made it rather than to the `HNDL` that installed the handler (D33) |
 | A `fast` clause | No continuation value is constructed, and the continuation is not split |
+| A `PERF`, `CGET`, or `CSET` in a `fast` clause's body, where a handler or a region between the answering marker and the `PERF` holds the key | Passes over them to what stands below the answering marker. What the body installs itself is found as usual, and a `full` operation the body performs, resumed twice, leaves the body where it was each time |
 | `perform` under two handlers of one key | The innermost. Handlers of one key nest at run time, `openEff` being what puts a self-handling function under an outer one |
 | A faulting `FFI` inside a `handle` | The whole continuation is discarded, handler markers included. A fault is not the `Partial` effect and no clause sees it |
 | A `JMP` read from a file | The destination's parameter registers come from the `Join`, which names them. A count alone leaves a consumer unable to perform the transfer |

@@ -272,7 +272,9 @@ treats reaching it as an internal error rather than as a fault.
 `PERF` is not a `Tail`. Where the clause found is `fast`, control returns to
 the instruction after it with the clause's value in `d`; where it is `full`,
 control does not return to it at all unless the clause resumes the continuation,
-and the resumed value arrives in `d`.
+and the resumed value arrives in `d`. Either way the clause's body runs outside
+the handler that answered and outside everything between that handler and the
+`PERF` (below).
 
 **`HNDL` is an ordinary instruction and not a `Tail`**, because the value of a
 `handle` is the value of a computation. It supplies its functions in registers:
@@ -479,12 +481,32 @@ return clause.
 key is `key`. The innermost wins, which is what makes handlers deep, and
 handlers of one key may nest — a function that handles an effect internally is
 pure to its caller, so calling it under an outer handler of the same effect puts
-two markers on the stack at once ([Semantics](../03-Typed-Core/06-Semantics.md)).
+two markers on the stack at once ([Semantics](../03-Typed-Core/06-Semantics.md)). Where the
+`PERF` stands in the body of a `fast` clause, the walk passes over what that body
+runs outside (the table below).
 
 | The clause found | What the machine does |
 | --- | --- |
-| `fast` | Call the clause closure with the argument, leaving the continuation as it is. The clause returns to the `PERF` site with its value |
+| `fast` | Call the clause closure with the argument, constructing no continuation. The continuation above the marker stays where it is, but the body does not run inside it: a marker or a cell the body looks for is sought **below** the answering marker, past everything between it and the `PERF`, while what the body installs itself is found as usual. The clause returns to the `PERF` site with its value |
 | `full` | Split the continuation at that marker, inclusive. Make the removed segment a continuation value. Call the clause closure with the argument and that value, its result returning to what remains below the marker |
+
+**Both rows put the body where Core's rules put it**, outside the handler and
+outside `Ev_k` ([Semantics](../03-Typed-Core/06-Semantics.md)). A `full` clause
+gets that from the split, the segment it removes being exactly the handler and
+`Ev_k`. A `fast` clause removes nothing, so what the row above asks of it is
+the search: `Ev_k` may hold a handler of another key, or a region declaring a key
+the body names — a function that handles an effect internally, called from under
+the handler, puts both there — and a body that found either would reach what
+Core's rule places out of its reach. **The requirement is the behaviour, not the
+mechanism**: the machine meets it with an entry marking where the body begins
+([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)), and a consumer
+threading an environment of handlers meets it by running the body under the
+environment the handler was installed in.
+
+**What the body reaches has to survive a capture.** A `full` operation the body
+performs may be answered below the handler, and its continuation then carries the
+body, the handler, and `Ev_k` together, re-pushed as often as it is applied; every
+such application leaves the body outside `Ev_k` as the first run did.
 
 Nothing here consults an effect row, a type, or an operation's signature. A key
 is compared for equality and an operation is found by name among the clauses of
@@ -493,8 +515,9 @@ the one handler the key selected.
 ### Cells
 
 A region frame is part of the continuation and **not a store**. `CGET` and `CSET`
-find the innermost frame declaring the key, and a write replaces what that frame
-holds.
+find the innermost frame declaring the key, by the walk `PERF` finds a marker by —
+so inside a `fast` clause's body they pass over the same entries it does — and a
+write replaces what that frame holds.
 
 **A frame leaves in three ways and no others**: its owner marker finishes, which
 pops the two together; a value reaches it with its owner gone, which is a `full`
@@ -745,7 +768,7 @@ virtual machine included. They are obligations of the format rather than of any
 one implementation.
 
 1. The evaluation order of [Semantics](../03-Typed-Core/06-Semantics.md), which is observable because any subterm may perform an effect
-2. `PERF` finding the innermost marker of its key
+2. `PERF` finding the innermost marker of its key, and a clause's body — `fast` as well as `full` — running outside the handler that answered and outside what stands between it and the `PERF`, so that neither an operation the body performs nor a cell it reaches is found there
 3. A continuation applicable any number of times, each application proceeding from the captured state and returning to whoever applied it
 4. A handler marker standing below the body's activation, so that returning from the body runs the return clause and a tail call inside the body leaves the path to it intact
 5. A fault discarding the continuation entirely, handler markers and region frames included
