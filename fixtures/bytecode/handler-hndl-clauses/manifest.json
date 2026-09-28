@@ -1,0 +1,6 @@
+{
+  "description": "Main compiled from Core and then a HNDL of Main given one clause fewer than its handler entry holds",
+  "modules": ["Base.Int", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "Meter"}},
+  "observe": []
+}

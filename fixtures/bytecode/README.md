@@ -37,8 +37,13 @@ back to the value, so `-0`, `NaN`, and `Infinity` are writable), `{"char": 98}`,
 ## Where they come from
 
 The Core each fixture is compiled from, and its expected values, are in
-`compiler/test/Stella/Compiler/Fixtures/Programs.purs`; the fixtures themselves are
+`compiler/test/Stella/Compiler/Fixtures/Programs.purs` and
+`compiler/test/Stella/Compiler/Fixtures/Effects.purs`; the fixtures themselves are
 listed in `compiler/test/Stella/Compiler/Fixtures.purs`.
+
+A module no Core compiles to, such as a handler entry naming one cell twice, is made
+by compiling Core and then changing the lowered module. Its manifest's description
+says what was changed.
 
 The compiler's test suite checks that every fixture here is exactly what compiling
 its source gives now, and fails naming each one that is not. The `.dmo` format is

@@ -1,0 +1,6 @@
+{
+  "description": "Main compiled from Core and then the second cell of Main's handler entry changed to the first, at a KEYS index of its own holding the same key",
+  "modules": ["Base.Int", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "reading"}},
+  "observe": []
+}

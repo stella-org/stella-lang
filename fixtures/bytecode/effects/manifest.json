@@ -1,0 +1,24 @@
+{
+  "description": "Handlers, perform in both clause forms, continuations resumed once, twice, interleaved, and over-applied, regions carried in a continuation, and where a fast clause's body runs",
+  "modules": ["Base.Int", "Main"],
+  "outcome": {"loads": true},
+  "observe": [
+    {"global": "Main.counted", "value": {"int": 1}},
+    {"global": "Main.resumedTwice", "value": {"int": 3}},
+    {"global": "Main.resumedOnce", "value": {"int": 1006}},
+    {"global": "Main.abandoned", "value": {"int": 42}},
+    {"global": "Main.innermost", "value": {"int": 3}},
+    {"global": "Main.forwarded", "value": {"int": 11}},
+    {"global": "Main.contOverApplied", "value": {"int": 34}},
+    {"global": "Main.foldedOrder", "value": {"int": -1}},
+    {"global": "Main.chainedOrder", "value": {"int": -1}},
+    {"global": "Main.regionForked", "value": {"int": 27}},
+    {"global": "Main.ownedFork", "value": {"int": 223}},
+    {"global": "Main.interleaved", "value": {"int": 3}},
+    {"global": "Main.askedOutside", "value": {"int": 1}},
+    {"global": "Main.readOutside", "value": {"int": 7}},
+    {"global": "Main.writtenOutside", "value": {"int": 47}},
+    {"global": "Main.installedByBody", "value": {"int": 9}},
+    {"global": "Main.forkedTwice", "value": {"int": 17}}
+  ]
+}

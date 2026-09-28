@@ -1,0 +1,6 @@
+{
+  "description": "Main compiled from Core and then the second clause of Main's handler entry changed to answer the first clause's operation, at the same OPS index",
+  "modules": ["Base.Int", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "bump"}},
+  "observe": []
+}

@@ -1,0 +1,6 @@
+{
+  "description": "Main compiled from Core and then a HNDL of Main given one initial cell value fewer than its handler entry's cells",
+  "modules": ["Base.Int", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "Meter"}},
+  "observe": []
+}
