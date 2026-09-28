@@ -1,0 +1,86 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+// The runtime generated code imports, reached from this file's own place in the
+// build output rather than resolved as a package, so a test needs no install step.
+export const runtimeSpecifier = new URL("../../js-runtime/src/backend.js", import.meta.url).href;
+
+// Write the generated modules into a fresh directory and import the entry one.
+export const importGeneratedImpl = (files) => (entry) => (onError, onSuccess) => {
+  try {
+    const dir = mkdtempSync(join(tmpdir(), "stella-js-"));
+    for (const file of files) writeFileSync(join(dir, file.name), file.source);
+    import(pathToFileURL(join(dir, entry)).href).then(onSuccess, onError);
+  } catch (e) {
+    onError(e);
+  }
+  return (cancelError, onCancelerError, onCancelerSuccess) => onCancelerSuccess();
+};
+
+// The message of whatever importing the entry module threw, or "" where it loaded.
+export const importFailureImpl = (files) => (entry) => (onError, onSuccess) => {
+  try {
+    const dir = mkdtempSync(join(tmpdir(), "stella-js-"));
+    for (const file of files) writeFileSync(join(dir, file.name), file.source);
+    import(pathToFileURL(join(dir, entry)).href).then(
+      () => onSuccess(""),
+      (e) => onSuccess(String(e && e.message)),
+    );
+  } catch (e) {
+    onError(e);
+  }
+  return (cancelError, onCancelerError, onCancelerSuccess) => onCancelerSuccess();
+};
+
+// What an export of a generated module holds, read through the constructors the
+// caller supplies. Numbers of every kind read as one, a JavaScript number being
+// what an Int, a Number, and a Char are all held as.
+export const shapeOfImpl = (k) => (namespace) => (name) => {
+  const go = (v) => {
+    if (typeof v === "number") return k.number(v);
+    if (typeof v === "string") return k.string(v);
+    if (typeof v === "boolean") return k.boolean(v);
+    if (v === null || v === undefined) return k.other("nothing");
+    const kind = v.constructor && v.constructor.name;
+    if (kind === "Data") return k.data(v.c.name)(v.f.map(go));
+    if (kind === "Variant") return k.variant(v.k)(go(v.v));
+    if (kind === "Closure" || kind === "Pap") return k.fn;
+    return k.record(
+      Object.keys(v)
+        .sort()
+        .map((key) => ({ key, value: go(v[key]) })),
+    );
+  };
+  if (!Object.prototype.hasOwnProperty.call(namespace, name)) return k.other("no such export");
+  return go(namespace[name]);
+};
+
+// Each structural operation of the runtime handed what its precondition excludes,
+// and whether it refused as a bug rather than answering with a value.
+export const runtimeRefusals = await (async () => {
+  const rt = await import(runtimeSpecifier);
+  const refuses = (thunk) => {
+    try {
+      thunk();
+      return false;
+    } catch (e) {
+      return e instanceof rt.Bug;
+    }
+  };
+  const c = rt.ctor("T.C", 1);
+  const d = new rt.Data(c, [1]);
+  const rec = rt.extend(rt.emptyRecord, "s:x", 1);
+  const other = rt.extend(rt.emptyRecord, "s:x", 2);
+  return [
+    { name: "a field past the constructor's arity", refused: refuses(() => rt.field(d, c, 1)) },
+    { name: "a field of another constructor", refused: refuses(() => rt.field(d, rt.ctor("T.D", 1), 0)) },
+    { name: "extending at a key held", refused: refuses(() => rt.extend(rec, "s:x", 2)) },
+    { name: "selecting a key lacking", refused: refuses(() => rt.select(rec, "s:y")) },
+    { name: "restricting a key lacking", refused: refuses(() => rt.restrict(rec, "s:y")) },
+    { name: "updating a key lacking", refused: refuses(() => rt.update(rec, "s:y", 2)) },
+    { name: "merging records sharing a key", refused: refuses(() => rt.merge(rec, other)) },
+    { name: "a payload at another key", refused: refuses(() => rt.payload(new rt.Variant("t:A", 1), "t:B")) },
+  ];
+})();

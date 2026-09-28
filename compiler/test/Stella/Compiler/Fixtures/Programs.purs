@@ -375,7 +375,6 @@ variantBody =
           Nothing
       )
 
-
 -- | `Main` with one of its values left out, from its declarations and its exports.
 without :: P.String -> Module P.Int
 without name = mainModule
@@ -438,3 +437,70 @@ papOnly =
       ]
   }
 
+-- | `Lib` exporting everything but `unbox`.
+libUnexported :: Module P.Int
+libUnexported = libModule { exports = Array.filter (_ /= ExportValue (Ident "unbox")) libModule.exports }
+
+-- | `Lib` whose one constructor is called `Crate`: a module importing `Lib.Box`
+-- | reaches a constructor no module declares.
+libRenamed :: Module P.Int
+libRenamed =
+  { annotation: 0
+  , name: libName
+  , imports: [ intName ]
+  , exports: [ ExportType (TyName "Box"), ExportCtor (Ident "Crate"), ExportValue (Ident "unbox"), ExportValue (Ident "addTo") ]
+  , decls:
+      [ DeclData 1
+          { name: TyName "Box"
+          , kindVars: []
+          , params: []
+          , constructors: [ { name: Ident "Crate", tag: 0, fields: [ int ] } ]
+          , isNewtype: false
+          , attributes: []
+          }
+      , nonrec 2 "unbox" (pureFn boxTy int) $ lam "b" boxTy $
+          Case 0 [ var "b" ]
+            ( SwitchCtor (OccScrutinee 0)
+                [ { ctor: inLib "Crate", tree: Bind (Ident "x") (OccField (OccScrutinee 0) (inLib "Crate") 0) (Leaf (var "x")) } ]
+                Nothing
+            )
+      , nonrec 3 "addTo" (pureFn int (pureFn int int)) $ lam "n" int $ lam "m" int $ intOp "add" (var "n") (var "m")
+      ]
+  }
+
+-- | What each value of `Main` holds, fixed from the program by hand.
+expected :: P.Array (Tuple P.String Expected)
+expected =
+  [ Tuple "summed" (EInt 6)
+  -- 1 + … + 100000 is 5000050000, which wraps modulo 2³² to 705082704
+  , Tuple "deepSum" (EInt 705082704)
+  , Tuple "counted" (EInt 1000000)
+  , Tuple "listValue" (cons 1 (cons 2 (cons 3 nil)))
+  -- curried 10 3 = subtract 10 3 = 3 - 10
+  , Tuple "overApplied" (EInt (-7))
+  , Tuple "papApplied" (EInt 9)
+  , Tuple "ctorPap" (EInt 1)
+  , Tuple "captured" (EInt 8)
+  -- 100001 is odd
+  , Tuple "evenOdd" (EBoolean false)
+  , Tuple "joined" (EInt 101)
+  , Tuple "looped" (EInt 705082704)
+  , Tuple "recordShape" (ERecord [ { key: KField "y", value: EBoolean true } ])
+  , Tuple "recordArith" (EInt 6)
+  , Tuple "variantCase" (EInt 6)
+  , Tuple "negZero" (EInt 2)
+  , Tuple "posZero" (EInt 2)
+  , Tuple "nanCase" (EInt 1)
+  , Tuple "stringCase" (EInt 2)
+  , Tuple "charCase" (EInt 2)
+  , Tuple "unitValue" (EData "Prim.Unit" [])
+  , Tuple "unboxed" (EInt 7)
+  , Tuple "boxMatched" (EInt 9)
+  , Tuple "addPartial" (EInt 42)
+  , Tuple "addCalled" (EInt 3)
+  -- subtract 10 3 = 3 - 10; the pending argument applied first would give 10 - 3
+  , Tuple "overAppliedU" (EInt (-7))
+  ]
+  where
+  cons x xs = EData "Main.Cons" [ EInt x, xs ]
+  nil = EData "Main.Nil" []

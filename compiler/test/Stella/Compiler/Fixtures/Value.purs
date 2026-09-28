@@ -84,12 +84,10 @@ numberText x
 jsonString :: P.String -> P.String
 jsonString text = "\"" <> String.joinWith "" (map escape (CodePoints.toCodePointArray text)) <> "\""
   where
-  escape cp
-    | n == 0x22 = "\\\""
-    | n == 0x5C = "\\\\"
-    | n < 0x20 = "\\u" <> pad (toStringAs hexadecimal n)
-    | otherwise = CodePoints.singleton cp
-    where
-    n = fromEnum cp
+  escape cp = case fromEnum cp of
+    0x22 -> "\\\""
+    0x5C -> "\\\\"
+    n | n < 0x20 -> "\\u" <> pad (toStringAs hexadecimal n)
+    _ -> CodePoints.singleton cp
 
   pad s = String.joinWith "" (Array.replicate (4 - String.length s) "0") <> s
