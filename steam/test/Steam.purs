@@ -12,7 +12,7 @@ import Test.Steam.Drive as Drive
 import Test.Steam.Eval as Eval
 import Test.Steam.Effectful as Effectful
 import Test.Steam.FastClause as FastClause
-import Test.Steam.JavaScript as JavaScript
+import Test.Steam.Fixtures as Fixtures
 import Test.Steam.Foreign as Foreign
 import Test.Steam.Handlers as Handlers
 import Test.Steam.Load as Load
@@ -33,7 +33,7 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   Handlers.spec
   Effectful.spec
   FastClause.spec
-  JavaScript.spec
+  Fixtures.spec
   Drive.spec
   Marshal.spec
   Command.spec
