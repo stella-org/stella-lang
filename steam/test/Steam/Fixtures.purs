@@ -32,7 +32,8 @@ import Steam.Eval (Failure(..))
 import Steam.Load (LoadError(..), Store, emptyStore, globalNamed, load, namesOf, noIdentities)
 import Steam.Structural (NumberAtom(..), StructuralValue(..), defaultLimits, inspect)
 import Stella.Compiler.Bytecode (decode)
-import Stella.Compiler.TypedCore (EffName(..), Ident(..), ModuleName(..), Qualified(..), RowKey(..), Symbol(..), Tag(..), codePointOf, sameNumber, textOf)
+import Stella.Compiler.Bytecode.Module (Key(..)) as M
+import Stella.Compiler.TypedCore (EffName(..), Ident(..), ModuleName(..), OpName(..), Qualified(..), RowKey(..), Symbol(..), Tag(..), codePointOf, sameNumber, textOf)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
@@ -169,8 +170,11 @@ fixtureMismatches name = liftEffect do
               InitializationFailed q (Faults _) | qualifiedText q == manifest.faults -> []
               _ -> [ name <> ": ended as " <> show err <> ", not as a fault initializing " <> manifest.faults ]
           | isFault err -> pure [ name <> ": faulted as " <> show err <> ", where a refusal naming " <> manifest.mentions <> " was expected" ]
-          | String.contains (String.Pattern manifest.mentions) (show err) -> pure []
-          | otherwise -> pure [ name <> ": refused as " <> show err <> ", not naming " <> manifest.mentions ]
+          | not (String.contains (String.Pattern manifest.mentions) (show err)) ->
+              pure [ name <> ": refused as " <> show err <> ", not naming " <> manifest.mentions ]
+          | Just r <- Array.find (\listed -> listed.name == name) loadRefusals, not (r.refusal err) ->
+              pure [ name <> ": refused as " <> show err <> ", not as the refusal it is listed for" ]
+          | otherwise -> pure []
         Right loadedStore
           | not manifest.loads -> pure [ name <> ": loaded, and a refusal naming " <> manifest.mentions <> " was expected" ]
           | otherwise -> map Array.catMaybes (traverse (observed loadedStore) manifest.observe)
@@ -199,6 +203,45 @@ spec = describe "Steam, over the bytecode fixtures" do
     when (Array.null names) (fail "no fixtures found")
     mismatches <- traverse fixtureMismatches names
     Array.concat mismatches `shouldEqual` []
+
+  -- a name left behind when its fixture is renamed or removed would check nothing
+  it "lists only fixtures that exist as refused for a given reason" do
+    names <- liftEffect (caseNames fixturesRoot)
+    Array.filter (\n -> not (Array.elem n names)) (map _.name loadRefusals) `shouldEqual` []
+
+-- | The refusal each of these fixtures must be refused with, which a manifest's
+-- | `mentions` does not pin down: every shape refusal names the same effect, and
+-- | a report naming the key or the operation says nothing of the counts.
+loadRefusals :: P.Array { name :: P.String, refusal :: LoadError -> P.Boolean }
+loadRefusals =
+  [ { name: "handler-cell-twice", refusal: cellTwice }
+  , { name: "handler-cell-aliased", refusal: cellTwice }
+  , { name: "handler-clause-twice", refusal: clauseTwice }
+  , { name: "handler-clause-aliased", refusal: clauseTwice }
+  , { name: "handler-hndl-clauses", refusal: clausesDisagree }
+  , { name: "handler-tailhndl-clauses", refusal: clausesDisagree }
+  , { name: "handler-hndl-cells", refusal: cellsDisagree }
+  , { name: "handler-tailhndl-cells", refusal: cellsDisagree }
+  ]
+  where
+  cellTwice = case _ of
+    CellKeyTwice (M.KSymbol (Symbol "reading")) -> true
+    _ -> false
+
+  clauseTwice = case _ of
+    ClauseTwice (OpName "bump") -> true
+    _ -> false
+
+  -- the handler entry holds two of each and the instruction supplies one
+  clausesDisagree = case _ of
+    HandlerClausesDisagree key 2 1 -> key == meter
+    _ -> false
+
+  cellsDisagree = case _ of
+    HandlerCellsDisagree key 2 1 -> key == meter
+    _ -> false
+
+  meter = M.KEffect (Qualified (ModuleName "Main") (EffName "Meter"))
 
 qualifiedText :: Qualified Ident -> P.String
 qualifiedText (Qualified (ModuleName m) (Ident x)) = m <> "." <> x

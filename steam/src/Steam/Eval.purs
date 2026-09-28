@@ -128,7 +128,8 @@ data Bug
   -- | An owner marker with no region frame below it.
   | RegionNotBelowMarker
   -- | A handler installed with a number of clauses or of initial values its table
-  -- | does not state.
+  -- | does not state. Loading refuses such an instruction, so a loaded module never
+  -- | reaches this.
   | WrongHandlerShape HandlerIx
   -- | A `Base.IO` entry applied to a count it does not take, as the entry and the
   -- | count. Its arity is the ABI's and a loader checked it, so this is what a

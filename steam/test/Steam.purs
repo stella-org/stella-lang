@@ -10,8 +10,6 @@ import Test.Steam.Calls as Calls
 import Test.Steam.Command as Command
 import Test.Steam.Drive as Drive
 import Test.Steam.Eval as Eval
-import Test.Steam.Effectful as Effectful
-import Test.Steam.FastClause as FastClause
 import Test.Steam.Fixtures as Fixtures
 import Test.Steam.Foreign as Foreign
 import Test.Steam.Handlers as Handlers
@@ -31,8 +29,6 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   Arrays.spec
   Foreign.spec
   Handlers.spec
-  Effectful.spec
-  FastClause.spec
   Fixtures.spec
   Drive.spec
   Marshal.spec

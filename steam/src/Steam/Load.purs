@@ -62,7 +62,7 @@ import Steam.Module (CalleeTarget(..), CtorRef, ForeignRef, GlobalSlot, HandlerR
 import Steam.Op as Op
 import Steam.Structural (RuntimeNames)
 import Steam.Value (Closure, CtorId(..), Foreign(..), KeyId(..), ModuleId(..), OpId(..), Value(..), arityOfIO, entryOfIO, ioEntries)
-import Stella.Compiler.Bytecode.Instr (CalleeIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), Function, GlobalIx(..), Instr(..), Join, JoinName, KeyIx(..), Node, OpIx(..), PrimIx(..), Tail(..))
+import Stella.Compiler.Bytecode.Instr (CalleeIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), Function, GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName, KeyIx(..), Node, OpIx(..), PrimIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (CalleeEntry(..), Dmo, GlobalInit(..), HandlerEntry, Key)
 import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, ModuleName, OpName, Qualified(..))
@@ -221,10 +221,16 @@ data LoadError
   -- | A handler naming a key or an operation its module's tables do not hold.
   | NoSuchKeyIndex P.Int
   | NoSuchOpIndex P.Int
-  -- | A handler declaring one cell twice, or holding two clauses for one operation.
-  -- | Two indices may intern to one identity, so what is compared is the identity.
-  | CellKeyTwice KeyId
-  | ClauseTwice OpId
+  -- | A handler declaring one cell twice, or holding two clauses for one operation,
+  -- | as the key or the operation's name. Two indices may intern to one identity, so
+  -- | what is compared is the identity.
+  | CellKeyTwice Key
+  | ClauseTwice OpName
+  -- | A `HNDL` or `TAILHNDL` supplying another count of clauses, or of initial cell
+  -- | values, than its handler entry holds: the key of the handler's effect, the
+  -- | entry's count, and the instruction's.
+  | HandlerClausesDisagree Key P.Int P.Int
+  | HandlerCellsDisagree Key P.Int P.Int
   -- | Two join points of one function under one name.
   | JoinNameTwice JoinName
   -- | A foreign nothing carries out: neither an entry this interpreter claims nor
@@ -312,7 +318,8 @@ load store dmo = do
   foreigns <- traverse (resolveForeign withDeclarations scope) dmo.foreignRefs
   globalRefs <- traverse (resolveGlobal withDeclarations scope) dmo.globalRefs
   callees <- traverse (resolveCallee withDeclarations scope) dmo.callees
-  handlers <- traverse (resolveHandler keys ops) dmo.handlers
+  handlers <- traverse (resolveHandler dmo keys ops) dmo.handlers
+  checkHandlers dmo
   checkGlobals functions dmo
   checkArities withDeclarations dmo
 
@@ -612,37 +619,71 @@ checkGlobals functions dmo = traverse_ one dmo.globals
 -- | looked up where the handler is installed.
 resolveHandler
   :: forall r
-   . P.Array KeyId
+   . Dmo
+  -> P.Array KeyId
   -> P.Array OpId
   -> HandlerEntry
   -> Run (LOAD r) HandlerRef
-resolveHandler keys ops entry = do
-  key <- keyAt entry.key
+resolveHandler dmo keys ops entry = do
+  key <- map _.id (keyAt entry.key)
   cells <- traverse keyAt entry.cells
   opClauses <- traverse clause entry.opClauses
   unique CellKeyTwice cells
-  unique ClauseTwice (map _.op opClauses)
-  pure { key, cells, opClauses }
+  unique ClauseTwice opClauses
+  pure { key, cells: map _.id cells, opClauses: map (\c -> { op: c.id, form: c.form }) opClauses }
   where
-  keyAt (KeyIx i) = case Array.index keys i of
-    Just key -> pure key
-    Nothing -> refuse (NoSuchKeyIndex i)
+  keyAt (KeyIx i) = case Array.index keys i, Array.index dmo.keys i of
+    Just id, Just name -> pure { id, name }
+    _, _ -> refuse (NoSuchKeyIndex i)
 
-  clause c = do
-    op <- case c.op of
-      OpIx i -> case Array.index ops i of
-        Just op -> pure op
-        Nothing -> refuse (NoSuchOpIndex i)
-    pure { op, form: c.form }
+  clause c = case c.op of
+    OpIx i -> case Array.index ops i, Array.index dmo.ops i of
+      Just id, Just name -> pure { id, name, form: c.form }
+      _, _ -> refuse (NoSuchOpIndex i)
 
   -- a cell is found by its key and a clause by its operation, so either standing
   -- twice would leave which one a `CGET` or a `PERF` means to the order of a table
-  unique :: forall r2 a. Ord a => (a -> LoadError) -> P.Array a -> Run (LOAD r2) Unit
-  unique twice names = void (foldM one Set.empty names)
+  unique
+    :: forall r2 id name more
+     . Ord id
+    => (name -> LoadError)
+    -> P.Array { id :: id, name :: name | more }
+    -> Run (LOAD r2) Unit
+  unique twice named = void (foldM one Set.empty named)
     where
-    one seen name
-      | Set.member name seen = refuse (twice name)
-      | otherwise = pure (Set.insert name seen)
+    one seen resolved
+      | Set.member resolved.id seen = refuse (twice resolved.name)
+      | otherwise = pure (Set.insert resolved.id seen)
+
+-- | That every `HNDL` and `TAILHNDL` supplies one clause per clause of its handler
+-- | entry and one initial value per cell, wherever in a function it stands.
+checkHandlers :: forall r. Dmo -> Run (LOAD r) Unit
+checkHandlers dmo = traverse_ perFunction dmo.functions
+  where
+  perFunction function = do
+    traverse_ perInstr (instructionsOf function)
+    traverse_ perTail (tailsOf function)
+
+  perInstr = case _ of
+    HNDL _ ix _ _ clauses cells -> operands ix clauses cells
+    _ -> pure unit
+
+  perTail = case _ of
+    TAILHNDL ix _ _ clauses cells -> operands ix clauses cells
+    _ -> pure unit
+
+  operands :: forall r2 a b. HandlerIx -> P.Array a -> P.Array b -> Run (LOAD r2) Unit
+  operands (HandlerIx i) clauses cells = case Array.index dmo.handlers i of
+    Nothing -> refuse (IndexOutOfRange "HANDLERS" i)
+    Just entry -> do
+      key <- case entry.key of
+        KeyIx k -> case Array.index dmo.keys k of
+          Just key -> pure key
+          Nothing -> refuse (NoSuchKeyIndex k)
+      when (Array.length clauses /= Array.length entry.opClauses)
+        (refuse (HandlerClausesDisagree key (Array.length entry.opClauses) (Array.length clauses)))
+      when (Array.length cells /= Array.length entry.cells)
+        (refuse (HandlerCellsDisagree key (Array.length entry.cells) (Array.length cells)))
 
 -- | That every call in the code supplies a count the declaration it reaches admits.
 -- |
