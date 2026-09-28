@@ -578,16 +578,16 @@ the machine provides it.
 The cost falls on `full` clauses alone. A `fast` clause captures nothing (D28),
 so the common case of translating one operation into another pays none of it.
 
-**This makes the virtual machine conforming with respect to D18**, where the
-v0.1 JavaScript and Wasm backends are not: the reference semantics is multi-shot
-and no backend that raises an error on a second resumption reproduces it
+**This makes the virtual machine conforming with respect to D18**, as the
+JavaScript backend is and the v0.1 Wasm backend is not: the reference semantics is
+multi-shot and no backend that raises an error on a second resumption reproduces it
 ([Semantics](../03-Typed-Core/06-Semantics.md)).
 
 What that buys the test suite is narrower than being the evaluator the
 properties are stated over. The machine is **a second evaluator to compare the
 Core evaluator against** — one program run both ways, giving the same value and
 the same sequence of observable effects — and it is what **exercises a program
-that resumes a continuation more than once**, which the web backends cannot run
+that resumes a continuation more than once**, which a one-shot backend cannot run
 at all. Preservation and erasure are stated over Typed Core and its erasure, and
 a machine state carries no types, so those two stay with the Core evaluator
 ([Implementation Plan](../01-Introduction/04-Implementation-Plan.md)).
@@ -779,5 +779,5 @@ one implementation.
 10. One identity per key, per operation name, and per constructor across every module it has loaded, a table index being the file's own
 
 A consumer unable to meet (3) is non-conforming in the way D18 records, and says
-so rather than failing quietly: the v0.1 JavaScript and Wasm backends are in
-exactly that position, and the virtual machine is not.
+so rather than failing quietly: the v0.1 Wasm backend is in exactly that position,
+and the virtual machine and the JavaScript backend are not.

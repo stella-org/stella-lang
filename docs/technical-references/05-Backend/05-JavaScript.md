@@ -39,9 +39,12 @@ generated.** A decoder hands on every module whose bytes it can read, and whethe
 module's declarations are its own, whether a name is declared twice in one
 namespace, whether its exports name its values, whether its globals are
 installable — a `func` over a function of at least one parameter, a `run` over one
-of none, neither expecting captures — and whether a foreign the ABI fixes as an
-operation is declared at that operation's arity are properties of the module rather
-than of its bytes. Steam checks them where a module loads
+of none, neither expecting captures — whether a foreign the ABI fixes as an
+operation is declared at that operation's arity, whether a handler declares one
+cell or holds clauses for one operation twice, compared by the key and the name an
+index holds rather than by the index, and whether every `HNDL` and `TAILHNDL`
+supplies as many clauses and initial cell values as its handler holds are
+properties of the module rather than of its bytes. Steam checks them where a module loads
 ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)); generated code has no
 such moment for what one module decides alone, so the backend checks them first and
 refuses the module otherwise. What another module declares is checked where the
@@ -186,17 +189,20 @@ continuation-passing style. That it is one of them is not a choice.
 ## The execution model: frames and a run loop
 
 **An activation is a frame on a stack of the runtime's own, and a function is a set
-of segments.** A function is cut at each non-tail call: its entry is one segment,
-what follows each such call another, and each join point a third kind. A segment
-runs straight to its next transfer and returns to the run loop what to do next —
-return a value, call, tail call, or continue at another segment of the same frame —
-so the host's call stack never holds more than one segment.
+of segments.** A function is cut at each non-tail call, each `PERF`, and each
+`HNDL`: its entry is one segment, what follows each such transfer another, and each
+join point a third kind. A segment runs straight to its next transfer and returns
+to the run loop what to do next — return a value, call, tail call, perform, install
+a handler, or continue at another segment of the same frame — so the host's call
+stack never holds more than one segment.
 
 | What the loop does | Where it comes from |
 | --- | --- |
 | a call pushes an entry naming the frame, the register the value goes to, and the segment that continues | a non-tail call |
 | a tail call pushes nothing and replaces the frame | `TAILK`, `TAILU` |
-| a value reaching an entry is written and the frame continues, or is applied to the arguments an over-application left | `RET` |
+| a perform pushes the same entry, then answers as the clause's form says (below) | `PERF` |
+| an installation pushes the same entry, then a marker and, where the handler declares cells, a region directly below it, and calls the body | `HNDL`; `TAILHNDL` pushes no entry for the frame |
+| a value reaching an entry is written and the frame continues, is applied to the arguments an over-application left, or passes a marker, a region, or a clause's boundary as the next section says | `RET` |
 
 **Applying is decided by the count before the kind**, as the machine decides it:
 too few arguments build a partial application whatever the callee, too many call
@@ -205,8 +211,9 @@ application completed later carries out the callee once the last argument arrive
 ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)). Registers live in the
 frame, so a deep non-tail recursion takes heap and not host stack: **the depth of
 a program's calls narrows nothing about which programs the backend runs.** What the
-backend does not run yet is decided by the constructs it does not generate and by
-the conformance it has not shown (below), and not by call depth.
+backend does not run is decided by what it does not generate — a foreign other than
+an operation, and the execution of an `IO`, which the foreign manifest and the drive
+loop are for (below) — and not by call depth.
 
 **The strategy is the backend's to change, not the format's.** Frame IR, the lower
 IR the frame strategy cuts a module into, holds the segments; a strategy converting
@@ -217,6 +224,56 @@ it generates, the strategies not sharing a calling convention. Frames and a run 
 come first because they carry the machine's model over directly, which is what
 makes a continuation applied twice expressible from the start; what is faster is
 measured on top of them.
+
+## Handlers, continuations, and regions
+
+**The stack holds what the machine's holds, in the same order**
+([Bytecode](01-Bytecode.md)). Installing a handler pushes a marker and, where the
+handler declares cells, a region directly below it. A `HNDL` pushes these above the
+entry of the frame that installed it, and a `TAILHNDL`, pushing no entry for that
+frame, directly above whatever was below it. A marker a continuation re-pushes at its bottom has no
+region of its own below it. A marker is found by its key's string and a clause of it
+by the operation's name, looked up in a map built when the handler is installed, so
+no operation name can collide with a property the host gives every object.
+
+**A marker records two facts apart: whether installing produced it, and whether the
+entry below is the region it opened.** An owner of a handler that declares no cells
+opens no region, and the entry below it belongs to someone else, so being an owner
+does not say that the region below is its own. A value reaching a marker that owns
+its region closes that region first — finding anything else there is a defect — and
+then goes to the return clause. A value reaching a region no marker owns, or a
+clause's boundary, passes on down.
+
+**A `full` clause takes the stack from the perform up to the answering marker.**
+The perform pushes its frame's entry first, so the continuation begins at the
+perform, and the run of entries from there up to and including the marker is taken
+off the stack and becomes the continuation; the handler's region, where it has one,
+stays below. The
+clause is then applied to the operation's argument and the continuation.
+
+**A `fast` clause is applied where the perform stands, above a boundary.** The
+boundary records how far below it the answering marker stands, and a search for a
+marker or a cell that reaches it continues directly below that marker, so the body
+sees neither the handler nor what stood between it and the perform, while it sees
+the handler's region where it has one (D28). The distance is relative because a
+`full` operation the body performs may take the boundary with the marker into a
+continuation, and re-push the two anywhere. A search for a marker and a search for a cell are one
+walk, which is what keeps a perform and a cell access reaching the same context.
+
+**Applying a continuation re-pushes a copy of what it took, every time.** What an
+application can change is the register array of each frame in the segment and the
+cell slots of each region, so each is copied, holding what it held when taken; the
+values they hold are shared, a value written into in place being one value before
+and after. This rests on a frame being referred to by nothing but the one entry
+holding it and, while it runs, the loop. **The marker at the bottom is re-pushed as
+one owning nothing**, whatever it was taken as: a region its handler opened stayed
+behind, and closing it belongs to whoever holds it now. The first argument
+reaches the top of the segment, and arguments past it wait below the segment for
+what it returns.
+
+**A cell is found afresh at each access.** Applying a continuation copies the
+regions it re-pushes, so a cell found before a transfer is not, in general, the one
+after it, and nothing holds a cell across a transfer.
 
 ## A `fast` clause, and purity
 
@@ -350,6 +407,16 @@ read the bytes and check the same manifest, so the two agree wherever both pass,
 neither lowers Core. The compiler's own tests check that every fixture is what
 compiling its source gives now, the format not being frozen.
 
+**Each property of re-entering a continuation has a value of its own that only it
+decides**: a region inside a continuation resumed twice, which shows its cells are
+copied; a continuation whose bottom marker owns a region, resumed twice from its
+clause, which shows that marker is re-pushed owning nothing; and one resumption held
+captured while a second runs through the same frame, which shows the frame's
+registers are copied — resumptions run one after another cannot show it, lowering
+giving every local a register of its own. A module no Core compiles to, such as a
+handler naming one cell twice, is made by changing a lowered one, and its manifest
+says what was changed.
+
 **What a manifest observes is how loading ends and what globals hold**, and nothing
 of the effects a program has while it runs. The same sequence of observable effects
 is a claim for once a program can have one — a foreign reached and an `IO`
@@ -357,12 +424,11 @@ executed — and a manifest can record the sequence a run must produce.
 
 ## Conformance
 
-**D18 records the JavaScript backend as one-shot, and that record stands until
-this backend passes the cases that decide it**: a `full` clause resuming its
-continuation twice, each resumption beginning from the captured state, and a
-continuation captured outside a region carrying the cells it was captured with
-([Bytecode](01-Bytecode.md)). The execution model is chosen so that those cases
-are expressible; they are what shows it.
+**The backend is conforming with respect to D18.** It passes the cases that decide
+it: a `full` clause resuming its continuation twice, each resumption beginning from
+the captured state, and a continuation captured outside a region carrying the cells
+it was captured with ([Bytecode](01-Bytecode.md)). A second resumption is an
+ordinary application, and no error is raised for one.
 
 ## What is open
 

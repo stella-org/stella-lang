@@ -399,10 +399,12 @@ type Cell =
 -- | **Every application clones, the first one included.** The captured segment is
 -- | the record of the capture and is never the thing that runs.
 -- |
--- | What is shared rather than copied is every value: a value is immutable, so two
--- | applications reading one read the same thing whichever holds it. A closure's
--- | capture slots are shared for the same reason — they are filled once, where the
--- | closure is built, and a segment carries closures rather than building them.
+-- | What is shared rather than copied is every value those references hold: what
+-- | is copied is the holder of the control state, not what it holds, so a value
+-- | keeps its identity across applications, and a value written into in place, such
+-- | as an array, is one value before the capture and after. A closure's capture
+-- | slots are shared too — they are filled once, where the closure is built, and a
+-- | segment carries closures rather than building them.
 -- |
 -- | **The marker at the bottom is a reinstatement, whichever kind was captured
 -- | there.** It owns no frame: the frame its `handle` opened stayed behind when the

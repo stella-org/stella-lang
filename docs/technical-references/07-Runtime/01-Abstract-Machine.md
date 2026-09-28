@@ -42,9 +42,9 @@ Two uses stand beside those, and neither reaches a user.
   both ways gives the same value and the same sequence of observable effects, which
   exercises the whole of translation and lowering at once
   ([Implementation Plan](../01-Introduction/04-Implementation-Plan.md))
-- **A way to run what the web backends cannot.** A continuation applied more than
-  once is what D33 undertakes and what D18 records the v0.1 JavaScript and Wasm
-  backends as lacking
+- **A way to run what a one-shot backend cannot.** A continuation applied more than
+  once is what D33 undertakes and what D18 records the v0.1 Wasm backend as
+  lacking
 
 ## Two modes
 
@@ -245,11 +245,9 @@ manifest to say; a program that does declare one and was given no manifest is re
 where that module loads, naming the foreign rather than the missing file — the
 declaration is what was unmet, and the manifest is one way to meet it.
 
-**The long-lived command is `session`, and it waits.** A session is answered through
-a request naming what to report, and what carries the two — a pipe with a framing of
-its own, a socket, the two in one process — is open
-([Open Questions](../99-Open-Questions/01-Open-Questions.md)). The `run` mode needs
-none of that: it is given its modules at once and answers by exiting.
+**The long-lived command is `session`, and it waits.** It speaks on a channel of its
+own, fixed below, and answers each request there; the `run` mode needs none of that,
+being given its modules at once and answering by exiting.
 
 **It is `session` rather than `eval` because evaluating is one of the things it is
 for.** The other is the compile-time use: a synthesizer named by a `⟨ τ by f ⟩` is
@@ -265,6 +263,78 @@ decision now.** The messages a session carries will grow — a request that yiel
 back to the host mid-attempt is what the elaboration profile needs, and it does not
 exist yet — so the framing is tagged from the first version rather than being a
 single request and a single answer that a later kind has to be squeezed into.
+
+#### The session's channel
+
+**A session speaks on descriptor 3 and nowhere else.** Whoever starts `steam
+session` opens descriptor 3 as a bidirectional pipe; standard output and standard
+error stay for logs and for what host modules print, which on Node reaches standard
+output and would otherwise corrupt the channel. A starter inherits the two streams or
+reads them continuously, a pipe nobody reads filling up and stopping the process.
+Started without descriptor 3, the command does not start. POSIX hosts are supported.
+
+**A frame is a length and a JSON object.**
+
+```text
+frame   = length payload
+length  = unsigned 32-bit big-endian, the byte count of payload
+payload = a JSON object, in UTF-8, of at most 16 MiB
+```
+
+A reader cuts frames out of the bytes as they arrive, so several frames in one read
+and one frame across several are the same frames. **Two kinds of bad input are kept
+apart by whether a boundary is left to trust.** A length above the limit, and the
+channel ending inside a frame, leave none, and the session ends. An empty payload, one
+that is not UTF-8 or not JSON, and JSON that is not an object leave the next frame
+where it was, and the session answers with a protocol error and goes on.
+
+**A message is a request, a response, or a notification.**
+
+```text
+request      = { kind, id, payload }
+response     = { kind, replyTo, payload }
+notification = { kind, payload }
+```
+
+Each side numbers its own requests from 1 up to `2³¹−1`, never reusing one, and stops
+rather than wraps once it has used them all; a response names by `replyTo` a request
+of the side receiving it that still awaits one. The numberings are independent, which
+is what lets a request of one side stand inside a request of the other — the callback
+a synthesizer makes while it is being run. What a message is about beyond that, an
+attempt among it, travels in its payload.
+
+**Each side receives in one place.** One listener cuts frames and dispatches: a
+response to the request it answers, a request to a handler, a notification to its own
+handler. A request never reads the channel itself, since one that did could not
+answer a request arriving while it waits. Every message leaves through one writer.
+
+**A message that cannot be taken is answered with `protocolError`**, carrying a code
+and a description: as a response where the message is a request whose `id` could be
+read, and as a notification otherwise. It is about the message and never about a
+program, and a protocol error is never answered in turn.
+
+**The handshake fixes the session.** `hello { protocol, profile, offers, requires }` is
+answered by `ready { protocol, profile, capabilities }`, naming the capabilities in
+force, or by `refused { reason, supported }`, the reason being `protocol`, `profile`,
+or `capability` and `supported` what this side can open with. Only what is implemented
+is advertised: protocol `1`, the profile `elaboration`, and the capability `lifecycle`
+— the handshake, `ping` answered by `pong`, and `close` answered by `closed`. A request
+before the handshake, and a second handshake, are protocol errors.
+
+| How it ends | Status |
+| --- | --- |
+| `close`, answered by `closed` | `0` |
+| a handshake answered by `refused` | `1` |
+| the channel ending or failing unasked, or a frame with no boundary to trust | `1` |
+| a defect of the interpreter answering a request | `3` |
+
+**The process ends by having nothing left to do**, the last frame written and the
+channel released, never by exiting at once, which would cut off what a pipe had not
+yet taken. A client reads the outcome off both what arrived and how the process ended:
+`closed` then status `0` is a session closed; `refused` is a session not opened,
+whatever status follows; an exit without `closed`, status `0` included, is a session
+failed; a protocol error answering a request fails that request, and the session goes
+on.
 
 #### What the process makes of the outcome
 
@@ -1421,8 +1491,8 @@ stack trace, a source span — is the REPL's to decide and is not fixed here.
 ## What Steam owes
 
 The ten obligations of a consumer of a `.dmo` are Bytecode's, and Steam meets
-(3) — a continuation applicable any number of times — where the v0.1 JavaScript and
-Wasm backends do not.
+(3) — a continuation applicable any number of times — as the JavaScript backend
+does and the v0.1 Wasm backend does not.
 
 Two of them are the ABI's and are worth stating as this interpreter's:
 

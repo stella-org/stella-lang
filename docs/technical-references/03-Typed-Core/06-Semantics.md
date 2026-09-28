@@ -107,7 +107,7 @@ Achieving both arbitrary call depth and multi-shot on JavaScript requires the ba
 
 Each backend therefore declares what it can implement. This is **not a capability difference permitted by the language semantics**; it is provisional tolerance of non-conformance.
 
-- **JavaScript backend**: an execution model that represents a continuation itself, one of the two multi-shot rows above ([JavaScript](../05-Backend/05-JavaScript.md)). Until it passes the cases that decide it — a `full` clause resuming twice, and a continuation carrying the cells of a region it was captured outside — it stands as one-shot here and in the gap below.
+- **JavaScript backend**: multi-shot, with frames and a run loop of its own, one of the two multi-shot rows above ([JavaScript](../05-Backend/05-JavaScript.md)). It passes the cases that decide it: a `full` clause resuming twice, each resumption from the captured state, and a continuation carrying the cells of a region it was captured outside.
 - **Wasm backend**: one-shot for now, following the stack-switching proposal.
 - **Native backend**: nothing prevents multi-shot.
 
@@ -115,7 +115,7 @@ Each backend therefore declares what it can implement. This is **not a capabilit
 
 Stated precisely:
 
-> **The v0.1 JavaScript and Wasm backends do not satisfy type soundness.** Since the reference semantics is multi-shot, a program that resumes a continuation more than once is well typed. On these backends such a program raises a run-time error.
+> **The v0.1 Wasm backend does not satisfy type soundness.** Since the reference semantics is multi-shot, a program that resumes a continuation more than once is well typed. On that backend such a program raises a run-time error.
 
 v0.1 **accepts this as a known gap**, under three conditions.
 
@@ -123,7 +123,7 @@ v0.1 **accepts this as a known gap**, under three conditions.
 2. **A static best-effort check is performed.** Only `full` clauses are in question, a `fast` clause having no continuation to resume. Detecting multiple resumption within a `full` clause is undecidable in general, since `k` can be stored and called in a loop, but the **syntactically evident** cases are detectable: a clause that mentions `k` more than once, or passes `k` to another function, warns at compile time. Most accidents are caught there, leaving the run-time check as a backstop. Writing a clause `fast` where its shape allows removes it from the question altogether.
 3. **Closing the gap is a requirement for v1.0**, recorded in [Open Questions](../99-Open-Questions/01-Open-Questions.md).
 
-The routes to closing it appear in the table above: an execution model representing a continuation on JavaScript, or a cloning primitive entering the Wasm stack-switching proposal. Making the reference semantics target-parameterized is a third possibility, but it would mean the same Core has different meanings on different backends, which conflicts with the backend independence of Mid IR.
+On JavaScript the gap is closed by an execution model representing a continuation, which is the route the JavaScript backend takes. On Wasm the route is a cloning primitive entering the stack-switching proposal. Making the reference semantics target-parameterized is a third possibility, but it would mean the same Core has different meanings on different backends, which conflicts with the backend independence of Mid IR.
 
 ### Consequence for Mid IR
 
@@ -981,4 +981,4 @@ This is the property the whole design rests on, and it is the one that testing i
 
 **Erasure.** If `Σ ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, and `G ⊢ e → e2`, then `⌊e⌋` reduces to `⌊e2⌋` in zero or one steps under the erased relation, the zero-step case being a step that only introduced or discharged a coercion. If `G ⊢ e → fault φ` then `⌊e⌋` reduces to the same fault `φ`; an erased evaluator and a typed one fail identically. The value restriction is what makes this hold: the body of a type or constraint abstraction is already a value, so erasing the abstraction cannot move evaluation to a different point.
 
-**Non-conformance of the v0.1 backends.** The reduction rule for a `full` clause places no bound on applications of `k_i`, so a term applying it twice is well typed and has a defined reduction sequence. The v0.1 JavaScript and Wasm backends do not reproduce that sequence; they raise a run-time error at the second application. This is the precise content of the soundness gap recorded above.
+**Non-conformance of the v0.1 Wasm backend.** The reduction rule for a `full` clause places no bound on applications of `k_i`, so a term applying it twice is well typed and has a defined reduction sequence. The v0.1 Wasm backend does not reproduce that sequence; it raises a run-time error at the second application. This is the precise content of the soundness gap recorded above.

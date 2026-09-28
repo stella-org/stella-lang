@@ -4,9 +4,9 @@ Questions that v0.1 leaves open, with what is already known about each.
 
 ## Required for v1.0
 
-**Close the soundness gap for multi-shot continuations.** The v0.1 JavaScript and Wasm backends do not satisfy the reference semantics; a second resumption raises a run-time error ([Semantics](../03-Typed-Core/06-Semantics.md)). This is a soundness gap that v0.1 accepts deliberately and that v1.0 must close.
+**Close the soundness gap for multi-shot continuations.** The v0.1 Wasm backend does not satisfy the reference semantics; a second resumption raises a run-time error ([Semantics](../03-Typed-Core/06-Semantics.md)). This is a soundness gap that v0.1 accepts deliberately and that v1.0 must close. The JavaScript backend does not have it, representing a continuation itself with frames and a run loop of its own ([JavaScript](../05-Backend/05-JavaScript.md)).
 
-Three routes are available. On JavaScript, an execution model that represents a continuation itself — full CPS conversion, or frames and a run loop of the backend's own — which is the route the JavaScript backend takes ([JavaScript](../05-Backend/05-JavaScript.md)). Wait for a cloning primitive to enter the Wasm stack-switching proposal. Or make the reference semantics target-parameterized, which conflicts with the backend independence of Mid IR.
+Two routes are available for Wasm. Wait for a cloning primitive to enter the stack-switching proposal. Or make the reference semantics target-parameterized, which conflicts with the backend independence of Mid IR.
 
 Until then, multiple resumptions that are **syntactically evident** — a clause mentioning `k` more than once, or passing `k` elsewhere — should warn at compile time.
 
@@ -101,7 +101,7 @@ Nothing needs settling before Phase C: that is where dictionaries arrive, and th
 
 ## Effects
 
-**Declaring non-conformance.** Under D18 the v0.1 JavaScript and Wasm backends remain non-conforming and provisionally tolerated.
+**Declaring non-conformance.** Under D18 the v0.1 Wasm backend remains non-conforming and provisionally tolerated.
 
 D28 settles part of this. A clause is `full` or `fast`, and a `fast` clause constructs no continuation, so implementing one demands no multi-shot continuation and the construct that can demand one is `full` alone ([Semantics](../03-Typed-Core/06-Semantics.md)). A program containing `fast` clauses is not thereby one-shot: duplication arises wherever a `full` handler on the residual row applies its continuation more than once.
 
