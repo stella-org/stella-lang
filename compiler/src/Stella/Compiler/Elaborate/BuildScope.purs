@@ -30,6 +30,8 @@ module Stella.Compiler.Elaborate.BuildScope
   , usableTreeIn
   , treeOfCase
   , issueTree
+  , rowAt
+  , valueType
   , appliedShape
   , recordShape
   , variantShape
@@ -59,13 +61,14 @@ import Stella.Compiler.Elaborate.Context (XContext)
 import Stella.Compiler.Elaborate.Elab (Elab, Release(..), askEnv, break, currentMetas, freshBinderName, freshScopeId, issue, postpone, release, require, resolveExpr, resolveOccurrence, resolveScope, resolveTree, resolveType)
 import Stella.Compiler.Elaborate.Handle (ExprObject, Handle, HandleObject(..), JoinSignature, OccurrenceObject, ScopeId, ScopeObject, TreeObject, TypeObject)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Kinding (KindEvidence, KindingScope, checkConstraint, checkKind, quantifiable, settledIn, synthKind)
+import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), KindingScope, checkConstraint, checkKind, quantifiable, settledIn, synthKind, wellFormedKey)
+import Stella.Compiler.Elaborate.Row (rebuild, xnf)
 import Stella.Compiler.Elaborate.Pending (Site)
 import Stella.Compiler.Elaborate.Term (XDecisionTree, XExpr, freeVarsOf)
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..), freeRigids, metasOf)
 import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, lookupMeta, substitute, substituteKind)
 import Stella.Compiler.Elaborate.View (ConstraintView(..), KindView(..))
-import Stella.Compiler.TypedCore (Ident, JoinName, KindVar, Qualified, RowElemKind(..), TyName, TyVar(..))
+import Stella.Compiler.TypedCore (Ident, JoinName, KindVar, Qualified, RowElemKind(..), RowKey, TyName, TyVar(..))
 import Stella.Compiler.TypedCore.Prim (functionTy, recordTy, variantTy)
 import Data.Array as Array
 import Data.Either (Either(..))
@@ -625,3 +628,40 @@ issueTree :: ScopeObject -> ScopeId -> XDecisionTree Unit -> Maybe XType -> Elab
 issueTree scope caseId tree inferred = do
   metas <- currentMetas
   issue (TreeObject { tree, inferred: map (substitute metas) inferred, case: caseId, builtIn: Just scope.id })
+
+-- | A row taken apart at a key: the type it carries there, and the row with
+-- | the key taken out.
+-- |
+-- | **Every term and occurrence that reads a row at a key reads it here**, so
+-- | none of them decides otherwise: known with a type as its payload, it is
+-- | there; known with another payload, or absent from a row whose tails are all
+-- | rigid, it is a misuse — a rigid tail says nothing of what it carries; and
+-- | absent from a row with a flexible tail, the tails are waited on, any of them
+-- | being what could carry it. A row with no normal form is the error given.
+-- |
+-- | **The key is judged well-formed for a `Row Type` first.** No solution puts an
+-- | ill-formed key in a row, so waiting on a tail for one would wait forever.
+rowAt :: BuildError -> Handle -> XType -> RowKey -> Elab { payload :: XType, rest :: XType }
+rowAt notARow handle row key = do
+  env <- askEnv
+  case wellFormedKey env.session.kinding key (Just RowType) of
+    Left fault -> rejected (IllKinded fault)
+    Right _ -> pure unit
+  metas <- currentMetas
+  case xnf (substitute metas row) of
+    Left _ -> rejected notARow
+    Right n -> case Map.lookup key n.known of
+      Just (XRowTypeEntry _ ty) -> pure { payload: ty, rest: rebuild (n { known = Map.delete key n.known }) }
+      Just _ -> rejected (PayloadNotAType handle key)
+      Nothing
+        | not (Set.isEmpty n.flexible) -> postpone n.flexible
+        | otherwise -> rejected (FieldAbsent handle key)
+
+-- | A type a value may be bound or written at: one the scope may use, standing
+-- | at `Type`.
+valueType :: ScopeObject -> Handle -> Elab XType
+valueType scope handle = do
+  ty <- usableIn scope handle
+  case ty.kind of
+    ExactKind XKType -> pure ty.type
+    _ -> rejected (NotAType handle)

@@ -43,7 +43,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.BuildScope (Shape(..), abstractedChild, built, childWith, closedOver, closedOverParts, constrainedShape, constraintIn, forallShape, functionShape, inheritingChild, instantiatedAt, issueTerm, kindIn, rejected, requiredIn, schemeAt, siteOf, usableIn, usableTermIn, visibleUnder)
+import Stella.Compiler.Elaborate.BuildScope (Shape(..), abstractedChild, valueType, built, childWith, closedOver, closedOverParts, constrainedShape, constraintIn, forallShape, functionShape, inheritingChild, instantiatedAt, issueTerm, kindIn, rejected, requiredIn, schemeAt, siteOf, usableIn, usableTermIn, visibleUnder)
 import Stella.Compiler.Elaborate.Context (bindTyVar, bindVar)
 import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..))
@@ -368,14 +368,6 @@ closeLetRec scopeHandle binderHandle rhsHandles bodyHandle = do
     rhs <- resolveExpr handle
     if visibleUnder scope g rhs.builtIn then pure rhs
     else rejected (ScopeViolation handle)
-
--- A type a value may be bound at: one the scope may use, standing at `Type`.
-valueType :: ScopeObject -> Handle -> Elab XType
-valueType scope handle = do
-  ty <- usableIn scope handle
-  case ty.kind of
-    ExactKind XKType -> pure ty.type
-    _ -> rejected (NotAType handle)
 
 -- `argument -{row}-> result`.
 functionType :: XType -> XType -> XType -> XType

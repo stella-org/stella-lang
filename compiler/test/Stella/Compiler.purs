@@ -32,6 +32,7 @@ import Test.Stella.Compiler.Elaborate.BuildTerm as ElaborateBuildTerm
 import Test.Stella.Compiler.Elaborate.Binders as ElaborateBinders
 import Test.Stella.Compiler.Elaborate.Joins as ElaborateJoins
 import Test.Stella.Compiler.Elaborate.Trees as ElaborateTrees
+import Test.Stella.Compiler.Elaborate.Records as ElaborateRecords
 import Test.Stella.Compiler.Elaborate.Observe as ElaborateObserve
 import Test.Stella.Compiler.Elaborate.Run as ElaborateRun
 import Test.Stella.Compiler.Elaborate.Scheduler as ElaborateScheduler
@@ -90,3 +91,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateBinders.spec
   ElaborateJoins.spec
   ElaborateTrees.spec
+  ElaborateRecords.spec

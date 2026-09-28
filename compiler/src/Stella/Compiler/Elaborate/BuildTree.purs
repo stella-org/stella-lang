@@ -36,7 +36,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.BuildScope (Shape(..), appliedShape, caseRoot, closedOver, closedOverParts, instantiateConstructorFields, issueTerm, issueTree, rejected, recordShape, treeChild, treeOfCase, treeScopeOf, usableIn, usableOccurrenceIn, usableTermIn, usableTreeIn, variantShape)
+import Stella.Compiler.Elaborate.BuildScope (Shape(..), appliedShape, caseRoot, closedOver, closedOverParts, instantiateConstructorFields, issueTerm, issueTree, rejected, recordShape, rowAt, treeChild, treeOfCase, treeScopeOf, usableIn, usableOccurrenceIn, usableTermIn, usableTreeIn, variantShape)
 import Stella.Compiler.Elaborate.Catalog (EntrySort(..), lookupEntry)
 import Stella.Compiler.Elaborate.Constructors (ConstructorShape, lookupConstructor)
 import Stella.Compiler.Elaborate.Context (bindVar)
@@ -47,7 +47,7 @@ import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (KindEvidence(..))
 import Stella.Compiler.Elaborate.Row (rebuild, xnf)
 import Stella.Compiler.Elaborate.Term (XDecisionTree(..), XExpr(..))
-import Stella.Compiler.Elaborate.Type (XRowEntry(..), XType(..))
+import Stella.Compiler.Elaborate.Type (XType(..))
 import Stella.Compiler.Elaborate.Unify (substitute)
 import Stella.Compiler.TypedCore (Ident, Literal, Occurrence(..), Qualified, RowKey)
 import Stella.Compiler.TypedCore.Prim (variantTy)
@@ -56,7 +56,6 @@ import Data.Either (Either(..))
 import Data.Foldable (foldl, for_)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Data.Set as Set
 import Data.Traversable (for, traverse)
 import Data.Tuple (Tuple(..))
 
@@ -176,7 +175,7 @@ recordField scopeHandle occurrenceHandle key = do
     Seen row -> pure row
     Blocked ms -> postpone ms
     Otherwise -> rejected (NotARecord occurrenceHandle)
-  ty <- elementAt occurrenceHandle row key
+  ty <- elementAt (NotARecord occurrenceHandle) occurrenceHandle row key
   issueOccurrence occurrence.case scope (OccRecordField occurrence.path key) ty
 
 -- | Open `switchCtor o { C̄ }`, with a default or without: a binder, each
@@ -301,7 +300,7 @@ openSwitchKey scopeHandle occurrenceHandle keys withDefault = do
     Seen row -> pure row
     Blocked ms -> postpone ms
     Otherwise -> rejected (NotAVariant occurrenceHandle)
-  payloads <- traverse (elementAt occurrenceHandle row) keys
+  payloads <- traverse (elementAt (NotAVariant occurrenceHandle) occurrenceHandle row) keys
   hub <- treeChild scope scope.context
   branchScopes <- traverse (\_ -> treeChild hub scope.context) keys
   fallbackScope <- if withDefault then Just <$> treeChild hub scope.context else pure Nothing
@@ -402,20 +401,9 @@ constructorShape name = do
       Just entry | entry.sort == ConstructorEntry -> break (ConstructorTableMismatch name)
       _ -> rejected (UnknownConstructor name)
 
--- The type a row carries at a key: known with a type as its payload, waited on
--- where only a flexible tail could carry it, and otherwise a misuse. A rigid
--- tail says nothing of what it carries.
-elementAt :: Handle -> XType -> RowKey -> Elab XType
-elementAt occurrenceHandle row key = do
-  metas <- currentMetas
-  case xnf (substitute metas row) of
-    Left _ -> rejected (NotAVariant occurrenceHandle)
-    Right n -> case Map.lookup key n.known of
-      Just (XRowTypeEntry _ ty) -> pure ty
-      Just _ -> rejected (PayloadNotAType occurrenceHandle key)
-      Nothing
-        | not (Set.isEmpty n.flexible) -> postpone n.flexible
-        | otherwise -> rejected (FieldAbsent occurrenceHandle key)
+-- The type a row carries at a key, by `rowAt`.
+elementAt :: BuildError -> Handle -> XType -> RowKey -> Elab XType
+elementAt notARow occurrenceHandle row key = _.payload <$> rowAt notARow occurrenceHandle row key
 
 -- `Variant r'`, where `r'` is the row with the keys taken out of its known part
 -- and its tails kept.

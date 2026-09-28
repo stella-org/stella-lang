@@ -445,6 +445,16 @@ spec = describe "Elaborate.BuildTree" do
           residual `shouldEqual` Just (XApp (XCon variantTy []) (XRowExtend (XRowTypeEntry keyM xInt) XRowEmpty))
         other -> fail (show other)
 
+    it "refuses an ill-formed key over a flexible tail rather than waiting on it" do
+      let
+        negative = PositionKey (-1)
+        illKinded = is "IllKinded" case _ of
+          IllKinded _ -> true
+          _ -> false
+        overTail wrap = caseClaimed (XApp (XCon wrap []) (nm (XMeta withMetas.t)))
+      refusesIn withMetas.state (overTail recordTy >>= \c -> recordField c.treeScope c.occurrence negative) illKinded
+      refusesIn withMetas.state (overTail variantTy >>= \c -> openSwitchKey c.treeScope c.occurrence [ negative ] true) illKinded
+
     it "waits on a flexible tail for a key it lacks, and refuses one a closed or rigid row lacks" do
       case outcomeIn withMetas.state (caseClaimed (XApp (XCon variantTy []) (nm (XMeta withMetas.t))) >>= \c -> openSwitchKey c.treeScope c.occurrence [ keyK ] true) of
         Postponed (ExplicitPostponement ms) -> ms `shouldEqual` Set.singleton withMetas.t
