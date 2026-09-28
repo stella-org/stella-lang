@@ -53,12 +53,13 @@ Anything stronger — asserting preservation over machine states — would need 
 
 The set of FFI the backend must implement is `stella-base-0.1`, the first version of the `Base` ABI surface ([Open Questions](../99-Open-Questions/01-Open-Questions.md)). The longer it is deferred, the more the standard library settles into a shape that depends on FFI, so it should be fixed while writing this backend.
 
-**The backend reads a `.dmo`** (D45, [JavaScript](../05-Backend/05-JavaScript.md)), so its tests start from an encoded module decoded again rather than from a lowered value, which is what keeps it from leaning on anything the file does not carry. It is built in this order, each step settling what the next depends on.
+**The backend reads a `.dmo`** (D45, [JavaScript](../05-Backend/05-JavaScript.md)), so its tests start from the bytecode fixtures on disk rather than from a lowered value, which is what keeps it from leaning on anything the file does not carry. It is built in this order, each step settling what the next depends on.
 
-1. **Calls, branches, join points, and tail calls.** The execution model is chosen here, before any handler exists, since a tail call is already a transfer the host does not provide
+1. **Calls, branches, join points, tail calls, and the operations.** The execution model is chosen here, before any handler exists, since a tail call is already a transfer the host does not provide; the operations come with it, branches needing them to be tested and none of them depending on the model
 2. **Handlers and continuations.** A `full` clause resuming twice, each resumption from the captured state, and a continuation captured outside a region carrying its cells: these are the cases that show the model represents a continuation, and D18's record of the backend changes once they pass
-3. **The operations, the foreign manifest, and the drive loop**
-4. **Optimization**: a pure function kept a host call, and a `fast` clause kept cheap, each resting on what the model of step 2 already guarantees
+3. **The foreign manifest and the drive loop**
+4. **Purity**: the per-function record in the format, and a pure entry kept a host call
+5. **The lower-IR optimizations**: an evidence environment in place of a search of the stack, and a `fast` clause run in place, each resting on what the model of step 2 already guarantees
 
 **Comparing the backend with the machine tests the backend and not lowering**, both reading what lowering produced. Until a Core evaluator exists, lowering is covered by its own tests and by execution tests whose expected results are fixed independently from hand-written Core. **Building that evaluator is a unit of its own**, and it precedes any claim that lowering preserves meaning broadly; it need not precede the backend's first steps.
 

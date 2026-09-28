@@ -5,10 +5,16 @@ file the machine executes ([Bytecode](01-Bytecode.md)), and it reaches foreign
 implementations through the same manifest target the machine does
 ([Foreign Manifest](04-Foreign-Manifest.md)).
 
-This document fixes what the backend reads, what it owes, and which of its
-choices are still open. How a value is represented while a program runs is the
-backend's own and is not a published ABI, exactly as it is not for the machine
-([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
+This document fixes what the backend reads, what it owes, what it generates, and
+which of its choices are still open. How a value is represented while a program
+runs is the backend's own and is not a published ABI, exactly as it is not for the
+machine ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
+
+**The backend is a package of its own**, depending on the compiler and known to no
+part of it: the compiler's work ends at the `.dmo`, and a front end hands that file
+to whichever backend it builds for. What the package offers is a `.dmo` in, text
+out, and the file name the text is written to; the stages between are its own and
+change with the strategy (below).
 
 ## It reads a `.dmo`
 
@@ -24,7 +30,22 @@ it implements, with text a sequence of scalar values ([Encoding](02-Encoding.md)
 and lowering by itself establishes none of that. So a module handed across is held
 to what an encoder checks before the backend reads it; otherwise the two paths
 would accept different modules, and a defect of lowering would reach generated
-code by one of them and be refused by the other.
+code by one of them and be refused by the other. **The module is run through the
+encoder itself**, the bytes it writes being dropped, so one walk decides both routes
+rather than two walks that could come to disagree.
+
+**What a loader establishes of one module is checked before any code is
+generated.** A decoder hands on every module whose bytes it can read, and whether a
+module's declarations are its own, whether a name is declared twice in one
+namespace, whether its exports name its values, whether its globals are
+installable — a `func` over a function of at least one parameter, a `run` over one
+of none, neither expecting captures — and whether a foreign the ABI fixes as an
+operation is declared at that operation's arity are properties of the module rather
+than of its bytes. Steam checks them where a module loads
+([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)); generated code has no
+such moment for what one module decides alone, so the backend checks them first and
+refuses the module otherwise. What another module declares is checked where the
+generated modules are linked and loaded (below).
 
 **That restriction is the point of the route.** A `.dmo` is what a backend outside
 this compiler builds on (D34), and a first-class backend reading the same file is
@@ -53,13 +74,67 @@ agree about it; and two keys may share a spelling and still differ:
 | | Is one identity across every module | Differs from |
 | --- | --- | --- |
 | a key | its kind together with its payload | a key of another kind with the same spelling: a field `n` and a tag `n` are two keys (D16) |
-| an operation | its name | — |
+| an effect's operation, of `OPS` | its name | — |
 | a constructor | the module that declares it together with its own name | a constructor of the same name in another module |
 | an effect key | the effect it names, module included | an effect of the same name in another module |
 
 Obligation (10) of [Bytecode](01-Bytecode.md) is this table, and it binds the
 backend as it binds the machine. **A representation that writes a key as its bare
 spelling fails it**, a field and a tag of one spelling then selecting each other.
+
+The backend meets the table as follows.
+
+| | Represented as | Compared by |
+| --- | --- | --- |
+| a key | a string of its kind and its payload: `s:x` for a field, `t:Ok` for a tag, `p:0` for a position, `e:Mod.Sub:Eff` for an effect | string equality, which is identity across every module since the kind is part of the string |
+| an effect's operation, of `OPS` | its name | string equality, where a `perform` finds the clause of the handler its key selected |
+| a constructor | a descriptor object the declaring module creates and every other module imports | **reference**. A tag is unique within one type only, and nothing checks that a dispatch's branches are of one type, so a comparison of tags could send a value of one type into the branch of another |
+
+`BRC` dispatches on a value's descriptor, and `FIELD` checks that the value it
+reads is of the constructor the instruction names before reading the field.
+
+**A `Base` operation of `PRIMS` is not in the table**, having no identity to
+compare: a `.dmo` names one by the code the ABI version fixes, and the backend
+resolves it where it generates code — to an expression, or to a descriptor where a
+partial application waits on it — so nothing compares one while the program runs.
+
+## The generated module
+
+**One `.dmo` becomes one ES module**, written to a file named by the module, so
+`Main.Sub` is `Main.Sub.js`, and another generated module imports it as
+`./Main.Sub.js`. The runtime is imported by a specifier the build supplies.
+
+**What another module reads is exported under a name no binding can clash with.**
+
+| Exported as | What it is |
+| --- | --- |
+| the global's own name | a global of `EXPORTS`. A global the module does not export is not exported, which is what data abstraction is (D22) |
+| `ctor Name` | the descriptor of a constructor the module declares. Every constructor is exported: a `.dmo` does not record which a module publishes, a type checker having settled that before the file existed |
+| `arity table` | the definitional arity of each exported global installed as a function |
+
+The last two hold a space, so no Stella identifier is either of them.
+
+**Every name another module is referred to by is imported by that name**: each
+imported name `GLOBALREFS`, `CTORREFS`, or `CALLEES` holds is imported once, whether
+or not anything then reads it. Linking the generated modules therefore refuses a
+reference to what the declaring module does not export, before anything runs, which
+is where Steam refuses one. Every module of `IMPORTS` is imported, its arity table
+at least, so an imported module is initialized before this one whether or not
+anything of it is named, which is the order module initialization owes
+([Bytecode](01-Bytecode.md)).
+
+**What one module assumed of another is checked where the modules load.** A known
+call to an imported global supplied the definitional arity the importing module's
+interface gave it, a partial application of one supplied fewer, and a construction
+of an imported constructor supplied its arity. The generated module checks each
+against what the declaring module exports — its arity table and its descriptors —
+as its first act, and refuses to load where one disagrees. A stale `.dmi` is
+therefore a module that does not load rather than a call that passes the wrong
+number of arguments ([Interface](03-Interface.md)).
+
+**A global is initialized where the module is evaluated**, in the order of
+`GLOBALS`: a `func` global becomes a closure over an empty capture list, and a `run`
+global is evaluated once.
 
 ## Structure is emitted, not rebuilt
 
@@ -69,6 +144,12 @@ tree: a `BRC` or `BRK` becomes a dispatch over resolved identities, a `BRIF` an
 `if`, and a join point a construct the enclosing function can transfer to by name.
 **Nothing is reconstructed from a control flow graph** (D32).
 
+**A join point is a segment of its own** (below), and a `JMP` writes the join
+point's parameters as one parallel move — every argument read before any parameter
+is written, an argument register being able to be a parameter too — then transfers
+through the run loop. A loop written with a join point therefore runs in bounded
+host stack.
+
 **`BRL` dispatches by literal identity, which JavaScript's `switch` does not
 implement.** A `switch` compares by strict equality, which identifies `0.0` with
 `-0.0` and separates a NaN from itself; literal identity does the opposite on both
@@ -77,10 +158,11 @@ right lowering where strict equality and literal identity agree — an `Int`, a
 `Char`, a `String`, a `Boolean` — and a `Number` dispatch compares by identity,
 `Object.is` deciding the zeros and a NaN test deciding every NaN as one.
 
-**Readable output is not a goal.** A register becomes a JavaScript variable and an
+**Readable output is not a goal.** A register becomes a slot of the frame and an
 instruction a statement, and what makes the result resemble hand-written code is
-optimization over the backend's own representation — propagating a copy, folding
-a constant — rather than anything this document requires.
+optimization over the backend's own representation — keeping a register in a host
+variable between the points where the frame must hold it, propagating a copy,
+folding a constant — rather than anything this document requires.
 
 ## What the host does not give
 
@@ -98,9 +180,43 @@ A continuation applied a second time must begin from the state captured
 live only in host frames or in a generator's state.
 
 **So the execution model represents a continuation itself**, as the machine does:
-either with frames and a run loop of the backend's own, or by converting to
-continuation-passing style. Which of the two is open (below); that it is one of
-them is not.
+with frames and a run loop of the backend's own, or by converting to
+continuation-passing style. That it is one of them is not a choice.
+
+## The execution model: frames and a run loop
+
+**An activation is a frame on a stack of the runtime's own, and a function is a set
+of segments.** A function is cut at each non-tail call: its entry is one segment,
+what follows each such call another, and each join point a third kind. A segment
+runs straight to its next transfer and returns to the run loop what to do next —
+return a value, call, tail call, or continue at another segment of the same frame —
+so the host's call stack never holds more than one segment.
+
+| What the loop does | Where it comes from |
+| --- | --- |
+| a call pushes an entry naming the frame, the register the value goes to, and the segment that continues | a non-tail call |
+| a tail call pushes nothing and replaces the frame | `TAILK`, `TAILU` |
+| a value reaching an entry is written and the frame continues, or is applied to the arguments an over-application left | `RET` |
+
+**Applying is decided by the count before the kind**, as the machine decides it:
+too few arguments build a partial application whatever the callee, too many call
+it with its arity and leave the rest pending on what comes back, and a partial
+application completed later carries out the callee once the last argument arrives
+([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)). Registers live in the
+frame, so a deep non-tail recursion takes heap and not host stack: **the depth of
+a program's calls narrows nothing about which programs the backend runs.** What the
+backend does not run yet is decided by the constructs it does not generate and by
+the conformance it has not shown (below), and not by call depth.
+
+**The strategy is the backend's to change, not the format's.** Frame IR, the lower
+IR the frame strategy cuts a module into, holds the segments; a strategy converting
+to continuation-passing style, or bubbling a yield up the host's stack in the
+manner of Koka's generalized evidence passing, would have a lower IR of its own
+between the same resolved module and the same JavaScript syntax. A build selecting a strategy selects it for every module
+it generates, the strategies not sharing a calling convention. Frames and a run loop
+come first because they carry the machine's model over directly, which is what
+makes a continuation applied twice expressible from the start; what is faster is
+measured on top of them.
 
 ## A `fast` clause, and purity
 
@@ -128,7 +244,11 @@ the execution model like anything else.
 in `TAILK` or `TAILU` wherever its body is a tail call, a self-recursive loop above
 all, and writing that transfer as an ordinary JavaScript call grows the host stack
 with every iteration. A tail transfer stays one that pushes no frame, whether or
-not the entry is pure (above).
+not the entry is pure (above). **So an entry is generated as a host function only
+where every tail transfer it holds is a `TAILK` to itself — written as a loop — a
+`TAILFFI`, or a `Tail` that is not a call.** A pure entry with any other tail
+transfer stays in frames. This does not bound a non-tail recursion, which is what
+reporting an exhausted host stack is for (below).
 
 **The row that decides is the body's, not the first arrow's.** An entry collapses a
 run of lambdas ([Translation](../04-MiddleEnd/02-Translation.md)), so
@@ -136,11 +256,48 @@ run of lambdas ([Translation](../04-MiddleEnd/02-Translation.md)), so
 first arrow is pure and the entry is not. A `handle` body and a handler clause are
 entries whose bodies run under a row that is in general not empty.
 
-**A `.dmo` does not yet say which functions are pure.** The effect row was erased
-before the file exists, and Translation is where it is still known
-([Translation](../04-MiddleEnd/02-Translation.md)). Recording it per function is the
-first addition to the format this backend is expected to ask for; until then every
-function is treated as one that may perform.
+**A `.dmo` does not say today which functions are pure, so every function is
+generated in frames.** The effect row is erased before the file exists, and
+Translation is where it is still known
+([Translation](../04-MiddleEnd/02-Translation.md)). What follows in this section is
+the design adopted for the step that adds the record (the fourth of
+[Implementation Plan](../01-Introduction/04-Implementation-Plan.md)'s steps for this
+backend); until that step lands, [Bytecode](01-Bytecode.md) and
+[Encoding](02-Encoding.md) describe `FUNCTIONS` as it is, without the byte below.
+
+**The record will be one byte per entry of `FUNCTIONS`**, `1` for a pure entry and
+`0` for any other, an encoder and a decoder accepting those two alone. The format
+keeps its version while Stella is unreleased, so a build caching `.dmo` files drops
+them when the byte arrives, and Steam will read it and make nothing of it.
+Translation will set it as follows.
+
+| Entry | Pure where |
+| --- | --- |
+| a run of lambdas | the annotation on its innermost lambda, `τ -{ ρ }-> τ'`, has `ρ` the closed empty row once normalized |
+| a `run` global | always: a top-level right-hand side is checked under the empty row ([Modules](../06-Modules/01-Modules.md)) |
+| a `handle` body, a handler clause | never, for now. A body runs under the row its handler handles, and a clause's row is not written in any annotation Translation reads |
+
+With the record, pure entries are generated as host functions, and two more
+things come with them.
+
+**A function's descriptor will carry its calling convention**, `direct` for one
+generated as a host function and `frame` for any other, because a closure, a partial
+application, and a continuation are applied without the caller knowing which it
+holds. The one generic apply reads the convention: from frame code a `direct` callee
+is a host call and a `frame` callee a pushed frame; from a host function a `direct`
+callee is a host call and a `frame` callee, or a continuation, is entered in a run
+loop of its own — sound because the empty row lets nothing that run performs escape
+it. Arguments an over-application leaves go through the same apply, whichever
+convention the value that comes back has.
+
+**An exhausted host stack is a failure of the host, not of the program.** A deep
+non-tail recursion through host functions can exhaust the host's stack, which the
+frame strategy alone never does, so the failure arises only once host functions
+are generated. It is then reported apart from a Stella fault, as a host resource
+failure carrying what the host threw as its cause. **An arbitrary
+`RangeError` is not taken to be an exhausted stack**, one being raised for other
+reasons too, among them a defect; what cannot be told apart is reported as a host
+resource failure of undetermined cause, still carrying what was thrown.
 
 ## Foreigns, operations, and `IO`
 
@@ -150,10 +307,23 @@ recognises a refusal by the helper's brand ([Foreign Manifest](04-Foreign-Manife
 so one implementation serves both consumers. The rules of that document apply
 unchanged: an adapter is uncurried, synchronous, and checked on the way out.
 
-**An operation is carried out by the backend's runtime**, with the meaning
-[Prim and Base](../06-Modules/02-Prim-and-Base.md) fixes. Where that meaning and the
-host's operator part, the backend implements the meaning: `Base.Int.mul` is not
-`(a * b) | 0`, and `Base.String.lt` is not `<`.
+**An operation is carried out where it stands**, with the meaning
+[Prim and Base](../06-Modules/02-Prim-and-Base.md) fixes, as an expression of the
+generated code where one expression carries it out and as a call of the runtime
+where one does not — a check that faults, a count of scalar values. Where that
+meaning and the host's operator part, the backend implements the meaning:
+`Base.Int.mul` is not `(a * b) | 0`, `Base.Number.toInt` is not `| 0`, and
+`Base.String.lt` is not `<`. **Every operation of the ABI version has one**, so no
+module names an operation the backend leaves without a meaning.
+
+**A fault and a defect are two failures and stay two.** An operation failing on an
+input its specification says it fails on is a fault: it discards the whole run, no
+handler intercepting it (obligation (5)). A state no well-formed `.dmo` admits —
+reading a field of another constructor, extending a record at a key it holds — is a
+defect above the program and is reported as that, never as a fault. **A fault that
+ends a module's initialization names the global being initialized**, which is what
+Steam reports where a global's initialization fails
+([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
 
 **Executing an `IO` is the drive loop's**, with the shape and the obligations the
 machine's has: `Pure`, `Bind`, and a native action, executed iteratively over a
@@ -169,8 +339,21 @@ independently from hand-written Core. Comparison with an evaluator of Typed Core
 is what a claim that lowering preserves meaning broadly waits on, and no such
 evaluator exists yet ([Implementation Plan](../01-Introduction/04-Implementation-Plan.md)).
 
-What the comparison does cover is the part it is for: the same value, and the
-same sequence of observable effects, from the same file.
+What the comparison is for is the part lowering does not decide: what the backend
+makes of the same file.
+
+**The two are compared through shared fixtures rather than against each other.** A
+fixture is a set of lowered modules and a manifest saying which load, in what order,
+whether they load or are refused or fault where they load, and what the named globals
+hold, the values fixed by hand from the program. The machine and the backend each
+read the bytes and check the same manifest, so the two agree wherever both pass, and
+neither lowers Core. The compiler's own tests check that every fixture is what
+compiling its source gives now, the format not being frozen.
+
+**What a manifest observes is how loading ends and what globals hold**, and nothing
+of the effects a program has while it runs. The same sequence of observable effects
+is a claim for once a program can have one — a foreign reached and an `IO`
+executed — and a manifest can record the sequence a run must produce.
 
 ## Conformance
 
@@ -183,11 +366,18 @@ are expressible; they are what shows it.
 
 ## What is open
 
-- **The execution model**: frames and a run loop of the backend's own, or
-  continuation-passing style, and how a pure function's call is kept a host call
-  under either
-- **The representation of a resolved identity**: a key, an operation, and a
-  constructor, meeting the table above across separately generated modules
-- **How a join point is emitted**: a labelled block, a loop, or a local function
-- **The per-function purity record**: its shape in the format, and what
-  Translation reads it from
+- **A `handle` body's and a handler clause's purity**: recorded as impure until
+  Translation reads the row each runs under
+- **Widening which pure entries become host functions**: a tail transfer between two
+  host functions, and not only to itself, once measurement says it is worth the
+  host stack it spends
+- **Recognising an exhausted host stack**: what on a given host tells it apart
+  from another `RangeError`, beyond reporting what cannot be told apart as of
+  undetermined cause
+- **Observing a sequence of effects**: how a manifest records the effects a run
+  must produce, once foreigns and `IO` are generated
+- **The lower-IR optimizations**: an evidence environment in place of a search of
+  the stack for a handler or a cell, a `fast` clause run in place, and registers
+  kept in host variables between the points where a frame must hold them
+- **A second strategy**: continuation-passing style, or a yield bubbled up the
+  host's stack, measured against frames and a run loop
