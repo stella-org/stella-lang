@@ -15,7 +15,7 @@ import Prim as P
 import Stella.Compiler.Elaborate.Context (Origin(..), bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..), Inadmissible(..), MalformedGoal(..))
 import Stella.Compiler.Elaborate.Handle (SessionId(..))
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, assignTerm, createSynthesis, emptySessionEnv, freshTermMeta, freshTypeMeta, initialState, postpone, runElab, spendFuel, throw, transact, unify)
+import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, assignTerm, createSynthesis, emptySessionEnv, freshTermMeta, freshTypeMeta, initialState, postpone, runElab, spendFuel, raiseDiagnostic, transact, unify)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), PendingId(..), Site, goalOf, newGoal)
 import Stella.Compiler.Elaborate.Term (XExpr(..))
@@ -187,7 +187,7 @@ spec = describe "Elaborate.Run" do
 
     it "rolls a failure back and keeps the fuel it spent" do
       let
-        Tuple outcome s = runAttempt emptySessionEnv (spendFuel *> unify site (solvable metas.r) *> (throw failure :: Elab Unit)) session
+        Tuple outcome s = runAttempt emptySessionEnv (spendFuel *> unify site (solvable metas.r) *> (raiseDiagnostic failure :: Elab Unit)) session
       outcome `shouldEqual` Failed failure
       solutionOf s.tentative.metas metas.r `shouldEqual` Nothing
       s.retained.fuel `shouldEqual` 99
@@ -226,7 +226,7 @@ spec = describe "Elaborate.Run" do
           t <- freshTypeMeta emptyXContext (XKRow RowType)
           case t of
             XMeta m -> postpone (Set.singleton m)
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
 
         Tuple outcome s = runAttempt emptySessionEnv naming session
       case outcome of
@@ -369,7 +369,7 @@ spec = describe "Elaborate.Run" do
           t <- freshTypeMeta emptyXContext (XKRow RowType)
           case t of
             XMeta m -> postpone (Set.singleton m)
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
         Tuple result _ = attemptPendingWith emptySessionEnv (\_ -> naming) id s0
       result `shouldEqual` Halted
         ( PostponementInadmissible
@@ -418,7 +418,7 @@ spec = describe "Elaborate.Run" do
     it "is rolled back together with its target" do
       let
         attempt :: Elab Unit
-        attempt = createSynthesis site tB resolver Nothing *> throw failure
+        attempt = createSynthesis site tB resolver Nothing *> raiseDiagnostic failure
         Tuple _ s = runElab session (transact attempt)
       s.tentative.metas.nextTerm `shouldEqual` 0
       Map.size s.tentative.metas.termBindings `shouldEqual` 0

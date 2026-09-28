@@ -1,9 +1,10 @@
 -- | What a failure reports, in the two kinds there are.
 -- |
 -- | A **diagnostic** is a statement about the program being compiled. It is what
--- | `throw` carries and what a `Failed` attempt holds, and it is one of the three
--- | outcomes a goal has: one says the goal cannot be decided yet, this one that
--- | it cannot be decided at all.
+-- | a `Failed` attempt holds: the mechanism raises one it has built, by
+-- | `raiseDiagnostic`, and a synthesizer's `throw` carries a message the host
+-- | makes one of. It is one of the three outcomes a goal has: one says the goal
+-- | cannot be decided yet, this one that it cannot be decided at all.
 -- |
 -- | A **defect** is a statement about the mechanism, or about what drove it, and
 -- | it is no outcome of a goal. The two are kept apart because what may be caught
@@ -15,6 +16,7 @@ module Stella.Compiler.Elaborate.Diagnostic
   , Inadmissible(..)
   , MalformedGoal(..)
   , BuildError(..)
+  , Warning
   ) where
 
 import Prelude
@@ -23,6 +25,7 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Context (Origin)
 import Stella.Compiler.Elaborate.Handle (Handle, HandleError, ScopeId)
+import Stella.Compiler.Elaborate.Message (FrozenMessagePart, GoalSummary)
 import Stella.Compiler.Elaborate.Kinding (KindingFault)
 import Stella.Compiler.Elaborate.Obligation (Basis, Breach)
 import Stella.Compiler.Elaborate.Pending (Job, PendingId, SynthRef)
@@ -66,6 +69,9 @@ data Diagnostic
   -- | A term metavariable's solution that mentions what its scope excludes, or
   -- | would contain the metavariable itself, reported at the site assigning it.
   | TermAssignmentFailed Origin TermError
+  -- | A synthesizer's `throw`: the goal it was running, and the message it
+  -- | built, frozen where it was thrown.
+  | SynthesisFailed { goal :: GoalSummary, message :: P.Array FrozenMessagePart }
 
 -- | Something the mechanism, or whoever drove it, got wrong.
 -- |
@@ -298,6 +304,11 @@ data BuildError
   | KindsDiffer Handle Handle
   -- | A type that a goal is asked at which does not stand at `Type`.
   | NotAType Handle
+
+-- | A synthesizer's `warn`: the goal it was running, and the message it built,
+-- | frozen where it was said. A warning does not end the attempt, and is kept
+-- | only where the attempt commits.
+type Warning = { goal :: GoalSummary, message :: P.Array FrozenMessagePart }
 
 -- | Why a postponement cannot be admitted, read against `Ψ` as the rollback
 -- | leaves it.

@@ -15,8 +15,8 @@ import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Elab (SolverState, createSynthesis, emptySessionEnv, initialState, postpone, unify)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Loop (RunResult(..), run, runWith, submitEquality, submitWith)
-import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), PendingId, Site)
+import Stella.Compiler.Elaborate.Loop (RunReport, RunResult(..), Submission(..), Submitted, run, runWith, submitEquality, submitWith)
+import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), PendingId(..), Site)
 import Stella.Compiler.Elaborate.Run as Run
 import Stella.Compiler.Elaborate.Scheduler (Invariant(..), create, lookupPending, readyIds)
 import Stella.Compiler.Elaborate.Type (MetaVar(..), XRowEntry(..), XType(..))
@@ -132,8 +132,8 @@ sessionWith fuel = s { tentative = s.tentative { metas = metas.ctx } }
 wokenAfter :: XType -> Int -> Tuple PendingId SolverState
 wokenAfter vSolution fuel = Tuple submitted.id s2
   where
-  Tuple submitted s1 = submitEquality emptySessionEnv waitingSite stuck (sessionWith fuel)
-  Tuple _ s2 = submitEquality emptySessionEnv site (solvedAs metas.v vSolution) s1
+  Tuple submitted s1 = went (submitEquality emptySessionEnv waitingSite stuck (sessionWith fuel))
+  Tuple _ s2 = went (submitEquality emptySessionEnv site (solvedAs metas.v vSolution) s1)
 
 solutionOf :: MetaContext -> MetaVar -> Maybe XType
 solutionOf ctx m = case lookupMeta ctx m of
@@ -144,38 +144,49 @@ solutionOf ctx m = case lookupMeta ctx m of
 waitsOnV :: Job
 waitsOnV = JobUnify (solvable metas.x)
 
+-- | A submission that went on, as the cases read it. One that stopped reads as
+-- | a job no table holds, halted, so an assertion expecting it to go on fails.
+went :: Tuple Submission SolverState -> Tuple Submitted SolverState
+went (Tuple submission s) = case submission of
+  Continue submitted -> Tuple submitted s
+  Stop _ -> Tuple { id: PendingId (-1), attempt: Run.Halted (PendingAbsent (PendingId (-1))) } s
+
+-- | Where a loop stopped, its warnings set aside.
+resultOf :: forall s. Tuple RunReport s -> Tuple RunResult s
+resultOf (Tuple report s) = Tuple report.result s
+
 spec :: Spec Unit
 spec = describe "Elaborate.Loop" do
   describe "submitting" do
     it "attempts a job at once, and removes one that solved" do
       let
-        Tuple submitted s = submitEquality emptySessionEnv site (solvable metas.r) (sessionWith 0)
+        Tuple submitted s = went (submitEquality emptySessionEnv site (solvable metas.r) (sessionWith 0))
       submitted.attempt `shouldEqual` Run.Committed
       lookupPending s.tentative.scheduler submitted.id `shouldEqual` Nothing
       solutionOf s.tentative.metas metas.r `shouldEqual` Just XRowEmpty
 
     it "registers one that is stuck, spending no fuel" do
       let
-        Tuple submitted s = submitEquality emptySessionEnv site stuck (sessionWith 3)
+        Tuple submitted s = went (submitEquality emptySessionEnv site stuck (sessionWith 3))
       submitted.attempt `shouldEqual` Run.Registered (Set.fromFoldable [ metas.r, metas.s, metas.v, metas.w ])
       s.retained.fuel `shouldEqual` 3
 
-    it "reports one that failed, and removes it" do
+    it "stops at one that failed, with the report a loop would make, and removes it" do
       let
-        Tuple submitted s = submitEquality emptySessionEnv site { kind: XKType, left: tA, right: tB } (sessionWith 0)
-      submitted.attempt `shouldEqual` Run.Rejected (EquationFailed here (TypeNotEqual tA tB))
-      lookupPending s.tentative.scheduler submitted.id `shouldEqual` Nothing
+        Tuple submission s = submitEquality emptySessionEnv site { kind: XKType, left: tA, right: tB } (sessionWith 0)
+      submission `shouldEqual` Stop { result: Rejected (EquationFailed here (TypeNotEqual tA tB)), warnings: [] }
+      lookupPending s.tentative.scheduler (PendingId 0) `shouldEqual` Nothing
 
   describe "running the ready queue" do
     it "completes where nothing is left, with no fuel at all" do
       let
-        Tuple result _ = run emptySessionEnv (sessionWith 0)
+        Tuple result _ = resultOf (run emptySessionEnv (sessionWith 0))
       result `shouldEqual` Completed
 
     it "reports what a job waits on where the ready queue is empty, with no fuel at all" do
       let
-        Tuple submitted s0 = submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) waitingSite waitsOnV (sessionWith 0)
-        Tuple result _ = run emptySessionEnv s0
+        Tuple submitted s0 = went (submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) waitingSite waitsOnV (sessionWith 0))
+        Tuple result _ = resultOf (run emptySessionEnv s0)
       result `shouldEqual` Blocked
         ( NonEmptyArray.singleton
             { id: submitted.id, origin: elsewhere, job: waitsOnV, awaiting: Set.singleton metas.v }
@@ -184,7 +195,7 @@ spec = describe "Elaborate.Loop" do
     it "names the next job where there is no fuel, and leaves it on the ready queue" do
       let
         Tuple id s0 = wokenAfter XRowEmpty 0
-        Tuple result s = run emptySessionEnv s0
+        Tuple result s = resultOf (run emptySessionEnv s0)
       result `shouldEqual` Exhausted
         { id, origin: elsewhere, job: JobUnify stuck, awaiting: Set.empty }
       (readyIds s.tentative.scheduler) `shouldEqual` [ id ]
@@ -192,14 +203,14 @@ spec = describe "Elaborate.Loop" do
     it "retries a woken job to completion, spending one unit" do
       let
         Tuple _ s0 = wokenAfter (field keyC tC XRowEmpty) 1
-        Tuple result s = run emptySessionEnv s0
+        Tuple result s = resultOf (run emptySessionEnv s0)
       result `shouldEqual` Completed
       s.retained.fuel `shouldEqual` 0
 
     it "reports a job postponed again, having spent the unit" do
       let
         Tuple id s0 = wokenAfter (XMeta metas.x) 1
-        Tuple result s = run emptySessionEnv s0
+        Tuple result s = resultOf (run emptySessionEnv s0)
       result `shouldEqual` Blocked
         ( NonEmptyArray.singleton
             { id
@@ -213,16 +224,16 @@ spec = describe "Elaborate.Loop" do
     it "stops at the first failure, reported at the failing job's own site" do
       let
         Tuple _ s0 = wokenAfter (field keyC tA XRowEmpty) 5
-        Tuple result s = run emptySessionEnv s0
+        Tuple result s = resultOf (run emptySessionEnv s0)
       result `shouldEqual` Rejected (EquationFailed elsewhere (TypeNotEqual tC tA))
       s.retained.fuel `shouldEqual` 4
 
     it "names the job the fuel did not reach once it has run emptySessionEnv out" do
       let
-        Tuple first s1 = submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) waitingSite waitsOnV (sessionWith 1)
-        Tuple second s2 = submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) waitingSite waitsOnV s1
-        Tuple _ s3 = submitEquality emptySessionEnv site (solvable metas.v) s2
-        Tuple result s = runWith emptySessionEnv (\_ -> pure unit) s3
+        Tuple first s1 = went (submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) waitingSite waitsOnV (sessionWith 1))
+        Tuple second s2 = went (submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) waitingSite waitsOnV s1)
+        Tuple _ s3 = went (submitEquality emptySessionEnv site (solvable metas.v) s2)
+        Tuple result s = resultOf (runWith emptySessionEnv (\_ -> pure unit) s3)
       first.attempt `shouldEqual` Run.Registered (Set.singleton metas.v)
       result `shouldEqual` Exhausted
         { id: second.id, origin: elsewhere, job: waitsOnV, awaiting: Set.empty }
@@ -232,14 +243,14 @@ spec = describe "Elaborate.Loop" do
       let
         absent = MetaVar 99
         Tuple _ s0 = wokenAfter XRowEmpty 5
-        Tuple result _ = runWith emptySessionEnv (\p -> unify p.site (solvable absent)) s0
+        Tuple result _ = resultOf (runWith emptySessionEnv (\p -> unify p.site (solvable absent)) s0)
       result `shouldEqual` Halted (UnifierMisuse elsewhere (MetaUnbound absent))
 
     it "halts at quiescence on a job no assignment can reach" do
       let
         Tuple lost scheduler = create site (JobUnify (solvable metas.r)) (sessionWith 0).tentative.scheduler
         s0 = (sessionWith 0) { tentative { scheduler = scheduler } }
-        Tuple result _ = run emptySessionEnv s0
+        Tuple result _ = resultOf (run emptySessionEnv s0)
       result `shouldEqual` Halted (UnreachablePending (NonEmptyArray.singleton lost))
 
     it "halts at quiescence on a job awaiting a metavariable it is not registered under" do
@@ -247,16 +258,16 @@ spec = describe "Elaborate.Loop" do
       -- missing: solving `?w` would never wake it, so it is not a job waiting on
       -- the program.
       let
-        Tuple submitted s0 = submitWith emptySessionEnv (\_ -> postpone (Set.fromFoldable [ metas.v, metas.w ])) waitingSite waitsOnV (sessionWith 0)
+        Tuple submitted s0 = went (submitWith emptySessionEnv (\_ -> postpone (Set.fromFoldable [ metas.v, metas.w ])) waitingSite waitsOnV (sessionWith 0))
         broken = s0 { tentative { scheduler { blocked = Map.delete metas.w s0.tentative.scheduler.blocked } } }
-        Tuple result _ = run emptySessionEnv broken
+        Tuple result _ = resultOf (run emptySessionEnv broken)
       result `shouldEqual` Halted (SchedulerBroken (NonEmptyArray.singleton (RegistrationDiffers metas.w submitted.id)))
 
     it "reports the jobs left blocked in identifier order" do
       let
-        Tuple first s1 = submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.w)) waitingSite waitsOnV (sessionWith 0)
-        Tuple second s2 = submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) site waitsOnV s1
-        Tuple result _ = run emptySessionEnv s2
+        Tuple first s1 = went (submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.w)) waitingSite waitsOnV (sessionWith 0))
+        Tuple second s2 = went (submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) site waitsOnV s1)
+        Tuple result _ = resultOf (run emptySessionEnv s2)
       result `shouldEqual` Blocked
         ( NonEmptyArray.cons'
             { id: first.id, origin: elsewhere, job: waitsOnV, awaiting: Set.singleton metas.w }
@@ -266,8 +277,8 @@ spec = describe "Elaborate.Loop" do
     it "runs a job created inside an attempt without spending fuel on its first attempt" do
       let
         creating p = void (createSynthesis p.site tA resolver Nothing)
-        Tuple created s1 = submitWith emptySessionEnv creating waitingSite waitsOnV (sessionWith 0)
-        Tuple result s = runWith emptySessionEnv (\_ -> pure unit) s1
+        Tuple created s1 = went (submitWith emptySessionEnv creating waitingSite waitsOnV (sessionWith 0))
+        Tuple result s = resultOf (runWith emptySessionEnv (\_ -> pure unit) s1)
       created.attempt `shouldEqual` Run.Committed
       result `shouldEqual` Completed
       s.retained.fuel `shouldEqual` 0
@@ -275,11 +286,11 @@ spec = describe "Elaborate.Loop" do
     it "spends fuel on a retry and not on a first attempt queued beside it" do
       let
         creating p = void (createSynthesis p.site tA resolver Nothing)
-        Tuple waiting s1 = submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) waitingSite waitsOnV (sessionWith 0)
-        Tuple _ s2 = submitWith emptySessionEnv creating waitingSite waitsOnV s1
-        Tuple _ s3 = submitEquality emptySessionEnv site (solvable metas.v) s2
-        Tuple withFuel _ = runWith emptySessionEnv (\_ -> pure unit) (s3 { retained { fuel = 1 } })
-        Tuple withoutFuel s = runWith emptySessionEnv (\_ -> pure unit) s3
+        Tuple waiting s1 = went (submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) waitingSite waitsOnV (sessionWith 0))
+        Tuple _ s2 = went (submitWith emptySessionEnv creating waitingSite waitsOnV s1)
+        Tuple _ s3 = went (submitEquality emptySessionEnv site (solvable metas.v) s2)
+        Tuple withFuel _ = resultOf (runWith emptySessionEnv (\_ -> pure unit) (s3 { retained { fuel = 1 } }))
+        Tuple withoutFuel s = resultOf (runWith emptySessionEnv (\_ -> pure unit) s3)
       withFuel `shouldEqual` Completed
       -- The first attempt runs; the retry after it is what the fuel does not reach.
       withoutFuel `shouldEqual` Exhausted

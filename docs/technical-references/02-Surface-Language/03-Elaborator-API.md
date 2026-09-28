@@ -764,15 +764,25 @@ It holds the entries the interfaces of the imported modules publish and every to
 **A synthesizer reports in a message it builds, and the host makes the diagnostic.**
 
 ```text
-Message = [ Text String | Type Type | Term Expr | Name QIdent ]
+Message       = [ TextPart String | TypePart Type | TermPart Expr | NamePart QIdent ]
+FrozenMessage = [ FrozenText String | FrozenType { type : τ⁺ , kind : KindEvidence }
+                | FrozenTerm { term : e⁺ , claimed : τ⁺ } | FrozenName QIdent ]
+GoalSummary   = { origin , pending : PendingId , synthesizer : SynthRef , expectedType : τ⁺ }
 
 throw : Message -> Elab a        a failure: this candidate, or this goal, does not hold
 warn  : Message -> Elab Unit     a warning, which does not end the attempt
+
+SynthesisFailed { goal : GoalSummary , message : FrozenMessage }     the diagnostic a throw makes
+Warning         { goal : GoalSummary , message : FrozenMessage }
 ```
 
-A guest cannot build the host's diagnostic, which names sites and holds Core⁺; what it can say is a message over the handles it holds, and the host resolves those handles when the request is made — a handle the rollback later invalidates leaves no dangling reference in a report. The host wraps a thrown message into a diagnostic naming the goal's origin and the synthesizer.
+A guest cannot build the host's diagnostic, which names sites and holds Core⁺; what it can say is a message over the handles it holds. **The host freezes the message where it is said**: each handle is resolved then, and what it holds is zonked against `Ψ` as it is then, so a report holds values and never a handle — one a later rollback invalidates leaves no dangling reference, and one whose metavariable is solved later does not change what the report shows. A handle in a message is shown and not built with, so the scope rules do not apply to it: a type a sibling candidate built, or one observed under a binder, may be named; it must still be a valid handle of the running session, of the class its part names. The host adds the goal the running job is about. A report is a synthesizer's, so one made where no goal runs is a defect of the host.
 
-**A warning is part of what an attempt owns.** One raised by a candidate that failed, or by an attempt that postponed, is rolled back with it, so a goal re-run from its beginning reports each warning once. What commits is reported with the result the loop reaches.
+**A warning is part of what an attempt owns.** The journal of warnings is in the tentative state, so one raised by an attempt that fails, postpones, or breaks, or by a candidate a `transact` discards, is rolled back with it, and a goal re-run from its beginning reports each warning once. **What commits is drained once**, where the driver stops — at the end of a loop, or at a submission whose first attempt fails or breaks, which stops with the report a loop stopping there would make — into that report beside the result, and out of the state, by the one finalizer both share. A driver reading it does not read it again, and never has to run a loop, retrying jobs a failure should have stopped short of, only to read it.
+
+**A report is data and not text.** The text an author wrote is kept as written; what the host adds — the goal, a type, a term, the reason a request was refused — is kept structured, so that one report can be shown by whatever shows it. Turning a report into text is the business of the tool showing it, and **text shown to a library's author is self-contained**: it cites no internal document and no stage of the compiler's own development, a defect of a synthesizer included, whose reader is the author of that synthesizer.
+
+The mechanism's own failure is `raiseDiagnostic`, which takes a diagnostic it has built; `throw` is the synthesizer's alone.
 
 **There is no `withFuel` in the kernel.** Two budgets exist, and neither is it: the scheduler's fuel bounds retries and is the loop's, and an instruction budget bounds a guest computation inside one attempt and is Steam's. A bound on a synthesizer's own search — a depth for recursive instance search — is policy, and the guest carries it as an ordinary argument, which keeps it an input rather than hidden state.
 

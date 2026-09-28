@@ -19,7 +19,7 @@ import Stella.Compiler.Elaborate.Effects (effectsOf)
 import Stella.Compiler.Elaborate.Catalog (catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Elab (Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, resolveExpr, runElabIn, throw, transact, withFrame)
+import Stella.Compiler.Elaborate.Elab (Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, resolveExpr, runElabIn, raiseDiagnostic, transact, withFrame)
 import Stella.Compiler.Elaborate.Unify (UnifyError(..))
 import Stella.Compiler.Elaborate.Handle (Handle, ScopeId(..), SessionId(..))
 import Stella.Compiler.Elaborate.Kinding (kindingOf)
@@ -99,7 +99,7 @@ opened = do
   o <- openJoin root "j" [ { hint: "x", type: i } ] i
   case o.params of
     [ param ] -> pure { root, binder: o.binder, join: o.join, param, definitionScope: o.definitionScope, bodyScope: o.bodyScope }
-    _ -> throw failure
+    _ -> raiseDiagnostic failure
 
 -- | `letjoin j (x : Int) : Int = x in jump j (1)`.
 letjoin :: Elab Handle
@@ -174,7 +174,7 @@ spec = describe "Elaborate.BuildTerm, join points" do
         again = do
           root <- rootScope
           i <- int root
-          _ <- transact (openJoin root "j" [] i *> throw failure)
+          _ <- transact (openJoin root "j" [] i *> raiseDiagnostic failure)
           j <- openJoin root "j" [] i
           body <- jump j.bodyScope j.join []
           definition <- litOne j.definitionScope

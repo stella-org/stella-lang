@@ -25,7 +25,7 @@ import Stella.Compiler.Elaborate.Constructors (constructorsOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Elaborate.Effects (effectsOf)
-import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), SessionEnv, SolverState, assignTerm, createSynthesis, initialState, resolveExpr, runElabIn, throw, transact)
+import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), SessionEnv, SolverState, assignTerm, createSynthesis, initialState, resolveExpr, runElabIn, raiseDiagnostic, transact)
 import Stella.Compiler.Elaborate.Handle (Handle, SessionId(..))
 import Stella.Compiler.Elaborate.Kinding (kindingOf)
 import Stella.Compiler.Elaborate.Pending (Job(..), Pending, Site, goalOf)
@@ -115,7 +115,7 @@ answered build = case asked of
               goalTarget = (goalOf goal).target
             term <- build root goalTarget >>= resolveExpr
             assignTerm p.site goalTarget term.term
-          JobUnify _ -> throw failure
+          JobUnify _ -> raiseDiagnostic failure
         Tuple result s1 = attemptPendingWith session runner id (s0 { tentative { scheduler = taken } })
       in
         Right (Tuple result (zonkExpr s1.tentative.metas (ETermMeta unit target)))
@@ -171,7 +171,7 @@ spec = describe "Elaborate, a kernel-built term through the Core boundary" do
           _ <- emptyRow root >>= closeLambda root discarded.binder discarded.variable
           two <- globalRef root (qualified "two") [] >>= resolveExpr
           assignTerm site target two.term
-          throw failure
+          raiseDiagnostic failure
         identityOfOne root target
     case answered tried, answered identityOfOne of
       Right (Tuple Committed rhs), Right (Tuple Committed clean) -> do

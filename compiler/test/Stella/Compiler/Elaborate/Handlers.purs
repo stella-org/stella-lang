@@ -22,7 +22,7 @@ import Stella.Compiler.Elaborate.Constructors (constructorsOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.Effects (effectsOf, emptyEffectEnv)
-import Stella.Compiler.Elaborate.Elab (Elab, Frame, Outcome(..), SessionEnv, SolverState, assignTerm, freshTermMeta, initialState, resolveExpr, runElabIn, throw, withFrame)
+import Stella.Compiler.Elaborate.Elab (Elab, Frame, Outcome(..), SessionEnv, SolverState, assignTerm, freshTermMeta, initialState, resolveExpr, runElabIn, raiseDiagnostic, withFrame)
 import Stella.Compiler.Elaborate.Handle (Handle, SessionId(..))
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (kindingOf)
@@ -205,7 +205,7 @@ counted residual body = do
       b <- body clause.scope
       zero <- literal root (LitInt 0)
       closeHandle root opened.binder opened.returnClause.variable [ b ] [ zero ]
-    _ -> throw failure
+    _ -> raiseDiagnostic failure
 
 spec :: Spec Unit
 spec = describe "Elaborate.BuildHandler" do
@@ -272,7 +272,7 @@ spec = describe "Elaborate.BuildHandler" do
           opened <- openHandle root c (EffectKey counter) (EffectPayload counter []) Nothing i rho [ { op: next, full: true } ]
           case opened.clauses of
             [ { continuation: Just k } ] -> resolveExpr k <#> _.claimed
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
       case outcomeOf continuation of
         Done ty -> ty `shouldEqual` fnType xInt XRowEmpty xInt
         other -> fail (show other)
@@ -338,7 +338,7 @@ spec = describe "Elaborate.BuildHandler" do
       case outcomeOf (inClause (\scope -> readCell scope cellN)) of
         Done _ -> pure unit
         other -> fail (show other)
-      case outcomeOf (inClause \scope -> readCell scope cellN >>= \v -> writeCell scope cellN v >>= resolveExpr >>= \w -> if w.claimed == xUnit then readCell scope cellN else throw failure) of
+      case outcomeOf (inClause \scope -> readCell scope cellN >>= \v -> writeCell scope cellN v >>= resolveExpr >>= \w -> if w.claimed == xUnit then readCell scope cellN else raiseDiagnostic failure) of
         Done _ -> pure unit
         other -> fail (show other)
       let
@@ -409,7 +409,7 @@ spec = describe "Elaborate.BuildHandler" do
             b <- body clause.scope
             initial <- literal scope (LitInt 0)
             closeHandle scope opened.binder opened.returnClause.variable [ b ] [ initial ]
-          _ -> throw failure
+          _ -> raiseDiagnostic failure
 
       -- An outer handler whose clause builds something, and an inner handler in
       -- that clause whose clause's body is what the function makes of it.
@@ -449,7 +449,7 @@ spec = describe "Elaborate.BuildHandler" do
             o <- resolveExpr goal
             case o.term of
               ETermMeta _ target -> assignTerm site target (EReadCell unit cellN)
-              _ -> throw failure
+              _ -> raiseDiagnostic failure
           pure goal
       case outcomeOf (nested (ownGoal false) (\_ t -> pure t)) of
         Done _ -> pure unit
@@ -472,7 +472,7 @@ spec = describe "Elaborate.BuildHandler" do
               body <- readCell clause.scope cellN
               initial <- literal root (LitInt 0)
               closeHandle root opened.binder opened.returnClause.variable [ body ] [ initial ] >>= resolveExpr
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
       case outcomeOf literalCounter of
         Done o -> case toCore o.claimed, toCoreExpr o.term of
           Just scheme, Right value ->

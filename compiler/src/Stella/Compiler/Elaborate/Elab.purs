@@ -35,7 +35,7 @@ module Stella.Compiler.Elaborate.Elab
   , askEnv
   , currentMetas
   , initialState
-  , throw
+  , raiseDiagnostic
   , break
   , postpone
   , transact
@@ -63,6 +63,8 @@ module Stella.Compiler.Elaborate.Elab
   , freshIdent
   , freshJoin
   , holdOpen
+  , recordWarning
+  , drainWarnings
   , release
   , Release(..)
   , requireClosed
@@ -79,7 +81,7 @@ import Stella.Compiler.Elaborate.Constructors (ConstructorEnv, emptyConstructorE
 import Stella.Compiler.Elaborate.Effects (EffectEnv, emptyEffectEnv)
 import Stella.Compiler.Elaborate.Context (XContext)
 import Stella.Compiler.Elaborate.Context as Context
-import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..), MalformedGoal(..))
+import Stella.Compiler.Elaborate.Diagnostic (Warning, Defect(..), Diagnostic(..), MalformedGoal(..))
 import Stella.Compiler.Elaborate.Kind (XKind)
 import Stella.Compiler.Elaborate.Kinding (KindingEnv, emptyKindingEnv)
 import Stella.Compiler.Elaborate.Handle (Arena, ExprObject, GoalObject, Handle, HandleClass(..), HandleError(..), HandleObject(..), BinderObject, JoinObject, OccurrenceObject, ScopeId(..), ScopeObject, SessionId, TreeObject, TypeObject, emptyArena, issueIn, resolveIn)
@@ -134,6 +136,12 @@ import Data.Tuple (Tuple(..))
 -- | a goal run twice against the same state opens the same scopes and binds the
 -- | same names; what tells a handle from a stale one is the generation, not these.
 -- |
+-- | `warnings` is the journal of what synthesizers have warned of. It is part of
+-- | what an attempt owns, so a warning of an attempt that fails, postpones, or
+-- | breaks, or of a candidate a `transact` discards, goes with its rollback, and
+-- | a goal run again reports its warnings once. What commits stays until the
+-- | driver drains it.
+-- |
 -- | `open` holds the binders an attempt has opened and not yet closed, each
 -- | named by the scope its body is built in and holding that scope's ancestors.
 -- | An attempt may not end in success with one still open, and a binder may not
@@ -150,6 +158,7 @@ type Tentative =
   , arena :: Arena
   , names :: { nextScope :: P.Int, nextBinder :: P.Int, nextIdent :: P.Int, nextJoin :: P.Int }
   , open :: Map ScopeId (Set ScopeId)
+  , warnings :: P.Array Warning
   }
 
 -- | What a rollback leaves alone.
@@ -273,12 +282,16 @@ initialState session fuel =
       , arena: emptyArena
       , names: { nextScope: 1, nextBinder: 0, nextIdent: 0, nextJoin: 0 }
       , open: Map.empty
+      , warnings: []
       }
   , retained: { session, nextGeneration: 0, fuel }
   }
 
-throw :: forall a. Diagnostic -> Elab a
-throw diagnostic = Elab \_ s -> Tuple (Failed diagnostic) s
+-- | Fail with the diagnostic given: the mechanism's own way of rejecting a
+-- | program. A synthesizer fails by `throw`, with a message it builds, which the
+-- | host makes a diagnostic of.
+raiseDiagnostic :: forall a. Diagnostic -> Elab a
+raiseDiagnostic diagnostic = Elab \_ s -> Tuple (Failed diagnostic) s
 
 -- | Report a defect, which nothing catches.
 -- |
@@ -454,6 +467,17 @@ firstFree make taken i =
   in
     if taken name then firstFree make taken (i + 1) else Tuple i name
 
+-- | Add a warning to the journal.
+recordWarning :: Warning -> Elab Unit
+recordWarning warning = Elab \_ s ->
+  Tuple (Done unit) (s { tentative { warnings = Array.snoc s.tentative.warnings warning } })
+
+-- | The warnings the journal holds, taken out of it. The driver drains it once,
+-- | where a loop ends, so a warning is reported once and not again by the next
+-- | loop over the same state.
+drainWarnings :: SolverState -> Tuple (P.Array Warning) SolverState
+drainWarnings s = Tuple s.tentative.warnings (s { tentative { warnings = [] } })
+
 -- | Hold a binder open, by the scope its body is built in and that scope's
 -- | ancestors.
 holdOpen :: ScopeId -> Set ScopeId -> Elab Unit
@@ -525,7 +549,7 @@ unify site goal = do
   case unifyType { kindVars: site.context.kindVars } metas goal.kind goal.left goal.right of
     Mismatch err
       | misuse err -> break (UnifierMisuse site.origin err)
-      | otherwise -> throw (EquationFailed site.origin err)
+      | otherwise -> raiseDiagnostic (EquationFailed site.origin err)
     Solved progress ->
       settle site progress
     Stuck { progress, blockedOn } -> do

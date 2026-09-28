@@ -760,6 +760,15 @@ no identifier is at once ready and blocked
 | A kernel-built term committed as a goal's solution, zonked, crossed, and walked for references | Accepted by the Core type checker, its references the committed term's |
 | The same, after a candidate that opened a lambda and assigned the target a reference to another global, then failed inside a `transact` | The same term, and none of the candidate's references. The assignment, the names, and the handles went with the rollback |
 | `(λ(x : Int). x) true`, kernel-built and claimed at the goal's `Int`, committed as its solution | Committed, and refused by the Core type checker. A derived claim reads the syntax and proves nothing |
+| A `throw` of text, a type, a term, and a name | A failure holding the message frozen — the type zonked with its kind evidence, the term with its claim, the text as written — and the goal it is about: its origin, its job, its synthesizer, and its expected type |
+| A `throw` or a `warn` where the frame runs no goal | A defect of the host. A report is a synthesizer's |
+| A message naming a type observed under a binder, and one naming a scope as a type | Frozen, and refused. A message's handle is shown and not built with, so only its validity and its class are checked |
+| A `warn` of a metavariable's type, the metavariable solved later in the attempt | The report still shows the metavariable. It was frozen where it was made |
+| A `warn` inside a `transact` that fails, and one after it | Only the second is reported |
+| A `warn` in an attempt that postpones, fails, or breaks | Not kept |
+| A goal that warns and postpones, woken, then warns and commits | Its warning reported once, by the run that commits |
+| A loop's report, and the state after it | The warnings committed, drained into the report and out of the state. A driver reads them once |
+| A job submitted that warns and commits, then one submitted that fails, or one that breaks | The second submission stops with the report a loop would make, the first job's warning drained into it and out of the state. No loop has to run to read it |
 | A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
 | No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
 | No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |

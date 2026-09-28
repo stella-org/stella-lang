@@ -18,7 +18,7 @@ import Stella.Compiler.Elaborate.Effects (emptyEffectEnv)
 import Stella.Compiler.Elaborate.Catalog (EntrySort(..), catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, assume, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Elab (Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, issue, runElabIn, throw, withFrame)
+import Stella.Compiler.Elaborate.Elab (Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, issue, runElabIn, raiseDiagnostic, withFrame)
 import Stella.Compiler.Elaborate.Handle (Handle, HandleClass(..), HandleError(..), HandleObject(..), ScopeId(..), SessionId(..))
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), KindingEnv, KindingFault(..), KindingScope)
@@ -143,7 +143,7 @@ typeOfY = do
   entries <- localContext
   case entries of
     [ _, entry ] -> pure entry.type
-    _ -> throw failure
+    _ -> raiseDiagnostic failure
 
 failure :: Diagnostic
 failure = EquationFailed site.origin (TypeNotEqual xInt xInt)
@@ -164,7 +164,7 @@ spec = describe "Elaborate.Observe" do
         s0 = start { tentative { scheduler = scheduler } }
         reading _ = do
           names <- map (map _.name) localContext
-          if names == [ x, y ] then pure unit else throw failure
+          if names == [ x, y ] then pure unit else raiseDiagnostic failure
       fst (attemptPendingWith session reading id s0) `shouldEqual` Committed
 
   describe "a view" do
@@ -178,7 +178,7 @@ spec = describe "Elaborate.Observe" do
               fk <- kindOf f
               argView <- viewType arg
               pure (Tuple fk argView)
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
       observing start action \(Tuple fk argView) _ -> do
         fk `shouldEqual` KindFun KindType KindType
         argView `shouldEqual` VarType a
@@ -194,8 +194,8 @@ spec = describe "Elaborate.Observe" do
               inner <- viewType body
               case inner of
                 AppType _ arg -> Tuple k <$> viewType arg
-                _ -> throw failure
-            _ -> throw failure
+                _ -> raiseDiagnostic failure
+            _ -> raiseDiagnostic failure
       observing start action \(Tuple k argView) _ -> do
         k `shouldEqual` KindType
         argView `shouldEqual` VarType b
@@ -208,7 +208,7 @@ spec = describe "Elaborate.Observe" do
           view <- viewType ty
           case view of
             AppType _ arg -> normalizeRow arg
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
       observing start action \rv _ -> do
         rv.elementKind `shouldEqual` Just RowType
         map _.key rv.known `shouldEqual` [ keyN ]
@@ -221,7 +221,7 @@ spec = describe "Elaborate.Observe" do
           view <- viewType ty
           case view of
             AppType _ arg -> normalizeRow arg
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
         bare = typeHandle XRowEmpty AnyRow >>= \h -> Tuple <$> normalizeRow h <*> kindOf h
       observing start underRecord \rv _ -> rv.elementKind `shouldEqual` Just RowType
       observing start bare \(Tuple rv k) _ -> do
@@ -235,7 +235,7 @@ spec = describe "Elaborate.Observe" do
           rv <- normalizeRow ty
           case map _.payload rv.known of
             [ EffectPayload _ [ arg ] ] -> kindOf arg
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
       observing start action \k _ -> k `shouldEqual` KindType
 
     it "refuses a row observation of a type at no row kind" do
@@ -316,7 +316,7 @@ spec = describe "Elaborate.Observe" do
             Just d -> do
               scheme <- viewType d.scheme
               pure { scheme, absent: map _.name absent, instances }
-            Nothing -> throw failure
+            Nothing -> raiseDiagnostic failure
       observing start action \found _ -> do
         found.scheme `shouldEqual` ConType (Qualified prim (TyName "Int")) []
         found.absent `shouldEqual` Nothing
@@ -335,7 +335,7 @@ spec = describe "Elaborate.Observe" do
           decl <- lookupGlobal name
           case decl of
             Just d -> viewType d.scheme
-            Nothing -> throw failure
+            Nothing -> raiseDiagnostic failure
       case fst (runElabIn polySession start (withFrame frame (viewed declared))) of
         Done (ForallType bound kind _) -> do
           bound `shouldEqual` a

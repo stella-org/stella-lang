@@ -22,7 +22,7 @@ import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindKindVars, bi
 import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.Handle (SessionId(..))
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, assume, freshTypeMeta, initialState, postpone, require, runElab, spendFuel, throw, transact, unify)
+import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, assume, freshTypeMeta, initialState, postpone, require, runElab, spendFuel, raiseDiagnostic, transact, unify)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce)
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), PendingId, Site)
@@ -133,7 +133,7 @@ failure = EquationFailed here (TypeNotEqual tA tB)
 
 -- | A candidate that assigns and then refuses, which is what a search discards.
 failingAfter :: EqualityGoal -> Elab Unit
-failingAfter goal = unify site goal *> throw failure
+failingAfter goal = unify site goal *> raiseDiagnostic failure
 
 -- | A postponement raised above the mechanism, as a synthesizer's is.
 waitingOn :: MetaVar -> Elab Unit
@@ -224,7 +224,7 @@ spec = describe "Elaborate.Elab" do
 
     it "takes its name from a supply a rollback restores" do
       let
-        Tuple first s = runElab session (transact (freshTypeMeta binding XKType *> (throw failure :: Elab Unit)))
+        Tuple first s = runElab session (transact (freshTypeMeta binding XKType *> (raiseDiagnostic failure :: Elab Unit)))
         Tuple second _ = runElab s (freshTypeMeta binding XKType)
         Tuple unrolled _ = runElab session (freshTypeMeta binding XKType)
       first `shouldEqual` Done (Left failure)
@@ -455,7 +455,7 @@ spec = describe "Elaborate.Elab" do
     it "keeps the fuel a rolled-back candidate spent" do
       let
         spending :: Elab Unit
-        spending = spendFuel *> throw failure
+        spending = spendFuel *> raiseDiagnostic failure
 
         Tuple _ s = runElab session (transact spending)
       s.retained.fuel `shouldEqual` 99

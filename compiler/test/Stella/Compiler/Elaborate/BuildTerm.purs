@@ -20,7 +20,7 @@ import Stella.Compiler.Elaborate.Effects (emptyEffectEnv)
 import Stella.Compiler.Elaborate.Catalog (EntrySort(..), catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Elab (Elab, Frame, Outcome(..), SessionEnv, SolverState, freshIdent, initialState, issue, resolveExpr, resolveScope, resolveType, runElabIn, throw, transact, withFrame)
+import Stella.Compiler.Elaborate.Elab (Elab, Frame, Outcome(..), SessionEnv, SolverState, freshIdent, initialState, issue, resolveExpr, resolveScope, resolveType, runElabIn, raiseDiagnostic, transact, withFrame)
 import Stella.Compiler.Elaborate.Handle (Handle, HandleObject(..), ScopeId(..), SessionId(..))
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (KindingEnv, KindingFault(..))
@@ -220,7 +220,7 @@ spec = describe "Elaborate.BuildTerm" do
     it "is drawn again, the same, after a rollback" do
       let
         again = do
-          _ <- transact (freshIdent Set.empty "x" *> throw failure)
+          _ <- transact (freshIdent Set.empty "x" *> raiseDiagnostic failure)
           freshIdent Set.empty "x"
       done again (_ `shouldEqual` Ident "x#0")
 

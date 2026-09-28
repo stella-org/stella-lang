@@ -5,9 +5,11 @@
 -- | attempt within an attempt, so neither is an `Elab` operation; an equation
 -- | met inside an attempt goes through `unify` instead.
 module Stella.Compiler.Elaborate.Loop
-  ( Submitted
+  ( Submission(..)
+  , Submitted
   , PendingReport
   , RunResult(..)
+  , RunReport
   , submitWith
   , submitEquality
   , runWith
@@ -16,8 +18,10 @@ module Stella.Compiler.Elaborate.Loop
 
 import Prelude
 
-import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic)
-import Stella.Compiler.Elaborate.Elab (SessionEnv, SolverState)
+import Prim as P
+
+import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic, Warning)
+import Stella.Compiler.Elaborate.Elab (SessionEnv, SolverState, drainWarnings)
 import Stella.Compiler.Elaborate.Context (Origin)
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), Pending, PendingId, Site)
 import Stella.Compiler.Elaborate.Run (Attempt, Runner, attemptPendingWith, hostRunner)
@@ -35,10 +39,20 @@ import Data.Set (Set)
 import Data.Show.Generic (genericShow)
 import Data.Tuple (Tuple(..))
 
--- | A job just submitted, and what its first attempt came to.
+-- | What submitting a job came to.
 -- |
--- | `Committed` and `Registered` let elaboration go on; `Rejected` stops the
--- | compilation, and `Halted` the session.
+-- | **A first attempt that commits or registers lets elaboration go on; one that
+-- | fails or breaks stops it, with the report a loop stopping there would
+-- | make.** Stopping is where the warnings committed so far are drained, by the
+-- | one finalizer a loop ends with, so a driver that stops at a submission reads
+-- | them as it would after a loop, and needs no loop run to read them — which
+-- | would retry jobs a failure should have stopped short of.
+data Submission
+  = Continue Submitted
+  | Stop RunReport
+
+-- | A job just submitted whose first attempt committed or registered, and what
+-- | that attempt came to.
 type Submitted =
   { id :: PendingId
   , attempt :: Attempt
@@ -56,21 +70,29 @@ type PendingReport =
   , awaiting :: Set MetaVar
   }
 
--- | Where running the ready queue stopped.
+-- | Where the driver stopped — at the end of a loop, or at a submission whose
+-- | first attempt failed or broke — and the warnings the attempts that committed
+-- | before then made.
+type RunReport =
+  { result :: RunResult
+  , warnings :: P.Array Warning
+  }
+
+-- | Where the driver stopped, running the ready queue or submitting a job.
 data RunResult
   -- | No job is left.
   = Completed
-  -- | A retried job failed. The loop stops at the first failure: the equation
-  -- | it rolled back is information the other jobs would have been retried
-  -- | without, and nothing yet tells a failure of their own from one that
-  -- | follows from it.
+  -- | An attempt failed, a job's first on submission or a retry. The driver
+  -- | stops at the first failure: the equation it rolled back is information
+  -- | the other jobs would have been retried without, and nothing yet tells a
+  -- | failure of their own from one that follows from it.
   | Rejected Diagnostic
   -- | The ready queue is empty and these jobs wait on metavariables no
   -- | assignment has reached, in identifier order. Each awaits at least one.
   | Blocked (NonEmptyArray PendingReport)
   -- | The fuel ran out with this job next on the ready queue, where it stays.
   | Exhausted PendingReport
-  -- | A defect. Nothing further is attempted.
+  -- | A defect, on submission or on a retry. Nothing further is attempted.
   | Halted Defect
 
 -- | Create a job and attempt it at once, with the runner given.
@@ -78,20 +100,24 @@ data RunResult
 -- | Just after `create` is one of the two points at which a job may be
 -- | attempted. A first attempt spends no fuel, fuel bounding the scheduler's
 -- | retries alone.
-submitWith :: SessionEnv -> Runner -> Site -> Job -> SolverState -> Tuple Submitted SolverState
-submitWith session runner site job s0 =
-  let
-    Tuple id scheduler = create site job s0.tentative.scheduler
-    Tuple attempt s = attemptPendingWith session runner id (s0 { tentative { scheduler = scheduler } })
-  in
-    Tuple { id, attempt } s
+submitWith :: SessionEnv -> Runner -> Site -> Job -> SolverState -> Tuple Submission SolverState
+submitWith session runner site job s0 = case attempt of
+  Run.Rejected diagnostic -> stop (Rejected diagnostic)
+  Run.Halted defect -> stop (Halted defect)
+  Run.Committed -> Tuple (Continue { id, attempt }) s
+  Run.Registered _ -> Tuple (Continue { id, attempt }) s
+  where
+  Tuple id scheduler = create site job s0.tentative.scheduler
+  Tuple attempt s = attemptPendingWith session runner id (s0 { tentative { scheduler = scheduler } })
+  stop result = case stopped result s of
+    Tuple stoppedWith s' -> Tuple (Stop stoppedWith) s'
 
 -- | `submitWith hostRunner`, for an equation.
-submitEquality :: SessionEnv -> Site -> EqualityGoal -> SolverState -> Tuple Submitted SolverState
+submitEquality :: SessionEnv -> Site -> EqualityGoal -> SolverState -> Tuple Submission SolverState
 submitEquality session site goal = submitWith session hostRunner site (JobUnify goal)
 
 -- | `runWith hostRunner`.
-run :: SessionEnv -> SolverState -> Tuple RunResult SolverState
+run :: SessionEnv -> SolverState -> Tuple RunReport SolverState
 run session = runWith session hostRunner
 
 -- | Retry the jobs on the ready queue until it is empty, or until something
@@ -109,8 +135,17 @@ run session = runWith session hostRunner
 -- |
 -- | At quiescence, a scheduler whose tables disagree, and a job awaiting
 -- | nothing, are defects; otherwise every job left is reported as blocked.
-runWith :: SessionEnv -> Runner -> SolverState -> Tuple RunResult SolverState
-runWith session runner = tailRec step
+-- |
+-- | **The warnings are drained where the loop stops**, every one the attempts
+-- | that committed made, those made before the loop by a job submitted and
+-- | attempted at once among them, into the report and out of the state: a
+-- | driver reading them reads them once.
+runWith :: SessionEnv -> Runner -> SolverState -> Tuple RunReport SolverState
+runWith session runner s0 =
+  let
+    Tuple result s = tailRec step s0
+  in
+    stopped result s
   where
   step s = case nextReady s.tentative.scheduler of
     Nothing ->
@@ -139,6 +174,15 @@ runWith session runner = tailRec step
     Just p -> Exhausted (report p)
     Nothing -> Halted (PendingAbsent id)
 
+-- | The report of a driver stopping with the result given, the warnings
+-- | committed so far drained into it and out of the state.
+stopped :: RunResult -> SolverState -> Tuple RunReport SolverState
+stopped result s =
+  let
+    Tuple warnings drained = drainWarnings s
+  in
+    Tuple { result, warnings } drained
+
 -- | Where the loop stopped with nothing on the ready queue.
 -- |
 -- | **A defect of the scheduler comes before anything is reported as waiting.**
@@ -160,6 +204,12 @@ quiesce s = case NonEmptyArray.fromArray (invariants scheduler) of
 
 report :: Pending -> PendingReport
 report p = { id: p.id, origin: p.site.origin, job: p.job, awaiting: p.awaiting }
+
+derive instance Eq Submission
+derive instance Generic Submission _
+
+instance Show Submission where
+  show x = genericShow x
 
 derive instance Eq RunResult
 derive instance Generic RunResult _

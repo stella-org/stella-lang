@@ -14,7 +14,7 @@ import Prim as P
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.Handle (SessionId(..))
-import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), assignTerm, freshTermMeta, initialState, runElab, throw, transact)
+import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), assignTerm, freshTermMeta, initialState, runElab, raiseDiagnostic, transact)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Pending (Site)
 import Stella.Compiler.Elaborate.Term (Residue(..), TermMetaVar(..), XExpr(..), toCoreExpr)
@@ -237,7 +237,7 @@ spec = describe "Elaborate.TermMeta" do
         attempt = do
           m <- freshTermMeta wideContext Nothing xInt
           assignTerm site m (EVar 1 x)
-          throw (TermAssignmentFailed here (TermMetaUnbound m))
+          raiseDiagnostic (TermAssignmentFailed here (TermMetaUnbound m))
 
         Tuple outcome s = runElab (initialState (SessionId 0) 0) (transact attempt)
       outcome `shouldEqual` Done (Left (TermAssignmentFailed here (TermMetaUnbound (TermMetaVar 0))))

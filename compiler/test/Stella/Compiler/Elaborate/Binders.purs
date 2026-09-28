@@ -22,7 +22,7 @@ import Stella.Compiler.Elaborate.Effects (emptyEffectEnv)
 import Stella.Compiler.Elaborate.Catalog (catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindTyVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, issue, resolveExpr, runElabIn, throw, withFrame)
+import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, issue, resolveExpr, runElabIn, raiseDiagnostic, withFrame)
 import Stella.Compiler.Elaborate.Handle (Handle, HandleObject(..), ScopeId(..), SessionId(..))
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (KindingEnv, kindingOf)
@@ -328,7 +328,7 @@ spec = describe "Elaborate.BuildTerm, binders and applications" do
           opened <- openLetRec root [ { hint: "a", type: i }, { hint: "b", type: i } ]
           case opened.variables of
             [ va, vb ] -> closeLetRec root opened.binder [ vb, va ] va
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
         a0 = Ident "a#0"
         b1 = Ident "b#1"
       builds group \o ->
@@ -347,7 +347,7 @@ spec = describe "Elaborate.BuildTerm, binders and applications" do
           rhs <- rhss root outside.variable opened.variables
           case opened.variables of
             [ v ] -> closeLetRec root opened.binder rhs v
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
       refuses (closedWith \_ _ _ -> pure []) case _ of
         LetRecArity _ 1 0 -> pure unit
         other -> fail ("not LetRecArity: " <> show other)

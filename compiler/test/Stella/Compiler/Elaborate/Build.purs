@@ -20,7 +20,7 @@ import Stella.Compiler.Elaborate.Effects (emptyEffectEnv)
 import Stella.Compiler.Elaborate.Catalog (EntrySort(..), catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, issue, resolveType, runElabIn, throw, transact, unify, withFrame)
+import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, issue, resolveType, runElabIn, raiseDiagnostic, transact, unify, withFrame)
 import Stella.Compiler.Elaborate.Handle (Handle, HandleObject(..), ScopeId(..), SessionId(..), TypeObject)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), KindingEnv, KindingFault(..))
@@ -171,7 +171,7 @@ forallList = do
 scheme :: P.String -> Elab Handle
 scheme name = lookupGlobal (global name) >>= case _ of
   Just decl -> pure decl.scheme
-  Nothing -> throw failure
+  Nothing -> raiseDiagnostic failure
 
 failure :: Diagnostic
 failure = EquationFailed site.origin (TypeNotEqual xInt xInt)
@@ -289,7 +289,7 @@ spec = describe "Elaborate.Build" do
           entries <- localContext
           case entries of
             [ entry ] -> list root >>= \l -> applyType root l entry.type
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
       builds start fromSite \object -> object.type `shouldEqual` listOf (listOf (XVar a))
 
     it "leave a catalog scheme, and every part a view takes of it, in no scope" do
@@ -304,15 +304,15 @@ spec = describe "Elaborate.Build" do
           s <- scheme "ints"
           viewType s >>= case _ of
             AppType _ argument -> list root >>= \l -> applyType root l argument
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
         payload = do
           root <- rootScope
           s <- scheme "record"
           viewType s >>= case _ of
             AppType _ row -> normalizeRow row >>= \view -> case view.known of
               [ { payload: TypePayload ty } ] -> list root >>= \l -> applyType root l ty
-              _ -> throw failure
-            _ -> throw failure
+              _ -> raiseDiagnostic failure
+            _ -> raiseDiagnostic failure
       refuses whole scopeViolation
       refuses part scopeViolation
       refuses payload scopeViolation
@@ -324,13 +324,13 @@ spec = describe "Elaborate.Build" do
           whole <- observed (XForall (TyVar "b") XKType (XVar (TyVar "b"))) (ExactKind XKType)
           viewType whole >>= case _ of
             ForallType _ _ body -> list root >>= \l -> applyType root l body
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
         constrainedBody = do
           root <- rootScope
           whole <- observed (XConstrained (XLacks keyN (XVar r)) xInt) (ExactKind XKType)
           viewType whole >>= case _ of
             ConstrainedType (LacksView _ _) body -> list root >>= \l -> applyType root l body
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
       refuses forallBody scopeViolation
       refuses constrainedBody scopeViolation
 
@@ -447,7 +447,7 @@ spec = describe "Elaborate.Build" do
       let
         again = do
           root <- rootScope
-          _ <- transact (openForall root "t" KindType *> throw failure)
+          _ <- transact (openForall root "t" KindType *> raiseDiagnostic failure)
           opened <- openForall root "t" KindType
           resolveType opened.variable
       case outcomeOf start again of
@@ -609,8 +609,8 @@ spec = describe "Elaborate.Build" do
           viewType whole >>= case _ of
             ForallType _ _ body -> viewType body >>= case _ of
               ConstrainedType c _ -> openConstraint root c
-              _ -> throw failure
-            _ -> throw failure
+              _ -> raiseDiagnostic failure
+            _ -> raiseDiagnostic failure
       refuses illFormed case _ of
         IllKinded (KeyNotOfRowKind _ _) -> pure unit
         other -> fail ("not KeyNotOfRowKind: " <> show other)
@@ -653,7 +653,7 @@ spec = describe "Elaborate.Build" do
 
     it "commits once every binder is closed, a discarded candidate's included" do
       attemptWith (\_ -> void forallList) `shouldEqual` Committed
-      attemptWith (\_ -> void (rootScope >>= \root -> transact (openForall root "t" KindType *> throw failure)))
+      attemptWith (\_ -> void (rootScope >>= \root -> transact (openForall root "t" KindType *> raiseDiagnostic failure)))
         `shouldEqual` Committed
 
     it "commits nested binders closed inside out, and siblings closed in either order" do
@@ -715,7 +715,7 @@ spec = describe "Elaborate.Build" do
               object <- resolveType flexible.type
               extended <- int root >>= \i -> extendRow root keyM (TypePayload i) flexible.type
               pure (Tuple object extended)
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
       case outcomeOf withTail rebuilt of
         Done (Tuple object _) -> do
           object.type `shouldEqual` XMeta tail
@@ -732,9 +732,9 @@ spec = describe "Elaborate.Build" do
             ForallType _ _ body -> viewType body >>= case _ of
               AppType _ row -> normalizeRow row >>= \view -> case view.flexible of
                 [ flexible ] -> int root >>= \i -> extendRow root keyM (TypePayload i) flexible.type
-                _ -> throw failure
-              _ -> throw failure
-            _ -> throw failure
+                _ -> raiseDiagnostic failure
+              _ -> raiseDiagnostic failure
+            _ -> raiseDiagnostic failure
       refusesIn withTail underBinder scopeViolation
 
 keyM :: RowKey

@@ -22,7 +22,7 @@ import Stella.Compiler.Elaborate.Constructors (constructorsOf)
 import Stella.Compiler.Elaborate.Effects (effectsOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, issue, resolveExpr, resolveOccurrence, resolveTree, runElabIn, throw, withFrame)
+import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, issue, resolveExpr, resolveOccurrence, resolveTree, runElabIn, raiseDiagnostic, withFrame)
 import Stella.Compiler.Elaborate.Handle (Handle, HandleObject(..), ScopeId(..), SessionId(..))
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (kindingOf)
@@ -209,7 +209,7 @@ caseOn name = do
   opened <- openCase root [ v ]
   case opened.scrutinees of
     [ occurrence ] -> pure { root, binder: opened.binder, occurrence, treeScope: opened.treeScope }
-    _ -> throw failure
+    _ -> raiseDiagnostic failure
 
 -- | `case (e) of` over a term claimed at the type given.
 caseClaimed :: XType -> Elab { root :: Handle, binder :: Handle, occurrence :: Handle, treeScope :: Handle }
@@ -219,7 +219,7 @@ caseClaimed ty = do
   opened <- openCase root [ e ]
   case opened.scrutinees of
     [ occurrence ] -> pure { root, binder: opened.binder, occurrence, treeScope: opened.treeScope }
-    _ -> throw failure
+    _ -> raiseDiagnostic failure
 
 occurrenceType :: Handle -> Elab XType
 occurrenceType h = resolveOccurrence h <#> _.type
@@ -239,8 +239,8 @@ lengthish = do
         tree <- closeSwitch c.treeScope s.binder [ nilTree, consTree ] Nothing
         term <- closeCase c.root c.binder Nothing tree
         pure { root: c.root, term }
-      _ -> throw failure
-    _ -> throw failure
+      _ -> raiseDiagnostic failure
+    _ -> raiseDiagnostic failure
 
 spec :: Spec Unit
 spec = describe "Elaborate.BuildTree" do
@@ -321,9 +321,9 @@ spec = describe "Elaborate.BuildTree" do
                     tree <- closeSwitch c.treeScope s.binder [ nilTree, consTree ] Nothing
                     body <- closeCase lam.bodyScope c.binder Nothing tree
                     emptyRow root >>= closeLambda root lam.binder body >>= resolveExpr
-                  _ -> throw failure
-                _ -> throw failure
-            _ -> throw failure
+                  _ -> raiseDiagnostic failure
+                _ -> raiseDiagnostic failure
+            _ -> raiseDiagnostic failure
       case outcomeOf underLambda of
         Done o -> case toCoreExpr o.term of
           Right core -> isRight (verdict core) `shouldEqual` true
@@ -344,8 +344,8 @@ spec = describe "Elaborate.BuildTree" do
                 consTree <- openBind consBranch.scope tail "t" >>= \b -> leaf b.bodyScope b.variable >>= closeBind consBranch.scope b.binder
                 tree <- closeSwitch c.treeScope s.binder [ nilTree, consTree ] Nothing
                 resolveTree tree <#> _.inferred
-              _ -> throw failure
-            _ -> throw failure
+              _ -> raiseDiagnostic failure
+            _ -> raiseDiagnostic failure
       case outcomeOf firstLeaf of
         Done inferred -> inferred `shouldEqual` Just (xList xInt)
         other -> fail (show other)
@@ -389,8 +389,8 @@ spec = describe "Elaborate.BuildTree" do
           case s.branches of
             [ nilBranch, consBranch ] -> case consBranch.fields of
               [ head, _ ] -> openBind nilBranch.scope head "x"
-              _ -> throw failure
-            _ -> throw failure
+              _ -> raiseDiagnostic failure
+            _ -> raiseDiagnostic failure
         inInnerCase = do
           c <- caseOn "xs"
           v <- localVariable c.treeScope (Ident "xs")
@@ -505,7 +505,7 @@ spec = describe "Elaborate.BuildTree" do
               t1 <- litZero first >>= leaf first
               f <- litZero o.s.fallback >>= leaf o.s.fallback
               closeSwitch o.c.treeScope o.s.binder [ t1, t1 ] (Just f)
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
       refuses crossed
         ( is "ScopeViolation" case _ of
             ScopeViolation _ -> true

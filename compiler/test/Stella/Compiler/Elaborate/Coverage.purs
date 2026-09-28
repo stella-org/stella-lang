@@ -24,7 +24,7 @@ import Stella.Compiler.Elaborate.Constructors (constructorsOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Elaborate.Effects (effectsOf)
-import Stella.Compiler.Elaborate.Elab (Elab, Frame, Outcome(..), SessionEnv, initialState, resolveExpr, runElabIn, throw, withFrame)
+import Stella.Compiler.Elaborate.Elab (Elab, Frame, Outcome(..), SessionEnv, initialState, resolveExpr, runElabIn, raiseDiagnostic, withFrame)
 import Stella.Compiler.Elaborate.Handle (Handle, SessionId(..))
 import Stella.Compiler.Elaborate.Kinding (kindingOf)
 import Stella.Compiler.Elaborate.Pending (Site)
@@ -130,7 +130,7 @@ lit scope n = literal scope (LitInt n)
 only :: forall a. P.Array a -> Elab a
 only = case _ of
   [ x ] -> pure x
-  _ -> throw failure
+  _ -> raiseDiagnostic failure
 
 -- | Terms together holding every form but a typed hole, each built by the
 -- | kernel's requests at the root.
@@ -172,11 +172,11 @@ everyForm = do
       zero <- lit nilBranch.scope 0 >>= leaf nilBranch.scope
       two <- lit nilBranch.scope 2 >>= leaf nilBranch.scope
       guarded <- guard nilBranch.scope condition zero two
-      headField <- Array.head consBranch.fields # maybe (throw failure) pure
+      headField <- Array.head consBranch.fields # maybe (raiseDiagnostic failure) pure
       b <- openBind consBranch.scope headField "h"
       bindTree <- leaf b.bodyScope b.variable >>= closeBind consBranch.scope b.binder
       pure [ guarded, bindTree ]
-    _ -> throw failure
+    _ -> raiseDiagnostic failure
   listCase <- closeSwitch onList.treeScope byCtor.binder ctorTrees Nothing >>= closeCase root onList.binder Nothing
   -- a case switching on a literal
   onLit <- openCase root [ one ]
@@ -232,7 +232,7 @@ everyForm = do
     rho <- emptyRow root
     h <- openHandle root one (EffectKey counter) (EffectPayload counter []) Nothing i rho [ { op: next, full: true } ]
     clause <- only h.clauses
-    k <- clause.continuation # maybe (throw failure) pure
+    k <- clause.continuation # maybe (raiseDiagnostic failure) pure
     body <- lit clause.scope 0 >>= termApply clause.scope k
     closeHandle root h.binder h.returnClause.variable [ body ] []
   -- a goal

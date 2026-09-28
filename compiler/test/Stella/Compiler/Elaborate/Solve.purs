@@ -20,7 +20,7 @@ import Stella.Compiler.Elaborate.Effects (emptyEffectEnv)
 import Stella.Compiler.Elaborate.Catalog (catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindTyVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Elab (Elab, Frame, Outcome(..), SessionEnv, SolverState, currentMetas, initialState, issue, resolveType, runElabIn, throw, transact, withFrame)
+import Stella.Compiler.Elaborate.Elab (Elab, Frame, Outcome(..), SessionEnv, SolverState, currentMetas, initialState, issue, resolveType, runElabIn, raiseDiagnostic, transact, withFrame)
 import Stella.Compiler.Elaborate.Handle (Handle, HandleObject(..), ScopeId(..), SessionId(..))
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), KindingEnv, KindingFault(..))
@@ -149,13 +149,13 @@ zonked handle = substitute <$> currentMetas <*> (_.type <$> resolveType handle)
 metaOf :: Handle -> Elab MetaVar
 metaOf handle = resolveType handle >>= \object -> case object.type of
   XMeta m -> pure m
-  _ -> throw failure
+  _ -> raiseDiagnostic failure
 
 -- | The `Meta` handle the view of a metavariable's type gives.
 metaHandleOf :: Handle -> Elab Handle
 metaHandleOf handle = viewType handle >>= case _ of
   MetaType m -> pure m
-  _ -> throw failure
+  _ -> raiseDiagnostic failure
 
 spec :: Spec Unit
 spec = describe "Elaborate.Solve" do
@@ -245,7 +245,7 @@ spec = describe "Elaborate.Solve" do
           whole <- issue (TypeObject { type: XForall (TyVar "b") XKType (XVar (TyVar "b")), kind: ExactKind XKType, scope: { kindVars: Set.empty, tyVars: context.tyVars }, builtIn: Just (ScopeId 0) })
           viewType whole >>= case _ of
             ForallType _ _ body -> int root >>= unify root body
-            _ -> throw failure
+            _ -> raiseDiagnostic failure
         fromSibling = do
           root <- rootScope
           left <- openForall root "t" KindType
@@ -385,7 +385,7 @@ spec = describe "Elaborate.Solve" do
         discarded = do
           root <- rootScope
           i <- int root
-          void (transact (subgoal root i resolver *> throw failure))
+          void (transact (subgoal root i resolver *> raiseDiagnostic failure))
       case run start discarded of
         Tuple (Done _) s -> do
           readyIds s.tentative.scheduler `shouldEqual` []

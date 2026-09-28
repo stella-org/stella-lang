@@ -16,12 +16,12 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Context (Origin(..), bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Handle (SessionId(..))
-import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), SolverState, assignTerm, emptySessionEnv, freshTermMeta, freshTypeMeta, initialState, runElab, throw, transact)
-import Stella.Compiler.Elaborate.Diagnostic (Diagnostic(..))
+import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), SolverState, assignTerm, emptySessionEnv, freshTermMeta, freshTypeMeta, initialState, runElab, raiseDiagnostic, transact)
+import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.TermMeta (TermError(..), zonkExpr)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Loop (RunResult(..), run, submitEquality)
-import Stella.Compiler.Elaborate.Pending (Site)
+import Stella.Compiler.Elaborate.Loop (RunReport, RunResult(..), Submission(..), Submitted, run, submitEquality)
+import Stella.Compiler.Elaborate.Pending (PendingId(..), Site)
 import Stella.Compiler.Elaborate.Run as Run
 import Stella.Compiler.Elaborate.Term (Residue(..), TermMetaVar, XDecisionTree(..), XExpr(..), toCoreExpr)
 import Stella.Compiler.Elaborate.Type (XType(..), fromCore)
@@ -140,9 +140,9 @@ solvedTypes :: Either P.String (Tuple Holes SolverState)
 solvedTypes = case runElab (initialState (SessionId 0) 10) opened of
   Tuple (Done holes) s0 ->
     let
-      Tuple first s1 = submitEquality emptySessionEnv site { kind: XKType, left: holes.param, right: listOf xInt } s0
-      Tuple second s2 = submitEquality emptySessionEnv site { kind: XKType, left: holes.nilAt, right: xInt } s1
-      Tuple result s3 = run emptySessionEnv s2
+      Tuple first s1 = went (submitEquality emptySessionEnv site { kind: XKType, left: holes.param, right: listOf xInt } s0)
+      Tuple second s2 = went (submitEquality emptySessionEnv site { kind: XKType, left: holes.nilAt, right: xInt } s1)
+      Tuple result s3 = resultOf (run emptySessionEnv s2)
     in
       if first.attempt /= Run.Committed || second.attempt /= Run.Committed then
         Left "an equation was not solved where it was submitted"
@@ -194,6 +194,17 @@ verdict m = case declare primSignature intModule of
   Right imported -> case declare imported m of
     Left failure -> Left failure.error
     Right _ -> Right unit
+
+-- | A submission that went on, as the cases read it. One that stopped reads as
+-- | a job no table holds, halted, so an assertion expecting it to go on fails.
+went :: Tuple Submission SolverState -> Tuple Submitted SolverState
+went (Tuple submission s) = case submission of
+  Continue submitted -> Tuple submitted s
+  Stop _ -> Tuple { id: PendingId (-1), attempt: Run.Halted (PendingAbsent (PendingId (-1))) } s
+
+-- | Where a loop stopped, its warnings set aside.
+resultOf :: forall s. Tuple RunReport s -> Tuple RunResult s
+resultOf (Tuple report s) = Tuple report.result s
 
 spec :: Spec Unit
 spec = describe "Elaborate, the vertical slice" do
@@ -265,7 +276,7 @@ spec = describe "Elaborate, the vertical slice" do
         let
           discarded = do
             assignTerm site holes.callee (EGlobal 0 resultName [])
-            throw (TermAssignmentFailed here (TermMetaUnbound holes.callee))
+            raiseDiagnostic (TermAssignmentFailed here (TermMetaUnbound holes.callee))
 
           searched = do
             _ <- transact discarded
