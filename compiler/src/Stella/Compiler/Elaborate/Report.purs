@@ -1,5 +1,5 @@
--- | How a synthesizer reports: `throw` to fail, and `warn` to say something and
--- | go on.
+-- | How a synthesizer reports and waits: `throw` to fail, `warn` to say something
+-- | and go on, and `postpone` to wait on a metavariable.
 -- |
 -- | **The synthesizer builds the message, and the host makes the report.** A
 -- | message is text and the handles the synthesizer holds; the host freezes it
@@ -14,6 +14,7 @@
 module Stella.Compiler.Elaborate.Report
   ( throw
   , warn
+  , postpone
   ) where
 
 import Prelude
@@ -21,12 +22,15 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Elab (Elab, askEnv, break, currentMetas, raiseDiagnostic, recordWarning, resolveExpr, resolveType)
+import Stella.Compiler.Elaborate.Elab (Elab, askEnv, break, currentMetas, raiseDiagnostic, recordWarning, resolveExpr, resolveMeta, resolveType)
+import Stella.Compiler.Elaborate.Elab as Elab
+import Stella.Compiler.Elaborate.Handle (Handle)
 import Stella.Compiler.Elaborate.Message (FrozenMessagePart(..), GoalSummary, MessagePart(..))
 import Stella.Compiler.Elaborate.Pending (goalOf)
 import Stella.Compiler.Elaborate.TermMeta (zonkExpr)
 import Stella.Compiler.Elaborate.Unify (substitute)
 import Data.Maybe (Maybe(..))
+import Data.Set as Set
 import Data.Traversable (traverse)
 
 -- | Fail the attempt with the message given, a failure `transact` catches: this
@@ -44,6 +48,17 @@ warn message = do
   goal <- runningGoal
   frozen <- traverse freeze message
   recordWarning { goal, message: frozen }
+
+-- | Wait until one of the metavariables named is solved: the attempt ends, and
+-- | the goal is run again from its beginning once one is.
+-- |
+-- | **Whether each can wake the goal is decided where the attempt ends, against
+-- | `Ψ` as its rollback leaves it**, and not here: a metavariable this attempt
+-- | solved is unsolved again once it is rolled back, and is then as good a thing
+-- | to wait on as any. One the attempt created, one solved before it, and an
+-- | empty set are defects then, as every postponement's are.
+postpone :: forall a. P.Array Handle -> Elab a
+postpone metas = traverse resolveMeta metas >>= \ms -> Elab.postpone (Set.fromFoldable ms)
 
 -- A part of a message as it stands now: a handle resolved and what it holds
 -- zonked, so that the report does not change as `Ψ` does.

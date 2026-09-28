@@ -37,6 +37,7 @@ import Test.Stella.Compiler.Elaborate.Handlers as ElaborateHandlers
 import Test.Stella.Compiler.Elaborate.Coverage as ElaborateCoverage
 import Test.Stella.Compiler.Elaborate.KernelVertical as ElaborateKernelVertical
 import Test.Stella.Compiler.Elaborate.Reports as ElaborateReports
+import Test.Stella.Compiler.Elaborate.Conversations as ElaborateConversations
 import Test.Stella.Compiler.Elaborate.Observe as ElaborateObserve
 import Test.Stella.Compiler.Elaborate.Run as ElaborateRun
 import Test.Stella.Compiler.Elaborate.Scheduler as ElaborateScheduler
@@ -100,3 +101,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateCoverage.spec
   ElaborateKernelVertical.spec
   ElaborateReports.spec
+  ElaborateConversations.spec

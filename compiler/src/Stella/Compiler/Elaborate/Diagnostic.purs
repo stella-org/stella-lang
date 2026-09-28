@@ -26,6 +26,7 @@ import Prim as P
 import Stella.Compiler.Elaborate.Context (Origin)
 import Stella.Compiler.Elaborate.Handle (Handle, HandleError, ScopeId)
 import Stella.Compiler.Elaborate.Message (FrozenMessagePart, GoalSummary)
+import Stella.Compiler.Elaborate.Protocol (ConversationId, TransactionToken)
 import Stella.Compiler.Elaborate.Kinding (KindingFault)
 import Stella.Compiler.Elaborate.Obligation (Basis, Breach)
 import Stella.Compiler.Elaborate.Pending (Job, PendingId, SynthRef)
@@ -38,6 +39,7 @@ import Stella.Compiler.Elaborate.Unify (UnifyError)
 import Stella.Compiler.TypedCore (EffName, Ident, JoinName, OpName, Qualified, RowKey, TyName, TyVar)
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Generic.Rep (class Generic)
+import Data.Maybe (Maybe)
 import Data.Set (Set)
 import Data.Show.Generic (genericShow)
 
@@ -128,6 +130,24 @@ data Defect
   -- | from its assumption, a job, a metavariable — would commit without the
   -- | type that carries it.
   | BindersLeftOpen (Set ScopeId)
+  -- | A request naming a conversation other than the one the runner holds: one
+  -- | arriving from an attempt that has ended, or not addressed to this one.
+  | ConversationMismatch { holding :: ConversationId, named :: ConversationId }
+  -- | A request naming another transaction as its innermost than the one the
+  -- | conversation holds: the synthesizer went on inside a transaction a failure
+  -- | has closed, or outside one still open.
+  | TransactionMismatch { holding :: Maybe TransactionToken, named :: Maybe TransactionToken }
+  -- | An attempt finished with transactions still open, innermost first.
+  | TransactionsLeftOpen (P.Array TransactionToken)
+  -- | A commit with no transaction open.
+  | NoTransactionToCommit
+  -- | A session that has identified every conversation it can. An identifier
+  -- | is never issued twice, which is what a late request failing to match
+  -- | rests on.
+  | ConversationsExhausted
+  -- | A conversation that has issued every transaction token it can, for the
+  -- | reason `ConversationsExhausted` gives.
+  | TransactionsExhausted
   -- | A term issued in a scope whose join points do not include one it jumps to.
   -- | Every builder checks what it is given against the scope, so this is an
   -- | invariant of the host broken.

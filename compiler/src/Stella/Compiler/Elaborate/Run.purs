@@ -1,5 +1,6 @@
--- | Running `Elab` from outside: one attempt of a pending job, and the admission
--- | of what a postponed attempt waits on (D40).
+-- | Running `Elab` from outside: one attempt of a pending job, held open across
+-- | a synthesizer's requests where it has several, and the admission of what a
+-- | postponed attempt waits on (D40).
 -- |
 -- | An attempt is a boundary and not a combinator of `Elab`. What it reaches is
 -- | handed back as the `Outcome` it is, so a defect is never a value some later
@@ -12,13 +13,28 @@ module Stella.Compiler.Elaborate.Run
   , hostRunner
   , attemptPending
   , attemptPendingWith
+  , Conversation
+  , Envelope
+  , OpenResult(..)
+  , Response(..)
+  , Step(..)
+  , envelopeOf
+  , innermost
+  , openAttempt
+  , request
+  , beginTransaction
+  , commitTransaction
+  , finishAttempt
   ) where
 
 import Prelude
 
+import Prim as P
+
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic, Inadmissible(..))
 import Stella.Compiler.Elaborate.Handle (emptyArena)
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SessionEnv, SolverState, break, checkSynthesisTarget, requireClosed, runElabIn, unify, withFrame)
+import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, Tentative, break, checkSynthesisTarget, requireClosed, runElabIn, unify, withFrame)
+import Stella.Compiler.Elaborate.Protocol (ConversationId(..), TransactionToken(..))
 import Stella.Compiler.Elaborate.Pending (Job(..), Pending, PendingId, goalOf)
 import Stella.Compiler.Elaborate.Scheduler (complete, lookupPending, reblock, unwakeable)
 import Stella.Compiler.Elaborate.Type (MetaVar)
@@ -137,48 +153,114 @@ hostRunner p = case p.job of
 attemptPending :: SessionEnv -> PendingId -> SolverState -> Tuple Attempt SolverState
 attemptPending session = attemptPendingWith session hostRunner
 
--- | Attempt the pending job named with the runner given, and act on the outcome.
--- |
--- | **The job is one no queue holds**: `pending` holds it, it awaits nothing,
--- | and it is not on the ready queue. A job is in that state at two points —
--- | just after `create`, before its first attempt, and just after `takeReady`,
--- | once a `wake` has queued it for another. `unwakeable` reads `awaiting` and the
--- | ready queue, and that the blocked table does not hold the job either follows
--- | from the scheduler's invariant that it registers a job exactly under what the
--- | job awaits.
--- |
--- | **A postponement is admitted in the same step as the rollback**, against the
--- | `Ψ` that rollback left, so no postponement reaches the scheduler unchecked. A
--- | solved or failed job is removed from every table, and a defect leaves the
--- | state as the rollback left it.
+-- | Attempt the pending job named with the runner given, and act on the outcome:
+-- | a conversation opened, the runner's action asked as its one request, and
+-- | the attempt finished, so that a runner written as one action and one
+-- | answering a synthesizer request by request reach the same place.
 attemptPendingWith :: SessionEnv -> Runner -> PendingId -> SolverState -> Tuple Attempt SolverState
-attemptPendingWith session runner id s0 = case lookupPending s0.tentative.scheduler id of
+attemptPendingWith session runner id s0 = case openAttempt session id s0 of
+  OpenStopped attempt s -> Tuple attempt s
+  Opened conversation -> case request (envelopeOf conversation) (runner conversation.pending) conversation of
+    Finished attempt s -> Tuple attempt s
+    Answered _ answered -> finishAttempt (envelopeOf answered) (pure unit) answered
+
+-- | An attempt held open across the requests a synthesizer makes, one at a
+-- | time.
+-- |
+-- | **It attempts a job already taken, and nothing else.** Which job is attempted,
+-- | and the fuel a retry spends, are the scheduler's and the loop's; a
+-- | conversation is given a job just created or just taken from the ready
+-- | queue, and holds the checkpoint of its attempt, the frame it runs under, and
+-- | the transactions open inside it. Those are the host's to control and none of
+-- | them is rolled back: the checkpoints hold what a rollback restores. The
+-- | transactions stand innermost first.
+type Conversation =
+  { id :: ConversationId
+  , session :: SessionEnv
+  , pending :: Pending
+  , frame :: Frame
+  , root :: Tentative
+  , state :: SolverState
+  , transactions :: P.Array { token :: TransactionToken, checkpoint :: Tentative }
+  , nextSerial :: P.Int
+  }
+
+-- | What a request carries beside what it asks: the conversation it belongs to,
+-- | and the transaction the synthesizer stands in, innermost, if any.
+type Envelope =
+  { conversation :: ConversationId
+  , transaction :: Maybe TransactionToken
+  }
+
+-- | Opening an attempt: a conversation, or where the attempt stopped before any
+-- | request, with the state as it left it.
+data OpenResult
+  = Opened Conversation
+  | OpenStopped Attempt SolverState
+
+-- | What a request that leaves the attempt going answers.
+data Response a
+  -- | What it asked for.
+  = Returned a
+  -- | It failed inside the transaction named, which the host has rolled back
+  -- | and closed. The synthesizer goes on outside it, as `transact` returning
+  -- | the diagnostic.
+  | CandidateFailed TransactionToken Diagnostic
+
+-- | Where a request leaves the conversation.
+data Step a
+  = Answered (Response a) Conversation
+  -- | The attempt ended: a failure outside every transaction, a postponement,
+  -- | or a defect, the scheduler acted on as `attemptPendingWith` acts.
+  | Finished Attempt SolverState
+
+-- | The envelope a request standing where the conversation stands carries.
+envelopeOf :: Conversation -> Envelope
+envelopeOf conversation = { conversation: conversation.id, transaction: innermost conversation }
+
+-- | The transaction the conversation stands in, innermost.
+innermost :: Conversation -> Maybe TransactionToken
+innermost conversation = map _.token (Array.head conversation.transactions)
+
+-- | Open an attempt of the job named, which must be one no queue holds.
+-- |
+-- | The conversation is identified afresh, the checkpoint taken with the write
+-- | set and the arena emptied, and a synthesis job's target checked before
+-- | anything is asked. An identifier is never issued twice, so where none is
+-- | left the session stops, the state unchanged.
+openAttempt :: SessionEnv -> PendingId -> SolverState -> OpenResult
+openAttempt session id s0 = case lookupPending s0.tentative.scheduler id of
   Nothing ->
-    Tuple (Halted (PendingAbsent id)) s0
+    OpenStopped (Halted (PendingAbsent id)) s0
   Just p
+    | s0.retained.nextConversation >= top ->
+        OpenStopped (Halted ConversationsExhausted) s0
     | not (Array.elem id (unwakeable s0.tentative.scheduler)) ->
-        Tuple (Halted (PendingStillScheduled id)) s0
-    | otherwise -> attempted p
+        OpenStopped (Halted (PendingStillScheduled id)) s0
+    | otherwise ->
+        let
+          root = s0.tentative { written = Set.empty, arena = emptyArena }
+          conversation =
+            { id: ConversationId s0.retained.nextConversation
+            , session
+            , pending: p
+            , frame: frameOf p
+            , root
+            , state: s0 { tentative = root, retained { nextConversation = s0.retained.nextConversation + 1 } }
+            , transactions: []
+            , nextSerial: 0
+            }
+        in
+          case request (envelopeOf conversation) (checked p) conversation of
+            Answered _ opened -> Opened opened
+            Finished attempt s -> OpenStopped attempt s
   where
-  attempted p = case runAttempt session (withFrame (frameOf p) (checked p *> runner p)) s0 of
-    Tuple (Done _) s ->
-      Tuple Committed (finish s)
-    Tuple (Failed diagnostic) s ->
-      Tuple (Rejected diagnostic) (finish s)
-    Tuple (Broke defect) s ->
-      Tuple (Halted defect) s
-    Tuple (Postponed cause) s -> case admit s.tentative.metas cause of
-      Left reason ->
-        Tuple
-          (Halted (PostponementInadmissible { origin: p.site.origin, job: p.job, reason }))
-          s
-      Right ms ->
-        Tuple (Registered ms) (s { tentative { scheduler = reblock p ms s.tentative.scheduler } })
+  -- A synthesis job's target is checked inside the attempt and before any
+  -- request, so a job that fails it runs no synthesizer and is rolled back.
+  checked p = case p.job of
+    JobSynthesis goal -> checkSynthesisTarget p.id p.site goal
+    JobUnify _ -> pure unit
 
-  finish s = s { tentative { scheduler = complete id s.tentative.scheduler } }
-
-  -- A synthesis job's target is checked inside the attempt and before the
-  -- runner, so a job that fails it runs no synthesizer and is rolled back.
   -- The site the job was created at, and its goal where it has one. Nothing
   -- inside the attempt changes either.
   frameOf p =
@@ -188,9 +270,118 @@ attemptPendingWith session runner id s0 = case lookupPending s0.tentative.schedu
         JobUnify _ -> Nothing
     }
 
-  checked p = case p.job of
-    JobSynthesis goal -> checkSynthesisTarget p.id p.site goal
-    JobUnify _ -> pure unit
+-- | Ask what the action given does, under the conversation's frame.
+-- |
+-- | **A failure inside a transaction is answered, not raised.** The host rolls
+-- | back to the innermost transaction's checkpoint, closes it, and answers the
+-- | request with the failure, so the synthesizer learns that this candidate did
+-- | not hold while it still has control; it sends no request to abandon the
+-- | candidate. A failure outside every transaction ends the attempt, and a
+-- | postponement or a defect ends it wherever it is raised, rolled back past
+-- | every transaction to the attempt's checkpoint.
+-- |
+-- | **The envelope must name where the conversation stands.** A request from
+-- | another conversation, or one naming another innermost transaction than the
+-- | host holds, is a defect of the synthesizer, and ends the attempt.
+request :: forall a. Envelope -> Elab a -> Conversation -> Step a
+request envelope action conversation = case mismatch envelope conversation of
+  Just defect -> finished conversation (Broke defect) conversation.state
+  Nothing -> case runElabIn conversation.session conversation.state (withFrame conversation.frame action) of
+    Tuple (Done a) s ->
+      Answered (Returned a) (conversation { state = s })
+    Tuple (Failed diagnostic) s -> case Array.uncons conversation.transactions of
+      Just { head: top, tail: rest } ->
+        Answered (CandidateFailed top.token diagnostic)
+          (conversation { state = s { tentative = top.checkpoint }, transactions = rest })
+      Nothing -> finished conversation (Failed diagnostic) s
+    Tuple (Postponed cause) s -> finished conversation (Postponed cause) s
+    Tuple (Broke defect) s -> finished conversation (Broke defect) s
+
+-- | Open a transaction inside the one the conversation stands in: a checkpoint
+-- | of the state as it is, under a token never issued before. Where none is
+-- | left the attempt stops rather than wrap around to one a late request may
+-- | still carry.
+beginTransaction :: Envelope -> Conversation -> Step TransactionToken
+beginTransaction envelope conversation = case mismatch envelope conversation of
+  Just defect -> finished conversation (Broke defect) conversation.state
+  Nothing
+    | conversation.nextSerial >= top ->
+        finished conversation (Broke TransactionsExhausted) conversation.state
+    | otherwise ->
+        let
+          token = TransactionToken { conversation: conversation.id, serial: conversation.nextSerial }
+        in
+          Answered (Returned token)
+            ( conversation
+                { transactions = Array.cons { token, checkpoint: conversation.state.tentative } conversation.transactions
+                , nextSerial = conversation.nextSerial + 1
+                }
+            )
+
+-- | Close the innermost transaction, keeping what was done inside it. The
+-- | envelope names it, so a transaction closes only where it is innermost. A
+-- | commit with none open is a defect.
+commitTransaction :: Envelope -> Conversation -> Step Unit
+commitTransaction envelope conversation = case mismatch envelope conversation, Array.uncons conversation.transactions of
+  Just defect, _ -> finished conversation (Broke defect) conversation.state
+  Nothing, Just { tail: rest } -> Answered (Returned unit) (conversation { transactions = rest })
+  Nothing, Nothing ->
+    finished conversation (Broke NoTransactionToCommit) conversation.state
+
+-- | Finish the attempt, running the action given to accept what the synthesizer
+-- | returned.
+-- |
+-- | **Acceptance runs inside the attempt, before it commits**: after checking
+-- | that no transaction and no binder is open, and rolled back with the
+-- | attempt where it fails, postpones, or breaks. Nothing commits that the
+-- | acceptance has not passed.
+finishAttempt :: Envelope -> Elab Unit -> Conversation -> Tuple Attempt SolverState
+finishAttempt envelope accept conversation = case mismatch envelope conversation of
+  Just defect -> ended conversation (Broke defect) conversation.state
+  Nothing
+    | not (Array.null conversation.transactions) ->
+        ended conversation (Broke (TransactionsLeftOpen (map _.token conversation.transactions))) conversation.state
+    | otherwise ->
+        case runElabIn conversation.session conversation.state (withFrame conversation.frame (requireClosed *> accept)) of
+          Tuple outcome s -> ended conversation outcome s
+
+-- Where the envelope disagrees with the conversation.
+mismatch :: Envelope -> Conversation -> Maybe Defect
+mismatch envelope conversation
+  | envelope.conversation /= conversation.id =
+      Just (ConversationMismatch { holding: conversation.id, named: envelope.conversation })
+  | envelope.transaction /= innermost conversation =
+      Just (TransactionMismatch { holding: innermost conversation, named: envelope.transaction })
+  | otherwise = Nothing
+
+finished :: forall a. Conversation -> Outcome Unit -> SolverState -> Step a
+finished conversation outcome s = case ended conversation outcome s of
+  Tuple attempt s' -> Finished attempt s'
+
+-- How an attempt ends, the scheduler acted on.
+--
+-- Every outcome but `Done` rolls back to the attempt's checkpoint, what is
+-- retained being kept. A postponement is admitted in the same step, against
+-- the `Ψ` that rollback left, so no postponement reaches the scheduler
+-- unchecked. A solved or failed job is removed from every table, and a defect
+-- leaves the state as the rollback left it.
+ended :: Conversation -> Outcome Unit -> SolverState -> Tuple Attempt SolverState
+ended conversation outcome s = case outcome of
+  Done _ ->
+    Tuple Committed (complete' (s { tentative { written = Set.empty, arena = emptyArena } }))
+  Failed diagnostic ->
+    Tuple (Rejected diagnostic) (complete' rolled)
+  Broke defect ->
+    Tuple (Halted defect) rolled
+  Postponed cause -> case admit rolled.tentative.metas cause of
+    Left reason ->
+      Tuple (Halted (PostponementInadmissible { origin: p.site.origin, job: p.job, reason })) rolled
+    Right ms ->
+      Tuple (Registered ms) (rolled { tentative { scheduler = reblock p ms rolled.tentative.scheduler } })
+  where
+  p = conversation.pending
+  rolled = { tentative: conversation.root, retained: s.retained }
+  complete' st = st { tentative { scheduler = complete p.id st.tentative.scheduler } }
 
 derive instance Eq Attempt
 derive instance Generic Attempt _

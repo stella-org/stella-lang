@@ -166,8 +166,11 @@ type Tentative =
 -- | Fuel bounds the loop's retries, and fuel restored with the rest would let a
 -- | goal that postpones unconditionally run forever. `nextGeneration` is what a
 -- | handle's generation is drawn from, and one restored would hand a new object
--- | the number a handle to a deleted one carries. `session` is the identity of
--- | the session and never changes. Nothing here is part of what an attempt owns.
+-- | the number a handle to a deleted one carries. `nextConversation` is what a
+-- | conversation's identifier is drawn from, for the same reason: a request
+-- | arriving late from an attempt rolled back must not name the next one.
+-- | `session` is the identity of the session and never changes. Nothing here is
+-- | part of what an attempt owns.
 -- |
 -- | **The split is structural.** A rollback replaces `tentative` and keeps this,
 -- | so which half a field stands in is the whole of what decides its fate, and
@@ -175,6 +178,7 @@ type Tentative =
 type Retained =
   { session :: SessionId
   , nextGeneration :: P.Int
+  , nextConversation :: P.Int
   , fuel :: P.Int
   }
 
@@ -284,7 +288,7 @@ initialState session fuel =
       , open: Map.empty
       , warnings: []
       }
-  , retained: { session, nextGeneration: 0, fuel }
+  , retained: { session, nextGeneration: 0, nextConversation: 0, fuel }
   }
 
 -- | Fail with the diagnostic given: the mechanism's own way of rejecting a
