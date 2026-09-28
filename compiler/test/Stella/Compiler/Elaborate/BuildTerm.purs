@@ -15,6 +15,7 @@ import Prim as P
 import Stella.Compiler.Elaborate.Build (openForall, rootScope)
 import Stella.Compiler.Elaborate.BuildScope (usableTermIn)
 import Stella.Compiler.Elaborate.BuildTerm (globalRef, literal, localVariable)
+import Stella.Compiler.Elaborate.Constructors (emptyConstructorEnv)
 import Stella.Compiler.Elaborate.Catalog (EntrySort(..), catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
@@ -82,6 +83,7 @@ session =
       , entry "free" [] (listOf (XVar a))
       ]
   , kinding
+  , constructors: emptyConstructorEnv
   }
   where
   entry name kindVars body = { name: global name, sort: ValueEntry, scheme: { kindVars, body }, attributes: [] }

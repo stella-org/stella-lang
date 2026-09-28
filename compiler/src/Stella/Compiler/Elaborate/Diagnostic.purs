@@ -32,7 +32,7 @@ import Stella.Compiler.Elaborate.Term (TermMetaVar)
 import Stella.Compiler.Elaborate.Type (MetaVar, XType)
 import Stella.Compiler.Elaborate.Row (XRowError)
 import Stella.Compiler.Elaborate.Unify (UnifyError)
-import Stella.Compiler.TypedCore (Ident, JoinName, Qualified, RowKey, TyVar)
+import Stella.Compiler.TypedCore (Ident, JoinName, Qualified, RowKey, TyName, TyVar)
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Generic.Rep (class Generic)
 import Data.Set (Set)
@@ -126,6 +126,10 @@ data Defect
   -- | Every builder checks what it is given against the scope, so this is an
   -- | invariant of the host broken.
   | JoinsOutOfScope (Set JoinName)
+  -- | A name the catalog calls a constructor and the constructor table does not
+  -- | hold. The two are assembled from one signature, so this is an invariant of
+  -- | the host broken.
+  | ConstructorTableMismatch (Qualified Ident)
   -- | A kernel operation that reads where it stands, run with no frame: outside
   -- | any attempt. The host called it where it had no site to give.
   | NoFrame
@@ -205,6 +209,38 @@ data BuildError
   | JoinOutOfScope Handle
   -- | A jump with another number of arguments than its join point takes.
   | JumpArity Handle P.Int P.Int
+  -- | A tree node asked for in a scope that stands in no decision tree.
+  | NotATreeScope Handle
+  -- | An occurrence read in the tree of another `case`.
+  | OccurrenceOfAnotherCase Handle
+  -- | A tree used in the tree of another `case`.
+  | TreeOfAnotherCase Handle
+  -- | A name the constructor table does not hold, and the catalog does not call a
+  -- | constructor.
+  | UnknownConstructor (Qualified Ident)
+  -- | A switch over constructors of more than one data type, or of another data
+  -- | type than its occurrence is claimed at.
+  | NotAConstructorOf (Qualified TyName) (Qualified Ident)
+  -- | An occurrence switched on by constructor whose type no solution makes the
+  -- | data type they build.
+  | NotOfDataType Handle
+  -- | An occurrence a field is read from whose type no solution makes a record.
+  | NotARecord Handle
+  -- | An occurrence switched on by key whose type no solution makes a variant.
+  | NotAVariant Handle
+  -- | A key the occurrence's row does not carry and no solution can add.
+  | FieldAbsent Handle RowKey
+  -- | A key the occurrence's row carries with a payload that is not a type.
+  | PayloadNotAType Handle RowKey
+  -- | A switch with one constructor, literal, or key twice.
+  | DuplicateBranch Handle
+  -- | A switch closed with another number of branches than it was opened with.
+  | BranchCount Handle P.Int P.Int
+  -- | A switch closed with a default it was not opened with, or without one it
+  -- | was.
+  | DefaultMismatch Handle
+  -- | A `case` closed with no result type over a tree that reaches no leaf.
+  | NoLeaf Handle
   -- | A binder closed in a scope other than the one it was opened in, or by the
   -- | operation that closes another sort of binder.
   | BinderMisuse Handle

@@ -56,6 +56,8 @@ module Stella.Compiler.Elaborate.Elab
   , resolveScope
   , resolveBinder
   , resolveJoin
+  , resolveTree
+  , resolveOccurrence
   , freshScopeId
   , freshBinderName
   , freshIdent
@@ -73,12 +75,13 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Catalog (ModuleCatalog, catalogOf)
+import Stella.Compiler.Elaborate.Constructors (ConstructorEnv, emptyConstructorEnv)
 import Stella.Compiler.Elaborate.Context (XContext)
 import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..), MalformedGoal(..))
 import Stella.Compiler.Elaborate.Kind (XKind)
 import Stella.Compiler.Elaborate.Kinding (KindingEnv, emptyKindingEnv)
-import Stella.Compiler.Elaborate.Handle (Arena, ExprObject, GoalObject, Handle, HandleClass(..), HandleError(..), HandleObject(..), BinderObject, JoinObject, ScopeId(..), ScopeObject, SessionId, TypeObject, emptyArena, issueIn, resolveIn)
+import Stella.Compiler.Elaborate.Handle (Arena, ExprObject, GoalObject, Handle, HandleClass(..), HandleError(..), HandleObject(..), BinderObject, JoinObject, OccurrenceObject, ScopeId(..), ScopeObject, SessionId, TreeObject, TypeObject, emptyArena, issueIn, resolveIn)
 import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce, recheck)
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, GoalRecord, Job(..), PendingId, Site, SynthRef, goalOf, newGoal)
 import Stella.Compiler.Elaborate.Row (XRowError)
@@ -211,7 +214,7 @@ newtype Elab a = Elab (ElabEnv -> SolverState -> Tuple (Outcome a) SolverState)
 -- | What an `Elab` action reads and never changes.
 -- |
 -- | `session` is fixed for the whole session, assembled before the first job:
--- | the value catalog and the type-level environment. `frame` is the site and
+-- | the value catalog, the type-level environment, and the constructor table. `frame` is the site and
 -- | goal of the attempt running, which the runner sets and nothing inside the
 -- | attempt changes; an action run outside any attempt has none.
 type ElabEnv =
@@ -222,6 +225,7 @@ type ElabEnv =
 type SessionEnv =
   { catalog :: ModuleCatalog
   , kinding :: KindingEnv
+  , constructors :: ConstructorEnv
   }
 
 -- | Where the running attempt stands. An equality job has a site and no goal.
@@ -231,7 +235,7 @@ type Frame =
   }
 
 emptySessionEnv :: SessionEnv
-emptySessionEnv = { catalog: catalogOf [], kinding: emptyKindingEnv }
+emptySessionEnv = { catalog: catalogOf [], kinding: emptyKindingEnv, constructors: emptyConstructorEnv }
 
 -- | Run an action outside any attempt, reading the session given.
 runElabIn :: forall a. SessionEnv -> SolverState -> Elab a -> Tuple (Outcome a) SolverState
@@ -387,6 +391,16 @@ resolveJoin :: Handle -> Elab JoinObject
 resolveJoin handle = resolveObject JoinClass handle >>= case _ of
   JoinObject join -> pure join
   _ -> break (InvalidHandle handle (HandleClassMismatch JoinClass))
+
+resolveTree :: Handle -> Elab TreeObject
+resolveTree handle = resolveObject TreeClass handle >>= case _ of
+  TreeObject tree -> pure tree
+  _ -> break (InvalidHandle handle (HandleClassMismatch TreeClass))
+
+resolveOccurrence :: Handle -> Elab OccurrenceObject
+resolveOccurrence handle = resolveObject OccurrenceClass handle >>= case _ of
+  OccurrenceObject occurrence -> pure occurrence
+  _ -> break (InvalidHandle handle (HandleClassMismatch OccurrenceClass))
 
 -- | The identity of a build scope opened in this attempt. The root is 0.
 freshScopeId :: Elab ScopeId

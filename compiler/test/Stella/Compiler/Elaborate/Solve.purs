@@ -15,6 +15,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Build (emptyRow, extendRow, openConstraint, openForall, rootScope, typeConstructor, typeVariable)
+import Stella.Compiler.Elaborate.Constructors (emptyConstructorEnv)
 import Stella.Compiler.Elaborate.Catalog (catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindTyVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
@@ -60,7 +61,7 @@ kinding =
   }
 
 session :: SessionEnv
-session = { catalog: catalogOf [], kinding }
+session = { catalog: catalogOf [], kinding, constructors: emptyConstructorEnv }
 
 resolver :: Qualified Ident
 resolver = Qualified (ModuleName "Typeclass") (Ident "resolve")

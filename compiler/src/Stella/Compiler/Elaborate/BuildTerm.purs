@@ -183,6 +183,9 @@ closeLambda scopeHandle binderHandle bodyHandle rowHandle = do
     LetBinder _ -> misuse
     LetRecGroup _ -> misuse
     JoinBinder _ -> misuse
+    CaseBinder _ -> misuse
+    BindBinder _ -> misuse
+    SwitchBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -223,6 +226,9 @@ closeTypeAbs scopeHandle binderHandle bodyHandle = do
     LetBinder _ -> misuse
     LetRecGroup _ -> misuse
     JoinBinder _ -> misuse
+    CaseBinder _ -> misuse
+    BindBinder _ -> misuse
+    SwitchBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -258,6 +264,9 @@ closeConstraintAbs scopeHandle binderHandle bodyHandle = do
     LetBinder _ -> misuse
     LetRecGroup _ -> misuse
     JoinBinder _ -> misuse
+    CaseBinder _ -> misuse
+    BindBinder _ -> misuse
+    SwitchBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -298,6 +307,9 @@ closeLet scopeHandle binderHandle bodyHandle = do
     ConstraintAbsBinder _ -> misuse
     LetRecGroup _ -> misuse
     JoinBinder _ -> misuse
+    CaseBinder _ -> misuse
+    BindBinder _ -> misuse
+    SwitchBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -345,6 +357,9 @@ closeLetRec scopeHandle binderHandle rhsHandles bodyHandle = do
     ConstraintAbsBinder _ -> misuse
     LetBinder _ -> misuse
     JoinBinder _ -> misuse
+    CaseBinder _ -> misuse
+    BindBinder _ -> misuse
+    SwitchBinder _ -> misuse
   where
   misuse :: forall a. Elab a
   misuse = rejected (BinderMisuse binderHandle)
@@ -413,8 +428,8 @@ openJoin scopeHandle hint declared resultHandle = do
     signature = { params: types, result }
     joins = Map.insert name signature scope.joins
   hub <- inheritingChild scope scope.context
-  definition <- childWith hub (Array.foldl (\ctx p -> bindVar ctx p.name p.type) scope.context params) joins
-  continuation <- childWith hub scope.context joins
+  definition <- childWith hub (Array.foldl (\ctx p -> bindVar ctx p.name p.type) scope.context params) joins Nothing
+  continuation <- childWith hub scope.context joins Nothing
   binder <- issue
     ( BinderObject
         ( JoinBinder
@@ -452,6 +467,9 @@ closeJoin scopeHandle binderHandle definitionHandle bodyHandle = do
     ConstraintAbsBinder _ -> misuse
     LetBinder _ -> misuse
     LetRecGroup _ -> misuse
+    CaseBinder _ -> misuse
+    BindBinder _ -> misuse
+    SwitchBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 

@@ -13,6 +13,7 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.Elaborate.Constructors (emptyConstructorEnv)
 import Stella.Compiler.Elaborate.Catalog (EntrySort(..), catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, assume, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
@@ -80,6 +81,7 @@ session =
         }
       ]
   , kinding
+  , constructors: emptyConstructorEnv
   }
 
 x :: Ident

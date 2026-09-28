@@ -31,6 +31,9 @@ module Stella.Compiler.Elaborate.Handle
   , ScopeObject
   , JoinSignature
   , JoinObject
+  , TreeObject
+  , OccurrenceObject
+  , SwitchBranches(..)
   , BinderObject(..)
   , ScopeId(..)
   , HandleObject(..)
@@ -50,9 +53,9 @@ import Stella.Compiler.Elaborate.Context (XContext)
 import Stella.Compiler.Elaborate.Kind (XKind)
 import Stella.Compiler.Elaborate.Kinding (KindEvidence, KindingScope)
 import Stella.Compiler.Elaborate.Pending (GoalRecord, PendingId)
-import Stella.Compiler.Elaborate.Term (XExpr)
+import Stella.Compiler.Elaborate.Term (XDecisionTree, XExpr)
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint, XType)
-import Stella.Compiler.TypedCore (Ident, JoinName, TyVar)
+import Stella.Compiler.TypedCore (Ident, JoinName, Literal, Occurrence, Qualified, RowKey, TyVar)
 import Data.Either (Either(..))
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
@@ -74,6 +77,8 @@ data HandleClass
   | ScopeClass
   | BinderClass
   | JoinClass
+  | TreeClass
+  | OccurrenceClass
 
 newtype Handle = Handle
   { session :: SessionId
@@ -104,12 +109,44 @@ type TypeObject =
 -- | the scopes it was opened inside; `context` is what it binds, which is what a
 -- | type built in it is kinded under; and `joins` is `Δ`, the join points a term
 -- | built in it may jump to, each with its parameters' types and its result.
+-- | `tree` is the `case` whose decision tree the scope stands in, where it stands
+-- | in one: the scope a tree node is built in, and the only one an occurrence of
+-- | that `case` is read in.
 type ScopeObject =
   { id :: ScopeId
   , ancestors :: Set ScopeId
   , context :: XContext
   , joins :: Map JoinName JoinSignature
+  , tree :: Maybe ScopeId
   }
+
+-- | A decision tree, with the type the first leaf it reaches is claimed at, where
+-- | it reaches one, the `case` it belongs to, named by the scope its tree is
+-- | built in, and the build scope it was built in. Its occurrences are paths
+-- | from that `case`'s scrutinees, so it means nothing in another's tree.
+type TreeObject =
+  { tree :: XDecisionTree Unit
+  , inferred :: Maybe XType
+  , case :: ScopeId
+  , builtIn :: Maybe ScopeId
+  }
+
+-- | An occurrence of a `case`: its path from a scrutinee, the type it stands at
+-- | there, the `case` it belongs to, named by the scope its tree is built in, and
+-- | the build scope of the branch that established it.
+type OccurrenceObject =
+  { path :: Occurrence
+  , type :: XType
+  , case :: ScopeId
+  , builtIn :: Maybe ScopeId
+  }
+
+-- | The branches a switch was opened with, each with the scope its tree is built
+-- | in.
+data SwitchBranches
+  = CtorBranches (P.Array { ctor :: Qualified Ident, scope :: ScopeId })
+  | LitBranches (P.Array { lit :: Literal, scope :: ScopeId })
+  | KeyBranches (P.Array { key :: RowKey, scope :: ScopeId })
 
 -- | What a join point takes and gives.
 type JoinSignature =
@@ -176,6 +213,29 @@ data BinderObject
       , parent :: ScopeId
       , body :: ScopeId
       }
+  -- | A `case`, its scrutinees built in the parent. Its body is the scope its
+  -- | decision tree is built in.
+  | CaseBinder
+      { scrutinees :: P.Array (XExpr Unit)
+      , parent :: ScopeId
+      , body :: ScopeId
+      }
+  -- | A `bind name = occurrence in`.
+  | BindBinder
+      { name :: Ident
+      , occurrence :: Occurrence
+      , parent :: ScopeId
+      , body :: ScopeId
+      }
+  -- | A switch on an occurrence. Its body scope holds one scope per branch, and
+  -- | one for the default where it has one.
+  | SwitchBinder
+      { occurrence :: Occurrence
+      , branches :: SwitchBranches
+      , fallback :: Maybe ScopeId
+      , parent :: ScopeId
+      , body :: ScopeId
+      }
   -- | A `letjoin`. Its body scope holds two scopes: the definition's, binding
   -- | the parameters and the join point, and the continuation's, binding the
   -- | join point alone.
@@ -216,6 +276,8 @@ data HandleObject
   | ScopeObject ScopeObject
   | BinderObject BinderObject
   | JoinObject JoinObject
+  | TreeObject TreeObject
+  | OccurrenceObject OccurrenceObject
 
 type Arena =
   { slots :: Map P.Int { generation :: P.Int, object :: HandleObject }
@@ -248,6 +310,8 @@ objectClass = case _ of
   ScopeObject _ -> ScopeClass
   BinderObject _ -> BinderClass
   JoinObject _ -> JoinClass
+  TreeObject _ -> TreeClass
+  OccurrenceObject _ -> OccurrenceClass
 
 -- | Place an object in the next slot, under the generation given. The caller
 -- | supplies a generation no handle has carried before.
@@ -292,6 +356,12 @@ derive newtype instance Show Handle
 derive instance Eq ScopeId
 derive instance Ord ScopeId
 derive newtype instance Show ScopeId
+
+derive instance Eq SwitchBranches
+derive instance Generic SwitchBranches _
+
+instance Show SwitchBranches where
+  show x = genericShow x
 
 derive instance Eq BinderObject
 derive instance Generic BinderObject _

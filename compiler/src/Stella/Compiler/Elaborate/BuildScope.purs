@@ -23,6 +23,16 @@ module Stella.Compiler.Elaborate.BuildScope
   , mapChildren
   , foldChildren
   , inheritingChild
+  , treeChild
+  , caseRoot
+  , treeScopeOf
+  , usableOccurrenceIn
+  , usableTreeIn
+  , treeOfCase
+  , issueTree
+  , appliedShape
+  , recordShape
+  , variantShape
   , abstractedChild
   , childWith
   , closedOverParts
@@ -34,6 +44,8 @@ module Stella.Compiler.Elaborate.BuildScope
   , forallShape
   , constrainedShape
   , instantiatedAt
+  , substitutedAt
+  , instantiateConstructorFields
   ) where
 
 import Prelude
@@ -42,24 +54,25 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..))
+import Stella.Compiler.Elaborate.Constructors (ConstructorShape)
 import Stella.Compiler.Elaborate.Context (XContext)
-import Stella.Compiler.Elaborate.Elab (Elab, Release(..), askEnv, break, currentMetas, freshBinderName, freshScopeId, issue, postpone, release, require, resolveExpr, resolveType)
-import Stella.Compiler.Elaborate.Handle (ExprObject, Handle, HandleObject(..), JoinSignature, ScopeId, ScopeObject, TypeObject)
+import Stella.Compiler.Elaborate.Elab (Elab, Release(..), askEnv, break, currentMetas, freshBinderName, freshScopeId, issue, postpone, release, require, resolveExpr, resolveOccurrence, resolveScope, resolveTree, resolveType)
+import Stella.Compiler.Elaborate.Handle (ExprObject, Handle, HandleObject(..), JoinSignature, OccurrenceObject, ScopeId, ScopeObject, TreeObject, TypeObject)
 import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (KindEvidence, KindingScope, checkConstraint, checkKind, quantifiable, settledIn, synthKind)
 import Stella.Compiler.Elaborate.Pending (Site)
-import Stella.Compiler.Elaborate.Term (XExpr, freeVarsOf)
+import Stella.Compiler.Elaborate.Term (XDecisionTree, XExpr, freeVarsOf)
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..), freeRigids, metasOf)
 import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, lookupMeta, substitute, substituteKind)
 import Stella.Compiler.Elaborate.View (ConstraintView(..), KindView(..))
-import Stella.Compiler.TypedCore (Ident, JoinName, KindVar, Qualified, RowElemKind(..), TyVar(..))
-import Stella.Compiler.TypedCore.Prim (functionTy)
+import Stella.Compiler.TypedCore (Ident, JoinName, KindVar, Qualified, RowElemKind(..), TyName, TyVar(..))
+import Stella.Compiler.TypedCore.Prim (functionTy, recordTy, variantTy)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (foldMap, for_)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), isJust)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Traversable (traverse)
@@ -273,24 +286,38 @@ foldChildren f = case _ of
     XRowRegionEntry var cells -> f var <> f cells
 
 -- | A child of the scope for a binder's body, with the context given, whose
--- | terms may jump to the join points the scope's may: the body of a `let`, a
--- | `letrec`, a branch, a `letjoin`, and a type's binder. Drawn from the
+-- | terms may jump to the join points the scope's may, and which stands in no
+-- | decision tree: the body of a `let`, a `letrec`, a `letjoin`, and a type's
+-- | binder. Drawn from the
 -- | attempt's supply of scopes.
 inheritingChild :: ScopeObject -> XContext -> Elab ScopeObject
-inheritingChild scope context = childWith scope context scope.joins
+inheritingChild scope context = childWith scope context scope.joins Nothing
 
 -- | A child of the scope for the body of an abstraction — `λ`, `Λ(a)`,
 -- | `Λ(_ : C)` — which jumps to no join point outside it: a join point is a
 -- | continuation of the evaluation the abstraction delays, and a body run
 -- | later has no such continuation to jump to.
 abstractedChild :: ScopeObject -> XContext -> Elab ScopeObject
-abstractedChild scope context = childWith scope context Map.empty
+abstractedChild scope context = childWith scope context Map.empty Nothing
 
--- | A child of the scope with the context and the join points given.
-childWith :: ScopeObject -> XContext -> Map JoinName JoinSignature -> Elab ScopeObject
-childWith scope context joins = do
+-- | A child of the scope within the decision tree the scope stands in, with the
+-- | context given: the body of a `bind`, a switch, or one of its branches.
+treeChild :: ScopeObject -> XContext -> Elab ScopeObject
+treeChild scope context = childWith scope context scope.joins scope.tree
+
+-- | The scope a `case`'s decision tree is built in, a child of the scope: it
+-- | names the `case`, and inherits its join points.
+caseRoot :: ScopeObject -> Elab ScopeObject
+caseRoot scope = do
   id <- freshScopeId
-  pure { id, ancestors: Set.insert scope.id scope.ancestors, context, joins }
+  pure { id, ancestors: Set.insert scope.id scope.ancestors, context: scope.context, joins: scope.joins, tree: Just id }
+
+-- | A child of the scope with the context, the join points, and the decision tree
+-- | given.
+childWith :: ScopeObject -> XContext -> Map JoinName JoinSignature -> Maybe ScopeId -> Elab ScopeObject
+childWith scope context joins tree = do
+  id <- freshScopeId
+  pure { id, ancestors: Set.insert scope.id scope.ancestors, context, joins, tree }
 
 -- | Whether what was built in the scope named is visible under a binder closed
 -- | in the scope given: built in the binder's own body scope, in the scope, or
@@ -344,47 +371,87 @@ data Shape a
   -- | It is not there, and no solution can put it there.
   | Otherwise
 
--- | A function type's three parts, read off the zonked type.
+-- | A type constructor applied to all its parameters, read off the zonked type:
+-- | the kinds it is written at and the arguments it is applied to.
 -- |
--- | A function type is an application spine headed by `Function`. **A spine
--- | headed by an unsolved metavariable may become one only where the two are
--- | compatible with `Function` partially applied**: at most three arguments, and
--- | the metavariable's kind that of `Function` with the arguments the spine does
--- | not supply already given — `?f : Type -> Type` applied to one argument can
--- | be solved to `Function τ ρ`, and `?f : Row Type -> Type` applied to one can
--- | be solved to nothing that makes it an arrow. Only a compatible head is waited
--- | on; waiting on another would register a job under a metavariable whose
--- | solution could never give it the shape. Once the head is `Function`, what
--- | its arguments hold is not waited on.
-functionShape :: MetaContext -> XType -> Shape { argument :: XType, row :: XType, result :: XType }
-functionShape metas ty = case spine (substitute metas ty) [] of
-  { head: XCon name [], args: [ argument, row, result ] }
-    | name == functionTy -> Seen { argument, row, result }
+-- | **A spine headed by an unsolved metavariable may become one only where the
+-- | two are compatible with the constructor partially applied**: no more
+-- | arguments than it has parameters, and the metavariable's kind that of the
+-- | constructor with the arguments the spine does not supply already given —
+-- | `?f : Type -> Type` applied to one argument can be solved to
+-- | `Function τ ρ`, and `?f : Row Type -> Type` applied to one can be solved to
+-- | nothing that makes an arrow. Only a compatible head is waited on; waiting on
+-- | another would register a job under a metavariable whose solution could never
+-- | give it the shape. Once the head is the constructor, what its arguments hold
+-- | is not waited on.
+-- |
+-- | The parameters' kinds are given. A kind variable among them stands for one
+-- | kind throughout, so the head's kind must give it the same one wherever it
+-- | occurs; a kind metavariable left in the head's kind rules nothing out.
+appliedShape
+  :: MetaContext
+  -> Qualified TyName
+  -> P.Array XKind
+  -> XType
+  -> Shape { kinds :: P.Array XKind, args :: P.Array XType }
+appliedShape metas name params ty = case spine (substitute metas ty) [] of
+  { head: XCon n kinds, args }
+    | n == name && Array.length args == Array.length params -> Seen { kinds, args }
   { head: XMeta m, args } -> case lookupMeta metas m of
     Just (Unsolved info)
-      | Array.length args <= 3
-      , compatible (substituteKind metas info.kind) (dropArrows (3 - Array.length args) functionKind) ->
+      | Array.length args <= Array.length params
+      , isJust (match Map.empty (substituteKind metas info.kind) (arrows (Array.drop (Array.length params - Array.length args) params))) ->
           Blocked (Set.singleton m)
     _ -> Otherwise
   _ -> Otherwise
   where
-  -- `Function : Type -> Row Effect -> Type -> Type`, as `Prim` declares it.
-  functionKind = XKFun XKType (XKFun (XKRow RowEffect) (XKFun XKType XKType))
+  arrows = Array.foldr XKFun XKType
 
-  dropArrows i k = case i, k of
-    0, _ -> k
-    _, XKFun _ rest -> dropArrows (i - 1) rest
-    _, _ -> k
+  -- The head's kind against the one expected, each kind variable of the
+  -- expected bound to the kind it first meets and held to it after.
+  match bound actual expected = case actual, expected of
+    XKMeta _, _ -> Just bound
+    _, XKVar v -> case Map.lookup v bound of
+      Nothing -> Just (Map.insert v actual bound)
+      Just earlier -> if agree earlier actual then Just bound else Nothing
+    XKFun a1 r1, XKFun a2 r2 -> match bound a1 a2 >>= \b -> match b r1 r2
+    _, _ -> if actual == expected then Just bound else Nothing
 
-  -- A kind metavariable left in the head's kind rules nothing out.
-  compatible actual expected = case actual, expected of
+  -- Two kinds a kind metavariable in either may still make one.
+  agree k1 k2 = case k1, k2 of
     XKMeta _, _ -> true
-    XKFun a1 r1, XKFun a2 r2 -> compatible a1 a2 && compatible r1 r2
-    _, _ -> actual == expected
+    _, XKMeta _ -> true
+    XKFun a1 r1, XKFun a2 r2 -> agree a1 a2 && agree r1 r2
+    _, _ -> k1 == k2
 
   spine t args = case t of
     XApp f a -> spine f (Array.cons a args)
     head -> { head, args }
+
+-- | A function type's three parts, read off the zonked type: `Function`, as
+-- | `Prim` declares it, at `Type -> Row Effect -> Type -> Type`.
+functionShape :: MetaContext -> XType -> Shape { argument :: XType, row :: XType, result :: XType }
+functionShape metas ty =
+  case appliedShape metas functionTy [ XKType, XKRow RowEffect, XKType ] ty of
+    Seen { args: [ argument, row, result ] } -> Seen { argument, row, result }
+    Seen _ -> Otherwise
+    Blocked ms -> Blocked ms
+    Otherwise -> Otherwise
+
+-- | A record's row, read off the zonked type.
+recordShape :: MetaContext -> XType -> Shape XType
+recordShape metas = rowOf <<< appliedShape metas recordTy [ XKRow RowType ]
+
+-- | A variant's row, read off the zonked type.
+variantShape :: MetaContext -> XType -> Shape XType
+variantShape metas = rowOf <<< appliedShape metas variantTy [ XKRow RowType ]
+
+rowOf :: Shape { kinds :: P.Array XKind, args :: P.Array XType } -> Shape XType
+rowOf = case _ of
+  Seen { args: [ row ] } -> Seen row
+  Seen _ -> Otherwise
+  Blocked ms -> Blocked ms
+  Otherwise -> Otherwise
 
 -- | A `forall`'s binder, kind, and body, read off the zonked type. Only an
 -- | unsolved metavariable at the root is waited on.
@@ -411,20 +478,8 @@ blockedOn metas m = case lookupMeta metas m of
   Nothing -> Otherwise
 
 -- | `body[a := argument]` in the scope, for `forall (a : kind). body` and an
--- | argument the scope may use, zonked.
--- |
--- | The argument must stand at `kind`. The substitution is capture-avoiding: a
--- | binder of the body that the argument mentions free is renamed, to a name
--- | drawn from the host's supply of fresh binder names that neither side, nor
--- | the scope, mentions.
--- |
--- | **An unsolved metavariable that could come to mention a variable the
--- | substitution treats specially postpones the instantiation until it is
--- | solved**: one in the body whose scope holds the binder or a binder being
--- | renamed, and one in the argument whose scope holds a binder of the body. A
--- | substitution stops at an unsolved metavariable, so the first's later solution
--- | could mention a binder the result no longer has, and the second's could be
--- | captured by a binder that was not renamed.
+-- | argument the scope may use, zonked: the argument must stand at `kind`, and
+-- | the substitution is the one `substitutedAt` makes.
 instantiatedAt :: ScopeObject -> TyVar -> XKind -> XType -> XType -> Elab XType
 instantiatedAt scope a kind body argument = do
   env <- askEnv
@@ -432,21 +487,56 @@ instantiatedAt scope a kind body argument = do
   case checkKind env.session.kinding (kindingScopeOf scope) metas kind argument of
     Left fault -> rejected (IllKinded fault)
     Right _ -> pure unit
+  substitutedAt scope (Map.singleton a argument) body
+
+-- | `body[ā := σ̄]` in the scope, simultaneously, for arguments the scope may
+-- | use, zonked.
+-- |
+-- | The substitution is capture-avoiding: a binder of the body that an argument
+-- | mentions free is renamed, to a name drawn from the host's supply of fresh
+-- | binder names that neither side, nor the scope, mentions. Below a binder named
+-- | like a substituted variable, that variable is not substituted.
+-- |
+-- | **An unsolved metavariable that could come to mention a variable the
+-- | substitution treats specially postpones the substitution until it is
+-- | solved**: one in the body whose scope holds a substituted variable or a
+-- | binder being renamed, and one in an argument whose scope holds a binder of
+-- | the body. A substitution stops at an unsolved metavariable, so the first's
+-- | later solution could mention a variable the result no longer has, and the
+-- | second's could be captured by a binder that was not renamed.
+substitutedAt :: ScopeObject -> Map TyVar XType -> XType -> Elab XType
+substitutedAt scope substitution body = do
+  metas <- currentMetas
   let
+    variables = Map.keys substitution
+    arguments = Array.fromFoldable (Map.values substitution)
+    argumentsFree = foldMap freeRigids arguments
     binders = bindersOf body
-    capturing = Set.intersection binders (freeRigids argument)
+    capturing = Set.intersection binders argumentsFree
     reaching =
-      Set.filter (mayMention metas (Set.insert a capturing)) (metasOf body)
-        <> Set.filter (mayMention metas binders) (metasOf argument)
+      Set.filter (mayMention metas (Set.union variables capturing)) (metasOf body)
+        <> Set.filter (mayMention metas binders) (foldMap metasOf arguments)
   unless (Set.isEmpty reaching) (postpone reaching)
   let
-    -- A new name must capture nothing the renamed binder's body, the argument,
+    -- A new name must capture nothing the renamed binder's body, an argument,
     -- or the scope mentions.
-    taken = Set.unions [ Map.keys scope.context.tyVars, binders, freeRigids body, freeRigids argument, Set.singleton a ]
+    taken = Set.unions [ Map.keys scope.context.tyVars, binders, freeRigids body, argumentsFree, variables ]
   renames <- traverse (renamed taken) (Set.toUnfoldable capturing :: P.Array TyVar)
-  pure (substituteTyVar a argument (Map.fromFoldable renames) body)
+  pure (substituteTyVars substitution (Map.fromFoldable renames) body)
   where
   renamed taken b@(TyVar hint) = Tuple b <$> freshBinderName taken hint
+
+-- | A constructor's fields where its data type stands at the kinds and the
+-- | arguments given: the kind variables first, then the type parameters, the
+-- | order the Core type checker instantiates them in. Every field reached by an
+-- | occurrence is instantiated here.
+instantiateConstructorFields :: ScopeObject -> ConstructorShape -> P.Array XKind -> P.Array XType -> Elab (P.Array XType)
+instantiateConstructorFields scope shape kinds args =
+  traverse
+    ( substitutedAt scope (Map.fromFoldable (Array.zip (map _.name shape.params) args))
+        <<< substituteKindVars (Map.fromFoldable (Array.zip shape.kindVars kinds))
+    )
+    shape.fields
 
 -- | Whether an unsolved metavariable's scope holds any of the variables given.
 mayMention :: MetaContext -> Set TyVar -> MetaVar -> P.Boolean
@@ -454,30 +544,84 @@ mayMention metas vars m = case lookupMeta metas m of
   Just (Unsolved info) -> not (Set.isEmpty (Set.intersection info.scope.types vars))
   _ -> false
 
--- | `τ[a := σ]`, with each binder of `τ` the map names renamed to the fresh name
--- | it gives.
+-- | `τ[ā := σ̄]`, simultaneously, with each binder of `τ` the map of renames names
+-- | renamed to the fresh name it gives.
 -- |
 -- | Renaming by name is sound because every new name is fresh: two binders
--- | sharing a name get one new name, and the inner still shadows the outer. Below
--- | a binder named `a` nothing is substituted, and only the renaming continues.
-substituteTyVar :: TyVar -> XType -> Map TyVar TyVar -> XType -> XType
-substituteTyVar a argument renames = go false Map.empty
+-- | sharing a name get one new name, and the inner still shadows the outer.
+-- | **A binder is handled as two things at once.** Below it, the variable it
+-- | shadows is no longer substituted; and where it would capture a variable of
+-- | another argument that is still substituted below it, it is renamed. A binder
+-- | named like one substituted variable can capture what another is replaced
+-- | by — `forall b. a` with `a := b, b := Int` — so neither may wait for the
+-- | other.
+substituteTyVars :: Map TyVar XType -> Map TyVar TyVar -> XType -> XType
+substituteTyVars substitution renames = go substitution Map.empty
   where
-  go shadowed inScope = case _ of
-    XVar v
-      | not shadowed && v == a -> argument
-      | otherwise -> case Map.lookup v inScope of
-          Just v' -> XVar v'
-          Nothing -> XVar v
-    XForall b k body
-      | b == a -> XForall b k (go true (Map.delete b inScope) body)
-      | otherwise -> case Map.lookup b renames of
-          Just b' -> XForall b' k (go shadowed (Map.insert b b' inScope) body)
-          Nothing -> XForall b k (go shadowed (Map.delete b inScope) body)
-    other -> mapChildren (go shadowed inScope) other
+  go active inScope = case _ of
+    XVar v -> case Map.lookup v active of
+      Just argument -> argument
+      Nothing -> case Map.lookup v inScope of
+        Just v' -> XVar v'
+        Nothing -> XVar v
+    XForall b k body ->
+      let
+        below = Map.delete b active
+      in
+        case Map.lookup b renames of
+          Just b' -> XForall b' k (go below (Map.insert b b' inScope) body)
+          Nothing -> XForall b k (go below (Map.delete b inScope) body)
+    other -> mapChildren (go active inScope) other
 
 -- | The type variables a `forall` inside the type binds.
 bindersOf :: XType -> Set TyVar
 bindersOf = case _ of
   XForall b _ body -> Set.insert b (bindersOf body)
   other -> foldChildren bindersOf other
+
+-- | A scope a tree node is built in: one standing in a decision tree, and the
+-- | `case` whose tree it is.
+treeScopeOf :: Handle -> Elab { scope :: ScopeObject, caseId :: ScopeId }
+treeScopeOf scopeHandle = do
+  scope <- resolveScope scopeHandle
+  case scope.tree of
+    Just caseId -> pure { scope, caseId }
+    Nothing -> rejected (NotATreeScope scopeHandle)
+
+-- | An occurrence the scope may read: established by a branch the scope stands
+-- | under, of the `case` whose tree the scope stands in. An occurrence of an
+-- | enclosing `case` is not one: its path is read from another `case`'s
+-- | scrutinees.
+usableOccurrenceIn :: ScopeObject -> Handle -> Elab OccurrenceObject
+usableOccurrenceIn scope handle = do
+  occurrence <- resolveOccurrence handle
+  case occurrence.builtIn of
+    Just id | id == scope.id || Set.member id scope.ancestors -> pure unit
+    _ -> rejected (ScopeViolation handle)
+  unless (scope.tree == Just occurrence.case) (rejected (OccurrenceOfAnotherCase handle))
+  pure occurrence
+
+-- | A tree the scope may use: one of the `case` named, built in the scope or in
+-- | one of its ancestors.
+usableTreeIn :: ScopeObject -> ScopeId -> Handle -> Elab TreeObject
+usableTreeIn scope caseId handle = do
+  tree <- treeOfCase caseId handle
+  case tree.builtIn of
+    Just id | id == scope.id || Set.member id scope.ancestors -> pure tree
+    _ -> rejected (ScopeViolation handle)
+
+-- | A tree of the `case` named. A tree of another `case` — an enclosing one's,
+-- | visible from an inner `case` built under it — reads its occurrences from
+-- | other scrutinees.
+treeOfCase :: ScopeId -> Handle -> Elab TreeObject
+treeOfCase caseId handle = do
+  tree <- resolveTree handle
+  unless (tree.case == caseId) (rejected (TreeOfAnotherCase handle))
+  pure tree
+
+-- | Issue a tree of the `case` named, built in the scope, with the type its first
+-- | leaf is claimed at, zonked.
+issueTree :: ScopeObject -> ScopeId -> XDecisionTree Unit -> Maybe XType -> Elab Handle
+issueTree scope caseId tree inferred = do
+  metas <- currentMetas
+  issue (TreeObject { tree, inferred: map (substitute metas) inferred, case: caseId, builtIn: Just scope.id })

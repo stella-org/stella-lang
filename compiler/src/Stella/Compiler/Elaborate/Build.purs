@@ -76,7 +76,7 @@ rootScope = do
   env <- askEnv
   case env.frame of
     Nothing -> break NoFrame
-    Just frame -> issue (ScopeObject { id: ScopeId 0, ancestors: Set.empty, context: frame.site.context, joins: Map.empty })
+    Just frame -> issue (ScopeObject { id: ScopeId 0, ancestors: Set.empty, context: frame.site.context, joins: Map.empty, tree: Nothing })
 
 -- | A type variable the scope binds.
 typeVariable :: Handle -> TyVar -> Elab Handle
@@ -172,6 +172,9 @@ closeForall scopeHandle binderHandle bodyHandle = do
     LetBinder _ -> misuse
     LetRecGroup _ -> misuse
     JoinBinder _ -> misuse
+    CaseBinder _ -> misuse
+    BindBinder _ -> misuse
+    SwitchBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -217,6 +220,9 @@ closeConstraint scopeHandle binderHandle bodyHandle = do
     LetBinder _ -> misuse
     LetRecGroup _ -> misuse
     JoinBinder _ -> misuse
+    CaseBinder _ -> misuse
+    BindBinder _ -> misuse
+    SwitchBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 

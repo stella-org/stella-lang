@@ -17,6 +17,7 @@ import Prim as P
 import Stella.Compiler.Elaborate.Build (emptyRow, extendRow, openConstraint, openForall, rootScope, typeConstructor, typeVariable)
 import Stella.Compiler.Elaborate.BuildTerm (closeConstraintAbs, closeLambda, closeLet, closeLetRec, closeTypeAbs, constraintApply, literal, openConstraintAbs, openLambda, openLet, openLetRec, openTypeAbs, termApply, typeApply)
 import Stella.Compiler.Elaborate.Build as Build
+import Stella.Compiler.Elaborate.Constructors (emptyConstructorEnv)
 import Stella.Compiler.Elaborate.Catalog (catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindTyVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
@@ -66,7 +67,7 @@ kinding =
     { types = Map.insert (tyName "List") { kindVars: [], body: KFun KType KType } (kindingOf primSignature).types }
 
 session :: SessionEnv
-session = { catalog: catalogOf [], kinding }
+session = { catalog: catalogOf [], kinding, constructors: emptyConstructorEnv }
 
 r :: TyVar
 r = TyVar "r"

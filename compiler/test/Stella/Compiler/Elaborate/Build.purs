@@ -15,6 +15,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Build (applyType, closeConstraint, closeForall, emptyRow, extendRow, instantiateForall, instantiateScheme, openConstraint, openForall, rootScope, typeConstructor, typeVariable, unionRow)
+import Stella.Compiler.Elaborate.Constructors (emptyConstructorEnv)
 import Stella.Compiler.Elaborate.Catalog (EntrySort(..), catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
@@ -97,6 +98,7 @@ session =
       , entry "freeKind" [] (XForall (TyVar "v") (XKVar j) xInt)
       ]
   , kinding
+  , constructors: emptyConstructorEnv
   }
   where
   entry name kindVars body = { name: global name, sort: ValueEntry, scheme: { kindVars, body }, attributes: [] }
