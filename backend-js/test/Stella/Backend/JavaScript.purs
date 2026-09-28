@@ -244,9 +244,41 @@ keyText = case _ of
     Nothing -> e
 
 generated :: P.Array Dmo -> Either P.String (P.Array { name :: P.String, source :: P.String })
-generated = traverse \dmo -> case generate { runtime: runtimeSpecifier } dmo of
+generated dmos = case generatedOrRefused dmos of
   Left e -> Left (show e)
+  Right files -> Right files
+
+generatedOrRefused :: P.Array Dmo -> Either JsError (P.Array { name :: P.String, source :: P.String })
+generatedOrRefused = traverse \dmo -> case generate { runtime: runtimeSpecifier } dmo of
+  Left e -> Left e
   Right source -> Right { name: fileName dmo.name, source }
+
+-- What a fixture's generation may end at ------------------------------------------------
+
+-- | The fixtures this backend refuses as unsupported, each with the refusal it
+-- | gives. A fixture listed here is refused with exactly that `Unsupported` and
+-- | nothing else; one that generates, or is refused otherwise, fails.
+-- |
+-- | **This table is looked at before `generationRefusals`.** A handler refusal
+-- | fixture holds a handler, which is what this backend refuses it for.
+knownUnsupported :: P.Array { name :: P.String, unsupported :: P.String }
+knownUnsupported = map (\name -> { name, unsupported: "a handler" })
+  [ "effects"
+  , "handler-cell-twice"
+  , "handler-cell-aliased"
+  , "handler-clause-twice"
+  , "handler-clause-aliased"
+  , "handler-hndl-clauses"
+  , "handler-hndl-cells"
+  , "handler-tailhndl-clauses"
+  , "handler-tailhndl-cells"
+  ]
+
+-- | The fixtures whose manifest says they are refused where they load, and which
+-- | this backend refuses where it generates, with the refusal each must be. Any
+-- | other refusal at generation fails, and so does such a fixture generating.
+generationRefusals :: P.Array { name :: P.String, refusal :: JsError -> P.Boolean }
+generationRefusals = []
 
 spec :: Spec Unit
 spec = describe "the JavaScript backend" do
@@ -255,6 +287,13 @@ spec = describe "the JavaScript backend" do
     when (Array.null names) (fail "no fixtures found")
     mismatches <- traverse fixtureMismatches names
     Array.concat mismatches `shouldEqual` []
+
+  -- a name left behind when its fixture is renamed or removed would exempt nothing
+  -- and hide that it is stale
+  it "lists only fixtures that exist as unsupported or refused at generation" do
+    names <- liftEffect (caseNames fixturesRoot)
+    Array.filter (\n -> not (Array.elem n names)) (map _.name knownUnsupported <> map _.name generationRefusals)
+      `shouldEqual` []
 
   describe "what the generated code holds" do
     it "captures a computed local, and the closure reads it through CAPT" do
@@ -446,12 +485,28 @@ fixtureMismatches name = do
   modules <- fixtureModules name
   case modules of
     Left err -> pure [ err ]
-    Right dmos -> case generated dmos of
-      Left err -> pure [ name <> ": not generated: " <> err ]
-      Right files -> case Array.last manifest.modules of
-        Nothing -> pure [ name <> ": no modules" ]
-        Just entry -> run manifest files (entry <> ".js")
+    Right dmos -> case generatedOrRefused dmos of
+      Left err
+        | Just k <- known -> pure
+            if err == Unsupported k.unsupported then []
+            else [ name <> ": refused as " <> show err <> ", not as " <> show (Unsupported k.unsupported) ]
+        | Just r <- refusedAtGeneration -> pure
+            if refusedAtLoad manifest && r.refusal err && String.contains (String.Pattern manifest.mentions) (show err) then []
+            else [ name <> ": refused as " <> show err <> ", not as the refusal naming " <> manifest.mentions <> " it is listed for" ]
+        | otherwise -> pure [ name <> ": not generated: " <> show err ]
+      Right files
+        | Just _ <- known -> pure [ name <> ": generated, where it is listed as unsupported" ]
+        | Just _ <- refusedAtGeneration -> pure [ name <> ": generated, where it is listed as refused" ]
+        | otherwise -> case Array.last manifest.modules of
+            Nothing -> pure [ name <> ": no modules" ]
+            Just entry -> run manifest files (entry <> ".js")
   where
+  known = Array.find (\k -> k.name == name) knownUnsupported
+
+  refusedAtGeneration = Array.find (\r -> r.name == name) generationRefusals
+
+  refusedAtLoad m = not m.loads && m.faults == ""
+
   run :: Manifest -> P.Array { name :: P.String, source :: P.String } -> P.String -> Aff (P.Array P.String)
   run manifest files entry =
     if manifest.loads then do
