@@ -13,14 +13,7 @@
 -- | source gives today, and running the suite with `STELLA_UPDATE_FIXTURES=1`
 -- | writes every fixture afresh instead.
 module Test.Stella.Compiler.Fixtures
-  ( Compiled
-  , Manifest
-  , compileAll
-  , fixturesRoot
-  , caseNames
-  , readManifest
-  , readBytes
-  , spec
+  ( spec
   ) where
 
 import Prelude
@@ -44,7 +37,7 @@ import Stella.Compiler.TypedCore (Ident(..), Module, ModuleName(..), Qualified(.
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 import Test.Stella.Compiler.Fixtures.Programs (abiSignature, baseModules, expected, faultCases, faultModule, intModule, libModule, libRenamed, libShrunk, libUnexported, mainModule, mainName, opsExpected, opsModule, refsOnly, without)
-import Test.Stella.Compiler.Fixtures.Value (Expected(..), ExpectedKey(..), jsonString, toJson)
+import Test.Stella.Compiler.Fixtures.Value (Expected, jsonString, toJson)
 
 -- Reading and writing --------------------------------------------------------------
 
@@ -58,54 +51,6 @@ foreign import readBytes :: P.String -> Effect (P.Array P.Int)
 foreign import writeText :: P.String -> P.String -> Effect Unit
 foreign import writeBytes :: P.String -> P.Array P.Int -> Effect Unit
 foreign import removeTree :: P.String -> Effect Unit
-
-foreign import parseManifestImpl
-  :: { int :: P.Int -> Expected
-     , number :: P.Number -> Expected
-     , char :: P.Int -> Expected
-     , string :: P.String -> Expected
-     , boolean :: P.Boolean -> Expected
-     , data :: P.String -> P.Array Expected -> Expected
-     , record :: P.Array { key :: ExpectedKey, value :: Expected } -> Expected
-     , variant :: ExpectedKey -> Expected -> Expected
-     , fn :: Expected
-     , field :: P.String -> ExpectedKey
-     , tag :: P.String -> ExpectedKey
-     , position :: P.Int -> ExpectedKey
-     , effect :: P.String -> ExpectedKey
-     }
-  -> P.String
-  -> Manifest
-
--- | A fixture's manifest. `mentions` is what a refusal names where `loads` is
--- | false.
-type Manifest =
-  { description :: P.String
-  , modules :: P.Array P.String
-  , loads :: P.Boolean
-  , mentions :: P.String
-  , faults :: P.String
-  , observe :: P.Array { global :: P.String, value :: Expected }
-  }
-
-readManifest :: P.String -> Effect Manifest
-readManifest name = map (parseManifestImpl constructors) (readText (fixturesRoot <> name <> "/manifest.json"))
-  where
-  constructors =
-    { int: EInt
-    , number: ENumber
-    , char: EChar
-    , string: EString
-    , boolean: EBoolean
-    , data: EData
-    , record: ERecord
-    , variant: EVariant
-    , fn: EFunction
-    , field: KField
-    , tag: KTag
-    , position: KPosition
-    , effect: KEffect
-    }
 
 -- Compiling ---------------------------------------------------------------------------
 

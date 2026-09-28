@@ -13,9 +13,12 @@
 -- | cannot come to accept different modules. What a loader establishes of one
 -- | module is checked next, before any code is generated
 -- | ([Check](JavaScript/Check.purs)).
-module Stella.Compiler.JavaScript
-  ( module Stella.Compiler.JavaScript.Emit
-  , module Stella.Compiler.JavaScript.Error
+-- |
+-- | **This is the package's whole interface.** The resolved module, Frame IR, and
+-- | the JavaScript syntax are its own and change with the strategy; what a caller
+-- | depends on is a `.dmo` in, text out, and the file that text is written to.
+module Stella.Backend.JavaScript
+  ( module Exported
   , generate
   ) where
 
@@ -26,12 +29,14 @@ import Prim as P
 import Data.Either (Either(..))
 import Stella.Compiler.Bytecode.Encode (encode)
 import Stella.Compiler.Bytecode.Module (Dmo)
-import Stella.Compiler.JavaScript.Check (check)
-import Stella.Compiler.JavaScript.Emit (Options, fileName)
-import Stella.Compiler.JavaScript.Emit (emit) as E
-import Stella.Compiler.JavaScript.Error (JsError(..))
-import Stella.Compiler.JavaScript.Syntax (print)
-import Stella.Compiler.JavaScript.ToFrame (toFrame)
+import Stella.Backend.JavaScript.Check (check)
+import Stella.Backend.JavaScript.Emit (Options)
+import Stella.Backend.JavaScript.Emit (Options, fileName) as Exported
+import Stella.Backend.JavaScript.Emit (emit) as E
+import Stella.Backend.JavaScript.Error (JsError(..))
+import Stella.Backend.JavaScript.Error (JsError(..)) as Exported
+import Stella.Backend.JavaScript.Syntax (print)
+import Stella.Backend.JavaScript.ToFrame (toFrame)
 
 generate :: Options -> Dmo -> Either JsError P.String
 generate options dmo = do

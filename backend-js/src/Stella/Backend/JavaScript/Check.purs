@@ -8,7 +8,7 @@
 -- | Steam checks them where a module is loaded. Generated code has no such moment
 -- | for what one module decides alone, so this checks it here, and what another
 -- | module declares is checked where the generated modules are linked and loaded.
-module Stella.Compiler.JavaScript.Check
+module Stella.Backend.JavaScript.Check
   ( check
   ) where
 
@@ -23,7 +23,7 @@ import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Bytecode.Instr (FuncIx(..))
 import Stella.Compiler.Bytecode.Module (Dmo, GlobalInit(..))
-import Stella.Compiler.JavaScript.Error (JsError(..))
+import Stella.Backend.JavaScript.Error (JsError(..))
 import Stella.Compiler.Primitive (lookupPrim)
 import Stella.Compiler.TypedCore.Name (ModuleName(..), Qualified(..))
 

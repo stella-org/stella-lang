@@ -30,7 +30,7 @@
 -- | module is initialized before this one whether or not anything of it is named,
 -- | which is the order module initialization owes
 -- | ([Bytecode](../../../../../docs/technical-references/05-Backend/01-Bytecode.md)).
-module Stella.Compiler.JavaScript.Emit
+module Stella.Backend.JavaScript.Emit
   ( Options
   , emit
   , fileName
@@ -51,11 +51,11 @@ import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..), fst)
 import Stella.Compiler.Bytecode.Instr (FuncIx(..))
 import Stella.Compiler.Bytecode.Module (GlobalInit(..))
-import Stella.Compiler.JavaScript.Error (JsError(..))
-import Stella.Compiler.JavaScript.Frame (Block, Callee(..), CtorRef(..), Exit(..), Expr(..), FrameFunction, GlobalRef(..), Literal(..), SegmentId(..), Stmt(..), Target(..))
-import Stella.Compiler.JavaScript.Operation (inline)
-import Stella.Compiler.JavaScript.Syntax as S
-import Stella.Compiler.JavaScript.ToFrame (FrameModule)
+import Stella.Backend.JavaScript.Error (JsError(..))
+import Stella.Backend.JavaScript.Frame (Block, Callee(..), CtorRef(..), Exit(..), Expr(..), FrameFunction, GlobalRef(..), Literal(..), SegmentId(..), Stmt(..), Target(..))
+import Stella.Backend.JavaScript.Operation (inline)
+import Stella.Backend.JavaScript.Syntax as S
+import Stella.Backend.JavaScript.ToFrame (FrameModule)
 import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp, lookupPrim)
 import Stella.Compiler.TypedCore.Domain (textOf)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..))

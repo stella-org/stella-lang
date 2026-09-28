@@ -1,6 +1,32 @@
 {
   "workspace": {
     "packages": {
+      "backend-js": {
+        "path": "backend-js",
+        "core": {
+          "dependencies": [
+            "arrays",
+            "compiler",
+            "either",
+            "enums",
+            "foldable-traversable",
+            "integers",
+            "maybe",
+            "ordered-collections",
+            "prelude",
+            "strings",
+            "tuples"
+          ]
+        },
+        "test": {
+          "dependencies": [
+            "aff",
+            "effect",
+            "spec",
+            "spec-node"
+          ]
+        }
+      },
       "cli": {
         "path": "cli",
         "core": {

@@ -1,5 +1,5 @@
 -- | Why the JavaScript backend refuses a module.
-module Stella.Compiler.JavaScript.Error
+module Stella.Backend.JavaScript.Error
   ( JsError(..)
   ) where
 

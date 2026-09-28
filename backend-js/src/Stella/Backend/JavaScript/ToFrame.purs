@@ -13,7 +13,7 @@
 -- | ([Frame](Frame.purs)). A `JMP` targets a join point's own segment, so a loop
 -- | written with join points runs through the run loop rather than the host's
 -- | call stack.
-module Stella.Compiler.JavaScript.ToFrame
+module Stella.Backend.JavaScript.ToFrame
   ( Resolved
   , FrameModule
   , toFrame
@@ -35,8 +35,8 @@ import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), Fu
 import Stella.Compiler.Bytecode.Instr as B
 import Stella.Compiler.Bytecode.Module (Constant(..), Dmo, GlobalInit(..), Key(..))
 import Stella.Compiler.Bytecode.Module as M
-import Stella.Compiler.JavaScript.Error (JsError(..))
-import Stella.Compiler.JavaScript.Frame (Block, Callee(..), CtorRef(..), Exit(..), Expr(..), FrameFunction, GlobalRef(..), Literal(..), Segment, SegmentId(..), Stmt(..), Target(..))
+import Stella.Backend.JavaScript.Error (JsError(..))
+import Stella.Backend.JavaScript.Frame (Block, Callee(..), CtorRef(..), Exit(..), Expr(..), FrameFunction, GlobalRef(..), Literal(..), Segment, SegmentId(..), Stmt(..), Target(..))
 import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp)
 import Stella.Compiler.TypedCore.Domain (codePointOf)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..))

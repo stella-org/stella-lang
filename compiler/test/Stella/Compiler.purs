@@ -10,7 +10,6 @@ import Test.Stella.Compiler.Bytecode.Effects as BytecodeEffects
 import Test.Stella.Compiler.Bytecode.Lower as BytecodeLower
 import Test.Stella.Compiler.Bytecode.Serialize as BytecodeSerialize
 import Test.Stella.Compiler.Fixtures as Fixtures
-import Test.Stella.Compiler.JavaScript as JavaScript
 import Test.Stella.Compiler.MiddleEnd.Regression as MidRegression
 import Test.Stella.Compiler.MiddleEnd.Translate as MidTranslate
 import Test.Stella.Compiler.MiddleEnd.Effects as MidEffects
@@ -75,7 +74,6 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   BytecodeEffects.spec
   BytecodeSerialize.spec
   Fixtures.spec
-  JavaScript.spec
   Interface.spec
   VerticalSlice.spec
   TypedCoreReference.spec

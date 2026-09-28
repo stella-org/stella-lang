@@ -11,7 +11,7 @@
 -- | Everything a segment names is resolved already: a register is a slot of the
 -- | frame, a constructor and a global are references the emitter turns into
 -- | bindings, and a key is its canonical string.
-module Stella.Compiler.JavaScript.Frame
+module Stella.Backend.JavaScript.Frame
   ( SegmentId(..)
   , GlobalRef(..)
   , CtorRef(..)

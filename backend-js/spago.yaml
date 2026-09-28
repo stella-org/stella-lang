@@ -1,0 +1,22 @@
+package:
+  name: backend-js
+  description: The Stella JavaScript backend, generating ES modules from .dmo module objects
+  dependencies:
+    - arrays
+    - compiler
+    - either
+    - enums
+    - foldable-traversable
+    - integers
+    - maybe
+    - ordered-collections
+    - prelude
+    - strings
+    - tuples
+  test:
+    main: Test.Stella.Backend
+    dependencies:
+      - aff
+      - effect
+      - spec
+      - spec-node

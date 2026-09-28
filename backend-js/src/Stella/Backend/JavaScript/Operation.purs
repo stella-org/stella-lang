@@ -18,13 +18,13 @@
 -- | calls the runtime, bound as `rt` in every generated module. **Every operation of
 -- | the version has an expression**, so this is total and no operation a module
 -- | names is left without one.
-module Stella.Compiler.JavaScript.Operation
+module Stella.Backend.JavaScript.Operation
   ( inline
   ) where
 
 import Prim as P
 
-import Stella.Compiler.JavaScript.Syntax (Expr(..))
+import Stella.Backend.JavaScript.Syntax (Expr(..))
 import Stella.Compiler.Primitive (PrimOp(..))
 
 -- | The expression carrying the operation out over operands already evaluated.

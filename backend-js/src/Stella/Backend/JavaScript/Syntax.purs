@@ -5,7 +5,7 @@
 -- | ([JavaScript](../../../../../docs/technical-references/05-Backend/05-JavaScript.md)).
 -- | It holds no Stella meaning: a strategy's own IR decides what to say, and this
 -- | only says it.
-module Stella.Compiler.JavaScript.Syntax
+module Stella.Backend.JavaScript.Syntax
   ( Expr(..)
   , Stmt(..)
   , Top(..)

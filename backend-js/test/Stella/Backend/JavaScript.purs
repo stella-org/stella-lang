@@ -2,15 +2,18 @@
 -- | what only this backend does — the code it generates, what it refuses before
 -- | generating, and the preconditions its runtime checks.
 -- |
--- | A fixture's `.dmo` files are read from disk as a backend outside this compiler
--- | would read them, generated one ES module each, written out, and the last module
--- | imported; what its exports hold, or the refusal loading gives, is checked
--- | against the fixture's manifest ([Fixtures](Fixtures.purs)). Steam checks the
--- | same manifests, so the two agree wherever both pass.
+-- | **Everything here starts from a `.dmo`**, read from `fixtures/bytecode` as a
+-- | backend outside this compiler would read one
+-- | ([Fixtures](../../../../fixtures/bytecode/README.md)). A fixture's modules are
+-- | generated one ES module each, written out, and the last imported; what its
+-- | exports hold, or how loading ended, is checked against the fixture's manifest.
+-- | Steam checks the same manifests, so the two agree wherever both pass. The cases
+-- | only this backend has are made by changing a decoded fixture, so no test here
+-- | reaches above the `.dmo`.
 -- |
 -- | JavaScript holds an `Int`, a `Number`, and a `Char` alike as a number, so each is
 -- | compared by the number it is; a function is compared as being one.
-module Test.Stella.Compiler.JavaScript (spec) where
+module Test.Stella.Backend.JavaScript (spec) where
 
 import Prelude
 
@@ -24,20 +27,107 @@ import Data.Maybe (Maybe(..))
 import Data.String as String
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
+import Effect (Effect)
 import Effect.Aff (Aff)
 import Effect.Aff.Compat (EffectFnAff, fromEffectFnAff)
 import Effect.Class (liftEffect)
+import Stella.Backend.JavaScript (JsError(..), fileName, generate)
 import Stella.Compiler.Bytecode (Dmo, EncodeError(..), FuncIx(..), GlobalInit(..), Instr(..), decode, encode)
 import Stella.Compiler.Bytecode as B
-import Stella.Compiler.JavaScript (JsError(..), fileName, generate)
-import Stella.Compiler.TypedCore (Decl(..), Ident(..), ModuleName(..), Qualified(..), TyName(..), monoScheme)
-import Stella.Compiler.TypedCore.Prim (intTy, pureFn)
-import Stella.Compiler.TypedCore (Type(..)) as T
+import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), TyName(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Stella.Compiler.Fixtures (Manifest, caseNames, compileAll, fixturesRoot, readBytes, readManifest)
-import Test.Stella.Compiler.Fixtures.Programs (inInt, inMain, intModule, libModule, mainModule)
-import Test.Stella.Compiler.Fixtures.Value (Expected(..), ExpectedKey(..))
+
+-- Reading the fixtures -------------------------------------------------------------------
+
+foreign import fixturesRoot :: P.String
+foreign import caseNames :: P.String -> Effect (P.Array P.String)
+foreign import readText :: P.String -> Effect P.String
+foreign import readBytes :: P.String -> Effect (P.Array P.Int)
+
+foreign import parseManifestImpl
+  :: { int :: P.Int -> Expected
+     , number :: P.Number -> Expected
+     , char :: P.Int -> Expected
+     , string :: P.String -> Expected
+     , boolean :: P.Boolean -> Expected
+     , data :: P.String -> P.Array Expected -> Expected
+     , record :: P.Array { key :: ExpectedKey, value :: Expected } -> Expected
+     , variant :: ExpectedKey -> Expected -> Expected
+     , fn :: Expected
+     , field :: P.String -> ExpectedKey
+     , tag :: P.String -> ExpectedKey
+     , position :: P.Int -> ExpectedKey
+     , effect :: P.String -> ExpectedKey
+     }
+  -> P.String
+  -> Manifest
+
+-- | A fixture's manifest. `mentions` is what a refusal names, and `faults` the
+-- | global whose initialization a fault ends, each `""` where it does not apply.
+type Manifest =
+  { description :: P.String
+  , modules :: P.Array P.String
+  , loads :: P.Boolean
+  , mentions :: P.String
+  , faults :: P.String
+  , observe :: P.Array { global :: P.String, value :: Expected }
+  }
+
+-- | What a manifest says a value is.
+data Expected
+  = EInt P.Int
+  | ENumber P.Number
+  | EChar P.Int
+  | EString P.String
+  | EBoolean P.Boolean
+  | EData P.String (P.Array Expected)
+  | ERecord (P.Array { key :: ExpectedKey, value :: Expected })
+  | EVariant ExpectedKey Expected
+  | EFunction
+
+data ExpectedKey
+  = KField P.String
+  | KTag P.String
+  | KPosition P.Int
+  | KEffect P.String
+
+readManifest :: P.String -> Effect Manifest
+readManifest name = map (parseManifestImpl constructors) (readText (fixturesRoot <> name <> "/manifest.json"))
+  where
+  constructors =
+    { int: EInt
+    , number: ENumber
+    , char: EChar
+    , string: EString
+    , boolean: EBoolean
+    , data: EData
+    , record: ERecord
+    , variant: EVariant
+    , fn: EFunction
+    , field: KField
+    , tag: KTag
+    , position: KPosition
+    , effect: KEffect
+    }
+
+-- | A fixture's modules, decoded, in the order its manifest loads them.
+fixtureModules :: P.String -> Aff (Either P.String (P.Array Dmo))
+fixtureModules name = liftEffect do
+  manifest <- readManifest name
+  bytes <- traverse (\m -> readBytes (fixturesRoot <> name <> "/" <> m <> ".dmo")) manifest.modules
+  pure case traverse decode bytes of
+    Left err -> Left (name <> ": does not decode: " <> show err)
+    Right dmos -> Right dmos
+
+inMain :: P.String -> Qualified Ident
+inMain = Qualified (ModuleName "Main") <<< Ident
+
+inInt :: P.String -> Qualified Ident
+inInt = Qualified (ModuleName "Base.Int") <<< Ident
+
+inLib :: P.String -> Qualified Ident
+inLib = Qualified (ModuleName "Lib") <<< Ident
 
 -- Running generated code ---------------------------------------------------------------
 
@@ -158,49 +248,6 @@ generated = traverse \dmo -> case generate { runtime: runtimeSpecifier } dmo of
   Left e -> Left (show e)
   Right source -> Right { name: fileName dmo.name, source }
 
--- The fixtures ----------------------------------------------------------------------------
-
--- | What running a fixture gave where the manifest says otherwise, one line each.
-fixtureMismatches :: P.String -> Aff (P.Array P.String)
-fixtureMismatches name = do
-  manifest <- liftEffect (readManifest name)
-  bytes <- liftEffect (traverse (\m -> readBytes (fixturesRoot <> name <> "/" <> m <> ".dmo")) manifest.modules)
-  case traverse decode bytes of
-    Left err -> pure [ name <> ": does not decode: " <> show err ]
-    Right dmos -> case generated dmos of
-      Left err -> pure [ name <> ": not generated: " <> err ]
-      Right files -> case Array.last manifest.modules of
-        Nothing -> pure [ name <> ": no modules" ]
-        Just entry -> run manifest files (entry <> ".js")
-  where
-  run :: Manifest -> _ -> P.String -> Aff (P.Array P.String)
-  run manifest files entry =
-    if manifest.loads then do
-      namespace <- fromEffectFnAff (importGeneratedImpl files entry)
-      pure $ Array.mapMaybe
-        ( \o ->
-            let
-              shape = jsShape namespace (unqualified o.global)
-            in
-              if matches o.value shape then Nothing
-              else Just (name <> ": " <> o.global <> " holds " <> show shape)
-        )
-        manifest.observe
-    else do
-      ended <- fromEffectFnAff (importFailureImpl files entry)
-      pure
-        if ended.loaded then [ name <> ": loaded, where the manifest says it does not" ]
-        -- a fault the manifest expects is one the named global's initialization ended at
-        else if manifest.faults /= "" then
-          if ended.fault && ended.global == manifest.faults then []
-          else [ name <> ": ended as \"" <> ended.message <> "\", not as a fault initializing " <> manifest.faults ]
-        else if not ended.fault && String.contains (String.Pattern manifest.mentions) ended.message then []
-        else [ name <> ": refused as \"" <> ended.message <> "\", not naming " <> manifest.mentions ]
-
-  unqualified g = case String.lastIndexOf (String.Pattern ".") g of
-    Just i -> String.drop (i + 1) g
-    Nothing -> g
-
 spec :: Spec Unit
 spec = describe "the JavaScript backend" do
   it "runs every bytecode fixture as its manifest says" do
@@ -211,17 +258,18 @@ spec = describe "the JavaScript backend" do
 
   describe "what the generated code holds" do
     it "captures a computed local, and the closure reads it through CAPT" do
-      case compileAll [ intModule, libModule, mainModule ] of
+      programs <- fixtureModules "programs"
+      case programs of
         Left err -> fail err
-        Right compiled -> case Array.last compiled of
-          Nothing -> fail "nothing compiled"
-          Just main -> case capturingClosure main.dmo "captured" of
+        Right dmos -> case Array.last dmos of
+          Nothing -> fail "no modules"
+          Just main -> case capturingClosure main "captured" of
             Nothing -> fail "the value builds no closure with a capture"
             Just f -> do
               -- the closure's function takes a capture and reads it
-              readsCapture main.dmo f `shouldEqual` true
+              readsCapture main f `shouldEqual` true
               -- and the segment generated for it reads the frame's capture slot
-              case generated [ main.dmo ] of
+              case generated [ main ] of
                 Left err -> fail err
                 Right files -> case Array.head files of
                   Nothing -> fail "nothing generated"
@@ -229,9 +277,9 @@ spec = describe "the JavaScript backend" do
 
   describe "what a loader establishes, before code is generated" do
     it "refuses each module a loader refuses, for the reason a loader gives" do
-      case compileAll [ intModule, libModule, mainModule ] of
-        Right [ intCompiled, _, mainCompiled ] ->
-          Array.mapMaybe (unrefused intCompiled.dmo mainCompiled.dmo) loaderRefusals `shouldEqual` []
+      programs <- fixtureModules "programs"
+      case programs of
+        Right [ int, _, main ] -> Array.mapMaybe (unrefused int main) loaderRefusals `shouldEqual` []
         Right _ -> fail "not three modules"
         Left err -> fail err
 
@@ -241,12 +289,12 @@ spec = describe "the JavaScript backend" do
 
   describe "what the encoder refuses" do
     it "refuses a module whose name the encoder would not write, as the encoder does" do
-      case compileAll [ intModule, libModule, mainModule ] of
-        Right [ _, _, mainCompiled ] -> do
+      programs <- fixtureModules "programs"
+      case programs of
+        Right [ _, _, main ] -> do
           let
-            dmo = mainCompiled.dmo
             -- `sum` is exported nowhere, so nothing but its spelling changes
-            lone = dmo { globals = map (\g -> if g.name == inMain "sum" then g { name = inMain "s\xD800um" } else g) dmo.globals }
+            lone = main { globals = map (\g -> if g.name == inMain "sum" then g { name = inMain "s\xD800um" } else g) main.globals }
           case encode lone, generate { runtime: runtimeSpecifier } lone of
             Left (NotScalarText _), Left (NotEncodable (NotScalarText _)) -> pure unit
             byEncoder, byBackend -> fail ("the encoder gave " <> show (map (const unit) byEncoder) <> " and the backend " <> show (map (const unit) byBackend))
@@ -255,15 +303,15 @@ spec = describe "the JavaScript backend" do
 
   describe "what the backend does not carry out yet" do
     it "refuses a foreign it does not yet reach" do
-      let
-        withForeign = libModule
-          { decls = libModule.decls <> [ DeclForeign 9 { name: Ident "now", scheme: monoScheme (pureFn (T.TCon intTy []) (T.TCon intTy [])), attributes: [] } ] }
-      case compileAll [ intModule, withForeign ] of
-        Right compiled -> case Array.last compiled of
-          Just lib -> case generate { runtime: runtimeSpecifier } lib.dmo of
+      programs <- fixtureModules "programs"
+      case programs of
+        Right [ _, lib, _ ] -> do
+          -- a foreign the ABI does not fix is supplied by a host implementation
+          let withForeign = lib { foreigns = lib.foreigns <> [ { name: inLib "now", arity: 1 } ] }
+          case generate { runtime: runtimeSpecifier } withForeign of
             Left (Unsupported _) -> pure unit
             other -> fail ("expected the foreign to be refused, got " <> show (map (const unit) other))
-          Nothing -> fail "nothing compiled"
+        Right _ -> fail "not three modules"
         Left err -> fail err
 
 -- | The function of the first closure with a capture that the initializer of the
@@ -388,3 +436,46 @@ installing :: P.String -> (P.Int -> GlobalInit) -> (B.Function -> P.Boolean) -> 
 installing name how which dmo = case Array.findIndex which dmo.functions of
   Nothing -> dmo
   Just i -> dmo { globals = map (\g -> if g.name == inMain name then g { init = how i } else g) dmo.globals }
+
+-- The fixtures ----------------------------------------------------------------------------
+
+-- | What running a fixture gave where the manifest says otherwise, one line each.
+fixtureMismatches :: P.String -> Aff (P.Array P.String)
+fixtureMismatches name = do
+  manifest <- liftEffect (readManifest name)
+  modules <- fixtureModules name
+  case modules of
+    Left err -> pure [ err ]
+    Right dmos -> case generated dmos of
+      Left err -> pure [ name <> ": not generated: " <> err ]
+      Right files -> case Array.last manifest.modules of
+        Nothing -> pure [ name <> ": no modules" ]
+        Just entry -> run manifest files (entry <> ".js")
+  where
+  run :: Manifest -> P.Array { name :: P.String, source :: P.String } -> P.String -> Aff (P.Array P.String)
+  run manifest files entry =
+    if manifest.loads then do
+      namespace <- fromEffectFnAff (importGeneratedImpl files entry)
+      pure $ Array.mapMaybe
+        ( \o ->
+            let
+              shape = jsShape namespace (unqualified o.global)
+            in
+              if matches o.value shape then Nothing
+              else Just (name <> ": " <> o.global <> " holds " <> show shape)
+        )
+        manifest.observe
+    else do
+      ended <- fromEffectFnAff (importFailureImpl files entry)
+      pure
+        if ended.loaded then [ name <> ": loaded, where the manifest says it does not" ]
+        -- a fault the manifest expects is one the named global's initialization ended at
+        else if manifest.faults /= "" then
+          if ended.fault && ended.global == manifest.faults then []
+          else [ name <> ": ended as \"" <> ended.message <> "\", not as a fault initializing " <> manifest.faults ]
+        else if not ended.fault && String.contains (String.Pattern manifest.mentions) ended.message then []
+        else [ name <> ": refused as \"" <> ended.message <> "\", not naming " <> manifest.mentions ]
+
+  unqualified g = case String.lastIndexOf (String.Pattern ".") g of
+    Just i -> String.drop (i + 1) g
+    Nothing -> g
