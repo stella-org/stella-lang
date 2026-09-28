@@ -24,7 +24,7 @@ Each directory is one fixture:
 | --- | --- |
 | `description` | what the fixture exercises |
 | `modules` | the modules to load, in the order to load them; the last is the entry |
-| `outcome` | `{"loads": true}`, or `{"refusedAtLoad": {"mentions": "name"}}` where loading must be refused with a report naming `name` |
+| `outcome` | `{"loads": true}`; `{"refusedAtLoad": {"mentions": "name"}}` where loading must be refused, not by a fault, with a report naming `name`; or `{"faultsAtLoad": {"global": "Main.x"}}` where loading must end in a fault as `Main.x` is initialized |
 | `observe` | globals of the entry module and the value each must hold |
 
 A value is `{"int": 6}`, `{"number": "-0"}` (the text JavaScript's `Number` reads

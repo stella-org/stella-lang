@@ -1,0 +1,6 @@
+{
+  "description": "Base.String.slice with a negative start, which is not counted from the end, which faults as Main.faulted is initialized",
+  "modules": ["Base.Int", "Base.Number", "Base.String", "Base.Char", "Base.Array", "Main"],
+  "outcome": {"faultsAtLoad": {"global": "Main.faulted"}},
+  "observe": []
+}

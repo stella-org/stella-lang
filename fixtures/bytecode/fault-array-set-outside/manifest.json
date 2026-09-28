@@ -1,0 +1,6 @@
+{
+  "description": "Base.Array.unsafeSet at an index outside the array, which faults as Main.faulted is initialized",
+  "modules": ["Base.Int", "Base.Number", "Base.String", "Base.Char", "Base.Array", "Main"],
+  "outcome": {"faultsAtLoad": {"global": "Main.faulted"}},
+  "observe": []
+}
