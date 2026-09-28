@@ -23,7 +23,7 @@ import Prim as P
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (foldM, for_)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
 import Data.String as String
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
@@ -36,6 +36,10 @@ import Stella.Compiler.Primitive (primTable)
 import Stella.Compiler.TypedCore (Ident(..), Module, ModuleName(..), Qualified(..), declareAnnotated)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
+import Stella.Compiler.Bytecode.Instr (Instr(..), KeyIx(..), Node, OpIx(..), Reg, Tail(..))
+import Stella.Compiler.Bytecode.Module (HandlerEntry)
+import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
+import Test.Stella.Compiler.Fixtures.Effects (effectsExpected, effectsModule, meterModule)
 import Test.Stella.Compiler.Fixtures.Programs (abiSignature, baseModules, expected, faultCases, faultModule, intModule, libModule, libRenamed, libShrunk, libUnexported, mainModule, mainName, opsExpected, opsModule, refsOnly, without)
 import Test.Stella.Compiler.Fixtures.Value (Expected, jsonString, toJson)
 
@@ -131,6 +135,44 @@ fixtures =
     , outcome: Loads
     , observe: opsExpected
     }
+  , { name: "effects"
+    , description: "Handlers, perform in both clause forms, continuations resumed once, twice, interleaved, and over-applied, regions carried in a continuation, and where a fast clause's body runs"
+    , modules: map (map _.dmo) (compileAll [ intModule, effectsModule ])
+    , outcome: Loads
+    , observe: effectsExpected
+    }
+  , meterRefusal "handler-cell-twice"
+      "the second cell of Main's handler entry changed to the first, at the same KEYS index"
+      (onHandlers secondCellRepeats)
+      "reading"
+  , meterRefusal "handler-cell-aliased"
+      "the second cell of Main's handler entry changed to the first, at a KEYS index of its own holding the same key"
+      secondCellAliased
+      "reading"
+  , meterRefusal "handler-clause-twice"
+      "the second clause of Main's handler entry changed to answer the first clause's operation, at the same OPS index"
+      (onHandlers secondClauseRepeats)
+      "bump"
+  , meterRefusal "handler-clause-aliased"
+      "the second clause of Main's handler entry changed to answer the first clause's operation, at an OPS index of its own holding the same name"
+      secondClauseAliased
+      "bump"
+  , meterRefusal "handler-hndl-clauses"
+      "a HNDL of Main given one clause fewer than its handler entry holds"
+      (everyNode (onInstrs (onHndl dropClause)))
+      "Meter"
+  , meterRefusal "handler-hndl-cells"
+      "a HNDL of Main given one initial cell value fewer than its handler entry's cells"
+      (everyNode (onInstrs (onHndl dropCell)))
+      "Meter"
+  , meterRefusal "handler-tailhndl-clauses"
+      "a TAILHNDL inside a branch of Main given one clause fewer than its handler entry holds"
+      (everyNode (onTail (onTailHndl dropClause)))
+      "Meter"
+  , meterRefusal "handler-tailhndl-cells"
+      "a TAILHNDL inside a branch of Main given one initial cell value fewer than its handler entry's cells"
+      (everyNode (onTail (onTailHndl dropCell)))
+      "Meter"
   ]
     <> map faultFixture faultCases
   where
@@ -148,6 +190,93 @@ against main lib = do
   written <- compileAll [ intModule, libModule, main ]
   changed <- compileAll [ intModule, lib ]
   pure (map _.dmo changed <> map _.dmo (Array.drop 2 written))
+
+-- Handler refusals -----------------------------------------------------------------------
+
+-- | A module no Core compiles to, refused where it loads: `Meter` lowered, and then
+-- | changed as `change` says. What is refused is a property of the module alone.
+meterRefusal :: P.String -> P.String -> (Dmo -> Dmo) -> P.String -> Fixture
+meterRefusal name description change mentions =
+  { name
+  , description: "Main compiled from Core and then " <> description
+  , modules: map (map (\c -> if c.dmo.name == mainName then change c.dmo else c.dmo))
+      (compileAll [ intModule, meterModule ])
+  , outcome: RefusedAtLoad mentions
+  , observe: []
+  }
+
+onHandlers :: (HandlerEntry -> HandlerEntry) -> Dmo -> Dmo
+onHandlers f dmo = dmo { handlers = map f dmo.handlers }
+
+-- | The first cell standing for the second, at its own index.
+secondCellRepeats :: HandlerEntry -> HandlerEntry
+secondCellRepeats h = h { cells = Array.take 1 h.cells <> Array.take 1 h.cells }
+
+-- | The first cell standing for the second, at a new index of `KEYS` holding the
+-- | same key. Two indices of one key are one identity.
+secondCellAliased :: Dmo -> Dmo
+secondCellAliased dmo = case Array.head dmo.handlers >>= \h -> Array.head h.cells of
+  Just (KeyIx i) | Just key <- Array.index dmo.keys i ->
+    onHandlers (\h -> h { cells = Array.take 1 h.cells <> [ KeyIx (Array.length dmo.keys) ] })
+      (dmo { keys = Array.snoc dmo.keys key })
+  _ -> dmo
+
+secondClauseRepeats :: HandlerEntry -> HandlerEntry
+secondClauseRepeats h = h { opClauses = Array.take 1 h.opClauses <> map (\c -> c { form = form }) (Array.take 1 h.opClauses) }
+  where
+  form = maybe ClauseFast _.form (Array.index h.opClauses 1)
+
+secondClauseAliased :: Dmo -> Dmo
+secondClauseAliased dmo = case Array.head dmo.handlers >>= \h -> Array.head h.opClauses of
+  Just { op: OpIx i } | Just name <- Array.index dmo.ops i ->
+    onHandlers
+      (\h -> h { opClauses = Array.take 1 h.opClauses <> map (_ { op = OpIx (Array.length dmo.ops) }) (Array.slice 1 2 h.opClauses) })
+      (dmo { ops = Array.snoc dmo.ops name })
+  _ -> dmo
+
+-- | Every node of every function changed by `f`: a function's body, each join
+-- | point's, and each a branch holds inline.
+everyNode :: (Node -> Node) -> Dmo -> Dmo
+everyNode f dmo = dmo { functions = map function dmo.functions }
+  where
+  function fn = fn { body = node fn.body, joins = map (\j -> j { body = node j.body }) fn.joins }
+
+  node n = f (n { tail = inline n.tail })
+
+  inline = case _ of
+    BRIF s a b -> BRIF s (node a) (node b)
+    BRC s cases fallback -> BRC s (map (\c -> c { body = node c.body }) cases) (map node fallback)
+    BRL s cases fallback -> BRL s (map (\c -> c { body = node c.body }) cases) (node fallback)
+    BRK s cases fallback -> BRK s (map (\c -> c { body = node c.body }) cases) (map node fallback)
+    other -> other
+
+onInstrs :: (Instr -> Instr) -> Node -> Node
+onInstrs f n = n { code = map f n.code }
+
+onTail :: (Tail -> Tail) -> Node -> Node
+onTail f n = n { tail = f n.tail }
+
+type HandleOperands = { clauses :: P.Array Reg, cells :: P.Array Reg }
+
+onHndl :: (HandleOperands -> HandleOperands) -> Instr -> Instr
+onHndl f = case _ of
+  HNDL d ix body ret clauses cells ->
+    let o = f { clauses, cells } in HNDL d ix body ret o.clauses o.cells
+  other -> other
+
+onTailHndl :: (HandleOperands -> HandleOperands) -> Tail -> Tail
+onTailHndl f = case _ of
+  TAILHNDL ix body ret clauses cells ->
+    let o = f { clauses, cells } in TAILHNDL ix body ret o.clauses o.cells
+  other -> other
+
+dropClause :: HandleOperands -> HandleOperands
+dropClause o = o { clauses = Array.dropEnd 1 o.clauses }
+
+dropCell :: HandleOperands -> HandleOperands
+dropCell o = o { cells = Array.dropEnd 1 o.cells }
+
+-- The manifest -----------------------------------------------------------------------------
 
 manifestText :: Fixture -> P.Array Dmo -> P.String
 manifestText f dmos = String.joinWith "\n"
