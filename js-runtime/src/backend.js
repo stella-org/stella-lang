@@ -75,6 +75,22 @@ const bug = (message) => {
   throw new Bug(message);
 };
 
+// A failure the ABI admits: an operation failing on an input it is specified to
+// fail on. It is not an effect — no handler intercepts one — and it discards the
+// whole run. `global` names the global being initialized when one ends a module's
+// initialization.
+export class Fault extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "StellaFault";
+    this.global = undefined;
+  }
+}
+
+const fault = (message) => {
+  throw new Fault(message);
+};
+
 // Descriptors -------------------------------------------------------------------
 
 // A function of the function table: its arity, how many registers a frame of it
@@ -269,6 +285,17 @@ export const applyFunction = (callee, args) => {
 // once where the module is initialized.
 export const runGlobal = (f) => applyFunction(new Closure(f, []), []);
 
+// Initialize the named global by evaluating its function. A fault ends the module's
+// initialization, and it says which global it ended at.
+export const initialize = (name, f) => {
+  try {
+    return runGlobal(f);
+  } catch (e) {
+    if (e instanceof Fault && e.global === undefined) e.global = name;
+    throw e;
+  }
+};
+
 // What segments call ----------------------------------------------------------------
 
 // The `j`-th field of a data value, whose constructor must be the one the
@@ -330,3 +357,95 @@ export const unreachable = (what) => bug(what);
 // `0.0` and `-0.0` are two literals and a NaN is one, which strict equality gets wrong
 // on both counts.
 export const sameNumber = (a, b) => (Number.isNaN(a) ? Number.isNaN(b) : Object.is(a, b));
+
+// The operations that are not one expression ---------------------------------------
+//
+// What each means is the ABI's (stella-base-0.1). An `Int` is an int32 held as a
+// number, a `Char` the number of a scalar value, and a `String` a JavaScript string
+// holding scalar values only; lengths and indices count scalar values (D27).
+
+const MIN_INT = -2147483648;
+const MAX_INT = 2147483647;
+
+// Division truncated towards zero. `minInt / -1` is one past `maxInt`, and `| 0`
+// wraps it to `minInt`, which is what the ABI fixes.
+export const quot = (a, b) => {
+  if (b === 0) fault(`Base.Int.quot: a zero divisor, dividing ${a}`);
+  return (a / b) | 0;
+};
+
+// The remainder `quot` leaves, whose sign is the dividend's. `minInt % -1` is `-0`,
+// which `| 0` makes `0`.
+export const rem = (a, b) => {
+  if (b === 0) fault(`Base.Int.rem: a zero divisor, dividing ${a}`);
+  return (a % b) | 0;
+};
+
+// Truncated towards zero and saturating: NaN gives 0, and what is outside the range
+// gives its nearer end.
+export const numberToInt = (x) =>
+  x !== x ? 0 : x >= MAX_INT ? MAX_INT : x <= MIN_INT ? MIN_INT : Math.trunc(x) | 0;
+
+const scalars = (s) => Array.from(s);
+
+export const stringLength = (s) => {
+  let n = 0;
+  for (const _ of s) n++;
+  return n;
+};
+
+export const codePointAt = (i, s) => {
+  const cs = scalars(s);
+  if (!(i >= 0 && i < cs.length)) fault(`Base.String.codePointAt: index ${i} outside a string of ${cs.length}`);
+  return cs[i].codePointAt(0);
+};
+
+// The scalar values from `start` up to but not including `end`; nothing counts from
+// the end, and no bound is clamped.
+export const slice = (start, end, s) => {
+  const cs = scalars(s);
+  if (!(start >= 0 && start <= end && end <= cs.length)) {
+    fault(`Base.String.slice: bounds ${start}..${end} outside a string of ${cs.length}`);
+  }
+  return cs.slice(start, end).join("");
+};
+
+// Lexicographic by scalar value, a proper prefix preceding what it prefixes.
+export const stringLt = (a, b) => {
+  const x = a[Symbol.iterator]();
+  const y = b[Symbol.iterator]();
+  for (;;) {
+    const p = x.next();
+    const q = y.next();
+    if (p.done) return !q.done;
+    if (q.done) return false;
+    const c = p.value.codePointAt(0);
+    const d = q.value.codePointAt(0);
+    if (c !== d) return c < d;
+  }
+};
+
+export const fromCodePoint = (n) => {
+  if (!(n >= 0 && n <= 0x10ffff) || (n >= 0xd800 && n <= 0xdfff)) {
+    fault(`Base.Char.fromCodePoint: ${n} is no scalar value`);
+  }
+  return n;
+};
+
+// An array is a JavaScript array held as an opaque value. A slot nothing wrote is
+// reached only by a read violating the precondition of `unsafeIndex` (D42).
+export const arrayNew = (n) => {
+  if (n < 0) fault(`Base.Array.unsafeNew: a negative count ${n}`);
+  return new Array(n);
+};
+
+export const arraySet = (i, x, xs) => {
+  if (!(i >= 0 && i < xs.length)) fault(`Base.Array.unsafeSet: index ${i} outside an array of ${xs.length}`);
+  xs[i] = x;
+  return PrimUnit.value;
+};
+
+export const arrayIndex = (xs, i) => {
+  if (!(i >= 0 && i < xs.length)) fault(`Base.Array.unsafeIndex: index ${i} outside an array of ${xs.length}`);
+  return xs[i];
+};
