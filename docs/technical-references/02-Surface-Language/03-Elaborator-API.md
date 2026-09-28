@@ -759,6 +759,33 @@ CatalogEntry = { name : QIdent , sort : value | foreign | constructor
 
 It holds the entries the interfaces of the imported modules publish and every top-level value name this module declares, and it holds the value namespace: what `lookupGlobal` resolves is a name a term can refer to. **The domain is fixed and a provisional scheme sharpens**: a scheme still being inferred carries metavariables, which are zonked against the current `Ψ` at each read, and which names exist never changes. `declsWithAttr` lists the names in ascending order of their qualified names, so that a search over them has one order whatever order the interfaces were read in.
 
+### An attempt held open across requests
+
+A guest synthesizer does not hand the host one action to run: it asks, is answered, and asks again, and the attempt stands open between its requests. **A conversation is that attempt**, driven one request at a time.
+
+```text
+Envelope = { conversation : ConversationId , transaction : Maybe TransactionToken }
+
+openAttempt       : PendingId -> Opened Conversation | OpenStopped Attempt
+request           : Envelope -> Elab a -> Answered (Returned a | CandidateFailed TransactionToken Diagnostic)
+                                         | Finished Attempt
+beginTransaction  : Envelope -> Returned TransactionToken
+commitTransaction : Envelope -> Returned Unit
+finishAttempt     : Envelope -> (acceptance : Elab Unit) -> Attempt
+
+postpone : [Meta] -> Elab a
+```
+
+**A conversation attempts a job already taken, and nothing else.** Which job runs, and the fuel a retry spends, stay the scheduler's and the loop's. What the conversation holds — the attempt's checkpoint, the frame, and the transactions open inside it — is the host's control state, and none of it is rolled back: the checkpoints are what a rollback restores. Opening checks what an attempt has always checked before anything is asked, and a job that fails it stops with the state as it was.
+
+**A failure inside a transaction is answered, not raised.** The host rolls back to the innermost transaction's checkpoint, closes it, and answers the request with `CandidateFailed` and the diagnostic, so the synthesizer learns that the candidate did not hold while it still has control, as `transact` returning `Left` tells it; there is no request to abandon a candidate. A failure outside every transaction ends the attempt as rejected. **A postponement and a defect end the attempt wherever they are raised**, rolled back past every open transaction to the attempt's checkpoint, as [above](#transact-catches-a-failure-and-not-a-postponement).
+
+**Every request names where the conversation stands**: the conversation, and the innermost transaction. Both are identified by the host and never reissued — a conversation's identifier is drawn from a counter no rollback restores, and a transaction token from one its conversation holds — so a request arriving late from an attempt rolled back, or from a candidate already closed, names something the host does not hold rather than something that has taken its place. A session that has identified every conversation it can, or a conversation that has issued every token it can, stops rather than wrap around to an identifier a late request may still carry. A token is an identifier and not a handle: it names no object in the arena. A request naming another conversation, or a transaction other than the innermost, and a commit with no transaction open, are defects of the synthesizer.
+
+**Nothing commits before the attempt is finished, and finishing accepts first.** An attempt finished with a transaction open is a defect; one with a binder open is the defect it is wherever an attempt succeeds; and the acceptance given then runs inside the attempt, before it commits, and rolls back with it where it fails, postpones, or breaks. Running one action as an attempt is the one-request conversation finished with nothing to accept, so a runner written as one action and a synthesizer answered request by request reach the same place by construction.
+
+**A synthesizer's `postpone` names metavariables by their handles**, and whether each can wake the goal is decided where the attempt ends, against `Ψ` as its rollback leaves it, and not when the request is made. A metavariable the attempt solved is unsolved again after the rollback, and as good a thing to wait on as any; one the attempt created, one solved before it, and an empty set are the defects [above](#a-defect-in-the-mechanism-is-outside-the-three-outcomes).
+
 ### Messages, `throw`, and `warn`
 
 **A synthesizer reports in a message it builds, and the host makes the diagnostic.**
@@ -791,8 +818,8 @@ The mechanism's own failure is `raiseDiagnostic`, which takes a diagnostic it ha
 | | Examples | Outcome | Caught by `transact` |
 | --- | --- | --- | --- |
 | **program diagnostic** | an equation no substitution satisfies; an obligation broken or rejected; a result escaping its scope; a result whose claim the goal's type refutes; a `throw` | `Failed` | yes |
-| **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session; a builder asked for what cannot be built; a binder left open by an attempt that succeeds, or closed twice; an equation between kinds that cannot meet, or a goal not at `Type`; an occurrence read outside its branch or its `case`, or a constructor the session does not know; an operation its effect does not declare, a handler's clauses naming one twice or missing one, or a cell read where no region holds it | `Broke`, naming the synthesizer and the goal | no |
-| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; a catalog scheme ill-formed under what it declares; a name the catalog calls a constructor and the constructor table does not hold; an effect the kinding environment declares and the effect table does not hold; a handler's answer type or residual row mentioning the region variable it binds; the mechanism's own invariants | `Broke` | no |
+| **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session; a builder asked for what cannot be built; a binder left open by an attempt that succeeds, or closed twice; an equation between kinds that cannot meet, or a goal not at `Type`; an occurrence read outside its branch or its `case`, or a constructor the session does not know; an operation its effect does not declare, a handler's clauses naming one twice or missing one, or a cell read where no region holds it; a request naming another conversation, or a transaction other than the innermost, or an attempt finished with a transaction open, or a commit with none open | `Broke`, naming the synthesizer and the goal | no |
+| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; a catalog scheme ill-formed under what it declares; a name the catalog calls a constructor and the constructor table does not hold; an effect the kinding environment declares and the effect table does not hold; a handler's answer type or residual row mentioning the region variable it binds; a session or a conversation that has issued every identifier it can; the mechanism's own invariants | `Broke` | no |
 
 **A `SynthRef` with no implementation is the host's defect and not the program's.** Name resolution resolved it against `Σ` where the goal was written ([above](#what-a-synthesis-goal-carries)), so the name exists; a session unable to run what it names was set up without it.
 

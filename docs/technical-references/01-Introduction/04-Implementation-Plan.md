@@ -769,6 +769,23 @@ no identifier is at once ready and blocked
 | A goal that warns and postpones, woken, then warns and commits | Its warning reported once, by the run that commits |
 | A loop's report, and the state after it | The warnings committed, drained into the report and out of the state. A driver reads them once |
 | A job submitted that warns and commits, then one submitted that fails, or one that breaks | The second submission stops with the report a loop would make, the first job's warning drained into it and out of the state. No loop has to run to read it |
+| A request inside a transaction, then the transaction committed and the attempt finished | Committed, with what the request did and the warning it raised. A committed transaction keeps its work |
+| A failure inside a transaction, after a handle issued outside it and one issued inside it | Answered `CandidateFailed`, naming that transaction, which is closed; its assignment and its warning are gone, the outer handle still resolves, and the inner one is stale. The synthesizer goes on outside it |
+| A failure inside two nested transactions | Only the inner one is closed, and the outer one commits after. Rolling back further discards a candidate the synthesizer did not give up |
+| A transaction opened after one a failure closed | A token never issued before |
+| A failure outside every transaction | Rejected, rolled back, and the job gone |
+| A metavariable solved inside a transaction, then postponed on | Registered under it, the attempt rolled back past the transaction to its checkpoint. Refusing a metavariable because it is solved when the request is made rejects a postponement its rollback makes sound |
+| A `postpone` on a metavariable solved before the attempt | A defect |
+| A defect inside a transaction | Rolled back to the attempt's checkpoint, past the transaction |
+| An attempt of a job still queued, or of one whose target is solved | Not opened, and the state left as it was |
+| An attempt opened again after one rolled back | Another conversation identifier. One restored with the rollback lets a late request of the first attempt name the second |
+| A request naming another conversation, or a transaction a failure has closed | A defect of the synthesizer |
+| A commit with no transaction open | A defect of its own, and not a mismatch: nothing is named that differs from what the host holds |
+| An attempt opened where every conversation identifier has been issued | A defect, and the state left as it was. Wrapping around issues an identifier a late request may still carry |
+| A transaction opened where its conversation has issued every token | A defect, rolled back to the attempt's checkpoint, for the same reason |
+| An attempt finished with a transaction open | A defect naming the transaction, and nothing committed |
+| An attempt finished with a binder open, and an acceptance that would fail | The binder defect. The binders are checked before anything is accepted |
+| An attempt whose requests assigned and warned, finished with an acceptance that fails | Rejected, and neither kept. The acceptance runs inside the attempt, before it commits |
 | A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
 | No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
 | No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |
