@@ -76,6 +76,7 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Catalog (ModuleCatalog, catalogOf)
 import Stella.Compiler.Elaborate.Constructors (ConstructorEnv, emptyConstructorEnv)
+import Stella.Compiler.Elaborate.Effects (EffectEnv, emptyEffectEnv)
 import Stella.Compiler.Elaborate.Context (XContext)
 import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..), MalformedGoal(..))
@@ -86,8 +87,8 @@ import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..), Obligation, 
 import Stella.Compiler.Elaborate.Pending (EqualityGoal, GoalRecord, Job(..), PendingId, Site, SynthRef, goalOf, newGoal)
 import Stella.Compiler.Elaborate.Row (XRowError)
 import Stella.Compiler.Elaborate.Scheduler (Scheduler, create, emptyScheduler, enqueueInitial, wake)
-import Stella.Compiler.Elaborate.Term (TermMetaVar, XExpr)
-import Stella.Compiler.Elaborate.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
+import Stella.Compiler.Elaborate.Term (Region, TermMetaVar, XExpr)
+import Stella.Compiler.Elaborate.TermMeta (TermError(..), assignTermMeta, regionWithin, termScopeOf, zonkExpr)
 import Stella.Compiler.Elaborate.TermMeta as TermMeta
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint, XType(..))
 import Stella.Compiler.TypedCore (Ident(..), JoinName(..), TyVar(..))
@@ -214,7 +215,8 @@ newtype Elab a = Elab (ElabEnv -> SolverState -> Tuple (Outcome a) SolverState)
 -- | What an `Elab` action reads and never changes.
 -- |
 -- | `session` is fixed for the whole session, assembled before the first job:
--- | the value catalog, the type-level environment, and the constructor table. `frame` is the site and
+-- | the value catalog, the type-level environment, and the tables of
+-- | constructors and of effects. `frame` is the site and
 -- | goal of the attempt running, which the runner sets and nothing inside the
 -- | attempt changes; an action run outside any attempt has none.
 type ElabEnv =
@@ -226,6 +228,7 @@ type SessionEnv =
   { catalog :: ModuleCatalog
   , kinding :: KindingEnv
   , constructors :: ConstructorEnv
+  , effects :: EffectEnv
   }
 
 -- | Where the running attempt stands. An equality job has a site and no goal.
@@ -235,7 +238,7 @@ type Frame =
   }
 
 emptySessionEnv :: SessionEnv
-emptySessionEnv = { catalog: catalogOf [], kinding: emptyKindingEnv, constructors: emptyConstructorEnv }
+emptySessionEnv = { catalog: catalogOf [], kinding: emptyKindingEnv, constructors: emptyConstructorEnv, effects: emptyEffectEnv }
 
 -- | Run an action outside any attempt, reading the session given.
 runElabIn :: forall a. SessionEnv -> SolverState -> Elab a -> Tuple (Outcome a) SolverState
@@ -642,31 +645,33 @@ freshTypeMeta context kind = Elab \_ s ->
   in
     Tuple (Done (XMeta m)) (s { tentative { metas = metas } })
 
--- | A term metavariable at the type given, created under the context given.
+-- | A term metavariable at the type given, created under the context given and in
+-- | the region of cells given, where it stands in one.
 -- |
--- | Its scope is what that context binds, read by `termScopeOf` rather than
--- | stated by the caller, so no caller can admit a solution the context does
--- | not have in scope. The caller places it in a term as `ETermMeta`, with the
--- | annotation of the place it stands.
-freshTermMeta :: XContext -> XType -> Elab TermMetaVar
-freshTermMeta context ty = Elab \_ s ->
+-- | Its scope is what that context binds and the cells that region holds, read
+-- | by `termScopeOf` rather than stated by the caller, so no caller can admit a
+-- | solution the context does not have in scope. The caller places it in a term
+-- | as `ETermMeta`, with the annotation of the place it stands.
+freshTermMeta :: XContext -> Maybe Region -> XType -> Elab TermMetaVar
+freshTermMeta context region ty = Elab \_ s ->
   let
-    Tuple m metas = TermMeta.freshTermMeta { ty, scope: termScopeOf context } s.tentative.metas
+    Tuple m metas = TermMeta.freshTermMeta { ty, scope: termScopeOf context region } s.tentative.metas
   in
     Tuple (Done m) (s { tentative { metas = metas } })
 
--- | `⟨ τ by f ⟩` at a site: a term metavariable at `τ` under the site's context,
--- | and the synthesis job that fills it, created together and queued for a first
--- | attempt.
+-- | `⟨ τ by f ⟩` at a site and in a region of cells: a term metavariable at `τ`
+-- | under the site's context and in the region, and the synthesis job that fills
+-- | it, created together and queued for a first attempt. The goal carries the
+-- | region, so the attempt that runs it stands in the same one.
 -- |
 -- | The job is queued rather than attempted, since it may be created inside an
 -- | attempt, and attempting it there would open one inside another. Both belong
 -- | to what the current attempt owns, so a rollback removes the two together.
 -- | The metavariable is returned for the caller to place as `ETermMeta`.
-createSynthesis :: Site -> XType -> SynthRef -> Elab (Tuple PendingId TermMetaVar)
-createSynthesis site expectedType synthesizer = Elab \_ s ->
+createSynthesis :: Site -> XType -> SynthRef -> Maybe Region -> Elab (Tuple PendingId TermMetaVar)
+createSynthesis site expectedType synthesizer region = Elab \_ s ->
   let
-    Tuple goal metas = newGoal site expectedType synthesizer s.tentative.metas
+    Tuple goal metas = newGoal site expectedType synthesizer region s.tentative.metas
     Tuple id created = create site (JobSynthesis goal) s.tentative.scheduler
   in
     Tuple (Done (Tuple id (goalOf goal).target))
@@ -678,7 +683,8 @@ createSynthesis site expectedType synthesizer = Elab \_ s ->
 -- | `createSynthesis` is the one supported way to make a job and its target; this
 -- | is the independent check of what it guarantees. The target must be held
 -- | unsolved, stand at the goal's type once both are zonked against the current
--- | `Ψ`, and have a scope within what the site binds — within and not equal,
+-- | `Ψ`, and have a scope within what the site binds and the goal's region
+-- | holds — within and not equal,
 -- | since a target standing in another solution is narrowed with it. A violation
 -- | is a defect of the host and not of the program.
 checkSynthesisTarget :: PendingId -> Site -> GoalRecord -> Elab Unit
@@ -692,7 +698,7 @@ checkSynthesisTarget id site record = Elab \_ s ->
       Just (TermUnsolved info)
         | substitute metas info.ty /= substitute metas goal.expectedType ->
             Just (TargetTypeDiffers (substitute metas info.ty) (substitute metas goal.expectedType))
-        | not (within info.scope (termScopeOf site.context)) ->
+        | not (within info.scope (termScopeOf site.context goal.region)) ->
             Just (TargetScopeWider goal.target)
         | otherwise -> Nothing
   in
@@ -704,6 +710,7 @@ checkSynthesisTarget id site record = Elab \_ s ->
     Set.subset inner.values outer.values
       && Set.subset inner.types outer.types
       && Set.subset inner.kinds outer.kinds
+      && regionWithin inner.region outer.region
 
 -- | `?m := e`, reported at the site given.
 -- |
@@ -734,6 +741,7 @@ termMisuse = case _ of
   TermEscapingType _ _ -> false
   TermEscapingKind _ _ -> false
   TermCapturesJoin _ _ -> false
+  TermEscapingCell _ _ -> false
 
 -- | Assume a row constraint at a site, returning the context that carries it.
 -- |

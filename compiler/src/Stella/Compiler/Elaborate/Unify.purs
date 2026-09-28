@@ -65,7 +65,7 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Kind (KindMetaVar(..), XKind(..), kindMetasOf, kindVarsOf, occursInKind)
 import Stella.Compiler.Elaborate.Row (XRowError, XRowNormalForm, payloadEquations, rebuild, xnf)
-import Stella.Compiler.Elaborate.Term (TermMetaVar, XExpr)
+import Stella.Compiler.Elaborate.Term (Region, TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.Type (MetaVar(..), Scope, XConstraint(..), XRowEntry(..), XType(..), freeRigids, kindMetasOfType, metasOf, occursIn, outOfScope)
 import Stella.Compiler.TypedCore (Ident, KindVar, RowElemKind(..), RowKey(..), TyVar)
 import Data.Array as Array
@@ -134,10 +134,15 @@ data KindMetaBinding
 -- |
 -- | Join points are not among them. A solution may jump only to a join point it
 -- | binds itself, so no join point of the place it stands in is in scope.
+-- |
+-- | `region` is the region of cells where it was created, if one is there: a
+-- | solution reads and writes only cells of that region, a cell being named by
+-- | its key alone and meaning the innermost region's.
 type TermScope =
   { values :: Set Ident
   , types :: Set TyVar
   , kinds :: Set KindVar
+  , region :: Maybe Region
   }
 
 -- | What `Ψ` records of an unsolved term metavariable, that is, `?m : τ [Γ]`.

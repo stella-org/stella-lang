@@ -32,7 +32,7 @@ import Stella.Compiler.Elaborate.Term (TermMetaVar)
 import Stella.Compiler.Elaborate.Type (MetaVar, XType)
 import Stella.Compiler.Elaborate.Row (XRowError)
 import Stella.Compiler.Elaborate.Unify (UnifyError)
-import Stella.Compiler.TypedCore (Ident, JoinName, Qualified, RowKey, TyName, TyVar)
+import Stella.Compiler.TypedCore (EffName, Ident, JoinName, OpName, Qualified, RowKey, TyName, TyVar)
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Generic.Rep (class Generic)
 import Data.Set (Set)
@@ -130,6 +130,13 @@ data Defect
   -- | hold. The two are assembled from one signature, so this is an invariant of
   -- | the host broken.
   | ConstructorTableMismatch (Qualified Ident)
+  -- | An effect the kinding environment declares and the effect table does not
+  -- | hold. The two are assembled from one signature.
+  | EffectTableMismatch (Qualified EffName)
+  -- | A handler's answer type or residual row mentioning the region variable it
+  -- | binds. Both are given where the handler is opened, outside the region, so
+  -- | this is an invariant of the host broken.
+  | RegionEscapes TyVar
   -- | A kernel operation that reads where it stands, run with no frame: outside
   -- | any attempt. The host called it where it had no site to give.
   | NoFrame
@@ -215,6 +222,9 @@ data BuildError
   | OccurrenceOfAnotherCase Handle
   -- | A tree used in the tree of another `case`.
   | TreeOfAnotherCase Handle
+  -- | A term that reads or writes a cell of the region it was built in, or waits
+  -- | on a goal asked for there, placed where another region stands.
+  | RegionMismatch Handle
   -- | A name the constructor table does not hold, and the catalog does not call a
   -- | constructor.
   | UnknownConstructor (Qualified Ident)
@@ -241,6 +251,24 @@ data BuildError
   | DefaultMismatch Handle
   -- | A `case` closed with no result type over a tree that reaches no leaf.
   | NoLeaf Handle
+  -- | An operation the effect does not declare.
+  | UnknownOperation (Qualified EffName) OpName
+  -- | An operation given another number of type arguments than it binds.
+  | OperationArity OpName P.Int P.Int
+  -- | A handler given a clause for one operation twice, or none for one of its
+  -- | effect's operations.
+  | DuplicateClause OpName
+  | MissingClause OpName
+  -- | A handler closed with another number of clause bodies than it was opened
+  -- | with, or of initial values than it has cells.
+  | ClauseCount Handle P.Int P.Int
+  | InitialValueCount Handle P.Int P.Int
+  -- | A layout giving one key twice.
+  | DuplicateCell RowKey
+  -- | A cell read or written in a scope standing in no region, or one the
+  -- | region does not hold.
+  | NoRegion Handle
+  | CellAbsent RowKey
   -- | A binder closed in a scope other than the one it was opened in, or by the
   -- | operation that closes another sort of binder.
   | BinderMisuse Handle

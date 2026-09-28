@@ -17,6 +17,7 @@ import Stella.Compiler.Elaborate.BuildRecord (openEff, recordEmpty, recordExtend
 import Stella.Compiler.Elaborate.BuildTerm (literal, localVariable)
 import Stella.Compiler.Elaborate.Catalog (catalogOf)
 import Stella.Compiler.Elaborate.Constructors (constructorsOf)
+import Stella.Compiler.Elaborate.Effects (effectsOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, resolveExpr, runElabIn, withFrame)
@@ -100,7 +101,7 @@ context =
     ]
 
 session :: SessionEnv
-session = { catalog: catalogOf [], kinding: kindingOf primSignature, constructors: constructorsOf primSignature }
+session = { catalog: catalogOf [], kinding: kindingOf primSignature, constructors: constructorsOf primSignature, effects: effectsOf primSignature }
 
 site :: Site
 site = { context, origin: InDeclaration (Qualified (ModuleName "Main") (Ident "decl")) }

@@ -60,6 +60,7 @@ import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..))
 import Stella.Compiler.Elaborate.Elab (Elab, askEnv, assume, break, currentMetas, freshBinderName, holdOpen, issue, resolveBinder, resolveScope, resolveType)
 import Stella.Compiler.Elaborate.Handle (BinderObject(..), Handle, HandleObject(..), ScopeId(..), ScopeObject)
 import Stella.Compiler.Elaborate.Kinding (quantifiable)
+import Stella.Compiler.Elaborate.Pending (goalOf)
 import Stella.Compiler.Elaborate.Type (XConstraint(..), XRowEntry(..), XType(..), xRowEntryKey)
 import Stella.Compiler.Elaborate.Unify (substitute)
 import Stella.Compiler.Elaborate.View (ConstraintView, KindView, PayloadView(..))
@@ -70,13 +71,24 @@ import Data.Maybe (Maybe(..))
 import Data.Set as Set
 import Data.Traversable (traverse)
 
--- | The root build scope, opened on the site of the running job.
+-- | The root build scope, opened on the site of the running job, in the region of
+-- | cells its goal was asked for in, where it was asked for in one.
 rootScope :: Elab Handle
 rootScope = do
   env <- askEnv
   case env.frame of
     Nothing -> break NoFrame
-    Just frame -> issue (ScopeObject { id: ScopeId 0, ancestors: Set.empty, context: frame.site.context, joins: Map.empty, tree: Nothing })
+    Just frame ->
+      issue
+        ( ScopeObject
+            { id: ScopeId 0
+            , ancestors: Set.empty
+            , context: frame.site.context
+            , joins: Map.empty
+            , tree: Nothing
+            , region: frame.goal >>= \g -> (goalOf g.goal).region
+            }
+        )
 
 -- | A type variable the scope binds.
 typeVariable :: Handle -> TyVar -> Elab Handle
@@ -175,6 +187,7 @@ closeForall scopeHandle binderHandle bodyHandle = do
     CaseBinder _ -> misuse
     BindBinder _ -> misuse
     SwitchBinder _ -> misuse
+    HandleBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -223,6 +236,7 @@ closeConstraint scopeHandle binderHandle bodyHandle = do
     CaseBinder _ -> misuse
     BindBinder _ -> misuse
     SwitchBinder _ -> misuse
+    HandleBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 

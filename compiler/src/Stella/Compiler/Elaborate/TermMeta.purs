@@ -8,6 +8,7 @@
 module Stella.Compiler.Elaborate.TermMeta
   ( TermError(..)
   , termScopeOf
+  , regionWithin
   , freshTermMeta
   , assignTermMeta
   , zonkExpr
@@ -18,10 +19,10 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Context (XContext)
-import Stella.Compiler.Elaborate.Term (TermMetaVar(..), XDecisionTree(..), XExpr(..), XHandler, XOpClause(..), freeVarsOf, metasOfTerm)
+import Stella.Compiler.Elaborate.Term (Region, TermMetaVar(..), XDecisionTree(..), XExpr(..), XHandler, XOpClause(..), freeVarsOf, metasOfTerm)
 import Stella.Compiler.Elaborate.Type (XConstraint, XType(..), freeKindVars, freeRigids, kindMetasOfType, metasOf)
 import Stella.Compiler.Elaborate.Unify (MetaContext, TermBinding(..), TermMetaInfo, TermScope, UnifyError, narrowMetas, substitute, substituteKind)
-import Stella.Compiler.TypedCore (Ident, JoinName, KindVar, TyVar)
+import Stella.Compiler.TypedCore (Ident, JoinName, KindVar, RowKey, TyVar)
 import Data.Either (Either(..))
 import Data.Foldable (foldM)
 import Data.Generic.Rep (class Generic)
@@ -47,17 +48,30 @@ data TermError
   -- | A solution jumping to a join point it does not bind. A join point does not
   -- | cross into a term supplied from elsewhere.
   | TermCapturesJoin TermMetaVar JoinName
+  -- | A solution reading or writing a cell the region the metavariable was
+  -- | created in does not hold, or with no region there at all.
+  | TermEscapingCell TermMetaVar RowKey
   -- | A metavariable the solution holds, whose own type or kind mentions a
   -- | variable the scope it is narrowed to excludes.
   | TermNarrowing UnifyError
 
--- | The scope a context gives: the values, types, and kinds it binds.
-termScopeOf :: XContext -> TermScope
-termScopeOf context =
+-- | The scope a context gives, in the region given: the values, types, and kinds
+-- | it binds, and the cells the region holds.
+termScopeOf :: XContext -> Maybe Region -> TermScope
+termScopeOf context region =
   { values: Map.keys context.vars
   , types: Map.keys context.tyVars
   , kinds: context.kindVars
+  , region
   }
+
+-- | Whether one region is within another: none, or the same region with no more
+-- | cells, each at the same type. A scope narrows by it as by its variables.
+regionWithin :: Maybe Region -> Maybe Region -> P.Boolean
+regionWithin inner outer = case inner, outer of
+  Nothing, _ -> true
+  Just i, Just o -> i.var == o.var && Map.isSubmap i.cells o.cells
+  Just _, Nothing -> false
 
 freshTermMeta :: TermMetaInfo -> MetaContext -> Tuple TermMetaVar MetaContext
 freshTermMeta info ctx =
@@ -103,6 +117,7 @@ assignTermMeta ctx m given = case Map.lookup m ctx.termBindings of
     escaping (TermEscapingType m) (Set.difference free.types info.scope.types)
     escaping (TermEscapingKind m) (Set.difference free.kinds info.scope.kinds)
     escaping (TermCapturesJoin m) free.joins
+    escaping (TermEscapingCell m) (Set.difference free.cells (cellsOf info.scope.region))
     narrowedTerms <- foldM (narrowTerm info.scope) ctx (Set.toUnfoldable metas.terms :: P.Array TermMetaVar)
     narrowed <- lmap TermNarrowing
       (narrowMetas narrowedTerms (typeScope info.scope) metas.types metas.kinds)
@@ -123,6 +138,7 @@ narrowTerm scope ctx t = case Map.lookup t ctx.termBindings of
         { values: Set.intersection tInfo.scope.values scope.values
         , types: Set.intersection tInfo.scope.types scope.types
         , kinds: Set.intersection tInfo.scope.kinds scope.kinds
+        , region: commonRegion tInfo.scope.region scope.region
         }
       ty = substitute ctx tInfo.ty
     case Set.findMin (Set.difference (freeRigids ty) within.types) of
@@ -138,6 +154,20 @@ narrowTerm scope ctx t = case Map.lookup t ctx.termBindings of
   -- A zonked solution holds no metavariable that is solved.
   Just (TermAssigned _) -> Left (TermMetaAlreadyAssigned t)
   Nothing -> Left (TermMetaUnbound t)
+
+-- The keys of the cells a region holds.
+cellsOf :: Maybe Region -> Set RowKey
+cellsOf = case _ of
+  Just region -> Map.keys region.cells
+  Nothing -> Set.empty
+
+-- What two regions have in common: one region's cells the other holds at the
+-- same type, where they are the same region, and none otherwise.
+commonRegion :: Maybe Region -> Maybe Region -> Maybe Region
+commonRegion l r = case l, r of
+  Just a, Just b
+    | a.var == b.var -> Just { var: a.var, cells: Map.filterWithKey (\k ty -> Map.lookup k b.cells == Just ty) a.cells }
+  _, _ -> Nothing
 
 typeScope :: TermScope -> { types :: Set TyVar, kinds :: Set KindVar }
 typeScope scope = { types: scope.types, kinds: scope.kinds }

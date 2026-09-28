@@ -9,6 +9,7 @@
 module Stella.Compiler.Elaborate.BuildScope
   ( usableIn
   , usableTermIn
+  , regionFits
   , issueTerm
   , built
   , kinded
@@ -64,9 +65,10 @@ import Stella.Compiler.Elaborate.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), KindingScope, checkConstraint, checkKind, quantifiable, settledIn, synthKind, wellFormedKey)
 import Stella.Compiler.Elaborate.Row (rebuild, xnf)
 import Stella.Compiler.Elaborate.Pending (Site)
-import Stella.Compiler.Elaborate.Term (XDecisionTree, XExpr, freeVarsOf)
+import Stella.Compiler.Elaborate.Term (Region, XDecisionTree, XExpr, freeVarsOf, termMetasUnderRegions)
+import Stella.Compiler.Elaborate.TermMeta (zonkExpr)
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..), freeRigids, metasOf)
-import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, lookupMeta, substitute, substituteKind)
+import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, TermBinding(..), lookupMeta, lookupTermMeta, substitute, substituteKind)
 import Stella.Compiler.Elaborate.View (ConstraintView(..), KindView(..))
 import Stella.Compiler.TypedCore (Ident, JoinName, KindVar, Qualified, RowElemKind(..), RowKey, TyName, TyVar(..))
 import Stella.Compiler.TypedCore.Prim (functionTy, recordTy, variantTy)
@@ -96,14 +98,48 @@ usableIn scope handle = do
 -- | **Every join point the term jumps to must be one the scope may jump to.** A
 -- | term built outside an abstraction is visible inside it, and one that jumps
 -- | to a join point outside would carry the jump under the abstraction.
+-- |
+-- | **A term that depends on its region must stand in the one it was built
+-- | in**, by `regionFits`.
 usableTermIn :: ScopeObject -> Handle -> Elab ExprObject
 usableTermIn scope handle = do
   object <- resolveExpr handle
   case object.builtIn of
     Just id | id == scope.id || Set.member id scope.ancestors ->
-      if joinsWithin scope object.term then pure object
-      else rejected (JoinOutOfScope handle)
+      unless (joinsWithin scope object.term) (rejected (JoinOutOfScope handle))
     _ -> rejected (ScopeViolation handle)
+  regionFits scope.region handle object
+  pure object
+
+-- | Refuse a term that depends on the region it was built in where another
+-- | region stands.
+-- |
+-- | **A cell is named by its key alone and means the innermost region's**, so a
+-- | `readCell n` built in one handler's clause and placed in a clause of another
+-- | handler holding an `n` would read the other's cell. A term depends on its
+-- | region where it reads or writes a cell outside every handler owning cells
+-- | it binds, or holds, outside those handlers' clauses, an unsolved term
+-- | metavariable created in a region — a goal asked for there, which may be
+-- | solved by one that does. A goal asked for in a clause of a handler inside
+-- | the term is filled in that handler's region, which the term binds itself. Such a term stands only in the
+-- | region it was built in. A term depending on none — pure, or one whose cells
+-- | are all a handler's own inside it — stands anywhere its scope allows.
+regionFits :: Maybe Region -> Handle -> ExprObject -> Elab Unit
+regionFits region handle object = do
+  metas <- currentMetas
+  let
+    term = zonkExpr metas object.term
+    -- A metavariable is filled in the region it was created in, which the term
+    -- binds itself where that is a handler's inside it.
+    freeIn occurrence = case lookupTermMeta metas occurrence.meta of
+      Just (TermUnsolved info) -> case info.scope.region of
+        Just r -> not (Set.member r.var occurrence.bound)
+        Nothing -> false
+      _ -> false
+    depends =
+      not (Set.isEmpty (freeVarsOf term).cells)
+        || Array.any freeIn (termMetasUnderRegions term)
+  when (depends && map _.var object.region /= map _.var region) (rejected (RegionMismatch handle))
 
 -- | Whether every join point a term jumps to free is one the scope may jump to.
 joinsWithin :: ScopeObject -> XExpr Unit -> P.Boolean
@@ -126,7 +162,7 @@ issueTerm scope term claimed = do
   case checkKind env.session.kinding (kindingScopeOf scope) metas XKType zonked of
     Left fault -> break (KindingFailed fault)
     Right _ ->
-      issue (ExprObject { term, claimed: zonked, scope: kindingScopeOf scope, builtIn: Just scope.id })
+      issue (ExprObject { term, claimed: zonked, scope: kindingScopeOf scope, builtIn: Just scope.id, region: scope.region })
 
 -- | Issue a type built in the scope, once the kinding judgement admits it.
 built :: ScopeObject -> XType -> Elab Handle
@@ -313,14 +349,15 @@ treeChild scope context = childWith scope context scope.joins scope.tree
 caseRoot :: ScopeObject -> Elab ScopeObject
 caseRoot scope = do
   id <- freshScopeId
-  pure { id, ancestors: Set.insert scope.id scope.ancestors, context: scope.context, joins: scope.joins, tree: Just id }
+  pure { id, ancestors: Set.insert scope.id scope.ancestors, context: scope.context, joins: scope.joins, tree: Just id, region: scope.region }
 
 -- | A child of the scope with the context, the join points, and the decision tree
--- | given.
+-- | given, standing in the scope's region of cells: a region is lexical, and
+-- | only an operation clause of a handler owning one opens another.
 childWith :: ScopeObject -> XContext -> Map JoinName JoinSignature -> Maybe ScopeId -> Elab ScopeObject
 childWith scope context joins tree = do
   id <- freshScopeId
-  pure { id, ancestors: Set.insert scope.id scope.ancestors, context, joins, tree }
+  pure { id, ancestors: Set.insert scope.id scope.ancestors, context, joins, tree, region: scope.region }
 
 -- | Whether what was built in the scope named is visible under a binder closed
 -- | in the scope given: built in the binder's own body scope, in the scope, or

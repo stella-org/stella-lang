@@ -16,6 +16,7 @@ import Stella.Compiler.Elaborate.Build (openForall, rootScope)
 import Stella.Compiler.Elaborate.BuildScope (usableTermIn)
 import Stella.Compiler.Elaborate.BuildTerm (globalRef, literal, localVariable)
 import Stella.Compiler.Elaborate.Constructors (emptyConstructorEnv)
+import Stella.Compiler.Elaborate.Effects (emptyEffectEnv)
 import Stella.Compiler.Elaborate.Catalog (EntrySort(..), catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
@@ -84,6 +85,7 @@ session =
       ]
   , kinding
   , constructors: emptyConstructorEnv
+  , effects: emptyEffectEnv
   }
   where
   entry name kindVars body = { name: global name, sort: ValueEntry, scheme: { kindVars, body }, attributes: [] }
@@ -202,7 +204,7 @@ spec = describe "Elaborate.BuildTerm" do
       let
         unscoped = do
           root <- rootScope >>= resolveScope
-          term <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt, scope: { kindVars: Set.empty, tyVars: Map.empty }, builtIn: Nothing })
+          term <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt, scope: { kindVars: Set.empty, tyVars: Map.empty }, builtIn: Nothing, region: Nothing })
           void (usableTermIn root term)
       refuses unscoped scopeViolation
 

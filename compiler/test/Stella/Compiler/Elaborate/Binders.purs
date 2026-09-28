@@ -18,6 +18,7 @@ import Stella.Compiler.Elaborate.Build (emptyRow, extendRow, openConstraint, ope
 import Stella.Compiler.Elaborate.BuildTerm (closeConstraintAbs, closeLambda, closeLet, closeLetRec, closeTypeAbs, constraintApply, literal, openConstraintAbs, openLambda, openLet, openLetRec, openTypeAbs, termApply, typeApply)
 import Stella.Compiler.Elaborate.Build as Build
 import Stella.Compiler.Elaborate.Constructors (emptyConstructorEnv)
+import Stella.Compiler.Elaborate.Effects (emptyEffectEnv)
 import Stella.Compiler.Elaborate.Catalog (catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindTyVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
@@ -67,7 +68,7 @@ kinding =
     { types = Map.insert (tyName "List") { kindVars: [], body: KFun KType KType } (kindingOf primSignature).types }
 
 session :: SessionEnv
-session = { catalog: catalogOf [], kinding, constructors: emptyConstructorEnv }
+session = { catalog: catalogOf [], kinding, constructors: emptyConstructorEnv, effects: emptyEffectEnv }
 
 r :: TyVar
 r = TyVar "r"
@@ -213,7 +214,7 @@ spec = describe "Elaborate.BuildTerm, binders and applications" do
       let
         claimedAt ty = do
           root <- rootScope
-          f <- issue (ExprObject { term: EVar unit (Ident "f"), claimed: ty, scope: { kindVars: Set.empty, tyVars: context.tyVars }, builtIn: Just (ScopeId 0) })
+          f <- issue (ExprObject { term: EVar unit (Ident "f"), claimed: ty, scope: { kindVars: Set.empty, tyVars: context.tyVars }, builtIn: Just (ScopeId 0), region: Nothing })
           litOne root >>= termApply root f
       case outcomeIn withMetas.state (claimedAt (XApp (XMeta withMetas.f) xInt)) of
         Postponed (ExplicitPostponement ms) -> ms `shouldEqual` Set.singleton withMetas.f
@@ -229,7 +230,7 @@ spec = describe "Elaborate.BuildTerm, binders and applications" do
       let
         claimedAt ty = do
           root <- rootScope
-          f <- issue (ExprObject { term: EVar unit (Ident "f"), claimed: ty, scope: { kindVars: Set.empty, tyVars: context.tyVars }, builtIn: Just (ScopeId 0) })
+          f <- issue (ExprObject { term: EVar unit (Ident "f"), claimed: ty, scope: { kindVars: Set.empty, tyVars: context.tyVars }, builtIn: Just (ScopeId 0), region: Nothing })
           litOne root >>= termApply root f
         notAFunction = case _ of
           Broke (BuildRejected (NotAFunction _)) -> pure unit

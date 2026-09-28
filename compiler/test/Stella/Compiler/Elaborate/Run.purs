@@ -404,11 +404,11 @@ spec = describe "Elaborate.Run" do
     it "is created together with its target, at the goal's type and under the site's context" do
       let
         bound = { context: bindVar emptyXContext (Ident "d") tA, origin: here }
-        Tuple outcome s = runElab session (createSynthesis bound tB resolver)
+        Tuple outcome s = runElab session (createSynthesis bound tB resolver Nothing)
       case outcome of
         Done (Tuple id target) -> do
           lookupTermMeta s.tentative.metas target `shouldEqual`
-            Just (TermUnsolved { ty: tB, scope: termScopeOf bound.context })
+            Just (TermUnsolved { ty: tB, scope: termScopeOf bound.context Nothing })
           map _.site (lookupPending s.tentative.scheduler id) `shouldEqual` Just bound
           map (jobTarget <<< _.job) (lookupPending s.tentative.scheduler id) `shouldEqual` Just (Just target)
           (readyIds s.tentative.scheduler) `shouldEqual` [ id ]
@@ -418,7 +418,7 @@ spec = describe "Elaborate.Run" do
     it "is rolled back together with its target" do
       let
         attempt :: Elab Unit
-        attempt = createSynthesis site tB resolver *> throw failure
+        attempt = createSynthesis site tB resolver Nothing *> throw failure
         Tuple _ s = runElab session (transact attempt)
       s.tentative.metas.nextTerm `shouldEqual` 0
       Map.size s.tentative.metas.termBindings `shouldEqual` 0
@@ -427,7 +427,7 @@ spec = describe "Elaborate.Run" do
 
     it "halts under the host runner, which holds no synthesizer, and stays pending" do
       let
-        Tuple outcome s0 = runElab session (createSynthesis site tB resolver)
+        Tuple outcome s0 = runElab session (createSynthesis site tB resolver Nothing)
       case outcome, takeReady s0.tentative.scheduler of
         Done (Tuple id _), Just (Tuple _ taken) -> do
           let
@@ -440,8 +440,8 @@ spec = describe "Elaborate.Run" do
       let
         bound = { context: bindVar emptyXContext (Ident "d") tA, origin: here }
         narrowing = do
-          Tuple id target <- createSynthesis bound tB resolver
-          outer <- freshTermMeta emptyXContext tB
+          Tuple id target <- createSynthesis bound tB resolver Nothing
+          outer <- freshTermMeta emptyXContext Nothing tB
           assignTerm site outer (ETermMeta 0 target)
           pure id
         Tuple outcome s0 = runElab session narrowing
@@ -451,7 +451,7 @@ spec = describe "Elaborate.Run" do
 
     it "halts on a target Ψ does not hold, running nothing and changing nothing" do
       let
-        Tuple record _ = newGoal site tB resolver metas.ctx
+        Tuple record _ = newGoal site tB resolver Nothing metas.ctx
         Tuple id scheduler = create site (JobSynthesis record) emptyScheduler
         Tuple result s = attemptPending emptySessionEnv id (sessionWith scheduler)
       result `shouldEqual` Halted (MalformedSynthesisJob id (TargetAbsent (goalOf record).target))
@@ -460,7 +460,7 @@ spec = describe "Elaborate.Run" do
     it "halts on a target solved already" do
       let
         solving = do
-          Tuple id target <- createSynthesis site tB resolver
+          Tuple id target <- createSynthesis site tB resolver Nothing
           assignTerm site target (ELit 0 (LitInt 0))
           pure (Tuple id target)
         Tuple outcome s0 = runElab session solving
@@ -471,7 +471,7 @@ spec = describe "Elaborate.Run" do
 
     it "halts on a target at another type, and on one scoped wider than its site" do
       let
-        Tuple record ctx = newGoal site tB resolver metas.ctx
+        Tuple record ctx = newGoal site tB resolver Nothing metas.ctx
         target = (goalOf record).target
         Tuple id scheduler = create site (JobSynthesis record) emptyScheduler
         retyped = rebound target (\info -> info { ty = tA }) ctx
@@ -486,7 +486,7 @@ spec = describe "Elaborate.Run" do
       -- not while it is `A`.
       let
         Tuple alpha ctx0 = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty } } metas.ctx
-        Tuple record ctx1 = newGoal site (XMeta alpha) resolver ctx0
+        Tuple record ctx1 = newGoal site (XMeta alpha) resolver Nothing ctx0
         target = (goalOf record).target
         Tuple id scheduler = create site (JobSynthesis record) emptyScheduler
         standingAtB = rebound target (\info -> info { ty = tB }) ctx1

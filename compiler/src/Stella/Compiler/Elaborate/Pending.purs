@@ -22,13 +22,14 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Context (Origin, XContext)
 import Stella.Compiler.Elaborate.Kind (XKind)
-import Stella.Compiler.Elaborate.Term (TermMetaVar)
+import Stella.Compiler.Elaborate.Term (Region, TermMetaVar)
 import Stella.Compiler.Elaborate.TermMeta (freshTermMeta, termScopeOf)
 import Stella.Compiler.Elaborate.Unify (MetaContext)
 import Stella.Compiler.Elaborate.Type (MetaVar, XType)
 import Stella.Compiler.TypedCore (Ident, Qualified)
 
 import Data.Generic.Rep (class Generic)
+import Data.Maybe (Maybe)
 import Data.Set (Set)
 import Data.Tuple (Tuple(..))
 import Data.Show.Generic (genericShow)
@@ -80,7 +81,8 @@ type SynthRef = Qualified Ident
 -- | `Synth ?m τ f`: what is particular to one synthesis goal.
 -- |
 -- | Where it stands is the envelope's `Site`, which the record does not repeat.
--- | `expectedType` stands at `Type`.
+-- | `expectedType` stands at `Type`, and `region` is the region of cells the goal
+-- | was asked for in.
 -- |
 -- | Its constructor is not exported. `createSynthesis` is the one supported way
 -- | to make a record together with its job, and the runner checks the target
@@ -89,22 +91,29 @@ newtype GoalRecord = GoalRecord
   { target :: TermMetaVar
   , expectedType :: XType
   , synthesizer :: SynthRef
+  , region :: Maybe Region
   }
 
 -- | A goal, and the term metavariable its result is assigned to, created
--- | together at `expectedType` under the site's context.
+-- | together at `expectedType` under the site's context, in the region of cells
+-- | given.
+-- |
+-- | **The region is the goal's own, and not the site's.** A site says what the
+-- | goal's variables are, which is all an equation or an obligation reads of it;
+-- | which cells a result may read and write is known only where the goal was
+-- | asked for, and is carried here to be restored where the goal is attempted.
 -- |
 -- | A trusted helper of `createSynthesis`, which installs the context returned
 -- | and registers the job in the same act. Used on its own it is outside the
 -- | contract: a record paired with any other `Ψ` names a target that `Ψ` may not
 -- | hold, which the runner reports as a defect.
-newGoal :: Site -> XType -> SynthRef -> MetaContext -> Tuple GoalRecord MetaContext
-newGoal site expectedType synthesizer ctx =
-  Tuple (GoalRecord { target, expectedType, synthesizer }) ctx'
+newGoal :: Site -> XType -> SynthRef -> Maybe Region -> MetaContext -> Tuple GoalRecord MetaContext
+newGoal site expectedType synthesizer region ctx =
+  Tuple (GoalRecord { target, expectedType, synthesizer, region }) ctx'
   where
-  Tuple target ctx' = freshTermMeta { ty: expectedType, scope: termScopeOf site.context } ctx
+  Tuple target ctx' = freshTermMeta { ty: expectedType, scope: termScopeOf site.context region } ctx
 
-goalOf :: GoalRecord -> { target :: TermMetaVar, expectedType :: XType, synthesizer :: SynthRef }
+goalOf :: GoalRecord -> { target :: TermMetaVar, expectedType :: XType, synthesizer :: SynthRef, region :: Maybe Region }
 goalOf (GoalRecord goal) = goal
 
 data Job

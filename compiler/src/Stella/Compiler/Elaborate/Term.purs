@@ -29,12 +29,14 @@ module Stella.Compiler.Elaborate.Term
   , XKeyBranch
   , Residue(..)
   , FreeVars
+  , Region
   , MetasOfTerm
   , xExprAnnotation
   , fromCoreExpr
   , toCoreExpr
   , freeVarsOf
   , metasOfTerm
+  , termMetasUnderRegions
   ) where
 
 import Prelude
@@ -49,6 +51,7 @@ import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
 import Data.Foldable (foldMap)
 import Data.Generic.Rep (class Generic)
+import Data.Map (Map)
 import Data.Maybe (Maybe(..))
 import Data.Set (Set)
 import Data.Set as Set
@@ -187,11 +190,24 @@ data Residue a
 -- |
 -- | `joins` are the join points a `jump` names that no `letjoin` inside the term
 -- | binds. Kind variables have no binder in a term (D3), so every one is free.
+-- | `cells` are the keys a `readCell` or `writeCell` names outside every
+-- | operation clause of a handler owning a region: the cells of the region the
+-- | term stands in.
 type FreeVars =
   { values :: Set Ident
   , types :: Set TyVar
   , kinds :: Set KindVar
   , joins :: Set JoinName
+  , cells :: Set RowKey
+  }
+
+-- | The region of cells a handler opens, as the place a term stands in has it:
+-- | the region variable, and the layout, each cell's key with the type it
+-- | holds. `readCell` and `writeCell` name a cell by its key alone, reaching the
+-- | innermost region, so where a term stands decides what its cells are.
+type Region =
+  { var :: TyVar
+  , cells :: Map RowKey XType
   }
 
 -- | The metavariables a term mentions, one set per class.
@@ -502,8 +518,8 @@ freeVarsOf = case _ of
   EVariantAbsurd _ ty e -> typeVars ty <> freeVarsOf e
   EPerform _ _ _ tyArgs arg -> foldMap typeVars tyArgs <> freeVarsOf arg
   EHandle _ body h initial -> freeVarsOf body <> handlerVars h <> foldMap freeVarsOf initial
-  EReadCell _ _ -> none
-  EWriteCell _ _ v -> freeVarsOf v
+  EReadCell _ k -> none { cells = Set.singleton k }
+  EWriteCell _ k v -> none { cells = Set.singleton k } <> freeVarsOf v
   EOpenEff _ row e -> typeVars row <> freeVarsOf e
   ETermMeta _ _ -> none
   EHole _ ty -> typeVars ty
@@ -523,8 +539,10 @@ freeVarsOf = case _ of
       <> withoutValue h.returnClause.binder (freeVarsOf h.returnClause.body)
       <> regionScoped (foldMap clauseVars h.opClauses)
     where
+    -- A handler owning a region binds its variable in the operation clauses,
+    -- and every cell they read or write is one of its own.
     regionScoped = case h.cells of
-      Just l -> withoutType l.var
+      Just l -> withoutType l.var >>> _ { cells = Set.empty }
       Nothing -> identity
 
   clauseVars = case _ of
@@ -544,7 +562,7 @@ freeVarsOf = case _ of
   constraintVars c = typeVars (XConstrained c XRowEmpty)
 
 none :: FreeVars
-none = { values: Set.empty, types: Set.empty, kinds: Set.empty, joins: Set.empty }
+none = { values: Set.empty, types: Set.empty, kinds: Set.empty, joins: Set.empty, cells: Set.empty }
 
 valueVar :: Ident -> FreeVars
 valueVar x = none { values = Set.singleton x }
@@ -631,6 +649,68 @@ metasOfTerm = case _ of
         <> metasOfTerm c.body
     XFastClause c ->
       foldMap (kindMetas <<< _.kind) c.tyBinders <> typeMetas c.argBinder.ty <> metasOfTerm c.body
+
+-- | The term metavariables a term holds, each with the regions bound around it:
+-- | the region variables of the handlers owning cells whose operation clauses
+-- | it stands in, inside the term.
+-- |
+-- | A metavariable standing in such a clause is filled in that handler's region,
+-- | which the term binds itself; one standing in no such clause is filled in the
+-- | region around the term.
+termMetasUnderRegions :: forall a. XExpr a -> P.Array { meta :: TermMetaVar, bound :: Set TyVar }
+termMetasUnderRegions = go Set.empty
+  where
+  go bound = case _ of
+    EVar _ _ -> []
+    EGlobal _ _ _ -> []
+    ELit _ _ -> []
+    ELam _ _ _ body -> go bound body
+    EApp _ f x -> go bound f <> go bound x
+    ETyLam _ _ _ body -> go bound body
+    ETyApp _ e _ -> go bound e
+    EConstraintLam _ _ body -> go bound body
+    EConstraintApp _ e -> go bound e
+    ELet _ _ _ v body -> go bound v <> go bound body
+    ELetRec _ bindings body -> foldMap (go bound <<< _.value) bindings <> go bound body
+    ECase _ scrutinees dt -> foldMap (go bound) scrutinees <> tree bound dt
+    ELetJoin _ _ _ _ v body -> go bound v <> go bound body
+    EJump _ _ args -> foldMap (go bound) args
+    ERecordEmpty _ -> []
+    ERecordExtend _ _ v rest -> go bound v <> go bound rest
+    ERecordSelect _ _ e -> go bound e
+    ERecordRestrict _ _ e -> go bound e
+    ERecordUpdate _ _ rec v -> go bound rec <> go bound v
+    ERecordMerge _ l r -> go bound l <> go bound r
+    EVariantInject _ _ v -> go bound v
+    EVariantWeaken _ _ _ e -> go bound e
+    EVariantAbsurd _ _ e -> go bound e
+    EPerform _ _ _ _ arg -> go bound arg
+    EHandle _ body h initial ->
+      go bound body
+        <> go bound h.returnClause.body
+        <> foldMap (go (clauses h) <<< clauseBody) h.opClauses
+        <> foldMap (go bound) initial
+      where
+      clauses handler = case handler.cells of
+        Just l -> Set.insert l.var bound
+        Nothing -> bound
+    EReadCell _ _ -> []
+    EWriteCell _ _ v -> go bound v
+    EOpenEff _ _ e -> go bound e
+    ETermMeta _ m -> [ { meta: m, bound } ]
+    EHole _ _ -> []
+
+  tree bound = case _ of
+    XLeaf e -> go bound e
+    XBind _ _ dt -> tree bound dt
+    XSwitchCtor _ branches d -> foldMap (tree bound <<< _.tree) branches <> foldMap (tree bound) d
+    XSwitchLit _ branches d -> foldMap (tree bound <<< _.tree) branches <> tree bound d
+    XSwitchKey _ branches d -> foldMap (tree bound <<< _.tree) branches <> foldMap (tree bound) d
+    XGuard e yes no -> go bound e <> tree bound yes <> tree bound no
+
+  clauseBody = case _ of
+    XFullClause c -> c.body
+    XFastClause c -> c.body
 
 noMetas :: MetasOfTerm
 noMetas = { terms: Set.empty, types: Set.empty, kinds: Set.empty }

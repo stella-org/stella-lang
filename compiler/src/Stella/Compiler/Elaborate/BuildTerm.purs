@@ -43,7 +43,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.BuildScope (Shape(..), abstractedChild, valueType, built, childWith, closedOver, closedOverParts, constrainedShape, constraintIn, forallShape, functionShape, inheritingChild, instantiatedAt, issueTerm, kindIn, rejected, requiredIn, schemeAt, siteOf, usableIn, usableTermIn, visibleUnder)
+import Stella.Compiler.Elaborate.BuildScope (Shape(..), abstractedChild, valueType, built, childWith, closedOver, closedOverParts, regionFits, constrainedShape, constraintIn, forallShape, functionShape, inheritingChild, instantiatedAt, issueTerm, kindIn, rejected, requiredIn, schemeAt, siteOf, usableIn, usableTermIn, visibleUnder)
 import Stella.Compiler.Elaborate.Context (bindTyVar, bindVar)
 import Stella.Compiler.Elaborate.Context as Context
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..))
@@ -186,6 +186,7 @@ closeLambda scopeHandle binderHandle bodyHandle rowHandle = do
     CaseBinder _ -> misuse
     BindBinder _ -> misuse
     SwitchBinder _ -> misuse
+    HandleBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -229,6 +230,7 @@ closeTypeAbs scopeHandle binderHandle bodyHandle = do
     CaseBinder _ -> misuse
     BindBinder _ -> misuse
     SwitchBinder _ -> misuse
+    HandleBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -267,6 +269,7 @@ closeConstraintAbs scopeHandle binderHandle bodyHandle = do
     CaseBinder _ -> misuse
     BindBinder _ -> misuse
     SwitchBinder _ -> misuse
+    HandleBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -299,6 +302,7 @@ closeLet scopeHandle binderHandle bodyHandle = do
     LetBinder b -> do
       body <- resolveExpr bodyHandle
       closedOver scope binderHandle b body.builtIn bodyHandle
+      regionFits scope.region bodyHandle body
       issueTerm scope (ELet unit b.name b.type b.rhs body.term) body.claimed
     ForallBinder _ -> misuse
     AssumedConstraint _ -> misuse
@@ -310,6 +314,7 @@ closeLet scopeHandle binderHandle bodyHandle = do
     CaseBinder _ -> misuse
     BindBinder _ -> misuse
     SwitchBinder _ -> misuse
+    HandleBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -347,6 +352,7 @@ closeLetRec scopeHandle binderHandle rhsHandles bodyHandle = do
       rhss <- traverse (visibleUnderGroup scope g) rhsHandles
       body <- resolveExpr bodyHandle
       closedOver scope binderHandle g body.builtIn bodyHandle
+      regionFits scope.region bodyHandle body
       let
         values = Array.zipWith (\b rhs -> { name: b.name, ty: b.type, value: rhs.term }) g.bindings rhss
       issueTerm scope (ELetRec unit values body.term) body.claimed
@@ -360,14 +366,16 @@ closeLetRec scopeHandle binderHandle rhsHandles bodyHandle = do
     CaseBinder _ -> misuse
     BindBinder _ -> misuse
     SwitchBinder _ -> misuse
+    HandleBinder _ -> misuse
   where
   misuse :: forall a. Elab a
   misuse = rejected (BinderMisuse binderHandle)
 
   visibleUnderGroup scope g handle = do
     rhs <- resolveExpr handle
-    if visibleUnder scope g rhs.builtIn then pure rhs
-    else rejected (ScopeViolation handle)
+    unless (visibleUnder scope g rhs.builtIn) (rejected (ScopeViolation handle))
+    regionFits scope.region handle rhs
+    pure rhs
 
 -- `argument -{row}-> result`.
 functionType :: XType -> XType -> XType -> XType
@@ -386,6 +394,7 @@ abstractedBody
 abstractedBody scope binderHandle binder bodyHandle = do
   body <- resolveExpr bodyHandle
   closedOver scope binderHandle binder body.builtIn bodyHandle
+  regionFits scope.region bodyHandle body
   unless (Set.isEmpty (freeVarsOf body.term).joins) (rejected (JoinOutOfScope bodyHandle))
   pure body
 
@@ -449,6 +458,8 @@ closeJoin scopeHandle binderHandle definitionHandle bodyHandle = do
         [ { within: b.definition, builtIn: definition.builtIn, handle: definitionHandle }
         , { within: b.continuation, builtIn: body.builtIn, handle: bodyHandle }
         ]
+      regionFits scope.region definitionHandle definition
+      regionFits scope.region bodyHandle body
       let
         params = map (\p -> { name: p.name, ty: p.type }) b.params
       issueTerm scope (ELetJoin unit b.name params b.result definition.term body.term) b.result
@@ -462,6 +473,7 @@ closeJoin scopeHandle binderHandle definitionHandle bodyHandle = do
     CaseBinder _ -> misuse
     BindBinder _ -> misuse
     SwitchBinder _ -> misuse
+    HandleBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 

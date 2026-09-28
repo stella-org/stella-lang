@@ -14,6 +14,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Constructors (emptyConstructorEnv)
+import Stella.Compiler.Elaborate.Effects (emptyEffectEnv)
 import Stella.Compiler.Elaborate.Catalog (EntrySort(..), catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, assume, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
@@ -82,6 +83,7 @@ session =
       ]
   , kinding
   , constructors: emptyConstructorEnv
+  , effects: emptyEffectEnv
   }
 
 x :: Ident
@@ -268,12 +270,12 @@ spec = describe "Elaborate.Observe" do
   describe "a goal and a term" do
     it "gives the running goal's type at Type, and a term's claimed type" do
       let
-        Tuple goal metas = newGoal site xInt showInt start.tentative.metas
+        Tuple goal metas = newGoal site xInt showInt Nothing start.tentative.metas
         s0 = start { tentative { metas = metas } }
         running = frame { goal = Just { id: PendingId 0, goal } }
         action = do
           g <- issue (GoalObject { id: PendingId 0, goal })
-          e <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt, scope: siteVariables, builtIn: Just (ScopeId 0) })
+          e <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt, scope: siteVariables, builtIn: Just (ScopeId 0), region: Nothing })
           gv <- goalType g >>= viewType
           ev <- typeOf e >>= viewType
           pure (Tuple gv ev)
@@ -285,7 +287,7 @@ spec = describe "Elaborate.Observe" do
 
     it "refuses a goal observed where no goal runs, or one not running" do
       let
-        Tuple goal metas = newGoal site xInt showInt start.tentative.metas
+        Tuple goal metas = newGoal site xInt showInt Nothing start.tentative.metas
         s0 = start { tentative { metas = metas } }
         observed = issue (GoalObject { id: PendingId 0, goal }) >>= goalType
         elsewhere = frame { goal = Just { id: PendingId 1, goal } }
@@ -297,7 +299,7 @@ spec = describe "Elaborate.Observe" do
     it "refuses a handle of the wrong class rather than answering nothing" do
       let
         action = do
-          e <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt, scope: siteVariables, builtIn: Just (ScopeId 0) })
+          e <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt, scope: siteVariables, builtIn: Just (ScopeId 0), region: Nothing })
           Tuple e <$> viewType e
       case outcomeOf start action of
         Broke (InvalidHandle _ (HandleClassMismatch TypeClass)) -> pure unit

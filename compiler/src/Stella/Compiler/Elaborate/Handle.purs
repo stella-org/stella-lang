@@ -53,9 +53,9 @@ import Stella.Compiler.Elaborate.Context (XContext)
 import Stella.Compiler.Elaborate.Kind (XKind)
 import Stella.Compiler.Elaborate.Kinding (KindEvidence, KindingScope)
 import Stella.Compiler.Elaborate.Pending (GoalRecord, PendingId)
-import Stella.Compiler.Elaborate.Term (XDecisionTree, XExpr)
-import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint, XType)
-import Stella.Compiler.TypedCore (Ident, JoinName, Literal, Occurrence, Qualified, RowKey, TyVar)
+import Stella.Compiler.Elaborate.Term (Region, XDecisionTree, XExpr)
+import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint, XRowEntry, XType)
+import Stella.Compiler.TypedCore (Ident, JoinName, Literal, Occurrence, OpName, Qualified, RowKey, TyVar)
 import Data.Either (Either(..))
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
@@ -112,12 +112,16 @@ type TypeObject =
 -- | `tree` is the `case` whose decision tree the scope stands in, where it stands
 -- | in one: the scope a tree node is built in, and the only one an occurrence of
 -- | that `case` is read in.
+-- | `region` is the region of cells a term built in it reads and writes, where it
+-- | stands in one: lexical, as a cell is named by its key and means the
+-- | innermost region around it.
 type ScopeObject =
   { id :: ScopeId
   , ancestors :: Set ScopeId
   , context :: XContext
   , joins :: Map JoinName JoinSignature
   , tree :: Maybe ScopeId
+  , region :: Maybe Region
   }
 
 -- | A decision tree, with the type the first leaf it reaches is claimed at, where
@@ -227,6 +231,26 @@ data BinderObject
       , parent :: ScopeId
       , body :: ScopeId
       }
+  -- | A `handle`, its handled computation built in the parent. Its body scope
+  -- | holds the return clause's scope and one for each operation clause.
+  | HandleBinder
+      { computation :: XExpr Unit
+      , element :: XRowEntry
+      , layout :: Maybe { var :: TyVar, cells :: P.Array { key :: RowKey, ty :: XType } }
+      , answer :: XType
+      , residual :: XType
+      , returnClause :: { name :: Ident, type :: XType, scope :: ScopeId }
+      , clauses ::
+          P.Array
+            { op :: OpName
+            , tyBinders :: P.Array { name :: TyVar, kind :: XKind }
+            , argument :: { name :: Ident, ty :: XType }
+            , continuation :: Maybe { name :: Ident, ty :: XType }
+            , scope :: ScopeId
+            }
+      , parent :: ScopeId
+      , body :: ScopeId
+      }
   -- | A switch on an occurrence. Its body scope holds one scope per branch, and
   -- | one for the default where it has one.
   | SwitchBinder
@@ -254,14 +278,16 @@ data BinderObject
 newtype ScopeId = ScopeId P.Int
 
 -- | A term, held without annotations, with the type it is claimed to have, the
--- | scope that type is kinded under, and the build scope the term was built in.
--- | The last is what says where the term may be placed, as a type's says where
--- | it may be used.
+-- | scope that type is kinded under, the build scope the term was built in, and
+-- | the region of cells that scope stands in. The build scope says where the
+-- | term may be placed, as a type's says where it may be used; the region says
+-- | which cells a `readCell` in it, or a goal it waits on, means.
 type ExprObject =
   { term :: XExpr Unit
   , claimed :: XType
   , scope :: KindingScope
   , builtIn :: Maybe ScopeId
+  , region :: Maybe Region
   }
 
 -- | What a slot holds. Objects are immutable: what changes is issued anew.

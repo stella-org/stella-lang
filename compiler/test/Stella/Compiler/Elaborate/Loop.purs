@@ -265,7 +265,7 @@ spec = describe "Elaborate.Loop" do
 
     it "runs a job created inside an attempt without spending fuel on its first attempt" do
       let
-        creating p = void (createSynthesis p.site tA resolver)
+        creating p = void (createSynthesis p.site tA resolver Nothing)
         Tuple created s1 = submitWith emptySessionEnv creating waitingSite waitsOnV (sessionWith 0)
         Tuple result s = runWith emptySessionEnv (\_ -> pure unit) s1
       created.attempt `shouldEqual` Run.Committed
@@ -274,7 +274,7 @@ spec = describe "Elaborate.Loop" do
 
     it "spends fuel on a retry and not on a first attempt queued beside it" do
       let
-        creating p = void (createSynthesis p.site tA resolver)
+        creating p = void (createSynthesis p.site tA resolver Nothing)
         Tuple waiting s1 = submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) waitingSite waitsOnV (sessionWith 0)
         Tuple _ s2 = submitWith emptySessionEnv creating waitingSite waitsOnV s1
         Tuple _ s3 = submitEquality emptySessionEnv site (solvable metas.v) s2

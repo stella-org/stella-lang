@@ -15,6 +15,7 @@ import Stella.Compiler.Elaborate.Build (openForall, rootScope, typeConstructor)
 import Stella.Compiler.Elaborate.BuildTerm (closeJoin, closeLambda, closeLet, jump, literal, openConstraintAbs, openJoin, openLambda, openLet, openTypeAbs, termApply)
 import Stella.Compiler.Elaborate.Build as Build
 import Stella.Compiler.Elaborate.Constructors (constructorsOf)
+import Stella.Compiler.Elaborate.Effects (effectsOf)
 import Stella.Compiler.Elaborate.Catalog (catalogOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
@@ -43,7 +44,7 @@ xInt :: XType
 xInt = XCon intTy []
 
 session :: SessionEnv
-session = { catalog: catalogOf [], kinding: kindingOf primSignature, constructors: constructorsOf primSignature }
+session = { catalog: catalogOf [], kinding: kindingOf primSignature, constructors: constructorsOf primSignature, effects: effectsOf primSignature }
 
 site :: Site
 site = { context: emptyXContext, origin: InDeclaration (Qualified (ModuleName "Main") (Ident "decl")) }

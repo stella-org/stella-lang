@@ -19,6 +19,7 @@ import Stella.Compiler.Elaborate.BuildTerm (closeLambda, literal, localVariable,
 import Stella.Compiler.Elaborate.BuildTree (closeBind, closeCase, closeSwitch, guard, leaf, openBind, openCase, openSwitchCtor, openSwitchKey, openSwitchLit, recordField)
 import Stella.Compiler.Elaborate.Catalog (EntrySort(..), catalogOf)
 import Stella.Compiler.Elaborate.Constructors (constructorsOf)
+import Stella.Compiler.Elaborate.Effects (effectsOf)
 import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindTyVar, bindVar, emptyXContext)
 import Stella.Compiler.Elaborate.Diagnostic (BuildError(..), Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, initialState, issue, resolveExpr, resolveOccurrence, resolveTree, runElabIn, throw, withFrame)
@@ -121,6 +122,7 @@ session =
       [ { name: qualified "Ghost", sort: ConstructorEntry, scheme: { kindVars: [], body: xInt }, attributes: [] } ]
   , kinding: kindingOf signature
   , constructors: constructorsOf signature
+  , effects: effectsOf signature
   }
 
 keyN :: RowKey
@@ -213,7 +215,7 @@ caseOn name = do
 caseClaimed :: XType -> Elab { root :: Handle, binder :: Handle, occurrence :: Handle, treeScope :: Handle }
 caseClaimed ty = do
   root <- rootScope
-  e <- issue (ExprObject { term: EVar unit (Ident "e"), claimed: ty, scope: { kindVars: Set.empty, tyVars: context.tyVars }, builtIn: Just (ScopeId 0) })
+  e <- issue (ExprObject { term: EVar unit (Ident "e"), claimed: ty, scope: { kindVars: Set.empty, tyVars: context.tyVars }, builtIn: Just (ScopeId 0), region: Nothing })
   opened <- openCase root [ e ]
   case opened.scrutinees of
     [ occurrence ] -> pure { root, binder: opened.binder, occurrence, treeScope: opened.treeScope }

@@ -136,7 +136,7 @@ fullClause = Handle 1 (Var 2 x) handler []
     }
 
 free :: FreeVars
-free = { values: Set.empty, types: Set.empty, kinds: Set.empty, joins: Set.empty }
+free = { values: Set.empty, types: Set.empty, kinds: Set.empty, joins: Set.empty, cells: Set.empty }
 
 spec :: Spec Unit
 spec = describe "Elaborate.Term" do

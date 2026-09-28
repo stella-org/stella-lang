@@ -63,6 +63,7 @@ wide =
   { values: Set.fromFoldable [ x, y ]
   , types: Set.singleton a
   , kinds: Set.singleton k
+  , region: Nothing
   }
 
 -- | The context `wide` is the scope of.
@@ -71,7 +72,7 @@ wideContext = bindKindVars (bindTyVar (bindVar (bindVar emptyXContext x xInt) y 
 
 -- | Nothing in scope.
 narrow :: TermScope
-narrow = { values: Set.empty, types: Set.empty, kinds: Set.empty }
+narrow = { values: Set.empty, types: Set.empty, kinds: Set.empty, region: Nothing }
 
 -- | `Ψ` holding the term metavariables given, in order, each at `Int`.
 holding :: P.Array TermScope -> Tuple (P.Array TermMetaVar) MetaContext
@@ -95,7 +96,7 @@ spec :: Spec Unit
 spec = describe "Elaborate.TermMeta" do
   describe "a scope" do
     it "is what a context binds, in each class" do
-      termScopeOf wideContext `shouldEqual` wide
+      termScopeOf wideContext Nothing `shouldEqual` wide
 
   describe "an assignment" do
     it "admits a solution naming what is in scope" do
@@ -214,14 +215,14 @@ spec = describe "Elaborate.TermMeta" do
   describe "through Elab" do
     it "creates a metavariable whose scope is what the context binds" do
       let
-        Tuple outcome s = runElab (initialState (SessionId 0) 0) (freshTermMeta wideContext xInt)
+        Tuple outcome s = runElab (initialState (SessionId 0) 0) (freshTermMeta wideContext Nothing xInt)
       outcome `shouldEqual` Done (TermMetaVar 0)
       lookupTermMeta s.tentative.metas (TermMetaVar 0) `shouldEqual` Just (TermUnsolved { ty: xInt, scope: wide })
 
     it "reports an escaping solution as a failure at the site" do
       let
         Tuple outcome _ = runElab (initialState (SessionId 0) 0) do
-          m <- freshTermMeta emptyXContext xInt
+          m <- freshTermMeta emptyXContext Nothing xInt
           assignTerm site m (EVar 1 x)
       outcome `shouldEqual` Failed (TermAssignmentFailed here (TermEscapingValue (TermMetaVar 0) x))
 
@@ -234,7 +235,7 @@ spec = describe "Elaborate.TermMeta" do
       let
         attempt :: Elab Unit
         attempt = do
-          m <- freshTermMeta wideContext xInt
+          m <- freshTermMeta wideContext Nothing xInt
           assignTerm site m (EVar 1 x)
           throw (TermAssignmentFailed here (TermMetaUnbound m))
 
