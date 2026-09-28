@@ -208,6 +208,12 @@ data Next
   -- | enter. The calling activation's `Resume` goes below them, so the marker stands
   -- | between it and the body.
   | Install Reg (P.Array StackEntry) Value
+  -- | A `fast` clause answering a `PERF`: the clause, its argument, and where the
+  -- | answering handler's marker stands, with the register the clause's value
+  -- | belongs in. The calling activation's `Resume` goes below a `ClauseBoundary`,
+  -- | so the body runs where Core binds it — outside that handler and outside what
+  -- | stands between it and the `perform` — and its value still reaches the `PERF`.
+  | Fast Reg Value Value P.Int
   -- | The instruction moved control itself. A `full` clause's answer does not return
   -- | to the `PERF`, so nothing waits for it there.
   | Moved State
@@ -340,7 +346,28 @@ popRegion machine = do
     Just (RegionFrame _) -> pure unit
     _ -> bug RegionNotBelowMarker
 
--- | The innermost marker of that key, and where it stands.
+-- | The first entry, from the top down, at which `found` answers, with where it
+-- | stands.
+-- |
+-- | **A `ClauseBoundary` is jumped over, together with everything below it down to
+-- | and including the marker of the handler whose `fast` clause is running**: the
+-- | walk continues directly below that marker, so what stood between the handler
+-- | and the `perform` is not seen, while the handler's own region, standing below
+-- | its marker, is. A marker search and a cell search read the stack by this one
+-- | walk, which is what keeps `PERF`, `CGET`, and `CSET` reaching the same context.
+visible :: forall a. P.Array StackEntry -> (StackEntry -> Maybe a) -> Maybe { at :: P.Int, found :: a }
+visible stack found = go (Array.length stack - 1)
+  where
+  go i
+    | i < 0 = Nothing
+    | otherwise = case Array.index stack i of
+        Just (ClauseBoundary toMarker) -> go (i - toMarker - 1)
+        Just entry -> case found entry of
+          Just a -> Just { at: i, found: a }
+          Nothing -> go (i - 1)
+        Nothing -> Nothing
+
+-- | The innermost visible marker of that key, and where it stands.
 -- |
 -- | **The innermost wins**, which is what makes handlers deep: a function handling
 -- | an effect internally is pure to its caller, so two markers of one key may stand
@@ -348,32 +375,26 @@ popRegion machine = do
 markerOf :: forall r. Machine -> KeyId -> Run (EVAL r) { at :: P.Int, marker :: Marker }
 markerOf machine key = do
   stack <- liftEffect (Ref.read machine.stack)
-  case search stack (Array.length stack - 1) of
-    Just found -> pure found
+  case visible stack answering of
+    Just { at, found } -> pure { at, marker: found }
     Nothing -> bug (NoHandlerInstalled key)
   where
-  search stack i
-    | i < 0 = Nothing
-    | otherwise = case Array.index stack i of
-        Just (HandlerMarker marker) | marker.key == key -> Just { at: i, marker }
-        _ -> search stack (i - 1)
+  answering = case _ of
+    HandlerMarker marker | marker.key == key -> Just marker
+    _ -> Nothing
 
--- | The cell keyed thus of the innermost region declaring it, found by walking the
--- | stack as `PERF` walks it for a marker.
+-- | The cell keyed thus of the innermost visible region declaring it, found by the
+-- | walk `PERF` finds a marker by.
 cellOf :: forall r. Machine -> KeyId -> Run (EVAL r) Cell
 cellOf machine key = do
   stack <- liftEffect (Ref.read machine.stack)
-  case search stack (Array.length stack - 1) of
-    Just cell -> pure cell
+  case visible stack declaring of
+    Just { found } -> pure found
     Nothing -> bug (NoCellDeclared key)
   where
-  search stack i
-    | i < 0 = Nothing
-    | otherwise = case Array.index stack i of
-        Just (RegionFrame region) -> case Array.find (\cell -> cell.key == key) region.cells of
-          Just cell -> Just cell
-          Nothing -> search stack (i - 1)
-        _ -> search stack (i - 1)
+  declaring = case _ of
+    RegionFrame region -> Array.find (\cell -> cell.key == key) region.cells
+    _ -> Nothing
 
 -- | Take everything from that entry upwards off the stack, which is what a `full`
 -- | clause's continuation is made of.
@@ -447,6 +468,8 @@ step machine = case _ of
         when marker.ownsRegion (popRegion machine)
         applyTo machine marker.returnClause [ value ]
       Just (RegionFrame _) -> pure (Returning value)
+      -- a `fast` clause has finished, and its value goes on to the `PERF` below
+      Just (ClauseBoundary _) -> pure (Returning value)
 
   -- an activation runs against the tables of its own module, which is the one its
   -- function belongs to
@@ -469,6 +492,13 @@ step machine = case _ of
             push machine (Resume (resuming activation) dest)
             pushAll machine entries
             applyTo machine body []
+          -- the boundary is measured from where it will stand, the `Resume` below it
+          -- being pushed first
+          Fast dest clause argument markerAt -> do
+            push machine (Resume (resuming activation) dest)
+            stack <- liftEffect (Ref.read machine.stack)
+            push machine (ClauseBoundary (Array.length stack - markerAt))
+            applyTo machine clause [ argument ]
           Moved state -> pure state
       Nothing -> transfer machine loaded activation
   where
@@ -892,8 +922,9 @@ exec machine loaded activation = case _ of
     found <- markerOf machine key
     clause <- clauseFor loaded found.marker opIx
     case clause.form of
-      -- the stack stands: the clause returns to this instruction with its value
-      ClauseFast -> pure (Unknown d clause.clause [ argument ])
+      -- the clause returns to this instruction with its value, its body running
+      -- outside the handler and outside what stands above it (D28)
+      ClauseFast -> pure (Fast d clause.clause argument found.at)
       -- the continuation begins at the `perform` and not after it, so this
       -- activation is pushed before the split and is part of the segment
       ClauseFull -> do

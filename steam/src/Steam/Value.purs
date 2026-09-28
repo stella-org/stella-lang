@@ -324,6 +324,21 @@ data StackEntry
   | ApplyRemaining (P.Array Value)
   | HandlerMarker Marker
   | RegionFrame Region
+  -- | Where a `fast` clause's body begins. Core binds that body outside the
+  -- | handler that answered and outside everything between that handler and the
+  -- | `perform` (D28), so a search for a marker or a cell that reaches this entry
+  -- | continues directly below that handler's marker, which stands this many
+  -- | entries further down. What the body itself installs stands above and is
+  -- | found as usual.
+  -- |
+  -- | **The distance is relative, not a position.** A `full` operation the body
+  -- | performs may capture a segment holding this entry and re-push it anywhere,
+  -- | any number of times; the handler's marker travels in the same segment, so the
+  -- | distance between the two survives where a position would not.
+  -- |
+  -- | A value reaching it passes down unchanged, to the `Resume` of the `PERF`
+  -- | below it.
+  | ClauseBoundary P.Int
 
 -- | An installed handler: the key it answers, a clause per operation, and the
 -- | return clause every value passes through.
