@@ -6,7 +6,8 @@
   "type": "module",
   "exports": {
     "./foreign": "./src/foreign.js",
-    "./interpreter": "./src/interpreter.js"
+    "./interpreter": "./src/interpreter.js",
+    "./backend": "./src/backend.js"
   },
   "files": [
     "src"
