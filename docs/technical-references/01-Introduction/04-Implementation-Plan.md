@@ -734,6 +734,24 @@ no identifier is at once ready and blocked
 | `absurd [Int]` of the empty variant, and of an `Int` | `Int`; refused. That the variant is empty is the Core type checker's |
 | `openEff` of a pure function at `()`, at a row of `Row Type`, and of an `Int` | The arrow at `() ⊎ ()`; refused; refused |
 | Records and variants the kernel built, declared at what they are claimed at | Accepted by the Core type checker |
+| `perform` of `State.get` at the element `State Int`, unlabelled and labelled | Claimed at `Int`, the effect's parameter instantiated. The element is an annotation; that it is in the ambient row is the Core type checker's |
+| `perform` of `Poly.ident [Boolean]` | Claimed at `Boolean`, the operation's own binder instantiated with the effect's parameters, simultaneously |
+| `perform` of an operation the effect lacks, with type arguments it does not bind, at a key that does not make the element, or at an ill-kinded element | Refused |
+| `perform` of an effect the kinding environment declares and the effect table lacks | A defect of the host. The two come from one signature |
+| A handler owning cells, closed with a body reading a cell | Claimed at its answer; the region variable fresh; the return clause binding the computation's result |
+| A `full` clause of a handler without cells | Its continuation at `τ -{ρ}-> β`, the resumption into the answer over the clauses' row |
+| A handler naming an operation twice, or missing one, or whose computation jumps to a join point | Refused |
+| A handler owning cells over a residual row `e` nothing proves lacks a region | A failure. `RegionKey ∉ ρ` is required with the term |
+| A handler closed with fewer bodies than clauses, fewer initial values than cells, or the return clause's variable as an operation clause's body | Refused |
+| `readCell` and `writeCell` in an operation clause of a handler owning the cell, and inside a lambda there | Built: the cell's type, and `Unit`. A region is lexical and not reset by an abstraction |
+| `readCell` at the root, in the return clause, or at a key the layout lacks | Refused. The return clause stands outside the region |
+| A goal asked for in an operation clause of a handler owning cells, attempted with a runner reading a cell at its root | Committed. The goal carries its region, and the attempt's root stands in it |
+| A term metavariable created outside any region, assigned `readCell n` | A failure: the solution reads a cell the metavariable's region does not hold |
+| `readCell n` built in a clause of a handler owning `n`, placed in the same clause, and in a clause of a handler inside it that owns an `n` too | Built, and refused. The inner handler's `n` would capture it |
+| A goal asked for in the outer clause, placed in the inner one | Refused. A solution may read a cell of the region it was asked for in |
+| A literal built in the outer clause, and a handler there reading only its own cells, placed in the inner one | Built, both. Neither depends on a region |
+| A handler built in the outer clause whose own clause is a goal asked for there, unsolved, and solved to `readCell n`, placed in the inner one | Built, both. The goal is filled in the handler's own region, so neither depends on the outer one, and the scheduler's progress changes nothing |
+| A handler owning cells, built by the kernel and declared at its answer | Accepted by the Core type checker |
 | A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
 | No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
 | No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |

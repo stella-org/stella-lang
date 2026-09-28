@@ -480,7 +480,7 @@ Job = JobUnify EqualityGoal | JobSynthesis GoalRecord
 **The runner sets the current site and goal before the attempt begins, and nothing inside the attempt changes them.** Every kernel operation that depends on where it stands reads them from there.
 
 ```text
-SessionEnv = { catalog, kinding, constructors }      fixed for the session, before the first job
+SessionEnv = { catalog, kinding, constructors, effects }      fixed for the session, before the first job
 Frame      = { site, goal }            read-only for the length of the attempt
 ```
 
@@ -701,6 +701,28 @@ openEff        : Scope -> Type -> Expr -> Elab Expr                    the row a
 
 **A row a term builds is sharp by construction**: `extend` and `weaken` require the key absent from the rest, and `merge` and `openEff` the two rows apart, each introducing the requirement together with the term, a failure where it is already broken. That an `absurd`'s variant is empty is the Core type checker's.
 
+### Effects, handlers, and cells
+
+```text
+perform     : Scope -> RowKey -> PayloadView -> OpName -> [Type] -> Expr -> Elab Expr
+openHandle  : Scope -> Expr -> RowKey -> PayloadView -> Maybe [ { key, type } ]
+                -> Type -> Type -> [ { op, full : Boolean } ]
+                -> Elab { binder, returnClause : { variable : Expr, scope }
+                        , clauses : [ { typeVariables : [Type], argument : Expr
+                                      , continuation : Maybe Expr, scope } ] }
+closeHandle : Scope -> Binder -> Expr -> [Expr] -> [Expr] -> Elab Expr     return body, clause bodies, initial values
+readCell    : Scope -> RowKey -> Elab Expr
+writeCell   : Scope -> RowKey -> Expr -> Elab Expr
+```
+
+**The kernel does not follow the ambient row.** A `perform` is given the element it performs on — its key and its payload, `E τ̄` — as a protocol annotation from which the operation's types are read: it is claimed at what the operation resumes with, the effect's parameters and the operation's own type binders instantiated at `τ̄` and at the type arguments given, simultaneously. The element is judged as a row element is, the operation must be one `E` declares, and the type arguments as many as it binds, each at its kind. **That the element is in the row the term stands at is the Core type checker's**, as are the argument's type and, for a handler, the handled computation's row. The operations are read from a table of effects the session holds, built once from the signature its kinding comes from; an effect the kinding knows and the table lacks is a defect of the host.
+
+**A handler is opened with its answer type `β` and its residual row `ρ`**, both types the scope may use, at `Type` and at `Row Effect`, which the types of its continuations need before any clause is built. It is opened with a clause for every operation its effect declares, once each, and closed with a body for each and one initial value per cell, all under one binder. The return clause's scope binds the handled computation's result at what the computation is claimed at; each operation clause's binds the operation's type variables, fresh, its argument, and for a `full` clause its continuation at `τ -{ρ}-> β`, or at `τ -{ρ'}-> β` where the handler owns cells. **Every clause, and the handled computation, jumps to no join point outside**, as an abstraction's body does not; the initial values stand under the handler's `Δ`. A handler owning cells binds a fresh region variable `r`, its operation clauses stand at `ρ' = ( region r ι | ρ )`, and it requires `RegionKey ∉ ρ` together with the term; that neither `β` nor `ρ` mentions `r` is checked where it is closed, both having been given outside the region.
+
+**A region of cells is lexical, and apart from `Δ`.** A scope stands in the region its parent stands in — an abstraction's body included — and only the operation clauses of a handler owning cells stand in that handler's own; its return clause, its handled computation, and its initial values stand outside it. `readCell` and `writeCell` read a cell's type from the region the scope stands in; that the region is in the row the term stands at is the Core type checker's. **A goal asked for in a region carries it**, apart from its site, which an equation or an obligation reads: the root scope of the attempt that runs it stands in the same region, and its target, like every term metavariable, records the region it was created in, so a solution reading or writing a cell that region does not hold is a failure. A term metavariable standing in another's solution is narrowed to the cells the two have in common.
+
+**A term that depends on its region stands only in the region it was built in.** A cell is named by its key alone and means the innermost region's, so a `readCell n` built in one handler's clause and placed in a clause of another handler holding an `n` would read the other's cell. An `Expr` records the region its scope stands in, and a term depends on it where it reads or writes a cell outside every handler owning cells it binds, or holds, outside those handlers' clauses, an unsolved term metavariable created in a region — a goal asked for there, which a solution reading a cell may fill. **A goal asked for in a clause of a handler inside the term is filled in that handler's region, which the term binds itself**, so it is no dependence, solved or not: whether a term may be placed does not turn on how far the scheduler has got. Such a term is refused wherever it is used, and wherever a binder is closed over it, in another region. A term depending on none — pure, or a handler whose cells are all its own — stands anywhere its scope allows.
+
 ### The catalog
 
 `lookupGlobal` and `declsWithAttr` read one immutable catalog, assembled before the first job exists ([above](#the-module-environment-is-built-once-before-any-job-exists)).
@@ -734,8 +756,8 @@ A guest cannot build the host's diagnostic, which names sites and holds Core⁺;
 | | Examples | Outcome | Caught by `transact` |
 | --- | --- | --- | --- |
 | **program diagnostic** | an equation no substitution satisfies; an obligation broken or rejected; a result escaping its scope; a result whose claim the goal's type refutes; a `throw` | `Failed` | yes |
-| **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session; a builder asked for what cannot be built; a binder left open by an attempt that succeeds, or closed twice; an equation between kinds that cannot meet, or a goal not at `Type`; an occurrence read outside its branch or its `case`, or a constructor the session does not know | `Broke`, naming the synthesizer and the goal | no |
-| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; a catalog scheme ill-formed under what it declares; a name the catalog calls a constructor and the constructor table does not hold; the mechanism's own invariants | `Broke` | no |
+| **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session; a builder asked for what cannot be built; a binder left open by an attempt that succeeds, or closed twice; an equation between kinds that cannot meet, or a goal not at `Type`; an occurrence read outside its branch or its `case`, or a constructor the session does not know; an operation its effect does not declare, a handler's clauses naming one twice or missing one, or a cell read where no region holds it | `Broke`, naming the synthesizer and the goal | no |
+| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; a catalog scheme ill-formed under what it declares; a name the catalog calls a constructor and the constructor table does not hold; an effect the kinding environment declares and the effect table does not hold; a handler's answer type or residual row mentioning the region variable it binds; the mechanism's own invariants | `Broke` | no |
 
 **A `SynthRef` with no implementation is the host's defect and not the program's.** Name resolution resolved it against `Σ` where the goal was written ([above](#what-a-synthesis-goal-carries)), so the name exists; a session unable to run what it names was set up without it.
 
