@@ -680,6 +680,27 @@ closeSwitch    : Scope -> Binder -> [Tree] -> Maybe Tree -> Elab Tree
 
 A constructor the table does not hold is a misuse, and one the catalog calls a constructor while the table does not hold it is a defect of the host, the two being assembled from one signature.
 
+### Records, variants, and `openEff`
+
+```text
+recordEmpty    : Scope -> Elab Expr
+recordExtend   : Scope -> RowKey -> Expr -> Expr -> Elab Expr          value, then the rest
+recordSelect   : Scope -> RowKey -> Expr -> Elab Expr
+recordRestrict : Scope -> RowKey -> Expr -> Elab Expr
+recordUpdate   : Scope -> RowKey -> Expr -> Expr -> Elab Expr          the record, then the value
+recordMerge    : Scope -> Expr -> Expr -> Elab Expr
+variantInject  : Scope -> RowKey -> Expr -> Elab Expr
+variantWeaken  : Scope -> RowKey -> Type -> Expr -> Elab Expr
+variantAbsurd  : Scope -> Type -> Expr -> Elab Expr
+openEff        : Scope -> Type -> Expr -> Elab Expr                    the row added
+```
+
+**Each is claimed at the type its Core rule gives it, read off its parts**: `{}` at `Record ()`, an extension at the rest's record with the field added, a selection at the field, a restriction and an update at the record without the field or with it replaced, a merge at the union of the two rows, an injection at `Variant ( k : τ )` — a variant of one element, widened by `weaken` and by nothing written in `inject` — a weakening at the variant with the element added, an `absurd` at the type it writes, and an `openEff` at the arrow with the row added. **A type the term writes is the synthesizer's to give** — the payload of a `weaken`, the result of an `absurd`, the row of an `openEff` — as a type the scope may use, at `Type` or at `Row Effect`; nothing else is. A key is well-formed for a `Row Type`.
+
+**A row is read at a key by one procedure**, which `select`, `restrict`, `update`, `recordField`, and a switch on keys share: the key is judged well-formed for a `Row Type` first, no solution putting an ill-formed one in a row, so none is waited on; then known with a type as its payload, the key is there, and the row without it is the rest; known with another payload, or absent from a row whose tails are all rigid, it is a misuse; absent from a row with a flexible tail, every flexible tail is waited on.
+
+**A row a term builds is sharp by construction**: `extend` and `weaken` require the key absent from the rest, and `merge` and `openEff` the two rows apart, each introducing the requirement together with the term, a failure where it is already broken. That an `absurd`'s variant is empty is the Core type checker's.
+
 ### The catalog
 
 `lookupGlobal` and `declsWithAttr` read one immutable catalog, assembled before the first job exists ([above](#the-module-environment-is-built-once-before-any-job-exists)).
