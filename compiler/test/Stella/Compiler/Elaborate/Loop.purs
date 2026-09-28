@@ -10,17 +10,17 @@ module Test.Stella.Compiler.Elaborate.Loop (spec) where
 
 import Prelude
 
-import Stella.Compiler.Elaborate.Context (Origin(..), emptyXContext)
-import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Handle (SessionId(..))
-import Stella.Compiler.Elaborate.Elab (SolverState, createSynthesis, emptySessionEnv, initialState, postpone, unify)
-import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Loop (RunReport, RunResult(..), Submission(..), Submitted, run, runWith, submitEquality, submitWith)
-import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), PendingId(..), Site)
-import Stella.Compiler.Elaborate.Run as Run
-import Stella.Compiler.Elaborate.Scheduler (Invariant(..), create, lookupPending, readyIds)
-import Stella.Compiler.Elaborate.Type (MetaVar(..), XRowEntry(..), XType(..))
-import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, MetaInfo, UnifyError(..), emptyContext, freshMeta, lookupMeta, substitute)
+import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
+import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
+import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
+import Stella.Compiler.Elaborate.Kernel.Elab (SolverState, createSynthesis, emptySessionEnv, initialState, postpone, unify)
+import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
+import Stella.Compiler.Elaborate.Driver.Loop (RunReport, RunResult(..), Submission(..), Submitted, run, runWith, submitEquality, submitWith)
+import Stella.Compiler.Elaborate.Mechanism.Pending (EqualityGoal, Job(..), PendingId(..), Site)
+import Stella.Compiler.Elaborate.Driver.Attempt as Run
+import Stella.Compiler.Elaborate.Mechanism.Scheduler (Invariant(..), create, lookupPending, readyIds)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XRowEntry(..), XType(..))
+import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, MetaInfo, UnifyError(..), emptyContext, freshMeta, lookupMeta, substitute)
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Map as Map

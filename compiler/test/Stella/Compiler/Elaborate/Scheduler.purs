@@ -12,11 +12,11 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Context (Origin(..), emptyXContext)
-import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Pending (Job(..), PendingId(..), Site)
-import Stella.Compiler.Elaborate.Type (MetaVar(..), XType(..))
-import Stella.Compiler.Elaborate.Scheduler (Invariant(..), Phase(..), Queued, Scheduler, blockedOn, complete, create, emptyScheduler, enqueueInitial, invariants, isInitial, lookupPending, readyIds, reblock, takeReady, unwakeable, wake)
+import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
+import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
+import Stella.Compiler.Elaborate.Mechanism.Pending (Job(..), PendingId(..), Site)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XType(..))
+import Stella.Compiler.Elaborate.Mechanism.Scheduler (Invariant(..), Phase(..), Queued, Scheduler, blockedOn, complete, create, emptyScheduler, enqueueInitial, invariants, isInitial, lookupPending, readyIds, reblock, takeReady, unwakeable, wake)
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..), TyName(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))

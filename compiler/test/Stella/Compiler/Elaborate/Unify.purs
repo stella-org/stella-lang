@@ -10,10 +10,10 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Kind (KindMetaVar(..), XKind(..))
-import Stella.Compiler.Elaborate.Row (xnf)
-import Stella.Compiler.Elaborate.Type (MetaVar(..), Scope, XConstraint(..), XRowEntry(..), XType(..), emptyScope)
-import Stella.Compiler.Elaborate.Unify (KindMetaBinding(..), KindMetaInfo, KindRequirement(..), MetaBinding(..), MetaContext, MetaInfo, UnifyEnv, UnifyError(..), UnifyResult(..), emptyContext, freshKindMeta, freshMeta, lookupKindMeta, lookupMeta, requireProducesType, requireQuantifiable, substitute, substituteKind, unifyKind, unifyRow, unifyType)
+import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar(..), XKind(..))
+import Stella.Compiler.Elaborate.CorePlus.Row (xnf)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), Scope, XConstraint(..), XRowEntry(..), XType(..), emptyScope)
+import Stella.Compiler.Elaborate.Mechanism.Unify (KindMetaBinding(..), KindMetaInfo, KindRequirement(..), MetaBinding(..), MetaContext, MetaInfo, UnifyEnv, UnifyError(..), UnifyResult(..), emptyContext, freshKindMeta, freshMeta, lookupKindMeta, lookupMeta, requireProducesType, requireQuantifiable, substitute, substituteKind, unifyKind, unifyRow, unifyType)
 import Stella.Compiler.TypedCore (EffName(..), KindVar(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
 import Data.Array as Array
 import Data.Either (Either(..))
@@ -177,7 +177,7 @@ unifiesAt kind t1 t2 = case unifyType env emptyContext kind t1 t2 of
   _ -> false
 
 spec :: Spec Unit
-spec = describe "Stella.Compiler.Elaborate.Unify" do
+spec = describe "Stella.Compiler.Elaborate.Mechanism.Unify" do
   describe "kind unification" do
     it "accepts two identical kinds" do
       case unifyKind emptyContext XKType XKType of

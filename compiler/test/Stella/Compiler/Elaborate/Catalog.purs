@@ -9,8 +9,8 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Catalog (CatalogEntry, EntrySort(..), catalogOf, lookupEntry, namesWithAttr)
-import Stella.Compiler.Elaborate.Type (XType(..))
+import Stella.Compiler.Elaborate.Environment.Catalog (CatalogEntry, EntrySort(..), catalogOf, lookupEntry, namesWithAttr)
+import Stella.Compiler.Elaborate.CorePlus.Type (XType(..))
 import Stella.Compiler.TypedCore (AttrValue(..), Ident(..), ModuleName(..), Qualified(..), TyName(..))
 import Data.Array as Array
 import Data.Maybe (Maybe(..))

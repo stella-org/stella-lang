@@ -11,9 +11,9 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Kind (KindMetaVar(..), XKind(..))
-import Stella.Compiler.Elaborate.Term (FreeVars, Residue(..), TermMetaVar(..), XDecisionTree(..), XExpr(..), XOpClause(..), fromCoreExpr, freeVarsOf, metasOfTerm, toCoreExpr)
-import Stella.Compiler.Elaborate.Type (MetaVar(..), XRowEntry(..), XType(..))
+import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar(..), XKind(..))
+import Stella.Compiler.Elaborate.CorePlus.Term (FreeVars, Residue(..), TermMetaVar(..), XDecisionTree(..), XExpr(..), XOpClause(..), fromCoreExpr, freeVarsOf, metasOfTerm, toCoreExpr)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XRowEntry(..), XType(..))
 import Stella.Compiler.TypedCore (Constraint(..), DecisionTree(..), EffName(..), Expr(..), Ident(..), JoinName(..), Kind(..), KindVar(..), Literal(..), ModuleName(..), OpClause(..), OpName(..), Occurrence(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyName(..), TyVar(..), Type(..))
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))

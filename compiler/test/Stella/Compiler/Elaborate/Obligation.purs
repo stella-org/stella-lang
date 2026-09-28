@@ -12,11 +12,11 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Context (Origin(..), XContext, assume, emptyXContext, facts)
-import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Obligation (Breach(..), Basis(..), Obligation, ObligationId(..), ObligationStore, Standing(..), emptyStore, introduce, obligationOf, recheck, standing, touching, watchedBy)
-import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..))
-import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, MetaInfo, emptyContext, freshMeta, substitute)
+import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, assume, emptyXContext, facts)
+import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
+import Stella.Compiler.Elaborate.Mechanism.Obligation (Breach(..), Basis(..), Obligation, ObligationId(..), ObligationStore, Standing(..), emptyStore, introduce, obligationOf, recheck, standing, touching, watchedBy)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..))
+import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, MetaInfo, emptyContext, freshMeta, substitute)
 import Stella.Compiler.TypedCore (ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..), Ident(..))
 import Stella.Compiler.TypedCore.Entailment (AtomicFacts, noFacts)
 import Data.Array as Array

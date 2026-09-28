@@ -11,10 +11,10 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), KindingEnv, KindingFault(..), KindingScope, synthKind)
-import Stella.Compiler.Elaborate.Type (XConstraint(..), XRowEntry(..), XType(..))
-import Stella.Compiler.Elaborate.Unify (KindMetaBinding(..), MetaBinding(..), emptyContext, freshKindMeta, freshMeta)
+import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
+import Stella.Compiler.Elaborate.Mechanism.Kinding (KindEvidence(..), KindingEnv, KindingFault(..), KindingScope, synthKind)
+import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..))
+import Stella.Compiler.Elaborate.Mechanism.Unify (KindMetaBinding(..), MetaBinding(..), emptyContext, freshKindMeta, freshMeta)
 import Stella.Compiler.TypedCore (EffName(..), Kind(..), KindVar(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Data.Either (Either(..))
 import Data.Map (Map)

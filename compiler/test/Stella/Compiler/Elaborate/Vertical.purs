@@ -14,17 +14,17 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Context (Origin(..), bindVar, emptyXContext)
-import Stella.Compiler.Elaborate.Handle (SessionId(..))
-import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), SolverState, assignTerm, emptySessionEnv, freshTermMeta, freshTypeMeta, initialState, runElab, raiseDiagnostic, transact)
-import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.TermMeta (TermError(..), zonkExpr)
-import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Loop (RunReport, RunResult(..), Submission(..), Submitted, run, submitEquality)
-import Stella.Compiler.Elaborate.Pending (PendingId(..), Site)
-import Stella.Compiler.Elaborate.Run as Run
-import Stella.Compiler.Elaborate.Term (Residue(..), TermMetaVar, XDecisionTree(..), XExpr(..), toCoreExpr)
-import Stella.Compiler.Elaborate.Type (XType(..), fromCore)
+import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), bindVar, emptyXContext)
+import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), SolverState, assignTerm, emptySessionEnv, freshTermMeta, freshTypeMeta, initialState, runElab, raiseDiagnostic, transact)
+import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
+import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..), zonkExpr)
+import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
+import Stella.Compiler.Elaborate.Driver.Loop (RunReport, RunResult(..), Submission(..), Submitted, run, submitEquality)
+import Stella.Compiler.Elaborate.Mechanism.Pending (PendingId(..), Site)
+import Stella.Compiler.Elaborate.Driver.Attempt as Run
+import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), TermMetaVar, XDecisionTree(..), XExpr(..), toCoreExpr)
+import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), fromCore)
 import Stella.Compiler.TypedCore (Decl(..), Expr, globalsOf, Ident(..), Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), TyName(..), Type(..), monoScheme)
 import Stella.Compiler.TypedCore.Declare (DeclError, declare)
 import Stella.Compiler.TypedCore.Prim (intTy, primSignature, pureFn)

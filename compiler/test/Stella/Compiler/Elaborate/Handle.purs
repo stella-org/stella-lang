@@ -12,15 +12,15 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Context (Origin(..))
-import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), SolverState, emptySessionEnv, initialState, issue, postpone, resolveExpr, resolveMeta, resolveType, runElab, raiseDiagnostic, transact)
-import Stella.Compiler.Elaborate.Handle (Handle(..), HandleClass(..), HandleError(..), HandleObject(..), SessionId(..))
-import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Kinding (KindEvidence(..), emptyScope)
-import Stella.Compiler.Elaborate.Run (runAttempt)
-import Stella.Compiler.Elaborate.Type (MetaVar(..), XType(..))
-import Stella.Compiler.Elaborate.Unify (UnifyError(..))
+import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
+import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), SolverState, emptySessionEnv, initialState, issue, postpone, resolveExpr, resolveMeta, resolveType, runElab, raiseDiagnostic, transact)
+import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle(..), HandleClass(..), HandleError(..), HandleObject(..), SessionId(..))
+import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
+import Stella.Compiler.Elaborate.Mechanism.Kinding (KindEvidence(..), emptyScope)
+import Stella.Compiler.Elaborate.Driver.Attempt (runAttempt)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XType(..))
+import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError(..))
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..), TyName(..))
 import Data.Maybe (Maybe(..))
 import Data.Set as Set

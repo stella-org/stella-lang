@@ -11,17 +11,17 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext)
-import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Handle (SessionId(..))
-import Stella.Compiler.Elaborate.Elab (Elab, Outcome(..), assignTerm, freshTermMeta, initialState, runElab, raiseDiagnostic, transact)
-import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Pending (Site)
-import Stella.Compiler.Elaborate.Term (Residue(..), TermMetaVar(..), XExpr(..), toCoreExpr)
-import Stella.Compiler.Elaborate.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
-import Stella.Compiler.Elaborate.TermMeta as TermMeta
-import Stella.Compiler.Elaborate.Type (XType(..))
-import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, TermBinding(..), TermScope, emptyContext, freshMeta, lookupMeta, lookupTermMeta)
+import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext)
+import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
+import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), assignTerm, freshTermMeta, initialState, runElab, raiseDiagnostic, transact)
+import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
+import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
+import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), TermMetaVar(..), XExpr(..), toCoreExpr)
+import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
+import Stella.Compiler.Elaborate.Mechanism.TermMeta as TermMeta
+import Stella.Compiler.Elaborate.CorePlus.Type (XType(..))
+import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, TermBinding(..), TermScope, emptyContext, freshMeta, lookupMeta, lookupTermMeta)
 import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar(..), ModuleName(..), Qualified(..), TyName(..), TyVar(..))
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))

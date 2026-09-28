@@ -18,18 +18,18 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Context (Origin(..), XContext, bindKindVars, bindTyVar, emptyXContext)
-import Stella.Compiler.Elaborate.Context as Context
-import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Handle (SessionId(..))
-import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Outcome(..), SolverState, assume, freshTypeMeta, initialState, postpone, require, runElab, spendFuel, raiseDiagnostic, transact, unify)
-import Stella.Compiler.Elaborate.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce)
-import Stella.Compiler.Elaborate.Pending (EqualityGoal, Job(..), PendingId, Site)
-import Stella.Compiler.Elaborate.Scheduler (Scheduler, blockedOn, create, emptyScheduler, lookupPending, reblock, readyIds)
-import Stella.Compiler.Elaborate.Type (MetaVar(..), XConstraint(..), XRowEntry(..), XType(..))
-import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, MetaInfo, UnifyError(..), emptyContext, freshMeta, lookupMeta, substitute)
-import Stella.Compiler.Elaborate.Row (XRowError(..), xnf)
+import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKindVars, bindTyVar, emptyXContext)
+import Stella.Compiler.Elaborate.CorePlus.Context as Context
+import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
+import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
+import Stella.Compiler.Elaborate.Kernel.Elab (Cause(..), Elab, Outcome(..), SolverState, assume, freshTypeMeta, initialState, postpone, require, runElab, spendFuel, raiseDiagnostic, transact, unify)
+import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
+import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce)
+import Stella.Compiler.Elaborate.Mechanism.Pending (EqualityGoal, Job(..), PendingId, Site)
+import Stella.Compiler.Elaborate.Mechanism.Scheduler (Scheduler, blockedOn, create, emptyScheduler, lookupPending, reblock, readyIds)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XConstraint(..), XRowEntry(..), XType(..))
+import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, MetaInfo, UnifyError(..), emptyContext, freshMeta, lookupMeta, substitute)
+import Stella.Compiler.Elaborate.CorePlus.Row (XRowError(..), xnf)
 import Stella.Compiler.TypedCore (Ident(..), KindVar(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
 import Data.Either (Either(..))
 import Data.Map as Map
