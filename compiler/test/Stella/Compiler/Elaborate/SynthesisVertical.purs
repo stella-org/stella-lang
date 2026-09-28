@@ -1,12 +1,14 @@
 -- | Hand-written Core⁺ with a synthesis hole in it, the hole filled by the
--- | reference synthesizer through the scheduler, and the term zonked.
+-- | reference synthesizer through the scheduler, and the term zonked and taken
+-- | to the Core checker.
 -- |
 -- | ```text
--- | Core⁺ with ?m → a goal queued → the loop → the reference synthesizer
--- |   → the target assigned → Completed → zonk
+-- | Core⁺ with ?m → goals and equations submitted or queued → the loop
+-- |   → the reference synthesizer → the target assigned → Completed → zonk
+-- |   → toCoreExpr → globalsOf → the Core checker
 -- | ```
 -- |
--- | Four things are what these cases are for. **A goal is answered from where
+-- | Five things are what these cases are for. **A goal is answered from where
 -- | it was asked**: the synthesizer reads the goal's type and the bindings of
 -- | the site it was created at, however late the loop runs it, each goal its
 -- | own. **The answer lands where the hole stood**: zonked, the hole is the term
@@ -14,9 +16,14 @@
 -- | is run again from its beginning**: the attempt that waited leaves nothing
 -- | it built, the job holds only its description, the retry alone spends fuel,
 -- | and a handle the waiting attempt was given is refused when it is presented
--- | again. And **a candidate search takes back what does not fit**: a candidate
+-- | again. **A candidate search takes back what does not fit**: a candidate
 -- | that fails is rolled back, what it assigned and built among it, and the
--- | next is tried; one that waits or misuses the kernel is not caught.
+-- | next is tried; one that waits or misuses the kernel is not caught. And
+-- | **what crosses the boundary is what committed, and is checked**: nothing
+-- | unsolved crosses, the only global referred to is the candidate that
+-- | answered, the Core checker accepts the declaration completed, and refuses a
+-- | term whose claim was derived and not borne out; the same input gives the
+-- | same trace.
 module Test.Stella.Compiler.Elaborate.SynthesisVertical (spec) where
 
 import Prelude
@@ -24,14 +31,14 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), bindVar, emptyXContext)
-import Stella.Compiler.Elaborate.CorePlus.Term (TermMetaVar, XExpr(..))
+import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), TermMetaVar, XExpr(..), toCoreExpr)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Driver.Attempt (Attempt(Committed, Registered), OpenResult(..), Response(..), Step(..), envelopeOf)
 import Stella.Compiler.Elaborate.Driver.Attempt as Run
 import Stella.Compiler.Elaborate.Driver.Conversation (command, openConversation)
-import Stella.Compiler.Elaborate.Driver.Loop (RunResult(..), Submission(..), submitAttempting)
-import Stella.Compiler.Elaborate.Driver.Synthesis (Registry, attemptJob, runSynthesis)
+import Stella.Compiler.Elaborate.Driver.Loop (RunReport, RunResult(..), Submission(..), submitAttempting)
+import Stella.Compiler.Elaborate.Driver.Synthesis (Registry, attemptJob, runSynthesis, submitSynthesis)
 import Stella.Compiler.Elaborate.Environment.Catalog (EntrySort(..), catalogOf)
 import Stella.Compiler.Elaborate.Environment.Constructors (constructorsOf)
 import Stella.Compiler.Elaborate.Environment.Effects (effectsOf)
@@ -46,13 +53,15 @@ import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(.
 import Stella.Compiler.Elaborate.Vocabulary.Handle (HandleError(..), SessionId(..), emptyArena)
 import Stella.Compiler.Elaborate.Vocabulary.Message (FrozenMessagePart(..), MessagePart(..))
 import Stella.Compiler.Elaborate.Vocabulary.Request (Command(..), CommandAnswer(..), KernelAnswer(..), BuildRequest(..), KernelRequest(..), ObserveRequest(..), ReportRequest(..), SolveRequest(..), TermRequest(..))
-import Stella.Compiler.Elaborate.Vocabulary.Trace (Tracing(..))
+import Stella.Compiler.Elaborate.Vocabulary.Trace (Fate(..), TraceEvent(..), Tracing(..), fates)
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView(..), KindView(KindRow), PayloadView(..), TypeView(..))
-import Stella.Compiler.TypedCore (AttrValue(..), Attribute, Decl(..), Expr(..), Ident(..), Kind(..), KindVar(..), Literal(..), Module, ModuleName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyVar(..), Type(..))
+import Stella.Compiler.TypedCore (AttrValue(..), Attribute, Decl(..), Expr(..), Ident(..), Kind(..), KindVar(..), Literal(..), Module, ModuleName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyVar(..), Type(..), globalsOf, monoScheme)
 import Stella.Compiler.TypedCore.Declare (declare)
 import Stella.Compiler.TypedCore.Prim (booleanTy, intTy, primSignature, recordTy)
 import Stella.Compiler.TypedCore.Signature (Signature)
-import Data.Either (Either(..), either, isRight)
+import Data.Array.NonEmpty (NonEmptyArray)
+import Data.Array.NonEmpty as NonEmptyArray
+import Data.Either (Either(..), either, isLeft, isRight)
 import Data.Array as Array
 import Data.Foldable (foldl)
 import Data.Map as Map
@@ -63,7 +72,7 @@ import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Stella.Compiler.Elaborate.Reference (Policy, policy, reference, workingOnCandidate, workingWhileWaiting)
+import Test.Stella.Compiler.Elaborate.Reference (Policy, badApplication, policy, reference, workingOnCandidate, workingWhileWaiting)
 
 main :: ModuleName
 main = ModuleName "Main"
@@ -131,12 +140,15 @@ signature :: Signature
 signature = either (const primSignature) identity (declare primSignature valuesModule)
 
 session :: SessionEnv
-session =
+session = sessionWith TraceDisabled
+
+sessionWith :: Tracing -> SessionEnv
+sessionWith tracing =
   { catalog: catalogOf (map (\d -> { name: Qualified main (Ident d.name), sort: ValueEntry, scheme: { kindVars: d.kindVars, body: fromCore d.type }, attributes: d.attributes }) declarations)
   , kinding: kindingOf signature
   , constructors: constructorsOf signature
   , effects: effectsOf signature
-  , tracing: TraceDisabled
+  , tracing
   }
 
 resolver :: Qualified Ident
@@ -152,6 +164,7 @@ registry = Map.fromFoldable
   , Tuple postponing (reference (misusingOn cand2 candidatesOnly))
   , Tuple breaking (reference (misusingOn cand1 candidatesOnly))
   , Tuple keeping (reference (workingOnCandidate cand2 candidatesOnly))
+  , Tuple badly badApplication
   ]
 
 -- | Answering from `Main.one`, then from the candidates.
@@ -209,6 +222,9 @@ breaking = Qualified (ModuleName "Synth") (Ident "breaking")
 
 keeping :: Qualified Ident
 keeping = Qualified (ModuleName "Synth") (Ident "keeping")
+
+badly :: Qualified Ident
+badly = Qualified (ModuleName "Synth") (Ident "badly")
 
 passingOver :: Qualified Ident
 passingOver = Qualified (ModuleName "Synth") (Ident "passingOver")
@@ -527,8 +543,94 @@ spec = describe "Elaborate, a synthesis hole filled by the reference synthesizer
                   other -> fail (describeStep other)
                 other -> fail (describeStep other)
               other -> fail (describeStep other)
+
+  describe "carried to the Core checker" do
+    it "solves a goal through a wait and a candidate search, and the Core checker accepts the declaration it completes" do
+      case scenario session of
+        Left err -> fail err
+        Right run -> do
+          case run.first of
+            Continue { attempt: Registered waited } -> waited `shouldEqual` Set.singleton run.g
+            other -> fail ("the first attempt did not wait: " <> show other)
+          case run.equation of
+            Continue { attempt: Committed } -> pure unit
+            other -> fail ("the equation did not commit: " <> show other)
+          run.report.result `shouldEqual` Completed
+          lookupMeta run.state.tentative.metas run.g `shouldEqual` Just (Assigned answerType)
+          run.zonked `shouldEqual` ELet 0 y answerType (EGlobal 7 cand2 []) (EVar 0 y)
+          case run.core of
+            Right core -> do
+              globalsOf core `shouldEqual` Set.singleton cand2
+              isRight (declare primSignature (completedWith "answer" (recordOf coreBoolean coreInt) core)) `shouldEqual` true
+            Left residues -> fail ("the declaration did not cross the boundary: " <> show residues)
+
+    it "commits an application whose argument is not at the function's parameter type, and the Core checker refuses it" do
+      case submitSynthesis session registry (siteBinding []) xInt badly Nothing (initialState (SessionId 0) 10) of
+        Tuple { target, submission: Continue { attempt: Committed } } s -> case toCoreExpr (zonkExpr s.tentative.metas (ETermMeta 7 target)) of
+          Right core -> isLeft (declare primSignature (completedWith "answer" coreInt core)) `shouldEqual` true
+          Left residues -> fail ("the term did not cross the boundary: " <> show residues)
+        Tuple { submission } _ -> fail ("the term was not committed: " <> show submission)
+
+    it "does not let an unsolved term metavariable cross the boundary" do
+      case runElabIn session (initialState (SessionId 0) 10) (createSynthesis (siteBinding []) xInt resolver Nothing) of
+        Tuple (Done (Tuple _ m)) s ->
+          case toCoreExpr (zonkExpr s.tentative.metas (ETermMeta 7 m)) of
+            Left residues -> NonEmptyArray.toArray residues `shouldEqual` [ ResidualTermMeta 7 m ]
+            Right _ -> fail "an unsolved term metavariable crossed the boundary"
+        Tuple other _ -> fail (show other)
+
+    it "gives the same submissions, report, term, state, and trace from the same input, the candidate that failed rolled back in it" do
+      case scenario (sessionWith TraceEnabled), scenario (sessionWith TraceEnabled) of
+        Right firstRun, Right secondRun -> do
+          secondRun.first `shouldEqual` firstRun.first
+          secondRun.equation `shouldEqual` firstRun.equation
+          secondRun.report `shouldEqual` firstRun.report
+          secondRun.core `shouldEqual` firstRun.core
+          (secondRun.state == firstRun.state) `shouldEqual` true
+          secondRun.state.retained.trace `shouldEqual` firstRun.state.retained.trace
+          let
+            events = firstRun.state.retained.trace
+            conversations = Array.mapMaybe
+              ( case _ of
+                  AttemptOpened e -> Just e.conversation
+                  _ -> Nothing
+              )
+              events
+          case conversations of
+            [ waited, retried ] -> do
+              -- The attempt that waited is rolled back whole.
+              Array.nub (fatesWhere (inConversation waited) events) `shouldEqual` [ RolledBack ]
+              -- `cand0` is passed over in a transaction that commits; `cand1`
+              -- fails in its own; `cand2` answers, and the attempt finishes.
+              fatesWhere (inConversation retried && commanded (Kernel (ObserveRequest (LookupGlobal cand0)))) events `shouldEqual` [ Kept ]
+              fatesWhere (inConversation retried && refersTo cand1) events `shouldEqual` [ RolledBack ]
+              fatesWhere (inConversation retried && refersTo cand2) events `shouldEqual` [ Kept ]
+              fatesWhere (inConversation retried && finishing) events `shouldEqual` [ Kept ]
+            other -> fail ("expected two conversations: " <> show other)
+        Left err, _ -> fail err
+        _, Left err -> fail err
   where
   ask request c = command (envelopeOf c) (Kernel request) c
+
+  fatesWhere holds events = Array.catMaybes (Array.zipWith (\event fate -> if holds event then Just fate else Nothing) events (fates events))
+
+  inConversation c = case _ of
+    AttemptOpened e -> e.conversation == c
+    CommandHandled e -> e.conversation == c
+    AttemptAbandoned e -> e.conversation == c
+    AttemptNotOpened _ -> false
+
+  commanded sent = case _ of
+    CommandHandled e -> e.command == sent
+    _ -> false
+
+  refersTo name = case _ of
+    CommandHandled { command: Kernel (TermRequest (GlobalRef _ referred _)) } -> referred == name
+    _ -> false
+
+  finishing = case _ of
+    CommandHandled { command: Finish _ } -> true
+    _ -> false
 
   describeStep :: forall a. Show a => Step a -> P.String
   describeStep = case _ of
@@ -567,6 +669,45 @@ recordGoal name = case runElabIn session (initialState (SessionId 0) 10) created
       goalType = XApp (XCon recordTy []) (XRowExtend (XRowTypeEntry keyA t) (XRowExtend (XRowTypeEntry keyZ xInt) XRowEmpty))
     Tuple _ target <- createSynthesis (siteBinding []) goalType name Nothing
     pure (Tuple t target)
+
+-- | `Record (a : Boolean, z : Int)`, the type `cand2` answers.
+answerType :: XType
+answerType = fromCore (recordOf coreBoolean coreInt)
+
+-- | The module declaring what `Main` declares, then the declaration named, at
+-- | the type given, with the right-hand side given.
+completedWith :: P.String -> Type -> Expr P.Int -> Module P.Int
+completedWith name ty value =
+  valuesModule { decls = valuesModule.decls <> [ DeclNonRec 1 { name: Ident name, scheme: monoScheme ty, value, attributes: [] } ] }
+
+-- | Every step of carrying `let y : ?g = ?m in y` to the Core boundary, and what
+-- | each came to.
+type Scenario =
+  { first :: Submission
+  , equation :: Submission
+  , report :: RunReport
+  , g :: MetaVar
+  , zonked :: XExpr P.Int
+  , core :: Either (NonEmptyArray (Residue P.Int)) (Expr P.Int)
+  , state :: SolverState
+  }
+
+-- | `answer = let y : ?g = ?m in y`, `?m` a goal at `?g`: the goal submitted,
+-- | and waiting on `?g`; the equation `?g ≡ Record (a : Boolean, z : Int)`
+-- | submitted through the same attempter, which wakes it; the loop run, the
+-- | retry searching the candidates; and the right-hand side zonked and taken
+-- | across the boundary.
+scenario :: SessionEnv -> Either P.String Scenario
+scenario env = case runElabIn env (initialState (SessionId 0) 10) (freshTypeMeta emptyXContext XKType) of
+  Tuple (Done (XMeta g)) s0 ->
+    let
+      Tuple submitted s1 = submitSynthesis env registry (siteBinding []) (XMeta g) resolver Nothing s0
+      Tuple equation s2 = submitAttempting (attemptJob env registry) (siteBinding []) (JobUnify { kind: XKType, left: XMeta g, right: answerType }) s1
+      Tuple report s3 = runSynthesis env registry s2
+      zonked = zonkExpr s3.tentative.metas (ELet 0 y (XMeta g) (ETermMeta 7 submitted.target) (EVar 0 y))
+    in
+      Right { first: submitted.submission, equation, report, g, zonked, core: toCoreExpr zonked, state: s3 }
+  Tuple other _ -> Left (show other)
 
 -- | Whether the target is held, and unsolved.
 unsolved :: SolverState -> TermMetaVar -> P.Boolean

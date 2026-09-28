@@ -25,6 +25,7 @@ module Test.Stella.Compiler.Elaborate.Reference
   , reference
   , workingOnCandidate
   , workingWhileWaiting
+  , badApplication
   , sameConstructorView
   ) where
 
@@ -38,6 +39,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle)
 import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView(..), KindView(..), TypeView(..))
 import Stella.Compiler.TypedCore (Ident, Literal(..), Qualified, RowElemKind(..), RowKey(..), Symbol(..))
+import Stella.Compiler.TypedCore.Prim (intTy)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
@@ -128,6 +130,17 @@ workingWhileWaiting answer goal = F.goalType goal >>= F.viewType >>= case _ of
     _ <- F.literal root (LitInt 0)
     F.postpone [ m ]
   _ -> answer goal
+
+-- | `(λ(x : Int). x) true`, whatever the goal. Its claim is derived from its
+-- | parts — the function's result, `Int` — and says nothing of whether the
+-- | argument is at the function's parameter type, which it is not.
+badApplication :: Synthesizer
+badApplication _ = do
+  root <- F.rootScope
+  int <- F.typeConstructor root intTy []
+  lambda <- F.openLambda root "x" int
+  function <- F.emptyRow root >>= F.closeLambda root lambda.binder lambda.variable
+  F.literal root (LitBoolean true) >>= F.termApply root function
 
 -- A row metavariable, a Lacks on it that stays open, and a warning, all
 -- named by the word given.
