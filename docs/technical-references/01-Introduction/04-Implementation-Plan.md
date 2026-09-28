@@ -699,6 +699,23 @@ no identifier is at once ready and blocked
 | The same term as a `let`'s body in the continuation | Built. A `let` inherits `Δ` |
 | Two join points opened one inside the other | `j#0` and `j#1`, from a supply apart from values' |
 | A join point opened inside a `transact` that fails, and opened again | `j#0` both times. The supply is part of what an attempt owns |
+| A switch on `Nil` and `Cons` over an occurrence at `List Int` | `Cons`'s fields at `Int` and `List Int`: the declaration's fields, the kind variables and then the parameters instantiated, read from the session's constructor table and not recovered from the constructor's scheme |
+| A switch naming a constructor the table lacks, constructors of two data types, or one constructor twice | A defect of the synthesizer |
+| A switch naming what the catalog calls a constructor and the table lacks | A defect of the host. The two come from one signature |
+| A switch on constructors over an occurrence at `?f Int`, `?f : Type -> Type`; at `?g ()`, `?g : Row Type -> Type`; and at `Int` | Postponed on `?f`; refused; refused. Only a head that could become the data type is waited on |
+| A `case` over a list, taken apart by the kernel under a lambda | Claimed at its first leaf's type, and accepted by the Core type checker |
+| A switch whose first branch reaches no leaf | Reaches the type of the first branch that does. A `case` over a tree reaching none is refused without a result type and claimed at it with one |
+| A guard whose first tree reaches no leaf | Reaches what its second does |
+| An occurrence of `Cons`'s branch read in `Nil`'s, and an occurrence of an enclosing `case` read in an inner one | Refused, both. An occurrence is in `Ω` only under the dispatch that established it, and `Ω` is the `case`'s own |
+| A tree node asked for in a scope standing in no tree | Refused |
+| `recordField` at a key the record's row carries, at one it does not, and on a list | The payload's type; refused; refused |
+| A switch on the key `n` of `Variant ( n : Int, m : Int )` with a default | The payload at `Int`, and the default's occurrence at `Variant ( m : Int )`. The residual keeps the tails and is not waited on |
+| A switch on a key a variant lacks, where its tail is flexible, closed, or rigid | Postponed on the tail; refused; refused. A rigid tail says nothing of what it carries |
+| A switch closed with fewer trees than branches, without the default a switch on literals has, or with one branch's tree in another's place | Refused |
+| A `case` left open when the attempt succeeds, or a switch closed as a `bind` | A defect of the synthesizer |
+| A field `forall b. a` of `data Wrap a b`, over an occurrence at `Wrap b Int` where `b` is the site's | `forall b#0. b`. The substitution is simultaneous and renames the field's binder, which is named like a parameter and would capture what the other parameter is replaced by |
+| A tree of an enclosing `case`, given as an inner `case`'s tree or to a guard in it | Refused. Its occurrences are paths from the enclosing `case`'s scrutinees |
+| A switch on the constructor of `data Same (a : k) (b : k)` over `?h Int Int`, with `?h : Type -> Type -> Type`, and with `?h : Type -> Row Type -> Type` | Postponed on `?h`, and refused. A kind variable of the data type stands for one kind wherever it occurs |
 | A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
 | No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
 | No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |

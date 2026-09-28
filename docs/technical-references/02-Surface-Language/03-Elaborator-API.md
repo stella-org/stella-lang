@@ -480,7 +480,7 @@ Job = JobUnify EqualityGoal | JobSynthesis GoalRecord
 **The runner sets the current site and goal before the attempt begins, and nothing inside the attempt changes them.** Every kernel operation that depends on where it stands reads them from there.
 
 ```text
-SessionEnv = { catalog, kinding }      fixed for the session, before the first job
+SessionEnv = { catalog, kinding, constructors }      fixed for the session, before the first job
 Frame      = { site, goal }            read-only for the length of the attempt
 ```
 
@@ -652,6 +652,34 @@ jump               : Scope -> Join -> [Expr] -> Elab Expr
 
 **`openJoin` opens two scopes under one binder**: the definition's, binding the parameters and the join point, and the continuation's, binding the join point alone; the definition is closed from the first and the body from the second. The parameter and result types are the synthesizer's, as Core writes them, each one the scope may use at `Type`, and the `letjoin` is claimed at the result. The join point is a handle of its own class, named by the host from a supply apart from values'. **`jump` checks that the join point is in scope and takes as many arguments as it has parameters**, and is claimed at its result; what the arguments are claimed at, and whether the jump is in tail position, are the Core type checker's.
 
+### Cases and decision trees
+
+```text
+openCase       : Scope -> [Expr] -> Elab { binder, scrutinees : [Occurrence], treeScope : Scope }
+closeCase      : Scope -> Binder -> Maybe Type -> Tree -> Elab Expr
+leaf           : Scope -> Expr -> Elab Tree
+guard          : Scope -> Expr -> Tree -> Tree -> Elab Tree
+openBind       : Scope -> Occurrence -> String -> Elab { binder, variable : Expr, bodyScope }
+closeBind      : Scope -> Binder -> Tree -> Elab Tree
+recordField    : Scope -> Occurrence -> RowKey -> Elab Occurrence
+openSwitchCtor : Scope -> Occurrence -> [QIdent] -> Boolean
+                   -> Elab { binder, branches : [ { scope, fields : [Occurrence] } ], fallback : Maybe Scope }
+openSwitchLit  : Scope -> Occurrence -> [Literal]
+                   -> Elab { binder, branches : [Scope], fallback : Scope }
+openSwitchKey  : Scope -> Occurrence -> [RowKey] -> Boolean
+                   -> Elab { binder, branches : [ { scope, payload : Occurrence } ]
+                           , fallback : Maybe { scope, residual : Occurrence } }
+closeSwitch    : Scope -> Binder -> [Tree] -> Maybe Tree -> Elab Tree
+```
+
+**A decision tree is built in scopes of its own, and a `Tree` and an `Occurrence` are handles of their own classes.** Opening a `case` gives the scope its tree is built in, which names the `case`, and an occurrence for each scrutinee; a `bind` and a switch open scopes below it, a switch one per branch and one for the default, all under one binder, in the order given. A tree node is built only in such a scope, and a scope a term binder opens inside one stands in no tree. **An occurrence is read only in the tree of its own `case`, under the branch that established it** — a constructor's fields under that constructor's branch, a variant's payload under its key's, the residual under the default — which is the occurrence typing of the Core type checker: an occurrence of an enclosing `case` is refused in an inner one, whose paths are read from other scrutinees. **A `Tree` carries its `case` likewise**, and is used only in that `case`'s tree: a tree of an enclosing `case`, visible from an inner one built under it, would have its occurrences read from the inner one's scrutinees. A switch is closed with a tree for each branch, each visible under its own, and with a default exactly where it was opened with one; a switch on literals always has one. Constructors, literals, and keys are each given once.
+
+**What an occurrence stands at is the host's to say**, so a synthesizer is given occurrences and never states one, and cannot project what no branch established: a scrutinee at what it is claimed at; a constructor's field at the field of its data type's declaration, instantiated at the kinds and then the arguments of the type the occurrence stands at, simultaneously and without capture, a binder of the field renamed where it would capture what another argument brings; `o . k`, which needs no dispatch, at the payload the record's row carries at `k`; a variant's payload likewise; and the default of a switch on keys at the residual, the row with the keys taken out of its known part and its tails kept. **The constructors are read from a table the session holds**, built once from the signature its kinding comes from, and not recovered from a constructor's scheme, which says what the constructor is as a function and not which of its arrows are fields. The constructors of one switch build one data type, the one the occurrence stands at. Where the occurrence's type is headed by an unsolved metavariable compatible with that data type partially applied — a kind variable of the data type standing for one kind wherever it occurs in the parameters the head would supply — or a row does not carry a key and a flexible tail could, those metavariables are waited on; a rigid tail says nothing of what it carries, and a head no solution makes the data type is a misuse. Whether the constructors exhaust the data type, whether it is one rather than an intrinsic type, and whether the keys exhaust the row are the Core type checker's.
+
+**A tree is claimed at nothing, and carries the type of the first leaf it reaches**: a leaf reaches what its term is claimed at, a `bind` what its tree reaches, a guard the first of its two trees that reaches a leaf, and a switch the first branch that does, then its default. A `case` is claimed at the result type it is closed with, where one is given, and otherwise at what its tree reaches; a tree reaching no leaf needs the type given. That every leaf agrees is the Core type checker's.
+
+A constructor the table does not hold is a misuse, and one the catalog calls a constructor while the table does not hold it is a defect of the host, the two being assembled from one signature.
+
 ### The catalog
 
 `lookupGlobal` and `declsWithAttr` read one immutable catalog, assembled before the first job exists ([above](#the-module-environment-is-built-once-before-any-job-exists)).
@@ -685,8 +713,8 @@ A guest cannot build the host's diagnostic, which names sites and holds Core⁺;
 | | Examples | Outcome | Caught by `transact` |
 | --- | --- | --- | --- |
 | **program diagnostic** | an equation no substitution satisfies; an obligation broken or rejected; a result escaping its scope; a result whose claim the goal's type refutes; a `throw` | `Failed` | yes |
-| **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session; a builder asked for what cannot be built; a binder left open by an attempt that succeeds, or closed twice; an equation between kinds that cannot meet, or a goal not at `Type` | `Broke`, naming the synthesizer and the goal | no |
-| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; a catalog scheme ill-formed under what it declares; the mechanism's own invariants | `Broke` | no |
+| **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session; a builder asked for what cannot be built; a binder left open by an attempt that succeeds, or closed twice; an equation between kinds that cannot meet, or a goal not at `Type`; an occurrence read outside its branch or its `case`, or a constructor the session does not know | `Broke`, naming the synthesizer and the goal | no |
+| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; a catalog scheme ill-formed under what it declares; a name the catalog calls a constructor and the constructor table does not hold; the mechanism's own invariants | `Broke` | no |
 
 **A `SynthRef` with no implementation is the host's defect and not the program's.** Name resolution resolved it against `Σ` where the goal was written ([above](#what-a-synthesis-goal-carries)), so the name exists; a session unable to run what it names was set up without it.
 
