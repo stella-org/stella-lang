@@ -1,0 +1,6 @@
+{
+  "description": "Main reads Lib.unbox as a value, beside a Lib that does not export it",
+  "modules": ["Base.Int", "Lib", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "unbox"}},
+  "observe": []
+}

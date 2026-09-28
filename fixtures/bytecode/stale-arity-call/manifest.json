@@ -1,0 +1,6 @@
+{
+  "description": "Main calls Lib.addTo with the two arguments Lib's interface gave it, and is loaded beside a Lib whose addTo takes one",
+  "modules": ["Base.Int", "Lib", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "addTo"}},
+  "observe": []
+}

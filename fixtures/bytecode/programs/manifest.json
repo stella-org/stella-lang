@@ -1,0 +1,32 @@
+{
+  "description": "Calls, tail calls, partial and over-application, closures, join points, records, variants, literal dispatch, and references into another module",
+  "modules": ["Base.Int", "Lib", "Main"],
+  "outcome": {"loads": true},
+  "observe": [
+    {"global": "Main.summed", "value": {"int": 6}},
+    {"global": "Main.deepSum", "value": {"int": 705082704}},
+    {"global": "Main.counted", "value": {"int": 1000000}},
+    {"global": "Main.listValue", "value": {"data": "Main.Cons", "fields": [{"int": 1}, {"data": "Main.Cons", "fields": [{"int": 2}, {"data": "Main.Cons", "fields": [{"int": 3}, {"data": "Main.Nil", "fields": []}]}]}]}},
+    {"global": "Main.overApplied", "value": {"int": -7}},
+    {"global": "Main.papApplied", "value": {"int": 9}},
+    {"global": "Main.ctorPap", "value": {"int": 1}},
+    {"global": "Main.captured", "value": {"int": 8}},
+    {"global": "Main.evenOdd", "value": {"boolean": false}},
+    {"global": "Main.joined", "value": {"int": 101}},
+    {"global": "Main.looped", "value": {"int": 705082704}},
+    {"global": "Main.recordShape", "value": {"record": [{"key": {"field": "y"}, "value": {"boolean": true}}]}},
+    {"global": "Main.recordArith", "value": {"int": 6}},
+    {"global": "Main.variantCase", "value": {"int": 6}},
+    {"global": "Main.negZero", "value": {"int": 2}},
+    {"global": "Main.posZero", "value": {"int": 2}},
+    {"global": "Main.nanCase", "value": {"int": 1}},
+    {"global": "Main.stringCase", "value": {"int": 2}},
+    {"global": "Main.charCase", "value": {"int": 2}},
+    {"global": "Main.unitValue", "value": {"data": "Prim.Unit", "fields": []}},
+    {"global": "Main.unboxed", "value": {"int": 7}},
+    {"global": "Main.boxMatched", "value": {"int": 9}},
+    {"global": "Main.addPartial", "value": {"int": 42}},
+    {"global": "Main.addCalled", "value": {"int": 3}},
+    {"global": "Main.overAppliedU", "value": {"int": -7}}
+  ]
+}

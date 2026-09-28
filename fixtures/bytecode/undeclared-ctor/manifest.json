@@ -1,0 +1,6 @@
+{
+  "description": "Main dispatches on Lib.Box, beside a Lib whose constructor is called Crate",
+  "modules": ["Base.Int", "Lib", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "Box"}},
+  "observe": []
+}

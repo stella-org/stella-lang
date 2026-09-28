@@ -1,0 +1,6 @@
+{
+  "description": "Main applies Lib.addTo to one argument, a partial application under the interface it was compiled against, beside a Lib whose addTo takes one",
+  "modules": ["Base.Int", "Lib", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "addTo"}},
+  "observe": []
+}
