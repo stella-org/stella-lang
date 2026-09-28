@@ -14,6 +14,7 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.Elaborate.Trace (Tracing(..))
 import Stella.Compiler.Elaborate.Build (emptyRow, extendRow, openConstraint, openForall, rootScope, typeConstructor, typeVariable)
 import Stella.Compiler.Elaborate.Constructors (emptyConstructorEnv)
 import Stella.Compiler.Elaborate.Effects (emptyEffectEnv)
@@ -62,7 +63,7 @@ kinding =
   }
 
 session :: SessionEnv
-session = { catalog: catalogOf [], kinding, constructors: emptyConstructorEnv, effects: emptyEffectEnv }
+session = { catalog: catalogOf [], kinding, constructors: emptyConstructorEnv, effects: emptyEffectEnv, tracing: TraceDisabled }
 
 resolver :: Qualified Ident
 resolver = Qualified (ModuleName "Typeclass") (Ident "resolve")

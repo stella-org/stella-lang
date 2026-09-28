@@ -94,6 +94,7 @@ import Stella.Compiler.Elaborate.TermMeta (TermError(..), assignTermMeta, region
 import Stella.Compiler.Elaborate.TermMeta as TermMeta
 import Stella.Compiler.Elaborate.Type (MetaVar, XConstraint, XType(..))
 import Stella.Compiler.TypedCore (Ident(..), JoinName(..), TyVar(..))
+import Stella.Compiler.Elaborate.Trace (TraceEvent, Tracing(..))
 import Stella.Compiler.Elaborate.Unify (MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupTermMeta, substitute, unifyType)
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
@@ -169,6 +170,8 @@ type Tentative =
 -- | the number a handle to a deleted one carries. `nextConversation` is what a
 -- | conversation's identifier is drawn from, for the same reason: a request
 -- | arriving late from an attempt rolled back must not name the next one.
+-- | `trace` is what a traced session's conversations asked and were answered,
+-- | a command a rollback undid among it.
 -- | `session` is the identity of the session and never changes. Nothing here is
 -- | part of what an attempt owns.
 -- |
@@ -180,6 +183,7 @@ type Retained =
   , nextGeneration :: P.Int
   , nextConversation :: P.Int
   , fuel :: P.Int
+  , trace :: P.Array TraceEvent
   }
 
 type SolverState =
@@ -242,6 +246,7 @@ type SessionEnv =
   , kinding :: KindingEnv
   , constructors :: ConstructorEnv
   , effects :: EffectEnv
+  , tracing :: Tracing
   }
 
 -- | Where the running attempt stands. An equality job has a site and no goal.
@@ -251,7 +256,7 @@ type Frame =
   }
 
 emptySessionEnv :: SessionEnv
-emptySessionEnv = { catalog: catalogOf [], kinding: emptyKindingEnv, constructors: emptyConstructorEnv, effects: emptyEffectEnv }
+emptySessionEnv = { catalog: catalogOf [], kinding: emptyKindingEnv, constructors: emptyConstructorEnv, effects: emptyEffectEnv, tracing: TraceDisabled }
 
 -- | Run an action outside any attempt, reading the session given.
 runElabIn :: forall a. SessionEnv -> SolverState -> Elab a -> Tuple (Outcome a) SolverState
@@ -288,7 +293,7 @@ initialState session fuel =
       , open: Map.empty
       , warnings: []
       }
-  , retained: { session, nextGeneration: 0, nextConversation: 0, fuel }
+  , retained: { session, nextGeneration: 0, nextConversation: 0, fuel, trace: [] }
   }
 
 -- | Fail with the diagnostic given: the mechanism's own way of rejecting a

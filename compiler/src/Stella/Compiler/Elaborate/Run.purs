@@ -6,7 +6,7 @@
 -- | handed back as the `Outcome` it is, so a defect is never a value some later
 -- | step could go on from.
 module Stella.Compiler.Elaborate.Run
-  ( Attempt(..)
+  ( module Exports
   , Runner
   , runAttempt
   , admit
@@ -14,7 +14,6 @@ module Stella.Compiler.Elaborate.Run
   , attemptPending
   , attemptPendingWith
   , Conversation
-  , Envelope
   , OpenResult(..)
   , Response(..)
   , Step(..)
@@ -35,31 +34,20 @@ import Prim as P
 import Stella.Compiler.Elaborate.Diagnostic (Defect(..), Diagnostic, Inadmissible(..))
 import Stella.Compiler.Elaborate.Handle (Handle, HandleObject(..), emptyArena)
 import Stella.Compiler.Elaborate.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, Tentative, break, checkSynthesisTarget, issue, requireClosed, runElabIn, unify, withFrame)
-import Stella.Compiler.Elaborate.Protocol (ConversationId(..), TransactionToken(..))
+import Stella.Compiler.Elaborate.Attempt (Attempt(..))
+import Stella.Compiler.Elaborate.Attempt (Attempt(..)) as Exports
+import Stella.Compiler.Elaborate.Protocol (Envelope) as Exports
+import Stella.Compiler.Elaborate.Protocol (Envelope, ConversationId(..), TransactionToken(..))
 import Stella.Compiler.Elaborate.Pending (Job(..), Pending, PendingId, goalOf)
 import Stella.Compiler.Elaborate.Scheduler (complete, lookupPending, reblock, unwakeable)
 import Stella.Compiler.Elaborate.Type (MetaVar)
 import Stella.Compiler.Elaborate.Unify (MetaBinding(..), MetaContext, lookupMeta)
 import Data.Array as Array
 import Data.Either (Either(..))
-import Data.Generic.Rep (class Generic)
 import Data.Maybe (Maybe(..))
 import Data.Set (Set)
 import Data.Set as Set
-import Data.Show.Generic (genericShow)
 import Data.Tuple (Tuple(..), uncurry)
-
--- | What attempting a pending job came to, once the scheduler has acted on it.
-data Attempt
-  -- | Solved and committed; the job is gone from every table.
-  = Committed
-  -- | Postponed, and registered under the metavariables admitted.
-  | Registered (Set MetaVar)
-  -- | Failed; the job is gone from every table, and the diagnostic is what to
-  -- | report.
-  | Rejected Diagnostic
-  -- | A defect. Nothing further is attempted.
-  | Halted Defect
 
 -- | One attempt: a transaction over what it owns.
 -- |
@@ -186,13 +174,6 @@ type Conversation =
   , goal :: Maybe Handle
   , transactions :: P.Array { token :: TransactionToken, checkpoint :: Tentative }
   , nextSerial :: P.Int
-  }
-
--- | What a request carries beside what it asks: the conversation it belongs to,
--- | and the transaction the synthesizer stands in, innermost, if any.
-type Envelope =
-  { conversation :: ConversationId
-  , transaction :: Maybe TransactionToken
   }
 
 -- | Opening an attempt: a conversation, or where the attempt stopped before any
@@ -393,9 +374,3 @@ ended conversation outcome s = case outcome of
   p = conversation.pending
   rolled = { tentative: conversation.root, retained: s.retained }
   complete' st = st { tentative { scheduler = complete p.id st.tentative.scheduler } }
-
-derive instance Eq Attempt
-derive instance Generic Attempt _
-
-instance Show Attempt where
-  show x = genericShow x

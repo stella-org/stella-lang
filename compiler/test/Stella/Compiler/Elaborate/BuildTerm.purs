@@ -12,6 +12,7 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.Elaborate.Trace (Tracing(..))
 import Stella.Compiler.Elaborate.Build (openForall, rootScope)
 import Stella.Compiler.Elaborate.BuildScope (usableTermIn)
 import Stella.Compiler.Elaborate.BuildTerm (globalRef, literal, localVariable)
@@ -86,6 +87,7 @@ session =
   , kinding
   , constructors: emptyConstructorEnv
   , effects: emptyEffectEnv
+  , tracing: TraceDisabled
   }
   where
   entry name kindVars body = { name: global name, sort: ValueEntry, scheme: { kindVars, body }, attributes: [] }

@@ -14,6 +14,7 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.Elaborate.Trace (Tracing(..))
 import Stella.Compiler.Elaborate.Build (emptyRow, rootScope, typeConstructor)
 import Stella.Compiler.Elaborate.BuildHandler (closeHandle, openHandle, perform, readCell, writeCell)
 import Stella.Compiler.Elaborate.BuildRecord (openEff, recordEmpty, recordExtend, recordMerge, recordRestrict, recordSelect, recordUpdate, variantAbsurd, variantInject, variantWeaken)
@@ -96,6 +97,7 @@ session =
   , kinding: kindingOf signature
   , constructors: constructorsOf signature
   , effects: effectsOf signature
+  , tracing: TraceDisabled
   }
 
 -- | A site binding a list, a variant, the empty variant, and a unit.

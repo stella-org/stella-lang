@@ -13,6 +13,7 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.Elaborate.Trace (Tracing(..))
 import Stella.Compiler.Elaborate.Build (emptyRow, rootScope, typeConstructor)
 import Stella.Compiler.Elaborate.Build as Build
 import Stella.Compiler.Elaborate.BuildTerm (closeLambda, literal, localVariable, openLambda)
@@ -123,6 +124,7 @@ session =
   , kinding: kindingOf signature
   , constructors: constructorsOf signature
   , effects: effectsOf signature
+  , tracing: TraceDisabled
   }
 
 keyN :: RowKey

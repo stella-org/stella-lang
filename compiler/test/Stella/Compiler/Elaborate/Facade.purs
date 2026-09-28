@@ -15,6 +15,7 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.Elaborate.Trace (Tracing(..))
 import Stella.Compiler.Elaborate.Catalog (catalogOf)
 import Stella.Compiler.Elaborate.Constructors (emptyConstructorEnv)
 import Stella.Compiler.Elaborate.Context (Origin(..), bindVar, emptyXContext)
@@ -389,7 +390,7 @@ xInt :: XType
 xInt = XCon intTy []
 
 session :: SessionEnv
-session = { catalog: catalogOf [], kinding: kindingOf primSignature, constructors: emptyConstructorEnv, effects: emptyEffectEnv }
+session = { catalog: catalogOf [], kinding: kindingOf primSignature, constructors: emptyConstructorEnv, effects: emptyEffectEnv, tracing: TraceDisabled }
 
 resolver :: Qualified Ident
 resolver = Qualified (ModuleName "Typeclass") (Ident "resolve")

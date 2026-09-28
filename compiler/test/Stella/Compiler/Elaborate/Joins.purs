@@ -11,6 +11,7 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.Elaborate.Trace (Tracing(..))
 import Stella.Compiler.Elaborate.Build (openForall, rootScope, typeConstructor)
 import Stella.Compiler.Elaborate.BuildTerm (closeJoin, closeLambda, closeLet, jump, literal, openConstraintAbs, openJoin, openLambda, openLet, openTypeAbs, termApply)
 import Stella.Compiler.Elaborate.Build as Build
@@ -44,7 +45,7 @@ xInt :: XType
 xInt = XCon intTy []
 
 session :: SessionEnv
-session = { catalog: catalogOf [], kinding: kindingOf primSignature, constructors: constructorsOf primSignature, effects: effectsOf primSignature }
+session = { catalog: catalogOf [], kinding: kindingOf primSignature, constructors: constructorsOf primSignature, effects: effectsOf primSignature, tracing: TraceDisabled }
 
 site :: Site
 site = { context: emptyXContext, origin: InDeclaration (Qualified (ModuleName "Main") (Ident "decl")) }

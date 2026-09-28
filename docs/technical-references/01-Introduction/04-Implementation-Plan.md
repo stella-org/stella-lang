@@ -799,6 +799,17 @@ no identifier is at once ready and blocked
 | The same attempt driven by commands — a transaction begun, the root and a literal requested, the transaction committed, the attempt finished | Each command answered in its shape, and the literal committed as the goal's solution |
 | A failure requested inside a transaction by command | Answered with the failure and the transaction it closed |
 | A synthesizer run on an equality job | A defect: the job has no goal to give it |
+| One synthesizer run twice from one state | The same trace, outcome, and final state |
+| The commands a traced attempt recorded, with their envelopes, sent again from the state it started from | The same trace, outcome, and final state, identifiers and handles included. The script and the commands are answered by one dispatcher |
+| An attempt run where the session does not trace | Nothing recorded |
+| A candidate that warns and fails inside `transact`, then a result | Every command recorded, the undone among them: the candidate's rolled back, the rest kept |
+| A transaction committed inside one that then fails | Rolled back, with the one around it |
+| An attempt that postpones | Every event rolled back, and the attempt's end recording what it waits on |
+| A conversation driven by commands and not yet finished | Every event pending |
+| An attempt of a job still queued | Recorded as not opened, naming no conversation, and not run |
+| A misuse after a failed candidate | The conversation ends with the defect, told apart from the failure answered before it |
+| A goal that postpones on its type's metavariable, the host solving it between two conversations, and the retry | The retry sends the same commands as the first attempt up to the first reply that differs, compared with handles renamed by first appearance: the reply to `viewType` shows the metavariable, then the constructor, and the commands part after it. What is reproduced is that common prefix, not the first attempt's commands entire |
+| The same goal carried on: after the retry, a candidate its type refutes, then `Main.one` | Committed, zonked, crossed, and accepted by the Core type checker, its only reference `Main.one` |
 | An attempt finished with a transaction open | A defect naming the transaction, and nothing committed |
 | An attempt finished with a binder open, and an acceptance that would fail | The binder defect. The binders are checked before anything is accepted |
 | An attempt whose requests assigned and warned, finished with an acceptance that fails | Rejected, and neither kept. The acceptance runs inside the attempt, before it commits |

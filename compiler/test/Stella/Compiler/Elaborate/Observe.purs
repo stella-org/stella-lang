@@ -13,6 +13,7 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.Elaborate.Trace (Tracing(..))
 import Stella.Compiler.Elaborate.Constructors (emptyConstructorEnv)
 import Stella.Compiler.Elaborate.Effects (emptyEffectEnv)
 import Stella.Compiler.Elaborate.Catalog (EntrySort(..), catalogOf)
@@ -84,6 +85,7 @@ session =
   , kinding
   , constructors: emptyConstructorEnv
   , effects: emptyEffectEnv
+  , tracing: TraceDisabled
   }
 
 x :: Ident

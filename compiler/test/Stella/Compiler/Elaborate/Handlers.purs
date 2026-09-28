@@ -14,6 +14,7 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.Elaborate.Trace (Tracing(..))
 import Stella.Compiler.Elaborate.Build (emptyRow, rootScope, typeConstructor, typeVariable)
 import Stella.Compiler.Elaborate.BuildHandler (closeHandle, openHandle, perform, readCell, writeCell)
 import Stella.Compiler.Elaborate.BuildTerm (closeLambda, closeLet, jump, literal, localVariable, openJoin, openLambda, openLet)
@@ -141,6 +142,7 @@ session =
   , kinding: kindingOf signature
   , constructors: constructorsOf signature
   , effects: effectsOf signature
+  , tracing: TraceDisabled
   }
 
 e :: TyVar

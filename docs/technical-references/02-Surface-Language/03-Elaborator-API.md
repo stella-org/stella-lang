@@ -804,7 +804,7 @@ CommandAnswer = KernelAnswered KernelAnswer | TransactionBegun TransactionToken 
 
 **A command is what drives a conversation**: a kernel request, the opening and closing of a transaction, or the end of the attempt with a result. The sequence of commands is what a guest on Steam sends and what a record of a conversation holds.
 
-**A synthesizer written in the host is a script over the same requests**: each operation makes the request its name says and takes back only the shape that request is answered in, which the same table fixes, and `transact` is the one form not made of requests — the driver opens a transaction where it starts, commits it where it ends, and resumes the script after it with the diagnostic where a failure is answered inside it, matching the failure to the transaction by its token. The synthesizer is given its goal as a Goal handle, issued as the attempt opens, and ends in the Expr handle it offers. The driver runs it against the conversation with the same operations the commands are answered by. **A script's representation is not the synthesizer's**: the operations and `transact` are all it is given, so it cannot make a request of its own or refuse an answer the host gives.
+**A synthesizer written in the host is a script over the same requests**: each operation makes the request its name says and takes back only the shape that request is answered in, which the same table fixes, and `transact` is the one form not made of requests — the driver opens a transaction where it starts, commits it where it ends, and resumes the script after it with the diagnostic where a failure is answered inside it, matching the failure to the transaction by its token. The synthesizer is given its goal as a Goal handle, issued as the attempt opens, and ends in the Expr handle it offers. The driver runs it by sending the commands it makes to the dispatcher a guest's commands are answered by. **A script's representation is not the synthesizer's**: the operations and `transact` are all it is given, so it cannot make a request of its own or refuse an answer the host gives.
 
 ### Accepting a result
 
@@ -818,6 +818,33 @@ CommandAnswer = KernelAnswered KernelAnswer | TransactionBegun TransactionToken 
 ```
 
 Only in the root scope does what the term may mention agree with where the goal stands. Unifying the claim first is what lets the goal's type be learned from the result, as [above](#what-a-synthesis-job-holds). Whatever acceptance comes to, it comes to inside the attempt, so a result it refuses is rolled back with everything the synthesizer did.
+
+### The trace of a conversation
+
+**A trace is a conversation as the host saw it**, and what a runner in the host and a guest on Steam are compared by:
+
+```text
+TraceEvent = AttemptOpened    { conversation , pending , goal : Maybe Goal }
+           | AttemptNotOpened { pending , outcome : Attempt }
+           | CommandHandled   { conversation , pending , envelope , command , reply }
+           | AttemptAbandoned { conversation , pending , outcome : Attempt }
+TraceReply = Replied CommandAnswer | FailedCandidate TransactionToken Diagnostic | Ended Attempt
+```
+
+Every command is handled by one dispatcher, whoever sends it: a script is run by sending the commands a guest would send, so the two are driven, answered, and recorded alike. An attempt that did not open names no conversation, since one that ran out of identifiers was never given one; an attempt the host ends at its own fault, rather than in reply to a command, is recorded as abandoned. **Only a synthesis attempt is traced**: an equality job sends no command, and a trace is not a history of the scheduler.
+
+**A trace is only appended to**, and kept where no rollback reaches, so a command a rollback undid stays in it. What became of each event is computed from the order of the events rather than written into them:
+
+| Fate | |
+| --- | --- |
+| kept | part of what the attempt committed |
+| rolled back | by a failure in its transaction or in one around it — a transaction committed inside one later rolled back is rolled back — or by the attempt ending without a result |
+| pending | the conversation had not ended where the trace ends |
+| not run | an attempt that did not open |
+
+**What a trace fixes** is two things, told apart. From one state, one synthesizer gives one trace, one outcome, and one final state, and the commands it recorded, sent again from that state, give all three again, identifiers and handles included. And a retry of a goal sends the same commands as the first attempt up to the first reply that differs — compared with their handles renamed by the order they first appear, a session never issuing a generation twice — and may part from them after it: that reply is the first point where what the attempts observe has changed, which is why the goal was woken. What a retry reproduces is that common prefix, and not the first attempt's commands entire.
+
+**Recording is chosen per session**: a compilation traces nothing, and a test, a comparison of runners, or a debugger turns it on.
 
 ### Messages, `throw`, and `warn`
 
@@ -852,7 +879,7 @@ The mechanism's own failure is `raiseDiagnostic`, which takes a diagnostic it ha
 | --- | --- | --- | --- |
 | **program diagnostic** | an equation no substitution satisfies; an obligation broken or rejected; a result escaping its scope; a result whose claim the goal's type refutes; a `throw` | `Failed` | yes |
 | **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session; a builder asked for what cannot be built; a binder left open by an attempt that succeeds, or closed twice; an equation between kinds that cannot meet, or a goal not at `Type`; an occurrence read outside its branch or its `case`, or a constructor the session does not know; an operation its effect does not declare, a handler's clauses naming one twice or missing one, or a cell read where no region holds it; a request naming another conversation, or a transaction other than the innermost, or an attempt finished with a transaction open, or a commit with none open; a result not built in its goal's root scope | `Broke`, naming the synthesizer and the goal | no |
-| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; a catalog scheme ill-formed under what it declares; a name the catalog calls a constructor and the constructor table does not hold; an effect the kinding environment declares and the effect table does not hold; a handler's answer type or residual row mentioning the region variable it binds; a session or a conversation that has issued every identifier it can; a kernel request answered in another shape than its own, or a candidate failure answered in a transaction the driver did not open; the mechanism's own invariants | `Broke` | no |
+| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; a catalog scheme ill-formed under what it declares; a name the catalog calls a constructor and the constructor table does not hold; an effect the kinding environment declares and the effect table does not hold; a handler's answer type or residual row mentioning the region variable it binds; a session or a conversation that has issued every identifier it can; a kernel request answered in another shape than its own, or a command in another shape than its own, or a candidate failure answered in a transaction the driver did not open; the mechanism's own invariants | `Broke` | no |
 
 **A `SynthRef` with no implementation is the host's defect and not the program's.** Name resolution resolved it against `Σ` where the goal was written ([above](#what-a-synthesis-goal-carries)), so the name exists; a session unable to run what it names was set up without it.
 

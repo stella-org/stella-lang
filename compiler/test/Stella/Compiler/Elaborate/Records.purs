@@ -12,6 +12,7 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.Elaborate.Trace (Tracing(..))
 import Stella.Compiler.Elaborate.Build (emptyRow, rootScope, typeConstructor)
 import Stella.Compiler.Elaborate.BuildRecord (openEff, recordEmpty, recordExtend, recordMerge, recordRestrict, recordSelect, recordUpdate, variantAbsurd, variantInject, variantWeaken)
 import Stella.Compiler.Elaborate.BuildTerm (literal, localVariable)
@@ -101,7 +102,7 @@ context =
     ]
 
 session :: SessionEnv
-session = { catalog: catalogOf [], kinding: kindingOf primSignature, constructors: constructorsOf primSignature, effects: effectsOf primSignature }
+session = { catalog: catalogOf [], kinding: kindingOf primSignature, constructors: constructorsOf primSignature, effects: effectsOf primSignature, tracing: TraceDisabled }
 
 site :: Site
 site = { context, origin: InDeclaration (Qualified (ModuleName "Main") (Ident "decl")) }

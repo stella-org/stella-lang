@@ -34,6 +34,8 @@ module Stella.Compiler.Elaborate.Request
   , answerShape
   , expectedAnswerShape
   , answersAs
+  , traverseCommandHandles
+  , traverseRequestHandles
   ) where
 
 import Prelude
@@ -41,14 +43,15 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Handle (Handle)
-import Stella.Compiler.Elaborate.Message (MessagePart)
+import Stella.Compiler.Elaborate.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Pending (SynthRef)
 import Stella.Compiler.Elaborate.Protocol (TransactionToken)
-import Stella.Compiler.Elaborate.View (ConstraintView, ContextEntry, DeclView, KindView, PayloadView, RowView, TypeView)
+import Stella.Compiler.Elaborate.View (ConstraintView(..), ContextEntry, DeclView, KindView, PayloadView(..), RowView, TypeView)
 import Stella.Compiler.TypedCore (Ident, Literal, OpName, Qualified, RowKey, TyName, TyVar)
 import Data.Generic.Rep (class Generic)
 import Data.Maybe (Maybe(..))
 import Data.Show.Generic (genericShow)
+import Data.Traversable (traverse)
 
 data KernelRequest
   = BuildRequest BuildRequest
@@ -446,3 +449,124 @@ derive instance Generic AnswerShape _
 
 instance Show AnswerShape where
   show x = genericShow x
+
+-- | The command with each handle it holds replaced as the function given says,
+-- | the handles visited in the order they are written.
+traverseCommandHandles :: forall f. Applicative f => (Handle -> f Handle) -> Command -> f Command
+traverseCommandHandles v = case _ of
+  Kernel request -> Kernel <$> traverseRequestHandles v request
+  BeginTransaction -> pure BeginTransaction
+  CommitTransaction -> pure CommitTransaction
+  Finish result -> Finish <$> v result
+
+traverseRequestHandles :: forall f. Applicative f => (Handle -> f Handle) -> KernelRequest -> f KernelRequest
+traverseRequestHandles v = case _ of
+  BuildRequest r -> BuildRequest <$> case r of
+    RootScope -> pure RootScope
+    TypeVariable s name -> TypeVariable <$> v s <*> pure name
+    TypeConstructor s name kinds -> TypeConstructor <$> v s <*> pure name <*> pure kinds
+    ApplyType s f a -> ApplyType <$> v s <*> v f <*> v a
+    EmptyRow s -> EmptyRow <$> v s
+    ExtendRow s key payload rest -> ExtendRow <$> v s <*> pure key <*> payloadHandles payload <*> v rest
+    UnionRow s left right -> UnionRow <$> v s <*> v left <*> v right
+    OpenForall s hint kind -> OpenForall <$> v s <*> pure hint <*> pure kind
+    CloseForall s binder body -> CloseForall <$> v s <*> v binder <*> v body
+    OpenConstraint s constraint -> OpenConstraint <$> v s <*> constraintHandles constraint
+    CloseConstraint s assumption body -> CloseConstraint <$> v s <*> v assumption <*> v body
+    InstantiateForall s quantified argument -> InstantiateForall <$> v s <*> v quantified <*> v argument
+    InstantiateScheme s name kinds -> InstantiateScheme <$> v s <*> pure name <*> pure kinds
+  TermRequest r -> TermRequest <$> case r of
+    LocalVariable s name -> LocalVariable <$> v s <*> pure name
+    GlobalRef s name kinds -> GlobalRef <$> v s <*> pure name <*> pure kinds
+    LiteralTerm s lit -> LiteralTerm <$> v s <*> pure lit
+    TermApply s f a -> TermApply <$> v s <*> v f <*> v a
+    TypeApply s e t -> TypeApply <$> v s <*> v e <*> v t
+    ConstraintApply s e -> ConstraintApply <$> v s <*> v e
+    OpenLambda s hint ty -> OpenLambda <$> v s <*> pure hint <*> v ty
+    CloseLambda s binder body row -> CloseLambda <$> v s <*> v binder <*> v body <*> v row
+    OpenTypeAbs s hint kind -> OpenTypeAbs <$> v s <*> pure hint <*> pure kind
+    CloseTypeAbs s binder body -> CloseTypeAbs <$> v s <*> v binder <*> v body
+    OpenConstraintAbs s constraint -> OpenConstraintAbs <$> v s <*> constraintHandles constraint
+    CloseConstraintAbs s binder body -> CloseConstraintAbs <$> v s <*> v binder <*> v body
+    OpenLet s hint value -> OpenLet <$> v s <*> pure hint <*> v value
+    CloseLet s binder body -> CloseLet <$> v s <*> v binder <*> v body
+    OpenLetRec s bindings -> OpenLetRec <$> v s <*> traverse typed bindings
+    CloseLetRec s binder rhss body -> CloseLetRec <$> v s <*> v binder <*> traverse v rhss <*> v body
+    OpenJoin s hint params result -> OpenJoin <$> v s <*> pure hint <*> traverse typed params <*> v result
+    CloseJoin s binder definition body -> CloseJoin <$> v s <*> v binder <*> v definition <*> v body
+    Jump s join args -> Jump <$> v s <*> v join <*> traverse v args
+  TreeRequest r -> TreeRequest <$> case r of
+    OpenCase s scrutinees -> OpenCase <$> v s <*> traverse v scrutinees
+    CloseCase s binder result tree -> CloseCase <$> v s <*> v binder <*> traverse v result <*> v tree
+    Leaf s e -> Leaf <$> v s <*> v e
+    Guard s condition yes no -> Guard <$> v s <*> v condition <*> v yes <*> v no
+    OpenBind s occurrence hint -> OpenBind <$> v s <*> v occurrence <*> pure hint
+    CloseBind s binder tree -> CloseBind <$> v s <*> v binder <*> v tree
+    RecordField s occurrence key -> RecordField <$> v s <*> v occurrence <*> pure key
+    OpenSwitchCtor s occurrence ctors withDefault -> OpenSwitchCtor <$> v s <*> v occurrence <*> pure ctors <*> pure withDefault
+    OpenSwitchLit s occurrence lits -> OpenSwitchLit <$> v s <*> v occurrence <*> pure lits
+    OpenSwitchKey s occurrence keys withDefault -> OpenSwitchKey <$> v s <*> v occurrence <*> pure keys <*> pure withDefault
+    CloseSwitch s binder trees fallback -> CloseSwitch <$> v s <*> v binder <*> traverse v trees <*> traverse v fallback
+  RecordRequest r -> RecordRequest <$> case r of
+    RecordEmpty s -> RecordEmpty <$> v s
+    RecordExtend s key value rest -> RecordExtend <$> v s <*> pure key <*> v value <*> v rest
+    RecordSelect s key e -> RecordSelect <$> v s <*> pure key <*> v e
+    RecordRestrict s key e -> RecordRestrict <$> v s <*> pure key <*> v e
+    RecordUpdate s key e value -> RecordUpdate <$> v s <*> pure key <*> v e <*> v value
+    RecordMerge s left right -> RecordMerge <$> v s <*> v left <*> v right
+    VariantInject s key value -> VariantInject <$> v s <*> pure key <*> v value
+    VariantWeaken s key payload e -> VariantWeaken <$> v s <*> pure key <*> v payload <*> v e
+    VariantAbsurd s result e -> VariantAbsurd <$> v s <*> v result <*> v e
+    OpenEff s row e -> OpenEff <$> v s <*> v row <*> v e
+  HandlerRequest r -> HandlerRequest <$> case r of
+    Perform s key payload op typeArgs argument ->
+      Perform <$> v s <*> pure key <*> payloadHandles payload <*> pure op <*> traverse v typeArgs <*> v argument
+    OpenHandle s computation key payload layout answer residual clauses ->
+      OpenHandle <$> v s <*> v computation <*> pure key <*> payloadHandles payload
+        <*> traverse (traverse (\cell -> { key: cell.key, type: _ } <$> v cell.type)) layout
+        <*> v answer
+        <*> v residual
+        <*> pure clauses
+    CloseHandle s binder returnBody clauseBodies initials ->
+      CloseHandle <$> v s <*> v binder <*> v returnBody <*> traverse v clauseBodies <*> traverse v initials
+    ReadCell s key -> ReadCell <$> v s <*> pure key
+    WriteCell s key value -> WriteCell <$> v s <*> pure key <*> v value
+  SolveRequest r -> SolveRequest <$> case r of
+    FreshMetaType s kind -> FreshMetaType <$> v s <*> pure kind
+    IsAssigned meta -> IsAssigned <$> v meta
+    Unify s left right -> Unify <$> v s <*> v left <*> v right
+    Entails s constraint -> Entails <$> v s <*> constraintHandles constraint
+    Require s constraint -> Require <$> v s <*> constraintHandles constraint
+    Subgoal s ty synthesizer -> Subgoal <$> v s <*> v ty <*> pure synthesizer
+  ObserveRequest r -> ObserveRequest <$> case r of
+    GoalType goal -> GoalType <$> v goal
+    ViewType ty -> ViewType <$> v ty
+    Whnf ty -> Whnf <$> v ty
+    NormalizeRow row -> NormalizeRow <$> v row
+    KindOf ty -> KindOf <$> v ty
+    TypeOf e -> TypeOf <$> v e
+    LocalContext -> pure LocalContext
+    LocalConstraints -> pure LocalConstraints
+    LookupGlobal name -> pure (LookupGlobal name)
+    DeclsWithAttr attribute -> pure (DeclsWithAttr attribute)
+  ReportRequest r -> ReportRequest <$> case r of
+    Throw message -> Throw <$> traverse partHandles message
+    Warn message -> Warn <$> traverse partHandles message
+    Postpone metas -> Postpone <$> traverse v metas
+  where
+  typed binding = { hint: binding.hint, type: _ } <$> v binding.type
+
+  payloadHandles = case _ of
+    TypePayload ty -> TypePayload <$> v ty
+    EffectPayload effect args -> EffectPayload effect <$> traverse v args
+    RegionPayload a b -> RegionPayload <$> v a <*> v b
+
+  constraintHandles = case _ of
+    LacksView key row -> LacksView key <$> v row
+    DisjointView left right -> DisjointView <$> v left <*> v right
+
+  partHandles = case _ of
+    TextPart text -> pure (TextPart text)
+    TypePart ty -> TypePart <$> v ty
+    TermPart e -> TermPart <$> v e
+    NamePart name -> pure (NamePart name)

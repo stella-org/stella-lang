@@ -18,13 +18,23 @@
 module Stella.Compiler.Elaborate.Protocol
   ( ConversationId(..)
   , TransactionToken(..)
+  , Envelope
   ) where
 
 import Prelude
 
 import Prim as P
 
+import Data.Maybe (Maybe)
+
 newtype ConversationId = ConversationId P.Int
+
+-- | What a request carries beside what it asks: the conversation it belongs to,
+-- | and the transaction the synthesizer stands in, innermost, if any.
+type Envelope =
+  { conversation :: ConversationId
+  , transaction :: Maybe TransactionToken
+  }
 
 newtype TransactionToken = TransactionToken
   { conversation :: ConversationId

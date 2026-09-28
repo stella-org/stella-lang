@@ -27,7 +27,7 @@ import Stella.Compiler.Elaborate.Context (Origin)
 import Stella.Compiler.Elaborate.Handle (Handle, HandleError, ScopeId)
 import Stella.Compiler.Elaborate.Message (FrozenMessagePart, GoalSummary)
 import Stella.Compiler.Elaborate.Protocol (ConversationId, TransactionToken)
-import Stella.Compiler.Elaborate.Request (KernelAnswer, KernelRequest)
+import Stella.Compiler.Elaborate.Request (Command, CommandAnswer, KernelAnswer, KernelRequest)
 import Stella.Compiler.Elaborate.Kinding (KindingFault)
 import Stella.Compiler.Elaborate.Obligation (Basis, Breach)
 import Stella.Compiler.Elaborate.Pending (Job, PendingId, SynthRef)
@@ -156,6 +156,9 @@ data Defect
   -- | A kernel request answered in another shape than the request is answered
   -- | in: a defect of whoever answered it.
   | AnswerShapeMismatch KernelRequest KernelAnswer
+  -- | A command answered in another shape than the command is answered in: a
+  -- | defect of whoever answered it.
+  | CommandAnswerMismatch Command CommandAnswer
   -- | A synthesizer's result not built in the root scope of its goal. Only
   -- | there does what the result may mention agree with where the goal stands.
   | ResultNotAtRoot Handle

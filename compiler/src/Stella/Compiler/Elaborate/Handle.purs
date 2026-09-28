@@ -373,15 +373,18 @@ resolveIn session nextGeneration expected (Handle h) arena
         | otherwise -> Right entry.object
 
 derive instance Eq SessionId
+derive instance Ord SessionId
 derive newtype instance Show SessionId
 
 derive instance Eq HandleClass
+derive instance Ord HandleClass
 derive instance Generic HandleClass _
 
 instance Show HandleClass where
   show x = genericShow x
 
 derive instance Eq Handle
+derive instance Ord Handle
 derive newtype instance Show Handle
 
 derive instance Eq ScopeId

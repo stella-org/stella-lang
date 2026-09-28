@@ -84,11 +84,11 @@ term = case _ of
 tree :: TreeRequest -> Elab KernelAnswer
 tree = case _ of
   OpenCase scope scrutinees -> CaseAnswer <$> BuildTree.openCase scope scrutinees
-  CloseCase scope binder result tree -> HandleAnswer <$> BuildTree.closeCase scope binder result tree
+  CloseCase scope binder result decision -> HandleAnswer <$> BuildTree.closeCase scope binder result decision
   Leaf scope e -> HandleAnswer <$> BuildTree.leaf scope e
   Guard scope condition yes no -> HandleAnswer <$> BuildTree.guard scope condition yes no
   OpenBind scope occurrence hint -> BinderAnswer <$> BuildTree.openBind scope occurrence hint
-  CloseBind scope binder tree -> HandleAnswer <$> BuildTree.closeBind scope binder tree
+  CloseBind scope binder decision -> HandleAnswer <$> BuildTree.closeBind scope binder decision
   RecordField scope occurrence key -> HandleAnswer <$> BuildTree.recordField scope occurrence key
   OpenSwitchCtor scope occurrence ctors withDefault -> SwitchCtorAnswer <$> BuildTree.openSwitchCtor scope occurrence ctors withDefault
   OpenSwitchLit scope occurrence lits -> SwitchLitAnswer <$> BuildTree.openSwitchLit scope occurrence lits
