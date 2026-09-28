@@ -11,8 +11,12 @@ handler, capturing a continuation. It commits to none of how a target
 represents those things. JavaScript functions and objects, Wasm GC structs, and
 layouts in linear memory belong past this stage and must not appear in it.
 
-Three lowerings consume Mid IR: bytecode ([Bytecode](../05-Backend/01-Bytecode.md)),
-JavaScript, and WebAssembly.
+Bytecode is the lowering that consumes Mid IR ([Bytecode](../05-Backend/01-Bytecode.md)).
+The JavaScript backend reads the `.dmo` that lowering produces rather than Mid IR
+(D45, [JavaScript](../05-Backend/05-JavaScript.md)), and the WebAssembly backend's
+input is fixed when that backend is designed. What this stage settles therefore
+reaches JavaScript through the file, and a property that does not survive lowering
+does not reach it at all.
 
 ## What Mid IR settles, and what it leaves open
 

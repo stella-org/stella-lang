@@ -100,16 +100,16 @@ The cost is backend-specific.
 | exceptions with a locally reified continuation | no | yes | low |
 | generators with `yield*` | yes | no | moderate |
 | full CPS conversion | yes | yes | high |
+| frames and a run loop of the backend's own, as the machine keeps | yes | yes | high, less where purity keeps a call on the host stack |
 | Wasm stack switching | yes | no | low (native) |
 
-Achieving both arbitrary call depth and multi-shot on JavaScript requires full CPS conversion, which costs the native stack and stack traces. Generators handle arbitrary depth via `yield*`, and a driver loop gives deep handler semantics directly, but JavaScript offers no way to clone a generator, so generators are strictly one-shot.
+Achieving both arbitrary call depth and multi-shot on JavaScript requires the backend to represent a continuation itself — by full CPS conversion, or by frames and a run loop of its own — and either costs the native stack and stack traces wherever it applies. Generators handle arbitrary depth via `yield*`, and a driver loop gives deep handler semantics directly, but JavaScript offers no way to clone a generator, so generators are strictly one-shot.
 
 Each backend therefore declares what it can implement. This is **not a capability difference permitted by the language semantics**; it is provisional tolerance of non-conformance.
 
-- **JavaScript backend**: one-shot for now, using a generator-based lowering.
+- **JavaScript backend**: an execution model that represents a continuation itself, one of the two multi-shot rows above ([JavaScript](../05-Backend/05-JavaScript.md)). Until it passes the cases that decide it — a `full` clause resuming twice, and a continuation carrying the cells of a region it was captured outside — it stands as one-shot here and in the gap below.
 - **Wasm backend**: one-shot for now, following the stack-switching proposal.
 - **Native backend**: nothing prevents multi-shot.
-- **JavaScript backend beyond v0.1**: may extend to multi-shot by paying for CPS conversion.
 
 ### The known soundness gap in v0.1
 
@@ -123,7 +123,7 @@ v0.1 **accepts this as a known gap**, under three conditions.
 2. **A static best-effort check is performed.** Only `full` clauses are in question, a `fast` clause having no continuation to resume. Detecting multiple resumption within a `full` clause is undecidable in general, since `k` can be stored and called in a loop, but the **syntactically evident** cases are detectable: a clause that mentions `k` more than once, or passes `k` to another function, warns at compile time. Most accidents are caught there, leaving the run-time check as a backstop. Writing a clause `fast` where its shape allows removes it from the question altogether.
 3. **Closing the gap is a requirement for v1.0**, recorded in [Open Questions](../99-Open-Questions/01-Open-Questions.md).
 
-The routes to closing it appear in the table above: full CPS conversion on JavaScript, or a cloning primitive entering the Wasm stack-switching proposal. Making the reference semantics target-parameterized is a third possibility, but it would mean the same Core has different meanings on different backends, which conflicts with the backend independence of Mid IR.
+The routes to closing it appear in the table above: an execution model representing a continuation on JavaScript, or a cloning primitive entering the Wasm stack-switching proposal. Making the reference semantics target-parameterized is a third possibility, but it would mean the same Core has different meanings on different backends, which conflicts with the backend independence of Mid IR.
 
 ### Consequence for Mid IR
 

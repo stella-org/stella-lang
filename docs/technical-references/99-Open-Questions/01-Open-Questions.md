@@ -6,7 +6,7 @@ Questions that v0.1 leaves open, with what is already known about each.
 
 **Close the soundness gap for multi-shot continuations.** The v0.1 JavaScript and Wasm backends do not satisfy the reference semantics; a second resumption raises a run-time error ([Semantics](../03-Typed-Core/06-Semantics.md)). This is a soundness gap that v0.1 accepts deliberately and that v1.0 must close.
 
-Three routes are available. Implement full CPS conversion on JavaScript. Wait for a cloning primitive to enter the Wasm stack-switching proposal. Or make the reference semantics target-parameterized, which conflicts with the backend independence of Mid IR.
+Three routes are available. On JavaScript, an execution model that represents a continuation itself — full CPS conversion, or frames and a run loop of the backend's own — which is the route the JavaScript backend takes ([JavaScript](../05-Backend/05-JavaScript.md)). Wait for a cloning primitive to enter the Wasm stack-switching proposal. Or make the reference semantics target-parameterized, which conflicts with the backend independence of Mid IR.
 
 Until then, multiple resumptions that are **syntactically evident** — a clause mentioning `k` more than once, or passing `k` elsewhere — should warn at compile time.
 

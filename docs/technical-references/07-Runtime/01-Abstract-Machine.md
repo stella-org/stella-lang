@@ -1156,8 +1156,11 @@ executes an `IO` value and is outside the reduction relation (D25) — below.
 | a foreign invocation | synchronous, and returns a value or faults |
 | executing an `IO` action | synchronous likewise: the action is called, and returns a value or refuses |
 
-The registry is **internal** until the JavaScript backend's own FFI convention is
-settled, at which point the two share one.
+**The JavaScript backend reaches the same implementations.** It reads the manifest
+for the same target, `javascript`, and marshals by the same signatures, so one
+implementation serves the interpreter and the generated code alike
+([JavaScript](../05-Backend/05-JavaScript.md)). The table itself stays internal: it
+holds the interpreter's values, which are not a published ABI.
 
 ## The operations
 

@@ -177,7 +177,7 @@ foreign mapImpl : forall a b. forall (e : Row Effect).
                   ( a -{e}-> b ) -> Array a -{e}-> Array b     ← not admitted
 ```
 
-An argument arrow with a non-empty effect row would have the FFI call back into effectful Stella code. Under the generator lowering, an effectful Stella function compiles to a generator, so a JavaScript implementation calling `cb(x)` naively receives a generator object rather than a value. **The lowering's calling convention would leak across the FFI boundary.** PureScript does not face this because `Effect a` is a plain thunk `() -> a`; algebraic effects afford no such thing.
+An argument arrow with a non-empty effect row would have the FFI call back into effectful Stella code. An effectful Stella function is not a host function the implementation can simply call: whatever represents a continuation — frames and a run loop of the backend's own, or continuation-passing style ([JavaScript](../05-Backend/05-JavaScript.md)) — has to see the call, so a JavaScript implementation calling `cb(x)` naively either receives something that is not the value or runs the callback outside the handlers installed around it. **The lowering's calling convention would leak across the FFI boundary.** PureScript does not face this because `Effect a` is a plain thunk `() -> a`; algebraic effects afford no such thing.
 
 D23 therefore closes two holes with one rule: the result side prevents handler bypass, the argument side prevents the calling convention from leaking.
 
@@ -233,7 +233,7 @@ mapArray :: forall a b. (a -> b / {| ... |}) -> Array a -> Array b / {| ... |}
 
 It traverses with `unsafeIndex` and builds its result with the construction its own module provides. Should mutable arrays be wanted, their operations are declared as leaves returning `IO`, and `mapArray`'s type returns `IO` accordingly.
 
-Since `f` is called from the Stella side, the lowering takes care of driving generators and **the calling convention never crosses the FFI boundary**.
+Since `f` is called from the Stella side, the execution model sees every call it makes and **the calling convention never crosses the FFI boundary**.
 
 This is the standard arrangement for a language with algebraic effects. Koka writes `list/map` in Koka and reserves `extern` for leaves.
 

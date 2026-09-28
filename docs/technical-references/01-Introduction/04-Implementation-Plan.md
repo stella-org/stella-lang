@@ -43,7 +43,7 @@ Two constraints must be respected even though the constructs they concern belong
 
 **The REPL is the interpreter's delivered use**, which is why it stands inside this order rather than after it: the module lifecycle it needs — an entry compiled to a module of its own, a redefinition adding a module rather than replacing one — is settled with the interpreter and not retrofitted to it ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
 
-**The machine does not replace the Core evaluator.** Preservation reduces a Typed Core term one step and re-runs the type checker; erasure compares the typed relation against the erased one. A machine state carries no types, so it serves neither — there is nothing to type check, and no typed side to compare against. The Core evaluator of step 4 is what those two properties are tested against, and it stays.
+**The machine does not replace the Core evaluator.** Preservation reduces a Typed Core term one step and re-runs the type checker; erasure compares the typed relation against the erased one. A machine state carries no types, so it serves neither — there is nothing to type check, and no typed side to compare against. The Core evaluator is what those two properties are tested against, and the machine does not stand in for it. It is **a unit of its own** rather than part of step 4, which type checks a hand-written module and runs nothing.
 
 What the machine adds is of two kinds. It is a **second evaluator to compare against**: one program run both ways should give the same value and the same sequence of observable effects, which tests the whole of translation and lowering at once and is what catches a fold that reorders effects or drops one. And it **runs programs the web backends cannot**, a second resumption of a continuation among them (D33), so effect safety and progress can be exercised on terms that D18's gap otherwise puts out of reach.
 
@@ -52,6 +52,15 @@ Anything stronger — asserting preservation over machine states — would need 
 ## Notes on step 6
 
 The set of FFI the backend must implement is `stella-base-0.1`, the first version of the `Base` ABI surface ([Open Questions](../99-Open-Questions/01-Open-Questions.md)). The longer it is deferred, the more the standard library settles into a shape that depends on FFI, so it should be fixed while writing this backend.
+
+**The backend reads a `.dmo`** (D45, [JavaScript](../05-Backend/05-JavaScript.md)), so its tests start from an encoded module decoded again rather than from a lowered value, which is what keeps it from leaning on anything the file does not carry. It is built in this order, each step settling what the next depends on.
+
+1. **Calls, branches, join points, and tail calls.** The execution model is chosen here, before any handler exists, since a tail call is already a transfer the host does not provide
+2. **Handlers and continuations.** A `full` clause resuming twice, each resumption from the captured state, and a continuation captured outside a region carrying its cells: these are the cases that show the model represents a continuation, and D18's record of the backend changes once they pass
+3. **The operations, the foreign manifest, and the drive loop**
+4. **Optimization**: a pure function kept a host call, and a `fast` clause kept cheap, each resting on what the model of step 2 already guarantees
+
+**Comparing the backend with the machine tests the backend and not lowering**, both reading what lowering produced. Until a Core evaluator exists, lowering is covered by its own tests and by execution tests whose expected results are fixed independently from hand-written Core. **Building that evaluator is a unit of its own**, and it precedes any claim that lowering preserves meaning broadly; it need not precede the backend's first steps.
 
 ## Notes on step 7
 
@@ -90,7 +99,7 @@ Division 6 is what establishes that the bootstrap cycle is cut, and it does not 
 
 [Semantics](../03-Typed-Core/06-Semantics.md) states progress, preservation, effect safety, and erasure without proof. Proving them for a calculus with rows, effect rows, and handlers is a substantial undertaking, and most of the confidence it would buy is available more cheaply: **each property can be turned into a property test.**
 
-This requires a Core evaluator, which step 4 needs regardless. Type checking a hand-written module confirms that it is well typed; running it is what confirms that it computes.
+This requires a Core evaluator, the unit of its own that the notes on step 5 name. Type checking a hand-written module confirms that it is well typed; running it is what confirms that it computes.
 
 **Preservation** is the most directly testable. Generate a well-typed Core term, reduce one step, and re-run the type checker.
 
@@ -716,6 +725,15 @@ no identifier is at once ready and blocked
 | A field `forall b. a` of `data Wrap a b`, over an occurrence at `Wrap b Int` where `b` is the site's | `forall b#0. b`. The substitution is simultaneous and renames the field's binder, which is named like a parameter and would capture what the other parameter is replaced by |
 | A tree of an enclosing `case`, given as an inner `case`'s tree or to a guard in it | Refused. Its occurrences are paths from the enclosing `case`'s scrutinees |
 | A switch on the constructor of `data Same (a : k) (b : k)` over `?h Int Int`, with `?h : Type -> Type -> Type`, and with `?h : Type -> Row Type -> Type` | Postponed on `?h`, and refused. A kind variable of the data type stands for one kind wherever it occurs |
+| `extend n 1 {}`, and `extend` of a key the rest carries, or over a rigid tail not proved to lack it | `Record ( n : Int )`; a failure; a failure. The requirement comes with the term |
+| `select`, `restrict`, and `update` at a key of a closed record | The field's type; the record without it; the record with it replaced, its type free to change. One procedure reads the row for all three |
+| `select` at a key a record lacks, its tail flexible, closed, or rigid | Postponed on the tail; refused; refused |
+| `select`, `recordField`, or a switch on keys at `PositionKey (-1)`, over a row with a flexible tail | Refused, and not waited on. No solution puts an ill-formed key in a row |
+| `merge` of records apart, and of records sharing a key | Claimed at the union; a failure |
+| `inject n 1`, then `weaken m [Boolean]` of it, and `weaken n` of it | `Variant ( n : Int )`, with no row given; `Variant ( m : Boolean, n : Int )`; a failure |
+| `absurd [Int]` of the empty variant, and of an `Int` | `Int`; refused. That the variant is empty is the Core type checker's |
+| `openEff` of a pure function at `()`, at a row of `Row Type`, and of an `Int` | The arrow at `() ⊎ ()`; refused; refused |
+| Records and variants the kernel built, declared at what they are claimed at | Accepted by the Core type checker |
 | A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
 | No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
 | No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |

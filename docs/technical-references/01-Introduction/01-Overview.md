@@ -62,10 +62,14 @@ Typed Core
   │ lowering of language semantics
   ▼
 backend-independent Mid IR
-  ├── bytecode ───────► .dmo module objects ──► the Stella virtual machine
+  │ lowering to bytecode
+  ▼
+.dmo module objects
+  ├──────────────────► the Stella virtual machine
   ├── JavaScript IR ──► ES modules
-  ├── Wasm IR ────────► WebAssembly modules
   └── future IRs ─────► native and others
+
+Wasm IR ──► WebAssembly modules      its input, Mid IR or a .dmo, is not yet fixed
 ```
 
 **Surface AST** carries source-oriented information: sugar, implicit arguments, holes, macro invocations, source locations, expansion provenance, and hygiene scopes. It is not a stable optimization interface.
@@ -77,6 +81,8 @@ backend-independent Mid IR
 **Bytecode** is the lowering of Mid IR to a machine Stella owns, which is what lets a program be executed before either web backend exists ([Bytecode](../05-Backend/01-Bytecode.md)). Its continuations are multi-shot, so unlike the v0.1 JavaScript and Wasm backends it conforms to the reference semantics. Against the Core evaluator it is a second evaluator to compare with, and it runs the programs the web backends cannot; the properties stated over Typed Core stay with the Core evaluator ([Implementation Plan](04-Implementation-Plan.md)).
 
 Its output, a **`.dmo` module object**, is also what a backend outside this compiler reads. Mid IR is an in-memory representation, so the artefact a third party builds on is the lowered one — erased, in A-normal form, with closures and their captures explicit and decision trees already disjoint — rather than Typed Core.
+
+**The JavaScript backend reads a `.dmo` too** (D45), so a first-class backend is what shows the file is enough to build on, and the machine and the backend run the same lowered program ([JavaScript](../05-Backend/05-JavaScript.md)).
 
 ## Backend strategy
 
@@ -115,7 +121,7 @@ These serve as architecture tests as well as demonstrations.
 | --- | --- |
 | **§1. Introduction** | |
 | [§1.2 Notation](02-Notation.md) | Metavariables, sequences, symbols |
-| [§1.3 Design Decisions](03-Design-Decisions.md) | The numbered decisions D1–D40 |
+| [§1.3 Design Decisions](03-Design-Decisions.md) | The numbered decisions D1–D45 |
 | [§1.4 Implementation Plan](04-Implementation-Plan.md) | Order of implementation work |
 | **§2. Surface Language** | |
 | [§2.1 Elaboration](../02-Surface-Language/01-Elaboration.md) | Core⁺, metavariables, unification, synthesis |
@@ -139,6 +145,7 @@ These serve as architecture tests as well as demonstrations.
 | [§5.2 Encoding](../05-Backend/02-Encoding.md) | The bytes of a `.dmo`: sections, tags, and opcodes |
 | [§5.3 Interface](../05-Backend/03-Interface.md) | The `.dmi`: the definitional arities a downstream module reads |
 | [§5.4 Foreign Manifest](../05-Backend/04-Foreign-Manifest.md) | The `foreign-manifest.json`: where a target reaches a module's implementations |
+| [§5.5 JavaScript](../05-Backend/05-JavaScript.md) | The JavaScript backend: a `.dmo` in, an ES module out, and what the host does not give |
 | **§6. Modules** | |
 | [§6.1 Modules](../06-Modules/01-Modules.md) | Modules, declarations, FFI, entry point |
 | [§6.2 Prim and Base](../06-Modules/02-Prim-and-Base.md) | The four layers: what `Prim` holds, and what the `Base` ABI surface does |

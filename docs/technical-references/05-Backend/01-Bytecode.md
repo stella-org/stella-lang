@@ -1,7 +1,8 @@
 # Bytecode and the `.dmo` module object
 
-Bytecode is one lowering of middle-end IR (ANF), beside any backend including JS
-and WebAssembly. Its target is *Steam*, an abstract machine Stella owns.
+Bytecode is the lowering of middle-end IR (ANF) to a file. Its first target is
+*Steam*, an abstract machine Stella owns, and the JavaScript backend reads the same
+file (D45).
 
 `lower` takes an ANF module and produces a **`.dmo` file**, a module object
 holding the module's tables and the code of its functions.
@@ -28,13 +29,20 @@ compiler.
 | Consumer | Reads |
 | --- | --- |
 | The virtual machine | A `.dmo` |
-| The JavaScript and Wasm backends | Mid IR, or a `.dmo`; both are available and neither is fixed here |
+| The JavaScript backend | A `.dmo` (D45) |
+| The Wasm backend | Mid IR or a `.dmo`; fixed when that backend is designed |
 | A backend outside this compiler | A `.dmo` |
 
-The two routes for the first-class backends are a question of what a build is
-convenient to organize — a single command generating JavaScript without an
-intermediate file is the likely shape — and not one the format answers. What the
-format does settle is that a `.dmo` is enough on its own.
+**The JavaScript backend reads the file a third party would**, so a `.dmo` being
+enough on its own is something a backend of this compiler shows rather than a claim
+about one nobody has written ([JavaScript](05-JavaScript.md)). A single command
+generating JavaScript need not write the bytes to do it: a decoder returns the
+module an encoder was handed ([Encoding](02-Encoding.md)), so a build that has just
+lowered hands that module across, and the backend reaches nothing beside it.
+
+**What that backend finds missing is added here**, not fetched from Mid IR, and
+before the first released version of Stella the format changes freely for that
+reason.
 
 ### The interface file
 
@@ -133,9 +141,9 @@ was thrown away.
 
 A backend handed this form walks it instead. A nested dispatch becomes a nested
 `switch`, a join point becomes a label or a local function, and nothing has to
-be reconstructed because nothing was lost. **That holds whether such a backend
-reads Mid IR or reads a `.dmo`**, and keeping it true of the `.dmo` is what
-leaves the second route open.
+be reconstructed because nothing was lost. **Keeping that true of the `.dmo` is
+what lets a code generator read the file**, the JavaScript backend among them
+(D45).
 
 The cost falls on the machine, which resolves names and walks a tree rather than
 incrementing a program counter. For a first evaluator that is the right side to
