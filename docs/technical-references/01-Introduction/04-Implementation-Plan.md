@@ -822,6 +822,10 @@ no identifier is at once ready and blocked
 | An attempt of a job the scheduler does not hold, in a session that traces | Reported by the host's runner, and nothing traced: a job whose kind is not known is not a synthesis attempt |
 | A goal naming a synthesizer the registry does not hold | A defect of the session. The trace holds the attempt opened and abandoned, and no command |
 | The same goal, its target solved before it is attempted | The malformed target is reported, and the trace holds the attempt as not opened: the target is checked before the synthesizer is resolved |
+| `λ(x : Int). ?m`, `?m` a goal at `Int` asked where `x : Int` is bound, queued, and answered by the reference synthesizer — a host script using the facade alone — run by the loop | Completed, and `?m` zonks to `x`, carrying the hole's annotation |
+| The same with `x : Boolean`, the synthesizer given the monomorphic global `Main.one : Int` | `?m` zonks to `Main.one`, carrying the hole's annotation. A global is referred to only once its scheme has no kind variable to instantiate |
+| Two goals queued together, each where a different variable is bound at `Int` | Each zonks to its own site's variable: a goal is answered from the site it was created at, however late the loop runs it |
+| A goal at `Boolean` where nothing is bound, the synthesizer given only `Main.one` | The loop stops with the synthesizer's failure, and the hole is left unsolved. Types are compared as constructor views only, a candidate test and not type equality |
 | An attempt finished with a transaction open | A defect naming the transaction, and nothing committed |
 | An attempt finished with a binder open, and an acceptance that would fail | The binder defect. The binders are checked before anything is accepted |
 | An attempt whose requests assigned and warned, finished with an acceptance that fails | Rejected, and neither kept. The acceptance runs inside the attempt, before it commits |
