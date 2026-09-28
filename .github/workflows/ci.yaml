@@ -24,6 +24,7 @@ jobs:
           filters: |
             code:
               - 'compiler/**'
+              - 'backend-js/**'
               - 'cli/**'
               - 'steam/**'
               - 'stella/**'
@@ -59,17 +60,18 @@ jobs:
 
       - name: Build
         run: |
-          for package in compiler steam cli; do
+          for package in compiler backend-js steam cli; do
             spago build -p "$package" --strict --pure --pedantic-packages
           done
 
       # The compiler's suite checks that fixtures/bytecode is exactly what compiling
-      # its source gives now, so it runs first: Steam's suite and the JavaScript
-      # backend's read those bytes, and a stale fixture fails here, naming itself,
+      # its source gives now, so it runs first: the JavaScript backend's suite and
+      # Steam's read those bytes, and a stale fixture fails here, naming itself,
       # rather than passing there. Regenerate with STELLA_UPDATE_FIXTURES=1.
       - name: Test
         run: |
           spago test -p compiler --pure
+          spago test -p backend-js --pure
           spago test -p steam --pure
           spago test -p cli --pure
 
