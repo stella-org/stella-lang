@@ -258,7 +258,7 @@ Should a design without the header entry be adopted later, it must be stated in 
 
 **Compiling metaprograms during bootstrap — settled in outline.** Policy is guest Stella code and mechanism is the compiler's, and the circle is cut by layers rather than by an exception: a kernel elaborator using no class, no macro, and no synthesis compiles `Stella.Elab` and a small guest synthesizer, which then runs on Steam against the host's mechanism (D39, [Elaborator API](../02-Surface-Language/03-Elaborator-API.md)).
 
-What remains is the **content of `Stella.Elab`** — which kernel operations the library exposes, and the shape of the view a metaprogram reads a type through — and the caching below.
+The content of `Stella.Elab` is settled: one kernel operation, `command`, whose requests and answers mirror the kernel's vocabulary, with views of the same shape the host reads through ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)). What remains is the caching and loading below.
 
 **Caching and loading compiled metaprograms.**
 

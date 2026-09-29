@@ -186,18 +186,22 @@ T : forall k̄. κ   data { Ctor … }    the constructors the declaration gives
 ```text
 intrinsic
 ├─ Core intrinsic       Function, Record, Variant, the literal types, IO
-└─ manifest intrinsic
-   ├─ portable  Base.*        Base.Array.Array, the uncurried families
-   └─ target    Js.*, Wasm.*  Js.String.JSString, opaque handles
+├─ manifest intrinsic
+│  ├─ portable  Base.*        Base.Array.Array, the uncurried families
+│  └─ target    Js.*, Wasm.*  Js.String.JSString, opaque handles
+└─ elaboration intrinsic
+                Stella.Elab   Stella.Elab.Handle
 ```
 
-Both are beyond a user's reach. They differ in who settles them: a **Core intrinsic** is fixed by this specification, a **manifest intrinsic** by the versioned ABI specification that a compiler and its backends implement together.
+All three are beyond a user's reach. They differ in who settles them: a **Core intrinsic** is fixed by this specification, a **manifest intrinsic** by the versioned ABI specification that a compiler and its backends implement together, and an **elaboration intrinsic** by the compiler alone.
 
 The second splits again by portability, and the split decides where an entry lives rather than how it behaves.
 
 A **portable** manifest intrinsic is one whose observable meaning is the same on every backend, and it lives in `Base.*`. Portable is not the same as universally present: which backends owe it is what a profile says, so an entry of `Base.Array` is owed by every backend claiming a profile that contains it. A backend claiming `core-runtime` alone owes none of `Base.Array` and is conformant all the same, whether or not it happens to supply some.
 
 A **target** manifest intrinsic is one only some targets have, and it lives under the namespace naming that target — `Js.*`, `Wasm.*` — so that a program naming one has thereby chosen its target.
+
+An **elaboration intrinsic** exists only where a guest synthesizer runs ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)). The compiler generates it as one inseparable bundle: the module `Stella.Elab`, the fragment of `Σ` holding its intrinsics, and the runtime shape descriptor of its data types. The ABI manifest has no entry for it and cannot supply one, and the `Stella` prefix is the compiler's own, so no package or manifest can stand in for any part of the bundle.
 
 Both reach `Σ` by the one route, `Σ_ABI(M)`, and the ABI manifest names modules of both kinds.
 

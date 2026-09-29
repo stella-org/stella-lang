@@ -355,7 +355,7 @@ A type constructor entry is **intrinsic** or **data**. Nothing adds a constructo
 
 An intrinsic entry carries a **canonical-value class** — literal, function, record, variant, or opaque — which says how a value of that type is built and what may examine one. Rules consult it rather than the entry's origin ([Prim and Base](02-Prim-and-Base.md)).
 
-**No declaration produces an intrinsic entry.** `data` and `newtype` produce data entries, `foreign` declares a value and not a type, and the surface has no third form. An intrinsic reaches `Σ` either as part of `Σ_Prim`, which the compiler holds, or through the ABI manifest, which a compiler and its backends implement together; the module it then belongs to is under `Base`, or under a target namespace the manifest names, and is imported like any other ([Prim and Base](02-Prim-and-Base.md)).
+**No declaration produces an intrinsic entry.** `data` and `newtype` produce data entries, `foreign` declares a value and not a type, and the surface has no third form. An intrinsic reaches `Σ` as part of `Σ_Prim`, which the compiler holds, through the ABI manifest, which a compiler and its backends implement together, or, for a guest synthesizer alone, in the `Stella.Elab` bundle the compiler generates; the module it then belongs to is under `Base`, under a target namespace the manifest names, or `Stella.Elab`, and is imported like any other ([Prim and Base](02-Prim-and-Base.md)).
 
 ```text
   Σ_ty ⊢ each constructor type Ctor : forall k̄. forall (ā : κ̄). τ̄ -> T ā  is well formed
