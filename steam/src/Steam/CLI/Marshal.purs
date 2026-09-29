@@ -114,8 +114,10 @@ wrap :: Value -> ValueKind -> HostValue -> Either P.String Value
 wrap unit owed given = case owed of
   AsInt -> do
     n <- number
-    -- a whole number within an int32 (D37); `Int.fromNumber` refuses anything else
-    note (owing "not a whole number within 32 bits") (map VInt (Int.fromNumber n))
+    -- a whole number within an int32 (D37); `Int.fromNumber` refuses anything else.
+    -- It keeps the sign of a zero, and an `Int` has one zero, so `-0` is taken to
+    -- `0` first
+    note (owing "not a whole number within 32 bits") (map VInt (Int.fromNumber (n + 0.0)))
   AsNumber -> map VNumber number
   AsChar -> do
     text <- scalarText
