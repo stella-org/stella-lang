@@ -1,0 +1,6 @@
+{
+  "description": "Main calls Host.greet, beside an implementation module whose export greet is a number",
+  "modules": ["Host", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "greet"}},
+  "observe": []
+}

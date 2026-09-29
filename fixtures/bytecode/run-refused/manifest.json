@@ -1,0 +1,8 @@
+{
+  "description": "An entry point that runs Host.say and then reaches a foreign refusing",
+  "modules": ["Base.IO", "Host", "Main"],
+  "outcome": {"faultsAtRun": {"entry": "Main.main", "kind": "refused", "foreign": "Host.culprit", "reason": "nothing to give", "effects": [
+    "say:before"
+  ]}},
+  "observe": []
+}

@@ -1,0 +1,6 @@
+{
+  "description": "Host declares greet, and no manifest names Host",
+  "modules": ["Host", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "greet"}},
+  "observe": []
+}

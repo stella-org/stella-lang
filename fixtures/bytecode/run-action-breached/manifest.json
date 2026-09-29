@@ -1,0 +1,8 @@
+{
+  "description": "An entry point that runs Host.say and then reaches an action owing an int producing the string \"3\"",
+  "modules": ["Base.IO", "Host", "Main"],
+  "outcome": {"faultsAtRun": {"entry": "Main.main", "kind": "actionBreached", "foreign": "Host.culprit", "effects": [
+    "say:before"
+  ]}},
+  "observe": []
+}

@@ -1,0 +1,27 @@
+{
+  "description": "An entry point run to the value it produces: actions a foreign returns, performed in order; a left-nested chain of bind 20000 deep; every value kind crossing in and out, and an action of each kind; an opaque value handed back; a partial application of a foreign another module declares, and a foreign the entry module declares",
+  "modules": ["Base.Int", "Base.IO", "Host", "Main"],
+  "outcome": {"runs": {"entry": "Main.main", "result": {"record": [{"key": {"field": "deep"}, "value": {"int": 20000}}, {"key": {"field": "read"}, "value": {"int": 70}}, {"key": {"field": "number"}, "value": {"number": "2.0"}}, {"key": {"field": "char"}, "value": {"char": 128512}}, {"key": {"field": "string"}, "value": {"string": "ok"}}, {"key": {"field": "boolean"}, "value": {"boolean": true}}, {"key": {"field": "added"}, "value": {"int": 3}}, {"key": {"field": "doubled"}, "value": {"int": 10}}, {"key": {"field": "halved"}, "value": {"number": "2.0"}}, {"key": {"field": "next"}, "value": {"char": 128513}}, {"key": {"field": "shouted"}, "value": {"string": "a😀!"}}, {"key": {"field": "flipped"}, "value": {"boolean": false}}, {"key": {"field": "noted"}, "value": {"data": "Prim.Unit", "fields": []}}, {"key": {"field": "sameGiven"}, "value": {"boolean": true}}, {"key": {"field": "sameBack"}, "value": {"boolean": true}}]}, "effects": [
+    "say:start",
+    "tick:undefined:1",
+    "say:1",
+    "parse:7",
+    "readInt:7",
+    "readNumber:undefined",
+    "readChar:undefined",
+    "readString:undefined",
+    "readBool:undefined",
+    "open:3",
+    "readHandle:undefined",
+    "add:1:2",
+    "twice:5",
+    "half:number:4",
+    "nextChar:string:2:128512",
+    "shout:a😀",
+    "flip:boolean:true",
+    "note:1",
+    "same:true",
+    "same:true"
+  ]}},
+  "observe": []
+}

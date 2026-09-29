@@ -1,0 +1,8 @@
+{
+  "description": "An entry point that runs Host.say and then reaches an action throwing the runtime's own Bug",
+  "modules": ["Base.IO", "Host", "Main"],
+  "outcome": {"faultsAtRun": {"entry": "Main.main", "kind": "actionThrew", "message": "a bug the action made", "effects": [
+    "say:before"
+  ]}},
+  "observe": []
+}

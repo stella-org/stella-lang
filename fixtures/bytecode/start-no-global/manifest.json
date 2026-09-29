@@ -1,0 +1,6 @@
+{
+  "description": "An entry point naming a global Main does not declare",
+  "modules": ["Base.IO", "Main"],
+  "outcome": {"startFails": {"entry": "Main.missing", "reason": "noSuchGlobal"}},
+  "observe": []
+}

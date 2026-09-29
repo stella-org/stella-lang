@@ -1,0 +1,6 @@
+{
+  "description": "Main calls Host.greet, beside a manifest entry for Host that gives greet no signature",
+  "modules": ["Host", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "greet"}},
+  "observe": []
+}

@@ -1,0 +1,6 @@
+{
+  "description": "An entry point that is Base.IO.bind applied to pure 7 alone, and then to Base.IO.pure handed over unapplied, reaching no host",
+  "modules": ["Base.IO", "Main"],
+  "outcome": {"runs": {"entry": "Main.main", "result": {"int": 7}, "effects": []}},
+  "observe": []
+}

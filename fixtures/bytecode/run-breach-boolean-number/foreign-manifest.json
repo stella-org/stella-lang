@@ -1,0 +1,10 @@
+{
+  "formatVersion": 1,
+  "target": "javascript",
+  "modules": [
+    {"module": "Host", "specifier": "./host.mjs", "foreigns": [
+      {"name": "say", "params": ["string"], "result": {"action": "unit"}},
+      {"name": "culprit", "params": ["unit"], "result": "boolean"}
+    ]}
+  ]
+}

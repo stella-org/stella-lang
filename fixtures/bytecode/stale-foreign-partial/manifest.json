@@ -1,0 +1,6 @@
+{
+  "description": "Main applies Host.add to one argument, a partial application under the interface it was compiled against, and is loaded beside a Host whose add takes one",
+  "modules": ["Host", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "add"}},
+  "observe": []
+}

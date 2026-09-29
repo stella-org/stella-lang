@@ -1,0 +1,9 @@
+{
+  "formatVersion": 1,
+  "target": "javascript",
+  "modules": [
+    {"module": "Host", "specifier": "./missing.mjs", "foreigns": [
+      {"name": "greet", "params": ["int"], "result": "int"}
+    ]}
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "description": "An entry point that runs Host.say and then reaches an action refusing",
+  "modules": ["Base.IO", "Host", "Main"],
+  "outcome": {"faultsAtRun": {"entry": "Main.main", "kind": "actionRefused", "reason": "nothing to give", "effects": [
+    "say:before"
+  ]}},
+  "observe": []
+}

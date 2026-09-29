@@ -1,0 +1,6 @@
+{
+  "description": "Main calls Host.greet, beside a manifest giving greet two params where it is declared at arity one",
+  "modules": ["Host", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "greet"}},
+  "observe": []
+}

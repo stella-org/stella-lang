@@ -1,0 +1,6 @@
+{
+  "description": "Base.IO declaring bind at arity three, where the runtime carries it out at arity two",
+  "modules": ["Base.IO"],
+  "outcome": {"refusedAtLoad": {"mentions": "bind"}},
+  "observe": []
+}

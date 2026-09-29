@@ -1,0 +1,6 @@
+{
+  "description": "Base.IO declaring pure at arity two, where the runtime carries it out at arity one",
+  "modules": ["Base.IO"],
+  "outcome": {"refusedAtLoad": {"mentions": "pure"}},
+  "observe": []
+}

@@ -1,0 +1,6 @@
+{
+  "description": "Main calls Host.add with the two arguments Host's interface gave it, and is loaded beside a Host whose add takes one",
+  "modules": ["Host", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "add"}},
+  "observe": []
+}

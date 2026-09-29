@@ -1,0 +1,6 @@
+{
+  "description": "An entry point naming a global of Main that holds an Int and no action",
+  "modules": ["Base.IO", "Main"],
+  "outcome": {"startFails": {"entry": "Main.answer", "reason": "notAnAction"}},
+  "observe": []
+}

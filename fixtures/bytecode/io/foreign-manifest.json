@@ -1,0 +1,28 @@
+{
+  "formatVersion": 1,
+  "target": "javascript",
+  "modules": [
+    {"module": "Host", "specifier": "./host.mjs", "foreigns": [
+      {"name": "say", "params": ["string"], "result": {"action": "unit"}},
+      {"name": "tick", "params": ["unit"], "result": "int"},
+      {"name": "parse", "params": ["string"], "result": "int"},
+      {"name": "add", "params": ["int", "int"], "result": "int"},
+      {"name": "half", "params": ["number"], "result": "number"},
+      {"name": "nextChar", "params": ["char"], "result": "char"},
+      {"name": "shout", "params": ["string"], "result": "string"},
+      {"name": "flip", "params": ["boolean"], "result": "boolean"},
+      {"name": "note", "params": ["int"], "result": "unit"},
+      {"name": "open", "params": ["int"], "result": "opaque"},
+      {"name": "same", "params": ["opaque"], "result": "boolean"},
+      {"name": "readInt", "params": ["int"], "result": {"action": "int"}},
+      {"name": "readNumber", "params": ["unit"], "result": {"action": "number"}},
+      {"name": "readChar", "params": ["unit"], "result": {"action": "char"}},
+      {"name": "readString", "params": ["unit"], "result": {"action": "string"}},
+      {"name": "readBool", "params": ["unit"], "result": {"action": "boolean"}},
+      {"name": "readHandle", "params": ["unit"], "result": {"action": "opaque"}}
+    ]},
+    {"module": "Main", "specifier": "./host.mjs", "foreigns": [
+      {"name": "twice", "params": ["int"], "result": "int"}
+    ]}
+  ]
+}

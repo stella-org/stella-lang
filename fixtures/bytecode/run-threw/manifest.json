@@ -1,0 +1,8 @@
+{
+  "description": "An entry point that runs Host.say and then reaches a foreign's host function throwing an Error",
+  "modules": ["Base.IO", "Host", "Main"],
+  "outcome": {"faultsAtRun": {"entry": "Main.main", "kind": "threw", "foreign": "Host.culprit", "message": "thrown by the host", "effects": [
+    "say:before"
+  ]}},
+  "observe": []
+}

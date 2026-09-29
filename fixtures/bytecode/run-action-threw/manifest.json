@@ -1,0 +1,8 @@
+{
+  "description": "An entry point that runs Host.say and then reaches an action throwing an Error",
+  "modules": ["Base.IO", "Host", "Main"],
+  "outcome": {"faultsAtRun": {"entry": "Main.main", "kind": "actionThrew", "message": "thrown by the action", "effects": [
+    "say:before"
+  ]}},
+  "observe": []
+}

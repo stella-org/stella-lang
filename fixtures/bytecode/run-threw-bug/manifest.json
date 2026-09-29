@@ -1,0 +1,8 @@
+{
+  "description": "An entry point that runs Host.say and then reaches a foreign's host function throwing the runtime's own Bug",
+  "modules": ["Base.IO", "Host", "Main"],
+  "outcome": {"faultsAtRun": {"entry": "Main.main", "kind": "threw", "foreign": "Host.culprit", "message": "a bug the host made", "effects": [
+    "say:before"
+  ]}},
+  "observe": []
+}

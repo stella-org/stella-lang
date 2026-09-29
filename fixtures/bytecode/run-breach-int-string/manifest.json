@@ -1,0 +1,8 @@
+{
+  "description": "An entry point that runs Host.say and then reaches a foreign owing an int returning the string \"3\"",
+  "modules": ["Base.IO", "Host", "Main"],
+  "outcome": {"faultsAtRun": {"entry": "Main.main", "kind": "breached", "foreign": "Host.culprit", "effects": [
+    "say:before"
+  ]}},
+  "observe": []
+}

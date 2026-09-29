@@ -1,0 +1,6 @@
+{
+  "description": "Main calls Host.greet, beside a manifest pointing Host at a module that is not there",
+  "modules": ["Host", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "missing.mjs"}},
+  "observe": []
+}
