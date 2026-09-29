@@ -6,7 +6,7 @@ import Data.Either (Either(..))
 import Dodo as Dodo
 import Dodo.Ansi (foreground)
 import Dodo.Ansi as Ansi
-import Effect.Aff (attempt)
+import Effect.Aff (attempt, makeAff, nonCanceler)
 import Effect.Class.Console as Console
 import Effect.Exception (message)
 import Node.Buffer as Buffer
@@ -20,6 +20,10 @@ import Data.Argonaut.Core (caseJsonObject, toString)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Effect (Effect)
+import Data.Nullable (Nullable, toMaybe, toNullable)
+import Stella.CLI.Effect.Process (Output(..), Process(..))
+import Stella.CLI.Effect.Transport (Channel, ChannelEvent(..), Transport(..))
+import Stella.Compiler.Bytecode.Bytes (Bytes)
 import Foreign.Object (Object)
 import Foreign.Object as Object
 import Stella.CLI.Effect.FS (FileSystem(..))
@@ -92,3 +96,73 @@ nodeForeignsHandler = case _ of
     caseJsonObject Nothing (\fields -> toString =<< Object.lookup "specifier" fields)
 
 foreign import importModuleImpl :: String -> String -> Effect (Promise (Object HostExport))
+
+-- | A session channel on this host is a socket: descriptor 3 of this process, or
+-- | the pipe a child was started with.
+-- |
+-- | **This is the only place that knows the channel is a socket.** What crosses up is
+-- | a `Channel` over `Bytes` and `Aff`, so the session logic above names no host.
+nodeTransportHandler :: forall r. Transport ~> Run (EFFECT + r)
+nodeTransportHandler = case _ of
+  OwnChannel reply -> do
+    opened <- Run.liftEffect (ownChannelImpl Left Right)
+    pure (reply (map channelFrom opened))
+
+-- | Starting a session process on this host is spawning it with descriptor 3 as a
+-- | bidirectional pipe.
+nodeProcessHandler :: forall r. Process ~> Run (EFFECT + r)
+nodeProcessHandler = case _ of
+  SpawnSession launch reply -> do
+    raw <- Run.liftEffect $ spawnSessionImpl launch.command launch.args case launch.output of
+      Inherit -> toNullable Nothing
+      Drain handlers -> toNullable (Just handlers)
+    pure $ reply
+      { channel: map channelFrom (toMaybe raw.channel)
+      , exit: makeAff \done -> do
+          raw.onExit \e -> done
+            (Right { code: toMaybe e.code, signal: toMaybe e.signal, error: toMaybe e.error })
+          pure nonCanceler
+      , kill: raw.kill
+      }
+
+channelFrom :: RawChannel -> Channel
+channelFrom raw =
+  { send: sendImpl raw
+  , receive: makeAff \done -> do
+      receiveImpl raw Received Ended Failed (done <<< Right)
+      pure nonCanceler
+  , end: makeAff \done -> do
+      endImpl raw (done (Right unit))
+      pure nonCanceler
+  , destroy: destroyImpl raw
+  }
+
+foreign import data RawChannel :: Type
+
+foreign import sendImpl :: RawChannel -> Bytes -> Effect Unit
+foreign import receiveImpl
+  :: RawChannel
+  -> (Bytes -> ChannelEvent)
+  -> ChannelEvent
+  -> (String -> ChannelEvent)
+  -> (ChannelEvent -> Effect Unit)
+  -> Effect Unit
+
+foreign import endImpl :: RawChannel -> Effect Unit -> Effect Unit
+foreign import destroyImpl :: RawChannel -> Effect Unit
+foreign import ownChannelImpl
+  :: (String -> Either String RawChannel)
+  -> (RawChannel -> Either String RawChannel)
+  -> Effect (Either String RawChannel)
+
+type RawExit = { code :: Nullable Int, signal :: Nullable String, error :: Nullable String }
+
+foreign import spawnSessionImpl
+  :: String
+  -> Array String
+  -> Nullable { stdout :: String -> Effect Unit, stderr :: String -> Effect Unit }
+  -> Effect
+       { channel :: Nullable RawChannel
+       , onExit :: (RawExit -> Effect Unit) -> Effect Unit
+       , kill :: Effect Unit
+       }

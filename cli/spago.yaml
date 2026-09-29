@@ -7,6 +7,7 @@ package:
     - ansi
     - argonaut-core
     - argparse-basic
+    - arrays
     - bifunctors
     - compiler
     - console
@@ -14,13 +15,18 @@ package:
     - effect
     - either
     - exceptions
+    - foldable-traversable
     - foreign-object
+    - integers
     - maybe
     - node-buffer
     - node-fs
+    - nullable
     - ordered-collections
     - prelude
+    - refs
     - run
+    - tuples
     - typelevel-prelude
   test:
     main: Test.Stella.CLI

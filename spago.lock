@@ -36,6 +36,7 @@
             "ansi",
             "argonaut-core",
             "argparse-basic",
+            "arrays",
             "bifunctors",
             "compiler",
             "console",
@@ -43,13 +44,18 @@
             "effect",
             "either",
             "exceptions",
+            "foldable-traversable",
             "foreign-object",
+            "integers",
             "maybe",
             "node-buffer",
             "node-fs",
+            "nullable",
             "ordered-collections",
             "prelude",
+            "refs",
             "run",
+            "tuples",
             "typelevel-prelude"
           ]
         },
@@ -107,6 +113,7 @@
             "exceptions",
             "fmt",
             "foldable-traversable",
+            "foreign-object",
             "integers",
             "lists",
             "maybe",
@@ -126,6 +133,7 @@
         "test": {
           "dependencies": [
             "aff",
+            "argonaut-core",
             "node-buffer",
             "node-child-process",
             "node-execa",
