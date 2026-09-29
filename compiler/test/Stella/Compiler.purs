@@ -36,6 +36,7 @@ import Test.Stella.Compiler.Elaborate.Trees as ElaborateTrees
 import Test.Stella.Compiler.Elaborate.Records as ElaborateRecords
 import Test.Stella.Compiler.Elaborate.Handlers as ElaborateHandlers
 import Test.Stella.Compiler.Elaborate.Coverage as ElaborateCoverage
+import Test.Stella.Compiler.Elaborate.GuestBundle as ElaborateGuestBundle
 import Test.Stella.Compiler.Elaborate.KernelVertical as ElaborateKernelVertical
 import Test.Stella.Compiler.Elaborate.Reports as ElaborateReports
 import Test.Stella.Compiler.Elaborate.Conversations as ElaborateConversations
@@ -105,6 +106,7 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateRecords.spec
   ElaborateHandlers.spec
   ElaborateCoverage.spec
+  ElaborateGuestBundle.spec
   ElaborateKernelVertical.spec
   ElaborateReports.spec
   ElaborateConversations.spec
