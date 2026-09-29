@@ -22,19 +22,22 @@ import Test.Steam.Ops as Ops
 import Test.Steam.Value as Value
 
 main :: Effect Unit
-main = runSpecAndExitProcess [ consoleReporter ] do
-  Value.spec
-  Eval.spec
-  Calls.spec
-  Ops.spec
-  Load.spec
-  Arrays.spec
-  Foreign.spec
-  Handlers.spec
-  Fixtures.spec
-  Drive.spec
-  Marshal.spec
-  Command.spec
-  Structural.spec
-  Session.spec
-  SessionGuest.spec
+main = do
+  fixtures <- Fixtures.fixtureNames
+  runSpecAndExitProcess [ consoleReporter ] do
+    Value.spec
+    Eval.spec
+    Calls.spec
+    Ops.spec
+    Load.spec
+    Arrays.spec
+    Foreign.spec
+    Handlers.spec
+    Fixtures.spec fixtures
+    Drive.spec
+    Marshal.spec
+    Command.spec
+    Structural.spec
+    Session.spec
+    SessionGuest.spec
+

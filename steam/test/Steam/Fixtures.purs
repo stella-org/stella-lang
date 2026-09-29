@@ -16,7 +16,10 @@
 -- |
 -- | Steam holds every value by its kind, so an `Int`, a `Number`, and a `Char` are
 -- | told apart here as the manifest writes them.
-module Test.Steam.Fixtures (spec) where
+module Test.Steam.Fixtures
+  ( fixtureNames
+  , spec
+  ) where
 
 import Prelude
 
@@ -24,7 +27,7 @@ import Prim as P
 
 import Data.Array as Array
 import Data.Either (Either(..))
-import Data.Foldable (and)
+import Data.Foldable (and, for_)
 import Data.Maybe (Maybe(..))
 import Data.String as String
 import Data.Traversable (traverse)
@@ -336,17 +339,24 @@ fixtureMismatches name = do
     if wanted == seen then []
     else [ name <> ": saw the effects " <> show seen <> ", not " <> show wanted ]
 
-spec :: Spec Unit
-spec = describe "Steam, over the bytecode fixtures" do
-  it "runs every fixture as its manifest says" do
-    names <- liftEffect (caseNames fixturesRoot)
+-- | The fixtures there are, read before the tests are built so that each is a test of
+-- | its own, reported as it finishes.
+fixtureNames :: Effect (P.Array P.String)
+fixtureNames = caseNames fixturesRoot
+
+-- | One test per fixture, given the fixtures there are.
+spec :: P.Array P.String -> Spec Unit
+spec names = describe "Steam, over the bytecode fixtures" do
+  it "finds the fixtures" do
     when (Array.null names) (fail "no fixtures found")
-    mismatches <- traverse fixtureMismatches names
-    Array.concat mismatches `shouldEqual` []
+
+  describe "runs each fixture as its manifest says" do
+    for_ names \name -> it name do
+      mismatches <- fixtureMismatches name
+      mismatches `shouldEqual` []
 
   -- a name left behind when its fixture is renamed or removed would check nothing
   it "lists only fixtures that exist as refused for a given reason" do
-    names <- liftEffect (caseNames fixturesRoot)
     Array.filter (\n -> not (Array.elem n names)) (map _.name loadRefusals) `shouldEqual` []
 
 -- | The refusal each of these fixtures must be refused with, which a manifest's
