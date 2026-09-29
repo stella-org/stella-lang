@@ -66,8 +66,7 @@ options =
               "Load whole program and execute main once."
               ((Run <$> runOptions) <* ArgParser.flagHelp)
           , ArgParser.command [ "session" ]
-              "Hold modules across many inputs and answer requests.\n\
-              \Intended for use as a REPL backend."
+              "Serve a compiler over descriptor 3 until it closes the session."
               ((Session {}) <$ ArgParser.flagHelp)
           ]
     }

@@ -13,6 +13,7 @@ package:
     - enums
     - exceptions
     - fmt
+    - foreign-object
     - foldable-traversable
     - integers
     - lists
@@ -34,6 +35,7 @@ package:
     main: Test.Steam
     dependencies:
       - aff
+      - argonaut-core
       - node-buffer
       - node-child-process
       - node-execa

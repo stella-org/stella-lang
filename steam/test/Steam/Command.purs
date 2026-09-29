@@ -937,12 +937,12 @@ spec = describe "the steam run command" do
 
   describe "the session mode" do
 
-    -- printing a failure and exiting zero would tell a reader one thing and a
-    -- shell another
-    it "refuses rather than reporting success" do
+    -- a session speaks on descriptor 3 alone, and one started without it has no
+    -- channel to open
+    it "does not start a session without descriptor 3" do
       outcome <- invokeCommand "session" []
       outcome.status `shouldEqual` 1
-      String.contains (String.Pattern "not built yet") outcome.err
+      String.contains (String.Pattern "descriptor 3") outcome.err
         `shouldEqual` true
 
   describe "what a message may not do" do

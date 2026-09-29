@@ -30,24 +30,24 @@ import Steam.Drive (execute)
 import Stella.Compiler.ForeignManifest (Manifest)
 import Stella.Compiler.ForeignManifest as Manifest
 import Steam.CLI.Assemble as Assemble
+import Steam.CLI.Session as Session
 import Steam.Load (Store, emptyStore, globalNamed, load, moduleNamed, noIdentities, registryOf, unitValue)
 import Steam.Load as Load
 import Steam.Value (IOValue, Value(..))
 import Stella.CLI.Effect.FS (FS, readBytes, readText)
 import Stella.CLI.Effect.Foreigns (FOREIGNS)
+import Stella.CLI.Effect.Transport (TRANSPORT)
 import Stella.CLI.Effect.Log (LOG)
 import Stella.Compiler.Bytecode (Dmo, decode)
 import Stella.Compiler.TypedCore.Name (Qualified(..))
 import Type.Row (type (+))
 
-type SteamEffects = (LOG + FS + FOREIGNS + EXCEPT ErrorType + AFF + EFFECT + ())
+type SteamEffects = (LOG + FS + FOREIGNS + TRANSPORT + EXCEPT ErrorType + AFF + EFFECT + ())
 
 program :: Options -> Run SteamEffects Unit
 program opts = case opts.command of
   Run runOptions -> runProgram runOptions
-  -- **a refusal and not a message**: a command that printed a failure and exited
-  -- zero would tell a reader one thing and a shell another
-  Session _ -> Except.throw SessionUnavailable
+  Session _ -> Session.serve
 
 -- | Load the modules given, in the order given, and execute the entry point.
 -- |

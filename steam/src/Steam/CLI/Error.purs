@@ -12,6 +12,7 @@
 module Steam.CLI.Error
   ( ErrorType(..)
   , exitStatus
+  , endsQuietly
   , report
   ) where
 
@@ -26,6 +27,9 @@ import Steam.Load (LoadError)
 import Stella.Compiler.ForeignManifest (ManifestError)
 import Stella.Compiler.Bytecode (DecodeError)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..))
+import Stella.CLI.Session.Frame (FrameFailure(..))
+import Stella.CLI.Session.Peer (SessionFailure(..))
+import Stella.CLI.Session.Protocol (Refusal, RefusalReason(..))
 
 data ErrorType
   -- | A file that could not be read, as the path and what the host said.
@@ -54,10 +58,13 @@ data ErrorType
   | ForeignsUnreachable AssembleError
   -- | The entry point ran and failed.
   | RunFailed Failure
-  -- | The long-lived mode, which is not built yet. **A refusal and not a notice**:
-  -- | a command that printed a failure and exited zero would tell a reader one
-  -- | thing and a shell another.
-  | SessionUnavailable
+  -- | The `session` command was started with no channel to speak on, as what the
+  -- | host said.
+  | SessionChannelMissing P.String
+  -- | The session refused the handshake, and so never opened.
+  | SessionRefused Refusal
+  -- | The session ended other than by `close`.
+  | SessionFailed SessionFailure
 
 -- | What the process exits with.
 exitStatus :: ErrorType -> P.Int
@@ -66,6 +73,11 @@ exitStatus = case _ of
   -- happened
   InitializationFailed _ (Bug _) -> 3
   RunFailed (Bug _) -> 3
+  -- a session that could not answer, or built a message it could not send, is the
+  -- interpreter's own defect
+  SessionFailed (HandlerFailed _) -> 3
+  SessionFailed (OutgoingTooLarge _) -> 3
+  SessionFailed (OutgoingUnencodable _) -> 3
   -- then by the moment: everything below stopped the program before it started
   FileUnreadable _ _ -> 1
   FileNotBytecode _ _ -> 1
@@ -76,8 +88,23 @@ exitStatus = case _ of
   EntryNotAnAction _ -> 1
   ManifestRefused _ _ -> 1
   ForeignsUnreachable _ -> 1
-  SessionUnavailable -> 1
   RunFailed _ -> 2
+  -- a session that did not open, or that ended unasked
+  SessionChannelMissing _ -> 1
+  SessionRefused _ -> 1
+  SessionFailed _ -> 1
+
+-- | Whether the process should end by having nothing left to do rather than by
+-- | exiting at once. **A session ends that way**: it has written its last frame
+-- | and released its channel, and what is still queued for standard output or
+-- | standard error is written before the process ends, where exiting at once would
+-- | cut off what a pipe had not yet taken.
+endsQuietly :: ErrorType -> P.Boolean
+endsQuietly = case _ of
+  SessionChannelMissing _ -> true
+  SessionRefused _ -> true
+  SessionFailed _ -> true
+  _ -> false
 
 -- | The line a user reads.
 -- |
@@ -121,8 +148,35 @@ report = case _ of
   RunFailed failure ->
     describe failure
 
-  SessionUnavailable ->
-    "The session mode is not built yet. Use `steam run` to run a program."
+  SessionChannelMissing reason ->
+    "The session has no channel to speak on: " <> reason
+      <> "\n  Start `steam session` with a bidirectional pipe as descriptor 3."
+
+  SessionRefused refusal ->
+    "The session was not opened: " <> refused refusal.reason
+
+  SessionFailed failure ->
+    "The session ended: " <> sessionFailure failure
+
+refused :: RefusalReason -> P.String
+refused = case _ of
+  ProtocolUnsupported -> "the client asked for a protocol version this session does not speak"
+  ProfileUnsupported -> "the client asked for a profile this session does not offer"
+  CapabilityUnsupported -> "the client required a capability this session does not have"
+
+sessionFailure :: SessionFailure -> P.String
+sessionFailure = case _ of
+  FrameUnreadable (Oversized length) ->
+    "a frame declared " <> show length <> " bytes, above the limit"
+  FrameUnreadable (TruncatedPrefix _) -> "the channel ended inside a frame's length"
+  FrameUnreadable (TruncatedPayload _) -> "the channel ended inside a frame"
+  ChannelEnded -> "the channel ended without `close`"
+  ChannelFailed reason -> "the channel failed: " <> reason
+  IdsExhausted -> "every request number has been used"
+  OutgoingTooLarge kind -> "a `" <> kind <> "` message was too large to send"
+  OutgoingUnencodable kind -> "a `" <> kind <> "` message could not be encoded"
+  HandlerFailed reason -> "a request could not be answered: " <> reason
+  ShutDown -> "the session was shut down"
 
 describe :: Failure -> P.String
 describe = case _ of
