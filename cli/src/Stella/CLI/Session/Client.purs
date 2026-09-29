@@ -23,6 +23,8 @@ module Stella.CLI.Session.Client
   , ready
   , request
   , ping
+  , load
+  , invoke
   , close
   , abandon
   , kill
@@ -39,6 +41,7 @@ import Data.Show.Generic (genericShow)
 import Foreign.Object (Object)
 import Run (AFF, EFFECT, Run, liftAff, liftEffect)
 import Stella.CLI.Effect.Process (Child, Exit, Output, PROCESS, spawnSession)
+import Stella.CLI.Session.Guest (GlobalName, InvocationFailure, LoadFailure, Token, decodeInvocationFailed, decodeLoadFailed, decodeLoaded, decodeReturned, encodeInvoke, encodeLoad, invocationFailedKind, invokeKind, loadFailedKind, loadKind, loadedKind, returnedKind)
 import Stella.CLI.Session.Peer (Peer, Reply, SessionFailure)
 import Stella.CLI.Session.Peer as Peer
 import Stella.CLI.Session.Protocol (Hello, Ready, Refusal, closeKind, closedKind, decodeReady, decodeRefusal, emptyPayload, encodeHello, helloKind, pingKind, pongKind, readyKind, refusedKind)
@@ -198,6 +201,43 @@ ping session = request session pingKind emptyPayload >>= case _ of
   Right reply
     | reply.kind == pongKind -> pure (Right unit)
     | otherwise -> Left <<< SessionLost <$> misbehaved session (AnswerUnexpected reply.kind)
+
+-- | Load the module at that path into the session: its name, or why the session
+-- | did not load it. A path is resolved against the session's working directory.
+load
+  :: forall r
+   . Session
+  -> String
+  -> Run (AFF + EFFECT + r) (Either RequestFailure (Either LoadFailure String))
+load session path = request session loadKind (encodeLoad path) >>= case _ of
+  Left failure -> pure (Left failure)
+  Right reply
+    | reply.kind == loadedKind -> answered (Right <$> decodeLoaded reply.payload) reply.kind
+    | reply.kind == loadFailedKind -> answered (Left <$> decodeLoadFailed reply.payload) reply.kind
+    | otherwise -> Left <<< SessionLost <$> misbehaved session (AnswerUnexpected reply.kind)
+  where
+  answered decoded kind = case decoded of
+    Just outcome -> pure (Right outcome)
+    Nothing -> Left <<< SessionLost <$> misbehaved session (AnswerMalformed kind)
+
+-- | Apply a guest function to tokens: the token it returned, or why it did not
+-- | return one.
+invoke
+  :: forall r
+   . Session
+  -> GlobalName
+  -> Array Token
+  -> Run (AFF + EFFECT + r) (Either RequestFailure (Either InvocationFailure Token))
+invoke session global arguments = request session invokeKind (encodeInvoke global arguments) >>= case _ of
+  Left failure -> pure (Left failure)
+  Right reply
+    | reply.kind == returnedKind -> answered (Right <$> decodeReturned reply.payload) reply.kind
+    | reply.kind == invocationFailedKind -> answered (Left <$> decodeInvocationFailed reply.payload) reply.kind
+    | otherwise -> Left <<< SessionLost <$> misbehaved session (AnswerUnexpected reply.kind)
+  where
+  answered decoded kind = case decoded of
+    Just outcome -> pure (Right outcome)
+    Nothing -> Left <<< SessionLost <$> misbehaved session (AnswerMalformed kind)
 
 -- | Close the session: `close`, `closed`, and then the process ending with 0.
 close :: forall r. Session -> Run (AFF + EFFECT + r) (Either ClientFailure Unit)

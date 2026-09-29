@@ -2,7 +2,7 @@ module Test.Stella.CLI.Session (spec) where
 
 import Prelude
 
-import Data.Argonaut.Core (Json, fromNumber, fromObject, fromString, stringify)
+import Data.Argonaut.Core (Json, fromArray, fromNumber, fromObject, fromString, stringify)
 import Data.Array as Array
 import Data.Either (Either(..), hush)
 import Data.Int (toNumber)
@@ -18,6 +18,7 @@ import Foreign.Object (Object)
 import Foreign.Object as Object
 import Stella.CLI.Session.Envelope (EnvelopeReason(..), Message(..), decodeMessage, encodeMessage, firstMessageId, messageId, nextMessageId)
 import Stella.CLI.Session.Frame (FrameFailure(..), PayloadProblem(..), emptyReader, feed, finish, frame, maxPayload, parsePayload, renderPayload, u32BE)
+import Stella.CLI.Session.Guest (InvocationReason(..), LoadStage(..), ValueClass(..), decodeInvocationFailed, decodeInvoke, decodeLoad, decodeLoadFailed, decodeLoaded, decodeReturned, encodeInvocationFailed, encodeInvoke, encodeLoad, encodeLoadFailed, encodeLoaded, encodeReturned)
 import Stella.CLI.Session.Peer (Incoming, SessionFailure(..), answer)
 import Stella.CLI.Session.Peer as Peer
 import Stella.CLI.Session.Protocol (RefusalReason(..), decodeHello, decodeReady, decodeRefusal, elaborationProfile, encodeHello, encodeReady, encodeRefusal, negotiate, protocolVersion)
@@ -33,6 +34,7 @@ spec = describe "Stella.CLI.Session" do
   frames
   envelopes
   handshakes
+  guests
   peers
 
 -- Frames -----------------------------------------------------------------------------
@@ -201,9 +203,13 @@ handshakes = describe "handshakes" do
       , requires: []
       }
 
-  it "puts in force only capabilities this side has, which in protocol 1 are none" do
+  it "puts in force only the capabilities asked for that this side supports" do
     negotiate hello `shouldEqual` Right
       { protocol: 1, profile: "elaboration", capabilities: [] }
+    negotiate (hello { offers = [ "invoke", "someday" ], requires = [ "modules" ] }) `shouldEqual` Right
+      { protocol: 1, profile: "elaboration", capabilities: [ "modules", "invoke" ] }
+    negotiate (hello { offers = [ "modules" ] }) `shouldEqual` Right
+      { protocol: 1, profile: "elaboration", capabilities: [ "modules" ] }
 
   it "refuses another protocol, another profile, and a capability it lacks" do
     let reasonOf h = map _.reason (either Just (const Nothing) (negotiate h))
@@ -222,6 +228,44 @@ handshakes = describe "handshakes" do
   either f g = case _ of
     Left a -> f a
     Right b -> g b
+
+-- Guest requests --------------------------------------------------------------------
+
+guests :: Spec Unit
+guests = describe "load and invoke payloads" do
+  let
+    tok = object [ Tuple "slot" (fromNumber 3.0) ]
+    name = { module: "Guest", name: "identity" }
+
+  it "round-trip what they write" do
+    decodeLoad (encodeLoad "a/b.dmo") `shouldEqual` Just "a/b.dmo"
+    decodeLoaded (encodeLoaded "Guest") `shouldEqual` Just "Guest"
+    decodeLoadFailed (encodeLoadFailed { stage: Initialization, detail: "d" })
+      `shouldEqual` Just { stage: Initialization, detail: "d" }
+    map (\r -> Tuple r.global (map text r.arguments)) (decodeInvoke (encodeInvoke name [ tok ]))
+      `shouldEqual` Just (Tuple name [ text tok ])
+    map text (decodeReturned (encodeReturned tok)) `shouldEqual` Just (text tok)
+    let failed = { reason: NotAToken ClassPartialApplication, detail: "d" }
+    decodeInvocationFailed (encodeInvocationFailed failed) `shouldEqual` Just failed
+
+  it "refuse a missing field, a field of another type, and one they do not know" do
+    decodeLoad Object.empty `shouldEqual` Nothing
+    decodeLoad (object [ Tuple "path" (fromNumber 1.0) ]) `shouldEqual` Nothing
+    decodeLoad (Object.insert "more" (fromString "") (encodeLoad "x")) `shouldEqual` Nothing
+    map (const unit) (decodeInvoke (object [ Tuple "global" (fromObject (object [ Tuple "module" (fromString "M") ])), Tuple "arguments" (fromArray []) ]))
+      `shouldEqual` Nothing
+    map (const unit) (decodeInvoke (object [ Tuple "global" (fromObject (object [ Tuple "module" (fromString "M"), Tuple "name" (fromString "f") ])), Tuple "arguments" (fromArray [ fromNumber 1.0 ]) ]))
+      `shouldEqual` Nothing
+
+  it "carry a class exactly where the reason is notAToken" do
+    let
+      withClass = object [ Tuple "reason" (fromString "fault"), Tuple "detail" (fromString ""), Tuple "class" (fromString "int") ]
+      withoutClass = object [ Tuple "reason" (fromString "notAToken"), Tuple "detail" (fromString "") ]
+      unknownClass = object [ Tuple "reason" (fromString "notAToken"), Tuple "detail" (fromString ""), Tuple "class" (fromString "thing") ]
+    decodeInvocationFailed withClass `shouldEqual` Nothing
+    decodeInvocationFailed withoutClass `shouldEqual` Nothing
+    decodeInvocationFailed unknownClass `shouldEqual` Nothing
+    Object.member "class" (encodeInvocationFailed { reason: Fault, detail: "" }) `shouldEqual` false
 
 -- Peers ------------------------------------------------------------------------------
 

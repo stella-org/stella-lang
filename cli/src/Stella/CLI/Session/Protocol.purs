@@ -12,11 +12,13 @@
 -- | those without which it will not open, and `ready` names those in force. **A
 -- | session opens with one profile and the capabilities the handshake settled, and
 -- | neither changes afterwards**; a request of a family not in force is refused.
--- | Only what is implemented is advertised, and protocol 1 implements no family
--- | yet.
+-- | Only what is implemented is advertised: `modules`, which loads modules into the
+-- | session, and `invoke`, which applies a guest function to tokens.
 module Stella.CLI.Session.Protocol
   ( protocolVersion
   , elaborationProfile
+  , modulesCapability
+  , invokeCapability
   , supportedCapabilities
   , capabilityFor
   , Hello
@@ -64,14 +66,25 @@ protocolVersion = 1
 elaborationProfile :: String
 elaborationProfile = "elaboration"
 
+-- | `load`.
+modulesCapability :: String
+modulesCapability = "modules"
+
+-- | `invoke`.
+invokeCapability :: String
+invokeCapability = "invoke"
+
 -- | The capabilities this side can put in force.
 supportedCapabilities :: Array String
-supportedCapabilities = []
+supportedCapabilities = [ modulesCapability, invokeCapability ]
 
 -- | The capability a request of that kind belongs to, where it belongs to one. The
 -- | lifecycle requests belong to none, being the protocol itself.
 capabilityFor :: String -> Maybe String
-capabilityFor _ = Nothing
+capabilityFor = case _ of
+  "load" -> Just modulesCapability
+  "invoke" -> Just invokeCapability
+  _ -> Nothing
 
 type Hello =
   { protocol :: Int
