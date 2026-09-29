@@ -1,0 +1,9 @@
+{
+  "formatVersion": 1,
+  "target": "javascript",
+  "modules": [
+    {"module": "Host", "specifier": "./host.mjs", "foreigns": [
+      {"name": "add", "params": ["int"], "result": "int"}
+    ]}
+  ]
+}

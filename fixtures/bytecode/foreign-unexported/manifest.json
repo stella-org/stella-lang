@@ -1,0 +1,6 @@
+{
+  "description": "Main calls Host.greet, beside a Host changed after it was compiled to export nothing",
+  "modules": ["Host", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "greet"}},
+  "observe": []
+}

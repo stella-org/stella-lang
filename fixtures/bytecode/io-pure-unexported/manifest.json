@@ -1,0 +1,6 @@
+{
+  "description": "Main compiled against Base.IO, beside a Base.IO changed to export nothing called pure, where Main calls it, and stands over it unapplied in a partial application",
+  "modules": ["Base.IO", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "pure"}},
+  "observe": []
+}

@@ -1,0 +1,8 @@
+{
+  "description": "Main compiled from Core and then changed to carry out Base.Int.add by calling the foreign Base.Int.add, where it used the operation",
+  "modules": ["Base.Int", "Main"],
+  "outcome": {"loads": true},
+  "observe": [
+    {"global": "Main.added", "value": {"int": 3}}
+  ]
+}

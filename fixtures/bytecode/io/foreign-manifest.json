@@ -12,6 +12,7 @@
       {"name": "shout", "params": ["string"], "result": "string"},
       {"name": "flip", "params": ["boolean"], "result": "boolean"},
       {"name": "note", "params": ["int"], "result": "unit"},
+      {"name": "negZero", "params": ["unit"], "result": "int"},
       {"name": "open", "params": ["int"], "result": "opaque"},
       {"name": "same", "params": ["opaque"], "result": "boolean"},
       {"name": "readInt", "params": ["int"], "result": {"action": "int"}},

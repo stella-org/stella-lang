@@ -42,6 +42,10 @@ export const note = (n) => {
   log.push(`note:${n}`);
   return 42;
 };
+export const negZero = (_u) => {
+  log.push("negZero");
+  return -0;
+};
 export const open = (n) => {
   opened = { n };
   log.push(`open:${n}`);
