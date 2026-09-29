@@ -3,12 +3,16 @@
 -- |
 -- | A fixture is a directory of `fixtures/bytecode`, holding one `.dmo` per module
 -- | and a `manifest.json` saying which modules load and in what order, whether they
--- | load or are refused where they load, and what the named globals hold. Steam and
--- | the JavaScript backend each read the bytes and check the manifest; neither
--- | lowers Core, which is the compiler's work.
+-- | load or are refused where they load, what the named globals hold, and, for a
+-- | fixture with an entry point, how running it ends and what effects the host saw.
+-- | One whose modules declare a foreign a host supplies also holds the foreign
+-- | manifest and the implementation module it points at. Steam and the JavaScript
+-- | backend each read the bytes and check the manifest; neither lowers Core, which
+-- | is the compiler's work.
 -- |
--- | **The bytes are compiled from the Core in [Programs](Fixtures/Programs.purs)
--- | and must be what the compiler produces now.** The `.dmo` format is not frozen,
+-- | **The bytes are compiled from the Core in [Programs](Fixtures/Programs.purs),
+-- | [Effects](Fixtures/Effects.purs), and [Foreigns](Fixtures/Foreigns.purs), and
+-- | must be what the compiler produces now.** The `.dmo` format is not frozen,
 -- | so the check below fails wherever a fixture differs from what compiling its
 -- | source gives today, and running the suite with `STELLA_UPDATE_FIXTURES=1`
 -- | writes every fixture afresh instead.
@@ -36,12 +40,13 @@ import Stella.Compiler.Primitive (primTable)
 import Stella.Compiler.TypedCore (Ident(..), Module, ModuleName(..), Qualified(..), declareAnnotated)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Stella.Compiler.Bytecode.Instr (Instr(..), KeyIx(..), Node, OpIx(..), Reg, Tail(..))
-import Stella.Compiler.Bytecode.Module (HandlerEntry)
+import Stella.Compiler.Bytecode.Instr (CalleeIx(..), Instr(..), KeyIx(..), Node, OpIx(..), Reg, Tail(..))
+import Stella.Compiler.Bytecode.Module (CalleeEntry(..), HandlerEntry)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
 import Test.Stella.Compiler.Fixtures.Effects (effectsExpected, effectsModule, meterModule)
+import Test.Stella.Compiler.Fixtures.Foreigns (ManifestModule, Result(..), RunCase, RunFault(..), addCallMain, addHostModule, addHostShrunk, addPartialMain, addShrunkManifest, addShrunkSource, greetHostModule, greetMainModule, greetManifest, greetSource, ioEffects, ioHostModule, ioHostSource, ioMainModule, ioManifest, ioModule, ioModuleBindArity, ioModulePureArity, ioResult, pureMainModule, runCases, runEffects, runHostModule, runHostSource, runMainModule, runManifest, startMainModule)
 import Test.Stella.Compiler.Fixtures.Programs (abiSignature, baseModules, expected, faultCases, faultModule, intModule, libModule, libRenamed, libShrunk, libUnexported, mainModule, mainName, opsExpected, opsModule, refsOnly, without)
-import Test.Stella.Compiler.Fixtures.Value (Expected, jsonString, toJson)
+import Test.Stella.Compiler.Fixtures.Value (Expected(..), jsonString, toJson)
 
 -- Reading and writing --------------------------------------------------------------
 
@@ -88,6 +93,24 @@ data Outcome
   | RefusedAtLoad P.String
   -- | Faulting where the modules load, as the named global is initialized.
   | FaultsAtLoad P.String
+  -- | Loading, and executing the action the entry global holds to the value it
+  -- | produces, with the effects the host saw in order.
+  | Runs { entry :: P.String, result :: Expected, effects :: P.Array P.String }
+  -- | Loading, and executing the entry's action to a fault, with the effects the
+  -- | host saw before it.
+  | FaultsAtRun { entry :: P.String, fault :: RunFault, effects :: P.Array P.String }
+  -- | Loading, and not starting: the entry names no global, or one holding no action.
+  | StartFails { entry :: P.String, reason :: StartFailure }
+
+data StartFailure
+  = NoSuchGlobal
+  | NotAnAction
+
+-- | A foreign manifest, which generation checks against the modules' declarations
+-- | unless it is one written to disagree with them.
+data ForeignManifest
+  = Checked (P.Array ManifestModule)
+  | Unchecked (P.Array ManifestModule)
 
 type Fixture =
   { name :: P.String
@@ -95,52 +118,81 @@ type Fixture =
   , modules :: Either P.String (P.Array Dmo)
   , outcome :: Outcome
   , observe :: P.Array (Tuple P.String Expected)
+  , foreignManifest :: Maybe ForeignManifest
+  -- | `host.mjs`, the implementation module the manifest points at.
+  , host :: Maybe P.String
+  }
+
+-- | A fixture of no foreigns the host supplies.
+plain
+  :: { name :: P.String
+     , description :: P.String
+     , modules :: Either P.String (P.Array Dmo)
+     , outcome :: Outcome
+     , observe :: P.Array (Tuple P.String Expected)
+     }
+  -> Fixture
+plain f =
+  { name: f.name
+  , description: f.description
+  , modules: f.modules
+  , outcome: f.outcome
+  , observe: f.observe
+  , foreignManifest: Nothing
+  , host: Nothing
   }
 
 fixtures :: P.Array Fixture
 fixtures =
-  [ { name: "programs"
-    , description: "Calls, tail calls, partial and over-application, closures, join points, records, variants, literal dispatch, and references into another module"
-    , modules: map (map _.dmo) (compileAll [ intModule, libModule, mainModule ])
-    , outcome: Loads
-    , observe: expected
-    }
-  , { name: "stale-arity-call"
-    , description: "Main calls Lib.addTo with the two arguments Lib's interface gave it, and is loaded beside a Lib whose addTo takes one"
-    , modules: against (without "addPartial") libShrunk
-    , outcome: RefusedAtLoad "addTo"
-    , observe: []
-    }
-  , { name: "stale-arity-partial"
-    , description: "Main applies Lib.addTo to one argument, a partial application under the interface it was compiled against, beside a Lib whose addTo takes one"
-    , modules: against (without "addCalled") libShrunk
-    , outcome: RefusedAtLoad "addTo"
-    , observe: []
-    }
-  , { name: "unexported-global"
-    , description: "Main reads Lib.unbox as a value, beside a Lib that does not export it"
-    , modules: against refsOnly libUnexported
-    , outcome: RefusedAtLoad "unbox"
-    , observe: []
-    }
-  , { name: "undeclared-ctor"
-    , description: "Main dispatches on Lib.Box, beside a Lib whose constructor is called Crate"
-    , modules: against refsOnly libRenamed
-    , outcome: RefusedAtLoad "Box"
-    , observe: []
-    }
-  , { name: "operations"
-    , description: "Every operation of stella-base-0.1, including inputs where a host's own operator gives another answer, and operations applied short of their arity and saturated later"
-    , modules: map (map _.dmo) (compileAll (baseModules <> [ opsModule ]))
-    , outcome: Loads
-    , observe: opsExpected
-    }
-  , { name: "effects"
-    , description: "Handlers, perform in both clause forms, continuations resumed once, twice, interleaved, and over-applied, regions carried in a continuation, and where a fast clause's body runs"
-    , modules: map (map _.dmo) (compileAll [ intModule, effectsModule ])
-    , outcome: Loads
-    , observe: effectsExpected
-    }
+  [ plain
+      { name: "programs"
+      , description: "Calls, tail calls, partial and over-application, closures, join points, records, variants, literal dispatch, and references into another module"
+      , modules: map (map _.dmo) (compileAll [ intModule, libModule, mainModule ])
+      , outcome: Loads
+      , observe: expected
+      }
+  , plain
+      { name: "stale-arity-call"
+      , description: "Main calls Lib.addTo with the two arguments Lib's interface gave it, and is loaded beside a Lib whose addTo takes one"
+      , modules: against (without "addPartial") libShrunk
+      , outcome: RefusedAtLoad "addTo"
+      , observe: []
+      }
+  , plain
+      { name: "stale-arity-partial"
+      , description: "Main applies Lib.addTo to one argument, a partial application under the interface it was compiled against, beside a Lib whose addTo takes one"
+      , modules: against (without "addCalled") libShrunk
+      , outcome: RefusedAtLoad "addTo"
+      , observe: []
+      }
+  , plain
+      { name: "unexported-global"
+      , description: "Main reads Lib.unbox as a value, beside a Lib that does not export it"
+      , modules: against refsOnly libUnexported
+      , outcome: RefusedAtLoad "unbox"
+      , observe: []
+      }
+  , plain
+      { name: "undeclared-ctor"
+      , description: "Main dispatches on Lib.Box, beside a Lib whose constructor is called Crate"
+      , modules: against refsOnly libRenamed
+      , outcome: RefusedAtLoad "Box"
+      , observe: []
+      }
+  , plain
+      { name: "operations"
+      , description: "Every operation of stella-base-0.1, including inputs where a host's own operator gives another answer, and operations applied short of their arity and saturated later"
+      , modules: map (map _.dmo) (compileAll (baseModules <> [ opsModule ]))
+      , outcome: Loads
+      , observe: opsExpected
+      }
+  , plain
+      { name: "effects"
+      , description: "Handlers, perform in both clause forms, continuations resumed once, twice, interleaved, and over-applied, regions carried in a continuation, and where a fast clause's body runs"
+      , modules: map (map _.dmo) (compileAll [ intModule, effectsModule ])
+      , outcome: Loads
+      , observe: effectsExpected
+      }
   , meterRefusal "handler-cell-twice"
       "the second cell of Main's handler entry changed to the first, at the same KEYS index"
       (onHandlers secondCellRepeats)
@@ -175,8 +227,9 @@ fixtures =
       "Meter"
   ]
     <> map faultFixture faultCases
+    <> foreignFixtures
   where
-  faultFixture c =
+  faultFixture c = plain
     { name: c.name
     , description: c.description <> ", which faults as Main.faulted is initialized"
     , modules: map (map _.dmo) (compileAll (baseModules <> [ faultModule c ]))
@@ -191,12 +244,188 @@ against main lib = do
   changed <- compileAll [ intModule, lib ]
   pure (map _.dmo changed <> map _.dmo (Array.drop 2 written))
 
+-- Foreigns and running ---------------------------------------------------------------------
+
+foreignFixtures :: P.Array Fixture
+foreignFixtures =
+  [ { name: "io"
+    , description: "An entry point run to the value it produces: actions a foreign returns, performed in order; a left-nested chain of bind 20000 deep; every value kind crossing in and out, and an action of each kind; an opaque value handed back; a partial application of a foreign another module declares, and a foreign the entry module declares"
+    , modules: map (map _.dmo) (compileAll [ intModule, ioModule, ioHostModule, ioMainModule ])
+    , outcome: Runs { entry: "Main.main", result: ioResult, effects: ioEffects }
+    , observe: []
+    , foreignManifest: Just (Checked ioManifest)
+    , host: Just ioHostSource
+    }
+  , plain
+      { name: "io-pure"
+      , description: "An entry point that is Base.IO.bind applied to pure 7 alone, and then to Base.IO.pure handed over unapplied, reaching no host"
+      , modules: map (map _.dmo) (compileAll [ ioModule, pureMainModule ])
+      , outcome: Runs { entry: "Main.main", result: EInt 7, effects: [] }
+      , observe: []
+      }
+  , plain
+      { name: "start-no-global"
+      , description: "An entry point naming a global Main does not declare"
+      , modules: map (map _.dmo) (compileAll [ ioModule, startMainModule ])
+      , outcome: StartFails { entry: "Main.missing", reason: NoSuchGlobal }
+      , observe: []
+      }
+  , plain
+      { name: "start-not-an-action"
+      , description: "An entry point naming a global of Main that holds an Int and no action"
+      , modules: map (map _.dmo) (compileAll [ ioModule, startMainModule ])
+      , outcome: StartFails { entry: "Main.answer", reason: NotAnAction }
+      , observe: []
+      }
+  , greetRefusal "foreign-unreachable" "a manifest pointing Host at a module that is not there"
+      (Checked (greetManifest "./missing.mjs" [ greet ]))
+      Nothing
+      "missing.mjs"
+  , greetRefusal "foreign-no-export" "an implementation module holding no export named greet"
+      (Checked (greetManifest "./host.mjs" [ greet ]))
+      (Just (greetSource [ Tuple "hello" "(n) => n" ]))
+      "greet"
+  , greetRefusal "foreign-not-callable" "an implementation module whose export greet is a number"
+      (Checked (greetManifest "./host.mjs" [ greet ]))
+      (Just (greetSource [ Tuple "greet" "41" ]))
+      "greet"
+  , greetRefusal "foreign-no-signature" "a manifest entry for Host that gives greet no signature"
+      (Unchecked (greetManifest "./host.mjs" []))
+      (Just greetImplementation)
+      "greet"
+  , greetRefusal "foreign-params-length" "a manifest giving greet two params where it is declared at arity one"
+      (Unchecked (greetManifest "./host.mjs" [ greet { params = [ "int", "int" ] } ]))
+      (Just greetImplementation)
+      "greet"
+  , plain
+      { name: "foreign-no-entry"
+      , description: "Host declares greet, and no manifest names Host"
+      , modules: map (map _.dmo) (compileAll [ greetHostModule, greetMainModule ])
+      , outcome: RefusedAtLoad "greet"
+      , observe: []
+      }
+  , plain
+      { name: "io-entry-arity-pure"
+      , description: "Base.IO declaring pure at arity two, where the runtime carries it out at arity one"
+      , modules: map (map _.dmo) (compileAll [ ioModulePureArity ])
+      , outcome: RefusedAtLoad "pure"
+      , observe: []
+      }
+  , plain
+      { name: "io-entry-arity-bind"
+      , description: "Base.IO declaring bind at arity three, where the runtime carries it out at arity two"
+      , modules: map (map _.dmo) (compileAll [ ioModuleBindArity ])
+      , outcome: RefusedAtLoad "bind"
+      , observe: []
+      }
+  , staleForeign "stale-foreign-call" "Main calls Host.add with the two arguments Host's interface gave it" addCallMain
+  , staleForeign "stale-foreign-partial" "Main applies Host.add to one argument, a partial application under the interface it was compiled against" addPartialMain
+  ]
+    <> map runFixture runCases
+  where
+  greet = { name: "greet", params: [ "int" ], result: Value "int" }
+
+  greetImplementation = greetSource [ Tuple "greet" "(n) => n" ]
+
+  greetRefusal name description manifest host mentions =
+    { name
+    , description: "Main calls Host.greet, beside " <> description
+    , modules: map (map _.dmo) (compileAll [ greetHostModule, greetMainModule ])
+    , outcome: RefusedAtLoad mentions
+    , observe: []
+    , foreignManifest: Just manifest
+    , host
+    }
+
+  staleForeign name description main =
+    { name
+    , description: description <> ", and is loaded beside a Host whose add takes one"
+    , modules: do
+        written <- compileAll [ addHostModule, main ]
+        changed <- compileAll [ addHostShrunk ]
+        pure (map _.dmo changed <> map _.dmo (Array.drop 1 written))
+    , outcome: RefusedAtLoad "add"
+    , observe: []
+    , foreignManifest: Just (Checked addShrunkManifest)
+    , host: Just addShrunkSource
+    }
+
+runFixture :: RunCase -> Fixture
+runFixture c =
+  { name: c.name
+  , description: "An entry point that runs Host.say and then reaches " <> c.description
+  , modules: map (map _.dmo) (compileAll [ ioModule, runHostModule c, runMainModule c ])
+  , outcome: FaultsAtRun { entry: "Main.main", fault: c.fault, effects: runEffects }
+  , observe: []
+  , foreignManifest: Just (Checked (runManifest c))
+  , host: Just (runHostSource c)
+  }
+
+-- | Where a checked manifest and the modules it describes disagree: a foreign one of
+-- | the named modules declares without a signature, a signature whose `params` are
+-- | not the declared arity long, or a signature naming nothing declared.
+manifestDisagreements :: P.Array Dmo -> P.Array ManifestModule -> P.Array P.String
+manifestDisagreements dmos = Array.concatMap perModule
+  where
+  perModule m = case Array.find (\d -> d.name == m.module) dmos of
+    Nothing -> [ moduleText m.module <> " is not among the modules" ]
+    Just dmo ->
+      map (declared m) dmo.foreigns # Array.catMaybes
+        # (_ <> Array.mapMaybe (undeclared dmo) m.foreigns)
+
+  declared m entry =
+    let
+      Qualified (ModuleName mn) (Ident x) = entry.name
+    in
+      case Array.find (\s -> s.name == x) m.foreigns of
+        Nothing -> Just (mn <> "." <> x <> " has no signature")
+        Just s
+          | Array.length s.params /= entry.arity -> Just (mn <> "." <> x <> " has params of another length than its arity")
+          | otherwise -> Nothing
+
+  undeclared dmo s =
+    if Array.any (\entry -> entry.name == Qualified dmo.name (Ident s.name)) dmo.foreigns then Nothing
+    else Just (moduleText dmo.name <> "." <> s.name <> " is declared nowhere")
+
+foreignManifestText :: P.Array ManifestModule -> P.String
+foreignManifestText modules = String.joinWith "\n"
+  ( [ "{"
+    , "  \"formatVersion\": 1,"
+    , "  \"target\": \"javascript\","
+    , "  \"modules\": ["
+    ]
+      <> Array.mapWithIndex entry modules
+      <> [ "  ]", "}", "" ]
+  )
+  where
+  entry i m =
+    String.joinWith "\n"
+      ( [ "    {\"module\": " <> jsonString (moduleText m.module) <> ", \"specifier\": " <> jsonString m.specifier <> ", \"foreigns\": [" ]
+          <> Array.mapWithIndex (signature (Array.length m.foreigns)) m.foreigns
+          <> [ "    ]}" <> comma i (Array.length modules) ]
+      )
+
+  signature n i s =
+    "      {\"name\": " <> jsonString s.name
+      <> ", \"params\": ["
+      <> String.joinWith ", " (map jsonString s.params)
+      <> "], \"result\": "
+      <> resultJson s.result
+      <> "}"
+      <> comma i n
+
+  resultJson = case _ of
+    Value k -> jsonString k
+    Action k -> "{\"action\": " <> jsonString k <> "}"
+
+  comma i n = if i + 1 < n then "," else ""
+
 -- Handler refusals -----------------------------------------------------------------------
 
 -- | A module no Core compiles to, refused where it loads: `Meter` lowered, and then
 -- | changed as `change` says. What is refused is a property of the module alone.
 meterRefusal :: P.String -> P.String -> (Dmo -> Dmo) -> P.String -> Fixture
-meterRefusal name description change mentions =
+meterRefusal name description change mentions = plain
   { name
   , description: "Main compiled from Core and then " <> description
   , modules: map (map (\c -> if c.dmo.name == mainName then change c.dmo else c.dmo))
@@ -276,6 +505,32 @@ dropClause o = o { clauses = Array.dropEnd 1 o.clauses }
 dropCell :: HandleOperands -> HandleOperands
 dropCell o = o { cells = Array.dropEnd 1 o.cells }
 
+-- | The foreign and the count of each partial application over a foreign that a
+-- | module makes.
+foreignPartials :: Dmo -> P.Array (Tuple P.String P.Int)
+foreignPartials dmo = Array.mapMaybe partial (instructionsOf dmo)
+  where
+  partial = case _ of
+    PAP _ (CalleeIx i) args | Just (CalleeForeign (Qualified (ModuleName m) (Ident x))) <- Array.index dmo.callees i ->
+      Just (Tuple (m <> "." <> x) (Array.length args))
+    _ -> Nothing
+
+-- | Every instruction of every function of a module: a function's body, each join
+-- | point's, and each node a branch holds inline.
+instructionsOf :: Dmo -> P.Array Instr
+instructionsOf dmo = Array.concatMap function dmo.functions
+  where
+  function fn = node fn.body <> Array.concatMap (\j -> node j.body) fn.joins
+
+  node n = n.code <> inline n.tail
+
+  inline = case _ of
+    BRIF _ a b -> node a <> node b
+    BRC _ cases fallback -> Array.concatMap (\c -> node c.body) cases <> maybe [] node fallback
+    BRL _ cases fallback -> Array.concatMap (\c -> node c.body) cases <> node fallback
+    BRK _ cases fallback -> Array.concatMap (\c -> node c.body) cases <> maybe [] node fallback
+    _ -> []
+
 -- The manifest -----------------------------------------------------------------------------
 
 manifestText :: Fixture -> P.Array Dmo -> P.String
@@ -298,6 +553,42 @@ manifestText f dmos = String.joinWith "\n"
     Loads -> "{\"loads\": true}"
     RefusedAtLoad name -> "{\"refusedAtLoad\": {\"mentions\": " <> jsonString name <> "}}"
     FaultsAtLoad global -> "{\"faultsAtLoad\": {\"global\": " <> jsonString global <> "}}"
+    Runs r ->
+      "{\"runs\": {\"entry\": " <> jsonString r.entry
+        <> ", \"result\": "
+        <> toJson r.result
+        <> ", \"effects\": "
+        <> effectsJson r.effects
+        <> "}}"
+    FaultsAtRun r ->
+      "{\"faultsAtRun\": {\"entry\": " <> jsonString r.entry
+        <> ", "
+        <> faultJson r.fault
+        <> ", \"effects\": "
+        <> effectsJson r.effects
+        <> "}}"
+    StartFails r ->
+      "{\"startFails\": {\"entry\": " <> jsonString r.entry <> ", \"reason\": "
+        <> jsonString case r.reason of
+          NoSuchGlobal -> "noSuchGlobal"
+          NotAnAction -> "notAnAction"
+        <> "}}"
+
+  -- one effect per line, so a changed sequence is a changed line
+  effectsJson effects =
+    if Array.null effects then "[]"
+    else "[\n" <> String.joinWith ",\n" (map (\e -> "    " <> jsonString e) effects) <> "\n  ]"
+
+  -- the kind, and what both runtimes observe of a fault of that kind
+  faultJson = case _ of
+    Refused culprit reason -> kind "refused" <> ", \"foreign\": " <> jsonString culprit <> ", \"reason\": " <> jsonString reason
+    Threw culprit message -> kind "threw" <> ", \"foreign\": " <> jsonString culprit <> ", \"message\": " <> jsonString message
+    Breached culprit -> kind "breached" <> ", \"foreign\": " <> jsonString culprit
+    ActionRefused reason -> kind "actionRefused" <> ", \"reason\": " <> jsonString reason
+    ActionThrew message -> kind "actionThrew" <> ", \"message\": " <> jsonString message
+    ActionBreached culprit -> kind "actionBreached" <> ", \"foreign\": " <> jsonString culprit
+
+  kind k = "\"kind\": " <> jsonString k
 
   observed i (Tuple name value) =
     let
@@ -318,7 +609,18 @@ filesOf :: Fixture -> Either P.String (P.Array (Tuple P.String Content))
 filesOf f = do
   dmos <- f.modules
   encoded <- traverse (\d -> stage "encode" (encode d) <#> \bytes -> Tuple (moduleText d.name <> ".dmo") (Bytes bytes)) dmos
-  pure (encoded <> [ Tuple "manifest.json" (Text (manifestText f dmos)) ])
+  foreignManifest <- case f.foreignManifest of
+    Nothing -> pure []
+    Just (Unchecked modules) -> pure [ Tuple "foreign-manifest.json" (Text (foreignManifestText modules)) ]
+    Just (Checked modules) -> case manifestDisagreements dmos modules of
+      [] -> pure [ Tuple "foreign-manifest.json" (Text (foreignManifestText modules)) ]
+      disagreements -> Left (f.name <> ": the foreign manifest disagrees with the modules: " <> String.joinWith "; " disagreements)
+  pure
+    ( encoded
+        <> [ Tuple "manifest.json" (Text (manifestText f dmos)) ]
+        <> foreignManifest
+        <> maybe [] (\source -> [ Tuple "host.mjs" (Text source) ]) f.host
+    )
 
 -- The check ------------------------------------------------------------------------------
 
@@ -335,6 +637,15 @@ spec = describe "the bytecode fixtures" do
           Array.filter (\entry -> not (Array.elem entry.op main.dmo.prims)) primTable
             <#> (\entry -> show entry.op)
             # (_ `shouldEqual` [])
+
+  -- the two `Base.IO` entries are carried out by the runtime and not by a host, so a
+  -- partial application over one is of its own kind: `bind` short of its arity, and
+  -- `pure` as a value, which is a partial application of no arguments
+  it "apply both Base.IO entries short of their arity in the io-pure fixture" do
+    case compileAll [ ioModule, pureMainModule ] of
+      Left err -> fail err
+      Right compiled -> map (foreignPartials <<< _.dmo) (Array.last compiled)
+        `shouldEqual` Just [ Tuple "Base.IO.bind" 1, Tuple "Base.IO.pure" 0 ]
 
   it "are what compiling their source gives now" do
     update <- liftEffect updating
