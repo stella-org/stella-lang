@@ -6,26 +6,29 @@
 -- | | Binding | What it holds |
 -- | | --- | --- |
 -- | | `rt` | the runtime, imported whole |
--- | | `iK_g_x`, `iK_c_X` | the global `x` and the constructor `X` of the `K`-th module of `IMPORTS` |
+-- | | `iK_g_x`, `iK_c_X`, `iK_f_x` | the global `x`, the constructor `X`, and the descriptor of the foreign `x` of the `K`-th module of `IMPORTS` |
 -- | | `iK_arities` | that module's table of definitional arities |
 -- | | `cI` | the descriptor of the `I`-th constructor this module declares |
 -- | | `pI` | the `I`-th operation of `PRIMS`, standing as a callee |
+-- | | `fgI` | the descriptor of the `I`-th foreign this module declares |
+-- | | `implI` | its host implementation, where a host implements it |
 -- | | `hI` | the `I`-th handler of `HANDLERS` |
 -- | | `fnI` | the descriptor of the `I`-th function |
 -- | | `fI_sJ` | segment `J` of that function |
 -- | | `gI` | the `I`-th global |
 -- |
 -- | **What another module reads is exported under a name no binding can clash
--- | with**: a global under its own name, a constructor as `"ctor Name"`, and the
--- | table of definitional arities as `"arity table"`. The last two hold spaces, so
--- | no Stella identifier is either of them.
+-- | with**: a global under its own name, a constructor as `"ctor Name"`, a foreign as
+-- | `"foreign name"`, and the table of definitional arities as `"arity table"`. The
+-- | global an entry point names is exported as `"entry point"` too. Every name but a
+-- | global's holds a space, so no Stella identifier is one of them.
 -- |
 -- | **Every name another module is referred to by is imported by that name**: each
--- | imported name that `GLOBALREFS`, `CTORREFS`, or `CALLEES` holds is imported
--- | once, however many entries hold it, and whether or not anything then reads
--- | the binding. Linking the modules therefore
--- | refuses a reference to what the module declaring it does not export, before
--- | anything runs, which is where Steam refuses one
+-- | imported name that `GLOBALREFS`, `CTORREFS`, `FOREIGNREFS`, or `CALLEES` holds is
+-- | imported once, however many entries hold it, and whether or not anything then
+-- | reads the binding, a foreign the runtime carries out included. Linking the
+-- | modules therefore refuses a reference to what the module declaring it does not
+-- | export, before anything runs, which is where Steam refuses one
 -- | ([Abstract Machine](../../../../../docs/technical-references/07-Runtime/01-Abstract-Machine.md)).
 -- | Every module of `IMPORTS` is imported, the arity table at least, so an imported
 -- | module is initialized before this one whether or not anything of it is named,
@@ -47,22 +50,39 @@ import Data.Int (hexadecimal, toStringAs)
 import Data.String as String
 import Data.String.CodePoints as CodePoints
 import Data.Either (Either(..))
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Map (Map)
+import Data.Map as Map
+import Data.Maybe (Maybe(..), fromMaybe, isNothing)
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..), fst)
 import Stella.Compiler.Bytecode.Instr (FuncIx(..))
 import Stella.Compiler.Bytecode.Module (GlobalInit(..))
 import Stella.Backend.JavaScript.Error (JsError(..))
-import Stella.Backend.JavaScript.Frame (Block, Callee(..), CtorRef(..), Exit(..), Expr(..), FrameFunction, GlobalRef(..), Literal(..), SegmentId(..), Stmt(..), Target(..))
+import Stella.Backend.JavaScript.Frame (Block, Callee(..), CtorRef(..), Exit(..), Expr(..), ForeignRef(..), FrameFunction, GlobalRef(..), IOEntry(..), Literal(..), SegmentId(..), Stmt(..), Target(..))
 import Stella.Backend.JavaScript.Operation (inline)
 import Stella.Backend.JavaScript.Syntax as S
-import Stella.Backend.JavaScript.ToFrame (FrameModule)
-import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp, lookupPrim)
+import Stella.Backend.JavaScript.ToFrame (FrameModule, runtimeEntry)
+import Stella.Compiler.ForeignManifest (ResultKind(..), Signature, ValueKind(..))
+import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp)
 import Stella.Compiler.TypedCore.Domain (textOf)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..))
 
+-- | How a module is generated.
+-- |
 -- | `runtime` is the specifier generated code imports the runtime by.
-type Options = { runtime :: P.String }
+-- |
+-- | `hosted` is the module's entry in the foreign manifest: the signature of each
+-- | foreign it declares, and the specifier its implementations are imported by.
+-- | **The specifier is resolved already**, by whoever read the manifest: one is
+-- | resolved against the manifest's place, which is not this module's, and an import
+-- | in the generated module is resolved against its own.
+-- |
+-- | `entry` names a global of the module to export as its entry point.
+type Options =
+  { runtime :: P.String
+  , hosted :: Maybe { specifier :: P.String, signatures :: Map P.String Signature }
+  , entry :: Maybe Ident
+  }
 
 -- | The file a module is written to, which is also how another generated module
 -- | imports it: `./` followed by this.
@@ -71,46 +91,30 @@ fileName (ModuleName m) = m <> ".js"
 
 emit :: Options -> FrameModule -> Either JsError S.Module
 emit options fm = do
-  foreignsChecked
+  foreigns <- foreignTops options fm
+  entryPoint <- entryExport options fm
   functionsOut <- traverse (functionTops fm) fm.functions
   pure $
     [ S.ImportAll "rt" options.runtime ]
+      <> foreigns.imports
       <> Array.mapWithIndex (importTop fm) dmo.imports
       <> map S.Statement importChecks
       <> Array.mapWithIndex ctorTop dmo.ctors
       <> Array.mapWithIndex primTop dmo.prims
+      <> foreigns.descriptors
       <> Array.mapWithIndex handlerTop fm.resolved.handlers
       <> Array.concat functionsOut
       <> Array.mapWithIndex (\i _ -> S.Statement (S.Let (globalName i) Nothing)) dmo.globals
       <> Array.mapWithIndex initTop dmo.globals
       <> [ S.Statement (S.Const "arities" (S.Call (S.Member (S.Ident "Object") "freeze") [ arityTable ])) ]
-      <> [ S.Export (exportedGlobals <> exportedCtors <> [ Tuple "arities" "arity table" ]) ]
+      <> [ S.Export (exportedGlobals <> exportedCtors <> foreigns.exports <> entryPoint <> [ Tuple "arities" "arity table" ]) ]
   where
   dmo = fm.dmo
-
-  -- A foreign this module declares is carried out by the backend where the ABI
-  -- fixes it as an operation, and needs nothing emitted; any other needs a host
-  -- implementation, and this backend refuses it.
-  foreignsChecked = case Array.find (\f -> lookupPrim f.name == Nothing) dmo.foreigns of
-    Just f -> Left (Unsupported ("the foreign declaration " <> qualifiedText f.name))
-    Nothing -> Right unit
 
   ctorTop i c =
     S.Statement (S.Const (ctorName i) (rtCall "ctor" [ S.String (qualifiedText c.name), S.Number (show c.arity) ]))
 
-  primTop i op =
-    let
-      params = Array.mapWithIndex (\j _ -> "a" <> show j) (Array.replicate (arityOfOp op) unit)
-    in
-      S.Statement
-        ( S.Const (primName i)
-            ( rtCall "prim"
-                [ S.String (qualifiedText (entryOfOp op))
-                , S.Number (show (arityOfOp op))
-                , S.Arrow params (operation op (map S.Ident params))
-                ]
-            )
-        )
+  primTop i op = S.Statement (S.Const (primName i) (primDescriptor op))
 
   handlerTop i h =
     S.Statement
@@ -173,10 +177,13 @@ emit options fm = do
     Construct ref args -> ctorCheck ref (Array.length args) true
     Pap (CalleeCtor ref) args -> ctorCheck ref (Array.length args) false
     Pap (CalleeGlobal (ImportedGlobal m x)) args -> globalCheck "expectPartial" m x (Array.length args)
+    Pap (CalleeForeign (ImportedForeign m x)) args -> foreignCheck "expectForeignPartial" m x (Array.length args)
+    CallForeign (ImportedForeign m x) args -> foreignCheck "expectForeignCall" m x (Array.length args)
     _ -> []
 
   exitChecks = case _ of
     Call c -> targetChecks c.target (Array.length c.args)
+    ReturnCall (ImportedForeign m x) args -> foreignCheck "expectForeignCall" m x (Array.length args)
     TailCall c -> targetChecks c.target (Array.length c.args)
     If _ a b -> blockChecks a <> blockChecks b
     SwitchCtor _ cases d -> Array.concatMap (blockChecks <<< _.body) cases <> maybe' d
@@ -209,12 +216,132 @@ emit options fm = do
           )
       ]
 
+  -- a foreign another module declares is its descriptor, which holds the arity
+  foreignCheck how m x@(Ident name) count =
+    let
+      ModuleName mn = m
+    in
+      [ Tuple (how <> " " <> mn <> "." <> name <> " " <> show count)
+          (S.ExprStmt (rtCall how [ S.Ident (importedName fm m "f" x), S.Number (show count) ]))
+      ]
+
   ctorCheck ref count saturated = case ref of
     ImportedCtor (ModuleName mn) (Ident x) ->
       [ Tuple ("ctor " <> mn <> "." <> x <> " " <> show count <> " " <> show saturated)
           (S.ExprStmt (rtCall "expectCtor" [ ctorExpr fm ref, S.Number (show count), S.Boolean saturated ]))
       ]
     _ -> []
+
+-- Foreigns and the entry point ----------------------------------------------------------
+
+-- | What the foreigns this module declares need emitted: a descriptor for each, the
+-- | import of the implementations of those a host implements, and the export of
+-- | those the module exports.
+-- |
+-- | **A foreign is exported as a declaration is, whatever carries it out**, and a
+-- | module naming a foreign another declares imports it by that export, so a
+-- | foreign the declaring module does not export is refused where the modules are
+-- | linked, an entry the runtime carries out included.
+-- |
+-- | **Only the declaring module reaches the implementations**, so the manifest is
+-- | read once per foreign and a call from elsewhere is checked against the arity
+-- | the declaration states.
+foreignTops
+  :: Options
+  -> FrameModule
+  -> Either JsError { imports :: P.Array S.Top, descriptors :: P.Array S.Top, exports :: P.Array (Tuple P.String P.String) }
+foreignTops options fm = do
+  signatures <- case Array.head hosted, options.hosted of
+    Nothing, _ -> pure Map.empty
+    Just (Tuple _ f), Nothing -> Left (ForeignWithoutImplementation f.name)
+    Just _, Just h -> pure h.signatures
+  descriptors <- traverse (descriptor signatures) declared
+  pure
+    { imports: case options.hosted of
+        Just h | not (Array.null hosted) ->
+          [ S.ImportNamed (map (\(Tuple i f) -> Tuple (unqualified f.name) (implName i)) hosted) h.specifier ]
+        _ -> []
+    , descriptors
+    , exports: Array.mapMaybe
+        (\(Tuple i f) -> if Array.elem f.name fm.dmo.exports then Just (Tuple (foreignDescName i) ("foreign " <> unqualified f.name)) else Nothing)
+        declared
+    }
+  where
+  declared = Array.mapWithIndex Tuple fm.dmo.foreigns
+
+  -- a name the ABI fixes is the runtime's wherever it is declared, and is never
+  -- looked up in a manifest
+  hosted = Array.filter (\(Tuple _ f) -> isNothing (runtimeEntry f.name)) declared
+
+  descriptor :: Map P.String Signature -> Tuple P.Int { name :: Qualified Ident, arity :: P.Int } -> Either JsError S.Top
+  descriptor signatures (Tuple i f) = map (S.Statement <<< S.Const (foreignDescName i)) case runtimeEntry f.name of
+    Just entry -> Right (foreignDescriptor fm entry.ref)
+    Nothing -> case Map.lookup (unqualified f.name) signatures of
+      Nothing -> Left (NoSignature f.name)
+      Just signature
+        | Array.length signature.params /= f.arity -> Left (SignatureDisagrees f.name f.arity (Array.length signature.params))
+        | otherwise -> Right
+            ( rtCall "foreign"
+                [ S.String (qualifiedText f.name)
+                , S.Ident (implName i)
+                , S.Array (map (S.String <<< kindText) signature.params)
+                , resultKind signature.result
+                ]
+            )
+
+  resultKind = case _ of
+    AsValue k -> S.String (kindText k)
+    AsAction k -> rtCall "action" [ S.String (kindText k) ]
+
+  unqualified (Qualified _ (Ident x)) = x
+
+-- | A kind as the manifest spells it, which is how the runtime reads it.
+kindText :: ValueKind -> P.String
+kindText = case _ of
+  AsInt -> "int"
+  AsNumber -> "number"
+  AsChar -> "char"
+  AsString -> "string"
+  AsBoolean -> "boolean"
+  AsUnit -> "unit"
+  AsOpaque -> "opaque"
+
+-- | The export of the global the entry point names, under a name no Stella
+-- | identifier can be.
+entryExport :: Options -> FrameModule -> Either JsError (P.Array (Tuple P.String P.String))
+entryExport options fm = case options.entry of
+  Nothing -> pure []
+  Just x -> case Array.findIndex (\g -> g.name == Qualified fm.dmo.name x) fm.dmo.globals of
+    Just i -> pure [ Tuple (globalName i) "entry point" ]
+    Nothing -> Left (NoEntryGlobal (Qualified fm.dmo.name x))
+
+-- | Calling a foreign: an operation where it stands, and anything else through its
+-- | descriptor.
+foreignCall :: FrameModule -> ForeignRef -> P.Array S.Expr -> S.Expr
+foreignCall fm ref args = case ref of
+  ForeignOperation op -> operation op args
+  _ -> rtCall "callForeign" [ foreignDescriptor fm ref, S.Array args ]
+
+-- | A foreign as a value a partial application or a call stands over.
+foreignDescriptor :: FrameModule -> ForeignRef -> S.Expr
+foreignDescriptor fm = case _ of
+  ForeignOperation op -> primDescriptor op
+  ForeignIO IOPure -> rtMember "ioPure"
+  ForeignIO IOBind -> rtMember "ioBind"
+  OwnForeign i -> S.Ident (foreignDescName i)
+  ImportedForeign m x -> S.Ident (importedName fm m "f" x)
+
+-- | An operation standing as a callee.
+primDescriptor :: PrimOp -> S.Expr
+primDescriptor op =
+  let
+    params = Array.mapWithIndex (\j _ -> "a" <> show j) (Array.replicate (arityOfOp op) unit)
+  in
+    rtCall "prim"
+      [ S.String (qualifiedText (entryOfOp op))
+      , S.Number (show (arityOfOp op))
+      , S.Arrow params (operation op (map S.Ident params))
+      ]
 
 -- Functions -----------------------------------------------------------------------------
 
@@ -254,6 +381,8 @@ exit :: FrameModule -> Exit -> Either JsError (P.Array S.Stmt)
 exit fm = case _ of
   Return s ->
     pure [ S.Assign (mField "value") (reg s), S.Return (rtMember "RET") ]
+  ReturnCall ref args ->
+    pure [ S.Assign (mField "value") (foreignCall fm ref (map reg args)), S.Return (rtMember "RET") ]
   Call c ->
     pure
       [ S.Assign (mField "callee") (target fm c.target)
@@ -360,6 +489,7 @@ expr fm = case _ of
   Inject k s -> S.New (rtMember "Variant") [ S.String k, reg s ]
   Payload k s -> rtCall "payload" [ reg s, S.String k ]
   Prim op args -> operation op (map reg args)
+  CallForeign ref args -> foreignCall fm ref (map reg args)
   CellGet k -> rtCall "cget" [ S.Ident "m", S.String k ]
   CellSet k s -> rtCall "cset" [ S.Ident "m", S.String k, reg s ]
 
@@ -376,6 +506,7 @@ calleeExpr fm = case _ of
   CalleeGlobal ref -> globalExpr fm ref
   CalleeCtor ref -> ctorExpr fm ref
   CalleePrim i -> S.Ident (primName i)
+  CalleeForeign ref -> foreignDescriptor fm ref
 
 globalExpr :: FrameModule -> GlobalRef -> S.Expr
 globalExpr fm = case _ of
@@ -395,6 +526,7 @@ importTop fm k m =
   S.ImportNamed
     ( map (\x@(Ident name) -> Tuple name (importedLocal k "g" x)) globals
         <> map (\x@(Ident name) -> Tuple ("ctor " <> name) (importedLocal k "c" x)) ctors
+        <> map (\x@(Ident name) -> Tuple ("foreign " <> name) (importedLocal k "f" x)) foreigns
         <> [ Tuple "arity table" (arityLocal k) ]
     )
     ("./" <> fileName m)
@@ -417,6 +549,9 @@ importTop fm k m =
           )
           fm.resolved.callees
     )
+  -- every foreign of that module named, the ones the runtime carries out included:
+  -- importing one is what refuses a foreign the module does not export
+  foreigns = Array.mapMaybe (\(Qualified m' x) -> if m' == m then Just x else Nothing) fm.resolved.foreignImports
   globalOf = case _ of
     ImportedGlobal m' x | m' == m -> Just x
     _ -> Nothing
@@ -498,6 +633,12 @@ fnName i = "fn" <> show i
 
 globalName :: P.Int -> P.String
 globalName i = "g" <> show i
+
+foreignDescName :: P.Int -> P.String
+foreignDescName i = "fg" <> show i
+
+implName :: P.Int -> P.String
+implName i = "impl" <> show i
 
 handlerName :: P.Int -> P.String
 handlerName i = "h" <> show i

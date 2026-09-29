@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // The runtime generated code imports, reached from this file's own place in the
@@ -39,6 +40,64 @@ export const importFailureImpl = (files) => (entry) => (onError, onSuccess) => {
   } catch (e) {
     onError(e);
   }
+  return (cancelError, onCancelerError, onCancelerSuccess) => onCancelerSuccess();
+};
+
+// A manifest specifier as generated code can import it, resolved against the
+// manifest's directory as a runtime reaching the entry resolves it.
+export const resolveSpecifier = (base) => (specifier) => {
+  if (specifier.startsWith("./") || specifier.startsWith("../")) {
+    return new URL(specifier, pathToFileURL(base + "/")).href;
+  }
+  if (isAbsolute(specifier)) return pathToFileURL(specifier).href;
+  if (URL.canParse(specifier)) return specifier;
+  return pathToFileURL(createRequire(pathToFileURL(base + "/")).resolve(specifier)).href;
+};
+
+// The effects a fixture's host saw, read from `host.mjs` under the URL a manifest
+// entry's `./host.mjs` resolves to against the fixture's directory: the module
+// instance the program reached, and so the log it wrote.
+const eventsOf = async (base) => {
+  const url = new URL("./host.mjs", pathToFileURL(base + "/"));
+  if (!existsSync(fileURLToPath(url))) return [];
+  const host = await import(url.href);
+  return host.events();
+};
+
+// Write the generated modules into a fresh directory, import the one holding the
+// entry point, and execute the action it exports as `"entry point"`: how the run
+// ended, what it produced or what ended it, and the effects the host saw.
+export const runEntryImpl = (files) => (entryFile) => (entry) => (base) => (onError, onSuccess) => {
+  const ran = async () => {
+    const rt = await import(runtimeSpecifier);
+    const dir = mkdtempSync(join(tmpdir(), "stella-js-"));
+    for (const file of files) writeFileSync(join(dir, file.name), file.source);
+    const out = { ended: "", holder: {}, kind: "", foreign: "", detail: "", message: "", effects: [] };
+    let namespace;
+    try {
+      namespace = await import(pathToFileURL(join(dir, entryFile)).href);
+    } catch (e) {
+      out.ended = "notLoaded";
+      out.message = String(e && e.message);
+      return out;
+    }
+    try {
+      out.holder.value = rt.runMain(entry, namespace["entry point"]);
+      out.ended = "produced";
+    } catch (e) {
+      out.message = String(e && e.message);
+      if (e instanceof rt.Fault) {
+        out.ended = "faulted";
+        out.kind = e.kind;
+        out.foreign = e.foreign ?? "";
+        out.detail = e.detail ?? "";
+      } else if (e instanceof rt.StartFailure) out.ended = "failedToStart";
+      else out.ended = "threw";
+    }
+    out.effects = await eventsOf(base);
+    return out;
+  };
+  ran().then(onSuccess, onError);
   return (cancelError, onCancelerError, onCancelerSuccess) => onCancelerSuccess();
 };
 
@@ -123,13 +182,37 @@ export const parseManifestImpl = (k) => (text) => {
     if ("variant" in j) return k.variant(key(j.variant))(value(j.payload));
     return k.fn;
   };
+  const o = m.outcome;
+  const run =
+    "runs" in o
+      ? k.just({ entry: o.runs.entry, end: k.produces(value(o.runs.result))(o.runs.effects) })
+      : "faultsAtRun" in o
+        ? k.just({
+            entry: o.faultsAtRun.entry,
+            end: k.faultsWith({
+              kind: o.faultsAtRun.kind,
+              foreign: o.faultsAtRun.foreign ?? "",
+              reason: o.faultsAtRun.reason ?? "",
+              message: o.faultsAtRun.message ?? "",
+            })(o.faultsAtRun.effects),
+          })
+        : "startFails" in o
+          ? k.just({ entry: o.startFails.entry, end: k.failsToStart(o.startFails.reason) })
+          : k.nothing;
   return {
     description: m.description,
     modules: m.modules,
-    loads: "loads" in m.outcome,
-    mentions: "refusedAtLoad" in m.outcome ? m.outcome.refusedAtLoad.mentions : "",
-    faults: "faultsAtLoad" in m.outcome ? m.outcome.faultsAtLoad.global : "",
-    observe: m.observe.map((o) => ({ global: o.global, value: value(o.value) })),
-    runs: "runs" in m.outcome || "faultsAtRun" in m.outcome || "startFails" in m.outcome,
+    loads: "loads" in o || "runs" in o || "faultsAtRun" in o || "startFails" in o,
+    mentions: "refusedAtLoad" in o ? o.refusedAtLoad.mentions : "",
+    faults: "faultsAtLoad" in o ? o.faultsAtLoad.global : "",
+    observe: m.observe.map((ob) => ({ global: ob.global, value: value(ob.value) })),
+    run,
   };
+};
+
+export const exists = (path) => () => existsSync(path);
+
+export const specifierIn = (path) => (module) => {
+  const entry = JSON.parse(readFileSync(path, "utf8")).modules.find((m) => m.module === module);
+  return entry && typeof entry.specifier === "string" ? entry.specifier : "";
 };

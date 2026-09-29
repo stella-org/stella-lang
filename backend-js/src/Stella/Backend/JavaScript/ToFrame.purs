@@ -2,13 +2,13 @@
 -- |
 -- | **Resolution** turns every index into what it names — a key into its
 -- | canonical string, an operation into its name, a constructor or a global into a
--- | reference to this module's declaration or to an imported one — and checks what
--- | one module can decide on
--- | its own: that a reference names a module this one imports, that a reference
--- | into this module names a declaration of the kind its table calls for, and that
--- | every call, construction, and partial application of something this module
--- | declares supplies a count its callee admits. What another module declares is
--- | checked where the generated modules are loaded together.
+-- | reference to this module's declaration or to an imported one, and a foreign into
+-- | what carries it out — and checks what one module can decide on its own: that a
+-- | reference names a module this one imports, that a reference into this module
+-- | names a declaration of the kind its table calls for, and that every call,
+-- | construction, and partial application of something this module declares, or
+-- | the runtime carries out, supplies a count its callee admits. What another module
+-- | declares is checked where the generated modules are loaded together.
 -- |
 -- | **Segmentation** cuts each function at its non-tail calls, its performs, and
 -- | its handler installations: the run loop carries each out and then continues the
@@ -20,6 +20,7 @@ module Stella.Backend.JavaScript.ToFrame
   , FrameModule
   , toFrame
   , keyString
+  , runtimeEntry
   ) where
 
 import Prelude
@@ -30,16 +31,16 @@ import Data.Array as Array
 import Data.Either (Either(..), note)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Tail(..))
+import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Instr as B
 import Stella.Compiler.Bytecode.Module (Constant(..), Dmo, GlobalInit(..), Key(..))
 import Stella.Compiler.Bytecode.Module as M
 import Stella.Backend.JavaScript.Error (JsError(..))
-import Stella.Backend.JavaScript.Frame (Block, Callee(..), CtorRef(..), Exit(..), Expr(..), FrameFunction, GlobalRef(..), HandleOperands, Handler, Literal(..), Segment, SegmentId(..), Stmt(..), Target(..))
-import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp)
+import Stella.Backend.JavaScript.Frame (Block, Callee(..), CtorRef(..), Exit(..), Expr(..), ForeignRef(..), FrameFunction, GlobalRef(..), HandleOperands, Handler, IOEntry(..), Literal(..), Segment, SegmentId(..), Stmt(..), Target(..))
+import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp, lookupPrim)
 import Stella.Compiler.TypedCore.Domain (codePointOf)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), OpName(..), Qualified(..), Symbol(..), Tag(..))
@@ -49,6 +50,10 @@ type Resolved =
   { keys :: P.Array P.String
   , ctors :: P.Array CtorRef
   , globals :: P.Array GlobalRef
+  , foreigns :: P.Array ForeignRef
+  -- | Every foreign of another module that `FOREIGNREFS` or `CALLEES` names, the
+  -- | ones the runtime carries out included.
+  , foreignImports :: P.Array (Qualified Ident)
   , callees :: P.Array Callee
   , prims :: P.Array PrimOp
   , handlers :: P.Array Handler
@@ -83,10 +88,12 @@ resolve :: Dmo -> Either JsError Resolved
 resolve dmo = do
   ctors <- traverse ctorRef dmo.ctorRefs
   globals <- traverse globalRef dmo.globalRefs
+  foreigns <- traverse foreignRef dmo.foreignRefs
   let
     prims = dmo.prims
     keys = map keyString dmo.keys
-    resolvedSoFar = { keys, ctors, globals, callees: [], prims, handlers: [] }
+    resolvedSoFar = { keys, ctors, globals, foreigns, foreignImports, callees: [], prims, handlers: [] }
+    foreignImports = Array.nub (Array.filter (not <<< own) (dmo.foreignRefs <> Array.mapMaybe calleeForeign dmo.callees))
   callees <- traverse (callee resolvedSoFar) dmo.callees
   handlers <- traverse (handler keys) dmo.handlers
   pure resolvedSoFar { callees = callees, handlers = handlers }
@@ -105,10 +112,26 @@ resolve dmo = do
     | own q = OwnGlobal <$> note (NoSuchDeclaration q) (Array.findIndex (\g -> g.name == q) dmo.globals)
     | otherwise = imported q $> ImportedGlobal m name
 
+  -- a foreign is resolved as a declaration first, one of this module or one a
+  -- module it imports exports, and the declaration is then bound to what carries it
+  -- out: **the name alone selects an entry the runtime carries out**, and anything
+  -- else is a host implementation reached through the declaring module
+  foreignRef q@(Qualified m name)
+    | own q = do
+        ix <- note (NoSuchDeclaration q) (Array.findIndex (\f -> f.name == q) dmo.foreigns)
+        pure (maybe (OwnForeign ix) _.ref (runtimeEntry q))
+    | otherwise = do
+        imported q
+        pure (maybe (ImportedForeign m name) _.ref (runtimeEntry q))
+
+  calleeForeign = case _ of
+    M.CalleeForeign q -> Just q
+    _ -> Nothing
+
   callee soFar = case _ of
     M.CalleeValue q -> CalleeGlobal <$> globalRef q
     M.CalleeCtor q -> CalleeCtor <$> ctorRef q
-    M.CalleeForeign q -> Left (Unsupported ("a partial application of the foreign " <> showName q))
+    M.CalleeForeign q -> CalleeForeign <$> foreignRef q
     M.CalleePrim op -> case Array.elemIndex op soFar.prims of
       Just ix -> Right (CalleePrim ix)
       Nothing -> Left (NoSuchIndex "PRIMS" (-1))
@@ -127,6 +150,16 @@ resolve dmo = do
       let OpIx i = c.op
       OpName op <- at "OPS" dmo.ops i
       pure { op, fast: c.form == ClauseFast }
+
+-- | The entry the runtime carries out that a foreign of this name is, with the arity
+-- | the ABI gives it: an operation, or one of the two `Base.IO` entries.
+runtimeEntry :: Qualified Ident -> Maybe { ref :: ForeignRef, arity :: P.Int }
+runtimeEntry q = case lookupPrim q of
+  Just entry -> Just { ref: ForeignOperation entry.op, arity: entry.arity }
+  Nothing
+    | q == Qualified (ModuleName "Base.IO") (Ident "pure") -> Just { ref: ForeignIO IOPure, arity: 1 }
+    | q == Qualified (ModuleName "Base.IO") (Ident "bind") -> Just { ref: ForeignIO IOBind, arity: 2 }
+    | otherwise -> Nothing
 
 showName :: Qualified Ident -> P.String
 showName (Qualified (ModuleName m) (Ident x)) = m <> "." <> x
@@ -177,7 +210,37 @@ checkPartial dmo resolved c count = case c of
     Just op | count < arityOfOp op -> Right unit
     Just op -> Left (ArityMismatch (showName (entryOfOp op)) (arityOfOp op) count)
     Nothing -> Left (NoSuchIndex "PRIMS" ix)
+  CalleeForeign ref -> case foreignArity dmo ref of
+    Just n | count >= n -> Left (ArityMismatch (foreignName dmo ref) n count)
+    _ -> Right unit
   _ -> Right unit
+
+-- | A call of a foreign supplies the arity it is declared at. What another module
+-- | declares is checked where the modules are loaded together.
+checkForeignCall :: Dmo -> ForeignRef -> P.Int -> Either JsError Unit
+checkForeignCall dmo ref count = case foreignArity dmo ref of
+  Just n | n /= count -> Left (ArityMismatch (foreignName dmo ref) n count)
+  _ -> Right unit
+
+-- | The arity of a foreign where this module can tell it: an entry the runtime
+-- | carries out, whose arity the ABI gives, or a foreign this module declares.
+foreignArity :: Dmo -> ForeignRef -> Maybe P.Int
+foreignArity dmo = case _ of
+  ForeignOperation op -> Just (arityOfOp op)
+  ForeignIO IOPure -> Just 1
+  ForeignIO IOBind -> Just 2
+  OwnForeign ix -> _.arity <$> Array.index dmo.foreigns ix
+  ImportedForeign _ _ -> Nothing
+
+foreignName :: Dmo -> ForeignRef -> P.String
+foreignName dmo = case _ of
+  ForeignOperation op -> showName (entryOfOp op)
+  ForeignIO IOPure -> "Base.IO.pure"
+  ForeignIO IOBind -> "Base.IO.bind"
+  OwnForeign ix -> case Array.index dmo.foreigns ix of
+    Just f -> showName f.name
+    Nothing -> "foreign " <> show ix
+  ImportedForeign m x -> showName (Qualified m x)
 
 arityOr :: Maybe P.Int -> P.Int
 arityOr = case _ of
@@ -307,7 +370,10 @@ cutTail scope next0 = case _ of
     checkKnownCall scope.dmo target (Array.length args)
     leaf (TailCall { target: TargetGlobal target, args: regs args })
   TAILU (B.Reg s) args -> leaf (TailCall { target: TargetReg s, args: regs args })
-  TAILFFI _ _ -> Left (Unsupported "a tail call to a foreign")
+  TAILFFI f args -> do
+    ref <- foreignAt scope f
+    checkForeignCall scope.dmo ref (Array.length args)
+    leaf (ReturnCall ref (regs args))
   TAILHNDL h body ret clauses cells -> do
     handler <- handlerAt scope h
     leaf (TailHandle { handler, operands: handleOperands body ret clauses cells })
@@ -406,7 +472,10 @@ instrStmt scope = case _ of
     when (Array.length args /= arityOfOp op)
       (Left (ArityMismatch (showName (entryOfOp op)) (arityOfOp op) (Array.length args)))
     pure (Set d (Prim op (regs args)))
-  FFI _ _ _ -> Left (Unsupported "a foreign call")
+  FFI (B.Reg d) f args -> do
+    ref <- foreignAt scope f
+    checkForeignCall scope.dmo ref (Array.length args)
+    pure (Set d (CallForeign ref (regs args)))
   CGET (B.Reg d) k -> do
     key <- keyAt scope k
     pure (Set d (CellGet key))
@@ -445,6 +514,9 @@ ctorAt scope (CtorIx i) = at "CTORREFS" scope.resolved.ctors i
 
 globalAt :: Scope -> GlobalIx -> Either JsError GlobalRef
 globalAt scope (GlobalIx i) = at "GLOBALREFS" scope.resolved.globals i
+
+foreignAt :: Scope -> ForeignIx -> Either JsError ForeignRef
+foreignAt scope (ForeignIx i) = at "FOREIGNREFS" scope.resolved.foreigns i
 
 calleeAt :: Scope -> CalleeIx -> Either JsError Callee
 calleeAt scope (CalleeIx i) = at "CALLEES" scope.resolved.callees i

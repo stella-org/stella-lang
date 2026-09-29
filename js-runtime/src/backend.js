@@ -20,6 +20,10 @@
 //   closure            a `Closure` over a function descriptor
 //   partial app        a `Pap`
 //   continuation       a `Continuation`
+//   IO                 an `IOPure`, an `IOBind`, or an `IONative`
+//   opaque             the host value itself
+
+import { refusalReason } from "./interpreter.js";
 
 // The codes a segment returns --------------------------------------------------
 
@@ -102,20 +106,40 @@ const bug = (message) => {
 };
 
 // A failure the ABI admits: an operation failing on an input it is specified to
-// fail on. It is not an effect — no handler intercepts one — and it discards the
-// whole run. `global` names the global being initialized when one ends a module's
-// initialization.
+// fail on, or a foreign failing at the boundary. It is not an effect — no handler
+// intercepts one — and it discards the whole run. `global` names the global being
+// initialized when one ends a module's initialization.
+//
+// `kind` says where it arose: `operation` for an operation of the ABI, and for the
+// boundary one of `refused`, `threw`, `breached` (a foreign) or `actionRefused`,
+// `actionThrew`, `actionBreached` (an action a foreign returned, as it is
+// performed). `foreign` names the foreign, where the kind carries one, and `detail`
+// is the reason a refusal gave, the message a throw carried, or what a breach was.
 export class Fault extends Error {
-  constructor(message) {
+  constructor(message, kind = "operation", foreign = undefined, detail = undefined) {
     super(message);
     this.name = "StellaFault";
     this.global = undefined;
+    this.kind = kind;
+    this.foreign = foreign;
+    this.detail = detail;
   }
 }
 
 const fault = (message) => {
   throw new Fault(message);
 };
+
+// An entry point that holds no action: the program does not start. Any global of a
+// well-formed module can be named as the entry, so this is neither a fault, which
+// ends a run that began, nor a bug.
+export class StartFailure extends Error {
+  constructor(entry) {
+    super(`the entry point ${entry} holds no action`);
+    this.name = "StellaStartFailure";
+    this.entry = entry;
+  }
+}
 
 // Descriptors -------------------------------------------------------------------
 
@@ -147,6 +171,217 @@ export const prim = (name, arity, apply) => ({ kind: "prim", name, arity, apply 
 
 // `Prim.Unit`, which no module declares and every module may name.
 export const PrimUnit = ctor("Prim.Unit", 0);
+
+// Foreigns ---------------------------------------------------------------------------
+//
+// A foreign that is not an operation is a descriptor `{kind: "foreign", name, arity,
+// call}`, `call` taking the arguments as an array. Its body is synchronous and applies
+// no Stella function, so a call is an expression of the segment it stands in.
+
+// `Base.IO.pure` and `Base.IO.bind`, which the runtime carries out itself. Each
+// constructs, and neither runs anything (D25).
+export const ioPure = { kind: "foreign", name: "Base.IO.pure", arity: 1, call: ([value]) => new IOPure(value) };
+
+export const ioBind = {
+  kind: "foreign",
+  name: "Base.IO.bind",
+  arity: 2,
+  call: ([io, k]) => {
+    if (!isIO(io)) bug("Base.IO.bind given what is not an IO");
+    return new IOBind(io, k);
+  },
+};
+
+// The result kind of a foreign returning an action producing a value of `kind`.
+export const action = (kind) => ({ action: kind });
+
+// A foreign a host implements, reached through the declaring module's manifest
+// entry: the implementation, the kind of each parameter, and the kind of the result,
+// as the manifest spells them. The arity is the number of parameters. Only the
+// declaring module creates one; every other module imports it.
+//
+// **The export must be callable**, the one shape of it that can be checked, and it
+// is checked as the declaring module is loaded.
+export const foreign = (name, impl, params, result) => {
+  if (typeof impl !== "function") bug(`the implementation of ${name} is not callable`);
+  return { kind: "foreign", name, arity: params.length, call: (args) => hosted(name, impl, params, result, args) };
+};
+
+// A call of a foreign declared elsewhere supplies the arity its declaration states,
+// and a partial application of one fewer; either is checked as the calling module is
+// loaded.
+export const expectForeignCall = (desc, count) => {
+  if (count !== desc.arity) bug(`${desc.name} is called with ${count} argument(s) but is declared at arity ${desc.arity}`);
+};
+
+export const expectForeignPartial = (desc, count) => {
+  if (count >= desc.arity) {
+    bug(`${desc.name} is partially applied to ${count} argument(s) but is declared at arity ${desc.arity}`);
+  }
+};
+
+export const callForeign = (desc, args) => desc.call(args);
+
+// Calling a hosted foreign: each argument unwrapped by the kind of its position, the
+// host function called, and what it returned wrapped by the result kind.
+//
+// **Only the host function's call is inside the `try`.** Whatever it throws is its
+// throw, a runtime `Fault` or `Bug` included, so a host cannot pass itself off as the
+// runtime; the marshalling around it is the runtime's, and what it throws is not.
+const hosted = (name, impl, params, result, args) => {
+  const given = args.map((v, i) => unwrap(params[i], v));
+  let answered;
+  try {
+    answered = impl(...given);
+  } catch (e) {
+    throw boundaryFault("threw", name, thrownMessage(e));
+  }
+  const reason = refusalReason(answered);
+  if (reason !== undefined) throw boundaryFault("refused", name, reason);
+  if (typeof result === "object") {
+    // the host returns the action and constructs no `IO` value
+    if (typeof answered !== "function") throw boundaryFault("breached", name, "declared an action, and the value is not a function");
+    return new IONative(name, answered, result.action);
+  }
+  const wrapped = wrap(result, answered);
+  if (wrapped.breach !== undefined) throw boundaryFault("breached", name, wrapped.breach);
+  return wrapped.value;
+};
+
+// A value as the host sees it. A `char` is a string of its one scalar value, and a
+// `unit` parameter keeps its place and is not read: the host sees `undefined` there.
+const unwrap = (kind, value) => {
+  switch (kind) {
+    case "char":
+      return String.fromCodePoint(value);
+    case "unit":
+      return undefined;
+    default:
+      return value;
+  }
+};
+
+const MIN_INT32 = -2147483648;
+const MAX_INT32 = 2147483647;
+
+// A host value as a Stella value of the kind it is owed as, by the kind and not by
+// the value: a whole number owed as a `number` stays one. **Wrapping is a check**:
+// what does not fit is `{breach}`, saying why.
+const wrap = (kind, value) => {
+  const owing = (why) => ({ breach: `declared \`${kind}\`, and the value is ${why}` });
+  switch (kind) {
+    case "int":
+      if (typeof value !== "number") return owing("not a number");
+      // `| 0` takes `-0` to `0`, an `Int` having one zero
+      if (!Number.isInteger(value) || value < MIN_INT32 || value > MAX_INT32) return owing("not a whole number within 32 bits");
+      return { value: value | 0 };
+    case "number":
+      return typeof value === "number" ? { value } : owing("not a number");
+    case "char": {
+      if (typeof value !== "string") return owing("not a string");
+      if (!value.isWellFormed()) return owing("a string holding an unpaired surrogate");
+      const scalars = Array.from(value);
+      return scalars.length === 1 ? { value: scalars[0].codePointAt(0) } : owing("not one scalar value");
+    }
+    case "string":
+      if (typeof value !== "string") return owing("not a string");
+      return value.isWellFormed() ? { value } : owing("a string holding an unpaired surrogate");
+    case "boolean":
+      return typeof value === "boolean" ? { value } : owing("not a boolean");
+    // nothing of the host value is read
+    case "unit":
+      return { value: PrimUnit.value };
+    case "opaque":
+      return { value };
+    default:
+      return bug(`no value kind ${kind}`);
+  }
+};
+
+const boundaryFault = (kind, name, detail) => {
+  const where = name === undefined ? "an action" : name;
+  return new Fault(`${where}: ${kind}: ${detail}`, kind, name, detail);
+};
+
+const thrownMessage = (e) => (e instanceof Error ? e.message : String(e));
+
+// IO --------------------------------------------------------------------------------
+//
+// Reduction halts once it has constructed an `IO` value (D25); executing one is a
+// second entry point, and nothing in a segment reaches it.
+
+export class IOPure {
+  constructor(value) {
+    this.value = value;
+  }
+}
+
+export class IOBind {
+  constructor(io, k) {
+    this.io = io;
+    this.k = k;
+  }
+}
+
+// An action a hosted foreign returned: the foreign's name, the host function of no
+// arguments that performs it, and the kind what it produces is owed as.
+export class IONative {
+  constructor(foreign, perform, kind) {
+    this.foreign = foreign;
+    this.perform = perform;
+    this.kind = kind;
+  }
+}
+
+const isIO = (v) => v instanceof IOPure || v instanceof IOBind || v instanceof IONative;
+
+// Run an `IO` to the value it produces.
+//
+// **The loop is iterative and holds its own stack of pending functions.** A chain
+// has no bound and the shape a program builds is left-nested, so the outermost
+// `Bind` stands above every other. Applying a pending function is a run of its own
+// (`applyFunction`), finished before the loop goes round again.
+export const execute = (initial) => {
+  const pending = [];
+  let io = initial;
+  for (;;) {
+    while (io instanceof IOBind) {
+      pending.push(io.k);
+      io = io.io;
+    }
+    let value;
+    if (io instanceof IOPure) value = io.value;
+    else if (io instanceof IONative) value = performAction(io);
+    else bug("executing what is not an IO");
+    if (pending.length === 0) return value;
+    io = applyFunction(pending.pop(), [value]);
+    // `k` has type `a -> IO b`, and a `.dmo` carries no type to hold it to that
+    if (!isIO(io)) bug("the function of a bind returned what is not an IO");
+  }
+};
+
+// Perform an action: call the host function, and wrap what it produced by the kind
+// it was declared with. Only the call is inside the `try`, as with a foreign.
+const performAction = (n) => {
+  let produced;
+  try {
+    produced = n.perform();
+  } catch (e) {
+    throw boundaryFault("actionThrew", undefined, thrownMessage(e));
+  }
+  const reason = refusalReason(produced);
+  if (reason !== undefined) throw boundaryFault("actionRefused", undefined, reason);
+  const wrapped = wrap(n.kind, produced);
+  if (wrapped.breach !== undefined) throw boundaryFault("actionBreached", n.foreign, wrapped.breach);
+  return wrapped.value;
+};
+
+// Execute the action the entry point holds, named `entry`. A value that is not an
+// action is a program that does not start.
+export const runMain = (entry, value) => {
+  if (!isIO(value)) throw new StartFailure(entry);
+  return execute(value);
+};
 
 // Checks a module makes of what it imports ----------------------------------------
 
@@ -406,7 +641,8 @@ const apply = (m, callee, args) => {
         m.value = callee.arity === 0 ? callee.value : new Data(callee, args);
         return RET;
       }
-      case "prim": {
+      case "prim":
+      case "foreign": {
         const n = callee.arity;
         if (args.length < n) {
           m.value = new Pap(callee, args);
@@ -416,7 +652,7 @@ const apply = (m, callee, args) => {
           m.stack.push(new ApplyRemaining(args.slice(n)));
           args = args.slice(0, n);
         }
-        m.value = callee.apply(...args);
+        m.value = callee.kind === "prim" ? callee.apply(...args) : callee.call(args);
         return RET;
       }
       default:

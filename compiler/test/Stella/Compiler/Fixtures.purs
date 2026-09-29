@@ -40,12 +40,12 @@ import Stella.Compiler.Primitive (primTable)
 import Stella.Compiler.TypedCore (Ident(..), Module, ModuleName(..), Qualified(..), declareAnnotated)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Stella.Compiler.Bytecode.Instr (CalleeIx(..), Instr(..), KeyIx(..), Node, OpIx(..), Reg, Tail(..))
+import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ForeignIx(..), Instr(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg, Tail(..))
 import Stella.Compiler.Bytecode.Module (CalleeEntry(..), HandlerEntry)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
 import Test.Stella.Compiler.Fixtures.Effects (effectsExpected, effectsModule, meterModule)
-import Test.Stella.Compiler.Fixtures.Foreigns (ManifestModule, Result(..), RunCase, RunFault(..), addCallMain, addHostModule, addHostShrunk, addPartialMain, addShrunkManifest, addShrunkSource, greetHostModule, greetMainModule, greetManifest, greetSource, ioEffects, ioHostModule, ioHostSource, ioMainModule, ioManifest, ioModule, ioModuleBindArity, ioModulePureArity, ioResult, pureMainModule, runCases, runEffects, runHostModule, runHostSource, runMainModule, runManifest, startMainModule)
-import Test.Stella.Compiler.Fixtures.Programs (abiSignature, baseModules, expected, faultCases, faultModule, intModule, libModule, libRenamed, libShrunk, libUnexported, mainModule, mainName, opsExpected, opsModule, refsOnly, without)
+import Test.Stella.Compiler.Fixtures.Foreigns (ManifestModule, Result(..), RunCase, RunFault(..), addCallMain, addHostModule, addInnerCallMain, opCallMain, addHostShrunk, addPartialMain, addShrunkManifest, addShrunkSource, greetHostModule, greetMainModule, greetManifest, greetSource, ioEffects, ioHostModule, ioHostSource, ioMainModule, ioManifest, ioModule, ioName, hostName, ioModuleBindArity, ioModulePureArity, ioResult, pureMainModule, runCases, runEffects, runHostModule, runHostSource, runMainModule, runManifest, startMainModule)
+import Test.Stella.Compiler.Fixtures.Programs (abiSignature, baseModules, expected, faultCases, faultModule, inInt, intModule, libModule, libRenamed, libShrunk, libUnexported, mainModule, mainName, opsExpected, opsModule, refsOnly, without)
 import Test.Stella.Compiler.Fixtures.Value (Expected(..), jsonString, toJson)
 
 -- Reading and writing --------------------------------------------------------------
@@ -319,7 +319,32 @@ foreignFixtures =
       , observe: []
       }
   , staleForeign "stale-foreign-call" "Main calls Host.add with the two arguments Host's interface gave it" addCallMain
+  , staleForeign "stale-foreign-call-inner" "Main calls Host.add with the two arguments Host's interface gave it, and puts what it gives in a record" addInnerCallMain
   , staleForeign "stale-foreign-partial" "Main applies Host.add to one argument, a partial application under the interface it was compiled against" addPartialMain
+  , unexportedAfter "io-pure-unexported" "pure" "Main calls it, and stands over it unapplied in a partial application"
+  , unexportedAfter "io-bind-unexported" "bind" "Main applies it short of its arity"
+  , { name: "foreign-unexported"
+    , description: "Main calls Host.greet, beside a Host changed after it was compiled to export nothing"
+    , modules: map (map (unexporting (Qualified hostName (Ident "greet")) <<< _.dmo)) (compileAll [ greetHostModule, greetMainModule ])
+    , outcome: RefusedAtLoad "greet"
+    , observe: []
+    , foreignManifest: Just (Checked (greetManifest "./host.mjs" [ greet ]))
+    , host: Just greetImplementation
+    }
+  , plain
+      { name: "operation-by-foreign"
+      , description: "Main compiled from Core and then changed to carry out Base.Int.add by calling the foreign Base.Int.add, where it used the operation"
+      , modules: map (map (callingOperation <<< _.dmo)) (compileAll [ intModule, opCallMain ])
+      , outcome: Loads
+      , observe: [ Tuple "added" (EInt 3) ]
+      }
+  , plain
+      { name: "operation-by-foreign-unexported"
+      , description: "Main compiled from Core and then changed to call the foreign Base.Int.add, beside a Base.Int changed to export nothing called add"
+      , modules: map (map (unexporting (inInt "add") <<< callingOperation <<< _.dmo)) (compileAll [ intModule, opCallMain ])
+      , outcome: RefusedAtLoad "add"
+      , observe: []
+      }
   ]
     <> map runFixture runCases
   where
@@ -349,6 +374,33 @@ foreignFixtures =
     , foreignManifest: Just (Checked addShrunkManifest)
     , host: Just addShrunkSource
     }
+
+-- | The modules of `io-pure` with the named entry of `Base.IO` taken out of what it
+-- | exports after `Main` was compiled against it: a foreign the runtime carries out
+-- | is still a declaration of the module declaring it.
+unexportedAfter :: P.String -> P.String -> P.String -> Fixture
+unexportedAfter name entry uses = plain
+  { name
+  , description: "Main compiled against Base.IO, beside a Base.IO changed to export nothing called " <> entry <> ", where " <> uses
+  , modules: map (map (unexporting (Qualified ioName (Ident entry)) <<< _.dmo)) (compileAll [ ioModule, pureMainModule ])
+  , outcome: RefusedAtLoad entry
+  , observe: []
+  }
+
+-- | A module with the name taken out of what it exports.
+unexporting :: Qualified Ident -> Dmo -> Dmo
+unexporting q dmo = dmo { exports = Array.filter (_ /= q) dmo.exports }
+
+-- | `Main` carrying out `Base.Int.add`, its one operation, by calling the foreign of
+-- | that name instead.
+callingOperation :: Dmo -> Dmo
+callingOperation dmo =
+  if dmo.name == mainName then (everyNode (onInstrs asCall) dmo) { prims = [], foreignRefs = [ inInt "add" ] }
+  else dmo
+  where
+  asCall = case _ of
+    PRIM d (PrimIx 0) args -> FFI d (ForeignIx 0) args
+    other -> other
 
 runFixture :: RunCase -> Fixture
 runFixture c =

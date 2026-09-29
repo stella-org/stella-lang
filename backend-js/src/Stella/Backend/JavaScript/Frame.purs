@@ -15,6 +15,8 @@ module Stella.Backend.JavaScript.Frame
   ( SegmentId(..)
   , GlobalRef(..)
   , CtorRef(..)
+  , IOEntry(..)
+  , ForeignRef(..)
   , Callee(..)
   , Target(..)
   , Literal(..)
@@ -58,11 +60,28 @@ data CtorRef
   | ImportedCtor ModuleName Ident
   | PrimUnit
 
+-- | One of the two `Base.IO` entries, which the runtime carries out itself.
+data IOEntry
+  = IOPure
+  | IOBind
+
+derive instance Eq IOEntry
+
+-- | A foreign, as what carries it out: an operation of the ABI, a `Base.IO` entry,
+-- | or a host implementation, reached through the declaring module — this one, by
+-- | its place in `FOREIGNS`, or an imported one, which exports it.
+data ForeignRef
+  = ForeignOperation PrimOp
+  | ForeignIO IOEntry
+  | OwnForeign P.Int
+  | ImportedForeign ModuleName Ident
+
 data Callee
   = CalleeGlobal GlobalRef
   | CalleeCtor CtorRef
   -- | An operation, by its place in the module's `PRIMS`.
   | CalleePrim P.Int
+  | CalleeForeign ForeignRef
 
 -- | What a call transfers to: a global, which `CALLK` names, or the value in a
 -- | register, which `CALLU` applies.
@@ -100,6 +119,9 @@ data Expr
   | Inject P.String P.Int
   | Payload P.String P.Int
   | Prim PrimOp (P.Array P.Int)
+  -- | A foreign called with all its arguments. Its body is synchronous and applies no
+  -- | Stella function, so the call cuts no segment.
+  | CallForeign ForeignRef (P.Array P.Int)
   -- | What the cell keyed thus holds, in the innermost region visible from the
   -- | running frame.
   | CellGet P.String
@@ -120,6 +142,8 @@ type Block =
 -- | How a segment's straight run ends.
 data Exit
   = Return P.Int
+  -- | Return what calling the foreign gives, a foreign in tail position.
+  | ReturnCall ForeignRef (P.Array P.Int)
   -- | A non-tail call. What follows it is segment `resume`, which the value
   -- | reaches in register `dest`.
   | Call { target :: Target, args :: P.Array P.Int, dest :: P.Int, resume :: SegmentId }

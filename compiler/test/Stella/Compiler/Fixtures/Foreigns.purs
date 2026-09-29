@@ -49,6 +49,8 @@ module Test.Stella.Compiler.Fixtures.Foreigns
   , addHostModule
   , addHostShrunk
   , addCallMain
+  , opCallMain
+  , addInnerCallMain
   , addPartialMain
   , addShrunkManifest
   , addShrunkSource
@@ -261,6 +263,7 @@ ioForeigns =
   , f "shout" (pureFn string string) [ "string" ] (Value "string")
   , f "flip" (pureFn bool bool) [ "boolean" ] (Value "boolean")
   , f "note" (pureFn int unit') [ "int" ] (Value "unit")
+  , f "negZero" (pureFn unit' int) [ "unit" ] (Value "int")
   , f "open" (pureFn int handle) [ "int" ] (Value "opaque")
   , f "same" (pureFn handle bool) [ "opaque" ] (Value "boolean")
   , f "readInt" (pureFn int (ioOf int)) [ "int" ] (Action "int")
@@ -332,6 +335,10 @@ export const note = (n) => {
   log.push(`note:${n}`);
   return 42;
 };
+export const negZero = (_u) => {
+  log.push("negZero");
+  return -0;
+};
 export const open = (n) => {
   opened = { n };
   log.push(`open:${n}`);
@@ -389,6 +396,8 @@ ioFields =
   , field "flipped" bool (EBoolean false)
   -- the host returned 42, and a `unit` result reads nothing of it
   , field "noted" unit' (EData "Prim.Unit" [])
+  -- the host returned -0, and an `Int` has one zero: `toNumber` of it is +0
+  , field "zero" number (ENumber 0.0)
   , field "sameGiven" bool (EBoolean true)
   , field "sameBack" bool (EBoolean true)
   ]
@@ -455,6 +464,7 @@ ioMainModule =
     , Be "shouted" string (app (host "shout") [ text ("a" <> smile) ])
     , Be "flipped" bool (app (host "flip") [ boolLit true ])
     , Be "noted" unit' (app (host "note") [ lit 1 ])
+    , Be "zero" number (app (global (inInt "toNumber")) [ app (host "negZero") [ unitValue ] ])
     , Be "sameGiven" bool (app (host "same") [ var "given" ])
     , Be "sameBack" bool (app (host "same") [ var "back" ])
     ]
@@ -488,6 +498,7 @@ ioEffects =
   , "shout:a" <> smile
   , "flip:boolean:true"
   , "note:1"
+  , "negZero"
   , "same:true"
   , "same:true"
   ]
@@ -722,6 +733,20 @@ addShrunkSource = "export const add = (a) => a;\n"
 addCallMain :: Module P.Int
 addCallMain = addMain (app (global (inHost "add")) [ lit 1, lit 2 ])
 
+-- | `Main` calling `Host.add 1 2` where the call is not in tail position: its value
+-- | goes into a record.
+addInnerCallMain :: Module P.Int
+addInnerCallMain =
+  { annotation: 0
+  , name: mainName
+  , imports: [ hostName ]
+  , exports: []
+  , decls:
+      [ nonrec 1 "boxed" (recordOf [ Tuple "x" int ])
+          (RecordExtend 0 (SymbolKey (Symbol "x")) (app (global (inHost "add")) [ lit 1, lit 2 ]) (RecordEmpty 0))
+      ]
+  }
+
 -- | `Main` applying `Host.add` to one argument, and the result to another.
 addPartialMain :: Module P.Int
 addPartialMain = addMain (Let 0 (Ident "p") (pureFn int int) (app (global (inHost "add")) [ lit 1 ]) (app (var "p") [ lit 2 ]))
@@ -733,4 +758,15 @@ addMain value =
   , imports: [ hostName ]
   , exports: []
   , decls: [ nonrec 1 "added" int value ]
+  }
+
+-- | `Main` computing `Base.Int.add 1 2`, which the compiler carries out with a
+-- | `PRIM`; a fixture changes that into a call of the foreign `Base.Int.add`.
+opCallMain :: Module P.Int
+opCallMain =
+  { annotation: 0
+  , name: mainName
+  , imports: [ intName ]
+  , exports: [ ExportValue (Ident "added") ]
+  , decls: [ nonrec 1 "added" int (intOp "add" (lit 1) (lit 2)) ]
   }

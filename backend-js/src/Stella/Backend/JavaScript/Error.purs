@@ -42,9 +42,22 @@ data JsError
   -- | A global whose function expects captures. A global is installed over an
   -- | empty capture list.
   | GlobalExpectsCaptures (Qualified Ident) P.Int
-  -- | A foreign whose name the ABI fixes as an operation, declared at another
-  -- | arity, as the ABI's and the declaration's.
-  | OperationDeclaredAtWrongArity (Qualified Ident) P.Int P.Int
+  -- | A foreign whose name the ABI fixes as an entry the runtime carries out — an
+  -- | operation, or `Base.IO.pure` or `Base.IO.bind` — declared at another arity, as
+  -- | the ABI's and the declaration's. The name selects the entry, so the
+  -- | declaration is not a declaration of it.
+  | EntryDeclaredAtWrongArity (Qualified Ident) P.Int P.Int
+  -- | A foreign a host must implement, declared by a module given no manifest entry.
+  | ForeignWithoutImplementation (Qualified Ident)
+  -- | A foreign the module's manifest entry gives no signature, which its values
+  -- | would cross by.
+  | NoSignature (Qualified Ident)
+  -- | A foreign whose signature has `params` of another length than the arity
+  -- | declared, as the declared arity and the length. The two came from the same
+  -- | compiler, or a manifest and a module that do not belong together.
+  | SignatureDisagrees (Qualified Ident) P.Int P.Int
+  -- | An entry point naming no global of the module.
+  | NoEntryGlobal (Qualified Ident)
   -- | A reference to a module the module does not import. A header says which
   -- | modules a term may name.
   | NotImported (Qualified Ident)

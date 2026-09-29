@@ -25,8 +25,7 @@ import Data.Tuple (Tuple(..))
 import Stella.Compiler.Bytecode.Instr (FuncIx(..), Function, HandlerIx(..), Instr(..), KeyIx(..), Node, OpIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Dmo, GlobalInit(..))
 import Stella.Backend.JavaScript.Error (JsError(..))
-import Stella.Backend.JavaScript.ToFrame (keyString)
-import Stella.Compiler.Primitive (lookupPrim)
+import Stella.Backend.JavaScript.ToFrame (keyString, runtimeEntry)
 import Stella.Compiler.TypedCore.Name (ModuleName(..), OpName(..), Qualified(..))
 
 check :: Dmo -> Either JsError Unit
@@ -58,10 +57,10 @@ check dmo = do
       when (f.nparams /= 0) (Left (RunGlobalWithParameters g.name f.nparams))
       noCaptures g.name f
 
-  -- a foreign the ABI fixes as an operation is carried out as that operation, and
-  -- a declaration of it at another arity is not a declaration of that entry
-  for_ dmo.foreigns \f -> case lookupPrim f.name of
-    Just entry | entry.arity /= f.arity -> Left (OperationDeclaredAtWrongArity f.name entry.arity f.arity)
+  -- a foreign whose name the ABI fixes as an entry the runtime carries out is that
+  -- entry, and a declaration of it at another arity is not a declaration of it
+  for_ dmo.foreigns \f -> case runtimeEntry f.name of
+    Just entry | entry.arity /= f.arity -> Left (EntryDeclaredAtWrongArity f.name entry.arity f.arity)
     _ -> Right unit
 
   -- a cell is found by its key and a clause by its operation, so either standing

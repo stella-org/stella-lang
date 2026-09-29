@@ -410,16 +410,31 @@ loadRefusals =
         WrongForeignArity q 1 2 -> q == inHost "add"
         _ -> false
     }
+  , { name: "stale-foreign-call-inner"
+    , refusal: loading case _ of
+        WrongForeignArity q 1 2 -> q == inHost "add"
+        _ -> false
+    }
   , { name: "stale-foreign-partial"
     , refusal: loading case _ of
         PapNotBelowArity q 1 1 -> q == inHost "add"
         _ -> false
     }
+  -- a foreign the runtime carries out is still a declaration its module exports or
+  -- does not
+  , { name: "io-pure-unexported", refusal: notExported (inIO "pure") }
+  , { name: "io-bind-unexported", refusal: notExported (inIO "bind") }
+  , { name: "operation-by-foreign-unexported", refusal: notExported (Qualified (ModuleName "Base.Int") (Ident "add")) }
+  , { name: "foreign-unexported", refusal: notExported (inHost "greet") }
   ]
   where
   loading p = case _ of
     Loading err -> p err
     Assembling _ -> false
+
+  notExported name = loading case _ of
+    NotExported q -> q == name
+    _ -> false
 
   assembling p = case _ of
     Assembling err -> p err

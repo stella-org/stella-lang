@@ -7,6 +7,11 @@
 -- | ([Fixtures](../../../../fixtures/bytecode/README.md)). A fixture's modules are
 -- | generated one ES module each, written out, and the last imported; what its
 -- | exports hold, or how loading ended, is checked against the fixture's manifest.
+-- | For a fixture with an entry point, the module holding it exports it, and that
+-- | module is imported and the action executed as a host starting the program
+-- | does; how that ends, and the effects the fixture's host saw, are checked. Each
+-- | module declaring a foreign a host implements is given its entry in the fixture's
+-- | foreign manifest, the specifier resolved against the fixture's directory.
 -- | Steam checks the same manifests, so the two agree wherever both pass. The cases
 -- | only this backend has are made by changing a decoded fixture, so no test here
 -- | reaches above the `.dmo`.
@@ -31,7 +36,8 @@ import Effect (Effect)
 import Effect.Aff (Aff)
 import Effect.Aff.Compat (EffectFnAff, fromEffectFnAff)
 import Effect.Class (liftEffect)
-import Stella.Backend.JavaScript (JsError(..), fileName, generate)
+import Stella.Backend.JavaScript (JsError(..), Options, fileName, generate)
+import Stella.Compiler.ForeignManifest as ForeignManifest
 import Stella.Compiler.Bytecode (Dmo, EncodeError(..), FuncIx(..), GlobalInit(..), Instr(..), decode, encode)
 import Stella.Compiler.Bytecode as B
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), TyName(..))
@@ -43,7 +49,13 @@ import Test.Spec.Assertions (fail, shouldEqual)
 foreign import fixturesRoot :: P.String
 foreign import caseNames :: P.String -> Effect (P.Array P.String)
 foreign import readText :: P.String -> Effect P.String
+foreign import exists :: P.String -> Effect P.Boolean
 foreign import readBytes :: P.String -> Effect (P.Array P.Int)
+foreign import resolveSpecifier :: P.String -> P.String -> P.String
+
+-- | The `specifier` of the named module's entry in the foreign manifest at that
+-- | path, as written, or `""`.
+foreign import specifierIn :: P.String -> P.String -> P.String
 
 foreign import parseManifestImpl
   :: { int :: P.Int -> Expected
@@ -59,13 +71,19 @@ foreign import parseManifestImpl
      , tag :: P.String -> ExpectedKey
      , position :: P.Int -> ExpectedKey
      , effect :: P.String -> ExpectedKey
+     , produces :: Expected -> P.Array P.String -> RunEnd
+     , faultsWith :: ExpectedFault -> P.Array P.String -> RunEnd
+     , failsToStart :: P.String -> RunEnd
+     , just :: Run -> Maybe Run
+     , nothing :: Maybe Run
      }
   -> P.String
   -> Manifest
 
--- | A fixture's manifest. `mentions` is what a refusal names, and `faults` the
--- | global whose initialization a fault ends, each `""` where it does not apply.
--- | `runs` holds for a fixture whose outcome is running an entry point.
+-- | A fixture's manifest. `loads` holds for a fixture whose modules all load,
+-- | whether or not it goes on to run an entry point; `mentions` is what a refusal
+-- | names, and `faults` the global whose initialization a fault ends, each `""`
+-- | where it does not apply.
 type Manifest =
   { description :: P.String
   , modules :: P.Array P.String
@@ -73,8 +91,23 @@ type Manifest =
   , mentions :: P.String
   , faults :: P.String
   , observe :: P.Array { global :: P.String, value :: Expected }
-  , runs :: P.Boolean
+  , run :: Maybe Run
   }
+
+-- | An entry point, as `Mod.name`, and how running it ends.
+type Run = { entry :: P.String, end :: RunEnd }
+
+data RunEnd
+  -- | Producing the value, with the effects in order.
+  = Produces Expected (P.Array P.String)
+  -- | Faulting, with the effects before the fault.
+  | FaultsWith ExpectedFault (P.Array P.String)
+  -- | Not starting, as `noSuchGlobal` or `notAnAction`.
+  | FailsToStart P.String
+
+-- | A fault's kind and what is observed of it; a field the kind does not carry is
+-- | `""`.
+type ExpectedFault = { kind :: P.String, foreign :: P.String, reason :: P.String, message :: P.String }
 
 -- | What a manifest says a value is.
 data Expected
@@ -111,6 +144,11 @@ readManifest name = map (parseManifestImpl constructors) (readText (fixturesRoot
     , tag: KTag
     , position: KPosition
     , effect: KEffect
+    , produces: Produces
+    , faultsWith: FaultsWith
+    , failsToStart: FailsToStart
+    , just: Just
+    , nothing: Nothing
     }
 
 -- | A fixture's modules, decoded, in the order its manifest loads them.
@@ -128,9 +166,6 @@ inMain = Qualified (ModuleName "Main") <<< Ident
 inInt :: P.String -> Qualified Ident
 inInt = Qualified (ModuleName "Base.Int") <<< Ident
 
-inLib :: P.String -> Qualified Ident
-inLib = Qualified (ModuleName "Lib") <<< Ident
-
 -- Running generated code ---------------------------------------------------------------
 
 -- | The namespace of an imported module, which only the functions below read.
@@ -145,6 +180,24 @@ foreign import importFailureImpl
   :: P.Array { name :: P.String, source :: P.String }
   -> P.String
   -> EffectFnAff { loaded :: P.Boolean, message :: P.String, fault :: P.Boolean, global :: P.String }
+
+-- | How executing an entry point ended — `produced`, `faulted`, `failedToStart`,
+-- | `threw`, or `notLoaded` — with what it produced, held as `holder`'s `value`, or
+-- | what ended it, and the effects the host saw.
+foreign import runEntryImpl
+  :: P.Array { name :: P.String, source :: P.String }
+  -> P.String
+  -> P.String
+  -> P.String
+  -> EffectFnAff
+       { ended :: P.String
+       , holder :: Namespace
+       , kind :: P.String
+       , foreign :: P.String
+       , detail :: P.String
+       , message :: P.String
+       , effects :: P.Array P.String
+       }
 
 foreign import shapeOfImpl
   :: { number :: P.Number -> Shape
@@ -211,6 +264,24 @@ jsShape = shapeOfImpl
 sortFields :: P.Array (Tuple P.String Shape) -> P.Array (Tuple P.String Shape)
 sortFields = Array.sortWith (\(Tuple k _) -> k)
 
+-- | Whether a fault is the one a manifest expects, as far as every runtime observes
+-- | one of its kind.
+faultMatches :: forall r. ExpectedFault -> { kind :: P.String, foreign :: P.String, detail :: P.String | r } -> P.Boolean
+faultMatches e f = e.kind == f.kind && case e.kind of
+  "refused" -> f.foreign == e.foreign && f.detail == e.reason
+  "threw" -> f.foreign == e.foreign && f.detail == e.message
+  "breached" -> f.foreign == e.foreign
+  "actionRefused" -> f.detail == e.reason
+  "actionThrew" -> f.detail == e.message
+  "actionBreached" -> f.foreign == e.foreign
+  _ -> false
+
+-- | `Mod.Sub.name` as the global `name` of the module `Mod.Sub`.
+qualified :: P.String -> Qualified Ident
+qualified g = case String.lastIndexOf (String.Pattern ".") g of
+  Just i -> Qualified (ModuleName (String.take i g)) (Ident (String.drop (i + 1) g))
+  Nothing -> Qualified (ModuleName "") (Ident g)
+
 -- | Whether what an export holds is the value a manifest expects, as JavaScript
 -- | can tell.
 matches :: Expected -> Shape -> P.Boolean
@@ -245,69 +316,48 @@ keyText = case _ of
     Just i -> String.take i e <> ":" <> String.drop (i + 1) e
     Nothing -> e
 
+-- | Options for a module that declares no foreign a host implements and exports no
+-- | entry point.
+plainOptions :: Options
+plainOptions = { runtime: runtimeSpecifier, hosted: Nothing, entry: Nothing }
+
 generated :: P.Array Dmo -> Either P.String (P.Array { name :: P.String, source :: P.String })
-generated dmos = case generatedOrRefused dmos of
+generated dmos = case generatedOrRefused (const plainOptions) dmos of
   Left e -> Left (show e)
   Right files -> Right files
 
-generatedOrRefused :: P.Array Dmo -> Either JsError (P.Array { name :: P.String, source :: P.String })
-generatedOrRefused = traverse \dmo -> case generate { runtime: runtimeSpecifier } dmo of
+generatedOrRefused :: (Dmo -> Options) -> P.Array Dmo -> Either JsError (P.Array { name :: P.String, source :: P.String })
+generatedOrRefused optionsFor = traverse \dmo -> case generate (optionsFor dmo) dmo of
   Left e -> Left e
   Right source -> Right { name: fileName dmo.name, source }
 
+-- | The options each module of a fixture is generated with: its entry in the
+-- | fixture's foreign manifest, the specifier resolved against the fixture's
+-- | directory as a build resolves it, and the entry point where the module holds
+-- | the one the manifest names.
+fixtureOptions :: P.String -> Maybe ForeignManifest.Manifest -> Maybe P.String -> Dmo -> Options
+fixtureOptions dir foreignManifest entry dmo =
+  { runtime: runtimeSpecifier
+  , hosted: do
+      held <- foreignManifest
+      found <- ForeignManifest.entryFor held dmo.name
+      let ModuleName m = dmo.name
+      pure { specifier: resolveSpecifier dir (specifierIn (dir <> "/foreign-manifest.json") m), signatures: found.foreigns }
+  , entry: do
+      Qualified m x <- map qualified entry
+      if m == dmo.name then Just x else Nothing
+  }
+
 -- What a fixture's generation may end at ------------------------------------------------
 
--- | The fixtures holding a construct this backend does not generate, with the
--- | construct each is refused for. Such a fixture generating fails, and so does its
--- | refusal naming another construct.
-knownUnsupported :: P.Array { name :: P.String, unsupported :: P.String }
-knownUnsupported =
-  map (gap (io "pure"))
-    [ "io"
-    , "io-entry-arity-bind"
-    , "io-entry-arity-pure"
-    , "io-pure"
-    , "run-action-breached"
-    , "run-action-refused"
-    , "run-action-threw"
-    , "run-action-threw-bug"
-    , "run-action-threw-fault"
-    , "run-breach-action-not-callable"
-    , "run-breach-boolean-number"
-    , "run-breach-char-surrogate"
-    , "run-breach-char-two"
-    , "run-breach-int-fraction"
-    , "run-breach-int-string"
-    , "run-breach-int-wide"
-    , "run-breach-number-string"
-    , "run-breach-string-surrogate"
-    , "run-refused"
-    , "run-threw"
-    , "run-threw-bug"
-    , "run-threw-fault"
-    , "start-no-global"
-    , "start-not-an-action"
-    ]
-    <> map (gap (host "greet"))
-      [ "foreign-no-entry"
-      , "foreign-no-export"
-      , "foreign-no-signature"
-      , "foreign-not-callable"
-      , "foreign-params-length"
-      , "foreign-unreachable"
-      ]
-    <> map (gap (host "add")) [ "stale-foreign-call", "stale-foreign-partial" ]
-  where
-  gap unsupported name = { name, unsupported }
-  io x = "the foreign declaration Base.IO." <> x
-  host x = "the foreign declaration Host." <> x
-
--- | The fixtures whose manifest says they are refused where they load, and which
--- | this backend refuses where it generates, with the refusal each must be. Any
--- | other refusal at generation fails, and so does such a fixture generating.
+-- | The fixtures whose manifest says they are refused where they load, or fail to
+-- | start for want of the entry global, and which this backend refuses where it
+-- | generates, with the refusal each must be. Any other refusal at generation fails,
+-- | and so does such a fixture generating.
 -- |
 -- | Each refusal is pinned whole, since the manifest's `mentions` does not tell
--- | them apart: every shape refusal names the same effect.
+-- | them apart: every shape refusal names the same effect, and a report naming a
+-- | foreign says nothing of what was wrong with it.
 generationRefusals :: P.Array { name :: P.String, refusal :: JsError -> P.Boolean }
 generationRefusals =
   [ { name: "handler-cell-twice", refusal: (_ == CellKeyTwice "s:reading") }
@@ -319,9 +369,18 @@ generationRefusals =
   , { name: "handler-tailhndl-clauses", refusal: (_ == HandlerClausesDisagree meter 2 1) }
   , { name: "handler-hndl-cells", refusal: (_ == HandlerCellsDisagree meter 2 1) }
   , { name: "handler-tailhndl-cells", refusal: (_ == HandlerCellsDisagree meter 2 1) }
+  , { name: "foreign-no-entry", refusal: (_ == ForeignWithoutImplementation (inHost "greet")) }
+  , { name: "foreign-no-signature", refusal: (_ == NoSignature (inHost "greet")) }
+  -- `greet` is declared at arity one and its signature has two params
+  , { name: "foreign-params-length", refusal: (_ == SignatureDisagrees (inHost "greet") 1 2) }
+  , { name: "io-entry-arity-pure", refusal: (_ == EntryDeclaredAtWrongArity (inIO "pure") 1 2) }
+  , { name: "io-entry-arity-bind", refusal: (_ == EntryDeclaredAtWrongArity (inIO "bind") 2 3) }
+  , { name: "start-no-global", refusal: (_ == NoEntryGlobal (inMain "missing")) }
   ]
   where
   meter = "e:Main:Meter"
+  inHost = Qualified (ModuleName "Host") <<< Ident
+  inIO = Qualified (ModuleName "Base.IO") <<< Ident
 
 spec :: Spec Unit
 spec = describe "the JavaScript backend" do
@@ -335,11 +394,6 @@ spec = describe "the JavaScript backend" do
   it "lists only fixtures that exist as refused at generation" do
     names <- liftEffect (caseNames fixturesRoot)
     Array.filter (\n -> not (Array.elem n names)) (map _.name generationRefusals)
-      `shouldEqual` []
-
-  it "lists only fixtures that exist as unsupported" do
-    names <- liftEffect (caseNames fixturesRoot)
-    Array.filter (\n -> not (Array.elem n names)) (map _.name knownUnsupported)
       `shouldEqual` []
 
   describe "what the generated code holds" do
@@ -369,6 +423,26 @@ spec = describe "the JavaScript backend" do
         Right _ -> fail "not three modules"
         Left err -> fail err
 
+    -- a foreign the runtime carries out is resolved as a declaration before its name
+    -- selects the runtime entry
+    it "resolves a foreign the runtime carries out as a declaration, before binding it" do
+      ioPure <- fixtureModules "io-pure"
+      byForeign <- fixtureModules "operation-by-foreign"
+      case ioPure, byForeign of
+        Right [ _, main ], Right [ int, _ ] -> do
+          let
+            -- Main names Base.IO.pure without importing Base.IO
+            unimported = main { imports = Array.filter (_ /= ModuleName "Base.IO") main.imports }
+            -- Base.Int names its own add without declaring it
+            undeclared = int
+              { foreigns = Array.filter (\f -> f.name /= inInt "add") int.foreigns
+              , exports = Array.filter (_ /= inInt "add") int.exports
+              , foreignRefs = int.foreignRefs <> [ inInt "add" ]
+              }
+          refusalOf unimported `shouldEqual` Just (NotImported (Qualified (ModuleName "Base.IO") (Ident "pure")))
+          refusalOf undeclared `shouldEqual` Just (NoSuchDeclaration (inInt "add"))
+        _, _ -> fail "not the modules of io-pure and operation-by-foreign"
+
   describe "what the runtime checks" do
     it "refuses, as a bug, each structural operation handed what its precondition excludes" do
       map _.name (Array.filter (not <<< _.refused) runtimeRefusals) `shouldEqual` []
@@ -381,22 +455,9 @@ spec = describe "the JavaScript backend" do
           let
             -- `sum` is exported nowhere, so nothing but its spelling changes
             lone = main { globals = map (\g -> if g.name == inMain "sum" then g { name = inMain "s\xD800um" } else g) main.globals }
-          case encode lone, generate { runtime: runtimeSpecifier } lone of
+          case encode lone, generate plainOptions lone of
             Left (NotScalarText _), Left (NotEncodable (NotScalarText _)) -> pure unit
             byEncoder, byBackend -> fail ("the encoder gave " <> show (map (const unit) byEncoder) <> " and the backend " <> show (map (const unit) byBackend))
-        Right _ -> fail "not three modules"
-        Left err -> fail err
-
-  describe "what the backend refuses" do
-    it "refuses a foreign that needs a host implementation" do
-      programs <- fixtureModules "programs"
-      case programs of
-        Right [ _, lib, _ ] -> do
-          -- a foreign the ABI does not fix is supplied by a host implementation
-          let withForeign = lib { foreigns = lib.foreigns <> [ { name: inLib "now", arity: 1 } ] }
-          case generate { runtime: runtimeSpecifier } withForeign of
-            Left (Unsupported _) -> pure unit
-            other -> fail ("expected the foreign to be refused, got " <> show (map (const unit) other))
         Right _ -> fail "not three modules"
         Left err -> fail err
 
@@ -443,6 +504,12 @@ segmentOf index source =
 
 foreign import runtimeRefusals :: P.Array { name :: P.String, refused :: P.Boolean }
 
+-- | Why the backend refuses a module, where it does.
+refusalOf :: Dmo -> Maybe JsError
+refusalOf dmo = case generate plainOptions dmo of
+  Left e -> Just e
+  Right _ -> Nothing
+
 -- | One thing a loader refuses, as a change to one module, and the refusal it gives.
 type LoaderRefusal =
   { name :: P.String
@@ -453,7 +520,7 @@ type LoaderRefusal =
 -- | Where the changed module is generated anyway, or refused for another reason,
 -- | what happened.
 unrefused :: Dmo -> Dmo -> LoaderRefusal -> Maybe P.String
-unrefused intDmo mainDmo r = case generate { runtime: runtimeSpecifier } (r.change { int: intDmo, main: mainDmo }) of
+unrefused intDmo mainDmo r = case generate plainOptions (r.change { int: intDmo, main: mainDmo }) of
   Left e | r.refusal e -> Nothing
   Left e -> Just (r.name <> ": refused as " <> show e)
   Right _ -> Just (r.name <> ": generated")
@@ -511,7 +578,7 @@ loaderRefusals =
   , { name: "an operation declared at another arity"
     , change: \m -> m.int { foreigns = map (\f -> if f.name == inInt "add" then f { arity = 3 } else f) m.int.foreigns }
     , refusal: case _ of
-        OperationDeclaredAtWrongArity _ 2 3 -> true
+        EntryDeclaredAtWrongArity _ 2 3 -> true
         _ -> false
     }
   ]
@@ -530,30 +597,63 @@ fixtureMismatches :: P.String -> Aff (P.Array P.String)
 fixtureMismatches name = do
   manifest <- liftEffect (readManifest name)
   modules <- fixtureModules name
-  case modules of
-    Left err -> pure [ err ]
-    Right dmos -> case generatedOrRefused dmos of
+  foreignManifest <- liftEffect readForeignManifest
+  case modules, foreignManifest of
+    Left err, _ -> pure [ err ]
+    _, Left err -> pure [ name <> ": " <> err ]
+    Right dmos, Right held -> case generatedOrRefused (fixtureOptions dir held (map _.entry manifest.run)) dmos of
       Left err
-        | Just gap <- listedUnsupported -> pure
-            if err == Unsupported gap.unsupported then []
-            else [ name <> ": refused as " <> show err <> ", not as the construct it is listed as unsupported for" ]
         | Just r <- refusedAtGeneration -> pure
-            if refusedAtLoad manifest && r.refusal err && String.contains (String.Pattern manifest.mentions) (show err) then []
-            else [ name <> ": refused as " <> show err <> ", not as the refusal naming " <> manifest.mentions <> " it is listed for" ]
+            if refusedHere manifest err && r.refusal err then []
+            else [ name <> ": refused as " <> show err <> ", not as the refusal it is listed for" ]
         | otherwise -> pure [ name <> ": not generated: " <> show err ]
       Right files
-        | Just _ <- listedUnsupported -> pure [ name <> ": generated, where it is listed as unsupported" ]
         | Just _ <- refusedAtGeneration -> pure [ name <> ": generated, where it is listed as refused" ]
-        | manifest.runs -> pure [ name <> ": generated, and running an entry point is not checked here" ]
+        | Just r <- manifest.run -> running r files
         | otherwise -> case Array.last manifest.modules of
             Nothing -> pure [ name <> ": no modules" ]
             Just entry -> run manifest files (entry <> ".js")
   where
+  dir = fixturesRoot <> name
+
   refusedAtGeneration = Array.find (\r -> r.name == name) generationRefusals
 
-  listedUnsupported = Array.find (\gap -> gap.name == name) knownUnsupported
+  -- a refusal where the modules load, naming what the manifest says, or an entry
+  -- point naming no global, which is known before anything is generated
+  refusedHere m err = case m.run of
+    Just { end: FailsToStart "noSuchGlobal" } -> true
+    Just _ -> false
+    Nothing -> not m.loads && m.faults == "" && String.contains (String.Pattern m.mentions) (show err)
 
-  refusedAtLoad m = not m.loads && m.faults == "" && not m.runs
+  readForeignManifest = do
+    let path = dir <> "/foreign-manifest.json"
+    present <- exists path
+    if not present then pure (Right Nothing)
+    else do
+      source <- readText path
+      pure case ForeignManifest.parse "javascript" source of
+        Left err -> Left ("the foreign manifest does not parse: " <> show err)
+        Right parsed -> Right (Just parsed)
+
+  -- the entry point imported from the module holding it and executed, as a host
+  -- starting the program does
+  running :: Run -> P.Array { name :: P.String, source :: P.String } -> Aff (P.Array P.String)
+  running r files = do
+    let Qualified m _ = qualified r.entry
+    ended <- fromEffectFnAff (runEntryImpl files (fileName m) r.entry dir)
+    pure case r.end, ended.ended of
+      Produces wanted wantedEffects, "produced" ->
+        (if matches wanted (jsShape ended.holder "value") then [] else [ name <> ": produced " <> show (jsShape ended.holder "value") ])
+          <> sameEffects wantedEffects ended.effects
+      FaultsWith wanted wantedEffects, "faulted" ->
+        (if faultMatches wanted ended then [] else [ name <> ": faulted as \"" <> ended.message <> "\", not as " <> wanted.kind ])
+          <> sameEffects wantedEffects ended.effects
+      FailsToStart "notAnAction", "failedToStart" -> []
+      _, _ -> [ name <> ": ended as " <> ended.ended <> " \"" <> ended.message <> "\"" ]
+
+  sameEffects wanted seen =
+    if wanted == seen then []
+    else [ name <> ": saw the effects " <> show seen <> ", not " <> show wanted ]
 
   run :: Manifest -> P.Array { name :: P.String, source :: P.String } -> P.String -> Aff (P.Array P.String)
   run manifest files entry =
