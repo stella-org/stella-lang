@@ -907,6 +907,27 @@ Running a guest synthesizer needs more of the interpreter than either of the mod
 
 Discarding rather than keeping is what the restart reading buys: nothing has to hold a guest computation once its attempt is abandoned. **The protocol that carries this is the session's** ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)), and what it leaves open is recorded with the open questions ([Open Questions](../99-Open-Questions/01-Open-Questions.md)); what this document fixes is what it is obliged to carry.
 
+### A guest's attempt, brokered
+
+**The conversation that answers a guest is the one that answers a script.** The client opens the attempt, hands the guest its Goal handle as a token, and invokes it; each `kernel` request the invocation makes is read as a command and answered by the dispatcher where the conversation stands; and the handle the guest returns is sent to finish the attempt. A guest sees `GuestCommand` and `GuestAnswer`, which leave out what it has no use for: the attempt is finished by the guest returning rather than by a command, and a transaction is opened and closed without the guest holding its token. **Where a command stands is always read off the conversation**, and nothing else keeps a list of transactions: a failure answered inside one closes the innermost there, and the guest, told only that the candidate failed, closes its own innermost with it.
+
+**A handle crosses as a token of its four fields** — `session`, `class`, `slot`, and `generation` — read for their shape alone. Whether a token names an object of the class a request wants, from this session, not yet discarded, is what resolving it decides, where the arena is; a token read as a handle and refused there is the defect it would be from a script.
+
+**The correspondence between the kernel's vocabulary and `Stella.Elab` is one rule**, read off the types: a mirrored type is its twin, constructor for constructor and field for field; a name is text; a qualified name is a `Name`; an array is a `List`; an optional value a `Maybe`; a record keeps its field names; and a handle is a token. No conversion recurses on the host's stack, so a value is converted however deep it is.
+
+**Who is at fault decides what a thing that does not read ends.**
+
+| What arrived | Ends |
+| --- | --- |
+| a command that is no canonical value | the session: the interpreter wrote it, and answering it as a protocol error ends the session |
+| a command that is canonical and no `GuestCommand`, a token among them that is no handle | the attempt, as a defect, and the guest is told it was abandoned |
+| a result that is no handle | the attempt, as a defect, with nothing left to tell the guest |
+| an answer the host built with no guest form | the attempt, as a defect, and the guest is told it was abandoned |
+
+**An attempt the host ends while the guest waits stays ended.** A `throw` outside every transaction, a postponement, and a defect end it where they are answered; the guest is told it was abandoned, and whatever the invocation then answers, the ending kept is the host's. Where the invocation fails, is refused, or loses the session instead, the attempt is left open, and what that failure makes of it is not settled here ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
+
+**One brokered invocation runs at a time in a session.** Answering is set up before the `invoke` goes out and taken down however it ends, so a `kernel` request arriving at once is answered, and one naming another attempt, or arriving after its invocation, is refused as unexpected. **The client judges a request of the session as the session judges one of its own**: before `ready`, any is unexpected; then an unknown kind is refused as such; a `kernel` request where `kernel` is not in force is refused for that, its payload unread; and only then is the payload read.
+
 ## The bootstrap
 
 A synthesizer written in Stella has to be compiled by an elaborator, and the elaborator that compiles it must therefore not need one. The circle is cut by layers rather than by an exception.

@@ -197,6 +197,17 @@ data Defect
   -- | Name resolution resolved the name where the goal was written, so the name
   -- | exists; a session unable to run it was set up without it.
   | SynthesizerUnavailable SynthRef
+  -- | A command a guest synthesizer sent, a canonical value that does not read as
+  -- | one, as where and why. A typed guest builds none: the value came from a
+  -- | module no compiler produced, or a transport that altered it.
+  | GuestCommandUnreadable P.String
+  -- | What a guest synthesizer returned, which does not read as a handle, as why.
+  -- | The guest has finished, so the attempt ends here rather than answering it.
+  | GuestResultUnreadable P.String
+  -- | An answer the host built for a guest synthesizer that has no form a guest
+  -- | reads, as why: host text holding an unpaired surrogate, which nothing the
+  -- | compiler produces holds.
+  | GuestAnswerUnwritable P.String
   -- | A synthesis job whose target is not what the one operation that creates
   -- | the two would have made. Nothing the author wrote produces one.
   | MalformedSynthesisJob PendingId MalformedGoal

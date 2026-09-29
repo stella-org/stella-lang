@@ -576,6 +576,20 @@ The channel `steam session` speaks on, before any request of a profile uses it (
 | NaN patterns, `-0`, infinities, the smallest subnormal | Written as their bit patterns, every NaN as `7ff8000000000000`, any NaN pattern read as NaN |
 | A value off the canonical form: a key twice or out of order, a lone surrogate, an `int` out of range, a member besides | Refused, naming the place |
 | A list of 100,000 elements, and nesting 100,000 deep | Written, rendered, read, checked, and brought into the machine without running out of stack |
+| A guest building `1` in its root scope, brokered | The attempt committed, the guest having been handed a Goal token |
+| Two transactions opened, a `throw` inside the inner, the outer committed | `TransactionBegun` twice, `CandidateFailed`, `TransactionCommitted`, and the attempt committed |
+| A `throw` outside every transaction, the invocation then failing as `abandoned` | The guest told `abandoned`; the attempt rejected, the host's ending kept |
+| A command that is canonical and no `GuestCommand` | The attempt ended as a defect, traced as abandoned, and the guest told `abandoned` |
+| A command that is no canonical value | Answered `payloadInvalid`; the session lost |
+| A result token that is no handle | The attempt ended as a defect, traced, with nothing sent |
+| A result token of a handle's shape and another generation | Refused where the attempt finishes, as an invalid handle |
+| A `kernel` request naming another attempt, and one after the invocation ended | `kindUnexpected` each |
+| A `kernel` request before `ready`, and one where `kernel` is not in force, each with a payload of another shape | `kindUnexpected`, and `capabilityNotInForce`: the payload is not read |
+| A host answer holding text with an unpaired surrogate | The attempt ended as a defect, traced; the guest told `abandoned`; the session answering the next request |
+| Two brokered invocations started together | Run one after the other, each answering only its own requests |
+| An invocation failing, and one refused | The failure and the refusal handed back, the attempt left open |
+| The kernel's vocabulary written and read back; a kind nested 100,000 deep, attributes nested as deep, a list of 100,000 names | The same values, without running out of stack |
+| A token of another shape | Refused, saying nothing of what it holds |
 
 ### The foreign manifest (step 5, interpreter 6)
 

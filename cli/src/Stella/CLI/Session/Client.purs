@@ -25,6 +25,8 @@ module Stella.CLI.Session.Client
   , ping
   , load
   , invoke
+  , Answering
+  , invokeAnswering
   , close
   , abandon
   , kill
@@ -38,13 +40,20 @@ import Data.Either (Either(..))
 import Data.Generic.Rep (class Generic)
 import Data.Maybe (Maybe(..))
 import Data.Show.Generic (genericShow)
+import Effect.Aff (Aff, bracket)
+import Effect.Class as Effect
+import Effect.Aff.AVar (AVar)
+import Effect.Aff.AVar as AVar
+import Effect.Ref (Ref)
+import Effect.Ref as Ref
 import Foreign.Object (Object)
-import Run (AFF, EFFECT, Run, liftAff, liftEffect)
+import Run (AFF, EFFECT, Run, liftAff, liftEffect, runBaseAff')
 import Stella.CLI.Effect.Process (Child, Exit, Output, PROCESS, spawnSession)
 import Stella.CLI.Session.Guest (InvocationFailure, InvokeRequest, LoadFailure, Token, decodeInvocationFailed, decodeLoadFailed, decodeLoaded, decodeReturned, encodeInvoke, encodeLoad, invocationFailedKind, invokeKind, loadFailedKind, loadKind, loadedKind, returnedKind)
+import Stella.CLI.Session.Kernel (KernelCall, decodeKernel, kernelKind)
 import Stella.CLI.Session.Peer (Peer, Reply, SessionFailure)
 import Stella.CLI.Session.Peer as Peer
-import Stella.CLI.Session.Protocol (Hello, Ready, Refusal, closeKind, closedKind, decodeReady, decodeRefusal, emptyPayload, encodeHello, helloKind, pingKind, pongKind, readyKind, refusedKind)
+import Stella.CLI.Session.Protocol (Hello, Ready, Refusal, closeKind, closedKind, decodeReady, decodeRefusal, emptyPayload, encodeHello, helloKind, kernelCapability, pingKind, pongKind, readyKind, refusedKind)
 import Stella.CLI.Session.ProtocolError (decodeProtocolError, protocolErrorKind)
 import Stella.CLI.Session.ProtocolError as ProtocolError
 import Type.Row (type (+))
@@ -62,7 +71,16 @@ newtype Session = Session
   { peer :: Peer
   , child :: Child
   , ready :: Ready
+  -- | The invocation whose `kernel` requests are answered, and how: there is at
+  -- | most one, for the length of its `invoke`.
+  , guest :: Ref (Maybe { attempt :: Int, answering :: Answering })
+  -- | Held for the length of an invocation answering its `kernel` requests, so
+  -- | that two are never in flight at once.
+  , serial :: AVar Unit
   }
+
+-- | How the `kernel` requests of an invocation are answered.
+type Answering = KernelCall -> Aff Peer.Answer
 
 -- | Why a session did not open.
 data OpenFailure
@@ -124,8 +142,11 @@ open launch = do
       exit <- liftAff child.exit
       pure (Left (OpenFailed (NotStarted (describeExit exit))))
     Just channel -> do
+      guest <- liftEffect (Ref.new Nothing)
+      opened <- liftEffect (Ref.new Nothing)
+      serial <- liftAff (AVar.new unit)
       peer <- liftEffect $ Peer.start channel
-        { request: \incoming -> pure (Peer.answer (unknown incoming.kind))
+        { request: answeringIn opened guest
         , notification: \_ -> pure unit
         , failed: \_ -> pure unit
         }
@@ -144,7 +165,9 @@ open launch = do
               Nothing -> stop (OpenFailed (AnswerMalformed reply.kind))
               Just r -> case unacceptable launch.hello r of
                 Just why -> stop (OpenFailed (ReadyUnacceptable r why))
-                Nothing -> pure (Right (Session { peer, child, ready: r }))
+                Nothing -> do
+                  liftEffect (Ref.write (Just r) opened)
+                  pure (Right (Session { peer, child, ready: r, guest, serial }))
           | reply.kind == refusedKind -> case decodeRefusal reply.payload of
               Nothing -> stop (OpenFailed (AnswerMalformed reply.kind))
               Just refusal -> do
@@ -155,10 +178,24 @@ open launch = do
               Just e -> stop (HandshakeRejected e)
           | otherwise -> stop (OpenFailed (AnswerUnexpected reply.kind))
   where
-  unknown kind =
-    { kind: protocolErrorKind
-    , payload: ProtocolError.encodeProtocolError (ProtocolError.KindUnknown kind)
-    }
+  -- a request of the session is judged as the session judges one: the stage `ready`
+  -- has settled, then the kind, then the capability, and only then the payload.
+  -- A `kernel` request is answered by the invocation it names, where that one is
+  -- running and answering; nothing else the session asks is the client's
+  answeringIn opened guest incoming = Effect.liftEffect (Ref.read opened) >>= case _ of
+    Nothing -> pure (refusing (ProtocolError.KindUnexpected incoming.kind))
+    Just r
+      | incoming.kind /= kernelKind -> pure (refusing (ProtocolError.KindUnknown incoming.kind))
+      | not (kernelCapability `Array.elem` r.capabilities) ->
+          pure (refusing (ProtocolError.CapabilityNotInForce incoming.kind))
+      | otherwise -> case decodeKernel incoming.payload of
+          Nothing -> pure (refusing (ProtocolError.PayloadInvalid incoming.kind))
+          Just call -> Effect.liftEffect (Ref.read guest) >>= case _ of
+            Just running | running.attempt == call.attempt -> running.answering call
+            _ -> pure (refusing (ProtocolError.KindUnexpected incoming.kind))
+
+  refusing error = Peer.answer
+    { kind: protocolErrorKind, payload: ProtocolError.encodeProtocolError error }
 
 -- | Why a `ready` does not answer a `hello`, where it does not: it names another
 -- | protocol or profile, leaves a required capability out, or puts in force one
@@ -237,6 +274,32 @@ invoke session invocation = request session invokeKind (encodeInvoke invocation)
   answered decoded kind = case decoded of
     Just outcome -> pure (Right outcome)
     Nothing -> Left <<< SessionLost <$> misbehaved session (AnswerMalformed kind)
+
+-- | `invoke`, answering the `kernel` requests the invocation makes with the
+-- | function given.
+-- |
+-- | **Answering is set up before the `invoke` goes out and taken down however it
+-- | ends** — answered, refused, the session lost, or the caller cancelled — so a
+-- | `kernel` request arriving at once finds it, and one arriving late, or naming
+-- | another attempt, is refused as unexpected. **One such invocation runs at a
+-- | time in a session**: a second waits for the first, the session running
+-- | invocations one after another in any case, so neither answers the other's
+-- | requests.
+invokeAnswering
+  :: forall r
+   . Session
+  -> InvokeRequest
+  -> Answering
+  -> Run (AFF + EFFECT + r) (Either RequestFailure (Either InvocationFailure Token))
+invokeAnswering session@(Session s) invocation answering = liftAff $ bracket
+  do
+    AVar.take s.serial
+    Effect.liftEffect (Ref.write (Just { attempt: invocation.attempt, answering }) s.guest)
+  ( \_ -> do
+      Effect.liftEffect (Ref.write Nothing s.guest)
+      AVar.put unit s.serial
+  )
+  (\_ -> runBaseAff' (invoke session invocation))
 
 -- | Close the session: `close`, `closed`, and then the process ending with 0.
 close :: forall r. Session -> Run (AFF + EFFECT + r) (Either ClientFailure Unit)

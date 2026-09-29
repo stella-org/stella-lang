@@ -11,6 +11,7 @@ module Stella.Compiler.Elaborate.Driver.Conversation
   , command
   , runSynthesizer
   , runSynthesizerWith
+  , abandoned
   ) where
 
 import Prelude
@@ -150,8 +151,9 @@ run conversation = case _ of
   where
   ended (Tuple attempt s) = Stopped attempt s
 
--- End the attempt with the defect given, where the host finds itself at fault
--- rather than answering a command, and record that it ended.
+-- | End the attempt with the defect given, where the host finds itself at fault
+-- | rather than answering a command, and record that it ended. **A driver ending
+-- | an attempt goes through this** rather than `abandon`, which records nothing.
 abandoned :: Conversation -> Defect -> Tuple Attempt SolverState
 abandoned c defect = case abandon c defect of
   Tuple attempt s ->
