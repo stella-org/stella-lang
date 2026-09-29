@@ -29,11 +29,13 @@ module Stella.CLI.Session.Frame
   , PayloadProblem(..)
   , parsePayload
   , renderPayload
+  , renderJson
   ) where
 
 import Prelude
 
-import Data.Argonaut.Core (Json, caseJsonObject, fromObject, stringify)
+import Control.Monad.Rec.Class as Rec
+import Data.Argonaut.Core (Json, caseJson, caseJsonObject, fromObject, fromString, stringify)
 import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
 import Data.Either (Either(..))
@@ -41,9 +43,14 @@ import Data.Generic.Rep (class Generic)
 import Data.Int (toNumber)
 import Data.Int as Int
 import Data.Int.Bits as Bits
+import Data.List (List(..), (:))
+import Data.List as List
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Show.Generic (genericShow)
+import Data.String (joinWith)
+import Data.Tuple (Tuple(..))
 import Foreign.Object (Object)
+import Foreign.Object as Object
 import Stella.Compiler.Bytecode.Bytes (Bytes, runR, utf8, utf8R)
 import Stella.Compiler.TypedCore.Domain (textOf)
 
@@ -169,6 +176,45 @@ parsePayload payload
 -- | surrogate**, one in a string being written as an escape, so the encoding
 -- | always succeeds; `Nothing` would mean a serializer that did not escape one.
 renderPayload :: Object Json -> Maybe Bytes
-renderPayload object = case utf8 (stringify (fromObject object)) of
+renderPayload object = case utf8 (renderJson (fromObject object)) of
   Left _ -> Nothing
   Right bytes -> Just bytes
+
+-- | JSON text, as `JSON.stringify` writes it, **without recursing on the host's
+-- | stack**. A payload may nest as deep as its size allows — a generic value's
+-- | `List` nests once per element — and the host's serializer overflows at a few
+-- | thousand levels, so the nesting is walked with a stack of its own and only a
+-- | scalar is handed to the host.
+renderJson :: Json -> String
+renderJson json = Rec.tailRec go { work: Value json : Nil, out: Nil }
+  where
+  go { work, out } = case work of
+    Nil -> Rec.Done (joinWith "" (Array.fromFoldable (List.reverse out)))
+    Text text : rest -> Rec.Loop { work: rest, out: text : out }
+    Value j : rest ->
+      let
+        scalar :: forall x. x -> _
+        scalar _ = Rec.Loop { work: rest, out: stringify j : out }
+      in
+        caseJson
+          scalar
+          scalar
+          scalar
+          scalar
+          (\items -> Rec.Loop { work: enclosed "[" "]" (map (Array.singleton <<< Value) items) <> rest, out })
+          ( \members -> Rec.Loop
+              { work:
+                  enclosed "{" "}"
+                    (map (\(Tuple name v) -> [ Text (stringify (fromString name) <> ":"), Value v ]) (Object.toUnfoldable members))
+                    <> rest
+              , out
+              }
+          )
+          j
+
+  enclosed open close items = List.fromFoldable
+    (Array.concat ([ [ Text open ] ] <> Array.intersperse [ Text "," ] items <> [ [ Text close ] ]))
+
+data Piece
+  = Text String
+  | Value Json

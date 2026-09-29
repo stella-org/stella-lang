@@ -6,7 +6,9 @@ import Effect (Effect)
 import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess)
 import Test.Stella.CLI.Session as Session
+import Test.Stella.CLI.Session.Value as SessionValue
 
 main :: Effect Unit
 main = runSpecAndExitProcess [ consoleReporter ] do
   Session.spec
+  SessionValue.spec

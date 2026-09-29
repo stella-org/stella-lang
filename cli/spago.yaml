@@ -18,19 +18,25 @@ package:
     - foldable-traversable
     - foreign-object
     - integers
+    - lists
     - maybe
     - node-buffer
     - node-fs
     - nullable
+    - numbers
     - ordered-collections
+    - partial
     - prelude
     - refs
     - run
+    - strings
+    - tailrec
     - tuples
     - typelevel-prelude
   test:
     main: Test.Stella.CLI
     dependencies:
       - effect
+      - quickcheck
       - spec
       - spec-node
