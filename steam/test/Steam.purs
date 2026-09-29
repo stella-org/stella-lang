@@ -16,6 +16,7 @@ import Test.Steam.Handlers as Handlers
 import Test.Steam.Load as Load
 import Test.Steam.Marshal as Marshal
 import Test.Steam.Session as Session
+import Test.Steam.SessionKernel as SessionKernel
 import Test.Steam.SessionGuest as SessionGuest
 import Test.Steam.Structural as Structural
 import Test.Steam.Ops as Ops
@@ -43,5 +44,6 @@ main = do
     Structural.spec
     Session.spec
     SessionGuest.spec
+    SessionKernel.spec
     Wire.spec
 

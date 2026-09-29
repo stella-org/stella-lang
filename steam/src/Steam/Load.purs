@@ -25,6 +25,7 @@ module Steam.Load
   , noIdentities
   , unitValue
   , internKeyIn
+  , internOpIn
   , claimedByInterpreter
   , registryOf
   , namesOf
@@ -424,21 +425,24 @@ internKeyIn ref key = do
       pure id
 
 internOp :: forall r. Store -> OpName -> Run (LOAD r) OpId
-internOp store name = do
-  identities <- liftEffect (Ref.read store.identities)
+internOp store name = liftEffect (internOpIn store.identities name)
+
+-- | The identity of an operation name, assigned where it has none yet. A session
+-- | names the operation its root boundary answers this way.
+internOpIn :: Ref Identities -> OpName -> Effect OpId
+internOpIn ref name = do
+  identities <- Ref.read ref
   case Map.lookup name identities.ops of
     Just id -> pure id
     Nothing -> do
       let id = OpId identities.next
-      liftEffect
-        ( Ref.write
-            identities
-              { ops = Map.insert name id identities.ops
-              , opNames = Map.insert id name identities.opNames
-              , next = identities.next + 1
-              }
-            store.identities
-        )
+      Ref.write
+        identities
+          { ops = Map.insert name id identities.ops
+          , opNames = Map.insert id name identities.opNames
+          , next = identities.next + 1
+          }
+        ref
       pure id
 
 internCtor :: forall r. Store -> Qualified Ident -> Run (LOAD r) CtorId

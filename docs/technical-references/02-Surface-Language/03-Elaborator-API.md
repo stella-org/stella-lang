@@ -899,13 +899,13 @@ Running a guest synthesizer needs more of the interpreter than either of the mod
 
 | | |
 | --- | --- |
-| apply a guest value to arguments | a session today is asked for the value a declaration holds, which is a load and not a call |
+| apply a guest value to arguments | loading hands over the value a declaration holds, which is not a call |
 | carry a handle across | a `Goal`, a `Type`, and an `Expr` pass in both directions without being read |
 | serve an `Elab` request | the guest asks, the host answers, and the same attempt continues |
 | discard guest execution state | what `postpone` abandons includes the guest's stack |
 | bound or cancel a guest computation | fuel bounds the scheduler's retries, so a loop inside one attempt is Steam's to stop |
 
-Discarding rather than keeping is what the restart reading buys: nothing has to hold a guest computation once its attempt is abandoned. **The protocol itself is not settled here** and is recorded with the open questions ([Open Questions](../99-Open-Questions/01-Open-Questions.md)); what this document fixes is what it is obliged to carry.
+Discarding rather than keeping is what the restart reading buys: nothing has to hold a guest computation once its attempt is abandoned. **The protocol that carries this is the session's** ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)), and what it leaves open is recorded with the open questions ([Open Questions](../99-Open-Questions/01-Open-Questions.md)); what this document fixes is what it is obliged to carry.
 
 ## The bootstrap
 

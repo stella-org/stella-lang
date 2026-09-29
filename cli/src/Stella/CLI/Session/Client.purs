@@ -41,7 +41,7 @@ import Data.Show.Generic (genericShow)
 import Foreign.Object (Object)
 import Run (AFF, EFFECT, Run, liftAff, liftEffect)
 import Stella.CLI.Effect.Process (Child, Exit, Output, PROCESS, spawnSession)
-import Stella.CLI.Session.Guest (GlobalName, InvocationFailure, LoadFailure, Token, decodeInvocationFailed, decodeLoadFailed, decodeLoaded, decodeReturned, encodeInvoke, encodeLoad, invocationFailedKind, invokeKind, loadFailedKind, loadKind, loadedKind, returnedKind)
+import Stella.CLI.Session.Guest (InvocationFailure, InvokeRequest, LoadFailure, Token, decodeInvocationFailed, decodeLoadFailed, decodeLoaded, decodeReturned, encodeInvoke, encodeLoad, invocationFailedKind, invokeKind, loadFailedKind, loadKind, loadedKind, returnedKind)
 import Stella.CLI.Session.Peer (Peer, Reply, SessionFailure)
 import Stella.CLI.Session.Peer as Peer
 import Stella.CLI.Session.Protocol (Hello, Ready, Refusal, closeKind, closedKind, decodeReady, decodeRefusal, emptyPayload, encodeHello, helloKind, pingKind, pongKind, readyKind, refusedKind)
@@ -220,15 +220,14 @@ load session path = request session loadKind (encodeLoad path) >>= case _ of
     Just outcome -> pure (Right outcome)
     Nothing -> Left <<< SessionLost <$> misbehaved session (AnswerMalformed kind)
 
--- | Apply a guest function to tokens: the token it returned, or why it did not
--- | return one.
+-- | Apply a guest function to tokens, as an attempt: the token it returned, or why
+-- | it did not return one.
 invoke
   :: forall r
    . Session
-  -> GlobalName
-  -> Array Token
+  -> InvokeRequest
   -> Run (AFF + EFFECT + r) (Either RequestFailure (Either InvocationFailure Token))
-invoke session global arguments = request session invokeKind (encodeInvoke global arguments) >>= case _ of
+invoke session invocation = request session invokeKind (encodeInvoke invocation) >>= case _ of
   Left failure -> pure (Left failure)
   Right reply
     | reply.kind == returnedKind -> answered (Right <$> decodeReturned reply.payload) reply.kind

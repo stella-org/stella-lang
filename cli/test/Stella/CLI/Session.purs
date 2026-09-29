@@ -2,9 +2,10 @@ module Test.Stella.CLI.Session (spec) where
 
 import Prelude
 
-import Data.Argonaut.Core (Json, fromArray, fromNumber, fromObject, fromString, stringify)
+import Data.Argonaut.Core (Json, fromArray, fromNumber, fromObject, fromString, jsonNull, stringify)
 import Data.Array as Array
 import Data.Either (Either(..), hush)
+import Data.Foldable (for_)
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Traversable (traverse)
@@ -19,6 +20,7 @@ import Foreign.Object as Object
 import Stella.CLI.Session.Envelope (EnvelopeReason(..), Message(..), decodeMessage, encodeMessage, firstMessageId, messageId, nextMessageId)
 import Stella.CLI.Session.Frame (FrameFailure(..), PayloadProblem(..), emptyReader, feed, finish, frame, maxPayload, parsePayload, renderPayload, u32BE)
 import Stella.CLI.Session.Guest (InvocationReason(..), LoadStage(..), ValueClass(..), decodeInvocationFailed, decodeInvoke, decodeLoad, decodeLoadFailed, decodeLoaded, decodeReturned, encodeInvocationFailed, encodeInvoke, encodeLoad, encodeLoadFailed, encodeLoaded, encodeReturned)
+import Stella.CLI.Session.Kernel (decodeAbandoned, decodeAnswered, decodeKernel, encodeAbandoned, encodeAnswered, encodeKernel)
 import Stella.CLI.Session.Peer (Incoming, SessionFailure(..), answer)
 import Stella.CLI.Session.Peer as Peer
 import Stella.CLI.Session.Protocol (RefusalReason(..), decodeHello, decodeReady, decodeRefusal, elaborationProfile, encodeHello, encodeReady, encodeRefusal, negotiate, protocolVersion)
@@ -215,7 +217,7 @@ handshakes = describe "handshakes" do
     let reasonOf h = map _.reason (either Just (const Nothing) (negotiate h))
     reasonOf (hello { protocol = 2 }) `shouldEqual` Just ProtocolUnsupported
     reasonOf (hello { profile = "repl" }) `shouldEqual` Just ProfileUnsupported
-    reasonOf (hello { requires = [ "kernel" ] }) `shouldEqual` Just CapabilityUnsupported
+    reasonOf (hello { requires = [ "someday" ] }) `shouldEqual` Just CapabilityUnsupported
 
   it "round-trips its messages" do
     decodeHello (encodeHello hello) `shouldEqual` Just hello
@@ -242,11 +244,19 @@ guests = describe "load and invoke payloads" do
     decodeLoaded (encodeLoaded "Guest") `shouldEqual` Just "Guest"
     decodeLoadFailed (encodeLoadFailed { stage: Initialization, detail: "d" })
       `shouldEqual` Just { stage: Initialization, detail: "d" }
-    map (\r -> Tuple r.global (map text r.arguments)) (decodeInvoke (encodeInvoke name [ tok ]))
-      `shouldEqual` Just (Tuple name [ text tok ])
+    map (\r -> { global: r.global, arguments: map text r.arguments, attempt: r.attempt })
+      (decodeInvoke (encodeInvoke { global: name, arguments: [ tok ], attempt: 7 }))
+      `shouldEqual` Just { global: name, arguments: [ text tok ], attempt: 7 }
     map text (decodeReturned (encodeReturned tok)) `shouldEqual` Just (text tok)
-    let failed = { reason: NotAToken ClassPartialApplication, detail: "d" }
-    decodeInvocationFailed (encodeInvocationFailed failed) `shouldEqual` Just failed
+    for_
+      [ NotAToken ClassPartialApplication
+      , KernelNotInForce
+      , CommandNotEncodable ClassClosure
+      , Abandoned
+      ]
+      \reason ->
+        decodeInvocationFailed (encodeInvocationFailed { reason, detail: "d" })
+          `shouldEqual` Just { reason, detail: "d" }
 
   it "refuse a missing field, a field of another type, and one they do not know" do
     decodeLoad Object.empty `shouldEqual` Nothing
@@ -257,7 +267,15 @@ guests = describe "load and invoke payloads" do
     map (const unit) (decodeInvoke (object [ Tuple "global" (fromObject (object [ Tuple "module" (fromString "M"), Tuple "name" (fromString "f") ])), Tuple "arguments" (fromArray [ fromNumber 1.0 ]) ]))
       `shouldEqual` Nothing
 
-  it "carry a class exactly where the reason is notAToken" do
+  it "refuse an attempt that is not an integer from 1 to 2147483647, or none" do
+    let
+      withAttempt a = Object.insert "attempt" a (encodeInvoke { global: name, arguments: [], attempt: 1 })
+    for_ [ fromNumber 0.0, fromNumber (-1.0), fromNumber 1.5, fromNumber 2147483648.0, fromString "1" ] \a ->
+      map (const unit) (decodeInvoke (withAttempt a)) `shouldEqual` Nothing
+    map _.attempt (decodeInvoke (withAttempt (fromNumber 2147483647.0))) `shouldEqual` Just 2147483647
+    map (const unit) (decodeInvoke (Object.delete "attempt" (withAttempt (fromNumber 1.0)))) `shouldEqual` Nothing
+
+  it "carry a class exactly where the reason is notAToken or commandNotEncodable" do
     let
       withClass = object [ Tuple "reason" (fromString "fault"), Tuple "detail" (fromString ""), Tuple "class" (fromString "int") ]
       withoutClass = object [ Tuple "reason" (fromString "notAToken"), Tuple "detail" (fromString "") ]
@@ -266,6 +284,25 @@ guests = describe "load and invoke payloads" do
     decodeInvocationFailed withoutClass `shouldEqual` Nothing
     decodeInvocationFailed unknownClass `shouldEqual` Nothing
     Object.member "class" (encodeInvocationFailed { reason: Fault, detail: "" }) `shouldEqual` false
+    Object.member "class" (encodeInvocationFailed { reason: Abandoned, detail: "" }) `shouldEqual` false
+    decodeInvocationFailed
+      (object [ Tuple "reason" (fromString "commandNotEncodable"), Tuple "detail" (fromString "") ])
+      `shouldEqual` Nothing
+    decodeInvocationFailed
+      (object [ Tuple "reason" (fromString "abandoned"), Tuple "detail" (fromString ""), Tuple "class" (fromString "int") ])
+      `shouldEqual` Nothing
+
+  it "carry a kernel request and its two answers, exactly as shown" do
+    let command = fromObject (object [ Tuple "int" (fromNumber 1.0) ])
+    map (\c -> Tuple c.attempt (stringify c.command)) (decodeKernel (encodeKernel { attempt: 3, command }))
+      `shouldEqual` Just (Tuple 3 (stringify command))
+    map stringify (decodeAnswered (encodeAnswered command)) `shouldEqual` Just (stringify command)
+    decodeAbandoned encodeAbandoned `shouldEqual` Just unit
+    map (const unit) (decodeKernel (object [ Tuple "attempt" (fromNumber 0.0), Tuple "command" command ]))
+      `shouldEqual` Nothing
+    map (const unit) (decodeKernel (object [ Tuple "attempt" (fromNumber 1.0) ])) `shouldEqual` Nothing
+    map (const unit) (decodeAnswered (Object.insert "more" jsonNull (encodeAnswered command))) `shouldEqual` Nothing
+    decodeAbandoned (object [ Tuple "reason" (fromString "") ]) `shouldEqual` Nothing
 
 -- Peers ------------------------------------------------------------------------------
 

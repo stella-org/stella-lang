@@ -79,6 +79,20 @@ data SessionDefect
   = DefectRunning Failure
   -- | A global of a module the session committed held nothing.
   | GlobalEmpty (Qualified Ident)
+  -- | `Stella.Elab`, which the interpreter builds and installs itself, could not be
+  -- | made ready, as what went wrong.
+  | ElaborationUnavailable P.String
+  -- | A value a guest asked with carried an identity no committed name accounts
+  -- | for, as which.
+  | ValueUnaccounted P.String
+  -- | A command the interpreter built from a guest's value was refused by the
+  -- | canonical encoder, as where and why: what the runtime holds broke what the
+  -- | encoder assumes of it.
+  | CommandUnencodable P.String
+  -- | An answer that is a `GuestAnswer` by the descriptor could not be brought into
+  -- | the machine, as where and why: the descriptor, the installed `Stella.Elab`,
+  -- | and the identities disagree.
+  | AnswerInconsistent P.String
 
 -- | What the process exits with.
 exitStatus :: ErrorType -> P.Int
@@ -181,6 +195,18 @@ report = case _ of
     fmt @"Internal error in the interpreter: {name} holds nothing though its module loaded"
       { name: qualified name }
 
+  SessionDefect (ElaborationUnavailable reason) ->
+    "Internal error in the interpreter: Stella.Elab could not be made ready: " <> reason
+
+  SessionDefect (ValueUnaccounted reason) ->
+    "Internal error in the interpreter: a guest's command carries " <> reason
+
+  SessionDefect (CommandUnencodable reason) ->
+    "Internal error in the interpreter: a guest's command has no canonical encoding at " <> reason
+
+  SessionDefect (AnswerInconsistent reason) ->
+    "Internal error in the interpreter: an answer the descriptor admits could not be taken in at " <> reason
+
 refused :: RefusalReason -> P.String
 refused = case _ of
   ProtocolUnsupported -> "the client asked for a protocol version this session does not speak"
@@ -200,6 +226,7 @@ sessionFailure = case _ of
   OutgoingUnencodable kind -> "a `" <> kind <> "` message could not be encoded"
   HandlerFailed reason -> "a request could not be answered: " <> reason
   ShutDown -> "the session was shut down"
+  PeerViolated reason -> "the client broke the protocol: " <> reason
 
 describe :: Failure -> P.String
 describe = case _ of

@@ -238,8 +238,9 @@ steamWith args s h =
 load' :: Session -> P.String -> Aff (Either RequestFailure (Either LoadFailure P.String))
 load' session path = node (Client.load session path)
 
-invoke' :: Session -> GlobalName -> P.Array Token -> Aff (Either RequestFailure (Either InvocationFailure Token))
-invoke' session name arguments = node (Client.invoke session name arguments)
+-- | Apply a global to tokens as that attempt.
+invoke' :: Session -> P.Int -> GlobalName -> P.Array Token -> Aff (Either RequestFailure (Either InvocationFailure Token))
+invoke' session attempt name arguments = node (Client.invoke session { global: name, arguments, attempt })
 
 token :: Token
 token = Object.fromFoldable
@@ -330,7 +331,7 @@ spec = describe "steam session, loading and invoking" do
       s <- streams
       opened (steamWith [ "--manifest", manifestPath "refusing" ] s both) \session -> do
         stageOf <$> load' session (pathOf "Host") >>= shouldEqual (Just Initialization)
-        reasonOf <$> invoke' session (global "Host" "greet") [ token ]
+        reasonOf <$> invoke' session 1 (global "Host" "greet") [ token ]
           >>= shouldEqual (Just NoSuchModule)
         -- and the name is free: a failed load committed no module under it
         stageOf <$> load' session (pathOf "Host") >>= shouldEqual (Just Initialization)
@@ -353,7 +354,7 @@ spec = describe "steam session, loading and invoking" do
       opened (steamWith [] s both) \session -> do
         loadAll session [ "Base.String" ]
         loading <- forkAff (load' session (pathOf "Guest"))
-        invoking <- forkAff (invoke' session (global "Guest" "identity") [ token ])
+        invoking <- forkAff (invoke' session 1 (global "Guest" "identity") [ token ])
         joinFiber loading >>= shouldEqual (Right (Right "Guest"))
         map (map text) <$> joinFiber invoking >>= shouldEqual (Right (Right (text token)))
         close' session >>= shouldEqual (Right unit)
@@ -362,7 +363,7 @@ spec = describe "steam session, loading and invoking" do
       s <- streams
       opened (steamWith [] s both) \session -> do
         loadAll session [ "Base.String", "Guest" ]
-        invoke' session (global "Guest" "identity") [ token ] >>= case _ of
+        invoke' session 1 (global "Guest" "identity") [ token ] >>= case _ of
           Right (Right back) -> text back `shouldEqual` text token
           other -> fail ("no token came back: " <> show (map (map (const unit)) other))
         close' session >>= shouldEqual (Right unit)
@@ -371,13 +372,13 @@ spec = describe "steam session, loading and invoking" do
       s <- streams
       opened (steamWith [] s both) \session -> do
         loadAll session [ "Base.String", "Guest", "OpaqueGuest" ]
-        let reason g n = reasonOf <$> invoke' session (global g n) [ token ]
-        reason "Nowhere" "identity" >>= shouldEqual (Just NoSuchModule)
-        reason "Guest" "nothing" >>= shouldEqual (Just NoSuchGlobal)
-        reason "Guest" "seven" >>= shouldEqual (Just NotCallable)
-        reason "Guest" "faulting" >>= shouldEqual (Just Fault)
-        reason "Guest" "constant" >>= shouldEqual (Just (NotAToken ClassInt))
-        reason "OpaqueGuest" "fresh" >>= shouldEqual (Just (NotAToken ClassOpaque))
+        let reason attempt g n = reasonOf <$> invoke' session attempt (global g n) [ token ]
+        reason 1 "Nowhere" "identity" >>= shouldEqual (Just NoSuchModule)
+        reason 2 "Guest" "nothing" >>= shouldEqual (Just NoSuchGlobal)
+        reason 3 "Guest" "seven" >>= shouldEqual (Just NotCallable)
+        reason 4 "Guest" "faulting" >>= shouldEqual (Just Fault)
+        reason 5 "Guest" "constant" >>= shouldEqual (Just (NotAToken ClassInt))
+        reason 6 "OpaqueGuest" "fresh" >>= shouldEqual (Just (NotAToken ClassOpaque))
         ping' session >>= shouldEqual (Right unit)
         close' session >>= shouldEqual (Right unit)
 
@@ -387,7 +388,7 @@ spec = describe "steam session, loading and invoking" do
       opened (steamWith [] s hello) \session -> do
         codeOf <$> request' session "load" (encodeLoad (pathOf "Guest"))
           >>= shouldEqual (Just "capabilityNotInForce")
-        codeOf <$> request' session "invoke" (encodeInvoke (global "Guest" "identity") [ token ])
+        codeOf <$> request' session "invoke" (encodeInvoke { global: global "Guest" "identity", arguments: [ token ], attempt: 1 })
           >>= shouldEqual (Just "capabilityNotInForce")
         codeOf <$> request' session "load" (Object.singleton "path" (fromNumber 5.0))
           >>= shouldEqual (Just "capabilityNotInForce")
@@ -409,7 +410,7 @@ spec = describe "steam session, loading and invoking" do
       opened (steamWith [] s both) \session -> do
         loadAll session [ "Base.String" ]
         loading <- forkAff (load' session (pathOf "Guest"))
-        invoking <- forkAff (invoke' session (global "Guest" "identity") [ token ])
+        invoking <- forkAff (invoke' session 1 (global "Guest" "identity") [ token ])
         closing <- forkAff (request' session closeKind Object.empty)
         late <- forkAff (request' session "load" (Object.singleton "path" (fromNumber 5.0)))
         latePing <- forkAff (ping' session)
@@ -454,7 +455,7 @@ spec = describe "steam session, loading and invoking" do
       s <- streams
       opened (steamWith [] s both) \session -> do
         loadAll session [ "Base.IO", "BugGuest" ]
-        invoke' session (global "BugGuest" "boom") [ token ] >>= case _ of
+        invoke' session 1 (global "BugGuest" "boom") [ token ] >>= case _ of
           Left (SessionLost (ExitedUnannounced exit)) -> exit.code `shouldEqual` Just 3
           other -> fail ("the defect was answered: " <> show (map (map (const unit)) other))
         ping' session >>= case _ of

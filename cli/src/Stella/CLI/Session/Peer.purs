@@ -94,6 +94,9 @@ data SessionFailure
   | HandlerFailed String
   -- | This side shut the session down, and something was still asked of it.
   | ShutDown
+  -- | The other side answered a request of this side's in a way the protocol does
+  -- | not admit, as what was wrong. A side goes on only with answers it can trust.
+  | PeerViolated String
 
 derive instance Eq SessionFailure
 derive instance Generic SessionFailure _

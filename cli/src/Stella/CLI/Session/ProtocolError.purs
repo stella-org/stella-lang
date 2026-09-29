@@ -44,6 +44,9 @@ data ProtocolError
   -- | A request whose `id` is not above every `id` the side sending it used
   -- | before. It is not run: a request sent twice would otherwise act twice.
   | IdReused
+  -- | An `invoke` whose `attempt` is not above every `attempt` admitted before. It
+  -- | is not run: an attempt once begun is never begun again.
+  | AttemptNotAbove
 
 derive instance Eq ProtocolError
 derive instance Generic ProtocolError _
@@ -84,6 +87,8 @@ encodeProtocolError error = Object.fromFoldable
       ("the capability a `" <> kind <> "` request belongs to is not in force")
     IdReused -> Tuple "idReused"
       "the request's `id` is not above every `id` used before"
+    AttemptNotAbove -> Tuple "attemptNotAbove"
+      "the invocation's `attempt` is not above every `attempt` admitted before"
 
 -- | The code a protocol error carries, and its detail. A reader keeps the code as
 -- | text: a code this side does not know is still a protocol error.

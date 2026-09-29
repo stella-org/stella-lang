@@ -562,6 +562,20 @@ The channel `steam session` speaks on, before any request of a profile uses it (
 | `load`, `invoke`, `close`, then `load` and `ping`, sent without waiting | The first two answered, then `closed`; the last two refused as `kindUnexpected` |
 | The channel lost with loads queued behind a running one | The running one finishes and nothing queued behind it starts: status `1`, and no queued module initialized |
 | A defect of the interpreter while a guest runs, or while a module initializes | The session ends with status `3`, answering nothing more |
+| A module importing `Stella.Elab`, loaded once the session is ready | Loaded: `Stella.Elab` was installed before `ready` |
+| A module named `Stella`, `Stella.Elab`, or `Stella.Other`, whatever the path holds; one named `Stellar` | `loadFailed` at `refused`; `Stellar` loaded |
+| `hello`, `ping`, an unknown kind, a second `hello`, a `load` whose capability is not in force, `close`, and `ping`, sent without waiting | `ready`, then each answered in the order sent — `pong`, three protocol errors, `closed`, and `kindUnexpected`: nothing a request is answered with, a refusal included, comes before `ready` |
+| A guest performing two commands, the second built from the first answer | Two `kernel` requests of the invocation's attempt, the second naming what the first answer held, and the token the second answer held returned |
+| A guest's command where `kernel` is not in force | `kernelNotInForce`, no `kernel` request sent, and the next request answered |
+| A command holding a closure | `commandNotEncodable` with the class `closure` |
+| `abandoned` answering a `kernel` request | `abandoned`, the guest not going on, and the next invocation answered |
+| An attempt of `0`; one not above every attempt admitted before; one of an invocation that failed, sent again | `payloadInvalid`; `attemptNotAbove`; `attemptNotAbove`. None of them began |
+| An answer that is no canonical value, one that is no `GuestAnswer`, an `answered` or `abandoned` of another shape, a protocol error, a response of another kind | The session ends with status `1`, the invocation unanswered |
+| A `GuestAnswer` that a store without `Stella.Elab` is asked to take in | The interpreter's defect, not the client's violation |
+| A generic value of every form, written and read back; any value built by hand, written where it can be | The same value; a value that cannot be read back is refused where it is written, with the place |
+| NaN patterns, `-0`, infinities, the smallest subnormal | Written as their bit patterns, every NaN as `7ff8000000000000`, any NaN pattern read as NaN |
+| A value off the canonical form: a key twice or out of order, a lone surrogate, an `int` out of range, a member besides | Refused, naming the place |
+| A list of 100,000 elements, and nesting 100,000 deep | Written, rendered, read, checked, and brought into the machine without running out of stack |
 
 ### The foreign manifest (step 5, interpreter 6)
 

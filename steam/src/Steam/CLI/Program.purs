@@ -23,7 +23,8 @@ import Effect.Ref as Ref
 import Run (AFF, EFFECT, Run, liftEffect)
 import Run.Except (EXCEPT)
 import Run.Except as Except
-import Steam.CLI.Error (ErrorType(..))
+import Steam.CLI.Elaboration as Elaboration
+import Steam.CLI.Error (ErrorType(..), SessionDefect(..))
 import Steam.CLI.Options (Command(..), Options, RunOptions)
 import Data.String as String
 import Steam.Drive (execute)
@@ -51,9 +52,14 @@ program opts = case opts.command of
     -- **the manifest is read before the channel is opened**: a manifest that does not
     -- read is a session that does not start, not a refusal it could answer
     manifest <- readManifest sessionOptions.manifest
+    -- `Stella.Elab` is lowered before the channel is opened too: the compiler this
+    -- interpreter is built with failing to supply it is a defect, not a refusal
+    elaboration <- case Elaboration.prepare of
+      Left reason -> Except.throw (SessionDefect (ElaborationUnavailable reason))
+      Right elaboration -> pure elaboration
     identities <- liftEffect (Ref.new noIdentities)
     unit <- liftEffect (unitValue identities)
-    Session.serve { manifest, base: baseOf sessionOptions.manifest, identities, unit }
+    Session.serve { manifest, base: baseOf sessionOptions.manifest, identities, unit, elaboration }
 
 -- | Load the modules given, in the order given, and execute the entry point.
 -- |

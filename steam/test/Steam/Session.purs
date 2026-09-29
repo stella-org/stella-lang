@@ -15,6 +15,7 @@ module Test.Steam.Session
   , ping'
   , request'
   , opened
+  , steamChild
   ) where
 
 import Prelude
@@ -135,7 +136,7 @@ spec = describe "steam session" do
       map _.supported protocol `shouldEqual` Just supported
       profile <- refusal (hello { profile = "repl" })
       map _.reason profile `shouldEqual` Just ProfileUnsupported
-      capability <- refusal (hello { requires = [ "kernel" ] })
+      capability <- refusal (hello { requires = [ "someday" ] })
       map _.reason capability `shouldEqual` Just CapabilityUnsupported
 
     it "writes out its refusal and then ends with status 1" do
@@ -157,7 +158,7 @@ spec = describe "steam session" do
     it "puts in force no capability it does not have, however much is offered" do
       s <- streams
       opened (steam s (hello { offers = [ "kernel", "someday" ] })) \session -> do
-        (Client.ready session).capabilities `shouldEqual` []
+        (Client.ready session).capabilities `shouldEqual` [ "kernel" ]
         ping' session >>= shouldEqual (Right unit)
         close' session >>= shouldEqual (Right unit)
 

@@ -3,8 +3,14 @@
 -- | ```text
 -- | load    { path }                        → loaded { module } or loadFailed { stage, detail }
 -- | invoke  { global: { module, name },     → returned { token }
--- |           arguments: [ token ] }          or invocationFailed { reason, detail [, class] }
+-- |           arguments: [ token ],           or invocationFailed { reason, detail [, class] }
+-- |           attempt }
 -- | ```
+-- |
+-- | **An `attempt` names one invocation for good.** It is an integer from 1 to
+-- | 2147483647, and each `invoke` a session admits carries one above every attempt
+-- | it admitted before, whatever became of those; the `kernel` requests a running
+-- | invocation makes carry it back ([Kernel](Kernel.purs)).
 -- |
 -- | **Every payload has exactly the fields shown**: a decoder refuses a missing
 -- | field, a field of another type, and a field it does not know, so one payload
@@ -16,6 +22,8 @@
 module Stella.CLI.Session.Guest
   ( Token
   , GlobalName
+  , InvokeRequest
+  , attemptOf
   , LoadStage(..)
   , LoadFailure
   , InvocationReason(..)
@@ -43,9 +51,10 @@ module Stella.CLI.Session.Guest
 
 import Prelude
 
-import Data.Argonaut.Core (Json, caseJsonArray, caseJsonObject, caseJsonString, fromArray, fromObject, fromString)
+import Data.Argonaut.Core (Json, caseJsonArray, caseJsonNumber, caseJsonObject, caseJsonString, fromArray, fromNumber, fromObject, fromString)
 import Data.Array as Array
 import Data.Generic.Rep (class Generic)
+import Data.Int as Int
 import Data.Maybe (Maybe(..))
 import Data.Show.Generic (genericShow)
 import Data.Traversable (traverse)
@@ -89,6 +98,14 @@ data InvocationReason
   | Fault
   -- | What the guest returned is not a token, as the class of value it is.
   | NotAToken ValueClass
+  -- | The guest asked the kernel in a session whose `kernel` capability is not in
+  -- | force.
+  | KernelNotInForce
+  -- | The guest asked the kernel with a value the wire has no form for, as the
+  -- | class of the part that has none.
+  | CommandNotEncodable ValueClass
+  -- | The host ended the attempt while the guest waited for an answer.
+  | Abandoned
 
 derive instance Eq InvocationReason
 derive instance Generic InvocationReason _
@@ -183,24 +200,32 @@ stageOf = case _ of
 
 -- Invoke ------------------------------------------------------------------------------
 
-encodeInvoke :: GlobalName -> Array Token -> Object Json
-encodeInvoke global arguments = Object.fromFoldable
+-- | An `invoke`: the global applied, the tokens it is applied to, and the attempt
+-- | it is.
+type InvokeRequest = { global :: GlobalName, arguments :: Array Token, attempt :: Int }
+
+encodeInvoke :: InvokeRequest -> Object Json
+encodeInvoke r = Object.fromFoldable
   [ Tuple "global" $ fromObject $ Object.fromFoldable
-      [ Tuple "module" (fromString global.module)
-      , Tuple "name" (fromString global.name)
+      [ Tuple "module" (fromString r.global.module)
+      , Tuple "name" (fromString r.global.name)
       ]
-  , Tuple "arguments" (fromArray (map fromObject arguments))
+  , Tuple "arguments" (fromArray (map fromObject r.arguments))
+  , Tuple "attempt" (fromNumber (Int.toNumber r.attempt))
   ]
 
-decodeInvoke :: Object Json -> Maybe { global :: GlobalName, arguments :: Array Token }
+-- | An `invoke` whose attempt is not an integer from 1 to 2147483647 has no
+-- | reading.
+decodeInvoke :: Object Json -> Maybe InvokeRequest
 decodeInvoke o = do
-  exactly [ "global", "arguments" ] o
+  exactly [ "global", "arguments", "attempt" ] o
   g <- field "global" o >>= objectOf
   exactly [ "module", "name" ] g
   m <- field "module" g >>= stringOf
   name <- field "name" g >>= stringOf
   arguments <- field "arguments" o >>= caseJsonArray Nothing Just >>= traverse objectOf
-  pure { global: { module: m, name }, arguments }
+  attempt <- field "attempt" o >>= attemptOf
+  pure { global: { module: m, name }, arguments, attempt }
 
 encodeReturned :: Token -> Object Json
 encodeReturned token = Object.singleton "token" (fromObject token)
@@ -208,13 +233,15 @@ encodeReturned token = Object.singleton "token" (fromObject token)
 decodeReturned :: Object Json -> Maybe Token
 decodeReturned o = exactly [ "token" ] o *> (field "token" o >>= objectOf)
 
--- | `class` stands exactly where the reason is `notAToken`, and nowhere else.
+-- | `class` stands exactly where the reason is `notAToken` or `commandNotEncodable`,
+-- | and nowhere else.
 encodeInvocationFailed :: InvocationFailure -> Object Json
 encodeInvocationFailed f = Object.fromFoldable $
   [ Tuple "reason" (fromString (reasonCode f.reason))
   , Tuple "detail" (fromString f.detail)
   ] <> case f.reason of
     NotAToken class' -> [ Tuple "class" (fromString (classCode class')) ]
+    CommandNotEncodable class' -> [ Tuple "class" (fromString (classCode class')) ]
     _ -> []
 
 decodeInvocationFailed :: Object Json -> Maybe InvocationFailure
@@ -225,6 +252,9 @@ decodeInvocationFailed o = do
     "notAToken" -> do
       exactly [ "reason", "detail", "class" ] o
       NotAToken <$> (field "class" o >>= stringOf >>= classOf)
+    "commandNotEncodable" -> do
+      exactly [ "reason", "detail", "class" ] o
+      CommandNotEncodable <$> (field "class" o >>= stringOf >>= classOf)
     _ -> do
       exactly [ "reason", "detail" ] o
       simpleReasonOf code
@@ -237,6 +267,9 @@ reasonCode = case _ of
   NotCallable -> "notCallable"
   Fault -> "fault"
   NotAToken _ -> "notAToken"
+  KernelNotInForce -> "kernelNotInForce"
+  CommandNotEncodable _ -> "commandNotEncodable"
+  Abandoned -> "abandoned"
 
 simpleReasonOf :: String -> Maybe InvocationReason
 simpleReasonOf = case _ of
@@ -244,6 +277,8 @@ simpleReasonOf = case _ of
   "noSuchGlobal" -> Just NoSuchGlobal
   "notCallable" -> Just NotCallable
   "fault" -> Just Fault
+  "kernelNotInForce" -> Just KernelNotInForce
+  "abandoned" -> Just Abandoned
   _ -> Nothing
 
 classCode :: ValueClass -> String
@@ -298,3 +333,9 @@ stringOf = caseJsonString Nothing Just
 
 objectOf :: Json -> Maybe (Object Json)
 objectOf = caseJsonObject Nothing Just
+
+-- | An attempt: an integer from 1 to 2147483647.
+attemptOf :: Json -> Maybe Int
+attemptOf json = do
+  n <- caseJsonNumber Nothing Just json >>= Int.fromNumber
+  if n >= 1 then Just n else Nothing

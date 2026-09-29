@@ -260,11 +260,11 @@ serves both, and what separates them is a profile fixed when the session opens**
 what a REPL may ask for and what an elaboration may ask for are different sets, and
 a REPL reaching a compiler's metavariables is what keeping them apart prevents.
 
-**What that costs the `run` command is nothing, and what it costs the framing is one
-decision now.** The messages a session carries will grow — a request that yields
-back to the host mid-attempt is what the elaboration profile needs, and it does not
-exist yet — so the framing is tagged from the first version rather than being a
-single request and a single answer that a later kind has to be squeezed into.
+**What that costs the `run` command is nothing, and what it cost the framing was one
+decision.** The messages a session carries grow with what it serves — the
+elaboration profile adds a request of the session's own, made while an invocation
+waits for the host — so the framing is tagged rather than being a single request
+and a single answer that a later kind has to be squeezed into.
 
 #### The session's channel
 
@@ -328,17 +328,29 @@ or `capability` and `supported` what this side can open with. **The lifecycle re
 it negotiated. A capability names an optional family of requests beyond them; the set
 the handshake put in force is held for the life of the session, and a request of a
 family not in force is a protocol error. Only what is implemented is advertised:
-protocol `1`, the profile `elaboration`, and the capabilities `modules` and `invoke`
-(below); the kernel callbacks of the elaboration profile will be a third. A request
-before the handshake, a second handshake, and any request once `close` has arrived are
-protocol errors.
+protocol `1`, the profile `elaboration`, and the capabilities `modules`, `invoke`, and
+`kernel` (below). A request before the handshake, a second handshake, and any request
+once `close` has arrived are protocol errors.
+
+**`ready` means `Stella.Elab` is there.** An accepted `hello` is not answered at once:
+the session first installs `Stella.Elab`, the module every guest is written against,
+which the interpreter builds from the compiler it is built with rather than loading
+from anywhere. Every request arriving meanwhile is answered after `ready`: one
+admitted waits its turn behind the installation, and an answer settled at once — a
+`pong`, a protocol error, a refusal once `close` has arrived — is held there too, in
+the order its request arrived. Once `ready` has gone out, such answers are written at
+once again. A message refused before it is a request at all — a payload that does not
+read, an envelope that is not one, a number used before — is answered where it
+arrives, the channel layer knowing nothing of the session's stages.
 
 | How it ends | Status |
 | --- | --- |
 | `close`, answered by `closed` | `0` |
 | a handshake answered by `refused` | `1` |
 | the channel ending or failing unasked, or a frame with no boundary to trust | `1` |
+| the client answering a `kernel` request in a way the protocol does not admit | `1` |
 | a defect of the interpreter answering a request, or reached while loading or running what was asked | `3` |
+| `Stella.Elab` failing to be built or installed | `3`, before `ready` |
 | a manifest given at start that does not read, or names another target | `1`, before the handshake |
 
 **The process ends by having nothing left to do**, the last frame written and the
@@ -358,7 +370,8 @@ supply is refused where it loads.
 | capability | request | answered by |
 | --- | --- | --- |
 | `modules` | `load { path }` | `loaded { module }`, or `loadFailed { stage, detail }` |
-| `invoke` | `invoke { global: { module, name }, arguments: [ token ] }` | `returned { token }`, or `invocationFailed { reason, detail }` with a `class` where the reason is `notAToken` |
+| `invoke` | `invoke { global: { module, name }, arguments: [ token ], attempt }` | `returned { token }`, or `invocationFailed { reason, detail }` with a `class` where the reason is `notAToken` or `commandNotEncodable` |
+| `kernel` | `kernel { attempt, command }`, **sent by the session** while an invocation waits | `answered { answer }`, or `abandoned {}` |
 
 Every payload has exactly those fields, and a request whose payload has another shape
 is a protocol error rather than a failed load or invocation. A `load` path is resolved
@@ -377,6 +390,19 @@ finishes and nothing queued behind it starts.
 **A request is judged in one order**, the first rule that applies answering: the
 envelope; the stage the session stands at; the kind; the capability; and only then the
 payload the kind carries.
+
+**An attempt names one invocation for good.** It is an integer from `1` to `2³¹−1`,
+and an `invoke` whose attempt is not above every attempt admitted before is refused
+with the protocol error `attemptNotAbove` before anything runs. The attempt is taken
+when the request is admitted, in the order requests arrive, and never again, whatever
+becomes of the invocation; an `invoke` refused earlier — its capability not in force,
+its payload of another shape — takes none.
+
+**A module under the `Stella` prefix is refused by its name**, whatever the path
+holds: once the bytes decode, a module named `Stella` or `Stella.…` is `loadFailed`
+at the stage `refused`, before any implementation is reached. `Stella.Elab` is the
+interpreter's own to install, and a module of that name from anywhere else would
+decide what a guest's commands and answers are.
 
 **A load commits whole or not at all.** The module, its globals, and the foreign entries
 reached for it enter the session together; a load failing at any stage — the path
@@ -398,6 +424,57 @@ A global faulting as it initializes, or a guest faulting as it runs, fails that 
 and the session goes on. The interpreter meeting a `Bug` — a state no `.dmo` admits —
 or an `Unimplemented` — something it does not carry out — in either ends the session
 with status `3` and answers nothing more.
+
+#### A guest's commands
+
+**An invocation stands on a root boundary** of `Stella.Elab.Kernel` and its one
+operation `command` (above). A guest performing it stops the run, and the session
+asks the client with a `kernel` request naming the invocation's attempt and carrying
+the command; the invocation waits, and the receiver goes on reading, which is what the
+answer needs. `answered` resumes the guest with the answer, and each further command is
+a request of its own; `abandoned` says the host ended the attempt, and the invocation
+fails with `abandoned` without the guest going on. Where `kernel` is not in force, a
+command fails the invocation with `kernelNotInForce` and nothing is sent.
+
+**A command and an answer cross as generic values**, which name constructors and keys
+and hold no type:
+
+```text
+value = { "int": n } | { "number": hex16 } | { "char": codePoint } | { "string": s }
+      | { "boolean": b }
+      | { "data": { "module", "name" }, "fields": [ value ] }
+      | { "record": [ { "key": key, "value": value } ] }
+      | { "variant": { "key": key, "value": value } }
+      | { "token": object }
+key   = { "symbol": s } | { "tag": s } | { "position": n } | { "effect": { "module", "name" } }
+```
+
+One value has one encoding, which is the only one written and the only one read:
+every object has exactly its members; an `int` is in the 32-bit range; a `number` is
+the sixteen lowercase hex digits of its binary64 pattern, high nibble first, every NaN
+written as `7ff8000000000000` and any NaN pattern read as NaN (D37); a `char` is a
+Unicode scalar value and no text holds an unpaired surrogate (D27); a `position` is not
+negative; and a record's keys stand once each, symbols before tags before positions
+before effects, text by scalar value, positions by number, effects by module and then
+name. Nothing about a value's depth is bounded but the frame's size: a list is a chain
+of constructors as long as it is, and every walk over one keeps a stack of its own.
+
+**A command with no such encoding is the guest's**: a closure, a partial application,
+a continuation, an `IO`, or an opaque value that is no token in it fails the invocation
+with `commandNotEncodable` and the class of that part. **An answer is checked whole
+before the guest sees it**, against the shape of `GuestAnswer` that the descriptor
+built with `Stella.Elab` gives, so a value a constructor dispatch could not take is
+never handed over. Who is at fault for an answer decides what it ends in:
+
+| The client answered with | Ends in |
+| --- | --- |
+| an `answered` whose answer is no canonical value, or no `GuestAnswer` | the session, status `1` |
+| an `answered` or `abandoned` of another shape, a protocol error, or another kind | the session, status `1` |
+| a `GuestAnswer` the installed `Stella.Elab` cannot be made to hold | the session, status `3`: the descriptor, the module, and the identities disagree |
+
+A command the interpreter built and cannot encode is likewise its own defect, status
+`3`. The names a command is written with are read as they stand when it is sent: an
+answer taken in may have introduced a record key the next command carries.
 
 #### What the process makes of the outcome
 

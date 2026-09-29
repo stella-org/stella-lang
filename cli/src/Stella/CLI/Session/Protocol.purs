@@ -19,6 +19,7 @@ module Stella.CLI.Session.Protocol
   , elaborationProfile
   , modulesCapability
   , invokeCapability
+  , kernelCapability
   , supportedCapabilities
   , capabilityFor
   , Hello
@@ -74,9 +75,14 @@ modulesCapability = "modules"
 invokeCapability :: String
 invokeCapability = "invoke"
 
+-- | `kernel`: a running invocation asks the client, which is the one request
+-- | family the session sends rather than answers.
+kernelCapability :: String
+kernelCapability = "kernel"
+
 -- | The capabilities this side can put in force.
 supportedCapabilities :: Array String
-supportedCapabilities = [ modulesCapability, invokeCapability ]
+supportedCapabilities = [ modulesCapability, invokeCapability, kernelCapability ]
 
 -- | The capability a request of that kind belongs to, where it belongs to one. The
 -- | lifecycle requests belong to none, being the protocol itself.
@@ -84,6 +90,7 @@ capabilityFor :: String -> Maybe String
 capabilityFor = case _ of
   "load" -> Just modulesCapability
   "invoke" -> Just invokeCapability
+  "kernel" -> Just kernelCapability
   _ -> Nothing
 
 type Hello =
