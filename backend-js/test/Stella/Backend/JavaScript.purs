@@ -65,6 +65,7 @@ foreign import parseManifestImpl
 
 -- | A fixture's manifest. `mentions` is what a refusal names, and `faults` the
 -- | global whose initialization a fault ends, each `""` where it does not apply.
+-- | `runs` holds for a fixture whose outcome is running an entry point.
 type Manifest =
   { description :: P.String
   , modules :: P.Array P.String
@@ -72,6 +73,7 @@ type Manifest =
   , mentions :: P.String
   , faults :: P.String
   , observe :: P.Array { global :: P.String, value :: Expected }
+  , runs :: P.Boolean
   }
 
 -- | What a manifest says a value is.
@@ -255,6 +257,51 @@ generatedOrRefused = traverse \dmo -> case generate { runtime: runtimeSpecifier 
 
 -- What a fixture's generation may end at ------------------------------------------------
 
+-- | The fixtures holding a construct this backend does not generate, with the
+-- | construct each is refused for. Such a fixture generating fails, and so does its
+-- | refusal naming another construct.
+knownUnsupported :: P.Array { name :: P.String, unsupported :: P.String }
+knownUnsupported =
+  map (gap (io "pure"))
+    [ "io"
+    , "io-entry-arity-bind"
+    , "io-entry-arity-pure"
+    , "io-pure"
+    , "run-action-breached"
+    , "run-action-refused"
+    , "run-action-threw"
+    , "run-action-threw-bug"
+    , "run-action-threw-fault"
+    , "run-breach-action-not-callable"
+    , "run-breach-boolean-number"
+    , "run-breach-char-surrogate"
+    , "run-breach-char-two"
+    , "run-breach-int-fraction"
+    , "run-breach-int-string"
+    , "run-breach-int-wide"
+    , "run-breach-number-string"
+    , "run-breach-string-surrogate"
+    , "run-refused"
+    , "run-threw"
+    , "run-threw-bug"
+    , "run-threw-fault"
+    , "start-no-global"
+    , "start-not-an-action"
+    ]
+    <> map (gap (host "greet"))
+      [ "foreign-no-entry"
+      , "foreign-no-export"
+      , "foreign-no-signature"
+      , "foreign-not-callable"
+      , "foreign-params-length"
+      , "foreign-unreachable"
+      ]
+    <> map (gap (host "add")) [ "stale-foreign-call", "stale-foreign-partial" ]
+  where
+  gap unsupported name = { name, unsupported }
+  io x = "the foreign declaration Base.IO." <> x
+  host x = "the foreign declaration Host." <> x
+
 -- | The fixtures whose manifest says they are refused where they load, and which
 -- | this backend refuses where it generates, with the refusal each must be. Any
 -- | other refusal at generation fails, and so does such a fixture generating.
@@ -289,6 +336,12 @@ spec = describe "the JavaScript backend" do
     names <- liftEffect (caseNames fixturesRoot)
     Array.filter (\n -> not (Array.elem n names)) (map _.name generationRefusals)
       `shouldEqual` []
+
+  it "lists only fixtures that exist as unsupported" do
+    names <- liftEffect (caseNames fixturesRoot)
+    Array.filter (\n -> not (Array.elem n names)) (map _.name knownUnsupported)
+      `shouldEqual` []
+
   describe "what the generated code holds" do
     it "captures a computed local, and the closure reads it through CAPT" do
       programs <- fixtureModules "programs"
@@ -481,19 +534,26 @@ fixtureMismatches name = do
     Left err -> pure [ err ]
     Right dmos -> case generatedOrRefused dmos of
       Left err
+        | Just gap <- listedUnsupported -> pure
+            if err == Unsupported gap.unsupported then []
+            else [ name <> ": refused as " <> show err <> ", not as the construct it is listed as unsupported for" ]
         | Just r <- refusedAtGeneration -> pure
             if refusedAtLoad manifest && r.refusal err && String.contains (String.Pattern manifest.mentions) (show err) then []
             else [ name <> ": refused as " <> show err <> ", not as the refusal naming " <> manifest.mentions <> " it is listed for" ]
         | otherwise -> pure [ name <> ": not generated: " <> show err ]
       Right files
+        | Just _ <- listedUnsupported -> pure [ name <> ": generated, where it is listed as unsupported" ]
         | Just _ <- refusedAtGeneration -> pure [ name <> ": generated, where it is listed as refused" ]
+        | manifest.runs -> pure [ name <> ": generated, and running an entry point is not checked here" ]
         | otherwise -> case Array.last manifest.modules of
             Nothing -> pure [ name <> ": no modules" ]
             Just entry -> run manifest files (entry <> ".js")
   where
   refusedAtGeneration = Array.find (\r -> r.name == name) generationRefusals
 
-  refusedAtLoad m = not m.loads && m.faults == ""
+  listedUnsupported = Array.find (\gap -> gap.name == name) knownUnsupported
+
+  refusedAtLoad m = not m.loads && m.faults == "" && not m.runs
 
   run :: Manifest -> P.Array { name :: P.String, source :: P.String } -> P.String -> Aff (P.Array P.String)
   run manifest files entry =

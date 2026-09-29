@@ -130,5 +130,6 @@ export const parseManifestImpl = (k) => (text) => {
     mentions: "refusedAtLoad" in m.outcome ? m.outcome.refusedAtLoad.mentions : "",
     faults: "faultsAtLoad" in m.outcome ? m.outcome.faultsAtLoad.global : "",
     observe: m.observe.map((o) => ({ global: o.global, value: value(o.value) })),
+    runs: "runs" in m.outcome || "faultsAtRun" in m.outcome || "startFails" in m.outcome,
   };
 };
