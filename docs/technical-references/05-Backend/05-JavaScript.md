@@ -39,16 +39,16 @@ generated.** A decoder hands on every module whose bytes it can read, and whethe
 module's declarations are its own, whether a name is declared twice in one
 namespace, whether its exports name its values, whether its globals are
 installable — a `func` over a function of at least one parameter, a `run` over one
-of none, neither expecting captures — whether a foreign the ABI fixes as an
-operation is declared at that operation's arity, whether a handler declares one
-cell or holds clauses for one operation twice, compared by the key and the name an
-index holds rather than by the index, and whether every `HNDL` and `TAILHNDL`
-supplies as many clauses and initial cell values as its handler holds are
-properties of the module rather than of its bytes. Steam checks them where a module loads
-([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)); generated code has no
-such moment for what one module decides alone, so the backend checks them first and
-refuses the module otherwise. What another module declares is checked where the
-generated modules are linked and loaded (below).
+of none, neither expecting captures — whether a foreign the ABI fixes, an
+operation or a `Base.IO` entry, is declared at the arity the ABI gives it, whether
+a handler declares one cell or holds clauses for one operation twice, compared by
+the key and the name an index holds rather than by the index, and whether every
+`HNDL` and `TAILHNDL` supplies as many clauses and initial cell values as its
+handler holds are properties of the module rather than of its bytes. Steam checks
+them where a module loads ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md));
+generated code has no such moment for what one module decides alone, so the backend
+checks them first and refuses the module otherwise. What another module declares is
+checked where the generated modules are linked and loaded (below).
 
 **That restriction is the point of the route.** A `.dmo` is what a backend outside
 this compiler builds on (D34), and a first-class backend reading the same file is
@@ -113,27 +113,31 @@ partial application waits on it — so nothing compares one while the program ru
 | --- | --- |
 | the global's own name | a global of `EXPORTS`. A global the module does not export is not exported, which is what data abstraction is (D22) |
 | `ctor Name` | the descriptor of a constructor the module declares. Every constructor is exported: a `.dmo` does not record which a module publishes, a type checker having settled that before the file existed |
+| `foreign name` | the descriptor of a foreign of `EXPORTS`, whatever carries it out (below) |
 | `arity table` | the definitional arity of each exported global installed as a function |
+| `entry point` | the global the build names as the program's entry point, in the module holding it |
 
-The last two hold a space, so no Stella identifier is either of them.
+Every name but a global's holds a space, so no Stella identifier is one of them.
 
 **Every name another module is referred to by is imported by that name**: each
-imported name `GLOBALREFS`, `CTORREFS`, or `CALLEES` holds is imported once, whether
-or not anything then reads it. Linking the generated modules therefore refuses a
-reference to what the declaring module does not export, before anything runs, which
-is where Steam refuses one. Every module of `IMPORTS` is imported, its arity table
-at least, so an imported module is initialized before this one whether or not
-anything of it is named, which is the order module initialization owes
-([Bytecode](01-Bytecode.md)).
+imported name `GLOBALREFS`, `CTORREFS`, `FOREIGNREFS`, or `CALLEES` holds is imported
+once, whether or not anything then reads it — a foreign the runtime carries out
+included, though it is called as the runtime's own. Linking the generated modules
+therefore refuses a reference to what the declaring module does not export, before
+anything runs, which is where Steam refuses one. Every module of `IMPORTS` is
+imported, its arity table at least, so an imported module is initialized before this
+one whether or not anything of it is named, which is the order module initialization
+owes ([Bytecode](01-Bytecode.md)).
 
 **What one module assumed of another is checked where the modules load.** A known
 call to an imported global supplied the definitional arity the importing module's
-interface gave it, a partial application of one supplied fewer, and a construction
-of an imported constructor supplied its arity. The generated module checks each
-against what the declaring module exports — its arity table and its descriptors —
-as its first act, and refuses to load where one disagrees. A stale `.dmi` is
-therefore a module that does not load rather than a call that passes the wrong
-number of arguments ([Interface](03-Interface.md)).
+interface gave it, a partial application of one supplied fewer, a construction of an
+imported constructor supplied its arity, and a call of an imported foreign supplied
+the arity it is declared at and a partial application of one fewer. The generated
+module checks each against what the declaring module exports — its arity table and
+its descriptors — as its first act, and refuses to load where one disagrees. A stale
+`.dmi` is therefore a module that does not load rather than a call that passes the
+wrong number of arguments ([Interface](03-Interface.md)).
 
 **A global is initialized where the module is evaluated**, in the order of
 `GLOBALS`: a `func` global becomes a closure over an empty capture list, and a `run`
@@ -210,10 +214,7 @@ it with its arity and leave the rest pending on what comes back, and a partial
 application completed later carries out the callee once the last argument arrives
 ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)). Registers live in the
 frame, so a deep non-tail recursion takes heap and not host stack: **the depth of
-a program's calls narrows nothing about which programs the backend runs.** What the
-backend does not run is decided by what it does not generate — a foreign other than
-an operation, and the execution of an `IO`, which the foreign manifest and the drive
-loop are for (below) — and not by call depth.
+a program's calls narrows nothing about which programs the backend runs.**
 
 **The strategy is the backend's to change, not the format's.** Frame IR, the lower
 IR the frame strategy cuts a module into, holds the segments; a strategy converting
@@ -358,11 +359,59 @@ resource failure of undetermined cause, still carrying what was thrown.
 
 ## Foreigns, operations, and `IO`
 
-**A foreign implementation is the one the machine calls.** The backend reads the
-manifest for the target `javascript`, marshals by the signatures it carries, and
-recognises a refusal by the helper's brand ([Foreign Manifest](04-Foreign-Manifest.md)),
-so one implementation serves both consumers. The rules of that document apply
-unchanged: an adapter is uncurried, synchronous, and checked on the way out.
+**A foreign is resolved as a declaration first**: one of this module's `FOREIGNS`,
+or one a module it imports exports, which the generated module imports by name like
+anything else it names in another module. **The name then selects what carries it
+out**, as it does on the machine: an operation of the ABI, `Base.IO.pure` or
+`Base.IO.bind`, which the runtime carries out itself, or else an implementation a
+host supplies. So a foreign of the runtime's that its module does not declare, or
+does not export, is refused as any other would be.
+
+**A foreign implementation is the one the machine calls.** It is reached through the
+manifest for the target `javascript`, marshalled by the signatures that manifest
+carries, and a refusal is recognised by the helper's brand
+([Foreign Manifest](04-Foreign-Manifest.md)), so one implementation serves both
+consumers. The rules of that document apply unchanged: an adapter is uncurried,
+synchronous, and checked on the way out.
+
+**The build reads the manifest, and the backend reads no file.** The build hands the
+backend, for a module, the signature of each foreign it declares that a host
+implements and the specifier those implementations are imported by, resolved
+already: a specifier is resolved against the manifest's place
+([Foreign Manifest](04-Foreign-Manifest.md)), and an import written into the
+generated module would be resolved against the generated module's own. **Only the
+declaring module imports the implementations**, and it alone makes the descriptor of
+each foreign it declares, holding the signature where a host implements it; a module
+calling the foreign imports that descriptor, and the arity a call supplies is checked
+against the declaration where the modules load (above).
+
+**Each invalid combination is refused at the earliest point that can tell.**
+
+| Refused | Where |
+| --- | --- |
+| a foreign a host must implement, declared by a module the manifest gives no entry; an entry giving it no signature; a signature whose `params` are not the declared arity long; an entry the runtime carries out declared at another arity | where the module is generated |
+| an implementation module that cannot be reached; one lacking the export | where the generated modules are linked, the implementation being imported by name |
+| an export that is not callable; a call or partial application of an imported foreign at a count its declaration does not admit | where the generated module is loaded |
+
+**A call is an expression and cuts no segment.** A foreign's body is synchronous and
+applies no Stella function, so nothing can capture the frame across it, and a call
+in tail position returns what the call gives.
+
+**What crosses is converted by the kind of its position, and checked on the way
+out.** A `char` crosses as a string of its one scalar value, and a `unit` parameter
+keeps its place as `undefined`. A result is a breach where it is not of its kind — an
+`int` not a whole number within 32 bits, a `char` not one scalar value, a string
+holding an unpaired surrogate — and `-0` returned as an `int` is `0`, an `Int` having
+one zero (D37). An action is checked to be callable, and what it produces is checked
+by its kind when it is performed.
+
+**Only the host's own call is inside the `try`.** Whatever the implementation
+throws, or an action it returned throws as it is performed, is a throw, the runtime's
+own fault and defect classes included: a host cannot pass for the runtime, and the
+machine, catching every exception there, agrees. The marshalling around the call is
+the runtime's, and what it raises is not taken for a throw. **The six failures are
+kept apart**: a refusal, a throw, and a breach, of a foreign or of an action it
+returned, each reported with the foreign it arose at where the machine reports one.
 
 **An operation is carried out where it stands**, with the meaning
 [Prim and Base](../06-Modules/02-Prim-and-Base.md) fixes, as an expression of the
@@ -385,6 +434,17 @@ Steam reports where a global's initialization fails
 **Executing an `IO` is the drive loop's**, with the shape and the obligations the
 machine's has: `Pure`, `Bind`, and a native action, executed iteratively over a
 stack of pending continuations ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
+Applying a pending function is a run of its own, finished before the loop goes round
+again, and one returning what is not an `IO` is a defect: a `.dmo` carries no type
+to hold it to `a -> IO b`.
+
+**The entry point is the build's to name.** The module holding it exports that global
+as `entry point`, and a name that is no global of the module is refused where the
+module is generated. Whatever starts the program imports it and hands it to the
+runtime to execute. **A global holding no action is a program that does not
+start**, reported apart from a fault and from a defect: any global of a well-formed
+module can be named, so it is neither a run that failed nor a state no module admits,
+which is how the machine reports one too.
 
 ## What testing the backend compares
 
@@ -402,7 +462,10 @@ makes of the same file.
 **The two are compared through shared fixtures rather than against each other.** A
 fixture is a set of lowered modules and a manifest saying which load, in what order,
 whether they load or are refused or fault where they load, and what the named globals
-hold, the values fixed by hand from the program. The machine and the backend each
+hold, the values fixed by hand from the program. A fixture with an entry point says
+how executing it ends — the value it produces, the fault it ends in, or that it does
+not start — and one whose modules declare foreigns a host implements holds a foreign
+manifest and the implementation module it points at. The machine and the backend each
 read the bytes and check the same manifest, so the two agree wherever both pass, and
 neither lowers Core. The compiler's own tests check that every fixture is what
 compiling its source gives now, the format not being frozen.
@@ -417,10 +480,15 @@ giving every local a register of its own. A module no Core compiles to, such as 
 handler naming one cell twice, is made by changing a lowered one, and its manifest
 says what was changed.
 
-**What a manifest observes is how loading ends and what globals hold**, and nothing
-of the effects a program has while it runs. The same sequence of observable effects
-is a claim for once a program can have one — a foreign reached and an `IO`
-executed — and a manifest can record the sequence a run must produce.
+**What a run must produce includes the sequence of its observable effects.** The
+implementation module records the events the fixture chooses to observe, which
+include both ordinary foreign calls and actions as they are performed, and the machine
+and the backend each read that record from the module instance the program reached,
+so the two must agree on what the host saw and in what order, including where a run
+ends in a fault. A fault is compared by its kind and by what both report of one of
+that kind; what each says of a breach is its own wording and is not compared. The
+fixture implementations that throw include ones throwing the runtime's own fault and
+defect classes, which must still be reported as throws.
 
 ## Conformance
 
@@ -440,8 +508,6 @@ ordinary application, and no error is raised for one.
 - **Recognising an exhausted host stack**: what on a given host tells it apart
   from another `RangeError`, beyond reporting what cannot be told apart as of
   undetermined cause
-- **Observing a sequence of effects**: how a manifest records the effects a run
-  must produce, once foreigns and `IO` are generated
 - **The lower-IR optimizations**: an evidence environment in place of a search of
   the stack for a handler or a cell, a `fast` clause run in place, and registers
   kept in host variables between the points where a frame must hold them
