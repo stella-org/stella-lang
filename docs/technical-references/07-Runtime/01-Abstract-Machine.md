@@ -328,16 +328,18 @@ or `capability` and `supported` what this side can open with. **The lifecycle re
 it negotiated. A capability names an optional family of requests beyond them; the set
 the handshake put in force is held for the life of the session, and a request of a
 family not in force is a protocol error. Only what is implemented is advertised:
-protocol `1`, the profile `elaboration`, and no capability yet, the first family being
-the kernel callbacks of the elaboration profile. A request before the handshake, and a
-second handshake, are protocol errors.
+protocol `1`, the profile `elaboration`, and the capabilities `modules` and `invoke`
+(below); the kernel callbacks of the elaboration profile will be a third. A request
+before the handshake, a second handshake, and any request once `close` has arrived are
+protocol errors.
 
 | How it ends | Status |
 | --- | --- |
 | `close`, answered by `closed` | `0` |
 | a handshake answered by `refused` | `1` |
 | the channel ending or failing unasked, or a frame with no boundary to trust | `1` |
-| a defect of the interpreter answering a request | `3` |
+| a defect of the interpreter answering a request, or reached while loading or running what was asked | `3` |
+| a manifest given at start that does not read, or names another target | `1`, before the handshake |
 
 **The process ends by having nothing left to do**, the last frame written and the
 channel released, never by exiting at once, which would cut off what a pipe had not
@@ -346,6 +348,56 @@ yet taken. A client reads the outcome off both what arrived and how the process 
 whatever status follows; an exit without `closed`, status `0` included, is a session
 failed; a protocol error answering a request fails that request, and the session goes
 on.
+
+#### Loading modules and applying guest functions
+
+**`steam session [--manifest path]`.** The manifest is optional, as for `run`, and read
+before the channel is opened. Without one, a module declaring a foreign a host must
+supply is refused where it loads.
+
+| capability | request | answered by |
+| --- | --- | --- |
+| `modules` | `load { path }` | `loaded { module }`, or `loadFailed { stage, detail }` |
+| `invoke` | `invoke { global: { module, name }, arguments: [ token ] }` | `returned { token }`, or `invocationFailed { reason, detail }` with a `class` where the reason is `notAToken` |
+
+Every payload has exactly those fields, and a request whose payload has another shape
+is a protocol error rather than a failed load or invocation. A `load` path is resolved
+against the session's working directory; a manifest's own specifiers against the
+manifest's directory.
+
+**`load`, `invoke`, and `close` run one at a time, in the order they arrived**, not in
+the order of their numbers, while the receiver goes on reading. So a module one request
+loads is there for the next, one module is never initialized twice, and nothing closes
+under a request still running. Once a well-formed `close` has arrived the session is
+closing: what arrived before it is finished and answered, and what arrives after it is
+refused at once. **A channel lost is not a close**: it is noticed before the next
+request is started and wins over the queue, so the request running when it went
+finishes and nothing queued behind it starts.
+
+**A request is judged in one order**, the first rule that applies answering: the
+envelope; the stage the session stands at; the kind; the capability; and only then the
+payload the kind carries.
+
+**A load commits whole or not at all.** The module, its globals, and the foreign entries
+reached for it enter the session together; a load failing at any stage — the path
+unreadable, the bytes not a `.dmo`, the implementations unreachable, the loader
+refusing, a global faulting as it is evaluated — leaves them as they were. Identities
+interned on the way, and host modules reached with whatever their top level did, are
+not taken back.
+
+**A token is a JSON object the session never reads.** It is held as an opaque value
+under a brand of the session's own, so a guest can carry it and return it, and only a
+value holding one reads back as one: another opaque value, an array among them, is
+`notAToken`, and so is anything else, named by its class alone. The same token coming
+back means the same JSON, not the same object. Whether the global holds a function is
+asked before it is applied, so `notCallable` is never a defect of the interpreter read
+as the program's.
+
+**A fault is the program's and is answered; a defect is the interpreter's and is not.**
+A global faulting as it initializes, or a guest faulting as it runs, fails that request
+and the session goes on. The interpreter meeting a `Bug` — a state no `.dmo` admits —
+or an `Unimplemented` — something it does not carry out — in either ends the session
+with status `3` and answers nothing more.
 
 #### What the process makes of the outcome
 

@@ -547,6 +547,21 @@ The channel `steam session` speaks on, before any request of a profile uses it (
 | A process writing megabytes to standard output and standard error before answering | Answered, and every byte drained. A pipe nobody reads stops the process |
 | A character of the output split between two chunks | Whole. A chunk decoded on its own turns each half into a replacement character |
 | A process killed, then asked something | The session is lost, not a request refused |
+| `steam session` with no manifest, loading modules over `Base` alone | Loaded, each answered by its name |
+| The same, loading a module declaring a host foreign | `loadFailed` at `refused`, naming the foreign |
+| A manifest given at start that does not read, or names another target | Exit `1` before the handshake |
+| A path that does not read, bytes that are not a `.dmo`, implementations unreachable, a module the loader refuses, a global that faults initializing | `loadFailed` at `unreadable`, `notBytecode`, `foreigns`, `refused`, and `initialization`, and the next request answered |
+| A load failing after its foreign entries were reached | Nothing of it committed: the module is not there to invoke, and its name loads again |
+| Two loads of one module sent without waiting | The first loaded, the second refused, the module initialized once |
+| A load and an invoke of what it loads, sent without waiting | The invoke sees the module |
+| A guest handing back the token it was given | The same JSON |
+| A module not loaded, a global it lacks, a global not holding a function, a guest that faults | `noSuchModule`, `noSuchGlobal`, `notCallable`, `fault`, and the next request answered |
+| A guest handing back an `Int`, or an array | `notAToken`, with the class `int`, or `opaque`: an opaque value that is not a token is not one |
+| `load` or `invoke` where its capability is not in force, whatever the payload | `capabilityNotInForce` |
+| `load` or `invoke` of another payload shape, the capability in force | `payloadInvalid`, not a failed load or invocation |
+| `load`, `invoke`, `close`, then `load` and `ping`, sent without waiting | The first two answered, then `closed`; the last two refused as `kindUnexpected` |
+| The channel lost with loads queued behind a running one | The running one finishes and nothing queued behind it starts: status `1`, and no queued module initialized |
+| A defect of the interpreter while a guest runs, or while a module initializes | The session ends with status `3`, answering nothing more |
 
 ### The foreign manifest (step 5, interpreter 6)
 
