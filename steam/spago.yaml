@@ -5,6 +5,7 @@ package:
     - aff
     - argparse-basic
     - arrays
+    - avar
     - cli
     - compiler
     - console

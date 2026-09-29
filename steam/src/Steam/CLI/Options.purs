@@ -33,8 +33,13 @@ type RunOptions =
   , modules :: Array String
   }
 
+-- | What `session` is given: where the implementations of the foreigns the
+-- | modules it will load declare are. **Absent is not an error**, as for `run`: a
+-- | module over `Base` alone declares nothing for one to say.
+type SessionOptions = { manifest :: Maybe String }
+
 data Command
-  = Session {}
+  = Session SessionOptions
   | Run RunOptions
 
 derive instance Eq Command
@@ -67,11 +72,18 @@ options =
               ((Run <$> runOptions) <* ArgParser.flagHelp)
           , ArgParser.command [ "session" ]
               "Serve a compiler over descriptor 3 until it closes the session."
-              ((Session {}) <$ ArgParser.flagHelp)
+              ((Session <$> sessionOptions) <* ArgParser.flagHelp)
           ]
     }
     <* ArgParser.flagHelp
   where
+  sessionOptions = ArgParser.fromRecord
+    { manifest:
+        ArgParser.argument [ "--manifest" ]
+          "Path to the foreign-manifest.json"
+          # ArgParser.optional
+    }
+
   runOptions = ArgParser.fromRecord
     { entry:
         ArgParser.argument [ "--entry", "-e" ]

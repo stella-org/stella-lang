@@ -47,7 +47,13 @@ type SteamEffects = (LOG + FS + FOREIGNS + TRANSPORT + EXCEPT ErrorType + AFF + 
 program :: Options -> Run SteamEffects Unit
 program opts = case opts.command of
   Run runOptions -> runProgram runOptions
-  Session _ -> Session.serve
+  Session sessionOptions -> do
+    -- **the manifest is read before the channel is opened**: a manifest that does not
+    -- read is a session that does not start, not a refusal it could answer
+    manifest <- readManifest sessionOptions.manifest
+    identities <- liftEffect (Ref.new noIdentities)
+    unit <- liftEffect (unitValue identities)
+    Session.serve { manifest, base: baseOf sessionOptions.manifest, identities, unit }
 
 -- | Load the modules given, in the order given, and execute the entry point.
 -- |

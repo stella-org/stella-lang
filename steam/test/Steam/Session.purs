@@ -3,7 +3,19 @@
 -- | What is asserted is what a client sees: the answers on descriptor 3 and how the
 -- | process ended. A server written inline stands in for `steam` where a case needs
 -- | a way of ending that `steam` itself never takes.
-module Test.Steam.Session (spec) where
+module Test.Steam.Session
+  ( spec
+  , Streams
+  , streams
+  , draining
+  , hello
+  , node
+  , open'
+  , close'
+  , ping'
+  , request'
+  , opened
+  ) where
 
 import Prelude
 

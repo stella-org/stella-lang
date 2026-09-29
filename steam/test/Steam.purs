@@ -16,6 +16,7 @@ import Test.Steam.Handlers as Handlers
 import Test.Steam.Load as Load
 import Test.Steam.Marshal as Marshal
 import Test.Steam.Session as Session
+import Test.Steam.SessionGuest as SessionGuest
 import Test.Steam.Structural as Structural
 import Test.Steam.Ops as Ops
 import Test.Steam.Value as Value
@@ -36,3 +37,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   Command.spec
   Structural.spec
   Session.spec
+  SessionGuest.spec

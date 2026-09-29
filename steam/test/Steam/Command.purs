@@ -9,7 +9,17 @@
 -- | was it an interpreter bug, and had the entry point begun to run — and a case
 -- | per leaf is what shows nothing falls between them. A path left unclassified
 -- | would exit `0`, which is the worst of the four answers.
-module Test.Steam.Command (spec) where
+module Test.Steam.Command
+  ( spec
+  , writeModules
+  , pathOf
+  , manifestPath
+  , ioModule
+  , stringModule
+  , stringModuleName
+  , outOfRange
+  , bugModule
+  ) where
 
 import Prelude
 

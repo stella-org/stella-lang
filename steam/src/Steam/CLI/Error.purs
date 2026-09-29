@@ -11,9 +11,11 @@
 -- | build handed over wrong from a program that ran and failed.
 module Steam.CLI.Error
   ( ErrorType(..)
+  , SessionDefect(..)
   , exitStatus
   , endsQuietly
   , report
+  , unreachable
   ) where
 
 import Prelude
@@ -65,6 +67,18 @@ data ErrorType
   | SessionRefused Refusal
   -- | The session ended other than by `close`.
   | SessionFailed SessionFailure
+  -- | The interpreter reached a defect of its own while it loaded or ran what a
+  -- | session asked, and the session ended rather than answer as though the program
+  -- | were at fault.
+  | SessionDefect SessionDefect
+
+-- | A defect a session met, which ends it.
+data SessionDefect
+  -- | The interpreter failed other than by the program faulting: a `Bug`, a state
+  -- | no `.dmo` admits, or an `Unimplemented`, something it does not carry out.
+  = DefectRunning Failure
+  -- | A global of a module the session committed held nothing.
+  | GlobalEmpty (Qualified Ident)
 
 -- | What the process exits with.
 exitStatus :: ErrorType -> P.Int
@@ -78,6 +92,7 @@ exitStatus = case _ of
   SessionFailed (HandlerFailed _) -> 3
   SessionFailed (OutgoingTooLarge _) -> 3
   SessionFailed (OutgoingUnencodable _) -> 3
+  SessionDefect _ -> 3
   -- then by the moment: everything below stopped the program before it started
   FileUnreadable _ _ -> 1
   FileNotBytecode _ _ -> 1
@@ -104,6 +119,7 @@ endsQuietly = case _ of
   SessionChannelMissing _ -> true
   SessionRefused _ -> true
   SessionFailed _ -> true
+  SessionDefect _ -> true
   _ -> false
 
 -- | The line a user reads.
@@ -157,6 +173,13 @@ report = case _ of
 
   SessionFailed failure ->
     "The session ended: " <> sessionFailure failure
+
+  SessionDefect (DefectRunning failure) ->
+    describe failure
+
+  SessionDefect (GlobalEmpty name) ->
+    fmt @"Internal error in the interpreter: {name} holds nothing though its module loaded"
+      { name: qualified name }
 
 refused :: RefusalReason -> P.String
 refused = case _ of
