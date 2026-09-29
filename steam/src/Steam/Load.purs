@@ -24,6 +24,7 @@ module Steam.Load
   , emptyStore
   , noIdentities
   , unitValue
+  , internKeyIn
   , claimedByInterpreter
   , registryOf
   , namesOf
@@ -401,21 +402,25 @@ checkDeclarations dmo = do
 -- Identities --------------------------------------------------------------------------
 
 internKey :: forall r. Store -> Key -> Run (LOAD r) KeyId
-internKey store key = do
-  identities <- liftEffect (Ref.read store.identities)
+internKey store key = liftEffect (internKeyIn store.identities key)
+
+-- | The identity of a key, assigned where it has none yet. A key a value carries
+-- | in from outside a load — a record field of a session answer — is interned
+-- | the same way a module's `KEYS` are.
+internKeyIn :: Ref Identities -> Key -> Effect KeyId
+internKeyIn ref key = do
+  identities <- Ref.read ref
   case Map.lookup key identities.keys of
     Just id -> pure id
     Nothing -> do
       let id = KeyId identities.next
-      liftEffect
-        ( Ref.write
-            identities
-              { keys = Map.insert key id identities.keys
-              , keyNames = Map.insert id key identities.keyNames
-              , next = identities.next + 1
-              }
-            store.identities
-        )
+      Ref.write
+        identities
+          { keys = Map.insert key id identities.keys
+          , keyNames = Map.insert id key identities.keyNames
+          , next = identities.next + 1
+          }
+        ref
       pure id
 
 internOp :: forall r. Store -> OpName -> Run (LOAD r) OpId

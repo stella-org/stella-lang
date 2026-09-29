@@ -46,6 +46,7 @@ import Run.Except as Except
 import Steam.CLI.Assemble (entriesFor)
 import Steam.CLI.Error (ErrorType(SessionChannelMissing, SessionRefused, SessionFailed, SessionDefect), SessionDefect(..), unreachable)
 import Steam.CLI.Token as Token
+import Steam.CLI.Wire (classOf)
 import Steam.Eval (Failure(..), applyFunction)
 import Steam.Foreign (emptyTable, insert)
 import Steam.Load (Identities, LoadError(InitializationFailed), Store, emptyStore, globalNamed, load, moduleNamed, registryOf)
@@ -53,7 +54,7 @@ import Steam.Value (Value(..))
 import Stella.CLI.Effect.FS (FS, readBytes)
 import Stella.CLI.Effect.Foreigns (FOREIGNS)
 import Stella.CLI.Effect.Transport (Channel, TRANSPORT, ownChannel)
-import Stella.CLI.Session.Guest (GlobalName, InvocationFailure, InvocationReason(..), LoadFailure, LoadStage(..), Token, ValueClass(..), decodeInvoke, decodeLoad, encodeInvocationFailed, encodeLoadFailed, encodeLoaded, encodeReturned, invocationFailedKind, invokeKind, loadFailedKind, loadKind, loadedKind, returnedKind)
+import Stella.CLI.Session.Guest (GlobalName, InvocationFailure, InvocationReason(..), LoadFailure, LoadStage(..), Token, decodeInvoke, decodeLoad, encodeInvocationFailed, encodeLoadFailed, encodeLoaded, encodeReturned, invocationFailedKind, invokeKind, loadFailedKind, loadKind, loadedKind, returnedKind)
 import Stella.CLI.Session.Peer (Answer, Incoming, Peer, SessionFailure, answer)
 import Stella.CLI.Session.Peer as Peer
 import Stella.CLI.Session.Protocol (Refusal, capabilityFor, closeKind, closedKind, decodeHello, emptyPayload, encodeReady, encodeRefusal, helloKind, negotiate, pingKind, pongKind, readyKind, refusedKind)
@@ -344,22 +345,6 @@ callable = case _ of
   VPap _ -> true
   VCont _ -> true
   _ -> false
-
-classOf :: Value -> ValueClass
-classOf = case _ of
-  VInt _ -> ClassInt
-  VNumber _ -> ClassNumber
-  VChar _ -> ClassChar
-  VString _ -> ClassString
-  VBoolean _ -> ClassBoolean
-  VData _ _ -> ClassData
-  VRecord _ -> ClassRecord
-  VVariant _ _ -> ClassVariant
-  VClos _ -> ClassClosure
-  VPap _ -> ClassPartialApplication
-  VCont _ -> ClassContinuation
-  VIO _ -> ClassIO
-  VOpaque _ -> ClassOpaque
 
 unModule :: ModuleName -> P.String
 unModule (ModuleName m) = m

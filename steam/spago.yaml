@@ -26,6 +26,7 @@ package:
     - refs
     - run
     - strings
+    - tailrec
     - tuples
     - typelevel-prelude
     - unicode

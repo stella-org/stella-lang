@@ -20,6 +20,7 @@ import Test.Steam.SessionGuest as SessionGuest
 import Test.Steam.Structural as Structural
 import Test.Steam.Ops as Ops
 import Test.Steam.Value as Value
+import Test.Steam.Wire as Wire
 
 main :: Effect Unit
 main = do
@@ -40,4 +41,5 @@ main = do
     Structural.spec
     Session.spec
     SessionGuest.spec
+    Wire.spec
 
