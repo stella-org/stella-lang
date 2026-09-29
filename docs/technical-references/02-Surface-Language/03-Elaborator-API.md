@@ -889,7 +889,7 @@ The mechanism's own failure is `raiseDiagnostic`, which takes a diagnostic it ha
 
 ### What this does not settle
 
-- **How a request reaches Steam**: the transport, the instruction budget, cancellation, and how a guest fault becomes a report belong to the compile-time session protocol ([Open Questions](../99-Open-Questions/01-Open-Questions.md)). The requests themselves are the ones fixed here, whichever runner answers them.
+- **How a request reaches Steam**: the channel, its frames, and its envelope are the session's ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)); the payloads of the elaboration profile, the instruction budget, cancellation, and how a guest fault becomes a report belong to the compile-time session protocol ([Open Questions](../99-Open-Questions/01-Open-Questions.md)). The requests themselves are the ones fixed here, whichever runner answers them.
 - **Type-level entries in the catalog**, which a derive mechanism over a data type needs. The catalog above holds the value namespace.
 - **What becomes of a subgoal left unsolved where a declaration is generalized.** That belongs with the design of inference, as the interleaving of generalization with the scheduler does ([above](#the-dependency-graph-is-settled-after-elaboration-not-before-it)).
 

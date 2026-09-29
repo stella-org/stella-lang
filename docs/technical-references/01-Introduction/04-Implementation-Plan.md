@@ -506,11 +506,47 @@ What the command adds over the pieces below it is the wiring — reading files, 
 | A fault while the entry point runs | Status `2`, the fault on standard error |
 | An interpreter bug while a module initializes | Status `3` and not `1`. The question asked first is whose the defect is, not when it happened |
 | An interpreter bug while the entry point runs | Status `3` likewise |
-| The `session` command, before that mode is built | Status `1` and a message. **Not a message and status `0`**: printing a failure while reporting success tells a reader one thing and a shell another |
+| The `session` command, started without descriptor 3 | Status `1` and a message. **Not a message and status `0`**: printing a failure while reporting success tells a reader one thing and a shell another |
 
 **Totality is the property worth testing here, not any one row.** Two questions decide the status — was it a bug, and had the entry point begun — and a case for each leaf is what shows nothing falls between them. A command that left one path unclassified would exit `0` on it, which is the worst of the four answers.
 
 **A test of this is a test of a process and not of a function**, so what it asserts is the exit status and the streams. Asserting the value `main` produced would be asserting what the command deliberately does not report.
+
+### The session channel (step 7, division 6)
+
+The channel `steam session` speaks on, before any request of a profile uses it ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
+
+| Input | Required outcome |
+| --- | --- |
+| A frame handed over one byte at a time, several frames in one read, a frame split inside its length and inside its payload | The same frames. A reader that parses per read passes every test written with whole frames |
+| A payload holding text outside ASCII | Its length counted in UTF-8 bytes |
+| A length above 16 MiB | The session ends, before any of the payload arrives |
+| The channel ending inside a length, or inside a payload | The session ends, told apart from an end between frames |
+| An empty payload, one that is not UTF-8, not JSON, or not an object | A protocol error as a notification, and the next frame is read |
+| A malformed message whose `id` can be read, and one whose cannot | A protocol error as a response to that `id`, and as a notification |
+| A response naming no request awaiting one | A protocol error as a notification |
+| A protocol error arriving | Not answered. Two sides answering each other's protocol errors never stop |
+| A request made by one side while answering a request of the other: A out, B in, B answered, A answered | Both answered, in that order. A request that read the channel itself would never see B |
+| Responses arriving in another order than their requests | Each reaches its own request, by number |
+| Numbers used up | The side stops rather than wrapping to a number a late response may still carry |
+| A request whose number is not above every number received before, a repeat or a step back | Not run, and answered by a protocol error as a notification. Answering it by its number would answer one request twice |
+| A malformed request whose number is fresh, then a well-formed one of the same number | The first answered by that number; the second not run |
+| A `ready` naming another protocol or profile, leaving out a required capability, or putting in force one not asked for | Not opened, the process ended |
+| A protocol error whose payload has no code and detail | The session ended as misbehaving, not the request refused |
+| The channel ending with requests outstanding | Each fails, with the same reason the session ended with |
+| A request before the handshake, a second handshake, an unknown kind, a lifecycle request with a payload | A protocol error each, and the session answers the next request |
+| A handshake offering and requiring nothing | Opened with no capability in force, and `ping` and `close` answered: the lifecycle requests are the protocol itself |
+| A handshake offering capabilities this side does not have | Opened with none of them in force |
+| A handshake of another protocol, another profile, or a capability not implemented | `refused`, naming the reason and what is supported, written out before the process ends with status `1` |
+| `close` | `closed`, written out before the process ends with status `0` |
+| The channel ending without `close` | Status `1` |
+| Descriptor 3 not open | Status `1` and a message |
+| A process that answers `refused` and ends with another status | A session refused. The exit does not override what arrived |
+| A process that ends with status `0` and no `closed`, before or after the handshake | A session failed |
+| `closed` followed by a status other than `0` | A session failed |
+| A process writing megabytes to standard output and standard error before answering | Answered, and every byte drained. A pipe nobody reads stops the process |
+| A character of the output split between two chunks | Whole. A chunk decoded on its own turns each half into a replacement character |
+| A process killed, then asked something | The session is lost, not a request refused |
 
 ### The foreign manifest (step 5, interpreter 6)
 

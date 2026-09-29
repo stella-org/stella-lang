@@ -27,13 +27,15 @@ Stella, and mechanism, which is the compiler's (D39): a synthesizer named by a
 interpreter, reaching it by the resolved qualified name the constraint carries
 ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)).
 
-**What that use shares is the machine, and not a protocol.** The registry, loading a
+**What that use shares is the machine and the session.** The registry, loading a
 module at a time, resolving a name, and the interpreter running the code are the same
-for it as for anything else. What it asks for beyond them is its own: a synthesizer is
-a function, so it is **applied** to a goal the host holds; an `Elab` operation it
-performs is answered by the host and **the same attempt continues** from that answer;
-and an attempt the host abandons **discards what the run had reached**. Whether that
-becomes a mode of its own or a capability the session mode gains is not settled
+for it as for anything else, and it reaches them through the one long-lived `session`
+mode, opened with the `elaboration` profile and speaking on the channel below. What it
+asks for beyond them is its own: a synthesizer is a function, so it is **applied** to a
+goal the host holds; an `Elab` operation it performs is answered by the host and **the
+same attempt continues** from that answer; and an attempt the host abandons **discards
+what the run had reached**. Those are requests of that profile, not a mode of their
+own; what their payloads are is open
 ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
 
 Two uses stand beside those, and neither reaches a user.
@@ -297,7 +299,9 @@ notification = { kind, payload }
 ```
 
 Each side numbers its own requests from 1 up to `2³¹−1`, never reusing one, and stops
-rather than wraps once it has used them all; a response names by `replyTo` a request
+rather than wraps once it has used them all; **a side receiving a request whose number is
+not above every number that side used before does not run it** and answers a
+protocol error, since a request sent twice would otherwise act twice; a response names by `replyTo` a request
 of the side receiving it that still awaits one. The numberings are independent, which
 is what lets a request of one side stand inside a request of the other — the callback
 a synthesizer makes while it is being run. What a message is about beyond that, an
@@ -311,15 +315,22 @@ answer a request arriving while it waits. Every message leaves through one write
 **A message that cannot be taken is answered with `protocolError`**, carrying a code
 and a description: as a response where the message is a request whose `id` could be
 read, and as a notification otherwise. It is about the message and never about a
-program, and a protocol error is never answered in turn.
+program, and a protocol error is never answered in turn. A protocol error whose own payload is not
+one is the other side misbehaving, and ends the session rather than refusing a
+request.
 
 **The handshake fixes the session.** `hello { protocol, profile, offers, requires }` is
 answered by `ready { protocol, profile, capabilities }`, naming the capabilities in
-force, or by `refused { reason, supported }`, the reason being `protocol`, `profile`,
-or `capability` and `supported` what this side can open with. Only what is implemented
-is advertised: protocol `1`, the profile `elaboration`, and the capability `lifecycle`
-— the handshake, `ping` answered by `pong`, and `close` answered by `closed`. A request
-before the handshake, and a second handshake, are protocol errors.
+force, which a client checks against what it asked — the same protocol and
+profile, every required capability in force, and none it did not offer or require — or by `refused { reason, supported }`, the reason being `protocol`, `profile`,
+or `capability` and `supported` what this side can open with. **The lifecycle requests are the protocol itself** — the handshake, `ping` answered by
+`pong`, and `close` answered by `closed` — and every open session answers them, whatever
+it negotiated. A capability names an optional family of requests beyond them; the set
+the handshake put in force is held for the life of the session, and a request of a
+family not in force is a protocol error. Only what is implemented is advertised:
+protocol `1`, the profile `elaboration`, and no capability yet, the first family being
+the kernel callbacks of the elaboration profile. A request before the handshake, and a
+second handshake, are protocol errors.
 
 | How it ends | Status |
 | --- | --- |
