@@ -160,23 +160,6 @@
           ]
         }
       },
-      "stella": {
-        "path": "stella",
-        "core": {
-          "dependencies": [
-            "console",
-            "effect",
-            "prelude"
-          ]
-        },
-        "test": {
-          "dependencies": [
-            "effect",
-            "spec",
-            "spec-node"
-          ]
-        }
-      },
       "stella-fmt": {
         "path": "stella-fmt",
         "core": {
@@ -193,6 +176,33 @@
         },
         "test": {
           "dependencies": []
+        }
+      },
+      "stellac": {
+        "path": "stellac",
+        "core": {
+          "dependencies": [
+            "aff",
+            "argparse-basic",
+            "arrays",
+            "cli",
+            "compiler",
+            "console",
+            "effect",
+            "either",
+            "maybe",
+            "node-process",
+            "prelude",
+            "run",
+            "typelevel-prelude"
+          ]
+        },
+        "test": {
+          "dependencies": [
+            "effect",
+            "spec",
+            "spec-node"
+          ]
         }
       }
     },
