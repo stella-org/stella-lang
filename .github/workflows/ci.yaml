@@ -27,7 +27,7 @@ jobs:
               - 'backend-js/**'
               - 'cli/**'
               - 'steam/**'
-              - 'stella/**'
+              - 'stellac/**'
               - 'js-runtime/**'
               - 'fixtures/**'
               - 'package.json'

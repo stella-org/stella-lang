@@ -136,10 +136,6 @@ endsQuietly = case _ of
   SessionDefect _ -> true
   _ -> false
 
--- | The line a user reads.
--- |
--- | **Nothing here points at an internal document.** What a reader is told is what
--- | happened and, where there is one, what to do about it.
 report :: ErrorType -> P.String
 report = case _ of
   FileUnreadable path reason ->

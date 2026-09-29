@@ -8,13 +8,15 @@
 -- | What crosses the boundary is `Bytes` and not a host buffer, so nothing above
 -- | this module names a representation the host chose.
 module Stella.CLI.Effect.FS
-  ( FileSystem(..)
-  , FS
+  ( FS
+  , FilePath
+  , FileSystem(..)
   , _fs
   , interpret
   , readBytes
   , readText
-  ) where
+  )
+  where
 
 import Prelude
 
@@ -25,6 +27,8 @@ import Run as Run
 import Stella.Compiler.Bytecode.Bytes (Bytes)
 import Type.Proxy (Proxy(..))
 import Type.Row (type (+))
+
+type FilePath = P.String
 
 -- | **A failure is answered rather than thrown.** What a command makes of a file
 -- | it could not read is the command's — one may refuse, another may go on — so the

@@ -1,0 +1,25 @@
+package:
+  name: stellac
+  description: The Stella Compiler CLI
+  dependencies:
+    - aff
+    - argparse-basic
+    - arrays
+    - cli
+    - compiler
+    - console
+    - effect
+    - either
+    - maybe
+    - node-process
+    - prelude
+    - run
+    - typelevel-prelude
+  run:
+    main: Stella
+  test:
+    main: Test.Stella
+    dependencies:
+      - effect
+      - spec
+      - spec-node
