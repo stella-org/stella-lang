@@ -30,6 +30,10 @@ module Steam.Eval
   , EVAL
   , enter
   , applyFunction
+  , Outcome(..)
+  , Suspension
+  , invoke
+  , resumeWith
   ) where
 
 import Prelude
@@ -55,7 +59,7 @@ import Run.Except as Except
 import Steam.Fault (Fault(..))
 import Steam.Module (CalleeTarget(..), CtorRef, ForeignRef, GlobalSlot, HandlerRef, Loaded, Prepared, Registry)
 import Steam.Op as Op
-import Steam.Value (Activation, Callee(..), Cell, Clause, Closure, Continuation(..), CtorId, Foreign(..), ForeignOutcome(..), IOEntry(..), IOValue(..), KeyId, Marker, MarkerKind(..), ModuleId, StackEntry(..), Value(..), matchesConstant, reinstate, valueOfConstant)
+import Steam.Value (Activation, Callee(..), Cell, Clause, Closure, Continuation(..), CtorId, Foreign(..), ForeignOutcome(..), IOEntry(..), IOValue(..), KeyId, Marker, MarkerKind(..), ModuleId, OpId, Root, StackEntry(..), Value(..), matchesConstant, reinstate, valueOfConstant)
 import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName, KeyIx(..), OpIx(..), PrimIx(..), Reg(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Constant)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
@@ -120,8 +124,10 @@ data Bug
   -- | A `PERF` for which no marker of that key is installed, which effect safety
   -- | rules out: a handler of the key encloses every `perform` of it.
   | NoHandlerInstalled KeyId
-  -- | A marker of the key that holds no clause for the operation, which a handler
-  -- | removing the effect cannot be.
+  -- | An operation nothing that answers its key answers: a marker of the key holding
+  -- | no clause for it, which a handler removing the effect cannot be, or a root
+  -- | boundary of the key answering another operation, which an invocation whose
+  -- | root names the one operation of its effect cannot reach.
   | NoClauseForOperation OpIx
   -- | A cell no region frame in the stack declares.
   | NoCellDeclared KeyId
@@ -164,6 +170,12 @@ data Bug
   | ForeignArgumentNotOfKind (Qualified Ident) P.Int
   -- | `VABS`, whose operand's type is uninhabited, so nothing reaches it.
   | Unreachable
+  -- | A suspension resumed after it already was. Each is resumed once: what it
+  -- | holds is the one run it stopped, and that run has gone on.
+  | SuspensionAlreadyResumed
+  -- | A `perform` answered by a root boundary in a run no invocation began, which
+  -- | pushes none: nothing a run of its own holds can carry one.
+  | AskedOutsideInvocation
 
 -- | What ends a run before its value.
 data Failure
@@ -194,6 +206,10 @@ data State
   = Running Activation
   | Returning Value
   | Finished Value
+  -- | Stopped at a `perform` a root boundary answers: the activation, already at
+  -- | the instruction after the `PERF`, the register the answer belongs in, and
+  -- | the argument the host is asked with.
+  | Asking Activation Reg Value
 
 -- | What executing one instruction leaves the machine to do.
 data Next
@@ -218,6 +234,9 @@ data Next
   -- | The instruction moved control itself. A `full` clause's answer does not return
   -- | to the `PERF`, so nothing waits for it there.
   | Moved State
+  -- | A `PERF` a root boundary answers: the register the answer belongs in, and
+  -- | the argument.
+  | Ask Reg Value
 
 -- Registers, captures, and tables -------------------------------------------------
 
@@ -368,21 +387,34 @@ visible stack found = go (Array.length stack - 1)
           Nothing -> go (i - 1)
         Nothing -> Nothing
 
--- | The innermost visible marker of that key, and where it stands.
+-- | What answers a `perform` of that key: the innermost visible marker of it, and
+-- | where it stands.
 -- |
 -- | **The innermost wins**, which is what makes handlers deep: a function handling
 -- | an effect internally is pure to its caller, so two markers of one key may stand
 -- | on the stack at once.
-markerOf :: forall r. Machine -> KeyId -> Run (EVAL r) { at :: P.Int, marker :: Marker }
-markerOf machine key = do
+-- |
+-- | A root boundary of the key answers where no marker above it does, and is found
+-- | by the same walk: a handler the program installs is inner to it, and so is
+-- | what a `fast` clause's boundary jumps over.
+answererOf :: forall r. Machine -> KeyId -> Run (EVAL r) Answerer
+answererOf machine key = do
   stack <- liftEffect (Ref.read machine.stack)
   case visible stack answering of
-    Just { at, found } -> pure { at, marker: found }
+    Just { at, found: Left marker } -> pure (AtMarker at marker)
+    Just { found: Right root } -> pure (AtRoot root)
     Nothing -> bug (NoHandlerInstalled key)
   where
   answering = case _ of
-    HandlerMarker marker | marker.key == key -> Just marker
+    HandlerMarker marker | marker.key == key -> Just (Left marker)
+    RootBoundary root | root.key == key -> Just (Right root)
     _ -> Nothing
+
+-- | What answers a `perform`: a handler's marker and where it stands, or the root
+-- | boundary.
+data Answerer
+  = AtMarker P.Int Marker
+  | AtRoot Root
 
 -- | The cell keyed thus of the innermost visible region declaring it, found by the
 -- | walk `PERF` finds a marker by.
@@ -433,25 +465,89 @@ enter registry closure args = do
 -- | admitting a closure, a partial application, and a continuation alike.
 applyFunction :: forall r. Registry -> Value -> P.Array Value -> Run (EVAL r) Value
 applyFunction registry callee args = do
+  machine <- machineOver registry []
+  state <- applyTo machine callee args
+  loop machine state
+
+-- | A machine over the registry, its stack holding these entries.
+machineOver :: forall r. Registry -> P.Array StackEntry -> Run (EVAL r) Machine
+machineOver registry entries = do
   -- every loaded module holds the one `Prim.Unit` the registry assigned, so which
   -- of them it is taken from does not matter
   unit <- case Map.findMin registry of
     Just { value: loaded } -> pure loaded.unit
     Nothing -> bug RegistryEmpty
-  stack <- liftEffect (Ref.new [])
-  let machine = { registry, stack, unit }
-  state <- applyTo machine callee args
-  loop machine state
+  stack <- liftEffect (Ref.new entries)
+  pure { registry, stack, unit }
 
+-- | A run no invocation began, to its value. It holds no root boundary, so no
+-- | `perform` of it stops.
 loop :: forall r. Machine -> State -> Run (EVAL r) Value
-loop machine state = case state of
-  Finished value -> pure value
-  _ -> step machine state >>= loop machine
+loop machine state = drive machine state >>= case _ of
+  Done value -> pure value
+  Asked _ _ -> bug AskedOutsideInvocation
+
+-- Invocations -------------------------------------------------------------------------
+
+-- | How an invocation, or the part of it since it was last resumed, ended.
+data Outcome
+  = Done Value
+  -- | Stopped at a `perform` the root boundary answers, with its argument. The run
+  -- | goes on only where the suspension is resumed with the answer.
+  | Asked Value Suspension
+
+-- | A run stopped at a `perform`: the machine, the activation at the instruction
+-- | after the `PERF`, and the register the answer belongs in.
+-- |
+-- | **Nothing but a continuation of the machine is held**, not a continuation
+-- | value: the stack is the one the run stopped with, and resuming carries on with
+-- | it. So a suspension is resumed once, and a second attempt is refused before it
+-- | touches anything. Dropping one abandons the run: the stack and the cells of its
+-- | regions become unreachable. **What ran before the stop stays done** — a
+-- | foreign's effect on the host is not the machine's to take back.
+newtype Suspension = Suspension
+  { machine :: Machine
+  , activation :: Activation
+  , dest :: Reg
+  , resumed :: Ref P.Boolean
+  }
+
+-- | Apply a function value to arguments, as a run whose root boundary answers the
+-- | one operation of `root.key` by stopping.
+-- |
+-- | The boundary stands below everything the run pushes, so a handler the program
+-- | installs for the key answers first, and a `fast` clause's body, which runs
+-- | outside the handler that answered, reaches it.
+invoke :: forall r. Registry -> Root -> Value -> P.Array Value -> Run (EVAL r) Outcome
+invoke registry root callee args = do
+  machine <- machineOver registry [ RootBoundary root ]
+  state <- applyTo machine callee args
+  drive machine state
+
+-- | Go on with a stopped run, the answer written where the `PERF` put its value.
+resumeWith :: forall r. Suspension -> Value -> Run (EVAL r) Outcome
+resumeWith (Suspension suspended) answer = do
+  already <- liftEffect (Ref.read suspended.resumed)
+  when already (bug SuspensionAlreadyResumed)
+  liftEffect (Ref.write true suspended.resumed)
+  writeReg suspended.activation suspended.dest answer
+  drive suspended.machine (Running suspended.activation)
+
+-- | Step the machine until the run produces its value or stops at the root.
+drive :: forall r. Machine -> State -> Run (EVAL r) Outcome
+drive machine state = case state of
+  Finished value -> pure (Done value)
+  Asking activation dest argument -> do
+    resumed <- liftEffect (Ref.new false)
+    pure (Asked argument (Suspension { machine, activation, dest, resumed }))
+  _ -> step machine state >>= drive machine
 
 -- | One step of the machine.
 step :: forall r. Machine -> State -> Run (EVAL r) State
 step machine = case _ of
   Finished value -> pure (Finished value)
+  -- a stop is the driver's to answer, and a step leaves it where it is
+  Asking activation dest argument -> pure (Asking activation dest argument)
 
   -- a value reaching the bottom of the stack is what the run produces
   Returning value -> do
@@ -471,6 +567,8 @@ step machine = case _ of
       Just (RegionFrame _) -> pure (Returning value)
       -- a `fast` clause has finished, and its value goes on to the `PERF` below
       Just (ClauseBoundary _) -> pure (Returning value)
+      -- the bottom of an invocation, which the value passes on its way out
+      Just (RootBoundary _) -> pure (Returning value)
 
   -- an activation runs against the tables of its own module, which is the one its
   -- function belongs to
@@ -501,6 +599,7 @@ step machine = case _ of
             push machine (ClauseBoundary (Array.length stack - markerAt))
             applyTo machine clause [ argument ]
           Moved state -> pure state
+          Ask dest argument -> pure (Asking (resuming activation) dest argument)
       Nothing -> transfer machine loaded activation
   where
   resuming activation = activation { ip = activation.ip + 1 }
@@ -657,6 +756,12 @@ install loaded activation ix body ret clauses cells = do
     pure { key, value: held }
 
   clauseOf stated value = { op: stated.op, form: stated.form, clause: value }
+
+-- | The operation an index of the module's `OPS` names.
+opAt :: forall r. Loaded -> OpIx -> Run (EVAL r) OpId
+opAt loaded ix@(OpIx i) = case Array.index loaded.ops i of
+  Just op -> pure op
+  Nothing -> bug (NoClauseForOperation ix)
 
 -- | The clause a marker holds for that operation. A handler removing an effect has
 -- | one per operation of it, which is what checking a handler establishes.
@@ -916,23 +1021,28 @@ exec machine loaded activation = case _ of
       Returning value -> advance (writeReg activation d value)
       _ -> bug (NotOfClass ACallable)
   -- the innermost marker of the key answers, and which reduction applies is the
-  -- clause's form (D28)
+  -- clause's form (D28); where none does, the root boundary asks the host
   PERF d keyIx opIx s -> do
     key <- keyAt loaded keyIx
     argument <- readReg activation s
-    found <- markerOf machine key
-    clause <- clauseFor loaded found.marker opIx
-    case clause.form of
-      -- the clause returns to this instruction with its value, its body running
-      -- outside the handler and outside what stands above it (D28)
-      ClauseFast -> pure (Fast d clause.clause argument found.at)
-      -- the continuation begins at the `perform` and not after it, so this
-      -- activation is pushed before the split and is part of the segment
-      ClauseFull -> do
-        push machine (Resume (activation { ip = activation.ip + 1 }) d)
-        segment <- splitAt machine found.at
-        map Moved
-          (applyTo machine clause.clause [ argument, VCont (Continuation segment) ])
+    answerer <- answererOf machine key
+    case answerer of
+      AtRoot root -> do
+        op <- opAt loaded opIx
+        if op == root.op then pure (Ask d argument) else bug (NoClauseForOperation opIx)
+      AtMarker at marker -> do
+        clause <- clauseFor loaded marker opIx
+        case clause.form of
+          -- the clause returns to this instruction with its value, its body running
+          -- outside the handler and outside what stands above it (D28)
+          ClauseFast -> pure (Fast d clause.clause argument at)
+          -- the continuation begins at the `perform` and not after it, so this
+          -- activation is pushed before the split and is part of the segment
+          ClauseFull -> do
+            push machine (Resume (activation { ip = activation.ip + 1 }) d)
+            segment <- splitAt machine at
+            map Moved
+              (applyTo machine clause.clause [ argument, VCont (Continuation segment) ])
 
   HNDL d ix body ret clauses cells -> do
     installed <- install loaded activation ix body ret clauses cells

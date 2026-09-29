@@ -19,6 +19,7 @@ import Test.Steam.Session as Session
 import Test.Steam.SessionGuest as SessionGuest
 import Test.Steam.Structural as Structural
 import Test.Steam.Ops as Ops
+import Test.Steam.Root as Root
 import Test.Steam.Value as Value
 import Test.Steam.Wire as Wire
 
@@ -34,6 +35,7 @@ main = do
     Arrays.spec
     Foreign.spec
     Handlers.spec
+    Root.spec
     Fixtures.spec fixtures
     Drive.spec
     Marshal.spec

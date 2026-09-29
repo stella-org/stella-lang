@@ -39,6 +39,7 @@ module Steam.Value
   , Continuation(..)
   , Activation
   , StackEntry(..)
+  , Root
   , Marker
   , MarkerKind(..)
   , Clause
@@ -339,6 +340,20 @@ data StackEntry
   -- | A value reaching it passes down unchanged, to the `Resume` of the `PERF`
   -- | below it.
   | ClauseBoundary P.Int
+  -- | The bottom of an invocation a host answers the operations of one key for. A
+  -- | `perform` whose search reaches it asks the host rather than running a clause,
+  -- | and the run stops there until the host answers ([Eval](Eval.purs)). **It is
+  -- | no handler**: it has no return clause, opens no region, and a continuation
+  -- | never holds it, a `full` clause capturing only what stands above its own
+  -- | marker. A value reaching it passes down unchanged and is what the run
+  -- | produces.
+  | RootBoundary Root
+
+-- | The key a root boundary answers, and the one operation of it.
+type Root =
+  { key :: KeyId
+  , op :: OpId
+  }
 
 -- | An installed handler: the key it answers, a clause per operation, and the
 -- | return clause every value passes through.

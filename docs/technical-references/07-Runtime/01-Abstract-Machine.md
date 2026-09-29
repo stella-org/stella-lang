@@ -631,6 +631,7 @@ StackEntry
   | HandlerMarker   { key, clauses, return clause, owner }
   | RegionFrame     { cells }
   | ClauseBoundary  { distance to the answering marker }
+  | RootBoundary    { key, op }
 ```
 
 `Resume` is the only entry that carries a destination register. A tail call pushes
@@ -645,6 +646,7 @@ none, which is the whole of what makes it a tail call, and `TAILHNDL` differs fr
 | a **reinstatement** marker | the marker pops alone and its return clause runs with the value; the frame it stood in is untouched, and what the clause produces reaches the entry below |
 | a `RegionFrame` whose owner is gone | it pops with no return clause, and the value reaches the entry below |
 | a `ClauseBoundary` | it pops, and the value — a `fast` clause's — reaches the entry below, the `Resume` of the `PERF` it answers |
+| a `RootBoundary` | it pops, and the value is what the invocation produces |
 
 The three rows about a marker and a frame are the three completion paths, and a marker's `owner` flag is what
 distinguishes them ([Bytecode](../05-Backend/01-Bytecode.md)). Nothing in a `.dmo`
@@ -691,6 +693,23 @@ point, which is what makes a resumption resume ([Bytecode](../05-Backend/01-Byte
 stands between the call that produced it and the value it waits for, so a `full`
 clause capturing that stretch captures it — which is precisely what leaving it in
 the host's call stack would lose.
+
+**An invocation stands on a root boundary.** A run begun as an invocation pushes a
+`RootBoundary` of one key and one operation first, below everything the run
+pushes; a run begun otherwise pushes none. A `PERF` of that key whose search
+finds no marker above it reaches the boundary by the same walk — so a handler of
+the key the program installs answers first, and a `fast` clause's body reaches
+past the handler that answered it — and **stops the run**: nothing runs in its
+place, and what the machine keeps is the activation after the `PERF`, the register
+its value belongs in, and the stack as it stands. The host answers, the answer is
+written into that register, and the run goes on from there, with no continuation
+made. A stopped run goes on at most once; one the host abandons is dropped, stack
+and cells with it, and what ran before the stop — a foreign's effect included —
+stays done. The boundary is no handler: it has no return clause and no region, and
+no segment a `full` clause captures holds it, since it stands below every marker.
+A `PERF` of its key naming another operation is refused as a defect; where the
+root names the one operation its effect declares, as a well-formed elaboration
+root does, no `.dmo` reaches that state.
 
 ## Loading, and the REPL's module lifecycle
 
