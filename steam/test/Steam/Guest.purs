@@ -10,6 +10,7 @@
 module Test.Steam.Guest
   ( compileGuest
   , compileGuests
+  , compileGuestsOver
   , Machine
   , machineWith
   , Ran(..)
@@ -66,6 +67,7 @@ import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.TypedCore (Expr(..), Ident(..), Literal(..), Module, Qualified(..), TyName(..), Type(..), declareAnnotated, primSignature)
 import Stella.Compiler.TypedCore.Domain (scalarString)
 import Stella.Compiler.TypedCore.Prim (unitCtor)
+import Stella.Compiler.TypedCore.Signature (Signature)
 
 -- Compiling --------------------------------------------------------------------------------
 
@@ -78,8 +80,13 @@ compileGuest m = compileGuests [ m ] >>= \dmos -> case Array.last dmos of
 -- | Modules compiled in order against `Stella.Elab`, each against what the ones
 -- | before it declare.
 compileGuests :: P.Array (Module Unit) -> Either P.String (P.Array Dmo)
-compileGuests modules = do
-  elabDeclared <- declared (withGuest primSignature) guestModule
+compileGuests = compileGuestsOver identity
+
+-- | `compileGuests`, the signature first given what the function adds to it: a
+-- | type an ABI manifest supplies, which no declaration does.
+compileGuestsOver :: (Signature -> Signature) -> P.Array (Module Unit) -> Either P.String (P.Array Dmo)
+compileGuestsOver supplied modules = do
+  elabDeclared <- declared (supplied (withGuest primSignature)) guestModule
   elabMid <- translated noImports guestModule elabDeclared
   compiled <- Array.foldM step
     { signature: elabDeclared.signature, interfaces: [ interfaceOf elabMid.module ], dmos: [] }

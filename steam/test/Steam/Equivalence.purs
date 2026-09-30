@@ -38,7 +38,8 @@ import Node.FS.Aff as FS
 import Node.FS.Perms as Perms
 import Stella.CLI.Session.Broker (SessionHealth(..), newCancellation)
 import Stella.CLI.Session.Broker.Attempter (Guests, runGuests, submitGuest, submitGuestSynthesis)
-import Stella.CLI.Session.Client (Session)
+import Stella.CLI.Session.Client (OpenFailure, Session)
+import Stella.CLI.Session.Protocol (Hello)
 import Stella.CLI.Session.Client as Client
 import Stella.Compiler.Bytecode (encode)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
@@ -73,7 +74,8 @@ import Test.Spec.Assertions (fail, shouldEqual)
 import Test.Steam.Command (dir, pathOf)
 import Test.Steam.Guest (compileGuests)
 import Test.Steam.Reference (policyModule, stringModule, synthesizerNamed)
-import Test.Steam.Session (close', draining, hello, node, opened, streams)
+import Test.Steam.InProcess (openInProcess)
+import Test.Steam.Session (close', draining, hello, node, open', streams)
 
 -- The fixture ------------------------------------------------------------------------------------
 
@@ -268,22 +270,17 @@ byGuest session = case start, bundle of
 equating :: MetaVar -> Job
 equating g = JobUnify { kind: XKType, left: XMeta g, right: answerType }
 
--- | A session that has loaded `Base.String` and the policy.
-withPolicySession :: (Session -> Aff Unit) -> Aff Unit
-withPolicySession k = case compileGuests [ stringModule, policyModule ] of
+-- | A session that has loaded `Base.String` and the policy, opened as given.
+withPolicySession :: (Hello -> Aff (Either OpenFailure Session)) -> (Session -> Aff Unit) -> Aff Unit
+withPolicySession open k = case compileGuests [ stringModule, policyModule ] of
   Left err -> fail ("the policy did not compile: " <> err)
   Right [ string, policy ] -> do
     FS.mkdir' dir { recursive: true, mode: Perms.mkPerms Perms.all Perms.all Perms.all }
     write "BaseStringEq" string
     write "Policy" policy
-    s <- streams
-    opened
-      { command: "node"
-      , args: [ "steam/index.dev.js", "session" ]
-      , output: draining s
-      , hello: hello { offers = [ "modules", "invoke", "kernel" ] }
-      }
-      \session -> do
+    open (hello { offers = [ "modules", "invoke", "kernel" ] }) >>= case _ of
+      Left failure -> fail ("the session did not open: " <> show failure)
+      Right session -> do
         node (Client.load session (pathOf "BaseStringEq")) >>= shouldEqual (Right (Right "Base.String"))
         node (Client.load session (pathOf "Policy")) >>= shouldEqual (Right (Right "Policy"))
         k session
@@ -293,6 +290,12 @@ withPolicySession k = case compileGuests [ stringModule, policyModule ] of
   write name dmo = case encode dmo of
     Left err -> fail ("could not encode " <> name <> ": " <> show err)
     Right bytes -> liftEffect (Buffer.fromArray bytes) >>= FS.writeFile (pathOf name)
+
+-- | `steam session`, started as a process.
+asProcess :: Hello -> Aff (Either OpenFailure Session)
+asProcess h = do
+  s <- streams
+  open' { command: "node", args: [ "steam/index.dev.js", "session" ], output: draining s, hello: h }
 
 -- The cases ----------------------------------------------------------------------------------------
 
@@ -304,7 +307,7 @@ spec = describe "a guest synthesizer against the host's, one scenario" do
       Right host -> checkScenario host
 
   it "comes to the same, by a guest on a session, in every part of what the host holds" do
-    withPolicySession \session -> byGuest session >>= case _, byHost of
+    withPolicySession asProcess \session -> byGuest session >>= case _, byHost of
       Left err, _ -> fail err
       _, Left err -> fail err
       Right guest, Right host -> do
@@ -323,6 +326,30 @@ spec = describe "a guest synthesizer against the host's, one scenario" do
         guest.scenario.state.retained.trace `shouldEqual` host.state.retained.trace
         fates guest.scenario.state.retained.trace `shouldEqual` fates host.state.retained.trace
         (guest.scenario.state == host.state) `shouldEqual` true
+
+  it "comes to the same in a session served in this process, whether a guest runs in stretches of ten thousand steps or of one" do
+    long <- runIn 10_000
+    short <- runIn 1
+    case long, short, byHost of
+      Right l, Right s, Right host -> do
+        checkScenario s.scenario
+        s.attempts `shouldEqual` 2
+        s.scenario.first `shouldEqual` l.scenario.first
+        s.scenario.equation `shouldEqual` l.scenario.equation
+        s.scenario.report `shouldEqual` l.scenario.report
+        s.scenario.core `shouldEqual` l.scenario.core
+        s.scenario.state.retained.trace `shouldEqual` l.scenario.state.retained.trace
+        (s.scenario.state == l.scenario.state) `shouldEqual` true
+        -- and what the host's runner came to, stretch by stretch
+        (l.scenario.state == host.state) `shouldEqual` true
+      Left err, _, _ -> fail err
+      _, Left err, _ -> fail err
+      _, _, Left err -> fail err
+  where
+  runIn quantum = do
+    result <- liftEffect (Ref.new (Left "the session did not run"))
+    withPolicySession (openInProcess quantum) \session -> byGuest session >>= liftEffect <<< flip Ref.write result
+    liftEffect (Ref.read result)
 
 -- | What one run of the scenario must come to, whichever runner ran it.
 checkScenario :: Scenario -> Aff Unit

@@ -15,6 +15,7 @@ import Test.Steam.Facade as Facade
 import Test.Steam.Fixtures as Fixtures
 import Test.Steam.Foreign as Foreign
 import Test.Steam.Handlers as Handlers
+import Test.Steam.Isolation as Isolation
 import Test.Steam.Load as Load
 import Test.Steam.Marshal as Marshal
 import Test.Steam.Session as Session
@@ -51,5 +52,6 @@ main = do
     Facade.spec
     Reference.spec
     Equivalence.spec
+    Isolation.spec
     Wire.spec
 
