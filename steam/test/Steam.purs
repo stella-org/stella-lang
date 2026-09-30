@@ -9,6 +9,7 @@ import Test.Steam.Arrays as Arrays
 import Test.Steam.Calls as Calls
 import Test.Steam.Command as Command
 import Test.Steam.Drive as Drive
+import Test.Steam.Equivalence as Equivalence
 import Test.Steam.Eval as Eval
 import Test.Steam.Facade as Facade
 import Test.Steam.Fixtures as Fixtures
@@ -49,5 +50,6 @@ main = do
     SessionKernel.spec
     Facade.spec
     Reference.spec
+    Equivalence.spec
     Wire.spec
 
