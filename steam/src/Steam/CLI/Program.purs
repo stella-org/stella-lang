@@ -37,13 +37,15 @@ import Steam.Load as Load
 import Steam.Value (IOValue, Value(..))
 import Stella.CLI.Effect.FS (FS, readBytes, readText)
 import Stella.CLI.Effect.Foreigns (FOREIGNS)
+import Steam.CLI.Effect.Tuning (TUNING)
+import Steam.CLI.Effect.Tuning as Tuning
 import Stella.CLI.Effect.Transport (TRANSPORT)
 import Stella.CLI.Effect.Log (LOG)
 import Stella.Compiler.Bytecode (Dmo, decode)
 import Stella.Compiler.TypedCore.Name (Qualified(..))
 import Type.Row (type (+))
 
-type SteamEffects = (LOG + FS + FOREIGNS + TRANSPORT + EXCEPT ErrorType + AFF + EFFECT + ())
+type SteamEffects = (LOG + FS + FOREIGNS + TRANSPORT + TUNING + EXCEPT ErrorType + AFF + EFFECT + ())
 
 program :: Options -> Run SteamEffects Unit
 program opts = case opts.command of
@@ -59,7 +61,8 @@ program opts = case opts.command of
       Right elaboration -> pure elaboration
     identities <- liftEffect (Ref.new noIdentities)
     unit <- liftEffect (unitValue identities)
-    Session.serve { manifest, base: baseOf sessionOptions.manifest, identities, unit, elaboration }
+    quantum <- Tuning.quantum
+    Session.serve { manifest, base: baseOf sessionOptions.manifest, identities, unit, elaboration, quantum }
 
 -- | Load the modules given, in the order given, and execute the entry point.
 -- |

@@ -14,30 +14,33 @@ import Node.Process as Process
 import Run (AFF, EFFECT, Run, runBaseAff')
 import Run.Except (EXCEPT)
 import Run.Except as Except
+import Steam.CLI.Effect.Tuning (TUNING)
+import Steam.CLI.Effect.Tuning as Tuning
 import Steam.CLI.Error (ErrorType, endsQuietly, exitStatus, report)
 import Steam.CLI.Options as Options
 import Steam.CLI.Program (program)
 import Stella.CLI.Effect.FS (FS)
+import Stella.CLI.Effect.FS as FS
 import Stella.CLI.Effect.Foreigns (FOREIGNS)
 import Stella.CLI.Effect.Foreigns as Foreigns
-import Stella.CLI.Effect.Transport (TRANSPORT)
-import Stella.CLI.Effect.Transport as Transport
-import Stella.CLI.Effect.FS as FS
 import Stella.CLI.Effect.Log (LOG)
 import Stella.CLI.Effect.Log as Log
+import Stella.CLI.Effect.Transport (TRANSPORT)
+import Stella.CLI.Effect.Transport as Transport
 import Stella.CLI.Runner.Node as Node
 import Type.Row (type (+))
 
 runNode
   :: forall a
    . Log.LoggerConfig
-  -> Run (LOG + FS + FOREIGNS + TRANSPORT + EXCEPT ErrorType + AFF + EFFECT + ()) a
+  -> Run (LOG + FS + FOREIGNS + TRANSPORT + TUNING + EXCEPT ErrorType + AFF + EFFECT + ()) a
   -> Aff (Either ErrorType a)
 runNode loggerConfig m = m
   # Log.interpret (Node.jsConsoleHandler loggerConfig)
   # FS.interpret Node.nodeFsHandler
   # Foreigns.interpret Node.nodeForeignsHandler
   # Transport.interpret Node.nodeTransportHandler
+  # Tuning.interpret (Tuning.tuningConfigHandler Tuning.defaultTuningConfig)
   # Except.runExcept
   # runBaseAff'
 

@@ -43,12 +43,14 @@ import Data.Either (Either(..))
 import Data.Foldable (foldl)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
+import Data.Set (Set)
+import Data.Set as Set
 import Data.String (Pattern(..), stripPrefix)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.AVar (AVar)
 import Effect.AVar as AVar
-import Effect.Aff (Aff, makeAff, nonCanceler)
+import Effect.Aff (Aff, Milliseconds(..), delay, makeAff, nonCanceler)
 import Effect.Aff.AVar as AffVar
 import Effect.Ref (Ref)
 import Effect.Ref as Ref
@@ -61,14 +63,14 @@ import Steam.CLI.Elaboration (Elaboration, Opened, TakenAnswer(..), install, tak
 import Steam.CLI.Error (ErrorType(SessionChannelMissing, SessionRefused, SessionFailed, SessionDefect), SessionDefect(..), unreachable)
 import Steam.CLI.Token as Token
 import Steam.CLI.Wire (Unencodable(..), classOf, toWire)
-import Steam.Eval (Failure(..), Outcome(..), invoke, resumeWith)
+import Steam.Eval (Failure(..), Outcome(..), Slice, invoke, resumePaused, resumeWith)
 import Steam.Foreign (emptyTable, insert)
 import Steam.Load (Identities, LoadError(InitializationFailed), Store, emptyStore, globalNamed, load, moduleNamed, namesOf, registryOf)
 import Steam.Value (Value(..))
 import Stella.CLI.Effect.FS (FS, readBytes)
 import Stella.CLI.Effect.Foreigns (FOREIGNS)
 import Stella.CLI.Effect.Transport (Channel, TRANSPORT, ownChannel)
-import Stella.CLI.Session.Guest (InvocationFailure, InvocationReason(..), InvokeRequest, LoadFailure, LoadStage(..), Token, decodeInvoke, decodeLoad, encodeInvocationFailed, encodeLoadFailed, encodeLoaded, encodeReturned, invocationFailedKind, invokeKind, loadFailedKind, loadKind, loadedKind, returnedKind)
+import Stella.CLI.Session.Guest (InvocationFailure, InvocationReason(..), InvokeRequest, LoadFailure, LoadStage(..), Token, cancelKind, cancelledKind, decodeCancel, decodeInvoke, decodeLoad, encodeInvocationFailed, encodeLoadFailed, encodeLoaded, encodeReturned, invocationFailedKind, invokeKind, loadFailedKind, loadKind, loadedKind, returnedKind)
 import Stella.CLI.Session.Kernel (encodeKernel, kernelKind)
 import Stella.CLI.Session.Peer (Answer, Incoming, Peer, SessionFailure(..), answer)
 import Stella.CLI.Session.Peer as Peer
@@ -89,6 +91,19 @@ type Setup =
   , identities :: Ref Identities
   , unit :: Value
   , elaboration :: Elaboration
+  -- | How many steps a guest takes between two looks at the loop: a cancel, a
+  -- | channel lost. Nothing a guest answers depends on it.
+  , quantum :: P.Int
+  }
+
+-- | What an invocation is watched by while it runs: the channel lost, and the
+-- | attempts a client has cancelled. **An attempt is cancelled only while it is
+-- | queued or running**, so `active` holds those, and a cancel naming any other
+-- | changes nothing.
+type Watch =
+  { lost :: Ref (Maybe SessionFailure)
+  , active :: Ref (Set P.Int)
+  , cancelled :: Ref (Set P.Int)
   }
 
 -- | Where the session stands. An opening session has accepted the handshake and
@@ -141,27 +156,30 @@ serve setup = ownChannel >>= case _ of
   Right channel -> do
     queue <- liftEffect AVar.empty
     lost <- liftEffect (Ref.new Nothing)
+    active <- liftEffect (Ref.new Set.empty)
+    cancelled <- liftEffect (Ref.new Set.empty)
+    let watch = { lost, active, cancelled }
     stage <- liftEffect (Ref.new AwaitingHello)
     withheld <- liftEffect (Ref.new false)
-    peer <- liftEffect (open channel stage withheld queue lost)
-    ending <- work setup peer stage withheld queue lost
+    peer <- liftEffect (open channel stage withheld queue watch)
+    ending <- work setup peer stage withheld queue watch
       { store: emptyStore emptyTable setup.identities, opened: Nothing }
     case ending of
       Closed -> pure unit
       RefusedHello refusal -> Except.throw (SessionRefused refusal)
       Lost failure -> Except.throw (SessionFailed failure)
 
-open :: Channel -> Ref Stage -> Ref P.Boolean -> AVar Work -> Ref (Maybe SessionFailure) -> Effect Peer
-open channel stage withheld queue lost = do
+open :: Channel -> Ref Stage -> Ref P.Boolean -> AVar Work -> Watch -> Effect Peer
+open channel stage withheld queue watch = do
   self <- Ref.new Nothing
   lastAttempt <- Ref.new 0
   peer <- Peer.start channel
     { request: \incoming -> makeAff \done -> do
-        admit stage withheld lastAttempt queue incoming (done <<< Right)
+        admit stage withheld lastAttempt watch queue incoming (done <<< Right)
         pure nonCanceler
     , notification: \incoming -> Ref.read self >>= notified incoming
     , failed: \failure -> do
-        Ref.write (Just failure) lost
+        Ref.write (Just failure) watch.lost
         enqueue queue Wake
     }
   Ref.write (Just peer) self
@@ -184,24 +202,24 @@ work
   -> Ref Stage
   -> Ref P.Boolean
   -> AVar Work
-  -> Ref (Maybe SessionFailure)
+  -> Watch
   -> Held
   -> Run (SessionEffects r) Ending
-work setup peer stage withheld queue lost held = liftEffect (Ref.read lost) >>= case _ of
+work setup peer stage withheld queue watch held = liftEffect (Ref.read watch.lost) >>= case _ of
   Just failure -> do
     liftAff (release peer)
     pure (Lost failure)
-  Nothing -> liftAff (AffVar.take queue) >>= \item -> liftEffect (Ref.read lost) >>= case _, item of
+  Nothing -> liftAff (AffVar.take queue) >>= \item -> liftEffect (Ref.read watch.lost) >>= case _, item of
     Just failure, _ -> do
       liftAff (release peer)
       pure (Lost failure)
-    Nothing, Wake -> work setup peer stage withheld queue lost held
+    Nothing, Wake -> work setup peer stage withheld queue watch held
     Nothing, Stop ending -> do
       liftAff (release peer)
       pure ending
     Nothing, Next next -> run next
   where
-  continue = work setup peer stage withheld queue lost
+  continue = work setup peer stage withheld queue watch
 
   run :: { job :: Job, reply :: Answer -> Effect Unit } -> Run (SessionEffects r) Ending
   run { job, reply } = case job of
@@ -241,18 +259,28 @@ work setup peer stage withheld queue lost held = liftEffect (Ref.read lost) >>= 
     InvokeJob request -> case held.opened of
       -- an invocation is admitted only once the session has opened
       Nothing -> broken (ElaborationUnavailable "an invocation ran before the session opened")
-      Just opened -> invokeIn setup peer held.store opened request >>= case _ of
-        Returned token -> do
-          liftEffect (reply (answer { kind: returnedKind, payload: encodeReturned token }))
-          continue held
-        InvocationRefused failure -> do
-          liftEffect $ reply $ answer
-            { kind: invocationFailedKind, payload: encodeInvocationFailed failure }
-          continue held
-        InvocationBroken defect -> broken defect
-        InvocationLost failure -> do
-          liftAff (release peer)
-          pure (Lost failure)
+      Just opened -> do
+        -- one cancelled while it waited in the queue is not begun
+        waited <- liftEffect (Set.member request.attempt <$> Ref.read watch.cancelled)
+        invocation <-
+          if waited then pure (InvocationRefused { reason: Cancelled, detail: "the client cancelled the invocation before it began" })
+          else invokeIn setup peer watch held.store opened request
+        -- an attempt settled is neither queued nor running, and no cancel reaches it
+        liftEffect do
+          Ref.modify_ (Set.delete request.attempt) watch.active
+          Ref.modify_ (Set.delete request.attempt) watch.cancelled
+        case invocation of
+          Returned token -> do
+            liftEffect (reply (answer { kind: returnedKind, payload: encodeReturned token }))
+            continue held
+          InvocationRefused failure -> do
+            liftEffect $ reply $ answer
+              { kind: invocationFailedKind, payload: encodeInvocationFailed failure }
+            continue held
+          InvocationBroken defect -> broken defect
+          InvocationLost failure -> do
+            liftAff (release peer)
+            pure (Lost failure)
 
   -- a defect answers nothing: the session ends with it
   broken :: forall a. SessionDefect -> Run (SessionEffects r) a
@@ -285,11 +313,12 @@ admit
   :: Ref Stage
   -> Ref P.Boolean
   -> Ref P.Int
+  -> Watch
   -> AVar Work
   -> Incoming
   -> (Answer -> Effect Unit)
   -> Effect Unit
-admit stage withheld lastAttempt queue incoming reply = Ref.read stage >>= case _, incoming.kind of
+admit stage withheld lastAttempt watch queue incoming reply = Ref.read stage >>= case _, incoming.kind of
   Closing, kind -> problem (KindUnexpected kind)
   AwaitingHello, kind
     | kind == helloKind -> case decodeHello incoming.payload of
@@ -330,7 +359,16 @@ admit stage withheld lastAttempt queue incoming reply = Ref.read stage >>= case 
                 if request.attempt <= last then problem AttemptNotAbove
                 else do
                   Ref.write request.attempt lastAttempt
+                  Ref.modify_ (Set.insert request.attempt) watch.active
                   queued (InvokeJob request)
+          -- a cancel is noted, and answered, where it arrives: it is for an
+          -- invocation queued or running, which the queue would hold it behind
+          | kind == cancelKind -> case decodeCancel incoming.payload of
+              Nothing -> problem (PayloadInvalid kind)
+              Just attempt -> do
+                current <- Ref.read watch.active
+                when (Set.member attempt current) (Ref.modify_ (Set.insert attempt) watch.cancelled)
+                respond (answer { kind: cancelledKind, payload: emptyPayload })
           -- `kernel` is a request this side makes, not one it answers
           | otherwise -> problem (KindUnexpected kind)
 
@@ -430,11 +468,12 @@ invokeIn
   :: forall r
    . Setup
   -> Peer
+  -> Watch
   -> Store
   -> { root :: Opened, kernel :: P.Boolean }
   -> InvokeRequest
   -> Run (AFF + EFFECT + r) Invocation
-invokeIn setup peer store opened request =
+invokeIn setup peer watch store opened request =
   case moduleNamed store (ModuleName request.global.module) of
     Nothing -> pure (refused NoSuchModule ("no module " <> request.global.module <> " is loaded"))
     Just _ -> case globalNamed store name of
@@ -444,9 +483,9 @@ invokeIn setup peer store opened request =
         Just value
           | callable value ->
               Except.runExcept
-                ( invoke (registryOf store) opened.root.root value
+                ( invoke (registryOf store) opened.root.root (allowed 0) value
                     (map (VOpaque <<< Token.wrap) request.arguments)
-                ) >>= continued
+                ) >>= continued 0
           | otherwise ->
               pure (refused NotCallable (showName name <> " does not hold a function"))
   where
@@ -454,33 +493,61 @@ invokeIn setup peer store opened request =
 
   refused reason detail = InvocationRefused { reason, detail }
 
-  continued :: Either Failure Outcome -> Run (AFF + EFFECT + r) Invocation
-  continued = case _ of
+  -- the steps the next stretch may take: a quantum, or what is left of the budget
+  allowed spent = min setup.quantum (request.budget - spent)
+
+  cancelledNow = Set.member request.attempt <$> Ref.read watch.cancelled
+
+  continued :: P.Int -> Either Failure Slice -> Run (AFF + EFFECT + r) Invocation
+  continued before = case _ of
     Left (Faults fault) -> pure (refused Fault (show fault))
     Left failure -> pure (InvocationBroken (DefectRunning failure))
-    Right (Done (VOpaque o)) | Just token <- Token.unwrap o -> pure (Returned token)
-    Right (Done other) ->
+    Right slice -> outcome (before + slice.spent) slice.outcome
+
+  outcome :: P.Int -> Outcome -> Run (AFF + EFFECT + r) Invocation
+  outcome spent = case _ of
+    Done (VOpaque o) | Just token <- Token.unwrap o -> pure (Returned token)
+    Done other ->
       pure (refused (NotAToken (classOf other)) "what the function returned is not a token")
-    Right (Asked argument suspension)
+    -- a pause needs another step: none is left, or the loop is let go round first,
+    -- so that a cancel or a channel lost meanwhile is seen before the next stretch
+    Paused pause
+      | spent >= request.budget ->
+          pure (refused BudgetExhausted ("the guest took the " <> show request.budget <> " steps its budget allows and needed another"))
+      | otherwise -> do
+          liftAff (delay (Milliseconds 0.0))
+          gone <- liftEffect (Ref.read watch.lost)
+          stop <- liftEffect cancelledNow
+          case gone of
+            Just failure -> pure (InvocationLost failure)
+            Nothing
+              | stop -> pure (refused Cancelled "the client cancelled the invocation")
+              | otherwise -> Except.runExcept (resumePaused (allowed spent) pause) >>= continued spent
+    Asked argument suspension
       | not opened.kernel ->
           pure (refused KernelNotInForce "the guest asked the kernel, and `kernel` is not in force")
-      | otherwise -> do
-          names <- liftEffect (namesOf store)
-          case toWire store names argument of
-            Left (NotEncodable class') ->
-              pure (refused (CommandNotEncodable class') "the guest asked with a value the wire has no form for")
-            Left (Unaccounted why) -> pure (InvocationBroken (ValueUnaccounted why))
-            Right wire -> case encodeValue wire of
-              Left problem ->
-                pure (InvocationBroken (CommandUnencodable ("command" <> renderPath problem.path <> ": " <> problem.problem)))
-              Right command ->
-                liftAff (Peer.request peer kernelKind (encodeKernel { attempt: request.attempt, command })) >>= case _ of
-                  Left failure -> pure (InvocationLost failure)
-                  Right reply -> liftEffect (takeAnswer store setup.elaboration.descriptor reply) >>= case _ of
-                    Resume answer' -> Except.runExcept (resumeWith suspension answer') >>= continued
-                    Abandon -> pure (refused Abandoned "the host ended the attempt")
-                    Violated why -> pure (InvocationLost (PeerViolated why))
-                    Inconsistent why -> pure (InvocationBroken (AnswerInconsistent why))
+      | otherwise -> liftEffect cancelledNow >>=
+          if _ then pure (refused Cancelled "the client cancelled the invocation")
+          else do
+            names <- liftEffect (namesOf store)
+            case toWire store names argument of
+              Left (NotEncodable class') ->
+                pure (refused (CommandNotEncodable class') "the guest asked with a value the wire has no form for")
+              Left (Unaccounted why) -> pure (InvocationBroken (ValueUnaccounted why))
+              Right wire -> case encodeValue wire of
+                Left problem ->
+                  pure (InvocationBroken (CommandUnencodable ("command" <> renderPath problem.path <> ": " <> problem.problem)))
+                Right command ->
+                  liftAff (Peer.request peer kernelKind (encodeKernel { attempt: request.attempt, command })) >>= case _ of
+                    Left failure -> pure (InvocationLost failure)
+                    -- a cancel taken while the client answered wins over what it answered
+                    Right reply -> liftEffect cancelledNow >>=
+                      if _ then pure (refused Cancelled "the client cancelled the invocation")
+                      else liftEffect (takeAnswer store setup.elaboration.descriptor reply) >>= case _ of
+                        Resume answer' -> Except.runExcept (resumeWith (allowed spent) suspension answer') >>= continued spent
+                        Abandon -> pure (refused Abandoned "the host ended the attempt")
+                        Violated why -> pure (InvocationLost (PeerViolated why))
+                        Inconsistent why -> pure (InvocationBroken (AnswerInconsistent why))
 
 callable :: Value -> P.Boolean
 callable = case _ of

@@ -18,7 +18,7 @@ import Data.Maybe (Maybe(..))
 import Data.Foldable (traverse_)
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
-import Effect.Aff (Aff, forkAff, joinFiber)
+import Effect.Aff (Aff, Milliseconds(..), delay, forkAff, joinFiber)
 import Effect.Class (liftEffect)
 import Effect.Exception (throw)
 import Effect.Ref as Ref
@@ -28,7 +28,7 @@ import Node.Buffer as Buffer
 import Node.FS.Aff as FS
 import Stella.CLI.Effect.Process (Child)
 import Stella.CLI.Session.Frame (renderJson)
-import Stella.CLI.Session.Guest (InvocationReason(..), ValueClass(..), decodeInvocationFailed, decodeReturned, encodeInvoke, encodeLoad)
+import Stella.CLI.Session.Guest (InvocationReason(..), ValueClass(..), decodeInvocationFailed, decodeReturned, encodeCancel, encodeInvoke, encodeLoad)
 import Stella.CLI.Session.Kernel (KernelCall, abandonedKind, answeredKind, decodeKernel, encodeAbandoned, encodeAnswered, kernelKind)
 import Stella.CLI.Session.Peer (Peer, Reply)
 import Stella.CLI.Session.Peer as Peer
@@ -36,7 +36,7 @@ import Stella.CLI.Session.ProtocolError (decodeProtocolError, protocolErrorKind)
 import Stella.CLI.Session.Protocol (encodeHello, helloKind, pingKind)
 import Stella.CLI.Session.Value (WireValue(..), encodeValue)
 import Stella.Compiler.Bytecode (Dmo, encode, lower)
-import Stella.Compiler.Bytecode.Instr (FuncIx(..), Instr(..), KeyIx(..), OpIx(..), Reg(..), Tail(..))
+import Stella.Compiler.Bytecode.Instr (FuncIx(..), Instr(..), JoinName(..), KeyIx(..), OpIx(..), Reg(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (GlobalInit(..), Key(..))
 import Stella.Compiler.Elaborate.Protocol.Guest (commandOp, elabModule, guestModule, handleTy, kernelEffect, withGuest)
 import Stella.Compiler.Interface (importsOf, interfaceOf, noImports)
@@ -161,6 +161,24 @@ unencodable = bugModule
   , globals = [ { name: Qualified (ModuleName "Unencodable") (Ident "ask"), init: GFunc (FuncIx 0) } ]
   }
 
+-- | `Loop.spin`, which jumps to itself for good: a guest that never returns.
+looping :: Dmo
+looping = bugModule
+  { name = ModuleName "Loop"
+  , imports = []
+  , constants = []
+  , foreignRefs = []
+  , functions =
+      [ { nparams: 1
+        , regs: [ RepVal ]
+        , captures: []
+        , joins: [ { name: JoinName 0, params: [ Reg 0 ], body: { code: [], tail: JMP (JoinName 0) [ Reg 0 ] } } ]
+        , body: { code: [], tail: JMP (JoinName 0) [ Reg 0 ] }
+        }
+      ]
+  , globals = [ { name: Qualified (ModuleName "Loop") (Ident "spin"), init: GFunc (FuncIx 0) } ]
+  }
+
 -- | A module under a name of its own, with nothing in it.
 named :: P.String -> Dmo
 named name = bugModule
@@ -178,6 +196,7 @@ writeGuests = do
     Left err -> fail ("Synth did not compile: " <> err)
     Right synth -> write "Synth" synth
   write "Unencodable" unencodable
+  write "Loop" looping
   for [ "Stella", "Stella.Elab", "Stella.Other", "Stellar" ] \name -> write name (named name)
   where
   for xs f = void (Array.foldM (\_ x -> f x) unit xs)
@@ -255,8 +274,14 @@ every :: P.Array P.String
 every = [ "modules", "invoke", "kernel" ]
 
 invoking :: Raw -> P.Int -> P.String -> P.String -> Aff (Either Peer.SessionFailure Reply)
-invoking raw attempt m g = Peer.request raw.peer "invoke"
-  (encodeInvoke { global: { module: m, name: g }, arguments: [ tokenNamed "goal" ], attempt })
+invoking raw = invokingWithin raw 1000000
+
+invokingWithin :: Raw -> P.Int -> P.Int -> P.String -> P.String -> Aff (Either Peer.SessionFailure Reply)
+invokingWithin raw budget attempt m g = Peer.request raw.peer "invoke"
+  (encodeInvoke { global: { module: m, name: g }, arguments: [ tokenNamed "goal" ], attempt, budget })
+
+cancelling :: Peer -> P.Int -> Aff (Either Peer.SessionFailure Reply)
+cancelling peer attempt = Peer.request peer "cancel" (encodeCancel attempt)
 
 -- | What an `invoke` came back with, as far as a test needs it.
 data Came
@@ -389,6 +414,67 @@ spec = describe "steam session, answering a guest's commands" do
       came <$> invoking raw 1 "Synth" "synth" >>= shouldEqual (FailedWith Abandoned)
       liftEffect (Ref.read raw.asked) >>= shouldEqual [ Tuple 1 (observed "GoalType" "goal") ]
       came <$> invoking raw 2 "Synth" "synth" >>= shouldEqual (FailedWith Abandoned)
+      closeAndWait raw >>= shouldEqual (Just 0)
+
+  describe "budgets and quanta" do
+    it "stops a guest that never returns once its budget is spent, and answers the next request" do
+      s <- streams
+      counter <- liftEffect (Ref.new 0)
+      raw <- session s every (handing counter) [ "Loop", "Synth" ]
+      came <$> invokingWithin raw 5000 1 "Loop" "spin" >>= shouldEqual (FailedWith BudgetExhausted)
+      came <$> invoking raw 2 "Synth" "synth" >>= shouldEqual (TokenBack (renderJson (fromObject (tokenNamed "h2"))))
+      closeAndWait raw >>= shouldEqual (Just 0)
+
+  describe "cancelling" do
+    it "stops a running invocation at the next stretch, and answers the next request" do
+      s <- streams
+      counter <- liftEffect (Ref.new 0)
+      raw <- session s every (handing counter) [ "Loop", "Synth" ]
+      running <- forkAff (invokingWithin raw 2147483647 1 "Loop" "spin")
+      delay (Milliseconds 100.0)
+      map _.kind <$> cancelling raw.peer 1 >>= shouldEqual (Right "cancelled")
+      came <$> joinFiber running >>= shouldEqual (FailedWith Cancelled)
+      came <$> invoking raw 2 "Synth" "synth" >>= shouldEqual (TokenBack (renderJson (fromObject (tokenNamed "h2"))))
+      closeAndWait raw >>= shouldEqual (Just 0)
+
+    it "stops a queued invocation before it begins" do
+      s <- streams
+      counter <- liftEffect (Ref.new 0)
+      raw <- session s every (handing counter) [ "Loop", "Synth" ]
+      running <- forkAff (invokingWithin raw 2147483647 1 "Loop" "spin")
+      queued <- forkAff (invoking raw 2 "Synth" "synth")
+      delay (Milliseconds 100.0)
+      map _.kind <$> cancelling raw.peer 2 >>= shouldEqual (Right "cancelled")
+      map _.kind <$> cancelling raw.peer 1 >>= shouldEqual (Right "cancelled")
+      came <$> joinFiber running >>= shouldEqual (FailedWith Cancelled)
+      came <$> joinFiber queued >>= shouldEqual (FailedWith Cancelled)
+      -- the queued one asked nothing: it never began
+      liftEffect (Ref.read raw.asked) >>= shouldEqual []
+      closeAndWait raw >>= shouldEqual (Just 0)
+
+    it "leaves alone an attempt neither queued nor running: one to come, and one done" do
+      s <- streams
+      counter <- liftEffect (Ref.new 0)
+      raw <- session s every (handing counter) [ "Synth" ]
+      map _.kind <$> cancelling raw.peer 7 >>= shouldEqual (Right "cancelled")
+      came <$> invoking raw 7 "Synth" "synth" >>= shouldEqual (TokenBack (renderJson (fromObject (tokenNamed "h2"))))
+      map _.kind <$> cancelling raw.peer 7 >>= shouldEqual (Right "cancelled")
+      came <$> invoking raw 8 "Synth" "synth" >>= shouldEqual (TokenBack (renderJson (fromObject (tokenNamed "h4"))))
+      closeAndWait raw >>= shouldEqual (Just 0)
+
+    it "fails as cancelled an invocation cancelled while its answer was awaited, whatever the client then answers" do
+      s <- streams
+      holder <- liftEffect (Ref.new Nothing)
+      let
+        answering call = do
+          peer <- liftEffect (Ref.read holder)
+          case peer of
+            Just p -> void (cancelling p call.attempt)
+            Nothing -> pure unit
+          pure (Peer.answer { kind: abandonedKind, payload: encodeAbandoned })
+      raw <- session s every answering [ "Synth" ]
+      liftEffect (Ref.write (Just raw.peer) holder)
+      came <$> invoking raw 1 "Synth" "synth" >>= shouldEqual (FailedWith Cancelled)
       closeAndWait raw >>= shouldEqual (Just 0)
 
   describe "attempts" do

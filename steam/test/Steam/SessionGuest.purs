@@ -240,7 +240,7 @@ load' session path = node (Client.load session path)
 
 -- | Apply a global to tokens as that attempt.
 invoke' :: Session -> P.Int -> GlobalName -> P.Array Token -> Aff (Either RequestFailure (Either InvocationFailure Token))
-invoke' session attempt name arguments = node (Client.invoke session { global: name, arguments, attempt })
+invoke' session attempt name arguments = node (Client.invoke session { global: name, arguments, attempt, budget: 1000000 })
 
 token :: Token
 token = Object.fromFoldable
@@ -388,7 +388,7 @@ spec = describe "steam session, loading and invoking" do
       opened (steamWith [] s hello) \session -> do
         codeOf <$> request' session "load" (encodeLoad (pathOf "Guest"))
           >>= shouldEqual (Just "capabilityNotInForce")
-        codeOf <$> request' session "invoke" (encodeInvoke { global: global "Guest" "identity", arguments: [ token ], attempt: 1 })
+        codeOf <$> request' session "invoke" (encodeInvoke { global: global "Guest" "identity", arguments: [ token ], attempt: 1, budget: 1000000 })
           >>= shouldEqual (Just "capabilityNotInForce")
         codeOf <$> request' session "load" (Object.singleton "path" (fromNumber 5.0))
           >>= shouldEqual (Just "capabilityNotInForce")

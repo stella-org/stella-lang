@@ -32,8 +32,11 @@ module Steam.Eval
   , applyFunction
   , Outcome(..)
   , Suspension
+  , Pause
+  , Slice
   , invoke
   , resumeWith
+  , resumePaused
   ) where
 
 import Prelude
@@ -483,9 +486,7 @@ machineOver registry entries = do
 -- | A run no invocation began, to its value. It holds no root boundary, so no
 -- | `perform` of it stops.
 loop :: forall r. Machine -> State -> Run (EVAL r) Value
-loop machine state = drive machine state >>= case _ of
-  Done value -> pure value
-  Asked _ _ -> bug AskedOutsideInvocation
+loop = drive
 
 -- Invocations -------------------------------------------------------------------------
 
@@ -495,6 +496,24 @@ data Outcome
   -- | Stopped at a `perform` the root boundary answers, with its argument. The run
   -- | goes on only where the suspension is resumed with the answer.
   | Asked Value Suspension
+  -- | Stopped because the steps this part was allowed ran out, the run needing
+  -- | another. It goes on only where the pause is resumed.
+  | Paused Pause
+
+-- | A part of an invocation: how it ended, and how many steps of the machine it
+-- | took. **A step is one call of the machine's step**, an administrative
+-- | transition — a return reaching an entry, a handler installed — counting as
+-- | one like an instruction does. A part allowed `n` steps that reaches its value
+-- | or a `perform` at its `n`th has it; one that would need another pauses.
+type Slice = { spent :: P.Int, outcome :: Outcome }
+
+-- | A run paused between two steps: the machine and where it stands. Resumed once,
+-- | as a suspension is.
+newtype Pause = Pause
+  { machine :: Machine
+  , state :: State
+  , resumed :: Ref P.Boolean
+  }
 
 -- | A run stopped at a `perform`: the machine, the activation at the instruction
 -- | after the `PERF`, and the register the answer belongs in.
@@ -518,28 +537,58 @@ newtype Suspension = Suspension
 -- | The boundary stands below everything the run pushes, so a handler the program
 -- | installs for the key answers first, and a `fast` clause's body, which runs
 -- | outside the handler that answered, reaches it.
-invoke :: forall r. Registry -> Root -> Value -> P.Array Value -> Run (EVAL r) Outcome
-invoke registry root callee args = do
+-- |
+-- | It runs at most `allowed` steps before it pauses.
+invoke :: forall r. Registry -> Root -> P.Int -> Value -> P.Array Value -> Run (EVAL r) Slice
+invoke registry root allowed callee args = do
   machine <- machineOver registry [ RootBoundary root ]
   state <- applyTo machine callee args
-  drive machine state
+  driveFor allowed machine state
 
--- | Go on with a stopped run, the answer written where the `PERF` put its value.
-resumeWith :: forall r. Suspension -> Value -> Run (EVAL r) Outcome
-resumeWith (Suspension suspended) answer = do
-  already <- liftEffect (Ref.read suspended.resumed)
-  when already (bug SuspensionAlreadyResumed)
-  liftEffect (Ref.write true suspended.resumed)
+-- | Go on with a stopped run, the answer written where the `PERF` put its value,
+-- | for at most `allowed` steps.
+resumeWith :: forall r. P.Int -> Suspension -> Value -> Run (EVAL r) Slice
+resumeWith allowed (Suspension suspended) answer = do
+  once suspended.resumed
   writeReg suspended.activation suspended.dest answer
-  drive suspended.machine (Running suspended.activation)
+  driveFor allowed suspended.machine (Running suspended.activation)
 
--- | Step the machine until the run produces its value or stops at the root.
-drive :: forall r. Machine -> State -> Run (EVAL r) Outcome
+-- | Go on with a paused run where it stands, for at most `allowed` steps.
+resumePaused :: forall r. P.Int -> Pause -> Run (EVAL r) Slice
+resumePaused allowed (Pause paused) = do
+  once paused.resumed
+  driveFor allowed paused.machine paused.state
+
+-- | That a stopped run goes on for the first time, marked before anything else
+-- | is touched.
+once :: forall r. Ref P.Boolean -> Run (EVAL r) Unit
+once resumed = do
+  already <- liftEffect (Ref.read resumed)
+  when already (bug SuspensionAlreadyResumed)
+  liftEffect (Ref.write true resumed)
+
+-- | Step the machine until the run produces its value, stops at the root, or has
+-- | taken `allowed` steps and needs another.
+driveFor :: forall r. P.Int -> Machine -> State -> Run (EVAL r) Slice
+driveFor allowed machine = go 0
+  where
+  go spent state = case state of
+    Finished value -> pure { spent, outcome: Done value }
+    Asking activation dest argument -> do
+      resumed <- liftEffect (Ref.new false)
+      pure { spent, outcome: Asked argument (Suspension { machine, activation, dest, resumed }) }
+    _
+      | spent >= allowed -> do
+          resumed <- liftEffect (Ref.new false)
+          pure { spent, outcome: Paused (Pause { machine, state, resumed }) }
+      | otherwise -> step machine state >>= go (spent + 1)
+
+-- | Step a run no invocation began until it produces its value. Nothing bounds
+-- | it, and a root boundary it cannot hold is a defect.
+drive :: forall r. Machine -> State -> Run (EVAL r) Value
 drive machine state = case state of
-  Finished value -> pure (Done value)
-  Asking activation dest argument -> do
-    resumed <- liftEffect (Ref.new false)
-    pure (Asked argument (Suspension { machine, activation, dest, resumed }))
+  Finished value -> pure value
+  Asking _ _ _ -> bug AskedOutsideInvocation
   _ -> step machine state >>= drive machine
 
 -- | One step of the machine.

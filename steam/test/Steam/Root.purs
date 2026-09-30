@@ -32,7 +32,7 @@ import Effect.Exception (throw)
 import Effect.Ref as Ref
 import Run (runBaseEffect)
 import Run.Except as Except
-import Steam.Eval (Bug(..), Failure(..), Outcome(..), Suspension, applyFunction, invoke, resumeWith)
+import Steam.Eval (Bug(..), Failure(..), Outcome(..), Pause, Slice, Suspension, applyFunction, invoke, resumePaused, resumeWith)
 import Steam.Module (Loaded, Registry, prepare)
 import Steam.Value (CtorId(..), KeyId(..), ModuleId(..), OpId(..), Root, Value(..))
 import Stella.Compiler.Bytecode.Instr (ConstIx(..), FuncIx(..), Function, HandlerIx(..), Instr(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg(..), Tail(..))
@@ -41,7 +41,7 @@ import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
 import Stella.Compiler.MiddleEnd.Rep (Rep(..))
 import Stella.Compiler.Primitive (PrimOp(..))
 import Test.Spec (Spec, describe, it)
-import Test.Spec.Assertions (shouldEqual)
+import Test.Spec.Assertions (fail, shouldEqual)
 
 -- The fixture ----------------------------------------------------------------------
 
@@ -173,14 +173,46 @@ closureAt i = liftEffect do
   captures <- Ref.new Map.empty
   pure (VClos { func: { module: ModuleId 0, func: FuncIx i }, captures })
 
+-- | Steps enough for anything here to reach its value or a `perform`.
+plenty :: P.Int
+plenty = 1000000
+
 invoking :: P.Int -> Aff (Either Failure Outcome)
-invoking i = do
+invoking i = map _.outcome <$> invokingFor plenty i
+
+invokingFor :: P.Int -> P.Int -> Aff (Either Failure Slice)
+invokingFor allowed i = do
   callee <- closureAt i
-  liftEffect (runBaseEffect (Except.runExcept (invoke registry root callee [])))
+  liftEffect (runBaseEffect (Except.runExcept (invoke registry root allowed callee [])))
 
 resuming :: Suspension -> P.Int -> Aff (Either Failure Outcome)
-resuming suspension answer =
-  liftEffect (runBaseEffect (Except.runExcept (resumeWith suspension (VInt answer))))
+resuming suspension answer = map _.outcome <$> resumingFor plenty suspension answer
+
+resumingFor :: P.Int -> Suspension -> P.Int -> Aff (Either Failure Slice)
+resumingFor allowed suspension answer =
+  liftEffect (runBaseEffect (Except.runExcept (resumeWith allowed suspension (VInt answer))))
+
+resumingPaused :: P.Int -> Pause -> Aff (Either Failure Slice)
+resumingPaused allowed pause = liftEffect (runBaseEffect (Except.runExcept (resumePaused allowed pause)))
+
+-- | Run function `i` in stretches of `quantum` steps, answering each `perform`
+-- | with its argument plus 10: the arguments asked with, the value, and the steps
+-- | taken in all.
+stretched :: P.Int -> P.Int -> Aff { asked :: P.Array P.Int, value :: Seen, spent :: P.Int }
+stretched quantum i = invokingFor quantum i >>= go { asked: [], spent: 0 }
+  where
+  go acc = case _ of
+    Left failure -> pure { asked: acc.asked, value: Failed failure, spent: acc.spent }
+    Right slice ->
+      let
+        spent = acc.spent + slice.spent
+      in
+        case slice.outcome of
+          Done (VInt n) -> pure { asked: acc.asked, value: DoneWith n, spent }
+          Done _ -> pure { asked: acc.asked, value: Elsewhere, spent }
+          Asked (VInt n) suspension -> resumingFor quantum suspension (n + 10) >>= go { asked: Array.snoc acc.asked n, spent }
+          Asked _ _ -> pure { asked: acc.asked, value: Elsewhere, spent }
+          Paused pause -> resumingPaused quantum pause >>= go { asked: acc.asked, spent }
 
 -- | What an outcome was, as far as a test needs it.
 data Seen
@@ -250,6 +282,37 @@ spec = describe "Steam.Eval, an invocation's root boundary" do
     result <- resuming second 3
     seen result `shouldEqual` DoneWith 5
 
+  describe "stretches of steps" do
+    it "gives the same questions, value, and steps in all, whatever the stretch" do
+      for_' [ 0, 5, 8, 11 ] \i -> do
+        whole <- stretched plenty i
+        for_' [ 1, 2, 3, 7 ] \q -> do
+          cut <- stretched q i
+          Tuple i cut `shouldEqual` Tuple i whole
+
+    it "allows exactly the steps it is given, a value or a perform at the last one included" do
+      whole <- stretched plenty 11
+      invokingFor whole.spent 11 >>= \r -> seen (map _.outcome r) `shouldEqual` DoneWith 3
+      invokingFor (whole.spent - 1) 11 >>= \r -> paused r `shouldEqual` true
+      -- the first perform of function 0, reached after the steps its first stretch took
+      first <- invokingFor plenty 0
+      case first of
+        Right slice -> do
+          asked <- invokingFor slice.spent 0
+          seen (map _.outcome asked) `shouldEqual` AskedWith 1
+          short <- invokingFor (slice.spent - 1) 0
+          paused short `shouldEqual` true
+        Left failure -> fail (show failure)
+
+    it "resumes a pause once, a second time refused" do
+      invokingFor 1 0 >>= case _ of
+        Right { outcome: Paused pause } -> do
+          once <- resumingPaused plenty pause
+          seen (map _.outcome once) `shouldEqual` AskedWith 1
+          again <- resumingPaused plenty pause
+          seen (map _.outcome again) `shouldEqual` Failed (Bug SuspensionAlreadyResumed)
+        _ -> fail "the first stretch did not pause"
+
   describe "what no .dmo admits" do
     it "an operation of the root's key the root does not answer" do
       result <- invoking 9
@@ -263,6 +326,15 @@ spec = describe "Steam.Eval, an invocation's root boundary" do
       callee <- closureAt 0
       result <- liftEffect (runBaseEffect (Except.runExcept (applyFunction registry callee [])))
       map (const unit) result `shouldEqual` Left (Bug (NoHandlerInstalled rootKey))
+
+-- | Whether a stretch paused for want of steps.
+paused :: Either Failure Slice -> P.Boolean
+paused = case _ of
+  Right { outcome: Paused _ } -> true
+  _ -> false
+
+for_' :: forall a. P.Array a -> (a -> Aff Unit) -> Aff Unit
+for_' xs f = void (Array.foldM (\_ x -> f x) unit xs)
 
 derive instance Eq Seen
 
