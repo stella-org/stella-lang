@@ -85,7 +85,7 @@ options =
           # map Array.fromFoldable
     , main:
         ArgParser.argument [ "-m", "--main" ]
-          "Entrypoint module which exports value with `@entrypoint` attribute"
+          "Entrypoint module which exports value with `entrypoint` attribute"
           # moduleName
           # ArgParser.default (ModuleName "Main")
     , traceOpt:
@@ -97,7 +97,7 @@ options =
     , target:
         ArgParser.argument [ "-t", "--target" ]
           "Build target. Acceptable value: `js` | `wasm`\n\
-          \If not specified, build finishes after emitting bytecode object file"
+          \If not specified, build finishes after emitting bytecode object file."
           # buildTarget
           # ArgParser.optional
     }
