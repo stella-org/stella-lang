@@ -15,8 +15,7 @@ module Stella.CLI.Effect.FS
   , interpret
   , readBytes
   , readText
-  )
-  where
+  ) where
 
 import Prelude
 
