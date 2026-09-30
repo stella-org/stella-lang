@@ -6,6 +6,9 @@
 -- | host type has its twin of the same name whose fields have, in order, the shapes
 -- | the host's fields are carried as, the descriptor gives every
 -- | field a shape, and a guest can perform `command` and cannot take a handle apart.
+-- | The typed facade is held to the host's: each operation has the host facade's
+-- | name, makes the request the host's operation makes, takes its fields in order, and
+-- | gives back what the answer the host's table gives it carries.
 module Test.Stella.Compiler.Elaborate.GuestBundle (spec) where
 
 import Prelude
@@ -15,25 +18,27 @@ import Prim as P
 import Data.Array as Array
 import Data.Either (Either(..), isLeft)
 import Data.Foldable (for_)
-import Data.Generic.Rep (class Generic, Argument, Constructor, NoArguments, Product, Sum)
+import Data.Generic.Rep (class Generic, Argument, Constructor, NoArguments, Product, Sum(..), from)
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), isNothing)
+import Data.String as String
 import Data.Symbol (class IsSymbol, reflectSymbol)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Bytecode (lower)
 import Stella.Compiler.Elaborate.Environment.Catalog (EntrySort)
-import Stella.Compiler.Elaborate.Protocol.Guest (bundle, commandOp, elabModule, guestAnswerTy, guestCommandTy, guestModule, handleTy, kernelEffect, nameTy, withGuest)
+import Stella.Compiler.Elaborate.Protocol.Guest (abortEffect, breachEffect, bundle, commandOp, elabModule, elabRow, guestAnswerTy, guestCommandTy, guestModule, handleTy, kernelEffect, nameTy, operationType, operations, withGuest)
 import Stella.Compiler.Elaborate.Protocol.Guest.Shape (Descriptor, Shape(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle)
 import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart)
-import Stella.Compiler.Elaborate.Vocabulary.Request (BuildRequest, HandlerRequest, KernelAnswer, KernelRequest, ObserveRequest, RecordRequest, ReportRequest, SolveRequest, TermRequest, TreeRequest)
+import Stella.Compiler.Elaborate.Vocabulary.Request (AnswerShape, BuildRequest, HandlerRequest, KernelAnswer, KernelRequest(..), ObserveRequest, RecordRequest, ReportRequest, SolveRequest, TermRequest, TreeRequest, expectedAnswerShape)
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView, KindView, PayloadView, TypeView)
 import Stella.Compiler.Interface (noImports)
 import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.TypedCore.Check (CheckError(..))
 import Stella.Compiler.TypedCore.Declare (DeclError(..))
-import Stella.Compiler.TypedCore (AttrValue, Decl(..), DecisionTree(..), Expr(..), Ident(..), KindVar, Literal, Module, ModuleName(..), OpName, Occurrence(..), Qualified(..), RowEntry(..), RowElemKind, RowKey(..), ScalarString, ScalarValue, Symbol, Tag, TyName(..), TyVar, Type(..), declareAnnotated, monoScheme, primSignature)
-import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn)
+import Stella.Compiler.TypedCore (AttrValue, Decl(..), DecisionTree(..), Expr(..), Ident(..), KindVar, Literal, Module, ModuleName(..), OpName, Occurrence(..), Qualified(..), RowEntry(..), RowElemKind, RowKey(..), ScalarString, ScalarValue, Symbol, Tag, TyName(..), TyVar(..), Type(..), Kind(..), declareAnnotated, monoScheme, primSignature)
+import Stella.Compiler.TypedCore.Prim (asFunction, fn, intTy, pureFn, unitTy)
+import Test.Stella.Compiler.Elaborate.Facade (probes)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual, shouldSatisfy)
 import Prim.RowList (class RowToList, Cons, Nil, RowList)
@@ -302,6 +307,78 @@ takesApart =
       ]
   }
 
+-- The facade, read against the host's -------------------------------------------------------
+
+-- | The name of the constructor a value is built with, read off its generic
+-- | representation.
+class CtorName rep where
+  ctorNameOf :: rep -> P.String
+
+instance (CtorName a, CtorName b) => CtorName (Sum a b) where
+  ctorNameOf = case _ of
+    Inl a -> ctorNameOf a
+    Inr b -> ctorNameOf b
+
+instance IsSymbol name => CtorName (Constructor name a) where
+  ctorNameOf _ = reflectSymbol (Proxy :: Proxy name)
+
+nameOf :: forall a rep. Generic a rep => CtorName rep => a -> P.String
+nameOf = ctorNameOf <<< from
+
+-- | The family and the constructor of a host request.
+requestNames :: KernelRequest -> { family :: P.String, request :: P.String }
+requestNames request = { family: nameOf request, request: inner }
+  where
+  inner = case request of
+    BuildRequest r -> nameOf r
+    TermRequest r -> nameOf r
+    TreeRequest r -> nameOf r
+    RecordRequest r -> nameOf r
+    HandlerRequest r -> nameOf r
+    SolveRequest r -> nameOf r
+    ObserveRequest r -> nameOf r
+    ReportRequest r -> nameOf r
+
+-- | The constructor of `KernelAnswer` an answer of the shape given is built with.
+answerOfShape :: AnswerShape -> P.String
+answerOfShape shape = case String.stripSuffix (String.Pattern "Shape") (show shape) of
+  Just stem -> stem <> "Answer"
+  Nothing -> show shape
+
+-- | The fields a data type of `Stella.Elab` declares for a constructor, read off the
+-- | module's declaration.
+declaredFields :: P.String -> P.String -> Maybe (P.Array Type)
+declaredFields typeName ctorName = do
+  d <- Array.findMap
+    ( case _ of
+        DeclData _ d | d.name == TyName typeName -> Just d
+        _ -> Nothing
+    )
+    guestModule.decls
+  _.fields <$> Array.find (\c -> c.name == Ident ctorName) d.constructors
+
+-- | An operation's type taken apart: the quantified variable, if any, each argument
+-- | with the row of its arrow, and the result.
+type Arrows = { quantified :: Maybe TyVar, arguments :: P.Array { argument :: Type, row :: Type }, result :: Type }
+
+arrowsOf :: Type -> Arrows
+arrowsOf = case _ of
+  TForall v _ body -> (go [] body) { quantified = Just v }
+  other -> go [] other
+  where
+  go acc t = case asFunction t of
+    Just parts -> go (Array.snoc acc { argument: parts.argument, row: parts.row }) parts.result
+    Nothing -> { quantified: Nothing, arguments: acc, result: t }
+
+unitType :: Type
+unitType = TCon unitTy []
+
+handle :: Type
+handle = TCon handleTy []
+
+maybeOf :: Type -> Type
+maybeOf = TApp (elabType "Maybe")
+
 -- Cases ----------------------------------------------------------------------------------
 
 descriptorOf :: Either P.String Descriptor
@@ -389,6 +466,60 @@ spec = describe "Stella.Elab, the trusted bundle" do
     case declareAnnotated (withGuest primSignature) guestModule of
       Left err -> fail (show err.error)
       Right declared -> declareAnnotated declared.signature synthesizer `shouldSatisfy` isRight'
+
+  describe "the typed facade" do
+    it "has an operation for every public kernel operation, under the host's name and in its order" do
+      map _.name operations `shouldEqual` map _.operation probes
+
+    it "makes the request the host's operation of the same name makes, and takes back the answer the host's table gives it" do
+      for_ probes \p -> case p.request, Array.find (\o -> o.name == p.operation) operations of
+        Just request, Just o -> do
+          let host = requestNames request
+          Tuple p.operation { family: o.family, request: o.request } `shouldEqual` Tuple p.operation host
+          Tuple p.operation o.answer `shouldEqual` Tuple p.operation (answerOfShape <$> expectedAnswerShape request)
+        _, found -> fail (p.operation <> ": no request, or no guest operation: " <> show (map _.name found))
+
+    it "takes the request's fields in order, curried, the last arrow alone at the facade's row" do
+      for_ operations \o -> case declaredFields o.family o.request of
+        Nothing -> fail (o.name <> ": no such request declared")
+        Just fields -> do
+          let
+            arrows = arrowsOf (operationType o)
+            expected = if Array.null fields then [ unitType ] else fields
+            rows = map _.row arrows.arguments
+          Tuple o.name (map _.argument arrows.arguments) `shouldEqual` Tuple o.name expected
+          Tuple o.name (Array.dropEnd 1 rows) `shouldEqual` Tuple o.name (map (const TRowEmpty) (Array.dropEnd 1 rows))
+          Tuple o.name (Array.last rows) `shouldEqual` Tuple o.name (Just elabRow)
+
+    it "gives back what its answer carries, `Unit` for an answer carrying nothing, and anything for throw and postpone" do
+      for_ operations \o -> do
+        let arrows = arrowsOf (operationType o)
+        case o.answer of
+          Nothing -> Tuple o.name (map TVar arrows.quantified) `shouldEqual` Tuple o.name (Just arrows.result)
+          Just answer -> case declaredFields "KernelAnswer" answer of
+            Just [ carried ] -> Tuple o.name arrows.result `shouldEqual` Tuple o.name carried
+            Just [] -> Tuple o.name arrows.result `shouldEqual` Tuple o.name unitType
+            other -> fail (o.name <> ": the answer " <> answer <> " is not declared with at most one field: " <> show other)
+        Tuple o.name (isNothing o.answer) `shouldEqual` Tuple o.name (o.name == "throw" || o.name == "postpone")
+
+    it "declares every operation, transact, and synthesizer at the types the facade gives them" do
+      case declareAnnotated (withGuest primSignature) guestModule of
+        Left err -> fail (show err.error)
+        Right declared -> do
+          let
+            schemeOf n = _.scheme.body <$> Map.lookup (elab n) declared.signature.values
+            a = TyVar "a"
+          for_ operations \o -> Tuple o.name (schemeOf o.name) `shouldEqual` Tuple o.name (Just (operationType o))
+          schemeOf "transact" `shouldEqual` Just
+            (TForall a KType (fn (fn unitType elabRow (TVar a)) elabRow (maybeOf (TVar a))))
+          -- no escape is left in the row once a policy is made a synthesizer
+          schemeOf "synthesizer" `shouldEqual` Just
+            (pureFn (fn handle elabRow handle) (fn handle kernelRow handle))
+
+    it "runs at a row holding each of its three effects once" do
+      elabRow `shouldEqual`
+        TRowExtend (RowEffectEntry abortEffect [])
+          (TRowExtend (RowEffectEntry breachEffect []) (TRowExtend (RowEffectEntry kernelEffect []) TRowEmpty))
 
   it "refuses a guest that takes a handle apart" do
     case declareAnnotated (withGuest primSignature) guestModule of

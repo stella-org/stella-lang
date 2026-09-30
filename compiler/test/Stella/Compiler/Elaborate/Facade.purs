@@ -9,7 +9,11 @@
 -- | and the goal it is given is the answerOne the attempt runs. And **a result is
 -- | accepted before anything commits**: built at the goal's root, its claim
 -- | unified with the goal's type, then assigned to the goal's target.
-module Test.Stella.Compiler.Elaborate.Facade (spec) where
+module Test.Stella.Compiler.Elaborate.Facade
+  ( spec
+  , Probe
+  , probes
+  ) where
 
 import Prelude
 
