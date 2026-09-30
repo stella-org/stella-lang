@@ -12,6 +12,7 @@ module Stella.Compiler.Elaborate.Driver.Conversation
   , runSynthesizer
   , runSynthesizerWith
   , abandoned
+  , cancelled
   ) where
 
 import Prelude
@@ -158,6 +159,20 @@ abandoned :: Conversation -> Defect -> Tuple Attempt SolverState
 abandoned c defect = case abandon c defect of
   Tuple attempt s ->
     Tuple attempt (traced c.session (AttemptAbandoned { conversation: c.id, pending: c.pending.id, outcome: attempt }) s)
+
+-- | The state an attempt cancelled from outside leaves: rolled back to where it
+-- | opened, what is retained kept, and the cancellation recorded.
+-- |
+-- | **It is the last state of a compilation called off, and nothing resumes from
+-- | it.** The job the attempt ran stays as it was taken, pending and on neither
+-- | the ready queue nor the blocked table, so a loop handed this state again
+-- | would find a job no assignment can reach. What is kept is what no rollback
+-- | restores — the identifiers issued — so nothing issued in the attempt is
+-- | issued again.
+cancelled :: Conversation -> SolverState
+cancelled c = traced c.session
+  (AttemptCancelled { conversation: c.id, pending: c.pending.id })
+  { tentative: c.root, retained: c.state.retained }
 
 traced :: SessionEnv -> TraceEvent -> SolverState -> SolverState
 traced session event s = case session.tracing of

@@ -618,6 +618,7 @@ spec = describe "Elaborate, a synthesis hole filled by the reference synthesizer
     AttemptOpened e -> e.conversation == c
     CommandHandled e -> e.conversation == c
     AttemptAbandoned e -> e.conversation == c
+    AttemptCancelled e -> e.conversation == c
     AttemptNotOpened _ -> false
 
   commanded sent = case _ of

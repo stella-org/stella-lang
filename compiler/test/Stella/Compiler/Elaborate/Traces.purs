@@ -21,7 +21,7 @@ import Stella.Compiler.Elaborate.Environment.Catalog (EntrySort(..), catalogOf)
 import Stella.Compiler.Elaborate.Environment.Constructors (constructorsOf)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..))
-import Stella.Compiler.Elaborate.Driver.Conversation (command, openConversation, runSynthesizer)
+import Stella.Compiler.Elaborate.Driver.Conversation (cancelled, command, openConversation, runSynthesizer)
 import Stella.Compiler.Elaborate.Environment.Effects (effectsOf)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, createSynthesis, freshTypeMeta, initialState, runElabIn)
 import Stella.Compiler.Elaborate.Protocol.Facade (Synthesizer)
@@ -273,6 +273,20 @@ spec = describe "Elaborate.Trace" do
         Opened c0 -> case command (envelopeOf c0) BeginTransaction c0 of
           Answered _ c1 -> case command (envelopeOf c1) (Kernel (ObserveRequest LocalContext)) c1 of
             Answered _ c2 -> Array.nub (fates (traceOf c2.state)) `shouldEqual` [ Pending ]
+            Finished attempt _ -> fail (show attempt)
+          Finished attempt _ -> fail (show attempt)
+        OpenStopped attempt _ -> fail (show attempt)
+
+    it "is rolled back, every one, where the attempt is cancelled from outside, and the identifiers stay spent" do
+      given \g -> case openConversation session g.id g.taken of
+        Opened c0 -> case command (envelopeOf c0) BeginTransaction c0 of
+          Answered _ c1 -> case command (envelopeOf c1) (Kernel (ObserveRequest LocalContext)) c1 of
+            Answered _ c2 -> do
+              let s = cancelled c2
+              Array.nub (fates (traceOf s)) `shouldEqual` [ RolledBack ]
+              Array.length (traceOf s) `shouldEqual` (Array.length (traceOf c2.state) + 1)
+              s.retained.nextConversation `shouldEqual` c2.state.retained.nextConversation
+              s.retained.nextGeneration `shouldEqual` c2.state.retained.nextGeneration
             Finished attempt _ -> fail (show attempt)
           Finished attempt _ -> fail (show attempt)
         OpenStopped attempt _ -> fail (show attempt)

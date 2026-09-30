@@ -78,6 +78,12 @@ data TraceEvent
       , pending :: PendingId
       , outcome :: Attempt
       }
+  -- | An attempt cancelled from outside: the build it belongs to was called off.
+  -- | It has no outcome, and what it did is rolled back.
+  | AttemptCancelled
+      { conversation :: ConversationId
+      , pending :: PendingId
+      }
 
 -- | What a command was answered.
 data TraceReply
@@ -122,6 +128,12 @@ fates events = Array.mapWithIndex (\i _ -> fromMaybe Pending (Map.lookup i final
     AttemptAbandoned e -> case Map.lookup e.conversation acc.open of
       Nothing -> acc { decided = Map.insert i NotRun acc.decided }
       Just frames -> ended e.conversation e.outcome frames
+    AttemptCancelled e -> case Map.lookup e.conversation acc.open of
+      Nothing -> acc { decided = Map.insert i NotRun acc.decided }
+      Just frames -> acc
+        { open = Map.delete e.conversation acc.open
+        , decided = decide RolledBack (Array.concatMap _.events (within i frames)) acc.decided
+        }
     CommandHandled e -> case Map.lookup e.conversation acc.open of
       Nothing -> acc { decided = Map.insert i NotRun acc.decided }
       Just frames -> case e.reply of

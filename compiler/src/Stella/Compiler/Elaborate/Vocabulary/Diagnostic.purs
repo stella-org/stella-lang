@@ -208,6 +208,29 @@ data Defect
   -- | reads, as why: host text holding an unpaired surrogate, which nothing the
   -- | compiler produces holds.
   | GuestAnswerUnwritable P.String
+  -- | A guest synthesizer that faulted as it ran, as the synthesizer and what the
+  -- | interpreter said. A fault is no statement about the program being compiled:
+  -- | the synthesizer's code went wrong, whatever the goal.
+  | SynthesizerFaulted SynthRef P.String
+  -- | A guest synthesizer that used up the steps its invocation was allowed, as
+  -- | the synthesizer and the budget. This policy under this bound reached no
+  -- | conclusion, which says nothing about whether the goal has one.
+  | SynthesizerExhausted SynthRef P.Int
+  -- | A guest synthesizer that broke the runtime contract a well-typed guest keeps
+  -- | where its implementations keep to their declared types: it returned what is
+  -- | no handle, or asked with a value the wire has no form for. Code no compiler
+  -- | produced does, and so does a foreign implementation breaking its declaration.
+  | GuestValueOutsideContract SynthRef P.String
+  -- | A session not set up to run the synthesizer: its module or global missing,
+  -- | not a function, or the kernel callback not in force.
+  | GuestSessionUnprepared SynthRef P.String
+  -- | A request the session refused, as its code and detail. The session goes on.
+  | GuestRequestRejected P.String
+  -- | A session lost or broken while it ran a guest, as how.
+  | GuestSessionBroke P.String
+  -- | The interpreter running a guest reached a defect of its own, as what was
+  -- | reported.
+  | InterpreterDefect P.String
   -- | A synthesis job whose target is not what the one operation that creates
   -- | the two would have made. Nothing the author wrote produces one.
   | MalformedSynthesisJob PendingId MalformedGoal

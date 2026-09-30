@@ -263,6 +263,7 @@ spec = describe "Elaborate.Driver.Synthesis" do
     AttemptNotOpened _ -> "not opened"
     CommandHandled _ -> "command"
     AttemptAbandoned _ -> "abandoned"
+    AttemptCancelled _ -> "cancelled"
 
   absent = PendingId 99
 
