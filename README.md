@@ -50,9 +50,9 @@ This particular idea was inspired by F*.
 - ✅️ `TypedCore`, the central representation with explicit types and kinds
 - ✅️ Bytecode compiler
 - ✅️ STEAM, the bytecode interpreter with multi-shot continuation over explicit stack
-- ☑️ Core⁺ and Elaborator API ... *WIP*
+- ✅️ Elaborator API
 - ☑️ The first two backend: JavaScript and WebAssembly ... *WIP*
-- ☑️ CST parser, Macro Expander and SurfaceAST
+- ☑️ CST parser, Macro Expander, Surface AST and Hindley-Milner type inference
 - ☑️ MiddleEnd: IR design and optimization
 - ☑️ Suspension and concurrent primitives, `Async` effect
 - ☑️ First-class Parser API
