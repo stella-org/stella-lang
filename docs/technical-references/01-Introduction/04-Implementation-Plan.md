@@ -606,6 +606,13 @@ The channel `steam session` speaks on, before any request of a profile uses it (
 | A guest that finished, or a host that ended the attempt, before the cancel took hold | That ending kept |
 | Each way an invocation fails, settled | The defect its row names, traced as abandoned, and the session kept or replaced as its row says |
 | An attempt cancelled from outside | Every event of it rolled back, the identifiers issued in it not issued again |
+| `Stella.Elab`'s typed operations, read against the host facade | One for each of the 77, under the facade's name and in its order: each makes the request the facade's operation of that name makes and expects the answer `expectedAnswerShape` gives it, takes the request's fields in order with the last arrow alone at `( Abort, Breach, Kernel )`, and gives back what that answer carries; `throw` and `postpone` expect none |
+| Each typed operation run on the machine, answered as it expects | The command its request is, and what the answer carries given back |
+| The same, answered with another answer, with no kernel answer, or with a candidate failure outside every transaction | The policy ended with its goal, nothing more asked. A value made up for the result would let a breach pass for an answer |
+| A failure inside a `transact` inside another, then a request and the outer transaction committed | The inner `Nothing`, nothing sent to close it; the outer `Just` |
+| A transaction failing as it commits | `Nothing` |
+| An answer out of contract inside a `transact` | Neither committed nor `Nothing`: the policy ended with its goal. `transact` does not handle a breach |
+| The reference policy, written in Typed Core against `Stella.Elab` and `Base.String` | Compiled, and loaded by a session. On the machine it asks what the host reference asks, in the same order: it postpones on its goal's metavariable; it answers from the site, comparing constructor views by name and kinds, then from the globals given, then from the candidates, each in a transaction of its own, one with kind variables passed over; its hook runs only for the candidate it names; and it throws, in the same words, where nothing fits |
 
 ### The foreign manifest (step 5, interpreter 6)
 
