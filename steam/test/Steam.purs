@@ -10,6 +10,7 @@ import Test.Steam.Calls as Calls
 import Test.Steam.Command as Command
 import Test.Steam.Drive as Drive
 import Test.Steam.Eval as Eval
+import Test.Steam.Facade as Facade
 import Test.Steam.Fixtures as Fixtures
 import Test.Steam.Foreign as Foreign
 import Test.Steam.Handlers as Handlers
@@ -20,6 +21,7 @@ import Test.Steam.SessionKernel as SessionKernel
 import Test.Steam.SessionGuest as SessionGuest
 import Test.Steam.Structural as Structural
 import Test.Steam.Ops as Ops
+import Test.Steam.Reference as Reference
 import Test.Steam.Root as Root
 import Test.Steam.Value as Value
 import Test.Steam.Wire as Wire
@@ -45,5 +47,7 @@ main = do
     Session.spec
     SessionGuest.spec
     SessionKernel.spec
+    Facade.spec
+    Reference.spec
     Wire.spec
 

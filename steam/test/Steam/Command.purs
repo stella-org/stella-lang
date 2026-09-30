@@ -12,6 +12,7 @@
 module Test.Steam.Command
   ( spec
   , writeModules
+  , dir
   , pathOf
   , manifestPath
   , ioModule
