@@ -928,6 +928,22 @@ Discarding rather than keeping is what the restart reading buys: nothing has to 
 
 **One brokered invocation runs at a time in a session.** Answering is set up before the `invoke` goes out and taken down however it ends, so a `kernel` request arriving at once is answered, and one naming another attempt, or arriving after its invocation, is refused as unexpected. **The client judges a request of the session as the session judges one of its own**: before `ready`, any is unexpected; then an unknown kind is refused as such; a `kernel` request where `kernel` is not in force is refused for that, its payload unread; and only then is the payload read.
 
+**What a run comes to is settled apart from the run.** An attempt the run left open is ended by what its invocation failed as, and a guest's runtime fault or a budget used up is no statement about the program being compiled — a fault says the synthesizer went wrong whatever the goal, and a budget used up that this policy under this bound reached no conclusion — so neither is rejected as the program's. The one way a guest rejects a goal is its own `throw`.
+
+| The run ended with | The attempt | The session |
+| --- | --- | --- |
+| the attempt ended, by the guest's result or the host | as it ended | kept |
+| the guest faulting | halted, `SynthesizerFaulted` and the synthesizer | kept |
+| the budget used up | halted, `SynthesizerExhausted`, the synthesizer, and the budget | kept |
+| a result that is no handle, or a command the wire has no form for | halted, `GuestValueOutsideContract` | kept |
+| a module, a global, a function, or the kernel callback missing | halted, `GuestSessionUnprepared` | kept |
+| the `invoke` refused | halted, `GuestRequestRejected` | kept |
+| the session lost, or answering what the host has no ground for — an attempt abandoned the host did not end, one cancelled no one cancelled | halted, `GuestSessionBroke` | replaced |
+| the interpreter's own defect | halted, `InterpreterDefect` | replaced |
+| a cancellation | none: the compilation is called off | kept, or replaced where it would not stop |
+
+**A run is cancelled by asking, and the caller waits for it.** A cancellation asks the session to stop the invocation, answers any command still to come with `abandoned`, and holds the session until the invocation settles, so the state handed back is the attempt rolled back to where it opened with nothing issued in it forgotten, and the session is not handed to another run while the guest still runs. An invocation that does not settle within the cancellation's grace, or a cancel the session does not take, ends the session instead: stopping is cooperative, and a guest inside a long call of a host implementation does not return to be stopped. A run cancelled while it still waits for the session sends nothing: its wait is given up, the attempt rolled back where it stands, and the session, busy with the run ahead, hears nothing of it; the grace is for an invocation in flight alone. **An attempt ended before the cancellation took hold stays ended.** **The state a cancellation hands back is the last of a compilation called off**: the job the attempt ran stays taken, pending and neither ready nor blocked, and nothing resumes from it; a session kept is a process to use again, not a compilation to go on with. A deadline is the caller's clock cancelling.
+
 ## The bootstrap
 
 A synthesizer written in Stella has to be compiled by an elaborator, and the elaborator that compiles it must therefore not need one. The circle is cut by layers rather than by an exception.

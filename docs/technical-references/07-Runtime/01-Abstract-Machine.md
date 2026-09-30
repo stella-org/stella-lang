@@ -370,7 +370,8 @@ supply is refused where it loads.
 | capability | request | answered by |
 | --- | --- | --- |
 | `modules` | `load { path }` | `loaded { module }`, or `loadFailed { stage, detail }` |
-| `invoke` | `invoke { global: { module, name }, arguments: [ token ], attempt }` | `returned { token }`, or `invocationFailed { reason, detail }` with a `class` where the reason is `notAToken` or `commandNotEncodable` |
+| `invoke` | `invoke { global: { module, name }, arguments: [ token ], attempt, budget }` | `returned { token }`, or `invocationFailed { reason, detail }` with a `class` where the reason is `notAToken` or `commandNotEncodable` |
+| `invoke` | `cancel { attempt }` | `cancelled {}` |
 | `kernel` | `kernel { attempt, command }`, **sent by the session** while an invocation waits | `answered { answer }`, or `abandoned {}` |
 
 Every payload has exactly those fields, and a request whose payload has another shape
@@ -475,6 +476,51 @@ never handed over. Who is at fault for an answer decides what it ends in:
 A command the interpreter built and cannot encode is likewise its own defect, status
 `3`. The names a command is written with are read as they stand when it is sent: an
 answer taken in may have introduced a record key the next command carries.
+
+#### Budgets, stretches, and cancellation
+
+**A budget bounds the steps an invocation takes.** It is an integer from `1` to
+`2³¹−1` the `invoke` carries, and a step is one step of the machine — an
+administrative transition, a return reaching an entry or a handler installed,
+counting as one like an instruction. A budget of `N` allows `N` steps: an invocation
+reaching its value or a `perform` at its `N`th has it, and one needing another fails
+with `budgetExhausted`. The steps of every stretch are summed across the
+invocation, those after each `kernel` answer included; the time spent waiting for an
+answer counts for nothing. What the budget is is the client's policy, and so is
+any deadline: the clock is the client's, and a deadline is a cancel it sends.
+
+**A guest runs in stretches, and the loop comes round between them.** After a
+stretch of steps — ten thousand by default, a setting of the interpreter that no
+message carries — the machine pauses where it stands, the steps are added to what the invocation
+has spent, and the process lets its event loop go round before it looks at
+anything, so a message that arrived during the stretch is read. Only then are a
+channel lost and a cancel looked at, and the next stretch begun. Nothing a guest
+answers depends on where the stretches fall: the same guest asks the same and
+returns the same under any stretch.
+
+**A cancel asks a queued or running invocation to stop.** `cancel { attempt }` is
+answered at once, as `ping` is, and `cancelled` says the request was taken, not
+that anything stopped; that the invocation stopped is what its own answer, failed
+as `cancelled`, says. The session holds the attempts it has admitted and not
+finished, and a cancel naming any other — one to come, one finished, one never
+sent — changes nothing, so no attempt can be cancelled before it is sent. A queued
+invocation cancelled is failed as `cancelled` as it would begin, without running;
+a running one stops at the end of its stretch. One cancelled while its `kernel`
+request awaits an answer fails as `cancelled` whatever the client answers,
+`abandoned` included. Once `hello` is accepted and before `ready` goes out, a cancel is judged and noted
+where it arrives and answered after `ready`, as any answer settled then is; before
+`hello`, it is unexpected, as every request is.
+
+**Stopping is cooperative.** A guest stops between two stretches and nowhere else:
+not inside one call of a host implementation, and not inside one step, however much
+a primitive does. A client that needs a bound on how long stopping takes ends the
+session instead, which is what the client of a compile-time session does when an
+invocation it cancelled does not settle within its grace.
+
+| The invocation's reason | What it means |
+| --- | --- |
+| `budgetExhausted` | the guest took the steps its budget allows and needed another |
+| `cancelled` | the client cancelled it, queued or running |
 
 #### What the process makes of the outcome
 

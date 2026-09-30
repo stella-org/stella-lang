@@ -590,6 +590,22 @@ The channel `steam session` speaks on, before any request of a profile uses it (
 | An invocation failing, and one refused | The failure and the refusal handed back, the attempt left open |
 | The kernel's vocabulary written and read back; a kind nested 100,000 deep, attributes nested as deep, a list of 100,000 names | The same values, without running out of stack |
 | A token of another shape | Refused, saying nothing of what it holds |
+| A guest that never returns, under a budget | `budgetExhausted`, and the next request answered |
+| A budget of exactly the steps a guest takes, and one less | Its value; `budgetExhausted` |
+| One guest run in stretches of one, two, three, and seven steps | The same questions, value, and steps in all as one stretch |
+| A pause resumed twice | Refused as a defect, the machine untouched |
+| A running invocation cancelled | `cancelled` answered at once; the invocation failed as `cancelled` at the next stretch; the next request answered |
+| A queued invocation cancelled | Failed as `cancelled` without beginning |
+| A cancel naming an attempt to come, or one finished | `cancelled` answered, and nothing changed: the attempt to come runs |
+| A cancel sent while the invocation's `kernel` request awaits an answer, the client then answering `abandoned` | Failed as `cancelled` |
+| A brokered run cancelled | `Cancelled`, the attempt rolled back and traced as cancelled, the session kept |
+| A brokered run cancelled, a command asked after | The command answered `abandoned` |
+| A cancelled invocation that does not settle within the grace, and a cancel refused | The session ended; `Cancelled` with the session to replace |
+| A run cancelled while it waits for the session another run holds | `Cancelled`, the session kept: nothing sent, and the run ahead going on to its end |
+| `cancelled` answered with a payload | The session lost as misbehaving |
+| A guest that finished, or a host that ended the attempt, before the cancel took hold | That ending kept |
+| Each way an invocation fails, settled | The defect its row names, traced as abandoned, and the session kept or replaced as its row says |
+| An attempt cancelled from outside | Every event of it rolled back, the identifiers issued in it not issued again |
 
 ### The foreign manifest (step 5, interpreter 6)
 
