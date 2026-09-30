@@ -606,6 +606,12 @@ The channel `steam session` speaks on, before any request of a profile uses it (
 | A guest that finished, or a host that ended the attempt, before the cancel took hold | That ending kept |
 | Each way an invocation fails, settled | The defect its row names, traced as abandoned, and the session kept or replaced as its row says |
 | An attempt cancelled from outside | Every event of it rolled back, the identifiers issued in it not issued again |
+| A goal waiting on `?a`, attempted on the session; `?a ≡ Int` submitted through the same attempter; the loop run | The guest invoked twice by the goal's synthesizer, attempts `1` and `2`, each with the budget given; the equation sent nowhere; Completed, one unit of fuel spent |
+| A compilation called off before a goal is attempted on the session | The driver stopped with the state and a session kept; nothing sent; the attempt that opened traced as cancelled |
+| An equation submitted once the compilation is called off | Not attempted: the driver stopped, the metavariable unsolved. The cancellation is the compilation's, not a guest's |
+| A loop of equations alone, the compilation called off, and the same loop not called off | Stopped, the equation not run; Completed |
+| A session lost while a guest runs | Halted, `GuestSessionBroke`, and the session marked to replace |
+| A session that has named its last attempt, asked for another | Halted, `GuestAttemptsExhausted`, traced as abandoned; nothing sent; the session marked to replace |
 | `Stella.Elab`'s typed operations, read against the host facade | One for each of the 77, under the facade's name and in its order: each makes the request the facade's operation of that name makes and expects the answer `expectedAnswerShape` gives it, takes the request's fields in order with the last arrow alone at `( Abort, Breach, Kernel )`, and gives back what that answer carries; `throw` and `postpone` expect none |
 | Each typed operation run on the machine, answered as it expects | The command its request is, and what the answer carries given back |
 | The same, answered with another answer, with no kernel answer, or with a candidate failure outside every transaction | The policy ended with its goal, nothing more asked. A value made up for the result would let a breach pass for an answer |
@@ -952,6 +958,9 @@ no identifier is at once ready and blocked
 | A retry, whatever it comes to | One unit spent, whether the job solves, postpones again, fails, or ends in a defect |
 | No fuel left with a job on the ready queue | The loop stops naming that job, which stays at the front of the queue. Taking it first would leave it on no queue, where nothing reaches it again |
 | No fuel left and the ready queue empty | Quiescence as usual. Fuel is checked where a job would be taken, and none is |
+| The loop run in a monad that records each attempt, over a job created inside an attempt and a retry | The same report and state as over the identity monad, the attempts in the same order |
+| An attempter whose monad stops at the second job | The driver stopped there, no attempt made of it |
+| A submission in a monad | The same submission and state as over the identity monad |
 | A retry that fails, with other jobs still ready | The loop stops at that diagnostic. The jobs after it would be retried without what the failed equation would have told them |
 | A retry that fails | Reported at the site of the job that failed, not at the site of the equation whose assignment woke it |
 | Quiescence, with a job awaiting a metavariable it is not registered under | A defect, not a report of insufficient information. That assignment would never wake it, which says nothing about the program |

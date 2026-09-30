@@ -364,6 +364,8 @@ The three-way outcome is what separates "unsolvable" from "not enough informatio
 
 **How a job is attempted is delegated.** The loop and a submission choose which job is attempted, and spend the fuel; one attempt is carried out by what they are given: an equation by the host's own runner, and a synthesis job by a conversation with the synthesizer its goal names. A synthesis goal submitted from outside every attempt has its target and its job installed in one state transition, as one created inside an attempt does.
 
+**The loop is one, whatever carries out an attempt.** An attempt may be carried out in a monad — one that waits on a guest running in another process, or one that stops the driver without an attempt, as a compilation called off does — and the loop, the submission, and the fuel are the same in every monad; the host's own runner is the loop over the identity monad. A monad is a way to carry out an attempt, and never a second loop.
+
 **A synthesizer is resolved once its attempt has opened.** A job whose target is malformed is reported as that, and no attempt opens; a name the session holds no synthesizer for is a defect of the session, and the attempt that opened is abandoned having asked nothing. The loop records no trace of its own, and neither reads nor drains one.
 
 ### Which job may be attempted
@@ -949,9 +951,12 @@ synthesizer : (Handle -{ ( Abort, Breach, Kernel ) }-> Handle) -> Handle -{ ( Ke
 | the `invoke` refused | halted, `GuestRequestRejected` | kept |
 | the session lost, or answering what the host has no ground for — an attempt abandoned the host did not end, one cancelled no one cancelled | halted, `GuestSessionBroke` | replaced |
 | the interpreter's own defect | halted, `InterpreterDefect` | replaced |
+| the session having named every attempt it can | halted, `GuestAttemptsExhausted`, nothing sent | replaced |
 | a cancellation | none: the compilation is called off | kept, or replaced where it would not stop |
 
 **A run is cancelled by asking, and the caller waits for it.** A cancellation asks the session to stop the invocation, answers any command still to come with `abandoned`, and holds the session until the invocation settles, so the state handed back is the attempt rolled back to where it opened with nothing issued in it forgotten, and the session is not handed to another run while the guest still runs. An invocation that does not settle within the cancellation's grace, or a cancel the session does not take, ends the session instead: stopping is cooperative, and a guest inside a long call of a host implementation does not return to be stopped. A run cancelled while it still waits for the session sends nothing: its wait is given up, the attempt rolled back where it stands, and the session, busy with the run ahead, hears nothing of it; the grace is for an invocation in flight alone. **An attempt ended before the cancellation took hold stays ended.** **The state a cancellation hands back is the last of a compilation called off**: the job the attempt ran stays taken, pending and neither ready nor blocked, and nothing resumes from it; a session kept is a process to use again, not a compilation to go on with. A deadline is the caller's clock cancelling.
+
+**One session carries out a compilation's attempts in turn.** A synthesis job is run by the global its goal's synthesizer names, as a new invocation each time it is attempted, so a retry starts the guest from its beginning; an equation is the host's. Every invocation is given the same budget, and its attempt is the next number the session has not named, so a number is never named twice, a run called off before it was sent included. What a run comes to is settled as above: an attempt ended goes back to the scheduler, a session to replace is told to whoever holds it, and a run cancelled is no attempt at all, but the driver stopping, with the state the cancellation left. **The cancellation is the compilation's**, so once it is asked for no job is attempted, an equation the host would carry out included: the driver stops at the job it took, not run.
 
 ## The bootstrap
 
