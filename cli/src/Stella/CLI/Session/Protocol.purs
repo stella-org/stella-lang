@@ -90,6 +90,7 @@ capabilityFor :: String -> Maybe String
 capabilityFor = case _ of
   "load" -> Just modulesCapability
   "invoke" -> Just invokeCapability
+  "cancel" -> Just invokeCapability
   "kernel" -> Just kernelCapability
   _ -> Nothing
 

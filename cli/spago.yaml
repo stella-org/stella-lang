@@ -28,6 +28,7 @@ package:
     - nullable
     - numbers
     - ordered-collections
+    - parallel
     - partial
     - prelude
     - record

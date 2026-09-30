@@ -37,7 +37,7 @@ import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Foreign.Object (Object)
 import Foreign.Object as Object
-import Stella.CLI.Session.Guest (attemptOf)
+import Stella.CLI.Session.Guest (positiveOf)
 
 -- | A command, and the attempt that asks it.
 type KernelCall = { attempt :: Int, command :: Json }
@@ -60,7 +60,7 @@ encodeKernel call = Object.fromFoldable
 decodeKernel :: Object Json -> Maybe KernelCall
 decodeKernel o = do
   exactly [ "attempt", "command" ] o
-  attempt <- Object.lookup "attempt" o >>= attemptOf
+  attempt <- Object.lookup "attempt" o >>= positiveOf
   command <- Object.lookup "command" o
   pure { attempt, command }
 

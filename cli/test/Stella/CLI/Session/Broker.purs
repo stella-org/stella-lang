@@ -17,7 +17,7 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Map as Map
 import Data.String as String
 import Data.Tuple (Tuple(..))
-import Effect.Aff (Aff, forkAff, joinFiber)
+import Effect.Aff (Aff, Milliseconds(..), delay, forkAff, joinFiber)
 import Effect.Class (liftEffect)
 import Effect.Exception (throw)
 import Effect.Ref (Ref)
@@ -26,8 +26,13 @@ import Run (AFF, EFFECT, Run, runBaseAff')
 import Stella.CLI.Effect.Process (Output(..), PROCESS)
 import Stella.CLI.Effect.Process as Process
 import Stella.CLI.Runner.Node (nodeProcessHandler)
-import Stella.CLI.Session.Broker (Brokered(..), runGuest)
-import Stella.CLI.Session.Client (Session)
+import Stella.CLI.Session.Broker (Brokered(..), Cancellation, SessionHealth(..), cancel, newCancellation, runGuest)
+import Stella.CLI.Session.Broker.Settle (Settled(Settled), settle)
+import Stella.CLI.Session.Broker.Settle as Settle
+import Stella.CLI.Session.Client (ClientFailure(..), Session)
+import Stella.CLI.Session.Guest (InvocationReason(Abandoned, BudgetExhausted, CommandNotEncodable, Fault, KernelNotInForce, NoSuchModule, NotAToken), ValueClass(..))
+import Stella.Compiler.Elaborate.Driver.Attempt (OpenResult(..))
+import Stella.Compiler.Elaborate.Driver.Conversation (openConversation)
 import Stella.CLI.Session.Client as Client
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Type (XType(..))
@@ -121,10 +126,13 @@ launchOffering offers s guest =
     , "const caps = " <> show offers <> ";"
     , "let onPing = async () => {};"
     , "let onHello = async () => {};"
+    , "let cancelSeen; const cancelArrived = new Promise((r) => { cancelSeen = r; });"
+    , "let onCancel = async (m) => { send({ kind: 'cancelled', replyTo: m.id, payload: {} }); cancelSeen(m.payload.attempt); };"
     , "let buf = Buffer.alloc(0);"
     , "function on(m) {"
     , "  if (m.replyTo !== undefined) { const r = waiting.get(m.replyTo); waiting.delete(m.replyTo); if (r) r(m); return; }"
     , "  if (m.kind === 'hello') return onHello().then(() => send({ kind: 'ready', replyTo: m.id, payload: { protocol: 1, profile: 'elaboration', capabilities: caps } }));"
+    , "  if (m.kind === 'cancel') return onCancel(m);"
     , "  if (m.kind === 'ping') return onPing().then(() => send({ kind: 'pong', replyTo: m.id, payload: {} }));"
     , "  if (m.kind === 'close') { process.stderr.write('SEEN ' + JSON.stringify(seen) + '\\n'); send({ kind: 'closed', replyTo: m.id, payload: {} }); socket.end(); return; }"
     , "  if (m.kind === 'invoke') return guest(m.payload).then((r) => send({ kind: r.kind, replyTo: m.id, payload: r.payload }));"
@@ -165,9 +173,14 @@ seenIn err = case Array.find (String.contains (String.Pattern "SEEN ")) (String.
   Nothing -> []
 
 running :: Session -> Int -> Aff Brokered
-running session attempt = case job of
+running session attempt = do
+  never <- liftEffect (newCancellation (Milliseconds 1000.0))
+  runningWith never session attempt
+
+runningWith :: Cancellation -> Session -> Int -> Aff Brokered
+runningWith cancellation session attempt = case job of
   Left err -> liftEffect (throw err)
-  Right j -> node (runGuest session descriptor { global: { module: "Synth", name: "synth" }, attempt } env j.id j.state)
+  Right j -> node (runGuest session descriptor { global: { module: "Synth", name: "synth" }, attempt, budget: 1000000 } cancellation env j.id j.state)
 
 -- | `Stella.Elab`'s descriptor, which the compiler's bundle holds.
 descriptor :: Descriptor
@@ -182,6 +195,7 @@ endedAs = case _ of
   InvocationFailed failure _ -> "InvocationFailed " <> show failure.reason
   RequestRejected refusal _ -> "RequestRejected " <> refusal.code
   SessionLost failure _ -> "SessionLost " <> show failure
+  Cancelled _ health -> "Cancelled " <> show health
 
 stateOf :: Brokered -> Maybe SolverState
 stateOf = case _ of
@@ -366,3 +380,164 @@ spec = describe "Stella.CLI.Session.Broker" do
           b <- running session 1
           liftEffect (Ref.write (endedAs b) invalid)
       liftEffect (Ref.read invalid) >>= shouldEqual "RequestRejected attemptNotAbove"
+
+  describe "a run cancelled" do
+    it "stops the guest, rolls the attempt back traced, and leaves the session to be used" do
+      result <- liftEffect (Ref.new Nothing)
+      pinged <- liftEffect (Ref.new false)
+      _ <- withSession
+        "const guest = async (p) => { await cancelArrived; return failed('cancelled'); };"
+        \session -> do
+          token <- liftEffect (newCancellation (Milliseconds 1000.0))
+          run <- forkAff (runningWith token session 1)
+          delay (Milliseconds 100.0)
+          liftEffect (cancel token)
+          b <- joinFiber run
+          liftEffect (Ref.write (Just b) result)
+          node (Client.ping session) >>= case _ of
+            Right _ -> liftEffect (Ref.write true pinged)
+            Left _ -> pure unit
+      liftEffect (Ref.read result) >>= case _ of
+        Just (Cancelled s health) -> do
+          health `shouldEqual` Reusable
+          Array.any cancelledEvent s.retained.trace `shouldEqual` true
+        Just other -> fail ("ended otherwise: " <> endedAs other)
+        Nothing -> fail "no result"
+      liftEffect (Ref.read pinged) >>= shouldEqual true
+
+    it "answers abandoned a command asked after the cancel" do
+      result <- liftEffect (Ref.new "")
+      seen <- withSession
+        "const guest = async (p) => { await cancelArrived; note(answerOf(await kernel(p.attempt, d('BeginTransaction')))); return failed('cancelled'); };"
+        \session -> do
+          token <- liftEffect (newCancellation (Milliseconds 1000.0))
+          run <- forkAff (runningWith token session 1)
+          delay (Milliseconds 100.0)
+          liftEffect (cancel token)
+          b <- joinFiber run
+          liftEffect (Ref.write (endedAs b) result)
+      liftEffect (Ref.read result) >>= shouldEqual "Cancelled Reusable"
+      seen `shouldEqual` [ "abandoned" ]
+
+    it "withdraws a run still waiting for the session, touching neither the session nor the run ahead" do
+      results <- liftEffect (Ref.new [])
+      seen <- withSession
+        ( "let release; const released = new Promise((r) => { release = r; }); onPing = async () => release();"
+            <> " const guest = async (p) => { note('start ' + p.attempt); await released; return returned(await answerOne(p.attempt)); };"
+        )
+        \session -> do
+          ahead <- forkAff (running session 1)
+          delay (Milliseconds 100.0)
+          token <- liftEffect (newCancellation (Milliseconds 100.0))
+          behind <- forkAff (runningWith token session 2)
+          delay (Milliseconds 100.0)
+          liftEffect (cancel token)
+          withdrawn <- joinFiber behind
+          -- the run ahead is still in flight, and goes on once released
+          _ <- node (Client.ping session)
+          finished <- joinFiber ahead
+          liftEffect (Ref.write [ endedAs withdrawn, endedAs finished ] results)
+      liftEffect (Ref.read results) >>= shouldEqual [ "Cancelled Reusable", "Ended Committed" ]
+      seen `shouldEqual` [ "start 1" ]
+
+    it "loses the session where cancelled is answered with a payload" do
+      s <- liftEffect ({ stdout: _, stderr: _ } <$> Ref.new "" <*> Ref.new "")
+      node (Client.open (launch s "onCancel = async (m) => send({ kind: 'cancelled', replyTo: m.id, payload: { extra: 1 } }); const guest = async (p) => new Promise(() => {});")) >>= case _ of
+        Left failure -> fail (show failure)
+        Right session -> node (Client.cancel session 1) >>= case _ of
+          Left (Client.SessionLost _) -> pure unit
+          other -> fail ("taken as " <> show other)
+
+    it "ends the session where the invocation does not stop within the grace, or the cancel is refused" do
+      for_'
+        [ "const guest = async (p) => new Promise(() => {});"
+        , "onCancel = async (m) => send({ kind: 'protocolError', replyTo: m.id, payload: { code: 'kindUnknown', detail: '' } }); const guest = async (p) => new Promise(() => {});"
+        ]
+        \guest -> do
+          s <- liftEffect ({ stdout: _, stderr: _ } <$> Ref.new "" <*> Ref.new "")
+          node (Client.open (launch s guest)) >>= case _ of
+            Left failure -> fail (show failure)
+            Right session -> do
+              token <- liftEffect (newCancellation (Milliseconds 200.0))
+              run <- forkAff (runningWith token session 1)
+              delay (Milliseconds 100.0)
+              liftEffect (cancel token)
+              b <- joinFiber run
+              endedAs b `shouldEqual` "Cancelled Replace"
+
+    it "keeps an attempt the guest finished, or the host ended, before the cancel took hold" do
+      finished <- liftEffect (Ref.new "")
+      _ <- withSession
+        "const guest = async (p) => { const e = await answerOne(p.attempt); await cancelArrived; return returned(e); };"
+        \session -> do
+          token <- liftEffect (newCancellation (Milliseconds 1000.0))
+          run <- forkAff (runningWith token session 1)
+          delay (Milliseconds 200.0)
+          liftEffect (cancel token)
+          b <- joinFiber run
+          liftEffect (Ref.write (endedAs b) finished)
+      liftEffect (Ref.read finished) >>= shouldEqual "Ended Committed"
+      rejected <- liftEffect (Ref.new "")
+      _ <- withSession
+        "const guest = async (p) => { await throwing(p.attempt); await cancelArrived; return failed('cancelled'); };"
+        \session -> do
+          token <- liftEffect (newCancellation (Milliseconds 1000.0))
+          run <- forkAff (runningWith token session 1)
+          delay (Milliseconds 200.0)
+          liftEffect (cancel token)
+          b <- joinFiber run
+          liftEffect (Ref.write (endedAs b) rejected)
+      liftEffect (Ref.read rejected) >>= \r -> r `shouldSatisfy` String.contains (String.Pattern "Ended (Rejected")
+
+  describe "settling a run" do
+    it "halts an attempt the invocation left open as the defect its failure is, keeping the session unless it was lost" do
+      case job of
+        Left err -> fail err
+        Right j -> case openConversation env j.id j.state of
+          OpenStopped attempt _ -> fail (show attempt)
+          Opened c -> do
+            let
+              failed reason = InvocationFailed { reason, detail: "d" } c
+              exit code = { code: Just code, signal: Nothing, error: Nothing }
+              settled b = case settle { budget: 77 } b of
+                Settled attempt s health -> Tuple (Array.any abandonedEvent s.retained.trace) (show attempt <> " " <> show health)
+                Settle.Cancelled _ health -> Tuple false ("Cancelled " <> show health)
+            for_'
+              [ Tuple (failed Fault) "SynthesizerFaulted"
+              , Tuple (failed BudgetExhausted) "SynthesizerExhausted"
+              , Tuple (failed (NotAToken ClassInt)) "GuestValueOutsideContract"
+              , Tuple (failed (CommandNotEncodable ClassClosure)) "GuestValueOutsideContract"
+              , Tuple (failed NoSuchModule) "GuestSessionUnprepared"
+              , Tuple (failed KernelNotInForce) "GuestSessionUnprepared"
+              , Tuple (RequestRejected { code: "attemptNotAbove", detail: "" } c) "GuestRequestRejected"
+              ]
+              \(Tuple b name) -> do
+                let Tuple traced text = settled b
+                traced `shouldEqual` true
+                text `shouldSatisfy` String.contains (String.Pattern name)
+                text `shouldSatisfy` String.contains (String.Pattern "Reusable")
+            for_'
+              [ Tuple (SessionLost (ExitedUnannounced (exit 3)) c) "InterpreterDefect"
+              , Tuple (SessionLost (ExitedUnannounced (exit 1)) c) "GuestSessionBroke"
+              , Tuple (failed Abandoned) "GuestSessionBroke"
+              ]
+              \(Tuple b name) -> do
+                let Tuple _ text = settled b
+                text `shouldSatisfy` String.contains (String.Pattern name)
+                text `shouldSatisfy` String.contains (String.Pattern "Replace")
+            case settle { budget: 77 } (failed BudgetExhausted) of
+              Settled (Halted (SynthesizerExhausted _ budget)) _ _ -> budget `shouldEqual` 77
+              _ -> fail "not halted as exhausted"
+
+abandonedEvent :: TraceEvent -> Boolean
+abandonedEvent = case _ of
+  AttemptAbandoned _ -> true
+  _ -> false
+
+cancelledEvent :: TraceEvent -> Boolean
+cancelledEvent = case _ of
+  AttemptCancelled _ -> true
+  _ -> false
+
+for_' :: forall a. Array a -> (a -> Aff Unit) -> Aff Unit
+for_' xs f = void (Array.foldM (\_ x -> f x) unit xs)

@@ -27,6 +27,7 @@ module Stella.CLI.Session.Client
   , invoke
   , Answering
   , invokeAnswering
+  , cancel
   , close
   , abandon
   , kill
@@ -40,6 +41,9 @@ import Data.Either (Either(..))
 import Data.Generic.Rep (class Generic)
 import Data.Maybe (Maybe(..))
 import Data.Show.Generic (genericShow)
+import Effect (Effect)
+import Control.Alt ((<|>))
+import Control.Parallel (parallel, sequential)
 import Effect.Aff (Aff, bracket)
 import Effect.Class as Effect
 import Effect.Aff.AVar (AVar)
@@ -47,9 +51,10 @@ import Effect.Aff.AVar as AVar
 import Effect.Ref (Ref)
 import Effect.Ref as Ref
 import Foreign.Object (Object)
+import Foreign.Object as Object
 import Run (AFF, EFFECT, Run, liftAff, liftEffect, runBaseAff')
 import Stella.CLI.Effect.Process (Child, Exit, Output, PROCESS, spawnSession)
-import Stella.CLI.Session.Guest (InvocationFailure, InvokeRequest, LoadFailure, Token, decodeInvocationFailed, decodeLoadFailed, decodeLoaded, decodeReturned, encodeInvoke, encodeLoad, invocationFailedKind, invokeKind, loadFailedKind, loadKind, loadedKind, returnedKind)
+import Stella.CLI.Session.Guest (InvocationFailure, InvokeRequest, LoadFailure, Token, cancelKind, cancelledKind, encodeCancel, decodeInvocationFailed, decodeLoadFailed, decodeLoaded, decodeReturned, encodeInvoke, encodeLoad, invocationFailedKind, invokeKind, loadFailedKind, loadKind, loadedKind, returnedKind)
 import Stella.CLI.Session.Kernel (KernelCall, decodeKernel, kernelKind)
 import Stella.CLI.Session.Peer (Peer, Reply, SessionFailure)
 import Stella.CLI.Session.Peer as Peer
@@ -285,21 +290,42 @@ invoke session invocation = request session invokeKind (encodeInvoke invocation)
 -- | time in a session**: a second waits for the first, the session running
 -- | invocations one after another in any case, so neither answers the other's
 -- | requests.
+-- |
+-- | **A caller may withdraw until the invocation is sent**, and nothing reaches the
+-- | session of one withdrawn. Waiting for the session is raced against
+-- | `withdrawn`: where it settles first, the wait is given up. Once the session is
+-- | held, `sending` is asked at that moment, before anything is sent, and where it
+-- | says not to, nothing is. Either way the answer is `Nothing`.
 invokeAnswering
   :: forall r
    . Session
   -> InvokeRequest
   -> Answering
-  -> Run (AFF + EFFECT + r) (Either RequestFailure (Either InvocationFailure Token))
-invokeAnswering session@(Session s) invocation answering = liftAff $ bracket
-  do
-    AVar.take s.serial
-    Effect.liftEffect (Ref.write (Just { attempt: invocation.attempt, answering }) s.guest)
-  ( \_ -> do
-      Effect.liftEffect (Ref.write Nothing s.guest)
-      AVar.put unit s.serial
-  )
-  (\_ -> runBaseAff' (invoke session invocation))
+  -> { withdrawn :: Aff Unit, sending :: Effect Boolean }
+  -> Run (AFF + EFFECT + r) (Maybe (Either RequestFailure (Either InvocationFailure Token)))
+invokeAnswering session@(Session s) invocation answering caller = liftAff do
+  held <- sequential (parallel (caller.withdrawn $> false) <|> parallel (AVar.take s.serial $> true))
+  if not held then pure Nothing
+  else bracket
+    (Effect.liftEffect (Ref.write (Just { attempt: invocation.attempt, answering }) s.guest))
+    ( \_ -> do
+        Effect.liftEffect (Ref.write Nothing s.guest)
+        AVar.put unit s.serial
+    )
+    ( \_ -> Effect.liftEffect caller.sending >>= if _ then Just <$> runBaseAff' (invoke session invocation) else pure Nothing
+    )
+
+-- | Ask the session to stop a queued or running invocation. **That the request was
+-- | taken is all its answer says**: whether the invocation stopped is what that
+-- | invocation's own answer says.
+cancel :: forall r. Session -> Int -> Run (AFF + EFFECT + r) (Either RequestFailure Unit)
+cancel session attempt = request session cancelKind (encodeCancel attempt) >>= case _ of
+  Left failure -> pure (Left failure)
+  Right reply
+    | reply.kind == cancelledKind ->
+        if Object.isEmpty reply.payload then pure (Right unit)
+        else Left <<< SessionLost <$> misbehaved session (AnswerMalformed reply.kind)
+    | otherwise -> Left <<< SessionLost <$> misbehaved session (AnswerUnexpected reply.kind)
 
 -- | Close the session: `close`, `closed`, and then the process ending with 0.
 close :: forall r. Session -> Run (AFF + EFFECT + r) (Either ClientFailure Unit)

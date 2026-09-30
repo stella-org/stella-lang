@@ -19,7 +19,7 @@ import Foreign.Object (Object)
 import Foreign.Object as Object
 import Stella.CLI.Session.Envelope (EnvelopeReason(..), Message(..), decodeMessage, encodeMessage, firstMessageId, messageId, nextMessageId)
 import Stella.CLI.Session.Frame (FrameFailure(..), PayloadProblem(..), emptyReader, feed, finish, frame, maxPayload, parsePayload, renderPayload, u32BE)
-import Stella.CLI.Session.Guest (InvocationReason(..), LoadStage(..), ValueClass(..), decodeInvocationFailed, decodeInvoke, decodeLoad, decodeLoadFailed, decodeLoaded, decodeReturned, encodeInvocationFailed, encodeInvoke, encodeLoad, encodeLoadFailed, encodeLoaded, encodeReturned)
+import Stella.CLI.Session.Guest (InvocationReason(..), LoadStage(..), ValueClass(..), decodeCancel, encodeCancel, decodeInvocationFailed, decodeInvoke, decodeLoad, decodeLoadFailed, decodeLoaded, decodeReturned, encodeInvocationFailed, encodeInvoke, encodeLoad, encodeLoadFailed, encodeLoaded, encodeReturned)
 import Stella.CLI.Session.Kernel (decodeAbandoned, decodeAnswered, decodeKernel, encodeAbandoned, encodeAnswered, encodeKernel)
 import Stella.CLI.Session.Peer (Incoming, SessionFailure(..), answer)
 import Stella.CLI.Session.Peer as Peer
@@ -244,15 +244,17 @@ guests = describe "load and invoke payloads" do
     decodeLoaded (encodeLoaded "Guest") `shouldEqual` Just "Guest"
     decodeLoadFailed (encodeLoadFailed { stage: Initialization, detail: "d" })
       `shouldEqual` Just { stage: Initialization, detail: "d" }
-    map (\r -> { global: r.global, arguments: map text r.arguments, attempt: r.attempt })
-      (decodeInvoke (encodeInvoke { global: name, arguments: [ tok ], attempt: 7 }))
-      `shouldEqual` Just { global: name, arguments: [ text tok ], attempt: 7 }
+    map (\r -> { global: r.global, arguments: map text r.arguments, attempt: r.attempt, budget: r.budget })
+      (decodeInvoke (encodeInvoke { global: name, arguments: [ tok ], attempt: 7, budget: 9 }))
+      `shouldEqual` Just { global: name, arguments: [ text tok ], attempt: 7, budget: 9 }
     map text (decodeReturned (encodeReturned tok)) `shouldEqual` Just (text tok)
     for_
       [ NotAToken ClassPartialApplication
       , KernelNotInForce
       , CommandNotEncodable ClassClosure
       , Abandoned
+      , BudgetExhausted
+      , Cancelled
       ]
       \reason ->
         decodeInvocationFailed (encodeInvocationFailed { reason, detail: "d" })
@@ -269,7 +271,7 @@ guests = describe "load and invoke payloads" do
 
   it "refuse an attempt that is not an integer from 1 to 2147483647, or none" do
     let
-      withAttempt a = Object.insert "attempt" a (encodeInvoke { global: name, arguments: [], attempt: 1 })
+      withAttempt a = Object.insert "attempt" a (encodeInvoke { global: name, arguments: [], attempt: 1, budget: 1 })
     for_ [ fromNumber 0.0, fromNumber (-1.0), fromNumber 1.5, fromNumber 2147483648.0, fromString "1" ] \a ->
       map (const unit) (decodeInvoke (withAttempt a)) `shouldEqual` Nothing
     map _.attempt (decodeInvoke (withAttempt (fromNumber 2147483647.0))) `shouldEqual` Just 2147483647
@@ -291,6 +293,11 @@ guests = describe "load and invoke payloads" do
     decodeInvocationFailed
       (object [ Tuple "reason" (fromString "abandoned"), Tuple "detail" (fromString ""), Tuple "class" (fromString "int") ])
       `shouldEqual` Nothing
+
+  it "carry a cancel, exactly as shown" do
+    decodeCancel (encodeCancel 5) `shouldEqual` Just 5
+    decodeCancel (object [ Tuple "attempt" (fromNumber 0.0) ]) `shouldEqual` Nothing
+    decodeCancel (Object.insert "more" jsonNull (encodeCancel 5)) `shouldEqual` Nothing
 
   it "carry a kernel request and its two answers, exactly as shown" do
     let command = fromObject (object [ Tuple "int" (fromNumber 1.0) ])

@@ -4,8 +4,19 @@
 -- | load    { path }                        → loaded { module } or loadFailed { stage, detail }
 -- | invoke  { global: { module, name },     → returned { token }
 -- |           arguments: [ token ],           or invocationFailed { reason, detail [, class] }
--- |           attempt }
+-- |           attempt, budget }
+-- | cancel  { attempt }                     → cancelled {}
 -- | ```
+-- |
+-- | **A budget bounds the steps an invocation takes**, an integer from 1 to
+-- | 2147483647: a guest needing more fails with `budgetExhausted`. Waiting for
+-- | the client to answer a `kernel` request takes none.
+-- |
+-- | **`cancel` asks a queued or running invocation to stop**, and `cancelled` says
+-- | the request was taken, not that it stopped: that is what the invocation's own
+-- | answer, failed as `cancelled`, says. An attempt neither queued nor running is
+-- | left alone. Stopping is cooperative: a guest stops between two stretches of
+-- | steps, and not inside one call of a host implementation.
 -- |
 -- | **An `attempt` names one invocation for good.** It is an integer from 1 to
 -- | 2147483647, and each `invoke` a session admits carries one above every attempt
@@ -23,7 +34,7 @@ module Stella.CLI.Session.Guest
   ( Token
   , GlobalName
   , InvokeRequest
-  , attemptOf
+  , positiveOf
   , LoadStage(..)
   , LoadFailure
   , InvocationReason(..)
@@ -35,6 +46,10 @@ module Stella.CLI.Session.Guest
   , invokeKind
   , returnedKind
   , invocationFailedKind
+  , cancelKind
+  , cancelledKind
+  , encodeCancel
+  , decodeCancel
   , encodeLoad
   , decodeLoad
   , encodeLoaded
@@ -106,6 +121,10 @@ data InvocationReason
   | CommandNotEncodable ValueClass
   -- | The host ended the attempt while the guest waited for an answer.
   | Abandoned
+  -- | The guest used up the steps its budget allowed.
+  | BudgetExhausted
+  -- | The client cancelled the invocation.
+  | Cancelled
 
 derive instance Eq InvocationReason
 derive instance Generic InvocationReason _
@@ -153,6 +172,12 @@ returnedKind = "returned"
 
 invocationFailedKind :: String
 invocationFailedKind = "invocationFailed"
+
+cancelKind :: String
+cancelKind = "cancel"
+
+cancelledKind :: String
+cancelledKind = "cancelled"
 
 -- Load --------------------------------------------------------------------------------
 
@@ -202,7 +227,7 @@ stageOf = case _ of
 
 -- | An `invoke`: the global applied, the tokens it is applied to, and the attempt
 -- | it is.
-type InvokeRequest = { global :: GlobalName, arguments :: Array Token, attempt :: Int }
+type InvokeRequest = { global :: GlobalName, arguments :: Array Token, attempt :: Int, budget :: Int }
 
 encodeInvoke :: InvokeRequest -> Object Json
 encodeInvoke r = Object.fromFoldable
@@ -212,26 +237,36 @@ encodeInvoke r = Object.fromFoldable
       ]
   , Tuple "arguments" (fromArray (map fromObject r.arguments))
   , Tuple "attempt" (fromNumber (Int.toNumber r.attempt))
+  , Tuple "budget" (fromNumber (Int.toNumber r.budget))
   ]
 
--- | An `invoke` whose attempt is not an integer from 1 to 2147483647 has no
--- | reading.
+-- | An `invoke` whose attempt or budget is not an integer from 1 to 2147483647 has
+-- | no reading.
 decodeInvoke :: Object Json -> Maybe InvokeRequest
 decodeInvoke o = do
-  exactly [ "global", "arguments", "attempt" ] o
+  exactly [ "global", "arguments", "attempt", "budget" ] o
   g <- field "global" o >>= objectOf
   exactly [ "module", "name" ] g
   m <- field "module" g >>= stringOf
   name <- field "name" g >>= stringOf
   arguments <- field "arguments" o >>= caseJsonArray Nothing Just >>= traverse objectOf
-  attempt <- field "attempt" o >>= attemptOf
-  pure { global: { module: m, name }, arguments, attempt }
+  attempt <- field "attempt" o >>= positiveOf
+  budget <- field "budget" o >>= positiveOf
+  pure { global: { module: m, name }, arguments, attempt, budget }
 
 encodeReturned :: Token -> Object Json
 encodeReturned token = Object.singleton "token" (fromObject token)
 
 decodeReturned :: Object Json -> Maybe Token
 decodeReturned o = exactly [ "token" ] o *> (field "token" o >>= objectOf)
+
+-- Cancel --------------------------------------------------------------------------------
+
+encodeCancel :: Int -> Object Json
+encodeCancel attempt = Object.singleton "attempt" (fromNumber (Int.toNumber attempt))
+
+decodeCancel :: Object Json -> Maybe Int
+decodeCancel o = exactly [ "attempt" ] o *> (field "attempt" o >>= positiveOf)
 
 -- | `class` stands exactly where the reason is `notAToken` or `commandNotEncodable`,
 -- | and nowhere else.
@@ -270,6 +305,8 @@ reasonCode = case _ of
   KernelNotInForce -> "kernelNotInForce"
   CommandNotEncodable _ -> "commandNotEncodable"
   Abandoned -> "abandoned"
+  BudgetExhausted -> "budgetExhausted"
+  Cancelled -> "cancelled"
 
 simpleReasonOf :: String -> Maybe InvocationReason
 simpleReasonOf = case _ of
@@ -279,6 +316,8 @@ simpleReasonOf = case _ of
   "fault" -> Just Fault
   "kernelNotInForce" -> Just KernelNotInForce
   "abandoned" -> Just Abandoned
+  "budgetExhausted" -> Just BudgetExhausted
+  "cancelled" -> Just Cancelled
   _ -> Nothing
 
 classCode :: ValueClass -> String
@@ -334,8 +373,8 @@ stringOf = caseJsonString Nothing Just
 objectOf :: Json -> Maybe (Object Json)
 objectOf = caseJsonObject Nothing Just
 
--- | An attempt: an integer from 1 to 2147483647.
-attemptOf :: Json -> Maybe Int
-attemptOf json = do
+-- | An integer from 1 to 2147483647, which is what an attempt and a budget are.
+positiveOf :: Json -> Maybe Int
+positiveOf json = do
   n <- caseJsonNumber Nothing Just json >>= Int.fromNumber
   if n >= 1 then Just n else Nothing
