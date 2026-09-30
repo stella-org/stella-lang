@@ -1,6 +1,6 @@
 {
-  "name": "@stella-lang/cli",
-  "description": "The Stella compiler toolchain CLI",
+  "name": "@stella-lang/stellac",
+  "description": "The Stella Compiler CLI",
   "version": "0.1.0",
   "author": {
     "name": "Katsujukou Kineya",
