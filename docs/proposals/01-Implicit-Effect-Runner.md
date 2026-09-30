@@ -13,17 +13,19 @@ main :: IO Unit
 main = runIO \_ -> handle ... with ...
 ```
 
-where `runIO :: forall a. a / {| LiftIO |} -> IO a` reifies effectful terms -- whose
+where `runIO :: forall a. (Unit -> a / {| LiftIO |}) -> IO a` reifies effectful terms -- whose
 effect rows contain only the `LiftIO` effect -- as values in the `IO` monad. Due to
 the core semantics, `runIO` must take a thunk rather than an effectful term, making
-`runIO \_ -> ...` seem somewhat clunky. Developers would expect an traditional helloworld
+`runIO \_ -> ...` seem somewhat clunky. Developers would expect a traditional helloworld
 program to be written in a much simpler style, such as:
 
 ```stella
 main = Console.log "🌍️"
 ```
 
-This proposal aims to make this possible.
+This proposal aims to make this possible. It relies on
+[Top-level Computation Declaration](./05-Toplevel-Computation-Declaration.md), which gives
+a declaration such as `main :: Unit / {| Console |}` its meaning.
 
 ### Proposal
 
@@ -35,23 +37,43 @@ main :: Unit / {| Console |}
 main = Console.log "🌍️"
 ```
 
-The right-hand side of `@[entrypoint]` is initially type-checked against the standard `IO Unit`.
-If this succeeds, it is directly used as the entrypoint. If the types do not match, the system
-infers it as a computation type `a / ρ` and checks it against the provided type annotation, if
-present. Next, letting `σ` be the closed effect row accepted by the runner, the system looks
-for a unique implicit lowering plan such that `ρ ~> σ`. If the plan combined with the runner
-application yields an `IO Unit`, the compiler generates a hidden stub to be passed to the runtime
-environment. The original main in the source code retains its annotated computation type.
+#### How it works
+
+**An entrypoint is treated according to the form of its declaration**:
+
+| Declaration Form | Signature | Treatment |
+| --- | --- | --- |
+| Value | `main :: IO Unit` | used directly as the entrypoint |
+| Computation | `main :: τ / ρ` | a runner and a lowering plan are applied, as below |
+| Others | without an annotation, and effectful | rejected with a hint of adding an annotation |
+
+The second is the case treated in the manner described here.
+
+When the system finds the entrypoint `main` is not an `IO`-value, then it generates the stub
+which reifies the found `main` as an `IO`:
 
 ```stella
-main        : Unit / {| Console |}
-$entry_main : IO Unit
+main :: Unit / ρ
+main = e
 
-$entry_main =
-  runIO \_ ->
-    lowerConsole \_ ->
-      main
+-- generated
+$entry_main :: IO Unit
+$entry_main = runIO (\_ -> main)
 ```
+
+Note that this first step is purely syntactic work, and the only step
+necessary to make this work, because the rest of the job is standard elaboration:
+
+- Since `main` is a computation declaration, it is desugared into the nullary thunk
+  `main : Unit -{ρ}-> Unit = λ(_: Unit). e`
+- The `main` in the RHS of the `$entry_main` is the same computation declaration, so referring
+  to it is desugared into the thunk forcing `main ()`
+- Combining these two results in `runIO (λ(_ : Unit). main ())`, which is effectively the `e` --
+  the original body of `main`
+- the argument to the `runIO` is checked against `Unit -> a / {| LiftIO |}`, so the elaborator
+  inserts an implicit handler which lowers `ρ` down to `{| LiftIO |}` if available
+
+#### Possible Future Improvemens
 
 Initially, the standard runner will be hidden within the toolchain, and `@[entrypoint]`
 will implicitly utilize it. In the future, when custom runners are exposed to users,
@@ -75,8 +97,12 @@ main :: Unit / {| Console |}
 main = Console.log "Hello, World!"
 ```
 
+> Note: The arguments of an attribute desugar to a record, `{ runner: myrunner }`,
+> whose values are limited to literals, names, and records and arrays of those.
+> `myrunner` is resolved as an ordinary name, and counts as a dependency of the module.
+
 In this case, the system applies an implicit lowering plan for `{| Console |} ~> {| LiftConsole |}`,
-wraps the computation in a thunk, and passes it to myrunner. For the time being, the allowed type
+wraps the computation in a thunk, and passes it to `myrunner`. For the time being, the allowed type
 signature for `@[entry_runner]` will be strictly limited to `forall a. (Unit -> a / σ) -> IO a`,
 where `σ` is a closed effect row, and no additional value arguments are permitted.
 
