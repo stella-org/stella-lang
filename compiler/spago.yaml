@@ -8,6 +8,7 @@ package:
     - enums
     - foldable-traversable
     - foreign-object
+    - identity
     - integers
     - maybe
     - ordered-collections
@@ -22,5 +23,6 @@ package:
       - arrays
       - effect
       - quickcheck
+      - refs
       - spec
       - spec-node

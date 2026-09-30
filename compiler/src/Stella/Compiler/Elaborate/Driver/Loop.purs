@@ -11,9 +11,12 @@ module Stella.Compiler.Elaborate.Driver.Loop
   , RunResult(..)
   , RunReport
   , Attempter
+  , AttempterM
+  , submitAttemptingM
   , submitAttempting
   , submitWith
   , submitEquality
+  , runAttemptingM
   , runAttempting
   , runWith
   , run
@@ -31,7 +34,8 @@ import Stella.Compiler.Elaborate.Driver.Attempt (Attempt, Runner, attemptPending
 import Stella.Compiler.Elaborate.Driver.Attempt as Run
 import Stella.Compiler.Elaborate.Mechanism.Scheduler (Phase(..), create, invariants, lookupPending, nextReady, takeReady, unwakeable)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar)
-import Control.Monad.Rec.Class (Step(..), tailRec)
+import Control.Monad.Rec.Class (class MonadRec, Step(..), tailRecM)
+import Data.Identity (Identity(..))
 import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
@@ -104,22 +108,33 @@ data RunResult
 -- | the job is carried out is the attempter's.
 type Attempter = PendingId -> SolverState -> Tuple Attempt SolverState
 
+-- | An attempter whose attempt is carried out in the monad given: one that waits
+-- | on a guest running elsewhere, or stops the driver without an attempt, where
+-- | the monad can. The driver is the same over any monad, and `Attempter` is the
+-- | one over `Identity`.
+type AttempterM m = PendingId -> SolverState -> m (Tuple Attempt SolverState)
+
 -- | Create a job and attempt it at once, with the attempter given.
 -- |
 -- | Just after `create` is one of the two points at which a job may be
 -- | attempted. A first attempt spends no fuel, fuel bounding the scheduler's
 -- | retries alone.
-submitAttempting :: Attempter -> Site -> Job -> SolverState -> Tuple Submission SolverState
-submitAttempting attempter site job s0 = case attempt of
-  Run.Rejected diagnostic -> stop (Rejected diagnostic)
-  Run.Halted defect -> stop (Halted defect)
-  Run.Committed -> Tuple (Continue { id, attempt }) s
-  Run.Registered _ -> Tuple (Continue { id, attempt }) s
+submitAttemptingM :: forall m. Monad m => AttempterM m -> Site -> Job -> SolverState -> m (Tuple Submission SolverState)
+submitAttemptingM attempter site job s0 = attempter id (s0 { tentative { scheduler = scheduler } }) <#> case _ of
+  Tuple attempt s -> case attempt of
+    Run.Rejected diagnostic -> stop (Rejected diagnostic) s
+    Run.Halted defect -> stop (Halted defect) s
+    Run.Committed -> Tuple (Continue { id, attempt }) s
+    Run.Registered _ -> Tuple (Continue { id, attempt }) s
   where
   Tuple id scheduler = create site job s0.tentative.scheduler
-  Tuple attempt s = attempter id (s0 { tentative { scheduler = scheduler } })
-  stop result = case stopped result s of
+  stop result s = case stopped result s of
     Tuple stoppedWith s' -> Tuple (Stop stoppedWith) s'
+
+-- | `submitAttemptingM` over `Identity`.
+submitAttempting :: Attempter -> Site -> Job -> SolverState -> Tuple Submission SolverState
+submitAttempting attempter site job s0 = case submitAttemptingM (identically attempter) site job s0 of
+  Identity result -> result
 
 -- | `submitAttempting`, each job carried out by the runner given.
 submitWith :: SessionEnv -> Runner -> Site -> Job -> SolverState -> Tuple Submission SolverState
@@ -143,7 +158,7 @@ run session = runWith session hostRunner
 -- | the fuel does not reach stays on the ready queue and is named, and one that
 -- | has been attempted has spent a unit whatever it came to. A job on the queue
 -- | for its first attempt — one created inside another attempt — spends none,
--- | as a job submitted and attempted at once spends none. The loop is a `tailRec`,
+-- | as a job submitted and attempted at once spends none. The loop is a `tailRecM`,
 -- | since the number of retries is bounded by fuel rather than by the stack.
 -- |
 -- | The attempter is given once and every attempt of the loop is its: the
@@ -156,22 +171,25 @@ run session = runWith session hostRunner
 -- | that committed made, those made before the loop by a job submitted and
 -- | attempted at once among them, into the report and out of the state: a
 -- | driver reading them reads them once.
-runAttempting :: Attempter -> SolverState -> Tuple RunReport SolverState
-runAttempting attempter s0 =
-  let
-    Tuple result s = tailRec step s0
-  in
-    stopped result s
+-- |
+-- | **The loop is the same in every monad.** The monad carries out each attempt
+-- | and nothing else: which job is taken, the fuel, and where the loop stops are
+-- | decided here, so an attempter waiting on a guest elsewhere drives the
+-- | scheduler exactly as the host's own does. A monad that stops the driver
+-- | without an attempt stops it where the attempt would have been.
+runAttemptingM :: forall m. MonadRec m => AttempterM m -> SolverState -> m (Tuple RunReport SolverState)
+runAttemptingM attempter s0 = tailRecM step s0 <#> case _ of
+  Tuple result s -> stopped result s
   where
   step s = case nextReady s.tentative.scheduler of
     Nothing ->
-      Done (Tuple (quiesce s) s)
+      pure (Done (Tuple (quiesce s) s))
     Just next
       | next.phase == Retry && s.retained.fuel <= 0 ->
-          Done (Tuple (exhausted s next.id) s)
+          pure (Done (Tuple (exhausted s next.id) s))
       | otherwise -> case takeReady s.tentative.scheduler of
           Nothing ->
-            Done (Tuple (quiesce s) s)
+            pure (Done (Tuple (quiesce s) s))
           Just (Tuple id scheduler) ->
             let
               spent = if next.phase == Retry then 1 else 0
@@ -180,7 +198,7 @@ runAttempting attempter s0 =
                 , retained { fuel = s.retained.fuel - spent }
                 }
             in
-              case attempter id taken of
+              attempter id taken <#> case _ of
                 Tuple Run.Committed s' -> Loop s'
                 Tuple (Run.Registered _) s' -> Loop s'
                 Tuple (Run.Rejected diagnostic) s' -> Done (Tuple (Rejected diagnostic) s')
@@ -189,6 +207,14 @@ runAttempting attempter s0 =
   exhausted s id = case lookupPending s.tentative.scheduler id of
     Just p -> Exhausted (report p)
     Nothing -> Halted (PendingAbsent id)
+
+-- | `runAttemptingM` over `Identity`.
+runAttempting :: Attempter -> SolverState -> Tuple RunReport SolverState
+runAttempting attempter s0 = case runAttemptingM (identically attempter) s0 of
+  Identity result -> result
+
+identically :: Attempter -> AttempterM Identity
+identically attempter id s = Identity (attempter id s)
 
 -- | `runAttempting`, each job carried out by the runner given.
 runWith :: SessionEnv -> Runner -> SolverState -> Tuple RunReport SolverState

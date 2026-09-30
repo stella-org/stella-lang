@@ -15,14 +15,18 @@ import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(.
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Kernel.Elab (SolverState, createSynthesis, emptySessionEnv, initialState, postpone, unify)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Driver.Loop (RunReport, RunResult(..), Submission(..), Submitted, run, runWith, submitEquality, submitWith)
+import Stella.Compiler.Elaborate.Driver.Loop (RunReport, RunResult(..), Submission(..), Submitted, run, runAttemptingM, runWith, submitAttemptingM, submitEquality, submitWith)
 import Stella.Compiler.Elaborate.Mechanism.Pending (EqualityGoal, Job(..), PendingId(..), Site)
 import Stella.Compiler.Elaborate.Driver.Attempt as Run
 import Stella.Compiler.Elaborate.Mechanism.Scheduler (Invariant(..), create, lookupPending, readyIds)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XRowEntry(..), XType(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, MetaInfo, UnifyError(..), emptyContext, freshMeta, lookupMeta, substitute)
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
+import Data.Array as Array
 import Data.Array.NonEmpty as NonEmptyArray
+import Data.Either (Either(..))
+import Effect.Class (liftEffect)
+import Effect.Ref as Ref
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set as Set
@@ -282,6 +286,42 @@ spec = describe "Elaborate.Loop" do
       created.attempt `shouldEqual` Run.Committed
       result `shouldEqual` Completed
       s.retained.fuel `shouldEqual` 0
+
+    describe "in a monad" do
+      let
+        creating p = void (createSynthesis p.site tA resolver Nothing)
+        Tuple waiting s1 = went (submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) waitingSite waitsOnV (sessionWith 1))
+        Tuple created s2 = went (submitWith emptySessionEnv creating waitingSite waitsOnV s1)
+        Tuple _ s3 = went (submitEquality emptySessionEnv site (solvable metas.v) s2)
+        host = Run.attemptPendingWith emptySessionEnv (\_ -> pure unit)
+
+      it "takes the jobs, spends the fuel, and stops as it does in Identity, the monad carrying out each attempt" do
+        attempted <- liftEffect (Ref.new [])
+        let
+          recording id s = do
+            Ref.modify_ (_ <> [ id ]) attempted
+            pure (host id s)
+        Tuple report s <- liftEffect (runAttemptingM recording s3)
+        let Tuple expected expectedState = runWith emptySessionEnv (\_ -> pure unit) s3
+        report `shouldEqual` expected
+        (s == expectedState) `shouldEqual` true
+        -- the first attempt of the job created inside another, then the retry
+        liftEffect (Ref.read attempted) >>= \ids -> map Just ids `shouldEqual` [ Array.head (readyIds s3.tentative.scheduler), Just waiting.id ]
+        created.attempt `shouldEqual` Run.Committed
+
+      it "stops without an attempt where the monad stops it" do
+        let
+          stopping id s
+            | id == waiting.id = Left "stopped"
+            | otherwise = Right (host id s)
+        (map fst (runAttemptingM stopping s3)) `shouldEqual` Left "stopped"
+
+      it "submits as it does in Identity" do
+        let
+          viaMonad = submitAttemptingM (\id s -> Just (host id s)) site (JobUnify (solvable metas.w)) s3
+          viaIdentity = submitWith emptySessionEnv (\_ -> pure unit) site (JobUnify (solvable metas.w)) s3
+        map fst viaMonad `shouldEqual` Just (fst viaIdentity)
+        map (\(Tuple _ s) -> s == snd viaIdentity) viaMonad `shouldEqual` Just true
 
     it "spends fuel on a retry and not on a first attempt queued beside it" do
       let

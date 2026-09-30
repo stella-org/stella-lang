@@ -231,6 +231,9 @@ data Defect
   -- | The interpreter running a guest reached a defect of its own, as what was
   -- | reported.
   | InterpreterDefect P.String
+  -- | A session that has named every attempt it can: an attempt, once named, is
+  -- | never named again, so the session is replaced rather than asked for more.
+  | GuestAttemptsExhausted
   -- | A synthesis job whose target is not what the one operation that creates
   -- | the two would have made. Nothing the author wrote produces one.
   | MalformedSynthesisJob PendingId MalformedGoal

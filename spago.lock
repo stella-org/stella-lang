@@ -89,6 +89,7 @@
             "enums",
             "foldable-traversable",
             "foreign-object",
+            "identity",
             "integers",
             "maybe",
             "ordered-collections",
@@ -104,6 +105,7 @@
             "arrays",
             "effect",
             "quickcheck",
+            "refs",
             "spec",
             "spec-node"
           ]
