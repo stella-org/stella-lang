@@ -5,7 +5,12 @@
 -- | handshake, and runs each `invoke` as the test's guest says — sending `kernel`
 -- | requests, reading what they are answered with, and ending the invocation. What
 -- | it saw it writes to standard error, one line of JSON a test reads back.
-module Test.Stella.CLI.Session.Broker (spec) where
+module Test.Stella.CLI.Session.Broker
+  ( spec
+  , withSession
+  , node
+  , descriptor
+  ) where
 
 import Prelude
 

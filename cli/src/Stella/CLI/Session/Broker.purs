@@ -37,6 +37,7 @@ module Stella.CLI.Session.Broker
   , Cancellation
   , newCancellation
   , cancel
+  , cancelRequested
   , runGuest
   ) where
 
@@ -45,7 +46,7 @@ import Prelude
 import Control.Alt ((<|>))
 import Control.Parallel (parallel, sequential)
 import Data.Either (Either(..))
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), isJust)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.AVar (AVar)
@@ -114,6 +115,10 @@ newCancellation grace = (\requested -> Cancellation { requested, grace }) <$> Ef
 -- | Ask for the run to stop. Asking again asks nothing more.
 cancel :: Cancellation -> Effect Unit
 cancel (Cancellation c) = void (EffectAVar.tryPut unit c.requested)
+
+-- | Whether the run has been asked to stop.
+cancelRequested :: Cancellation -> Effect Boolean
+cancelRequested (Cancellation c) = isJust <$> EffectAVar.tryRead c.requested
 
 -- | Where the conversation stands while the guest runs.
 data Progress
