@@ -60,7 +60,7 @@ jobs:
 
       - name: Build
         run: |
-          for package in compiler backend-js steam cli; do
+          for package in compiler cli steam backend-js stellac; do
             spago build -p "$package" --strict --pure --pedantic-packages
           done
 
@@ -71,9 +71,10 @@ jobs:
       - name: Test
         run: |
           spago test -p compiler --pure
-          spago test -p backend-js --pure
-          spago test -p steam --pure
           spago test -p cli --pure
+          spago test -p steam --pure
+          spago test -p stellac --pure
+          spago test -p backend-js --pure
 
       - name: Format check
         run: git ls-files '*.purs' ':(exclude)docs/**' | xargs purs-tidy check
