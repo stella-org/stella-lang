@@ -127,6 +127,8 @@ These serve as architecture tests as well as demonstrations.
 | [§2.1 Elaboration](../02-Surface-Language/01-Elaboration.md) | Core⁺, metavariables, unification, synthesis |
 | [§2.2 Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md) | Handler declarations, clause forms, implicit insertion |
 | [§2.3 Elaborator API](../02-Surface-Language/03-Elaborator-API.md) | The two layers, goal records, the attempt transaction, the scheduler |
+| [§2.4 Lexical Structure](../02-Surface-Language/04-Lexical-Structure.md) | Tokens, names, operators, literals |
+| [§2.5 Syntax](../02-Surface-Language/05-Syntax.md) | The offside rule, the grammar, the concrete syntax tree |
 | **§3. Typed Core** | |
 | [§3.1 Kinds and Types](../03-Typed-Core/01-Kinds-and-Types.md) | Names, kinds, types, kinding rules |
 | [§3.2 Rows](../03-Typed-Core/02-Rows.md) | Row theory, normal form, entailment, surface syntax |
