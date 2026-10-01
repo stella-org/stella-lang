@@ -10,9 +10,12 @@ package:
     - foreign-object
     - identity
     - integers
+    - lists
     - maybe
+    - numbers
     - ordered-collections
     - prelude
+    - puppy-runtime
     - strings
     - tailrec
     - tuples

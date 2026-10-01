@@ -38,6 +38,11 @@ import Test.Stella.Compiler.Elaborate.Handlers as ElaborateHandlers
 import Test.Stella.Compiler.Elaborate.Coverage as ElaborateCoverage
 import Test.Stella.Compiler.Elaborate.GuestBundle as ElaborateGuestBundle
 import Test.Stella.Compiler.Elaborate.KernelVertical as ElaborateKernelVertical
+import Test.Stella.Compiler.CST.Lexer as CSTLexer
+import Test.Stella.Compiler.CST.Layout as CSTLayout
+import Test.Stella.Compiler.CST.Parser as CSTParser
+import Test.Stella.Compiler.CST.Tour as CSTTour
+import Test.Stella.Compiler.CST.Check as CSTCheck
 import Test.Stella.Compiler.Elaborate.Reports as ElaborateReports
 import Test.Stella.Compiler.Elaborate.Conversations as ElaborateConversations
 import Test.Stella.Compiler.Elaborate.Facade as ElaborateFacade
@@ -61,6 +66,11 @@ import Test.Spec.Runner.Node (runSpecAndExitProcess)
 
 main :: Effect Unit
 main = runSpecAndExitProcess [ consoleReporter ] do
+  CSTLexer.spec
+  CSTLayout.spec
+  CSTParser.spec
+  CSTTour.spec
+  CSTCheck.spec
   TypedCore.spec
   Row.spec
   Kinding.spec

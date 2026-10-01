@@ -1,0 +1,789 @@
+-- The grammar of the surface syntax.
+--
+-- It reads the tokens `Stella.Compiler.CST.Lexer` produces, with the block
+-- tokens `Stella.Compiler.CST.Layout` has inserted, and builds the tree of
+-- `Stella.Compiler.CST.Types`. The parser is generated from this file by
+-- Puppy, `puppy -p compiler`, and is regenerated whenever it changes.
+
+%{
+import Data.Maybe (Maybe(..))
+import Stella.Compiler.CST.Build as B
+import Stella.Compiler.CST.Types as C
+%}
+
+%tokentype { C.SourceToken }
+
+%token LPAREN     "("  @ { { value: C.TokLeftParen } }
+%token RPAREN     ")"  @ { { value: C.TokRightParen } }
+%token LSQUARE    "["  @ { { value: C.TokLeftSquare } }
+%token RSQUARE    "]"  @ { { value: C.TokRightSquare } }
+%token LBRACE     "{"  @ { { value: C.TokLeftBrace } }
+%token RBRACE     "}"  @ { { value: C.TokRightBrace } }
+%token LBAR       "{|" @ { { value: C.TokLeftBar } }
+%token RBAR       "|}" @ { { value: C.TokRightBar } }
+%token LSYNTH     "{{" @ { { value: C.TokLeftSynth } }
+%token LATTR      "@[" @ { { value: C.TokLeftAttribute } }
+%token LOCALOPEN  "a local open"  @ { { value: C.TokLocalOpen _ } }
+%token COMMA      ","  @ { { value: C.TokComma } }
+%token BACKSLASH  "\\" @ { { value: C.TokBackslash } }
+%token UNDERSCORE "_"  @ { { value: C.TokUnderscore } }
+%token VOPEN      "the start of a block"     @ { { value: C.TokLayoutStart _ } }
+%token VSEP       "the start of a new item"  @ { { value: C.TokLayoutSep _ } }
+%token VCLOSE     "the end of a block"       @ { { value: C.TokLayoutEnd _ } }
+
+-- The reserved spellings, before the catch-all for operators.
+%token DOT        "."   @ { { value: C.TokOperator Nothing "." } }
+%token SPREAD     "..." @ { { value: C.TokOperator Nothing "..." } }
+%token EQUALS     "="   @ { { value: C.TokOperator Nothing "=" } }
+%token PIPE       "|"   @ { { value: C.TokOperator Nothing "|" } }
+%token AT         "@"   @ { { value: C.TokOperator Nothing "@" } }
+%token BANG       "!"   @ { { value: C.TokOperator Nothing "!" } }
+%token COLON      ":"   @ { { value: C.TokOperator Nothing ":" } }
+%token DCOLON     "::"  @ { { value: C.TokOperator Nothing "::" } }
+%token RARROW     "->"  @ { { value: C.TokOperator Nothing "->" } }
+%token OPARROW    "->*" @ { { value: C.TokOperator Nothing "->*" } }
+%token RFATARROW  "=>"  @ { { value: C.TokOperator Nothing "=>" } }
+%token LARROW     "<-"  @ { { value: C.TokOperator Nothing "<-" } }
+%token COLONEQ    ":="  @ { { value: C.TokOperator Nothing ":=" } }
+%token SQUIGARROW "~>"  @ { { value: C.TokOperator Nothing "~>" } }
+-- `/` is an ordinary operator in an expression and the grammar's own in a type.
+%token SLASH      "/"   @ { { value: C.TokOperator Nothing "/" } }
+-- `(..)` after a type name in an import or an export list.
+%token DOTDOTVALUE "(..)" @ { { value: C.TokOperatorValue Nothing ".." } }
+
+-- Keywords, before `LOWER`.
+%token MODULE   "module"   @ { { value: C.TokLowerName Nothing "module" } }
+%token WHERE    "where"    @ { { value: C.TokLowerName Nothing "where" } }
+%token IMPORT   "import"   @ { { value: C.TokLowerName Nothing "import" } }
+%token DATA     "data"     @ { { value: C.TokLowerName Nothing "data" } }
+%token NEWTYPE  "newtype"  @ { { value: C.TokLowerName Nothing "newtype" } }
+%token TYPE     "type"     @ { { value: C.TokLowerName Nothing "type" } }
+%token EFFECT   "effect"   @ { { value: C.TokLowerName Nothing "effect" } }
+%token HANDLER  "handler"  @ { { value: C.TokLowerName Nothing "handler" } }
+%token FOREIGN  "foreign"  @ { { value: C.TokLowerName Nothing "foreign" } }
+%token INFIX    "infix"    @ { { value: C.TokLowerName Nothing "infix" } }
+%token INFIXL   "infixl"   @ { { value: C.TokLowerName Nothing "infixl" } }
+%token INFIXR   "infixr"   @ { { value: C.TokLowerName Nothing "infixr" } }
+%token LET      "let"      @ { { value: C.TokLowerName Nothing "let" } }
+%token IN       "in"       @ { { value: C.TokLowerName Nothing "in" } }
+%token CASE     "case"     @ { { value: C.TokLowerName Nothing "case" } }
+%token OF       "of"       @ { { value: C.TokLowerName Nothing "of" } }
+%token FORALL   "forall"   @ { { value: C.TokLowerName Nothing "forall" } }
+%token HANDLE   "handle"   @ { { value: C.TokLowerName Nothing "handle" } }
+%token WITH     "with"     @ { { value: C.TokLowerName Nothing "with" } }
+%token USING    "using"    @ { { value: C.TokLowerName Nothing "using" } }
+%token FULL     "full"     @ { { value: C.TokLowerName Nothing "full" } }
+%token FAST     "fast"     @ { { value: C.TokLowerName Nothing "fast" } }
+%token RESUME   "resume"   @ { { value: C.TokLowerName Nothing "resume" } }
+%token TRUE     "true"     @ { { value: C.TokLowerName Nothing "true" } }
+%token FALSE    "false"    @ { { value: C.TokLowerName Nothing "false" } }
+
+%token VAR      "var"      @ { { value: C.TokLowerName Nothing "var" } }
+
+-- Words with a meaning only where the grammar places them. Elsewhere each is
+-- an ordinary name, which `ident` says.
+%token AS       "as"       @ { { value: C.TokLowerName Nothing "as" } }
+%token LAZY     "lazy"     @ { { value: C.TokLowerName Nothing "lazy" } }
+%token RETURN   "return"   @ { { value: C.TokLowerName Nothing "return" } }
+%token BY       "by"       @ { { value: C.TokLowerName Nothing "by" } }
+%token IMPLICIT "implicit" @ { { value: C.TokLowerName Nothing "implicit" } }
+
+%token LOWER          "a name"                  @ { { value: C.TokLowerName Nothing _ } }
+%token QUAL_LOWER     "a qualified name"        @ { { value: C.TokLowerName _ _ } }
+%token UPPER          "a constructor"           @ { { value: C.TokUpperName Nothing _ } }
+%token QUAL_UPPER     "a qualified constructor" @ { { value: C.TokUpperName _ _ } }
+%token DISCRIMINATOR  "a discriminator"         @ { { value: C.TokDiscriminator _ _ } }
+%token OPERATOR       "an operator"             @ { { value: C.TokOperator Nothing _ } }
+%token QUAL_OPERATOR  "a qualified operator"    @ { { value: C.TokOperator _ _ } }
+%token OPVALUE        "an operator value"       @ { { value: C.TokOperatorValue _ _ } }
+%token INFIXNAME      "an infix name"           @ { { value: C.TokInfixName _ _ } }
+%token HOLE           "a hole"                  @ { { value: C.TokHole _ } }
+%token TAG            "a tag"                   @ { { value: C.TokTag _ } }
+%token DIRECTIVE_ARGS "a directive"             @ { { value: C.TokDirective _ true } }
+%token DIRECTIVE      "a directive"             @ { { value: C.TokDirective _ false } }
+%token MACRO          "a macro call"            @ { { value: C.TokMacro _ _ } }
+%token LIT_INT        "an integer"              @ { { value: C.TokInt _ _ } }
+%token LIT_NUMBER     "a number"                @ { { value: C.TokNumber _ _ } }
+%token LIT_CHAR       "a character"             @ { { value: C.TokChar _ _ } }
+%token LIT_STRING     "a string"                @ { { value: C.TokString _ _ _ } }
+
+%start { C.Module } parseModule
+%start { C.Type } parseType
+%start { C.Expr } parseExpr
+
+%type { C.Name } ident typeVarIdent opIdent label qualIdent properName qualProperName moduleName operatorName
+%type { C.Module } parseModule
+%type { Maybe (Array C.Export) } exportList
+%type { C.Export } export
+%type { C.Members } members
+%type { C.Import } importDecl
+%type { C.ImportItem } importItem
+%type { Array C.Item } moduleItems moduleItem
+%type { C.Attribute } attribute
+%type { C.AttributeArg } attributeArg
+%type { C.Directive } directive
+%type { C.Macro } macroCall
+%type { Array C.SourceToken } tokenTree tokenTrees tokenTreeItem
+%type { C.SourceToken } plainToken
+%type { C.Decl } decl handlerDecl
+%type { C.DataCtor } dataCtor
+%type { Array C.DataCtor } dataCtors
+%type { C.OperationSignature } operationSignature
+%type { C.Fixity } fixity
+%type { C.TypeVarBinding } typeVarBinding
+%type { Array C.TypeVarBinding } typeVarBindings typeVarBindings1
+%type { C.Kind } kind kind1 kindAtom
+%type { C.Type } parseType type type1 type2 typeAtom
+%type { Array C.Type } typeAtoms
+%type { C.RowItem } rowItem
+%type { Array C.RowItem } rowItems
+%type { C.Operator } operator
+%type { C.Expr } parseExpr expr expr1 expr2 expr3 expr4 exprAtom
+%type { Array C.Expr } exprs1
+%type { C.RecordField } recordField
+%type { Array C.RecordField } recordFields
+%type { Array C.LetBinding } letBindings
+%type { C.LetBinding } letBinding
+%type { C.CaseAlternative } caseAlternative
+%type { Array (Array C.Binder) } alternativePatterns
+%type { Array C.Binder } patternRow binderAtoms binderAtoms1
+%type { C.GuardLine } guardLine
+%type { C.Binder } binder binder1 binderAtom
+%type { C.RecordBinder } recordBinder rest
+%type { Array C.RecordBinder } recordBinders
+%type { C.Marker } marker
+%type { Maybe C.Marker } markerOpt
+%type { C.Clause } clause
+%type { Array C.Clause } clauses
+%type { C.HandlerItem } handlerItem
+%type { C.HandlerListItem } handlerListItem
+%type { { name :: C.Name, value :: C.Expr } } cellDecl
+
+%%
+
+--------------------------------------------------------------------------------
+-- Helpers
+--------------------------------------------------------------------------------
+
+many(a):
+  | x = a                { [ x ] }
+  | xs = many(a) x = a   { xs <> [ x ] }
+
+manyOrEmpty(a):
+  |                      { [] }
+  | xs = many(a)         { xs }
+
+manySep(a, s):
+  | x = a                       { [ x ] }
+  | xs = manySep(a, s) s x = a  { xs <> [ x ] }
+
+manySepOrEmpty(a, s):
+  |                             { [] }
+  | xs = manySep(a, s)          { xs }
+
+layout(a):
+  | VOPEN xs = manySep(a, VSEP) VCLOSE  { xs }
+
+--------------------------------------------------------------------------------
+-- Names
+--------------------------------------------------------------------------------
+
+ident:
+  | t = LOWER    { B.name t }
+  | t = AS       { B.name t }
+  | t = LAZY     { B.name t }
+  | t = RETURN   { B.name t }
+  | t = BY       { B.name t }
+  | t = IMPLICIT { B.name t }
+
+-- A type variable. `by` closes a synthesized argument, `{{ … by f }}`, and so
+-- names none.
+typeVarIdent:
+  | t = LOWER    { B.name t }
+  | t = AS       { B.name t }
+  | t = LAZY     { B.name t }
+  | t = RETURN   { B.name t }
+  | t = IMPLICIT { B.name t }
+
+-- An operation's name in a clause, where `return` begins the return clause.
+opIdent:
+  | t = LOWER      { B.name t }
+  | t = QUAL_LOWER { B.name t }
+  | t = AS         { B.name t }
+  | t = LAZY       { B.name t }
+  | t = BY         { B.name t }
+  | t = IMPLICIT   { B.name t }
+
+qualIdent:
+  | n = ident        { n }
+  | t = QUAL_LOWER   { B.name t }
+
+properName:
+  | t = UPPER { B.name t }
+
+qualProperName:
+  | t = UPPER      { B.name t }
+  | t = QUAL_UPPER { B.name t }
+
+moduleName:
+  | t = UPPER      { B.moduleName t }
+  | t = QUAL_UPPER { B.moduleName t }
+
+-- A record field, which may be any word, a keyword included.
+label:
+  | n = ident    { n }
+  | t = VAR      { B.name t }
+  | t = MODULE   { B.name t }
+  | t = WHERE    { B.name t }
+  | t = IMPORT   { B.name t }
+  | t = DATA     { B.name t }
+  | t = NEWTYPE  { B.name t }
+  | t = TYPE     { B.name t }
+  | t = EFFECT   { B.name t }
+  | t = HANDLER  { B.name t }
+  | t = FOREIGN  { B.name t }
+  | t = INFIX    { B.name t }
+  | t = INFIXL   { B.name t }
+  | t = INFIXR   { B.name t }
+  | t = LET      { B.name t }
+  | t = IN       { B.name t }
+  | t = CASE     { B.name t }
+  | t = OF       { B.name t }
+  | t = FORALL   { B.name t }
+  | t = HANDLE   { B.name t }
+  | t = WITH     { B.name t }
+  | t = USING    { B.name t }
+  | t = FULL     { B.name t }
+  | t = FAST     { B.name t }
+  | t = RESUME   { B.name t }
+  | t = TRUE     { B.name t }
+  | t = FALSE    { B.name t }
+
+-- An operator a user may define or use.
+operatorName:
+  | t = OPERATOR      { B.name t }
+  | t = QUAL_OPERATOR { B.name t }
+  | t = SLASH         { B.name t }
+
+--------------------------------------------------------------------------------
+-- Modules
+--------------------------------------------------------------------------------
+
+parseModule:
+  | MODULE n = moduleName es = exportList WHERE VOPEN is = moduleItems VCLOSE
+      { C.Module { name: n, exports: es, items: is } }
+
+exportList:
+  |                                              { Nothing }
+  | LPAREN es = manySep(export, COMMA) RPAREN    { Just es }
+
+export:
+  | n = qualIdent                  { C.ExportValue n }
+  | t = OPVALUE                    { C.ExportOperator (B.name t) }
+  | n = properName                 { C.ExportType n Nothing }
+  | n = properName m = members     { C.ExportType n (Just m) }
+  | MODULE n = moduleName          { C.ExportModule n }
+
+members:
+  | DOTDOTVALUE                                    { C.MembersAll }
+  | LPAREN RPAREN                                  { C.MembersOnly [] }
+  | LPAREN ns = manySep(properName, COMMA) RPAREN  { C.MembersOnly ns }
+
+importDecl:
+  | IMPORT n = moduleName is = importList a = importAlias
+      { C.Import { lazy: false, module: n, names: is, alias: a } }
+  | IMPORT LAZY n = moduleName is = importList a = importAlias
+      { C.Import { lazy: true, module: n, names: is, alias: a } }
+
+importList:
+  |                                                   { Nothing }
+  | LPAREN RPAREN                                     { Just [] }
+  | LPAREN is = manySep(importItem, COMMA) RPAREN     { Just is }
+
+importAlias:
+  |                       { Nothing }
+  | AS n = moduleName     { Just n }
+
+importItem:
+  | n = ident                      { C.ImportValue n }
+  | t = OPVALUE                    { C.ImportOperator (B.name t) }
+  | n = properName                 { C.ImportType n Nothing }
+  | n = properName m = members     { C.ImportType n (Just m) }
+
+moduleItems:
+  | iss = manySepOrEmpty(moduleItem, VSEP) { join iss }
+
+-- An attribute, a directive and a modifier are items of their own, whether or
+-- not a declaration follows them on the same line; attaching them is later.
+moduleItem:
+  | i = importDecl                 { [ C.ItemImport i ] }
+  | d = decl                       { [ C.ItemDecl d ] }
+  | m = macroCall                  { [ C.ItemMacro m ] }
+  | a = attribute                  { [ C.ItemAttribute a ] }
+  | a = attribute is = moduleItem  { [ C.ItemAttribute a ] <> is }
+  | d = directive                  { [ C.ItemDirective d ] }
+  | d = directive is = moduleItem  { [ C.ItemDirective d ] <> is }
+  | t = IMPLICIT                   { [ C.ItemModifier (B.name t) ] }
+  | t = IMPLICIT d = handlerDecl   { [ C.ItemModifier (B.name t), C.ItemDecl d ] }
+  | e = ERROR                      { [ C.ItemBroken e.found ] }
+
+--------------------------------------------------------------------------------
+-- Attributes, directives and macros
+--------------------------------------------------------------------------------
+
+attribute:
+  | o = LATTR n = manySep(label, DOT) as = manyOrEmpty(attributeArg) c = RSQUARE
+      { { range: { start: o.range.start, end: c.range.end }, name: n, args: as } }
+
+attributeArg:
+  | e = exprAtom                       { C.AttributePositional e }
+  | l = label EQUALS e = exprAtom      { C.AttributeKeyed l e }
+
+directive:
+  | t = DIRECTIVE                                              { B.directive t Nothing }
+  | t = DIRECTIVE_ARGS LPAREN RPAREN                           { B.directive t (Just []) }
+  | t = DIRECTIVE_ARGS LPAREN es = manySep(exprAtom, COMMA) RPAREN { B.directive t (Just es) }
+
+macroCall:
+  | t = MACRO b = tokenTree { { name: B.name t, body: b } }
+
+-- A macro is called on a bracket and everything inside it, taken as tokens.
+tokenTree:
+  | o = LPAREN ts = tokenTrees c = RPAREN       { [ o ] <> ts <> [ c ] }
+  | o = LOCALOPEN ts = tokenTrees c = RPAREN    { [ o ] <> ts <> [ c ] }
+  | o = LSQUARE ts = tokenTrees c = RSQUARE     { [ o ] <> ts <> [ c ] }
+  | o = LATTR ts = tokenTrees c = RSQUARE       { [ o ] <> ts <> [ c ] }
+  | o = LBRACE ts = tokenTrees c = RBRACE       { [ o ] <> ts <> [ c ] }
+  | o = LBAR ts = tokenTrees c = RBAR           { [ o ] <> ts <> [ c ] }
+  | o = LSYNTH ts = tokenTrees c1 = RBRACE c2 = RBRACE { [ o ] <> ts <> [ c1, c2 ] }
+  | t = LIT_STRING                              { [ t ] }
+
+tokenTrees:
+  | tss = manyOrEmpty(tokenTreeItem) { join tss }
+
+tokenTreeItem:
+  | ts = tokenTree { ts }
+  | t = plainToken { [ t ] }
+
+plainToken:
+  | t = COMMA { t }
+  | t = BACKSLASH { t }
+  | t = UNDERSCORE { t }
+  | t = DOT { t }
+  | t = SPREAD { t }
+  | t = EQUALS { t }
+  | t = PIPE { t }
+  | t = AT { t }
+  | t = BANG { t }
+  | t = COLON { t }
+  | t = DCOLON { t }
+  | t = RARROW { t }
+  | t = OPARROW { t }
+  | t = RFATARROW { t }
+  | t = LARROW { t }
+  | t = COLONEQ { t }
+  | t = SQUIGARROW { t }
+  | t = SLASH { t }
+  | t = DOTDOTVALUE { t }
+  | t = MODULE { t }
+  | t = WHERE { t }
+  | t = IMPORT { t }
+  | t = DATA { t }
+  | t = NEWTYPE { t }
+  | t = TYPE { t }
+  | t = EFFECT { t }
+  | t = HANDLER { t }
+  | t = FOREIGN { t }
+  | t = INFIX { t }
+  | t = INFIXL { t }
+  | t = INFIXR { t }
+  | t = LET { t }
+  | t = IN { t }
+  | t = CASE { t }
+  | t = OF { t }
+  | t = FORALL { t }
+  | t = HANDLE { t }
+  | t = WITH { t }
+  | t = USING { t }
+  | t = FULL { t }
+  | t = FAST { t }
+  | t = RESUME { t }
+  | t = TRUE { t }
+  | t = FALSE { t }
+  | t = AS { t }
+  | t = LAZY { t }
+  | t = VAR { t }
+  | t = RETURN { t }
+  | t = BY { t }
+  | t = IMPLICIT { t }
+  | t = LOWER { t }
+  | t = QUAL_LOWER { t }
+  | t = UPPER { t }
+  | t = QUAL_UPPER { t }
+  | t = DISCRIMINATOR { t }
+  | t = OPERATOR { t }
+  | t = QUAL_OPERATOR { t }
+  | t = OPVALUE { t }
+  | t = INFIXNAME { t }
+  | t = HOLE { t }
+  | t = TAG { t }
+  | t = DIRECTIVE_ARGS { t }
+  | t = DIRECTIVE { t }
+  | t = MACRO { t }
+  | t = LIT_INT { t }
+  | t = LIT_NUMBER { t }
+  | t = LIT_CHAR { t }
+
+--------------------------------------------------------------------------------
+-- Declarations
+--------------------------------------------------------------------------------
+
+decl:
+  | n = ident DCOLON t = type
+      { C.DeclSignature n t }
+  | n = ident bs = binderAtoms EQUALS e = expr
+      { C.DeclValue n bs e Nothing }
+  | n = ident bs = binderAtoms EQUALS e = expr WHERE ls = letBindings
+      { C.DeclValue n bs e (Just ls) }
+  | DATA n = properName vs = typeVarBindings
+      { C.DeclData n vs [] }
+  | DATA n = properName vs = typeVarBindings EQUALS cs = dataCtors
+      { C.DeclData n vs cs }
+  | DATA n = properName vs = typeVarBindings EQUALS PIPE cs = dataCtors
+      { C.DeclData n vs cs }
+  | NEWTYPE n = properName vs = typeVarBindings EQUALS c = properName t = typeAtom
+      { C.DeclNewtype n vs c t }
+  | TYPE n = properName vs = typeVarBindings EQUALS t = type
+      { C.DeclType n vs t }
+  | DATA n = properName DCOLON k = kind
+      { C.DeclKindSignature C.KeywordData n k }
+  | NEWTYPE n = properName DCOLON k = kind
+      { C.DeclKindSignature C.KeywordNewtype n k }
+  | TYPE n = properName DCOLON k = kind
+      { C.DeclKindSignature C.KeywordType n k }
+  | EFFECT n = properName vs = typeVarBindings WHERE os = layout(operationSignature)
+      { C.DeclEffect n vs os }
+  | d = handlerDecl
+      { d }
+  | FOREIGN n = ident DCOLON t = type
+      { C.DeclForeign n t }
+  | FOREIGN TYPE n = properName DCOLON k = kind
+      { C.DeclForeignType n k }
+  | f = fixity p = LIT_INT n = qualIdent AS o = operatorName
+      { C.DeclFixity f (B.intLiteral p) n o }
+  | f = fixity p = LIT_INT n = qualProperName AS o = operatorName
+      { C.DeclFixity f (B.intLiteral p) n o }
+
+handlerDecl:
+  | HANDLER n = ident ps = binderAtoms DCOLON t = type WHERE is = layout(handlerItem)
+      { C.DeclHandler n ps t is }
+
+dataCtors:
+  | cs = manySep(dataCtor, PIPE) { cs }
+
+dataCtor:
+  | n = properName ts = typeAtoms { { name: n, fields: ts } }
+
+operationSignature:
+  | n = ident DCOLON t = type { { name: n, type: t } }
+
+fixity:
+  | INFIX  { C.Infix }
+  | INFIXL { C.Infixl }
+  | INFIXR { C.Infixr }
+
+--------------------------------------------------------------------------------
+-- Kinds
+--------------------------------------------------------------------------------
+
+kind:
+  | k = kind1                       { k }
+  | a = kind1 RARROW b = kind       { C.KindArrow a b }
+
+kind1:
+  | k = kindAtom                    { k }
+  | f = kind1 a = kindAtom          { C.KindApp f a }
+
+kindAtom:
+  | n = qualProperName              { C.KindName n }
+  | n = ident                       { C.KindVar n }
+  | LPAREN k = kind RPAREN          { C.KindParens k }
+
+--------------------------------------------------------------------------------
+-- Types
+--------------------------------------------------------------------------------
+
+type:
+  | t = type1 %shift                                    { t }
+  | FORALL vs = typeVarBindings1 DOT t = type           { C.TypeForall vs t }
+  | c = type1 RFATARROW t = type                        { C.TypeConstrained c t }
+
+-- `/` stands after the last arrow of a chain, and belongs to it.
+type1:
+  | t = type2 %shift                     { t }
+  | a = type2 RARROW b = type1           { C.TypeArrow a b }
+  -- `->*` is read wherever an arrow may stand; that an operation's signature
+  -- holds exactly one, and nothing else holds any, is checked afterwards.
+  | a = type2 o = OPARROW b = type1      { C.TypeOperationArrow a (B.range o) b }
+  | a = type2 SLASH r = typeAtom         { C.TypeEffect a r }
+  | a = type2 SQUIGARROW b = type2 %shift { C.TypeCapability a b }
+
+type2:
+  | t = typeAtom                { t }
+  | f = type2 a = typeAtom      { C.TypeApp f a }
+
+typeAtom:
+  | t = UNDERSCORE                                  { C.TypeWildcard (B.range t) }
+  | t = HOLE                                        { C.TypeHole (B.name t) }
+  | n = typeVarIdent                                { C.TypeVar n }
+  | n = qualProperName                              { C.TypeConstructor n }
+  | o = LPAREN c = RPAREN                           { C.TypeUnit { start: o.range.start, end: c.range.end } }
+  | LPAREN t = type RPAREN                          { C.TypeParens t }
+  | LPAREN t = type COMMA ts = manySep(type, COMMA) RPAREN  { C.TypeTuple ([ t ] <> ts) }
+  | LPAREN t = type DCOLON k = kind RPAREN          { C.TypeKinded t k }
+  | LPAREN d = directive t = type RPAREN            { C.TypeDirective d t }
+  | LBRACE RBRACE                                   { C.TypeRecord [] }
+  | LBRACE rs = rowItems RBRACE                     { C.TypeRecord rs }
+  | LBAR RBAR                                       { C.TypeEffectRow [] }
+  | LBAR rs = rowItems RBAR                         { C.TypeEffectRow rs }
+  | LSQUARE RSQUARE                                 { C.TypeVariant [] }
+  | LSQUARE rs = rowItems RSQUARE                   { C.TypeVariant rs }
+  | LSYNTH n = ident DCOLON t = type BY f = qualIdent RBRACE RBRACE
+      { C.TypeSynthesized (Just n) t f }
+  | LSYNTH UNDERSCORE DCOLON t = type BY f = qualIdent RBRACE RBRACE
+      { C.TypeSynthesized Nothing t f }
+
+typeAtoms:
+  | ts = manyOrEmpty(typeAtom) { ts }
+
+rowItems:
+  | rs = manySep(rowItem, COMMA) { rs }
+
+rowItem:
+  | l = label DCOLON t = type       { C.RowField l t }
+  | g = TAG DCOLON t = type         { C.RowTag (B.name g) t }
+  | t = type                        { C.RowElement t }
+  | s = SPREAD                      { C.RowSpread (B.range s) Nothing }
+  | s = SPREAD t = typeAtom         { C.RowSpread (B.range s) (Just t) }
+
+typeVarBinding:
+  | n = typeVarIdent                                  { C.BindName n }
+  | LPAREN n = typeVarIdent DCOLON k = kind RPAREN    { C.BindKinded n k }
+
+typeVarBindings:
+  | vs = manyOrEmpty(typeVarBinding) { vs }
+
+typeVarBindings1:
+  | vs = many(typeVarBinding) { vs }
+
+--------------------------------------------------------------------------------
+-- Expressions
+--------------------------------------------------------------------------------
+
+parseType:
+  | t = type { t }
+
+parseExpr:
+  | e = expr { e }
+
+expr:
+  | e = expr1 %shift               { e }
+  | e = expr1 DCOLON t = type      { C.ExprTyped e t }
+
+-- Operators are read in the order written; fixity rebrackets them later.
+expr1:
+  | e = expr2 %shift                        { e }
+  | a = expr1 o = operator b = expr2 %shift { C.ExprOp a o b }
+
+operator:
+  | n = operatorName    { C.OperatorSymbol n }
+  | t = INFIXNAME       { C.OperatorName (B.name t) }
+
+expr2:
+  | e = expr3                   { e }
+  | f = expr2 a = expr4         { C.ExprApp f a }
+  | f = expr2 a = expr3block    { C.ExprApp f a }
+
+expr3:
+  | e = expr4 %shift     { e }
+  | e = expr3block       { e }
+
+-- The forms that extend as far to the right as they can.
+expr3block:
+  | BACKSLASH bs = binderAtoms1 RARROW e = expr
+      { C.ExprLambda bs e }
+  | LET bs = letBindings IN e = expr
+      { C.ExprLet bs e }
+  | CASE es = exprs1 OF as = layout(caseAlternative)
+      { C.ExprCase es as }
+  | HANDLE e = expr WITH is = layout(handlerListItem)
+      { C.ExprHandle e is }
+  | USING is = layout(handlerListItem) HANDLE e = expr
+      { C.ExprUsing is e }
+  | IMPORT n = moduleName IN e = expr
+      { C.ExprImportIn n e }
+  | n = ident COLONEQ e = expr
+      { C.ExprCellWrite n e }
+
+expr4:
+  | e = exprAtom %shift                        { e }
+  | e = exprAtom DOT ls = manySep(label, DOT)  { C.ExprAccess e ls }
+
+exprAtom:
+  | t = UNDERSCORE          { C.ExprSection (B.range t) }
+  | t = HOLE                { C.ExprHole (B.name t) }
+  | n = qualIdent           { C.ExprVar n }
+  | n = qualProperName      { C.ExprConstructor n }
+  | t = DISCRIMINATOR       { C.ExprDiscriminator (B.name t) }
+  | t = OPVALUE             { C.ExprOperatorValue (B.name t) }
+  | t = DOTDOTVALUE         { C.ExprOperatorValue (B.name t) }
+  | t = TAG                 { C.ExprTag (B.name t) }
+  | t = TRUE                { C.ExprBoolean (B.range t) true }
+  | t = FALSE               { C.ExprBoolean (B.range t) false }
+  | t = LIT_INT             { C.ExprInt (B.intLiteral t) }
+  | t = LIT_NUMBER          { C.ExprNumber (B.numberLiteral t) }
+  | t = LIT_CHAR            { C.ExprChar (B.charLiteral t) }
+  | t = LIT_STRING          { C.ExprString (B.stringLiteral t) }
+  | t = RESUME              { C.ExprResume (B.range t) }
+  | o = LPAREN c = RPAREN   { C.ExprUnit { start: o.range.start, end: c.range.end } }
+  | LPAREN e = expr RPAREN  { C.ExprParens e }
+  | LPAREN e = expr COMMA es = exprs1 RPAREN      { C.ExprTuple ([ e ] <> es) }
+  | LSQUARE RSQUARE                               { C.ExprArray [] }
+  | LSQUARE es = exprs1 RSQUARE                   { C.ExprArray es }
+  | LBRACE RBRACE                                 { C.ExprRecord [] }
+  | LBRACE fs = recordFields RBRACE               { C.ExprRecord fs }
+  | t = LOCALOPEN e = expr RPAREN                 { C.ExprLocalOpen (B.name t) e }
+  | m = macroCall                                 { C.ExprMacro m }
+  | n = ident AT e = exprAtom                     { C.ExprAt n e }
+  | n = ident BANG                                { C.ExprCellRead n }
+
+exprs1:
+  | es = manySep(expr, COMMA) { es }
+
+recordField:
+  | l = label COLON e = expr      { C.FieldValue l e }
+  | l = label                     { C.FieldPun l }
+  | l = label EQUALS e = expr     { C.FieldUpdate l e }
+
+-- A spread stands last, and once.
+recordFields:
+  | fs = manySep(recordField, COMMA)                        { fs }
+  | fs = manySep(recordField, COMMA) COMMA SPREAD e = expr  { fs <> [ C.FieldSpread e ] }
+  | SPREAD e = expr                                         { [ C.FieldSpread e ] }
+
+letBindings:
+  | bs = layout(letBinding) { bs }
+
+letBinding:
+  | n = ident DCOLON t = type        { C.LetSignature n t }
+  | b = binder1 EQUALS e = expr      { B.letBinding b e }
+
+caseAlternative:
+  | ps = alternativePatterns RARROW e = expr
+      { { patterns: ps, body: C.Unconditional e } }
+  | ps = alternativePatterns WHERE gs = layout(guardLine)
+      { { patterns: ps, body: C.GuardBlock gs } }
+
+alternativePatterns:
+  | ps = manySep(patternRow, PIPE) { ps }
+
+patternRow:
+  | bs = manySep(binder1, COMMA) { bs }
+
+-- A binding and a guard begin alike, so the left of a binding is read as an
+-- expression and made a pattern afterwards.
+guardLine:
+  | l = expr1 EQUALS r = expr     { C.GuardBinding (B.toBinder l) r }
+  | g = expr1 RARROW b = expr     { C.Guard g b }
+
+--------------------------------------------------------------------------------
+-- Patterns
+--------------------------------------------------------------------------------
+
+binder:
+  | b = binder1 %shift              { b }
+  | b = binder1 DCOLON t = type     { C.BinderTyped b t }
+
+binder1:
+  | bs = binderAtoms1 { B.binderApp bs }
+
+binderAtom:
+  | t = UNDERSCORE                      { C.BinderWildcard (B.range t) }
+  | n = ident                           { C.BinderVar n }
+  | n = ident AT b = binderAtom         { C.BinderAs n b }
+  | n = qualProperName                  { C.BinderConstructor n [] }
+  | t = TAG                             { C.BinderTag (B.name t) [] }
+  | t = TRUE                            { C.BinderBoolean (B.range t) true }
+  | t = FALSE                           { C.BinderBoolean (B.range t) false }
+  | t = LIT_INT                         { C.BinderInt (B.intLiteral t) }
+  | t = LIT_NUMBER                      { C.BinderNumber (B.numberLiteral t) }
+  | t = LIT_CHAR                        { C.BinderChar (B.charLiteral t) }
+  | t = LIT_STRING                      { C.BinderString (B.stringLiteral t) }
+  | o = LPAREN c = RPAREN               { C.BinderUnit { start: o.range.start, end: c.range.end } }
+  | LPAREN b = binder RPAREN            { C.BinderParens b }
+  | LPAREN b = binder COMMA bs = manySep(binder, COMMA) RPAREN
+      { C.BinderTuple ([ b ] <> bs) }
+  | LPAREN b = binder PIPE bs = manySep(binder, PIPE) RPAREN
+      { C.BinderParens (C.BinderOr ([ b ] <> bs)) }
+  | LBRACE RBRACE                                   { C.BinderRecord [] }
+  | LBRACE fs = recordBinders RBRACE                { C.BinderRecord fs }
+
+binderAtoms:
+  | bs = manyOrEmpty(binderAtom) { bs }
+
+binderAtoms1:
+  | bs = many(binderAtom) { bs }
+
+recordBinder:
+  | l = label COLON b = binder      { C.RecordBinderField l b }
+  | l = label                       { C.RecordBinderPun l }
+
+-- The rest stands last, and once.
+recordBinders:
+  | fs = manySep(recordBinder, COMMA)                   { fs }
+  | fs = manySep(recordBinder, COMMA) COMMA r = rest    { fs <> [ r ] }
+  | r = rest                                            { [ r ] }
+
+rest:
+  | s = SPREAD                      { C.RecordBinderRest (B.range s) Nothing }
+  | s = SPREAD n = ident            { C.RecordBinderRest (B.range s) (Just n) }
+
+--------------------------------------------------------------------------------
+-- Handlers
+--------------------------------------------------------------------------------
+
+marker:
+  | FULL { C.Full }
+  | FAST { C.Fast }
+
+markerOpt:
+  |            { Nothing }
+  | m = marker { Just m }
+
+clauses:
+  | cs = many(clause) { cs }
+
+clause:
+  | PIPE m = markerOpt n = opIdent bs = binderAtoms RARROW e = expr
+      { C.ClauseOperation m n bs e }
+  | PIPE RETURN b = binderAtom RARROW e = expr
+      { C.ClauseReturn b e }
+
+cellDecl:
+  | VAR n = ident COLONEQ e = expr { { name: n, value: e } }
+
+-- An item of a handler declaration's block.
+handlerItem:
+  | c = cellDecl                   { C.HandlerCell c.name c.value }
+  | cs = clauses                   { C.HandlerClauses Nothing cs }
+  | m = marker cs = clauses        { C.HandlerClauses (Just m) cs }
+
+-- An item of `handle … with` or `using … handle`: a group written in place, or
+-- a handler.
+handlerListItem:
+  | h = qualProperName m = markerOpt cs = manyOrEmpty(cellDecl) cls = clauses
+      { C.ListGroup { head: h, marker: m, cells: cs, clauses: cls } }
+  | h = ident m = markerOpt cs = manyOrEmpty(cellDecl) cls = clauses
+      { C.ListGroup { head: h, marker: m, cells: cs, clauses: cls } }
+  | e = expr
+      { C.ListHandler e }

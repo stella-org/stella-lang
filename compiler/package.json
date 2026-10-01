@@ -1,0 +1,5 @@
+{
+  "name": "@stella-lang/lib-compiler",
+  "type": "module",
+  "devDependencies": {}
+}
