@@ -24,6 +24,8 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | any pattern in a binding position | a pattern that can fail ([Pattern Matching](../../proposals/03-Pattern-Matching-Syntax.md)) |
 | an or-pattern binding a variable | a binding or-pattern |
 | `import lazy M` without `as`, or with a list | a lazy import that is not qualified and implicit |
+| a member of either case after any type name | one the declaration does not have: a constructor of a data type, an operation of an effect |
+| `module N` in any export list | the module naming itself, `module M (module M) where` |
 | `->*` wherever an arrow may stand | `->*` outside an effect's operation signature; an operation signature without exactly one on its spine, or with one inside an argument or the resumption type (`Check`) |
 | any atom as an attribute's value — unparenthesized, an argument is one atom, so `@[a f x]` has two | anything but a literal, a name, or a record or array of those |
 | any integer literal as a precedence | one written other than as decimal digits: `-1`, `1_0`, `0x10` |
@@ -114,7 +116,7 @@ The grammar below writes a terminal in capitals or quoted, `x?` for an optional 
 ## Names
 
 ```text
-ident     ::= LOWER | "as" | "lazy" | "return" | "by" | "implicit"
+ident     ::= LOWER | "as" | "lazy" | "return" | "by" | "implicit" | "macro"
 qualIdent ::= ident | QUAL_LOWER
 properName     ::= UPPER
 qualProperName ::= UPPER | QUAL_UPPER
@@ -133,15 +135,16 @@ operatorName ::= OPERATOR | QUAL_OPERATOR | "/"
 ```text
 module     ::= "module" moduleName exports? "where" block(item)?
 exports    ::= "(" sep(export, ",") ")"
-export     ::= qualIdent | OPVALUE | properName members? | "module" moduleName
-members    ::= "(..)" | "(" ")" | "(" sep(properName, ",") ")"
+export     ::= qualIdent | OPVALUE | properName members? | "macro" ident | "module" moduleName
+members    ::= "(..)" | "(" ")" | "(" sep(memberName, ",") ")"
+memberName ::= properName | ident
 
 import     ::= "import" "lazy"? moduleName importList? ("as" moduleName)?
 importList ::= "(" ")" | "(" sep(importItem, ",") ")"
-importItem ::= ident | OPVALUE | properName members?
+importItem ::= ident | OPVALUE | properName members? | "macro" ident
 ```
 
-`(..)` is the token `..` as an operator value ([Lexical Structure](04-Lexical-Structure.md)), which after a type name means every constructor.
+`(..)` is the token `..` as an operator value ([Lexical Structure](04-Lexical-Structure.md)), which after a type name means every member: every constructor of a data type, or every operation of an effect. A member named alone may be of either case, an operation being lower case, and which one it must be follows from the declaration ([Name Resolution](06-Name-Resolution.md)). `macro m` names a macro, which is spelled as a value is.
 
 ### Items
 
@@ -294,7 +297,7 @@ letBinding  ::= ident "::" type | binder1 "=" expr
 - **`_` is an anonymous argument**: `case _, _ of`, and the section `(_ + 1)`.
 - **A record literal's field is `name: e`, a pun `name`, or a replacement `name = e`, and one spread `...e` may stand last.**
 - **`op@label`** performs an operation of a labelled effect, and on the left of a guard block's binding `m@(Just x)` is an as-pattern; **`x!`** reads a cell and **`x := e`** writes one ([Effect Handlers](02-Effect-Handlers.md)).
-- **`M.( e )` opens `M` within `e`**, and **`import M in e`** does the same over the rest of the expression ([Modules](../06-Modules/01-Modules.md)).
+- **`M.( e )` opens `M` within `e`**, and **`import M in e`** does the same over the rest of the expression ([Name Resolution](06-Name-Resolution.md)).
 - **A local function binding is written in a `let` as a name followed by patterns**, `let f x = x`; a name alone binds a value, and anything else is a pattern binding.
 
 ### Case

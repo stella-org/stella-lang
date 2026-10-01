@@ -118,6 +118,18 @@ serialization of Core types, which is open
 optimization will want, the bodies eligible for inlining among them. Until then a
 `.dmi` is a header and one table.
 
+**The file is also where a module's build hash is to be held.** What compiling a
+module produces depends on more than the types and exports of what it imports: a
+synthesizer may find an entry a module reaches only transitively, and a macro or a
+synthesizer a dependency carries decides what elaborating it produces
+([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)). So the hash is
+recursive, over the compiler's version, the options that change what is produced —
+the target, the ABI and profile, and any feature that changes meaning — the
+module's own source, and each direct dependency's identity with its hash, taken in
+a fixed order and with the hash field itself left out of the input. A change
+anywhere a module reaches changes its hash, and rebuilding it is decided from that
+alone. How the hash is computed and compared is settled with the package manager.
+
 **What optimization will want first is an effect summary per exported foreign.** An
 entry pure in its type may still write to memory, and may still fault, so a call of
 it whose result nothing reads is not dead — and the type says so nowhere, which is

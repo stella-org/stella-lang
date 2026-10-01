@@ -22,7 +22,7 @@ decl ::= data    T forall k̄. (ā : κ̄) = Ctor_1 τ̄1 | … | Ctor_n τ̄n  
 
 **The order of value declarations is a dependency order.** A `nonrec` does not refer forwards, and every cycle is contained in a `rec` group.
 
-`import` records the dependencies that name resolution established. Since every Core name is fully qualified, `import` has no effect on type checking; it is retained for build ordering and linking.
+`import` records the dependencies of the module: those name resolution established, and the module of every reference elaboration wrote, which may be one the header reaches only transitively when a synthesizer chose an entry there ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)). Since every Core name is fully qualified, `import` has no effect on type checking; it is retained for build ordering and linking.
 
 ## Modules are namespaces
 
@@ -99,7 +99,7 @@ module Main where
 - The brevity of unqualified names, **confined to a region**
 - **No pollution of module scope at all**, since `A.x` is not available module-wide either
 
-`import M as A` combined with `A.( … )` fails the second, since `A.x` remains usable everywhere. The property ML's `let open` has is reproducible only with a header form of this kind.
+`import M as A` combined with `A.( … )` fails the second, since `A.x` remains usable everywhere. The property ML's `let open` has is reproducible only with a header form of this kind. Local open itself applies to either alias, with one rule for what it opens ([Name Resolution](../02-Surface-Language/06-Name-Resolution.md)).
 
 `A` is not a value, nor a type, nor a module, since modules are not first class. It is a **namespace token** usable only in local-open position — a new kind of binding, which the name resolver keeps in its own namespace.
 

@@ -53,10 +53,14 @@ In particular, type class resolution is not a substitute for row computation or 
 
 ```text
 Source
-  │ parsing and syntax macro expansion
+  │ parsing
+  ▼
+concrete syntax tree
+  │ macro expansion, name resolution, desugaring
   ▼
 Surface AST
-  │ name resolution, type inference, elaboration
+  │ elaboration: type inference builds Core⁺, the solver fills its holes,
+  │ and the Core type checker verifies the result
   ▼
 Typed Core
   │ lowering of language semantics
@@ -72,7 +76,9 @@ backend-independent Mid IR
 Wasm IR ──► WebAssembly modules      its input, Mid IR or a .dmo, is not yet fixed
 ```
 
-**Surface AST** carries source-oriented information: sugar, implicit arguments, holes, macro invocations, source locations, expansion provenance, and hygiene scopes. It is not a stable optimization interface.
+**The concrete syntax tree** keeps what was written, in the shape it was written, and is what a formatter and an editor read ([Syntax](../02-Surface-Language/05-Syntax.md)).
+
+**Surface AST** is expanded and resolved: it holds no macro invocation and no unresolved name. It carries source-oriented information: implicit arguments, holes, source locations, expansion provenance, and hygiene scopes. It is not a stable optimization interface.
 
 **Typed Core** defines the semantics of the language. It makes explicit: type abstraction and application, evidence and dictionary arguments, record and variant operations, the decision structure of pattern matching, effect operations and handlers, and evaluation order wherever it is observable. The rest of these documents specify it.
 
@@ -129,6 +135,7 @@ These serve as architecture tests as well as demonstrations.
 | [§2.3 Elaborator API](../02-Surface-Language/03-Elaborator-API.md) | The two layers, goal records, the attempt transaction, the scheduler |
 | [§2.4 Lexical Structure](../02-Surface-Language/04-Lexical-Structure.md) | Tokens, names, operators, literals |
 | [§2.5 Syntax](../02-Surface-Language/05-Syntax.md) | The offside rule, the grammar, the concrete syntax tree |
+| [§2.6 Name Resolution](../02-Surface-Language/06-Name-Resolution.md) | Namespaces, local open, shadowing |
 | **§3. Typed Core** | |
 | [§3.1 Kinds and Types](../03-Typed-Core/01-Kinds-and-Types.md) | Names, kinds, types, kinding rules |
 | [§3.2 Rows](../03-Typed-Core/02-Rows.md) | Row theory, normal form, entailment, surface syntax |

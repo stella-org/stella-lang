@@ -63,6 +63,7 @@ These are reserved wherever a name may stand, except as a record field. Some oth
 | Word | Where it has a meaning |
 | --- | --- |
 | `as`, `lazy` | an import |
+| `macro` | an import or an export list |
 | `implicit` | before a handler declaration |
 | `return` | a handler clause |
 | `otherwise` | a guard |

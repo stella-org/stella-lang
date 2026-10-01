@@ -127,6 +127,8 @@ Two routes would lift it, and neither is available yet. One is a **proof that ha
 
 The question comes down to a surface spelling for the region element, which is the one thing D16 withholds. What a spelling would buy is factoring a clause body into named helpers, which is convenience rather than expressiveness, and evidence that clause bodies grow large enough to want it should come before the choice.
 
+**Whose cells are they: one handler's, or one handling expression's.** Cells today belong to one handler, and the operation clauses of that handler alone reach them ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md)). The intended model is wider: **a cell is local to the prompt a handling expression installs, and every group that prompt holds reaches it**, so that the groups written in one `handle … with` share their state. That changes where a `var` is written, what a region belongs to in Typed Core, and brings back rules for one cell hiding another, which the present model rules out by rejecting two cell regions nested ([Name Resolution](../02-Surface-Language/06-Name-Resolution.md)). **The syntax and the semantics are revised together once the surface-language implementation is complete**; until then the present model is the one implemented.
+
 **Whether an implicit handler may take parameters.** The mechanism exists — a value parameter could be a synthesis goal, resolved by the hook type classes use — so this is a question of whether it is wanted rather than of whether it can be built, and it waits on Phase C in any case ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md)). The argument against is that a parameter worth writing is one the caller means to choose.
 
 **Masking and scoped labels for effect rows.** Effect rows are sharp (D4), so Koka's `mask<exn>` is not expressible. Named instances, below, cover many of the uses, but temporarily hiding one occurrence of an effect may still require something separate.
@@ -217,6 +219,8 @@ What D40 settles is the part that would otherwise be hardest: the protocol holds
 
 ## Modules and surface syntax
 
+**How a declaration is published to the catalog alone.** An entry may be visible to the catalog, to Core, and to a linker without being exported to source, which is how a declaration a macro generates under a name nobody wrote reaches a synthesizer ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)). The meaning is settled; the marking is not — an attribute is the likely spelling, to be fixed when the first library needing it, the type class library, is written.
+
 **Anonymous `...` at `Row Type`.** The rule is that anonymous spreads in one signature denote one variable per kind ([Rows](../03-Typed-Core/02-Rows.md)). This is right for effect rows, but at `Row Type` the wish for two independent open rows arises more often.
 
 Should that frequency prove high, the option is to **limit anonymous `...` at `Row Type` to one per signature**, making two or more an error that demands names. No incorrect program is admitted either way, since an over-strong signature fails at the call site, so the decision can wait for evidence about how much is written.
@@ -237,15 +241,6 @@ Core can express this and requires no additional constructor. Because the contin
 The reason for not deciding is that **`do` should be a library syntax macro**, following the same policy that keeps `class` and `instance` from being primitive keywords. The compiler need not know about `do`. Once the Phase B foundation exists, whether to provide it is a library's decision, and competing spellings may coexist.
 
 There is a roadmap consequence: `do` with `bind` requires a `Monad` class and therefore **Phase C or later**, since desugaring produces a `{{ Monad m by Typeclass.resolve }}` synthesis goal. Direct style needs only Phase A and the effect part of Phase E, so it is available strictly earlier.
-
-**Surface syntax for local open.** D22 separates declaring a dependency from introducing names into scope. The spelling is settled ([Syntax](../02-Surface-Language/05-Syntax.md)): a header selects names, `import Js.String (JSString)`, or brings none in with `import lazy M as A`, and an expression opens a module with `M.( e )` or `import M in e`. What remains is the scoping:
-
-- Rules for nesting local opens and for shadowing outer bindings
-- That the namespace token `A` is managed in a namespace separate from values and types
-
-None of this reaches Core.
-
-Should a design without the header entry be adopted later, it must be stated in the build system's specification that **dependencies are not determined by the header alone**; planning incremental builds and parallel compilation would then require scanning module bodies. That is where OCaml sits, and D22 avoids it.
 
 **Strengthening the module system.** D22 forgoes functors and sealing by signature. Whether export lists alone suffice for abstraction in a large library needs validation in practice. Strengthening the system requires returning to the design of Core, so the decision has low reversibility and should be assessed once the shape of the standard library is visible, in Phase C or later.
 

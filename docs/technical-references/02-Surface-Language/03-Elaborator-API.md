@@ -95,7 +95,7 @@ What the **guest** sees of a synthesis job is the expected type, with its site r
 
 ### The module environment is built once, before any job exists
 
-**What `lookupGlobal` and `declsWithAttr` read is assembled before the first job is created, and its domain does not grow.** It holds two things: the entries the interfaces of the imported modules publish, immutable throughout, and every top-level name this module declares, with that declaration's attributes and its scheme — the written one where a signature is given, and one carrying metavariables where the scheme is to be inferred. `Ξ`, the implicit handlers the imports make visible, is assembled at the same point ([Effect Handlers](02-Effect-Handlers.md)).
+**What `lookupGlobal` and `declsWithAttr` read is assembled before the first job is created, and its domain does not grow.** It holds two things: the entries the interfaces of the modules the header reaches publish to the catalog, immutable throughout ([below](#what-the-catalog-reaches)), and every top-level name this module declares, with that declaration's attributes and its scheme — the written one where a signature is given, and one carrying metavariables where the scheme is to be inferred. `Ξ`, the implicit handlers the imports make visible, is assembled at the same point ([Effect Handlers](02-Effect-Handlers.md)).
 
 **Both halves are there because `declsWithAttr` reaches across modules.** An attribute is persisted in a compiled interface exactly so that a resolver can find an instance another module declares ([Modules](../06-Modules/01-Modules.md)); a catalog of local declarations alone would answer half of every question put to it.
 
@@ -106,6 +106,21 @@ What the **guest** sees of a synthesis job is the expected type, with its site r
 **The domain is fixed and the schemes sharpen.** A provisional scheme carries metavariables, and those are read against `Ψ` as it stands — zonked at each attempt, exactly as a site's context is. What is frozen is which names exist and what each is called, never what has been solved about them.
 
 **The catalog is not in the envelope**, having nothing to do with a site. Only what varies from one site to another is snapshotted per job.
+
+### What the catalog reaches
+
+**The catalog is independent of how names are written.** An import list, an alias, `import M ()`, `import lazy`, and a local open decide which names source may write and how ([Name Resolution](06-Name-Resolution.md)); none of them adds an entry to the catalog or removes one. A module the header imports contributes what its interface publishes to the catalog however it is imported, so what a synthesizer may find is the same throughout the module. Were it narrowed where a name is narrowed, one constraint could be solved by two candidates in two parts of one module.
+
+**It reaches the modules the header imports, directly or transitively.** The import graph is a DAG, a cycle being rejected when the build is planned, and the catalog is assembled from the transitive closure of the header's imports. Direct imports alone would not do: a module using a value of a type another module declares, without importing that module, could not find what the declaring module publishes about the type, and one constraint would be solved differently in the module that imports it and in one that does not.
+
+- **One qualified name is one entry**, however many import paths reach it, a name belonging to the module that declares it.
+- **The order of a search is the order of qualified names**, as `declsWithAttr` lists them, and never the order the closure was enumerated in.
+- **The header bounds the dependencies, and the Core decides which are taken.** A synthesizer that chooses an entry of a module the header reaches only transitively writes a reference to it, and the reference is collected from the committed Core as an actual dependency, as every reference is ([below](#the-dependency-graph-is-settled-after-elaboration-not-before-it)). Header completeness (D22) holds: no dependency is taken that the header does not reach.
+- **What decides coherence is the synthesizer's**, orphans and overlap among it (D39). The qualified name of an entry already says which module declares it, through every re-export and every path, so nothing more is recorded for that.
+
+**An entry's visibility to source and its visibility to the catalog are separate.** An entry exported in the ordinary way is both a name source may import and an entry of the catalog, which Core and a linker may refer to. An entry published **to the catalog only** is the second and not the first: `declsWithAttr` finds it and `globalRef` may refer to it, and no import, alias, local open, completion, or list of the module's API shows it. That is how a declaration a macro generates, under a name its author never wrote, reaches a synthesizer without the module's export list naming it — an instance among them, though nothing about the mechanism concerns classes. It applies to any declaration, and holds with an export list or without one. How a declaration is marked to be published so is open ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
+
+**Rebuilding follows from the build hash.** A change to what a module publishes changes what every module reaching it may find, whatever its ordinary exports are, and a change to a macro or a synthesizer it carries changes what elaborating such a module produces. A module's build hash is computed recursively over its dependencies' hashes, and the interface holds it ([Interface](../05-Backend/03-Interface.md)), so the closure needs no digest of its own.
 
 ### The dependency graph is settled after elaboration, not before it
 
@@ -763,7 +778,7 @@ CatalogEntry = { name : QIdent , sort : value | foreign | constructor
                , scheme : forall k̄. τ⁺ , attributes : [Attribute] }
 ```
 
-It holds the entries the interfaces of the imported modules publish and every top-level value name this module declares, and it holds the value namespace: what `lookupGlobal` resolves is a name a term can refer to. **An elaboration-only entry is not among them** ([Modules](../06-Modules/01-Modules.md)): no lookup finds it, and `globalRef` refuses its name as it refuses one the catalog does not hold, so a synthesizer cannot build a term that refers to it. **The domain is fixed and a provisional scheme sharpens**: a scheme still being inferred carries metavariables, which are zonked against the current `Ψ` at each read, and which names exist never changes. `declsWithAttr` lists the names in ascending order of their qualified names, so that a search over them has one order whatever order the interfaces were read in.
+It holds the entries the interfaces of the modules the header reaches publish to it ([above](#what-the-catalog-reaches)) and every top-level value name this module declares, and it holds value names: what `lookupGlobal` resolves is a name a term can refer to, whether or not source can name it. **An elaboration-only entry is not among them** ([Modules](../06-Modules/01-Modules.md)): no lookup finds it, and `globalRef` refuses its name as it refuses one the catalog does not hold, so a synthesizer cannot build a term that refers to it. **The domain is fixed and a provisional scheme sharpens**: a scheme still being inferred carries metavariables, which are zonked against the current `Ψ` at each read, and which names exist never changes. `declsWithAttr` lists the names in ascending order of their qualified names, so that a search over them has one order whatever order the interfaces were read in.
 
 ### An attempt held open across requests
 
