@@ -1,6 +1,6 @@
 # Top-level Computation Declaration
 
-Status: Proposed
+Status: Accepted
 
 ## What is This?
 
