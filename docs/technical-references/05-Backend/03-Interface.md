@@ -87,7 +87,14 @@ it either way.
 | Per exported value with a definitional arity | Its own name, and that arity |
 
 **Only exported values.** A downstream module can name nothing else: Core names
-are fully qualified and an export list is what data abstraction is (D22).
+are fully qualified and an export list is what data abstraction is (D22). An
+elaboration-only entry, the constructor of `Base.Continuation`, is a constructor and
+has no entry here, as no constructor has: today it is in the full signature built
+from its module, which the Core type checker reads, and a linker finds it among the
+constructors a `.dmo` describes. Once this file carries types it carries that entry
+too, under its internal name beginning with `$`, and a reader building the
+environment source names resolve against, an editor's completion, or a list of a
+module's API leaves it out ([Modules](../06-Modules/01-Modules.md)).
 
 **The table is a finite map from a name to an arity**, which is what makes a name
 occur once by construction rather than by a rule an encoder must keep: an export

@@ -763,7 +763,7 @@ CatalogEntry = { name : QIdent , sort : value | foreign | constructor
                , scheme : forall k̄. τ⁺ , attributes : [Attribute] }
 ```
 
-It holds the entries the interfaces of the imported modules publish and every top-level value name this module declares, and it holds the value namespace: what `lookupGlobal` resolves is a name a term can refer to. **The domain is fixed and a provisional scheme sharpens**: a scheme still being inferred carries metavariables, which are zonked against the current `Ψ` at each read, and which names exist never changes. `declsWithAttr` lists the names in ascending order of their qualified names, so that a search over them has one order whatever order the interfaces were read in.
+It holds the entries the interfaces of the imported modules publish and every top-level value name this module declares, and it holds the value namespace: what `lookupGlobal` resolves is a name a term can refer to. **An elaboration-only entry is not among them** ([Modules](../06-Modules/01-Modules.md)): no lookup finds it, and `globalRef` refuses its name as it refuses one the catalog does not hold, so a synthesizer cannot build a term that refers to it. **The domain is fixed and a provisional scheme sharpens**: a scheme still being inferred carries metavariables, which are zonked against the current `Ψ` at each read, and which names exist never changes. `declsWithAttr` lists the names in ascending order of their qualified names, so that a search over them has one order whatever order the interfaces were read in.
 
 ### An attempt held open across requests
 

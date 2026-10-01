@@ -366,6 +366,19 @@ warn            : Message -> Elab Unit
 
 Residual computation over an unknown tail takes this shape: `normalizeRow` extracts the known elements and the unknown tail, an encoder is assembled recursively over the known part, and where the tail `T` is non-empty the corresponding evidence is requested as a `subgoal`, to be decided by whatever the site it stands at can supply. **Closing the row is never required.**
 
+## Names only elaboration writes
+
+**The desugaring of a `reifiable full` clause refers to an elaboration-only entry**, the constructor `Base.Continuation.$Continuation` ([Modules](../06-Modules/01-Modules.md)). It wraps the clause's Core continuation in it, so that the clause holds an abstract `Continuation` where Core holds a function ([Effect Handlers](02-Effect-Handlers.md)):
+
+```text
+| reifiable full op x k -> e
+  ⟹  full op (x, k0) -> let k = Base.Continuation.$Continuation k0 in e
+```
+
+**Outside `Base.Continuation`, that desugaring is the one place the constructor is written**, the module's own source writing it under its ordinary name. Name resolution does not resolve it, a macro cannot spell it, and the catalog a synthesizer reads omits it ([Elaborator API](03-Elaborator-API.md)). The module the clause stands in imports `Base.Continuation`, which the desugaring makes a dependency; a clause in a module without the import is reported where it stands.
+
+**The Core type checker checks the reference as it checks any other**, as the application of a newtype constructor, and does not ask who wrote it. That no other term builds a `Continuation` is a guarantee of surface elaboration, and of nothing beneath it.
+
 ## What an elaborator may and may not do
 
 An elaborator may:

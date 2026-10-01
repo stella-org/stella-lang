@@ -264,13 +264,13 @@ ent ::= element                 written per kind
 | Structure | Brackets | Element | Key it makes | Example |
 | --- | --- | --- | --- | --- |
 | record | `{` `}` | `s :: τ` | `SymbolKey s` | `{ name :: String, age :: Int }` |
-| tuple | undetermined | `τ` | `PositionKey n`, from where it stands | — |
-| variant | undetermined | `#T :: τ` | `TagKey T` | — |
-| labelled variant | as the variant's | `s :: τ` | `SymbolKey s` | — |
+| tuple | `(` `)` | `τ` | `PositionKey n`, from where it stands | `(Int, String)` |
+| variant | `[` `]` | `'T :: τ` | `TagKey T` | `[ 'Ok :: Int, 'Err :: String ]` |
+| labelled variant | `[` `]` | `s :: τ` | `SymbolKey s` | `[ ok :: Int, err :: String ]` |
 | effect | `{\|` `\|}` | `E τ̄` | `EffectKey E`, derived | `{\| Console, State Int \|}` |
-| labelled effect | `{\|` `\|}` | `s :: E τ̄` | `SymbolKey s` | — |
+| labelled effect | `{\|` `\|}` | `s :: E τ̄` | `SymbolKey s` | `{\| cache :: State Int \|}` |
 
-The brackets of a tuple and of a variant, and the spelling a labelled effect takes, are open ([Open Questions](../99-Open-Questions/01-Open-Questions.md)). What is fixed is the element form and the key each produces.
+A tuple is written with at least two components and takes no spread, its keys being positions; `()` is `Unit` and not an empty tuple. An empty variant is `[]`. A tag is written `'Ok` in the surface and `#Ok` in Core ([Syntax](../02-Surface-Language/05-Syntax.md)).
 
 Desugaring is `⊎` at every kind.
 

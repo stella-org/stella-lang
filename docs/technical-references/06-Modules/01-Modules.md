@@ -39,6 +39,35 @@ This is a decision, but it also follows from the shape of Core. Every Core name 
 
 Strengthening the module system remains possible, but it would require returning to the design of Core.
 
+### An entry only elaboration names
+
+**A reserved module may hold an elaboration-only entry**: a constructor whose Core identity is a name that belongs to no source grammar, which a desugaring the compiler carries out refers to and nothing else does. It is the one exception to export lists being what data abstraction is, and it is narrow by construction: **the compiler lists the entries by name**, and a `Base` module is source only the package implementing the ABI may supply (D26), which package resolution verifies.
+
+**The module declares it in ordinary source, and name resolution gives it its internal identity.** The constructor is written under an ordinary name with the attribute `@[elaborationOnly]` on the declaration of its type. When the module is resolved, the source constructor binder is mapped to the internal qualified name the list gives, and that name is the constructor's identity from there on: its `CtorDecl`, every application of it and every pattern on it inside the module, the full signature built from the module, its `ExportCtor`, and the `.dmo` all use the internal name, and none of them the ordinary one. It is not a renaming at export, which Core would not admit: an `ExportCtor` names a constructor the signature declares under that same name. **The ordinary name exists in the declaring module's source alone**, where it resolves to the internal identity as any constructor's name resolves to its own, which is how the module writes the functions over it. The attribute is an error on a declaration the list does not name, and so in any module but the ones listed.
+
+```stella
+module Base.Continuation (Continuation, continue) where
+
+@[elaborationOnly]
+newtype Continuation a b (r :: Row Effect) = Continuation (a -> b / {| ...r |})
+
+continue :: forall a b r. Continuation a b r -> a -> b / {| ...r |}
+continue (Continuation f) = f
+```
+
+**The list fixes the correspondence**, so that an implementation has one answer: which module may declare the entry, the type and source constructor the attribute is on, and the internal identity that constructor takes.
+
+| Module | Type | Source constructor | Internal identity | Referred to by |
+| --- | --- | --- | --- | --- |
+| `Base.Continuation` | `Continuation` | `Continuation` | `Base.Continuation.$Continuation` | the desugaring of a `reifiable full` clause ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md)) |
+
+- **It is exported as any constructor is**, under its internal identity, and its `ExportCtor` is generated apart from the surface export list: its type is in the signature built from the module, which the Core type checker reads, and a linker finds it among the constructors a `.dmo` describes ([Interface](../05-Backend/03-Interface.md)).
+- **No source outside the declaring module reaches it.** Its name, beginning with `$`, is no identifier ([Lexical Structure](../02-Surface-Language/04-Lexical-Structure.md)), so name resolution never resolves it, and an import list, a re-export, and a macro cannot spell it. **Nor does `(..)`, which selects constructors without naming them**: after the type, in an export list, an import list, or a re-export, does not enumerate it, and importing the whole module does not bring it in. Naming it under its ordinary name is an error, in the declaring module's export list, `Continuation(Continuation)`, as anywhere else; that list writes the type alone, which is what keeps it abstract to source. An editor does not offer it, and a list of a module's API leaves it out.
+- **No synthesizer reaches it.** The catalog a synthesizer reads omits it, and the kernel refuses a global reference to it ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)).
+- **The Core type checker does not enforce any of this.** A reference to it is checked as an ordinary reference, whoever wrote it. The restriction is a property of surface elaboration and its trust boundary, and a hand-written Core module is outside it.
+
+**The module that holds one is a dependency like any other.** A module whose desugaring refers to an elaboration-only entry imports the module holding it, so its header still names every dependency.
+
 ## Local open and header completeness
 
 ML's `M.( … )`, which brings `M`'s names into scope unqualified within one expression, is worth having in surface syntax.

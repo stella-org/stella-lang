@@ -8,9 +8,9 @@ Nothing here reaches Core. A handler declaration desugars to an ordinary functio
 
 A **handler declaration** binds a name to an interpreter.
 
-```purescript
+```stella
 handler runConsole :: Console ~> ( LiftIO ) where
-  fast log msg = liftIO (Js.Console.log msg)
+  fast | log msg -> liftIO (Js.Console.log msg)
 ```
 
 It desugars to a value declaration whose right-hand side is a `handle` under a thunk.
@@ -48,10 +48,10 @@ handler h :: E ~> ( t1, …, tn ) where …
 
 The left of `~>` is **one element**, because a `handle` names one key. The right is a **row fragment**, which may hold several elements or none; the empty target is written `()`.
 
-```purescript
+```stella
 -- effect Verbosity where level :: Unit ->* Int
 handler quiet :: Verbosity ~> () where
-  fast level _ = 0
+  fast | level _ -> 0
 ```
 
 **The source element appears in the source row together with the target.** A handler declared `Console ~> ( LiftIO )` accepts a computation already performing `LiftIO` and returns one still performing it, which is the shape a hand-written adapter takes as well ([Prim and Base](../06-Modules/02-Prim-and-Base.md)).
@@ -62,43 +62,56 @@ The narrower shape, taking `( Console | e )`, is a different function and it doe
 
 A handler whose answer type differs from the computation's, or whose residual row must be closed, writes its signature in full instead of using `~>`.
 
-```purescript
+```stella
 handler runConsoleIO :: forall a. (Unit -> a / {| Console |}) -> IO a where
-  return x = Base.IO.pure x
-  full log s k = Base.IO.bind (Js.Console.log s) (\_ -> k ())
+  | return x -> Base.IO.pure x
+  reifiable full
+    | log s k -> Base.IO.bind (Js.Console.log s) (Continuation.continue k)
 ```
 
-Both properties belong to terminal interpreters, and both follow from what the clauses do rather than from a rule of this form. Sequencing a native action before the continuation requires a closed row, `Base.IO.bind` taking a pure arrow ([Effects](../03-Typed-Core/03-Effects.md)); supplying `IO a` where the computation gives `a` requires a `return` clause, and only a `full` clause can carry the answer onward.
+Both properties belong to terminal interpreters, and both follow from what the clauses do rather than from a rule of this form. Sequencing a native action before the continuation requires a closed row, `Base.IO.bind` taking a pure arrow ([Effects](../03-Typed-Core/03-Effects.md)); supplying `IO a` where the computation gives `a` requires a `return` clause, and only a clause capturing the continuation can carry the answer onward. That this one hands the continuation to the host is why it is `reifiable` (below).
 
 A handler interpreting an effect into a pure type is the same case.
 
-```purescript
+```stella
 handler toMaybe :: forall a. (Unit -> a / {| Partial, ... |}) -> Maybe a / {| ... |} where
-  return x = Just x
-  full abort _ k = Nothing
+  | return x -> Just x
+  | full abort _ -> Nothing
 ```
 
 ### Clause forms
 
+A clause is a `|`, a marker, the operation, a pattern for each of its arguments, and a body after `->`. The marker of a group is the default of its clauses, and a clause's own overrides it ([Syntax](05-Syntax.md)).
+
 ```text
-clause ::= [ 'full' | 'fast' ] op binder* '=' expr
-         | 'return' binder '=' expr
+clause ::= "|" marker? op binder* "->" expr
+         | "|" "return" binder "->" expr
+marker ::= "full" | "fast" | "reifiable" "full"
 ```
 
-A **`full` clause** binds the continuation after the operation's arguments; its body is the answer. A **`fast` clause** binds the arguments alone; its body has the type the operation resumes with (D28).
+**Three markers, by what becomes of the continuation** ([Handler Surface Syntax](../../proposals/02-Handler-Surface-Syntax.md)):
 
-```purescript
-full log s k = Base.IO.bind (Js.Console.log s) (\_ -> k ())
-fast log msg = liftIO (Js.Console.log msg)
+| Marker | The continuation | The body |
+| --- | --- | --- |
+| `fast` | not captured | has the type the operation resumes with (D28) |
+| `full` | captured, reached by `resume` in the clause's immediate body | is the answer |
+| `reifiable full` | captured, a `Continuation` value taken as the clause's last parameter | is the answer |
+
+```stella
+| fast log msg -> liftIO (Js.Console.log msg)
+| full choose _ -> let x = resume true in let y = resume false in x ++ y
+| reifiable full log s k -> Base.IO.bind (Js.Console.log s) (Continuation.continue k)
 ```
+
+**`resume` does not leave the clause it belongs to.** It stands in the clause's immediate body, and not inside a lambda, a local function, or the body of a handling expression, any of which could keep it. A clause that keeps its continuation beyond itself — handing it to the host, storing it, returning it — is `reifiable full`, and its continuation is an abstract `Continuation`, resumed by `Continuation.continue`. Both reach Core as the same `full` clause, the continuation an ordinary variable there, wrapped for a `reifiable full` clause by a constructor only that desugaring writes ([Elaboration](01-Elaboration.md)); a module holding such a clause imports `Base.Continuation`, which the examples here import as `Continuation`. The difference between the two is a lifetime the surface promises, which no backend relies on until the distinction is carried into Core or the `.dmo`.
 
 **An unmarked clause is `full`.** Core writes the marker on every clause, so the desugaring settles which form an unmarked one means, and it means the unrestricted one. Nothing in Core falls back on a default.
 
 An operation declared with several arguments binds them one by one, the record Core packs them into being surface sugar ([Effects](../03-Typed-Core/03-Effects.md)).
 
-```purescript
+```stella
 -- writeAt :: Int -> String ->* Unit
-fast writeAt line text = liftIO (Js.Console.writeAt line text)
+| fast writeAt line text -> liftIO (Js.Console.writeAt line text)
 ```
 
 The `return` clause is optional. A handler without one returns the computation's own value, which is the identity `return (x : α) -> x` in Core.
@@ -107,7 +120,7 @@ The `return` clause is optional. A handler without one returns the computation's
 
 A handler declaration may take ordinary value parameters, written before the `::`.
 
-```purescript
+```stella
 handler runWithLimit (limit :: Int) :: Fuel ~> () where …
 ```
 
@@ -117,11 +130,11 @@ They become arguments of the generated function, ahead of the thunk, and require
 
 A handler may own **cells**. A cell is a mutable binding whose lifetime is the handler's region and which the handler's operation clauses reach; nothing else does. This is what `ST` gives and a state monad does not — a `fast` clause reads and writes one without building a continuation, so handling an operation captures nothing (D36).
 
-```purescript
+```stella
 -- effect Counter where next :: Unit ->* Int
 handler counter :: Counter ~> () where
   var n := 0
-  fast next _ = let v = n! in let _ = n := v + 1 in v
+  fast | next _ -> let v = n! in let _ = n := v + 1 in v
 ```
 
 `var x := e` declares a cell together with its initial value, `x!` reads it, and `x := e` writes it. A write evaluates to `Prim.Unit`.
@@ -130,12 +143,12 @@ handler counter :: Counter ~> () where
 
 Every `var` of a handler stands ahead of its clauses. The cells belong to the handler, as the clauses do, and fixing their place is what makes the two paragraphs below readable at a glance: nothing above a clause is inside the region, and nothing below it is outside.
 
-```purescript
+```stella
 -- effect Emit where emit :: String ->* Unit
 handler collect :: Emit ~> () where
   var count := 0
   var last := ""
-  fast emit msg = let _ = count := count! + 1 in last := msg
+  fast | emit msg -> let _ = count := count! + 1 in last := msg
 ```
 
 Each declaration becomes one cell of one region, keyed by the name written. **Two declarations of one name are rejected**, a region's keys being distinct.
@@ -190,14 +203,14 @@ Main.counter
 
 The generated constraint does one piece of work: **a handler with cells cannot be applied inside a clause of another handler with cells.** Both regions would stand in one row, which sharpness forbids ([Rows](../03-Typed-Core/02-Rows.md)).
 
-```purescript
+```stella
 -- accepted: the inner handler stands in the computation the outer one handles
 counter (\_ -> collect (\_ -> program))
 
 -- rejected: the inner handler stands in a clause of the outer one
 handler outer :: Log ~> () where
   var seen := 0
-  fast log _ = counter (\_ -> program)
+  fast | log _ -> counter (\_ -> program)
 ```
 
 **The accepted case is the ordinary one.** Applying handlers one inside another's thunk is how handlers compose, and cells restrict it not at all — the computation a handler handles carries no region, so the two never meet. What the rule forbids is opening a region while another handler's clause is running, which is the one place two regions would have to share a row.
@@ -220,11 +233,21 @@ What cells add beyond that is a way for an insertion to fail at a site where not
 
 A handler is applied like any other function, to a thunk.
 
-```purescript
+```stella
 runConsole (\_ -> program)
 ```
 
-`handle` therefore appears only inside a handler declaration, of which a library has few, and application code contains none.
+**A handling expression writes the same application without the thunk.** `handle e with …` and `using … handle e` take a list of handlers and groups written in place, installed from the top down, the first outermost; the list desugars to `item₁ (\_ -> item₂ (\_ -> … (\_ -> e)))`, a group being a handler built where it stands ([Syntax](05-Syntax.md)).
+
+```stella
+handle program with
+  runConsole
+  State full
+    | get _ -> resume 0
+    | set _ -> resume ()
+```
+
+Neither form is a construct of its own: what reaches Core is the application, and the `handle` of Core appears only inside the handlers applied.
 
 **The thunk is what defers the computation.** An argument reaches a value before the function it is applied to, and before anything the callee does (D35), so a handler taking the computation itself would receive one that had already run — outside the `handle` meant to enclose it, with its operations reaching whatever handler was installed there instead. The `λ` is what puts that evaluation inside. This is why every application the desugaring and the insertion below produce has a value in argument position: a thunk, a variable, or `Prim.Unit`, never a computation.
 
@@ -232,10 +255,10 @@ runConsole (\_ -> program)
 
 The `implicit` modifier marks a handler the elaborator may supply where the author did not write one.
 
-```purescript
+```stella
 implicit
 handler runConsole :: Console ~> ( LiftIO ) where
-  fast log msg = liftIO (Js.Console.log msg)
+  fast | log msg -> liftIO (Js.Console.log msg)
 ```
 
 An implicit handler is subject to five conditions, each checked where it is declared.
@@ -324,7 +347,7 @@ Requiring a total order is where the design declines to be clever. Two handlers 
 
 Two capabilities lowering independently into one target do not.
 
-```purescript
+```stella
 implicit handler lowerConsole :: Console ~> ( LiftIO ) where …
 implicit handler lowerFile    :: File    ~> ( LiftIO ) where …
 
@@ -344,7 +367,7 @@ Every node of the graph is an effect, so the terminal step — interpreting the 
 
 A row element is keyed, and `handles Console` fixes the key `EffectKey Console` (D16). Core has no key polymorphism, so a handler for one key is not a handler for another, and an implicit handler is registered in `Ξ` under **its key** rather than under its effect constructor.
 
-**Implicit insertion therefore reaches unlabelled instances only.** A labelled instance `( logger : Console )` is keyed `SymbolKey logger`, and lowering it needs a handler declared for that key. What the surface writes to declare one is part of the spelling of labelled instances, which is not settled ([Rows](../03-Typed-Core/02-Rows.md)).
+**Implicit insertion therefore reaches unlabelled instances only.** A labelled instance `( logger : Console )` is keyed `SymbolKey logger`, and lowering it needs a handler declared for that key. A labelled instance is written `{| logger :: Console |}` and handled in place by a group headed by its label ([Syntax](05-Syntax.md)); a top-level handler declaration names no effect and so no key, and how one would be declared for a labelled instance, to be registered for insertion, is not settled.
 
 ## Scheduling
 

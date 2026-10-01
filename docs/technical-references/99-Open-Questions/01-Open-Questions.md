@@ -223,10 +223,6 @@ Should that frequency prove high, the option is to **limit anonymous `...` at `R
 
 Neither rule is backward compatible with the other. Code that writes names works under both, so making multiple anonymous spreads a warning is a way to defer the decision.
 
-**Brackets for variant rows.** Records use `{ … }` and effects use `{| … |}`, so variants need brackets of their own. A variant element is keyed by a `TagKey` written `#Ok`, or by a `SymbolKey` where a name is wanted, and the spread `...ρ` is shared; only the brackets remain to be chosen ([Rows](../03-Typed-Core/02-Rows.md)).
-
-**The surface spelling of a literal.** The value domains are settled (D37), and which token denotes which value is not: `42`, `0x2a`, and `0b101010` are one literal, `"\n"` and `"\u{A}"` are another, and what a lexer admits — separators in a numeral, an exponent, an escape — is its own question. Nothing of it reaches Core, which holds the value and compares nothing else.
-
 **Classical monads and `do` syntax.** D17 settles effect sequencing as direct style but leaves open whether monads as data structures, such as `Maybe` or a parser, should be writable with something like `<-`. **The direction is coexistence**; the syntax is not fixed.
 
 The condition for coexistence is known: `bind` must be effect-polymorphic ([Effects](../03-Typed-Core/03-Effects.md)).
@@ -242,13 +238,10 @@ The reason for not deciding is that **`do` should be a library syntax macro**, f
 
 There is a roadmap consequence: `do` with `bind` requires a `Monad` class and therefore **Phase C or later**, since desugaring produces a `{{ Monad m by Typeclass.resolve }}` synthesis goal. Direct style needs only Phase A and the effect part of Phase E, so it is available strictly earlier.
 
-**Surface syntax for local open.** D22 separates declaring a dependency from introducing names into scope, but the spelling and details are open.
+**Surface syntax for local open.** D22 separates declaring a dependency from introducing names into scope. The spelling is settled ([Syntax](../02-Surface-Language/05-Syntax.md)): a header selects names, `import Js.String (JSString)`, or brings none in with `import lazy M as A`, and an expression opens a module with `M.( e )` or `import M in e`. What remains is the scoping:
 
-- Whether `lazy` is the right keyword. What is deferred is the point at which names enter scope, not the loading of a module
-- Whether to provide both the expression form `M.( e )` and a block form `import M in e`
 - Rules for nesting local opens and for shadowing outer bindings
 - That the namespace token `A` is managed in a namespace separate from values and types
-- **Whether a header may select or hide names**, as in `import Js.String (JSString)`. The three forms above bring in everything a module exports or nothing at all, and nothing between. A selective list leaves D22 intact, since the header still names the module and the dependency is on the module rather than on a name within it; what it changes is only which names enter scope unqualified
 
 None of this reaches Core.
 

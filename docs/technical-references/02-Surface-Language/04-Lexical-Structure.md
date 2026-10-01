@@ -55,7 +55,7 @@ A name the compiler generates, such as `$entry_main`, is not a name of this gram
 ```text
 module where import data newtype type effect handler foreign
 infix infixl infixr let in case of forall handle with using
-full fast resume var true false
+full fast reifiable resume var true false
 ```
 
 These are reserved wherever a name may stand, except as a record field. Some other words have a meaning only where the grammar places them, and are ordinary names elsewhere:

@@ -31,6 +31,8 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | any upper case name in a kind | a name other than `Type`, `Effect`, `Row` |
 | a computation type anywhere a type stands | a computation type other than at the top of a top-level signature |
 | `resume` anywhere | `resume` outside the immediate body of a `full` clause |
+| any parameters in a `reifiable full` clause | a clause with no parameter after the operation's arguments, which is the continuation it keeps |
+| a `reifiable full` clause in any module | one in a module that does not import `Base.Continuation`, which its desugaring depends on |
 | an attribute, a directive, or a modifier with no declaration after it | the same |
 
 ## Layout
@@ -333,9 +335,11 @@ handlerListItem ::= (qualProperName | ident) marker? ("var" ident ":=" expr)* cl
                   | expr
 clause ::= "|" marker? opName binderAtom* "->" expr
          | "|" "return" binderAtom "->" expr
-marker ::= "full" | "fast"
+marker ::= "full" | "fast" | "reifiable" "full"
 ```
 
 **A group written in place is a head — an effect name or a label — followed by a marker, a cell declaration, or a clause**; any other item of a handling expression is a handler, an expression. The two are told apart by the token after the head ([Handler Surface Syntax](../../proposals/02-Handler-Surface-Syntax.md)).
 
 **A top-level handler's block holds its cells and its clauses with no head**, the effect it handles following from its signature.
+
+**`reifiable` qualifies a marker that captures the continuation**, and today that is `full` alone: a `reifiable full` clause takes the continuation as a parameter after the operation's arguments, a value of the abstract type `Continuation` it may keep beyond the clause, where a `full` clause reaches it through `resume` alone ([Handler Surface Syntax](../../proposals/02-Handler-Surface-Syntax.md)).
