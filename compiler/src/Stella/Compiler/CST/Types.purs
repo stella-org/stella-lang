@@ -175,6 +175,7 @@ keywords =
   , "using"
   , "full"
   , "fast"
+  , "reifiable"
   , "resume"
   , "var"
   , "true"
@@ -464,6 +465,9 @@ data RecordBinder
 data Marker
   = Full
   | Fast
+  -- | `reifiable full`: the clause takes the continuation as its last parameter,
+  -- | a value it may keep beyond the clause.
+  | ReifiableFull
 
 -- | An item of a handler declaration's block.
 data HandlerItem

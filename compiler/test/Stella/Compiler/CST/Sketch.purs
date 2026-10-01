@@ -236,6 +236,7 @@ marker = case _ of
   Nothing -> []
   Just Full -> [ "full" ]
   Just Fast -> [ "fast" ]
+  Just ReifiableFull -> [ "reifiable full" ]
 
 clause :: Clause -> String
 clause = case _ of

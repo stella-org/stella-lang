@@ -152,6 +152,11 @@ spec = describe "Stella.Compiler.CST.Parser" do
     it "reads labelled groups" do
       "handle work with\n  cache full | get _ -> resume 0\n             | set _ -> resume ()\n  counter    | fast get _ -> 0" `exprIs`
         "(handle work (group cache full (| get _ (resume 0)) (| set _ (resume ()))) (group counter (| fast get _ 0)))"
+    it "reads `reifiable full` on a group and on a clause" do
+      "handle w with\n  Console\n    | full log s -> resume ()\n    | reifiable full terminal act k -> Base.IO.bind act (Continuation.continue k)" `exprIs`
+        "(handle w (group Console (| full log s (resume ())) (| reifiable full terminal act k ((Base.IO.bind act) (parens (Continuation.continue k))))))"
+    it "refuses `reifiable` before `fast`" do
+      exprRejected "handle w with\n  E | reifiable fast op _ -> 0"
     it "reads a group with a cell" do
       "handle w with\n  Counter\n    var n := 0\n    | fast next _ -> n!" `exprIs`
         "(handle w (group Counter (var n 0) (| fast next _ n!)))"
@@ -194,6 +199,9 @@ spec = describe "Stella.Compiler.CST.Parser" do
         [ "(handler toMaybe (forall a (-> (parens (-> Unit (/ a (effects Partial)))) (Maybe a))) (group (| return x (Just x))) (group (| full abort _ Nothing)))" ]
       [ "handler runWithLimit (limit :: Int) :: Fuel ~> () where", "  fast | burn k -> k" ] `itemsAre`
         [ "(handler runWithLimit (parens (:: limit Int)) (~> Fuel ()) (group fast (| burn k k)))" ]
+    it "reads a terminal interpreter whose clauses keep their continuation" do
+      [ "handler runConsoleIO :: forall a. (Unit -> a / {| Console |}) -> IO a where", "  | return x -> Base.IO.pure x", "  reifiable full | log s k -> Base.IO.bind (Js.Console.log s) (Continuation.continue k)" ] `itemsAre`
+        [ "(handler runConsoleIO (forall a (-> (parens (-> Unit (/ a (effects Console)))) (IO a))) (group (| return x (Base.IO.pure x))) (group reifiable full (| log s k ((Base.IO.bind (parens (Js.Console.log s))) (parens (Continuation.continue k))))))" ]
     it "reads foreign declarations and foreign types, a directive before them" do
       [ "#observ(none) foreign sqrt :: Number -> Number", "foreign type Window :: Type" ] `itemsAre`
         [ "(#observ (none))", "(foreign sqrt (-> Number Number))", "(foreign-type Window Type)" ]

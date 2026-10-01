@@ -74,6 +74,7 @@ import Stella.Compiler.CST.Types as C
 %token USING    "using"    @ { { value: C.TokLowerName Nothing "using" } }
 %token FULL     "full"     @ { { value: C.TokLowerName Nothing "full" } }
 %token FAST     "fast"     @ { { value: C.TokLowerName Nothing "fast" } }
+%token REIFIABLE "reifiable" @ { { value: C.TokLowerName Nothing "reifiable" } }
 %token RESUME   "resume"   @ { { value: C.TokLowerName Nothing "resume" } }
 %token TRUE     "true"     @ { { value: C.TokLowerName Nothing "true" } }
 %token FALSE    "false"    @ { { value: C.TokLowerName Nothing "false" } }
@@ -255,6 +256,7 @@ label:
   | t = USING    { B.name t }
   | t = FULL     { B.name t }
   | t = FAST     { B.name t }
+  | t = REIFIABLE { B.name t }
   | t = RESUME   { B.name t }
   | t = TRUE     { B.name t }
   | t = FALSE    { B.name t }
@@ -407,6 +409,7 @@ plainToken:
   | t = USING { t }
   | t = FULL { t }
   | t = FAST { t }
+  | t = REIFIABLE { t }
   | t = RESUME { t }
   | t = TRUE { t }
   | t = FALSE { t }
@@ -752,9 +755,12 @@ rest:
 -- Handlers
 --------------------------------------------------------------------------------
 
+-- `reifiable` qualifies a marker that captures the continuation, and lets the
+-- clause take it as a value it may keep.
 marker:
-  | FULL { C.Full }
-  | FAST { C.Fast }
+  | FULL           { C.Full }
+  | FAST           { C.Fast }
+  | REIFIABLE FULL { C.ReifiableFull }
 
 markerOpt:
   |            { Nothing }
