@@ -88,6 +88,7 @@ import Stella.Compiler.CST.Types as C
 %token RETURN   "return"   @ { { value: C.TokLowerName Nothing "return" } }
 %token BY       "by"       @ { { value: C.TokLowerName Nothing "by" } }
 %token IMPLICIT "implicit" @ { { value: C.TokLowerName Nothing "implicit" } }
+%token MACRO_WORD "macro" @ { { value: C.TokLowerName Nothing "macro" } }
 
 %token LOWER          "a name"                  @ { { value: C.TokLowerName Nothing _ } }
 %token QUAL_LOWER     "a qualified name"        @ { { value: C.TokLowerName _ _ } }
@@ -196,6 +197,7 @@ ident:
   | t = RETURN   { B.name t }
   | t = BY       { B.name t }
   | t = IMPLICIT { B.name t }
+  | t = MACRO_WORD { B.name t }
 
 -- A type variable. `by` closes a synthesized argument, `{{ … by f }}`, and so
 -- names none.
@@ -205,6 +207,7 @@ typeVarIdent:
   | t = LAZY     { B.name t }
   | t = RETURN   { B.name t }
   | t = IMPLICIT { B.name t }
+  | t = MACRO_WORD { B.name t }
 
 -- An operation's name in a clause, where `return` begins the return clause.
 opIdent:
@@ -214,6 +217,7 @@ opIdent:
   | t = LAZY       { B.name t }
   | t = BY         { B.name t }
   | t = IMPLICIT   { B.name t }
+  | t = MACRO_WORD   { B.name t }
 
 qualIdent:
   | n = ident        { n }
@@ -284,12 +288,19 @@ export:
   | t = OPVALUE                    { C.ExportOperator (B.name t) }
   | n = properName                 { C.ExportType n Nothing }
   | n = properName m = members     { C.ExportType n (Just m) }
+  | MACRO_WORD n = ident           { C.ExportMacro n }
   | MODULE n = moduleName          { C.ExportModule n }
 
 members:
   | DOTDOTVALUE                                    { C.MembersAll }
   | LPAREN RPAREN                                  { C.MembersOnly [] }
-  | LPAREN ns = manySep(properName, COMMA) RPAREN  { C.MembersOnly ns }
+  | LPAREN ns = manySep(memberName, COMMA) RPAREN  { C.MembersOnly ns }
+
+-- A constructor of a data type, or an operation of an effect. Which one a name
+-- must be follows from the declaration, and name resolution checks it.
+memberName:
+  | n = properName { n }
+  | n = ident      { n }
 
 importDecl:
   | IMPORT n = moduleName is = importList a = importAlias
@@ -311,6 +322,7 @@ importItem:
   | t = OPVALUE                    { C.ImportOperator (B.name t) }
   | n = properName                 { C.ImportType n Nothing }
   | n = properName m = members     { C.ImportType n (Just m) }
+  | MACRO_WORD n = ident           { C.ImportMacro n }
 
 moduleItems:
   | iss = manySepOrEmpty(moduleItem, VSEP) { join iss }

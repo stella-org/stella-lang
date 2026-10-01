@@ -43,6 +43,7 @@ sketchModule (Module m) =
     ExportValue n -> name n
     ExportOperator n -> "(" <> name n <> ")"
     ExportType n ms -> name n <> members ms
+    ExportMacro n -> "macro " <> name n
     ExportModule n -> "module " <> name n
 
 members :: Maybe Members -> String
@@ -78,6 +79,7 @@ sketchItem = case _ of
     ImportValue n -> name n
     ImportOperator n -> "(" <> name n <> ")"
     ImportType n ms -> name n <> members ms
+    ImportMacro n -> "macro " <> name n
   attributeArg = case _ of
     AttributePositional e -> sketchExpr e
     AttributeKeyed k e -> name k <> "=" <> sketchExpr e

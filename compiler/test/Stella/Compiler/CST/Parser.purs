@@ -10,7 +10,7 @@ import Stella.Compiler.CST (parseExpr, parseModule, parseType, printSyntaxError)
 import Stella.Compiler.CST.Types (Module(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Stella.Compiler.CST.Sketch (sketchExpr, sketchItem, sketchType)
+import Test.Stella.Compiler.CST.Sketch (sketchExpr, sketchItem, sketchModule, sketchType)
 
 typeIs :: String -> String -> Aff Unit
 typeIs src expected = case parseType src of
@@ -227,5 +227,18 @@ spec = describe "Stella.Compiler.CST.Parser" do
         Left e -> fail (printSyntaxError e)
         Right (Module m) -> map sketchItem m.items `shouldEqual`
           [ "(import Prelude)", "(import Data.Array (length Maybe(..)) as A)", "(import-lazy Data.Array as DA)" ]
+    it "reads macros and members of either case in lists" do
+      case parseModule "module M (macro format, State(get, set), Maybe(Just), macro) where\nimport Fmt (macro format, State(get), macro)\nimport Fmt (macro macro) as F" of
+        Left e -> fail (printSyntaxError e)
+        Right m -> sketchModule m `shouldEqual`
+          "(module M (macro format State(get set) Maybe(Just) macro) (import Fmt (macro format State(get) macro)) (import Fmt (macro macro) as F))"
+    it "reads `macro` as an ordinary name outside a list" do
+      itemsAre [ "macro = 1", "f macro = macro" ] [ "(value macro 1)", "(value f macro macro)" ]
+    it "refuses `macro` before anything but a name" do
+      rejects [ "import Fmt (macro (++))" ]
+    it "refuses an empty export list" do
+      case parseModule "module M () where\nx = 1" of
+        Left _ -> pure unit
+        Right m -> fail ("accepted: " <> sketchModule m)
     it "refuses what the grammar does not have" do
       rejects [ "x = case" ]

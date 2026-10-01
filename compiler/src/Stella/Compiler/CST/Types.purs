@@ -251,9 +251,11 @@ data Export
   = ExportValue Name
   | ExportOperator Name
   | ExportType Name (Maybe Members)
+  | ExportMacro Name
   | ExportModule Name
 
--- | The constructors listed after a type name: `(..)`, or some of them.
+-- | The members listed after a type name: `(..)`, or some of them. A data
+-- | type's members are its constructors and an effect's its operations.
 data Members
   = MembersAll
   | MembersOnly (Array Name)
@@ -269,6 +271,7 @@ data ImportItem
   = ImportValue Name
   | ImportOperator Name
   | ImportType Name (Maybe Members)
+  | ImportMacro Name
 
 data Item
   = ItemImport Import
