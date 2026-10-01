@@ -1,6 +1,6 @@
 # Surface Syntax for Effect Handlers and Implicit `resume`
 
-Status: Proposed
+Status: Accepted
 
 ## What is This?
 
@@ -39,11 +39,11 @@ return-clause
 
 cell-decl     ::= "var" identifier ":=" expression
 
-group-marker  ::= "full" | "fast"
-clause-marker ::= "full" | "fast"
+group-marker  ::= "full" | "fast" | "reifiable" "full"
+clause-marker ::= "full" | "fast" | "reifiable" "full"
 ```
 
-- `full`, `fast`, and `resume` are reserved keywords.
+- `full`, `fast`, `reifiable`, and `resume` are reserved keywords.
 - The group marker may stand on the line after the group head, and the `|` of the clauses are
   aligned by layout:
 
@@ -288,3 +288,118 @@ Through this design, the desugared Core language can still treat continuations a
 variable, and the Core type checker verifies nothing about whether it escapes, so a backend
 optimization assuming that it does not has no checked ground yet. A mark that Core or the `.dmo`
 carries, and a checker can verify, is to be specified when the optimizer is worked on.
+
+#### 6. Reifiable Continuations
+
+The boundary rule leaves one kind of handler unwritable: a **terminal interpreter**, which hands the
+continuation to the host to run later. Interpreting `Console` into `IO` sequences a native action
+before the rest of the computation, and the rest is the continuation, stored inside the `IO`
+value that `Base.IO.bind` builds:
+
+```stella
+handler runConsoleIO :: forall a. (Unit -> a / {| Console |}) -> IO a where
+  | return x -> Base.IO.pure x
+  reifiable full
+    | log s k -> Base.IO.bind (Js.Console.log s) (Continuation.continue k)
+```
+
+Here the continuation does leave the clause, and in the present calculus nothing is wrong with
+that: it is called by a context that handles what the resumed computation performs, which its type
+requires, so **an escaping continuation breaks no soundness**. What the second-class `resume`
+promises is a lifetime: a continuation that cannot outlive its clause may be held for the clause's
+duration alone. No backend can rely on that yet — `full` and `reifiable full` reach Core as the
+same clause, and neither Core nor the `.dmo` keeps the difference (below) — and once a bracket
+effect gives a continuation never resumed a finalizer, the same line bears on that lifecycle too.
+So the escape is admitted, and written.
+
+##### `reifiable full`
+
+**A `reifiable full` clause takes the continuation as a value.** It is the last parameter of the
+clause, after the operation's arguments, and its type is the abstract
+`Continuation a b ρ`: resuming with an `a` gives the handler's answer `b`, performing `ρ`. The
+clause may capture it in a lambda, pass it as an argument, store it, or return it. `resume` is
+not available in such a clause; one name for the continuation is enough.
+
+`reifiable` qualifies a marker, in the same places a marker stands: on a group, as its default,
+or on a clause, overriding it. **It qualifies a marker that captures the continuation**, which
+today is `full` alone; `reifiable fast` is not a form, a `fast` clause capturing nothing. When
+higher-order operations come, a `scoped` clause captures a continuation as well, and
+`reifiable scoped` takes the same place.
+
+##### `Continuation`
+
+```stella
+module Base.Continuation (Continuation, continue) where
+
+@[elaborationOnly]
+newtype Continuation a b (r :: Row Effect) = Continuation (a -> b / {| ...r |})
+
+continue :: forall a b r. Continuation a b r -> a -> b / {| ...r |}
+continue (Continuation f) = f
+```
+
+**It is abstract outside `Base.Continuation`, and `continue` is its one public eliminator.** A
+continuation is resumed by `continue` and by nothing else, as a closure is applied and never split
+into its code and its environment. That leaves room for what a continuation may come to carry — whether it is one-shot, a finalizer for
+one never resumed, the lifetime of a region or a resource — without any program depending on how
+it is represented.
+
+**Its constructor is an elaboration-only entry of `Base.Continuation`.** The module is source the
+package implementing the ABI supplies (D26), and it writes the constructor under an ordinary name
+with `@[elaborationOnly]`, which the compiler admits there alone; name resolution gives the
+constructor the Core identity `Base.Continuation.$Continuation`, which its declaration, its uses
+inside the module, the signature, its export, and the `.dmo` all carry, the ordinary name holding in
+the module's own source alone. The internal name belongs to no source grammar, so it appears in no source name environment, no import selection,
+no re-export, and no completion; a macro, producing source tokens, cannot spell it either, and
+`Continuation(..)` does not enumerate it. Its `ExportCtor` is generated apart from the export list,
+which writes the type alone. Its type
+is part of the signature built from the module, which the Core type checker reads, and a linker
+finds it among the constructors a `.dmo` describes
+([Modules](../technical-references/06-Modules/01-Modules.md)). **Outside the module,
+the desugaring of a `reifiable full` clause alone writes it**, wrapping the Core continuation, `k0`
+below, before the clause's body binds `k`:
+
+```text
+| reifiable full op x k -> e
+  ⟹  full op (x, k0) -> let k = Base.Continuation.$Continuation k0 in e
+```
+
+Core gains no form: the constructor is checked as an ordinary newtype's, applied and matched as any
+constructor is, and a backend may erase its representation, the newtype flag reaching Mid IR.
+
+**A module with a `reifiable full` clause imports `Base.Continuation`.** The desugaring makes it a
+dependency, and a dependency is declared in the header (D22); a clause in a module that does not
+import it is an error reported at the clause. The import needs to bring nothing into scope, and
+`import lazy Base.Continuation as K` is enough; `continue` is used as any exported name is.
+
+**The restriction is the surface elaboration's trust boundary, and Core does not enforce it.** The
+Core type checker checks the reference as an ordinary application of a newtype constructor and
+asks nothing of who wrote it, so a hand-written Core module, or a defective elaborator, could build
+a `Continuation` from any function. What is guaranteed is that no source program, no macro, and no
+synthesizer reaches the constructor: name resolution does not resolve it, and the kernel omits it
+from the catalog a synthesizer reads and refuses a global reference to it.
+
+`continue` is not `resume`: `resume` is the keyword reaching the continuation of the clause it
+stands in, and `continue` an ordinary function of the value a reifiable clause holds.
+
+What becomes of a continuation that is never resumed is left to the design of a bracket effect,
+which is where a finalizer is needed.
+
+##### Three kinds of clause
+
+| Marker | Captures the continuation | May it outlive the clause |
+| --- | --- | --- |
+| `fast` | no | — |
+| `full` | yes, reached by `resume` | no |
+| `reifiable full` | yes, as a `Continuation` value | yes |
+
+**The line between the last two is drawn by syntax, and stays there.** The boundary rule above
+is the first stage of what `full` admits; analysing escapes may later accept more uses of
+`resume` inside a clause — binding it locally, passing it to a function that provably does not
+keep it — and accepting more only admits more programs. What is never inferred is that a
+continuation outlives its clause: a program that keeps one says so with `reifiable`, so that how
+long a continuation lives is read off the text, and no improvement of the analysis changes what a
+program means.
+
+An implicit handler has `fast` clauses alone, so it is never reifiable. How the distinction
+reaches Core or the `.dmo`, for a backend to rely on, is settled with the optimizer, as above.
