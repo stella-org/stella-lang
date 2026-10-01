@@ -91,9 +91,12 @@
             "foreign-object",
             "identity",
             "integers",
+            "lists",
             "maybe",
+            "numbers",
             "ordered-collections",
             "prelude",
+            "puppy-runtime",
             "strings",
             "tailrec",
             "tuples"
@@ -862,7 +865,13 @@
         "zipperarray": "2.0.0"
       }
     },
-    "extra_packages": {}
+    "extra_packages": {
+      "puppy-runtime": {
+        "git": "https://github.com/katsujukou/puppy.git",
+        "ref": "main",
+        "subdir": "puppy-runtime"
+      }
+    }
   },
   "packages": {
     "aff": {
@@ -1917,6 +1926,24 @@
         "newtype",
         "prelude",
         "tuples"
+      ]
+    },
+    "puppy-runtime": {
+      "type": "git",
+      "url": "https://github.com/katsujukou/puppy.git",
+      "rev": "4b234181a7d693db12710ae9360767d1fb2971fd",
+      "subdir": "puppy-runtime",
+      "dependencies": [
+        "arrays",
+        "either",
+        "lists",
+        "maybe",
+        "partial",
+        "prelude",
+        "tailrec",
+        "transformers",
+        "tuples",
+        "unsafe-coerce"
       ]
     },
     "quickcheck": {

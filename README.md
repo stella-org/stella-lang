@@ -51,13 +51,15 @@ This particular idea was inspired by F*.
 - ✅️ Bytecode compiler
 - ✅️ STEAM, the bytecode interpreter with multi-shot continuation over explicit stack
 - ✅️ Elaborator API
-- ☑️ The first two backend: JavaScript and WebAssembly ... *WIP*
-- ☑️ CST parser, Macro Expander, Surface AST and Hindley-Milner type inference
+- ✅️ Surface Language Concrete Syntax and parser
+- ☑️ Surface Language AST, Macro Expander and `Syntax` API ... *WIP*
+- ☑️ Hindley-Milner Type Inference
 - ☑️ MiddleEnd: IR design and optimization
+- ☑️ The first two backends: JavaScript and WebAssembly ... *WIP*
+- ☑️ Typeclasses over syntax macro system
 - ☑️ Suspension and concurrent primitives, `Async` effect
 - ☑️ First-class Parser API
 - ☑️ The standard library `Prelude`
-- ☑️ portable libraries around `Prelude`
-- ☑️ Typeclasses over syntax macro system
+- ☑️ portable libraries on top of `Prelude`
 - ☑️ Build system: the Lazuli package manager
 - ☑️ Ecosystem: LSP, IDE support, Formatter and Coding Agent Plugins

@@ -1,4 +1,8 @@
 workspace:
   packageSet:
     registry: 80.7.0
-  extraPackages: {}
+  extraPackages:
+    puppy-runtime:
+      git: https://github.com/katsujukou/puppy.git
+      ref: main
+      subdir: puppy-runtime

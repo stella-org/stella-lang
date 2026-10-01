@@ -4,6 +4,7 @@
   "type": "module",
   "workspaces": [
     "js-runtime",
-    "stellac"
+    "stellac",
+    "compiler"
   ]
 }
