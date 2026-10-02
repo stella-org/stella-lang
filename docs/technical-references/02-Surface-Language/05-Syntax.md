@@ -36,6 +36,9 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | any parameters in a `reifiable full` clause | a clause with no parameter after the operation's arguments, which is the continuation it keeps |
 | a `reifiable full` clause in any module | one in a module that does not import `Base.Continuation`, which its desugaring depends on |
 | an attribute, a directive, or a modifier with no declaration after it | the same |
+| `implicit` before any item | one before anything but a handler declaration or a macro call, which keeps it |
+| an import anywhere among the items | one after a declaration |
+| a signature, or a kind signature, anywhere | one not followed directly by the definition of its name, or the declaration of its keyword and name |
 
 ## Layout
 
@@ -159,6 +162,11 @@ item ::= import
 ```
 
 **An attribute, a directive, and a modifier are items of their own**, standing on a line before the declaration they belong to or on the same line ahead of it. The modifier `implicit` stands only before a handler declaration ([Effect Handlers](02-Effect-Handlers.md)).
+
+- **They join the declaration after them, which is their prefix.** A declaration given a signature has its prefix from before the signature and from before the definition alike, in the order written, so a prefix may stand between the two. Where the definition does not follow, the prefix before the signature goes with the signature, and to nothing after it.
+- **A signature is followed directly by the definition of its name**, and a kind signature by the declaration of its keyword and name: `data T :: Type -> Type` then `data T a = …`.
+- **The imports come before every declaration**, a signature counting as the start of one, so that the header, which the dependencies are read from, is the top of the module (D22).
+- **A macro called at a declaration's position keeps the prefix before it as a unit with it.** What an attribute there means is the macro's to settle, and nothing in the prefix passes on to the declarations an expansion produces or to the one after the call.
 
 **Where the parser carries on past an error, an item it cannot read is skipped up to the next item** and stands in the tree as a broken one, so that everything else in the module is still read. The generated parser has an entry point that does so beside the one that stops at the first error.
 

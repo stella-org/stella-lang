@@ -11,6 +11,25 @@ This document settles what a name written in source refers to. By the time a ter
 3. **The module's top-level scope** is the import scope together with every top-level declaration, those an expansion produced among them.
 4. **Every other name is resolved**, against the top-level scope and the bindings around it, whether it was written in source or produced by an expansion. In `f x = m%{ x }`, the `x` an expansion places in the body is resolved here, under the binding of `f`'s parameter, and could not have been at stage 2, where neither the top-level scope nor any local binding exists yet.
 
+### What it produces
+
+**The resolver reads the concrete syntax tree and builds the Surface AST.** The tree keeps every name as written, a qualifier being the alias written and not yet a module, and the Surface AST holds at each position the kind of name that position calls for.
+
+| Position | Name held |
+| --- | --- |
+| a global value: a value, a computation, a foreign, a handler, a constructor, an operation | `Qualified Ident` |
+| a type constructor | `Qualified TyName` |
+| an effect | `Qualified EffName` |
+| a local value, and a cell | the binding it refers to |
+| a type variable | the type binding it refers to |
+| a label and a tag | `Symbol` and `Tag`, unresolved |
+
+- **A global is qualified by the module that declares it.** An alias is replaced by the module it stands for, and a name a module re-exports is the entity it was in the module declaring it, so `M.a` after `import Long.Module as M` is `Long.Module.a` where `Long.Module` declares `a`, and `Other.a` where it re-exports the `a` of `Other`.
+- **A binding carries the name it was written with**, beside the identity that tells two bindings of one spelling apart, for diagnostics and for the names Core is given.
+- **What a name refers to is told by the node holding it.** A reference to a value and a reference to a computation are different nodes, and so are a constructor, an operation, and a discriminator; what else is known of an entity is read from the module's environment and the interfaces, so no resolved name carries it.
+- **Every node is annotated with where it came from**: its source range, for a node built from source. What a node an expansion produced carries is fixed with macro expansion.
+- **A name that does not resolve is an error node, and resolution carries on**, so that every error in the module is reported; a module holding one is not elaborated.
+
 **An expansion produces declarations and expressions, and never an import or a module header.** The header is what the dependencies are read from (D22), and the import scope has been fixed before any expansion runs.
 
 ## Namespaces
@@ -66,6 +85,7 @@ This document settles what a name written in source refers to. By the time a ter
 | `import lazy M as A` | nothing | nothing outside a local open of `A`; everything `M` exports inside one |
 
 - **Every form declares the dependency**, `import M ()` doing nothing else, and the header is what the dependencies are read from (D22).
+- **A reference reaches its entity through the export table of an import the header names**, and the module declaring the entity is then within the transitive closure of the header's imports. It need not be named there: where `C` imports `B` and `B` re-exports the `x` of `A`, a reference in `C` is `A.x`.
 - **An unqualified name and a qualified one are written as two imports**, which reach one entity and so do not conflict: `import M (a)` and `import M as M` make `a` and `M.a` the same reference.
 - **A lazy import is qualified and takes no list** ([Syntax](05-Syntax.md)).
 
