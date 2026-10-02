@@ -92,15 +92,15 @@ This document settles what a name written in source refers to. By the time a ter
 - **A reference reaches its entity through the export table of an import the header names**, and the module declaring the entity is then within the transitive closure of the header's imports. It need not be named there: where `C` imports `B` and `B` re-exports the `x` of `A`, a reference in `C` is `A.x`.
 - **An unqualified name and a qualified one are written as two imports**, which reach one entity and so do not conflict: `import M (a)` and `import M as M` make `a` and `M.a` the same reference.
 - **A lazy import is qualified and takes no list** ([Syntax](05-Syntax.md)).
-- **`hiding` stands on `import M` alone**, with no list, no alias, and no `lazy`, and names items as a list does: `T` hides the type, `T(..)` its members besides. A name `M` does not export is an error, as it is in a list. It is how a module declares or imports a name another import would bring, `Prelude`'s among them, without hiding one and being warned of it.
-- **`Prim` is a fixed dependency of every module, and an import of it selects names and nothing else.** Where the header writes no `import Prim …`, `Prim`'s exports are opened unqualified as a plain `import Prim` would open them; where it writes one, that import opens them instead, as it would a module's, so `import Prim as P` brings `Prim`'s names through `P` alone and leaves `String` free to declare, and `import Prim hiding (String)` brings the rest. **Writing one adds no dependency**: `Prim` stands in `Σ`, in `G`, and in the runtime's registry whatever a header says, and an `import Prim` is recorded neither among the imports of the module's interface or its Surface AST nor among those of its Core or its `.dmo`.
+- **`hiding` stands on `import M` alone**, with no list, no alias, and no `lazy`, and names items as a list does: `T` hides the type alone, so `import Prim hiding (Unit)` leaves the constructor `Unit` in scope, while `T(..)` hides its members besides and `T(A)` the type and `A`. A name `M` does not export is an error, as it is in a list. It is how a module declares or imports a name another import would bring, `Prelude`'s among them, without hiding one and being warned of it.
+- **`Prim` is a fixed dependency of every module, and an import of it selects names and nothing else.** Where the header writes no `import Prim …`, `Prim`'s exports are opened unqualified as a plain `import Prim` would open them; where it writes one, that import opens them instead, as it would a module's, so `import Prim as P` brings `Prim`'s names through `P` alone and leaves `String` free to declare, and `import Prim hiding (String)` brings the rest. Where no import of it is written, a top-level declaration of one of its names hides an imported name and is warned of, as any other is. **Writing one adds no dependency**: `Prim` stands in `Σ`, in `G`, and in the runtime's registry whatever a header says, and an `import Prim` is recorded neither among the imports of the module's interface or its Surface AST nor among those of its Core or its `.dmo`.
 - **An import list, an alias, `lazy`, and `hiding` change which names source may write, and nothing else.** The entities a module reaches and what its catalog holds are the same whichever form names an import ([Elaborator API](03-Elaborator-API.md)).
 
 **What a module exports is its own declarations, or what its export list names.**
 
 | Export list | Exported |
 | --- | --- |
-| none | every declaration of the module: values, types with their constructors, effects with their operations, operators, macros, and attributes; nothing imported |
+| none | every declaration of the module: values, types with their constructors, effects with their operations, operators, type operators, macros, and attributes; nothing imported |
 | an item naming an entity in scope | that entity, the module's own or imported, qualified or not |
 | `module A`, `A` an alias | every name `A.` qualifies, across every import sharing the alias |
 | `module N`, `N` imported without `as` | every name that import brings in unqualified |
@@ -109,7 +109,11 @@ This document settles what a name written in source refers to. By the time a ter
 - **A list is not empty.** `module M () where` is not in the grammar.
 - **A lazy alias is not re-exported.** It adds nothing to the module's scope, and `module A` for one is an error.
 - **One exported name refers to one entity.** Two items exporting different entities under one name are an error, and an item exporting one already exported is not.
+- **An item may be qualified**, a type, a macro, and an attribute as a value may: `A.x`, `A.T(..)`, `macro A.m`, `attribute A.json`. This is how one of two entities brought under one name is chosen; a name several entities stand for, written unqualified, is an error where it is exported, as where it is used.
+- **`T(..)` exports every member of `T` that is in scope**, written as the type is, whichever import brought it, and `T(A)` names one that must be: a member a module never imported stays unexported whatever its type does. **Each member is published the way it came**, which need not be the way its type did. One type exported twice, by two items or by two whole modules, is exported once with the members of both, in order.
 - **An elaboration-only entry is never listed** by any of these forms ([Modules](../06-Modules/01-Modules.md)).
+
+**A name may stand for several entities in scope**, two imports bringing one name for different ones. That is no error until the name is used or exported; two imports bringing one entity bring it once.
 
 **Imports and exports decide names, and not what a synthesizer may find.** Every module the header reaches contributes to the catalog however it is imported, and an entry may be published to the catalog without being exported to source ([Elaborator API](03-Elaborator-API.md)).
 

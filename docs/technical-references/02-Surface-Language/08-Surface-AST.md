@@ -23,7 +23,7 @@ The Surface AST is what name resolution builds from the concrete syntax tree and
 | a cell | `CellVar` |
 | a kind variable | `KindVar`, its name |
 | a label, and a tag | `Symbol` and `Tag`, as written |
-| an operator a fixity declaration introduces | `OperatorName` |
+| an operator, or a type operator, a fixity declaration introduces | `OperatorName` |
 
 - **A binding is a number and the name it was written with.** The number, a `BindingId`, is unique within the module and is what tells two bindings of one spelling apart; the name is kept for diagnostics and for the names Core is given.
 - **A kind variable is held by its name.** It is bound by the declaration it appears in, implicitly and at the front (D3), and no binder of one stands inside another, so its name is enough.
@@ -55,6 +55,8 @@ The Surface AST is what name resolution builds from the concrete syntax tree and
 | `E ~> ( t̄ )` | as a handler declaration's signature | `HandlerSignature`'s `Capability`: the source and the targets, each an effect application |
 
 **An arrow holds the row `/` puts on it.** `τ1 -> τ2 / ρ` is a `TypeFunction` with the row, and an arrow with none is pure.
+
+**A type operator is applied to its two operands**, rebracketed by fixity: `TypeOperator` holds the operator, as the entity it names — a type constructor, a type synonym, or an effect — with the origin of where it was written, and then the operands. One naming an effect stands as the effect application it is where an element of an effect row does; anywhere else it is a `TypeOperator` like any other, and kinding judges it. The arrow, the `/` of a computation type, and `~>` are no type operators, and keep the forms above.
 
 **A signature names the type variables it quantifies implicitly.** `Signature` holds them beside the type, outermost: those it mentions that nothing around it binds.
 
@@ -103,9 +105,10 @@ The Surface AST is what name resolution builds from the concrete syntax tree and
 | foreign | its `Observation` and its signature |
 | foreign type | its kind ([Foreign Types](../../proposals/06-Foreign-Types.md)) |
 | fixity | its associativity, its precedence, the value or constructor it names, and the operator |
+| type fixity | its associativity, its precedence, the type constructor, type synonym, or effect it names, and the operator |
 | attribute | its positional parameter types and its keyword parameters with their defaults |
 
-A fixity declaration names an operator rather than a declaration of its own, and neither it nor an attribute declaration carries attributes ([Attributes, Modifiers, and Directives](07-Attributes-Modifiers-and-Directives.md)).
+A fixity declaration, of an operator or of a type operator, names the operator rather than a declaration of its own, and neither it nor an attribute declaration carries attributes ([Attributes, Modifiers, and Directives](07-Attributes-Modifiers-and-Directives.md)).
 
 **What stands before a declaration is part of it.** A modifier and a directive are fields: `implicit` of a handler declaration, and `#observ(none)` of a foreign one, `Observation` being `MayObserve` where nothing is written and `ObservesNone` where it is. An attribute is its qualified name and its arguments **normalized**: as many positional arguments as the declaration has parameters, and every keyword argument in the order the declaration gives its parameters, a default standing for one left out. A default carries the origin of the attribute it was filled into.
 
@@ -125,10 +128,13 @@ A fixity declaration names an operator rather than a declaration of its own, and
 | --- | --- |
 | an import of a module that is not there | the import |
 | an attribute whose name does not resolve, or whose arguments do not match its declaration | the attribute |
+| `@[elaborationOnly]` on a declaration that is not exactly one the compiler lists | the attribute; the declaration is what it would be without it |
 | an effect element or instance, or a capability target, whose effect does not resolve | that item, or that target |
 | an operation clause whose operation does not resolve or is not the group's effect's, a second return clause, a `reifiable full` clause with no continuation parameter | the clause |
 | a group whose effect cannot be determined | the group |
 | a handler declaration whose effect cannot be determined, a fixity declaration whose target does not resolve, a computation declaration with parameters | the declaration |
+
+**An import whose module is there keeps its dependency**, whatever else is wrong with it: a lazy import with no alias, or with a list, is reported and opens no name, and its module stays among the dependencies the header declares.
 
 **A dropped declaration's name stays in scope.** The top-level scope is built before any declaration is resolved, so what refers to the name still resolves, and one error is not reported again at every use.
 
@@ -144,14 +150,16 @@ A fixity declaration names an operator rather than a declaration of its own, and
 
 | Concrete syntax tree | Surface AST |
 | --- | --- |
-| `ItemImport` | an import of the module |
+| `ItemImport` | an import of the module, unless it names `Prim`, which is no dependency; its list, alias, and `hiding` decide names and leave nothing in the tree |
 | `ItemAttribute`, `ItemDirective`, `ItemModifier` | the declaration's attributes, `Observation`, and `implicit`, joined to it where declarations are grouped |
 | `ItemMacro`, `ExprMacro` | the expansion, resolved |
 | `ItemBroken` | nothing; the parser reported it |
 | `DeclSignature` and `DeclValue` | a value, or a computation where the signature is a computation type |
 | `DeclKindSignature` and `DeclData`, `DeclNewtype`, `DeclType` | a data type, a newtype, or a type synonym, with its kind |
 | `DeclEffect`, `DeclHandler`, `DeclForeign`, `DeclForeignType`, `DeclFixity`, `DeclAttribute` | the declaration of that name |
+| `DeclTypeFixity` | a type fixity declaration |
 | `KindName`, `KindApp` | `KindType`, `KindEffect`, and `KindRow`; any other name or application is invalid |
+| `TypeOp` | `TypeOperator`, rebracketed by fixity; an effect application where it names an effect and stands as an element of an effect row |
 | `TypeArrow` | `TypeFunction`, with the row where its result is a `TypeEffect` |
 | `TypeOperationArrow`, `TypeCapability`, a `TypeEffect` at the top of a signature | `OperationSignature`, `HandlerSignature`, and `ComputationType` |
 | `TypeParens`, `TypeUnit` | the type it encloses, and `Prim.Unit` |

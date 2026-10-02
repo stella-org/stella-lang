@@ -144,7 +144,7 @@ operatorName ::= OPERATOR | QUAL_OPERATOR | "/"
 ```text
 module     ::= "module" moduleName exports? "where" block(item)?
 exports    ::= "(" sep(export, ",") ")"
-export     ::= qualIdent | OPVALUE | "type" OPVALUE | properName members? | "macro" ident | "attribute" ident
+export     ::= qualIdent | OPVALUE | "type" OPVALUE | qualProperName members? | "macro" qualIdent | "attribute" qualIdent
              | "module" moduleName
 members    ::= "(..)" | "(" ")" | "(" sep(memberName, ",") ")"
 memberName ::= properName | ident
