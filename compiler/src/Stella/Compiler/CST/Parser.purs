@@ -1603,36 +1603,75 @@ semanticActionTable =
       in
         Puppy.Runtime.box
           ((C.TypeDirective d t) :: C.Type)
-  , \_ ->
-      Puppy.Runtime.box
-        ((C.TypeRecord []) :: C.Type)
   , \puppyValues ->
       let
-        rs :: Array C.RowItem
-        rs = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
       in
         Puppy.Runtime.box
-          ((C.TypeRecord rs) :: C.Type)
-  , \_ ->
-      Puppy.Runtime.box
-        ((C.TypeEffectRow []) :: C.Type)
+          ((C.TypeRecord (B.between o c) []) :: C.Type)
   , \puppyValues ->
       let
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
         rs :: Array C.RowItem
         rs = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 2 puppyValues)
       in
         Puppy.Runtime.box
-          ((C.TypeEffectRow rs) :: C.Type)
-  , \_ ->
-      Puppy.Runtime.box
-        ((C.TypeVariant []) :: C.Type)
+          ((C.TypeRecord (B.between o c) rs) :: C.Type)
   , \puppyValues ->
       let
-        rs :: Array C.RowItem
-        rs = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
       in
         Puppy.Runtime.box
-          ((C.TypeVariant rs) :: C.Type)
+          ((C.TypeEffectRow (B.between o c) []) :: C.Type)
+  , \puppyValues ->
+      let
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
+        rs :: Array C.RowItem
+        rs = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 2 puppyValues)
+      in
+        Puppy.Runtime.box
+          ((C.TypeEffectRow (B.between o c) rs) :: C.Type)
+  , \puppyValues ->
+      let
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+      in
+        Puppy.Runtime.box
+          ((C.TypeVariant (B.between o c) []) :: C.Type)
+  , \puppyValues ->
+      let
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
+        rs :: Array C.RowItem
+        rs = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 2 puppyValues)
+      in
+        Puppy.Runtime.box
+          ((C.TypeVariant (B.between o c) rs) :: C.Type)
   , \puppyValues ->
       let
         n :: C.Name
@@ -1971,16 +2010,29 @@ semanticActionTable =
       in
         Puppy.Runtime.box
           ((C.ExprTuple ([ e ] <> es)) :: C.Expr)
-  , \_ ->
-      Puppy.Runtime.box
-        ((C.ExprRecord []) :: C.Expr)
   , \puppyValues ->
       let
-        fs :: Array C.RecordField
-        fs = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
       in
         Puppy.Runtime.box
-          ((C.ExprRecord fs) :: C.Expr)
+          ((C.ExprRecord (B.between o c) []) :: C.Expr)
+  , \puppyValues ->
+      let
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
+        fs :: Array C.RecordField
+        fs = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 2 puppyValues)
+      in
+        Puppy.Runtime.box
+          ((C.ExprRecord (B.between o c) fs) :: C.Expr)
   , \puppyValues ->
       let
         t :: C.SourceToken
@@ -2530,16 +2582,29 @@ semanticActionTable =
       in
         Puppy.Runtime.box
           ((C.BinderParens (C.BinderOr ([ b ] <> bs))) :: C.Binder)
-  , \_ ->
-      Puppy.Runtime.box
-        ((C.BinderRecord []) :: C.Binder)
   , \puppyValues ->
       let
-        fs :: Array C.RecordBinder
-        fs = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
       in
         Puppy.Runtime.box
-          ((C.BinderRecord fs) :: C.Binder)
+          ((C.BinderRecord (B.between o c) []) :: C.Binder)
+  , \puppyValues ->
+      let
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
+        fs :: Array C.RecordBinder
+        fs = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 2 puppyValues)
+      in
+        Puppy.Runtime.box
+          ((C.BinderRecord (B.between o c) fs) :: C.Binder)
   , \puppyValues ->
       let
         b :: C.Binder
@@ -4195,26 +4260,52 @@ semanticActionTable =
       in
         Puppy.Runtime.box
           ((C.TypeTuple ([ t ] <> ts)) :: C.Type)
-  , \_ ->
-      Puppy.Runtime.box
-        ((C.TypeRecord []) :: C.Type)
   , \puppyValues ->
       let
-        rs :: Array C.RowItem
-        rs = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
       in
         Puppy.Runtime.box
-          ((C.TypeRecord rs) :: C.Type)
-  , \_ ->
-      Puppy.Runtime.box
-        ((C.TypeVariant []) :: C.Type)
+          ((C.TypeRecord (B.between o c) []) :: C.Type)
   , \puppyValues ->
       let
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
         rs :: Array C.RowItem
         rs = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 2 puppyValues)
       in
         Puppy.Runtime.box
-          ((C.TypeVariant rs) :: C.Type)
+          ((C.TypeRecord (B.between o c) rs) :: C.Type)
+  , \puppyValues ->
+      let
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+      in
+        Puppy.Runtime.box
+          ((C.TypeVariant (B.between o c) []) :: C.Type)
+  , \puppyValues ->
+      let
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
+        rs :: Array C.RowItem
+        rs = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 2 puppyValues)
+      in
+        Puppy.Runtime.box
+          ((C.TypeVariant (B.between o c) rs) :: C.Type)
   , \puppyValues ->
       let
         o :: C.SourceToken

@@ -369,9 +369,11 @@ data Type
   | TypeKinded Type Kind
   | TypeParens Type
   | TypeTuple (Array Type)
-  | TypeRecord (Array RowItem)
-  | TypeEffectRow (Array RowItem)
-  | TypeVariant (Array RowItem)
+  -- | A row in its brackets, which the range covers: `{ … }`, `{| … |}`, and
+  -- | `[ … ]`.
+  | TypeRecord SourceRange (Array RowItem)
+  | TypeEffectRow SourceRange (Array RowItem)
+  | TypeVariant SourceRange (Array RowItem)
   -- | `{{ name :: τ by f }}`.
   | TypeSynthesized (Maybe Name) Type Name
   | TypeDirective Directive Type
@@ -404,7 +406,8 @@ data Expr
   | ExprUnit SourceRange
   | ExprParens Expr
   | ExprTuple (Array Expr)
-  | ExprRecord (Array RecordField)
+  -- | A record literal; the range covers its braces.
+  | ExprRecord SourceRange (Array RecordField)
   | ExprApp Expr Expr
   -- | Operators in the order written; fixity is applied later.
   | ExprOp Expr Operator Expr
@@ -465,7 +468,8 @@ data Binder
   | BinderParens Binder
   | BinderTuple (Array Binder)
   | BinderOr (Array Binder)
-  | BinderRecord (Array RecordBinder)
+  -- | A record pattern; the range covers its braces.
+  | BinderRecord SourceRange (Array RecordBinder)
   | BinderTyped Binder Type
   -- | Atoms side by side with no constructor at their head: the left of a
   -- | local function binding, `f x y`, and nothing a pattern may be.

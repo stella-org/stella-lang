@@ -195,9 +195,9 @@ subtypes = case _ of
   TypeKinded t _ -> [ t ]
   TypeParens t -> [ t ]
   TypeTuple ts -> ts
-  TypeRecord rs -> foldMap rowItem rs
-  TypeEffectRow rs -> foldMap rowItem rs
-  TypeVariant rs -> foldMap rowItem rs
+  TypeRecord _ rs -> foldMap rowItem rs
+  TypeEffectRow _ rs -> foldMap rowItem rs
+  TypeVariant _ rs -> foldMap rowItem rs
   TypeSynthesized _ t _ -> [ t ]
   TypeDirective _ t -> [ t ]
   TypeVar _ -> []
@@ -216,7 +216,7 @@ expr :: Expr -> Array CheckError
 expr = case _ of
   ExprParens e -> expr e
   ExprTuple es -> foldMap expr es
-  ExprRecord fs -> foldMap field fs
+  ExprRecord _ fs -> foldMap field fs
   ExprApp f a -> expr f <> expr a
   ExprOp a _ b -> expr a <> expr b
   ExprTyped e t -> expr e <> type_ t
@@ -259,7 +259,7 @@ binder = case _ of
   BinderParens b -> binder b
   BinderTuple bs -> foldMap binder bs
   BinderOr bs -> foldMap binder bs
-  BinderRecord fs -> foldMap recordBinder fs
+  BinderRecord _ fs -> foldMap recordBinder fs
   BinderTyped b t -> binder b <> type_ t
   BinderApp f as -> binder f <> foldMap binder as
   BinderInvalid e -> expr e

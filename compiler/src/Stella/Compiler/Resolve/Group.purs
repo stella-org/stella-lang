@@ -378,7 +378,7 @@ variablesOf = case _ of
   -- An or-pattern binds nothing; one that would is rejected where patterns are
   -- resolved.
   BinderOr _ -> []
-  BinderRecord fs -> Array.concatMap field fs
+  BinderRecord _ fs -> Array.concatMap field fs
   BinderTyped b _ -> variablesOf b
   BinderApp _ _ -> []
   BinderInvalid _ -> []

@@ -8,6 +8,7 @@ module Stella.Compiler.CST.Build
   ( name
   , moduleName
   , range
+  , between
   , intLiteral
   , numberLiteral
   , charLiteral
@@ -26,6 +27,11 @@ import Stella.Compiler.CST.Types (Argument, Binder(..), Directive, Expr(..), Let
 
 range :: SourceToken -> SourceRange
 range = _.range
+
+-- | The range from the start of one token to the end of another: a bracket
+-- | and the one closing it.
+between :: SourceToken -> SourceToken -> SourceRange
+between open close = { start: open.range.start, end: close.range.end }
 
 -- | The name a token carries. Only a token carrying one reaches here.
 name :: SourceToken -> Name
@@ -109,7 +115,7 @@ toBinder = case _ of
   ExprTuple es -> BinderTuple (map toBinder es)
   ExprTyped e t -> BinderTyped (toBinder e) t
   ExprAt n e -> BinderAs n (toBinder e)
-  ExprRecord fs -> BinderRecord (map field fs)
+  ExprRecord r fs -> BinderRecord r (map field fs)
   e@(ExprApp _ _) -> case spine e [] of
     { head: ExprConstructor n, args } -> BinderConstructor n (map toBinder args)
     { head: ExprTag n, args } -> BinderTag n (map toBinder args)

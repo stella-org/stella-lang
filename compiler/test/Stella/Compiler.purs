@@ -43,6 +43,7 @@ import Test.Stella.Compiler.CST.Layout as CSTLayout
 import Test.Stella.Compiler.CST.Parser as CSTParser
 import Test.Stella.Compiler.CST.Tour as CSTTour
 import Test.Stella.Compiler.CST.Check as CSTCheck
+import Test.Stella.Compiler.CST.Range as CSTRange
 import Test.Stella.Compiler.Resolve.Group as ResolveGroup
 import Test.Stella.Compiler.Elaborate.Reports as ElaborateReports
 import Test.Stella.Compiler.Elaborate.Conversations as ElaborateConversations
@@ -72,6 +73,7 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   CSTParser.spec
   CSTTour.spec
   CSTCheck.spec
+  CSTRange.spec
   ResolveGroup.spec
   TypedCore.spec
   Row.spec

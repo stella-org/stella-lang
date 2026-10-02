@@ -513,10 +513,10 @@ attributeParameterType:
   | o = LPAREN c = RPAREN                           { C.TypeUnit { start: o.range.start, end: c.range.end } }
   | LPAREN t = type RPAREN                          { C.TypeParens t }
   | LPAREN t = type COMMA ts = manySep(type, COMMA) RPAREN  { C.TypeTuple ([ t ] <> ts) }
-  | LBRACE RBRACE                                   { C.TypeRecord [] }
-  | LBRACE rs = rowItems RBRACE                     { C.TypeRecord rs }
-  | LSQUARE RSQUARE                                 { C.TypeVariant [] }
-  | LSQUARE rs = rowItems RSQUARE                   { C.TypeVariant rs }
+  | o = LBRACE c = RBRACE                                   { C.TypeRecord (B.between o c) [] }
+  | o = LBRACE rs = rowItems c = RBRACE                     { C.TypeRecord (B.between o c) rs }
+  | o = LSQUARE c = RSQUARE                                 { C.TypeVariant (B.between o c) [] }
+  | o = LSQUARE rs = rowItems c = RSQUARE                   { C.TypeVariant (B.between o c) rs }
 
 handlerDecl:
   | HANDLER n = ident ps = binderAtoms DCOLON t = type WHERE is = layout(handlerItem)
@@ -586,12 +586,12 @@ typeAtom:
   | LPAREN t = type COMMA ts = manySep(type, COMMA) RPAREN  { C.TypeTuple ([ t ] <> ts) }
   | LPAREN t = type DCOLON k = kind RPAREN          { C.TypeKinded t k }
   | LPAREN d = directive t = type RPAREN            { C.TypeDirective d t }
-  | LBRACE RBRACE                                   { C.TypeRecord [] }
-  | LBRACE rs = rowItems RBRACE                     { C.TypeRecord rs }
-  | LBAR RBAR                                       { C.TypeEffectRow [] }
-  | LBAR rs = rowItems RBAR                         { C.TypeEffectRow rs }
-  | LSQUARE RSQUARE                                 { C.TypeVariant [] }
-  | LSQUARE rs = rowItems RSQUARE                   { C.TypeVariant rs }
+  | o = LBRACE c = RBRACE                                   { C.TypeRecord (B.between o c) [] }
+  | o = LBRACE rs = rowItems c = RBRACE                     { C.TypeRecord (B.between o c) rs }
+  | o = LBAR c = RBAR                                       { C.TypeEffectRow (B.between o c) [] }
+  | o = LBAR rs = rowItems c = RBAR                         { C.TypeEffectRow (B.between o c) rs }
+  | o = LSQUARE c = RSQUARE                                 { C.TypeVariant (B.between o c) [] }
+  | o = LSQUARE rs = rowItems c = RSQUARE                   { C.TypeVariant (B.between o c) rs }
   | LSYNTH n = ident DCOLON t = type BY f = qualIdent RBRACE RBRACE
       { C.TypeSynthesized (Just n) t f }
   | LSYNTH UNDERSCORE DCOLON t = type BY f = qualIdent RBRACE RBRACE
@@ -692,8 +692,8 @@ exprAtom:
   | o = LPAREN c = RPAREN   { C.ExprUnit { start: o.range.start, end: c.range.end } }
   | LPAREN e = expr RPAREN  { C.ExprParens e }
   | LPAREN e = expr COMMA es = exprs1 RPAREN      { C.ExprTuple ([ e ] <> es) }
-  | LBRACE RBRACE                                 { C.ExprRecord [] }
-  | LBRACE fs = recordFields RBRACE               { C.ExprRecord fs }
+  | o = LBRACE c = RBRACE                                 { C.ExprRecord (B.between o c) [] }
+  | o = LBRACE fs = recordFields c = RBRACE               { C.ExprRecord (B.between o c) fs }
   | t = LOCALOPEN e = expr RPAREN                 { C.ExprLocalOpen (B.name t) e }
   | m = macroCall                                 { C.ExprMacro m }
   | n = ident AT e = exprAtom                     { C.ExprAt n e }
@@ -767,8 +767,8 @@ binderAtom:
       { C.BinderTuple ([ b ] <> bs) }
   | LPAREN b = binder PIPE bs = manySep(binder, PIPE) RPAREN
       { C.BinderParens (C.BinderOr ([ b ] <> bs)) }
-  | LBRACE RBRACE                                   { C.BinderRecord [] }
-  | LBRACE fs = recordBinders RBRACE                { C.BinderRecord fs }
+  | o = LBRACE c = RBRACE                                   { C.BinderRecord (B.between o c) [] }
+  | o = LBRACE fs = recordBinders c = RBRACE                { C.BinderRecord (B.between o c) fs }
 
 binderAtoms:
   | bs = manyOrEmpty(binderAtom) { bs }

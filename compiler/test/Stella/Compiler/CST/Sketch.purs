@@ -164,9 +164,9 @@ sketchType = case _ of
   TypeKinded t k -> list [ "::", sketchType t, sketchKind k ]
   TypeParens t -> list [ "parens", sketchType t ]
   TypeTuple ts -> list ([ "tuple" ] <> map sketchType ts)
-  TypeRecord rs -> list ([ "record" ] <> map rowItem rs)
-  TypeEffectRow rs -> list ([ "effects" ] <> map rowItem rs)
-  TypeVariant rs -> list ([ "variant" ] <> map rowItem rs)
+  TypeRecord _ rs -> list ([ "record" ] <> map rowItem rs)
+  TypeEffectRow _ rs -> list ([ "effects" ] <> map rowItem rs)
+  TypeVariant _ rs -> list ([ "variant" ] <> map rowItem rs)
   TypeSynthesized n t f -> list [ "synth", maybe "_" name n, sketchType t, "by", name f ]
   TypeDirective d t -> list [ directive d, sketchType t ]
   where
@@ -199,7 +199,7 @@ sketchExpr = case _ of
   ExprUnit _ -> "()"
   ExprParens e -> list [ "parens", sketchExpr e ]
   ExprTuple es -> list ([ "tuple" ] <> map sketchExpr es)
-  ExprRecord fs -> list ([ "record" ] <> map field fs)
+  ExprRecord _ fs -> list ([ "record" ] <> map field fs)
   ExprApp f a -> list [ sketchExpr f, sketchExpr a ]
   ExprOp a o b -> list [ operator o, sketchExpr a, sketchExpr b ]
   ExprTyped e t -> list [ "::", sketchExpr e, sketchType t ]
@@ -286,7 +286,7 @@ sketchBinder = case _ of
   BinderParens b -> list [ "parens", sketchBinder b ]
   BinderTuple bs -> list ([ "tuple" ] <> map sketchBinder bs)
   BinderOr bs -> list ([ "or" ] <> map sketchBinder bs)
-  BinderRecord fs -> list ([ "record" ] <> map field fs)
+  BinderRecord _ fs -> list ([ "record" ] <> map field fs)
   BinderTyped b t -> list [ "::", sketchBinder b, sketchType t ]
   BinderApp f as -> list ([ "app", sketchBinder f ] <> map sketchBinder as)
   BinderInvalid e -> list [ "invalid", sketchExpr e ]
