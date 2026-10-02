@@ -137,6 +137,7 @@ These serve as architecture tests as well as demonstrations.
 | [§2.5 Syntax](../02-Surface-Language/05-Syntax.md) | The offside rule, the grammar, the concrete syntax tree |
 | [§2.6 Name Resolution](../02-Surface-Language/06-Name-Resolution.md) | Namespaces, local open, shadowing |
 | [§2.7 Attributes, Modifiers, and Directives](../02-Surface-Language/07-Attributes-Modifiers-and-Directives.md) | What stands with a declaration, and who gives it meaning |
+| [§2.8 Surface AST](../02-Surface-Language/08-Surface-AST.md) | What name resolution builds and elaboration reads |
 | **§3. Typed Core** | |
 | [§3.1 Kinds and Types](../03-Typed-Core/01-Kinds-and-Types.md) | Names, kinds, types, kinding rules |
 | [§3.2 Rows](../03-Typed-Core/02-Rows.md) | Row theory, normal form, entailment, surface syntax |

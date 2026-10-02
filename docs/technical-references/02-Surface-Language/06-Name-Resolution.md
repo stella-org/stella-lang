@@ -13,12 +13,12 @@ This document settles what a name written in source refers to. By the time a ter
 
 ### What it produces
 
-**The resolver reads the concrete syntax tree and builds the Surface AST.** The tree keeps every name as written, a qualifier being the alias written and not yet a module, and the Surface AST holds at each position the kind of name that position calls for.
+**The resolver reads the concrete syntax tree and builds the Surface AST.** What the Surface AST holds is fixed in [Surface AST](08-Surface-AST.md). The tree keeps every name as written, a qualifier being the alias written and not yet a module, and the Surface AST holds at each position the kind of name that position calls for.
 
 | Position | Name held |
 | --- | --- |
 | a global value: a value, a computation, a foreign, a handler, a constructor, an operation | `Qualified Ident` |
-| a type constructor | `Qualified TyName` |
+| a type constructor or a type synonym | `Qualified TyName` |
 | an effect | `Qualified EffName` |
 | a local value, and a cell | the binding it refers to |
 | a type variable | the type binding it refers to |
@@ -26,7 +26,7 @@ This document settles what a name written in source refers to. By the time a ter
 
 - **A global is qualified by the module that declares it.** An alias is replaced by the module it stands for, and a name a module re-exports is the entity it was in the module declaring it, so `M.a` after `import Long.Module as M` is `Long.Module.a` where `Long.Module` declares `a`, and `Other.a` where it re-exports the `a` of `Other`.
 - **A binding carries the name it was written with**, beside the identity that tells two bindings of one spelling apart, for diagnostics and for the names Core is given.
-- **What a name refers to is told by the node holding it.** A reference to a value and a reference to a computation are different nodes, and so are a constructor, an operation, and a discriminator; what else is known of an entity is read from the module's environment and the interfaces, so no resolved name carries it.
+- **What a name refers to is told by the node holding it.** A reference to a value and a reference to a computation are different nodes, as are a constructor, an operation, and a discriminator, and as are a type constructor and a type synonym; what else is known of an entity is read from the module's environment and the interfaces, so no resolved name carries it.
 - **Every node is annotated with where it came from**: its source range, for a node built from source. What a node an expansion produced carries is fixed with macro expansion.
 - **A name that does not resolve is an error node, and resolution carries on**, so that every error in the module is reported; a module holding one is not elaborated.
 

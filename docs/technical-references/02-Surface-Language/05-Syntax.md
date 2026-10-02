@@ -17,6 +17,8 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 
 **The tree keeps what was written, in the shape it was written.** Operators stand in the order they appeared, before any fixity is applied. Parentheses are kept. An attribute, a directive, and a modifier are items of their own, to be attached to the declaration after them. What the grammar reads widely — the patterns of an alternative, the left of a `let` binding, the left of a binding in a guard block — is kept as read.
 
+**A leaf carries its source range, and so does a form made by its brackets.** A name, a literal, and a written symbol such as `_` or `->*` are leaves; a record, a row, a variant, and a record pattern carry the range from their opening bracket to their closing one, `{}` included. Every other node covers the smallest range holding its parts, so the range of any node is composed from what it holds (`Stella.Compiler.CST.Range`). A keyword and a grouping parenthesis are not part of it; `()` is no grouping, and carries the range of its two parentheses.
+
 **Checking what may stand where is not the parser's.** The grammar admits more than the language does wherever the difference is not a matter of shape, or where a check can say what is wrong better than a token the parser did not expect can. `Check` holds the checks that need nothing but the tree, and reports every place one fails; the rest belong to name resolution and elaboration.
 
 | Admitted by the grammar | Rejected later |
@@ -270,7 +272,7 @@ rowItem ::= label "::" type | TAG "::" type | type | "..." typeAtom?
 - **`()` is `Unit`**; a parenthesized list of two or more is a tuple.
 - **Braces hold a record's row, `{| |}` an effect row, and brackets a variant's**, each row written by one element grammar ([Rows](../03-Typed-Core/02-Rows.md)): a labelled element `name :: τ`, a tag `'Ok :: τ`, an element standing alone such as an effect `State Int`, and a spread `...r`, `...`.
 - **`E ~> ρ` is the shape of a capability translation** ([Effect Handlers](02-Effect-Handlers.md)).
-- **`{{ d :: C τ by f }}` is a synthesized argument**, the parameter a constraint desugars to.
+- **`{{ d :: C τ by f }}` is a synthesized argument**, the parameter a constraint desugars to. `d` names it for the reader and binds nothing; the definition binds the parameter as it binds any other.
 
 ## Expressions
 
