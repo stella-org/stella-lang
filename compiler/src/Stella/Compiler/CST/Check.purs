@@ -27,6 +27,9 @@ data CheckReason
   | OperationArrowMisplaced
   -- | An operation's signature with no `->*`
   | OperationArrowMissing
+  -- | `τ / ρ` with no arrow for `/` to belong to, other than at the top of a
+  -- | top-level signature.
+  | ComputationTypeMisplaced
 
 derive instance Eq CheckReason
 
@@ -35,6 +38,7 @@ instance Show CheckReason where
     OperationArrowOutsideOperation -> "OperationArrowOutsideOperation"
     OperationArrowMisplaced -> "OperationArrowMisplaced"
     OperationArrowMissing -> "OperationArrowMissing"
+    ComputationTypeMisplaced -> "ComputationTypeMisplaced"
 
 printCheckReason :: CheckReason -> String
 printCheckReason = case _ of
@@ -45,6 +49,9 @@ printCheckReason = case _ of
   OperationArrowMissing ->
     "An operation's signature needs exactly one `->*` on the spine of its arrows;\
     \ type synonym is not allowed"
+  ComputationTypeMisplaced ->
+    "A computation type `τ / ρ` can stand only at the top of a top-level signature;\
+    \ write `Unit -> τ / ρ` where a suspended computation is meant"
 
 checkModule :: Module -> Array CheckError
 checkModule (Module m) = foldMap item m.items
@@ -65,7 +72,7 @@ item = case _ of
 
 decl :: Decl -> Array CheckError
 decl = case _ of
-  DeclSignature _ t -> type_ t
+  DeclSignature _ t -> signature t
   DeclValue _ bs e w -> foldMap binder bs <> expr e <> foldMap (foldMap letBinding) w
   DeclData _ _ cs -> foldMap (foldMap type_ <<< _.fields) cs
   DeclNewtype _ _ _ t -> type_ t
@@ -82,7 +89,7 @@ decl = case _ of
 -- | right. Neither side may hold another. The rule is that of first-order
 -- | operations.
 operationSignature :: { name :: Name, type :: Type } -> Array CheckError
-operationSignature op = case spine op.type of
+operationSignature op = computationTypes op.type <> case spine op.type of
   { found: false, misplaced: [] } -> [ CheckError op.name.range OperationArrowMissing ]
   { misplaced } -> map (\r -> CheckError r OperationArrowMisplaced) misplaced
   where
@@ -97,28 +104,65 @@ operationSignature op = case spine op.type of
     TypeOperationArrow a _ b -> { found: true, misplaced: operationArrows a <> operationArrows b }
     t -> { found: false, misplaced: operationArrows t }
 
--- | A type that is not an operation's signature, which holds no `->*`.
+-- | A type that is neither an operation's signature nor a top-level
+-- | signature, which holds no `->*` and no computation type.
 type_ :: Type -> Array CheckError
-type_ t = map (\r -> CheckError r OperationArrowOutsideOperation) (operationArrows t)
+type_ t = outsideOperation t <> computationTypes t
+
+-- | A top-level signature, which may be a computation type at its top, under
+-- | its quantifiers and constraints. Parentheses around the whole of it change
+-- | nothing, there being no arrow for them to part it from.
+signature :: Type -> Array CheckError
+signature t = outsideOperation t <> top t
+  where
+  top = case _ of
+    TypeForall _ body -> top body
+    TypeConstrained c body -> computationTypes c <> top body
+    TypeParens body -> top body
+    TypeEffect a _ r -> computationTypes a <> computationTypes r
+    other -> computationTypes other
+
+outsideOperation :: Type -> Array CheckError
+outsideOperation t = map (\r -> CheckError r OperationArrowOutsideOperation) (operationArrows t)
 
 -- | Where `->*` stands in a type, at any depth.
 operationArrows :: Type -> Array SourceRange
 operationArrows = case _ of
   TypeOperationArrow a r b -> operationArrows a <> [ r ] <> operationArrows b
-  TypeApp f a -> operationArrows f <> operationArrows a
-  TypeArrow a b -> operationArrows a <> operationArrows b
-  TypeEffect t r -> operationArrows t <> operationArrows r
-  TypeCapability a b -> operationArrows a <> operationArrows b
-  TypeForall _ t -> operationArrows t
-  TypeConstrained c t -> operationArrows c <> operationArrows t
-  TypeKinded t _ -> operationArrows t
-  TypeParens t -> operationArrows t
-  TypeTuple ts -> foldMap operationArrows ts
+  t -> foldMap operationArrows (subtypes t)
+
+-- | Every `τ / ρ` in a type whose `/` belongs to no arrow. A `/` belongs to the
+-- | arrow it follows directly; parentheses between the two make the
+-- | parenthesized type a computation type of its own.
+computationTypes :: Type -> Array CheckError
+computationTypes = go false
+  where
+  go resultOfArrow = case _ of
+    TypeEffect a r e ->
+      (if resultOfArrow then [] else [ CheckError r ComputationTypeMisplaced ])
+        <> go false a
+        <> go false e
+    TypeArrow a b -> go false a <> go true b
+    t -> foldMap (go false) (subtypes t)
+
+-- | The types a type is built from, in the order written.
+subtypes :: Type -> Array Type
+subtypes = case _ of
+  TypeOperationArrow a _ b -> [ a, b ]
+  TypeApp f a -> [ f, a ]
+  TypeArrow a b -> [ a, b ]
+  TypeEffect t _ r -> [ t, r ]
+  TypeCapability a b -> [ a, b ]
+  TypeForall _ t -> [ t ]
+  TypeConstrained c t -> [ c, t ]
+  TypeKinded t _ -> [ t ]
+  TypeParens t -> [ t ]
+  TypeTuple ts -> ts
   TypeRecord rs -> foldMap rowItem rs
   TypeEffectRow rs -> foldMap rowItem rs
   TypeVariant rs -> foldMap rowItem rs
-  TypeSynthesized _ t _ -> operationArrows t
-  TypeDirective _ t -> operationArrows t
+  TypeSynthesized _ t _ -> [ t ]
+  TypeDirective _ t -> [ t ]
   TypeVar _ -> []
   TypeConstructor _ -> []
   TypeWildcard _ -> []
@@ -126,10 +170,10 @@ operationArrows = case _ of
   TypeUnit _ -> []
   where
   rowItem = case _ of
-    RowField _ t -> operationArrows t
-    RowTag _ t -> operationArrows t
-    RowElement t -> operationArrows t
-    RowSpread _ t -> foldMap operationArrows t
+    RowField _ t -> [ t ]
+    RowTag _ t -> [ t ]
+    RowElement t -> [ t ]
+    RowSpread _ t -> foldMap pure t
 
 expr :: Expr -> Array CheckError
 expr = case _ of

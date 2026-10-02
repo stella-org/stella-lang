@@ -346,8 +346,8 @@ data Type
   | TypeArrow Type Type
   -- | `τ ->* σ`, in the signature of an operation, with where the `->*` stands.
   | TypeOperationArrow Type SourceRange Type
-  -- | `τ / ρ`.
-  | TypeEffect Type Type
+  -- | `τ / ρ`, with where the `/` stands.
+  | TypeEffect Type SourceRange Type
   -- | `E ~> ρ`, the shape of a capability translation.
   | TypeCapability Type Type
   | TypeForall (Array TypeVarBinding) Type

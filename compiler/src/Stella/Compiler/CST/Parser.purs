@@ -1451,11 +1451,14 @@ semanticActionTable =
         a :: C.Type
         a = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
 
+        s :: C.SourceToken
+        s = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+
         r :: C.Type
         r = Puppy.Runtime.unbox (Puppy.Runtime.slot 2 puppyValues)
       in
         Puppy.Runtime.box
-          ((C.TypeEffect a r) :: C.Type)
+          ((C.TypeEffect a (B.range s) r) :: C.Type)
   , \puppyValues ->
       let
         a :: C.Type

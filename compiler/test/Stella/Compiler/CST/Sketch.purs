@@ -148,7 +148,7 @@ sketchType = case _ of
   TypeApp f a -> list [ sketchType f, sketchType a ]
   TypeArrow a b -> list [ "->", sketchType a, sketchType b ]
   TypeOperationArrow a _ b -> list [ "->*", sketchType a, sketchType b ]
-  TypeEffect t r -> list [ "/", sketchType t, sketchType r ]
+  TypeEffect t _ r -> list [ "/", sketchType t, sketchType r ]
   TypeCapability a b -> list [ "~>", sketchType a, sketchType b ]
   TypeForall vs t -> list ([ "forall" ] <> map typeVar vs <> [ sketchType t ])
   TypeConstrained c t -> list [ "=>", sketchType c, sketchType t ]

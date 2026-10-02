@@ -65,3 +65,42 @@ spec = describe "Stella.Compiler.CST.Check" do
         , { line: 4, column: 15, reason: OperationArrowOutsideOperation }
         , { line: 5, column: 16, reason: OperationArrowOutsideOperation }
         ]
+
+  describe "computation types" do
+    it "admits one at the top of a top-level signature, under quantifiers, constraints, and parentheses" do
+      [ "x :: Int / {| Random |}"
+      , "y :: forall a. a / {| Random |}"
+      , "z :: forall a. Show a => a / {| Random |}"
+      , "w :: (Int -> Int) / {| Random |}"
+      , "p :: (Int / {| Random |})"
+      , "q :: forall a. ((a / {| Random |}))"
+      ] `reports` []
+
+    it "admits `/` on the arrow it follows" do
+      [ "f :: Int -> String / {| Console |}"
+      , "handler h :: forall a. (Unit -> a / {| E |}) -> a where"
+      , "  fast | op _ -> 0"
+      ] `reports` []
+
+    it "reports one in an argument, and in a parenthesized result" do
+      [ "f :: (Int / {| E |}) -> Int"
+      , "g :: Int -> (Int / {| E |})"
+      ] `reports`
+        [ { line: 2, column: 11, reason: ComputationTypeMisplaced }
+        , { line: 3, column: 18, reason: ComputationTypeMisplaced }
+        ]
+
+    it "reports one wherever a type stands that is not a top-level signature" do
+      [ "x :: { a :: Int / {| E |} }"
+      , "y = (1 :: Int / {| E |})"
+      , "foreign f :: Int / {| E |}"
+      , "data T = T (Int / {| E |})"
+      , "effect E where"
+      , "  op :: Unit ->* Int / {| F |}"
+      ] `reports`
+        [ { line: 2, column: 17, reason: ComputationTypeMisplaced }
+        , { line: 3, column: 15, reason: ComputationTypeMisplaced }
+        , { line: 4, column: 18, reason: ComputationTypeMisplaced }
+        , { line: 5, column: 17, reason: ComputationTypeMisplaced }
+        , { line: 7, column: 22, reason: ComputationTypeMisplaced }
+        ]

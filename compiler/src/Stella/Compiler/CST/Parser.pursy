@@ -540,7 +540,7 @@ type1:
   -- `->*` is read wherever an arrow may stand; that an operation's signature
   -- holds exactly one, and nothing else holds any, is checked afterwards.
   | a = type2 o = OPARROW b = type1      { C.TypeOperationArrow a (B.range o) b }
-  | a = type2 SLASH r = typeAtom         { C.TypeEffect a r }
+  | a = type2 s = SLASH r = typeAtom     { C.TypeEffect a (B.range s) r }
   | a = type2 SQUIGARROW b = type2 %shift { C.TypeCapability a b }
 
 type2:
