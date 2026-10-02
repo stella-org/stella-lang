@@ -854,8 +854,8 @@ loadModule(dmo):
 **`Prim.Unit` stands among the declarations.** It is the one value the implicit
 environment holds, every module may name it, and no file declares it — so loading
 puts it in the tables a reference is resolved against, under the identity every
-module shares, and **`Prim` is the one module a reference may name without importing
-it** ([Prim and Base](../06-Modules/02-Prim-and-Base.md)).
+module shares, and **`Prim` is the one module a reference may name without its being among the
+module's imports** ([Prim and Base](../06-Modules/02-Prim-and-Base.md)).
 
 **The slots come before the references because a resolved reference is a slot.** A
 `GLOBALREFS` entry of this module's own name resolves to the slot this load has just

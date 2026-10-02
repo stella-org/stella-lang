@@ -11,9 +11,12 @@ drawing.
 | `Prelude` | the default portable environment: foundational types, classes, ordinary names, and syntax macros | the standard library specification |
 | portable libraries — `Data.*`, `Effect.*`, and the rest | portable API written in Stella over `Prelude` and, where necessary, `Base.*` | their library packages |
 
-`Prim` is visible without being imported; every other layer is imported like
-anything else. A module touching `Base.*` says so in its header (D22), so which
-code depends on the ABI surface is readable from headers alone.
+`Prim` is visible without being imported: a header may write `import Prim …` to
+choose how its names are written, which is no import in the sense of a dependency
+([Name Resolution](../02-Surface-Language/06-Name-Resolution.md)); every other
+layer is imported like anything else. A module touching `Base.*` says so in its
+header (D22), so which code depends on the ABI surface is readable from headers
+alone.
 
 **A portable library is one to which neither Core nor the ABI gives any
 privilege.** The classification is not about who publishes it: `Data.List` is
@@ -117,7 +120,7 @@ and being obligatory stay separate questions.
 
 | | Question | Answer |
 | --- | --- | --- |
-| `Prim` | where does a name live, and must it be imported | a reserved module, visible without being imported |
+| `Prim` | where does a name live, and must it be imported | a reserved module, visible without being imported, and never an import of a module in Core |
 | `intrinsic` | is this type constructor a `data` declaration | a classification `Σ` records |
 
 Neither implies the other.
@@ -248,7 +251,7 @@ A manifest intrinsic reaches `Σ` the same way, through the ABI manifest, and is
 
 ## How `Σ` acquires these names
 
-`Prim` is never imported, so the rules that build `Σ` must put it there before anything else.
+`Prim` is never an import of a module — a header's `import Prim` selects names and adds no dependency — so the rules that build `Σ` must put it there before anything else.
 
 ```text
 Σ_Prim = the intrinsic type constructors of Prim

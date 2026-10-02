@@ -111,7 +111,7 @@ A fixity declaration names an operator rather than a declaration of its own, and
 
 **An argument is a constant**: a literal, a global value, a constructor applied to constants, or a record of constants.
 
-**A module holds its name, its imports, and its declarations.** The imports are the dependencies its header declares (D22). What it exports is computed with its interface, rather than held here.
+**A module holds its name, its imports, and its declarations.** The imports are the dependencies its header declares (D22); `Prim` is never among them, an `import Prim` choosing how its names are written and nothing else. What it exports is computed with its interface, rather than held here.
 
 ## What an error leaves
 

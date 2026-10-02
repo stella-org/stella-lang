@@ -328,9 +328,9 @@ Which attributes there are is decided by the libraries declaring them, and what 
 
 | Field | Holds |
 | --- | --- |
-| imports | the modules its header imports, which are its dependencies (D22) |
-| exports | the names it publishes, one table per namespace — value, type, operator, macro, attribute — and the modules it re-exports whole |
-| declarations | every top-level declaration it makes, by what each declares: values, types, effects, operators, attributes |
+| imports | the modules its header imports, which are its dependencies (D22); `Prim`, a dependency of every module, is never among them |
+| exports | the names it publishes, one table per namespace — value, type, operator, type operator, macro, attribute — and the modules it re-exports whole |
+| declarations | every top-level declaration it makes, by what each declares: values, types, effects, operators, type operators, attributes |
 | implicit handlers | the implicit handlers it declares, each with the element it handles and the elements it performs in its place ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md)) |
 | catalog only | the values it publishes to the catalog without exporting them to source ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)) |
 | arities | the definitional arity of each value it declares and exports that has one |
@@ -345,6 +345,7 @@ Which attributes there are is decided by the libraries declaring them, and what 
 | a type | its kind scheme, its attributes, and what it is: a data type or newtype with its parameters and its constructors in the order of their tags, a synonym with its parameters and the type it stands for, a foreign type, or an intrinsic with its canonical class |
 | an effect | its parameters, its operations — each with its own type variables, its arguments, and the type it resumes with — and its attributes |
 | an operator | its associativity, its precedence, and the value or constructor it names |
+| a type operator | its associativity, its precedence, and the type it names |
 | an attribute | the types of its positional parameters, and its keyword parameters with their defaults |
 
 **A computation is a value whose scheme ends in a computation type**, and a macro a value carrying `Prim.macro`; neither is a sort of its own.
@@ -367,7 +368,7 @@ spine ::= τ                      a Core type, headed by no forall and no constr
 
 ### The environment
 
-**The environment begins with `Prim`.** `Prim` has no source; the compiler builds its interface, holding its intrinsic types, `Unit`, and the attributes the compiler acts on ([Prim and Base](02-Prim-and-Base.md)), and every module sees its names without importing it.
+**The environment begins with `Prim`.** `Prim` has no source; the compiler builds its interface, holding its intrinsic types, `Unit`, and the attributes the compiler acts on ([Prim and Base](02-Prim-and-Base.md)), and every module sees its names without importing it. A header may write `import Prim …` to choose how those names are written, which adds no dependency and no import to the module's interface ([Name Resolution](../02-Surface-Language/06-Name-Resolution.md)).
 
 **`Base` is compiled as any module is**, from source listing its ABI entries as `foreign` declarations. What the ABI manifest supplies is held in the environment beside the interfaces: for each module it names, the intrinsic type constructors that module's declarations are checked with. **What the manifest supplies is intrinsics and nothing else**, which is the trust boundary its reader keeps: a declaration, a scheme, or a constructor in it would be a trusted input no checker sees.
 
@@ -379,7 +380,7 @@ spine ::= τ                      a Core type, headed by no forall and no constr
 
 | | From |
 | --- | --- |
-| names | the export tables of the modules its header imports, and of `Prim` |
+| names | the export tables of the modules its header imports, and of `Prim`, opened as the header's `import Prim` says, or unqualified where it writes none |
 | entities | the declarations of every module its header reaches, directly or transitively, and of `Prim` |
 | the catalog | the same modules as entities ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)) |
 | implicit handlers, `Ξ` | the module itself, and the modules its header imports directly |
@@ -448,7 +449,7 @@ The join point context is empty. Join points do not cross a function boundary, a
   Σ_ty = Σ_Prim ∪ Σ_ABI(M) ∪ Σ_imp ∪ { all of the above }
 ```
 
-`Σ_Prim` is the signature of `Prim` ([Prim and Base](02-Prim-and-Base.md)), which no module imports and every module may name. `Σ_ABI(M)` is what the ABI manifest supplies to `M` itself, empty for every module it does not name, and the manifest names `Base.*` modules and the target namespaces it describes, and no others; a module holding a manifest intrinsic needs its own entries in scope before its declarations are collected.
+`Σ_Prim` is the signature of `Prim` ([Prim and Base](02-Prim-and-Base.md)), which no module imports — a header's `import Prim` selects names and adds no import — and every module may name. `Σ_ABI(M)` is what the ABI manifest supplies to `M` itself, empty for every module it does not name, and the manifest names `Base.*` modules and the target namespaces it describes, and no others; a module holding a manifest intrinsic needs its own entries in scope before its declarations are collected.
 
 Core names are fully qualified, so nothing here can collide the way an unqualified name would: a module declaring `Int` contributes `Main.Int`, which is a different entry from `Prim.Int` and shadows it in no way. What the union does require is that **`Prim` be a reserved module name**, so that no module can supply a second `Prim.Int` — a rival `Base.Int.add` is excluded by package resolution instead, since no property of a Core module distinguishes one ([Prim and Base](02-Prim-and-Base.md)); that a module declare no name twice within one namespace, as it must anyway; and that an entry arriving through two import paths be the same entry, which it is, since a name belongs to the module that declares it.
 

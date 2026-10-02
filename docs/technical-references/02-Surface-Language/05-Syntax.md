@@ -26,6 +26,8 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | any pattern in a binding position | a pattern that can fail ([Pattern Matching](../../proposals/03-Pattern-Matching-Syntax.md)) |
 | an or-pattern binding a variable | a binding or-pattern |
 | `import lazy M` without `as`, or with a list | a lazy import that is not qualified and implicit |
+| `hiding ( … )` after any import | `hiding` on an import with a list, an alias, or `lazy` (`Check`); a name hidden that the module does not export |
+| any operator as a type operator in a fixity declaration | `/`, which belongs to the grammar of types (`Check`); a target that does not resolve in the type namespace |
 | a member of either case after any type name | one the declaration does not have: a constructor of a data type, an operation of an effect |
 | `module N` in any export list | the module naming itself, `module M (module M) where` |
 | `->*` wherever an arrow may stand | `->*` outside an effect's operation signature; an operation signature without exactly one on its spine, or with one inside an argument or the resumption type (`Check`) |
@@ -123,7 +125,7 @@ The grammar below writes a terminal in capitals or quoted, `x?` for an optional 
 ## Names
 
 ```text
-ident     ::= LOWER | "as" | "lazy" | "return" | "by" | "implicit" | "macro"
+ident     ::= LOWER | "as" | "lazy" | "hiding" | "return" | "by" | "implicit" | "macro"
 qualIdent ::= ident | QUAL_LOWER
 properName     ::= UPPER
 qualProperName ::= UPPER | QUAL_UPPER
@@ -142,14 +144,14 @@ operatorName ::= OPERATOR | QUAL_OPERATOR | "/"
 ```text
 module     ::= "module" moduleName exports? "where" block(item)?
 exports    ::= "(" sep(export, ",") ")"
-export     ::= qualIdent | OPVALUE | properName members? | "macro" ident | "attribute" ident
+export     ::= qualIdent | OPVALUE | "type" OPVALUE | properName members? | "macro" ident | "attribute" ident
              | "module" moduleName
 members    ::= "(..)" | "(" ")" | "(" sep(memberName, ",") ")"
 memberName ::= properName | ident
 
-import     ::= "import" "lazy"? moduleName importList? ("as" moduleName)?
+import     ::= "import" "lazy"? moduleName importList? ("hiding" importList)? ("as" moduleName)?
 importList ::= "(" ")" | "(" sep(importItem, ",") ")"
-importItem ::= ident | OPVALUE | properName members? | "macro" ident | "attribute" ident
+importItem ::= ident | OPVALUE | "type" OPVALUE | properName members? | "macro" ident | "attribute" ident
 ```
 
 `(..)` is the token `..` as an operator value ([Lexical Structure](04-Lexical-Structure.md)), which after a type name means every member: every constructor of a data type, or every operation of an effect. A member named alone may be of either case, an operation being lower case, and which one it must be follows from the declaration ([Name Resolution](06-Name-Resolution.md)). `macro m` names a macro, which is spelled as a value is.
@@ -215,6 +217,7 @@ decl ::= ident "::" type
        | "foreign" ident "::" type
        | "foreign" "type" properName "::" kind
        | ("infix" | "infixl" | "infixr") INT (qualIdent | qualProperName) "as" operatorName
+       | ("infix" | "infixl" | "infixr") INT "type" qualProperName "as" operatorName
        | "attribute" ident attributeParameter*
 
 dataCtor ::= properName typeAtom*
@@ -249,11 +252,12 @@ kindAtom ::= qualProperName | ident | "(" kind ")"
 type  ::= type1
         | "forall" typeVarBinding+ "." type
         | type1 "=>" type
-type1 ::= type2
-        | type2 "->" type1
-        | type2 "->*" type1
-        | type2 "/" typeAtom
-        | type2 "~>" type2
+type1 ::= typeOp
+        | typeOp "->" type1
+        | typeOp "->*" type1
+        | typeOp "/" typeAtom
+        | typeOp "~>" typeOp
+typeOp ::= type2 | typeOp (OPERATOR | QUAL_OPERATOR) type2
 type2 ::= typeAtom | type2 typeAtom
 
 typeAtom ::= "_" | HOLE | typeVar | qualProperName
@@ -271,6 +275,7 @@ rowItem ::= label "::" type | TAG "::" type | type | "..." typeAtom?
 - **`/` follows the last arrow of a chain and belongs to it.** `Int -> String -> Unit / {| Console |}` is `Int -> (String -> Unit / {| Console |})`, the effect on the second arrow. With no arrow before it, `Int / {| Random |}`, it is a computation type ([Top-level Computation Declaration](../../proposals/05-Toplevel-Computation-Declaration.md)).
 - **`()` is `Unit`**; a parenthesized list of two or more is a tuple.
 - **Braces hold a record's row, `{| |}` an effect row, and brackets a variant's**, each row written by one element grammar ([Rows](../03-Typed-Core/02-Rows.md)): a labelled element `name :: τ`, a tag `'Ok :: τ`, an element standing alone such as an effect `State Int`, and a spread `...r`, `...`.
+- **A type operator binds tighter than an arrow and looser than application**, and every one is read at one precedence and associates to the left, in the order written; declared fixities rebracket the chain afterwards, as they do an expression's. `/` is the grammar's and no type operator, so `a + b / ρ` is the computation type of `a + b`.
 - **`E ~> ρ` is the shape of a capability translation** ([Effect Handlers](02-Effect-Handlers.md)).
 - **`{{ d :: C τ by f }}` is a synthesized argument**, the parameter a constraint desugars to. `d` names it for the reader and binds nothing; the definition binds the parameter as it binds any other. It stands on the spine of a signature, where nothing but quantifiers, constraints, and other synthesized arguments stands before it, and nowhere else ([Modules](../06-Modules/01-Modules.md)).
 

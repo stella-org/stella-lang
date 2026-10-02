@@ -62,7 +62,7 @@ These are reserved wherever a name may stand, except as a record field. Some oth
 
 | Word | Where it has a meaning |
 | --- | --- |
-| `as`, `lazy` | an import |
+| `as`, `lazy`, `hiding` | an import |
 | `macro` | an import or an export list |
 | `implicit` | before a handler declaration |
 | `return` | a handler clause |
@@ -74,25 +74,26 @@ These are reserved wherever a name may stand, except as a record field. Some oth
 
 ```text
 opChar   ::= "!" | "#" | "$" | "%" | "&" | "*" | "+" | "-" | "." | "/"
-           | ":" | "<" | "=" | ">" | "?" | "@" | "^" | "|" | "~"
+           | ":" | "<" | "=" | ">" | "?" | "@" | "\\" | "^" | "|" | "~"
 operator ::= opChar+
 ```
 
 **Some spellings are reserved.** They are tokens of the grammar and never a user's operator:
 
 ```text
-.  ...  =  |  @  %  #  !  :  ::  ->  ->*  =>  <-  :=  ~>
+\  .  ...  =  |  @  %  #  !  :  ::  ->  ->*  =>  <-  :=  ~>
 ```
 
 **A spelling is reserved only when the whole run of operator characters is that spelling.** `==`, `|>`, `@@`, `%%`, `!=`, `<#>`, `..`, and `.?` are ordinary operators, and `..` is free for a range, `.?` for an optional chain.
 
 - **`?` and `-` alone are ordinary operators.**
+- **`\` alone is the backslash of a lambda**, `\x -> e`, and among other operator characters it is one of them: `/\` and `\/` are operators. The longest match decides, so `f $\x -> x` is `f`, `$\`, `x`, `->`, `x`, and a lambda after an operator is written with space between.
 - **`%` and `#` alone are lexical errors.** `%` marks a macro call and `#` a directive, and neither is an operator on its own.
 - **`@` stands with no space on either side**: `get@cache`, `mb@(Just _)`. With space beside it, it is a lexical error.
 - **`!` alone follows a lower case name with no space between**: `n!` reads a cell. Anywhere else it is a lexical error. `n!=m` is `n`, `!=`, `m`, the longest match.
-- **`/` is an ordinary operator.** The `/` of a computation type, `τ / ρ`, belongs to the grammar of types, where no user operator stands.
+- **`/` is an ordinary operator in an expression.** In a type it belongs to the grammar, as the `/` of a computation type `τ / ρ`, and is no type operator; any other operator may be one ([Syntax](05-Syntax.md)).
 
-**An operator as a value is `(`, an operator, and `)`, with no space between**: `(++)`, and with a qualifier `DA.(++)`. It is one token. `( ++ )` is three tokens and not an operator as a value. A reserved spelling cannot be made a value: `(=)` is a lexical error. `(..)` is the operator `..` as a value, which the grammar also reads, after a type name in an import or export list, as every constructor of the type.
+**An operator as a value is `(`, an operator, and `)`, with no space between**: `(++)`, and with a qualifier `DA.(++)`. It is one token. `( ++ )` is three tokens and not an operator as a value. A reserved spelling cannot be made a value: `(=)` and `(\)` are lexical errors. `(..)` is the operator `..` as a value, which the grammar also reads, after a type name in an import or export list, as every constructor of the type.
 
 **A name used infix** is written between backticks with no space inside: `` `rem` ``, `` `M.mod` ``.
 

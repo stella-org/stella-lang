@@ -40,7 +40,8 @@ This document settles what a name written in source refers to. By the time a ter
 | --- | --- | --- | --- |
 | **value** | values, computations, foreigns, handlers, constructors, operations, synthesizers | value variables | expressions, patterns (constructors), the synthesizer after `by` |
 | **type** | data types, newtypes, type synonyms, foreign types, effects | type variables | types, rows |
-| **operator** | the operators fixity declarations introduce | none | between operands, and as a value `(++)` |
+| **operator** | the operators fixity declarations introduce for values and constructors | none | between operands in an expression, and as a value `(++)` |
+| **type operator** | the operators fixity declarations introduce for types, `infixr 0 type RowApply as +` | none | between operands in a type |
 | **macro** | the macros the imports bring; none the module declares | none | the name of a macro call, `m%` |
 | **attribute** | the attributes declared by the module and the imports | none | the head of an attribute, `@[a …]` |
 | **module** | none; the aliases `as` introduces and the namespace tokens `import lazy` introduces, which the header declares | none | the qualifier `X.` of a name, and local open |
@@ -55,7 +56,7 @@ This document settles what a name written in source refers to. By the time a ter
 - **A macro produced by an expansion is no different.** It is not in the macro namespace of the module it was produced in, so it affects no later expansion there.
 - **Two imported macros of one name are ambiguous where they are called**, and a qualified call, `M.m%( … )`, tells them apart.
 - **An attribute is not a value.** It is declared by a declaration of its own and named at the head of `@[ … ]` alone, so it has a namespace of its own, and a value and an attribute of one spelling stand together ([Attributes, Modifiers, and Directives](07-Attributes-Modifiers-and-Directives.md)).
-- **An operator is another name for a value.** A fixity declaration `infixr 5 add as +` makes `+` refer to the value `add`. Type operators are not admitted ([Syntax](05-Syntax.md)).
+- **An operator is another name for a value**, and a type operator another name for a type. A fixity declaration `infixr 5 add as +` makes `+` refer to the value `add`, and `infixr 0 type RowApply as +` makes the type operator `+` refer to the type `RowApply`. **The two are namespaces apart**, so one spelling may be both and neither hides the other: what a position calls for decides which is looked up, as for every name. A type operator names an entity of the type namespace — a type constructor, a type synonym, or an effect — and `a + b` is that entity applied to `a` and then to `b`. Whether the two applications are well kinded is decided where the type is kinded, as for any application, so a fixity declaration is refused only where its target does not resolve. The arrow `->` and the `/` of a computation type are the grammar's and no type operator ([Syntax](05-Syntax.md)).
 - **A cell is reached through its own syntax alone.** `x!` and `x := e` name a cell, a bare `x` never does, and a cell and a value variable of one spelling stand together without either hiding the other ([Effect Handlers](02-Effect-Handlers.md)).
 - **A kind variable is bound by the declaration it appears in**, implicitly and at the front (D3), and is in scope in the kind positions of that declaration alone. `Type`, `Effect`, and `Row` are a closed set of words with that meaning in a kind position, so a kind has no top-level entries to resolve ([Syntax](05-Syntax.md)).
 
@@ -81,6 +82,7 @@ This document settles what a name written in source refers to. By the time a ter
 | --- | --- | --- |
 | `import M` | everything `M` exports | — |
 | `import M (items)` | the items | — |
+| `import M hiding (items)` | everything `M` exports but the items | — |
 | `import M ()` | nothing | — |
 | `import M as A` | nothing | everything `M` exports, as `A.x` |
 | `import M (items) as A` | nothing | the items, as `A.x` |
@@ -90,6 +92,9 @@ This document settles what a name written in source refers to. By the time a ter
 - **A reference reaches its entity through the export table of an import the header names**, and the module declaring the entity is then within the transitive closure of the header's imports. It need not be named there: where `C` imports `B` and `B` re-exports the `x` of `A`, a reference in `C` is `A.x`.
 - **An unqualified name and a qualified one are written as two imports**, which reach one entity and so do not conflict: `import M (a)` and `import M as M` make `a` and `M.a` the same reference.
 - **A lazy import is qualified and takes no list** ([Syntax](05-Syntax.md)).
+- **`hiding` stands on `import M` alone**, with no list, no alias, and no `lazy`, and names items as a list does: `T` hides the type, `T(..)` its members besides. A name `M` does not export is an error, as it is in a list. It is how a module declares or imports a name another import would bring, `Prelude`'s among them, without hiding one and being warned of it.
+- **`Prim` is a fixed dependency of every module, and an import of it selects names and nothing else.** Where the header writes no `import Prim …`, `Prim`'s exports are opened unqualified as a plain `import Prim` would open them; where it writes one, that import opens them instead, as it would a module's, so `import Prim as P` brings `Prim`'s names through `P` alone and leaves `String` free to declare, and `import Prim hiding (String)` brings the rest. **Writing one adds no dependency**: `Prim` stands in `Σ`, in `G`, and in the runtime's registry whatever a header says, and an `import Prim` is recorded neither among the imports of the module's interface or its Surface AST nor among those of its Core or its `.dmo`.
+- **An import list, an alias, `lazy`, and `hiding` change which names source may write, and nothing else.** The entities a module reaches and what its catalog holds are the same whichever form names an import ([Elaborator API](03-Elaborator-API.md)).
 
 **What a module exports is its own declarations, or what its export list names.**
 
@@ -116,6 +121,7 @@ This document settles what a name written in source refers to. By the time a ter
 | --- | --- |
 | `n` | value |
 | `(++)` | operator |
+| `type (+)` | type operator |
 | `T`, `T(..)`, `T(A, B)`, `E(get, set)` | type: a data type with its constructors, or an effect with its operations |
 | `macro m` | macro |
 | `attribute a` | attribute |
@@ -126,7 +132,7 @@ import M (Maybe(..), State(..), fromMaybe, (<>), macro format)
 
 - **A type and an effect need no word of their own.** Both are in the type namespace, where one module declares no name twice, so what the members after the name select — constructors or operations — follows from the declaration, and a member that is neither is an error.
 - **`macro` has this meaning in a list alone**, as `as` and `lazy` have theirs in an import, and is an ordinary name elsewhere. `attribute` is a keyword, beginning an attribute declaration.
-- **`type` before an item is reserved for type operators**, which are not admitted yet.
+- **`type` before an operator names a type operator**, whose namespace is apart from that of the operators of values.
 
 ## Local open
 
@@ -143,7 +149,7 @@ g xs = A.( length xs )           -- length is A.length
 ```
 
 - **The two kinds of alias differ outside the construct alone.** `M.x` is usable anywhere in the module after `import … as M`, and nowhere after `import lazy … as M`, which is what keeps a lazy alias from adding anything to the module's scope ([Modules](../06-Modules/01-Modules.md)).
-- **What is opened is what a module can export**: the value, type, operator, and macro namespaces. An attribute is attached to a declaration and so never stands inside an expression, where an open is; `@[M.a]` and an import list reach one. A type in an annotation, an effect in a row, a constructor in a pattern, a discriminator, an operator, and a macro call inside `e` are resolved by the same rule; an operator opened this way takes its fixity from `M`. Local binders and cells are not a module's to open.
+- **What is opened is what a module can export**: the value, type, operator, type operator, and macro namespaces. An attribute is attached to a declaration and so never stands inside an expression, where an open is; `@[M.a]` and an import list reach one. A type in an annotation, an effect in a row, a constructor in a pattern, a discriminator, an operator, and a macro call inside `e` are resolved by the same rule; an operator opened this way takes its fixity from `M`. Local binders and cells are not a module's to open.
 - **What is opened is an alias.** A module imported without `as` has no qualifier, so its full name cannot be opened.
 - **The header still names every dependency.** The alias is declared by an import in either case, so local open adds nothing a build reads ([Modules](../06-Modules/01-Modules.md)).
 

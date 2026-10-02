@@ -200,7 +200,7 @@ The order mirrors the three stages of declaration checking ([Modules](../06-Modu
     rec { x̄ : σ̄ = v̄ }     G_{i+1} = G_i, M.x_1 : σκ_1 = v_1, …, M.x_n : σκ_n = v_n
 ```
 
-`G_Prim` mirrors `Σ_Prim` on the value side ([Prim and Base](../06-Modules/02-Prim-and-Base.md)). `Prim` is not imported, so without it a `Prim.Unit` occurring in the module would have nothing to unfold to, and condition (1) of `Σ ⊨ G` would fail. The implementations the runtime ABI is obliged to supply arrive with the imports, since the module that declares them is imported like any other.
+`G_Prim` mirrors `Σ_Prim` on the value side ([Prim and Base](../06-Modules/02-Prim-and-Base.md)). `Prim` is not among the imports — a header's `import Prim` selects names and adds none — so without it a `Prim.Unit` occurring in the module would have nothing to unfold to, and condition (1) of `Σ ⊨ G` would fail. The implementations the runtime ABI is obliged to supply arrive with the imports, since the module that declares them is imported like any other.
 
 A `rec` group installs **every entry at once, with the right-hand sides themselves**. Guardedness makes each `v_i` a value already, so nothing is evaluated, and a recursive reference inside `v_i` is `M.x_j [[κ̄]]`, an ordinary global name resolved by the lookup rule. No local recursive closure is involved, and each `v_i` keeps the kind binder `k̄_i` under which it was checked.
 
