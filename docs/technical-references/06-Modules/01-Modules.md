@@ -320,6 +320,74 @@ Attributes exist so that a resolver can search for declarations carrying one. Th
 
 Which attributes there are is decided by the libraries declaring them, and what one means by whatever reads it. The compiler records them and answers for them, and is a reader of the few `Prim` declares for it.
 
+## A module's interface and the build environment
+
+**A module is compiled on its own, against a build environment the whole build shares.** The environment holds the interface of every module compiled so far; once a module is compiled, its interface is added, and what a module downstream reads of it — for name resolution, for elaboration, and for an optimizer — reaches it that way and no other. The interface is `Stella.Compiler.Interface.Module`, the environment `Stella.Compiler.Interface.Environment`; how an interface is kept in a file is [Interface](../05-Backend/03-Interface.md).
+
+### What an interface holds
+
+| Field | Holds |
+| --- | --- |
+| imports | the modules its header imports, which are its dependencies (D22) |
+| exports | the names it publishes, one table per namespace — value, type, operator, macro, attribute — and the modules it re-exports whole |
+| declarations | every top-level declaration it makes, by what each declares: values, types, effects, operators, attributes |
+| implicit handlers | the implicit handlers it declares, each with the element it handles and the elements it performs in its place ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md)) |
+| catalog only | the values it publishes to the catalog without exporting them to source ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)) |
+| arities | the definitional arity of each value it declares and exports that has one |
+
+**Names and entities are held apart.** An export is a name as an importer writes it, the entity it is another name for — qualified by the module declaring it — and the way it reached the module: declared there, or imported from a module the header names and re-exported. A type's export also lists the members published with it, a data type's constructors or an effect's operations, each of which is in the value table as well. What an entity is — its scheme, its constructors, its attributes — is held by the interface of the module declaring it and by no other, so a module re-exporting a name holds the name and the way it came, and nothing of the entity. **Core keeps nothing of the way**; it is for a tool, which may offer a name from a module re-exporting it or from the module declaring it.
+
+**The declarations are every top-level declaration, not only those exported.** An exported scheme may mention a type the module keeps abstract or does not export, and Core refers to an entry published to the catalog alone. Which names source may write is the export tables' to say.
+
+| Declaration | Held as |
+| --- | --- |
+| a value | its sort — a value, a foreign with what it asserts of its observational effects, a handler, a constructor of a type, or an operation of an effect — its scheme, and its attributes |
+| a type | its kind scheme, its attributes, and what it is: a data type or newtype with its parameters and its constructors in the order of their tags, a synonym with its parameters and the type it stands for, a foreign type, or an intrinsic with its canonical class |
+| an effect | its parameters, its operations — each with its own type variables, its arguments, and the type it resumes with — and its attributes |
+| an operator | its associativity, its precedence, and the value or constructor it names |
+| an attribute | the types of its positional parameters, and its keyword parameters with their defaults |
+
+**A computation is a value whose scheme ends in a computation type**, and a macro a value carrying `Prim.macro`; neither is a sort of its own.
+
+### A scheme as an interface holds it
+
+**An interface holds a declaration's surface scheme, and its Core scheme is derived from it.** Two things a surface signature says are gone from Core: a synthesized argument, which is an ordinary parameter of the dictionary's type in Core (D11) and which an importer must know a goal fills, and a computation type `τ / ρ`, which is a thunk `Unit -{ρ}-> τ` in Core and which a reference forces ([Top-level Computation Declaration](../../proposals/05-Toplevel-Computation-Declaration.md)). Both stand on the **spine** of the scheme — the sequence of its quantifiers, constraints, and synthesized arguments, then what the scheme ends in — and below the spine everything is a Core type.
+
+```text
+spine ::= τ                      a Core type, headed by no forall and no constraint
+        | τ / ρ                  a computation type
+        | forall (a : κ). spine
+        | C => spine
+        | {{ d :: C τ̄ by f }} -> spine     a synthesized argument, behind a pure arrow
+```
+
+- **The Core scheme is derived, never stored beside it**: a computation type becomes `Unit -{ρ}-> τ`, and a synthesized argument a pure arrow from the dictionary's type. The two cannot disagree.
+- **A synthesized argument stands on the spine and nowhere else.** One inside the type of an argument, or after an ordinary parameter, is an error where the signature is resolved.
+- **A type synonym a type mentions is expanded** in what an interface holds — a scheme, a constructor's fields, an operation's signature, a synonym's own body — so those are read without another module's synonyms. A synonym's declaration stays among the declarations, with its parameters and its expanded body, for a module downstream to expand a reference to it.
+
+### The environment
+
+**The environment begins with `Prim`.** `Prim` has no source; the compiler builds its interface, holding its intrinsic types, `Unit`, and the attributes the compiler acts on ([Prim and Base](02-Prim-and-Base.md)), and every module sees its names without importing it.
+
+**`Base` is compiled as any module is**, from source listing its ABI entries as `foreign` declarations. What the ABI manifest supplies is held in the environment beside the interfaces: for each module it names, the intrinsic type constructors that module's declarations are checked with. **What the manifest supplies is intrinsics and nothing else**, which is the trust boundary its reader keeps: a declaration, a scheme, or a constructor in it would be a trusted input no checker sees.
+
+**An interface is added after every module it imports.** One added before an import of its own is refused, and so is a second interface of a module the environment holds, `Prim`'s among them. The environment is therefore ordered as the import graph is, a cycle cannot enter it, and everything a header reaches is there when its module is compiled.
+
+### What a module sees
+
+**A module compiled against the environment sees what its header reaches, and nothing else.**
+
+| | From |
+| --- | --- |
+| names | the export tables of the modules its header imports, and of `Prim` |
+| entities | the declarations of every module its header reaches, directly or transitively, and of `Prim` |
+| the catalog | the same modules as entities ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)) |
+| implicit handlers, `Ξ` | the module itself, and the modules its header imports directly |
+
+A name resolves through the first and the entity it stands for is read from the second, wherever it is declared: where `C` imports `B` and `B` re-exports the `x` of `A`, `C` writes `x`, resolves it to `A.x`, and reads `A.x` from `A`'s interface, `A` being reached through `B`. A module reached only through another publishes no name to this one. How names are written — an import list, an alias, `lazy` — selects among the names of the first row and changes none of the other three.
+
+**`Ξ` is taken from direct imports alone, where the catalog is taken from the closure.** An implicit handler is inserted where its plan is unique (D29), so a handler that entered `Ξ` by being reached transitively could make a plan ambiguous because a dependency added an import of its own, a change no header of this module records.
+
 ## Declaration typing and the entry point
 
 Term typing checks the interior of declarations; this section gives the rules for declarations themselves.

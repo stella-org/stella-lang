@@ -287,7 +287,7 @@ The last two are the ones a reader is most likely to want relaxed, and they are 
 Ξ ; Γ ⊢ e : α ! ρ1  ⇝  e' : α ! ρ2
 ```
 
-`Ξ` is the environment of implicit handlers the module's imports make visible. `Γ`, `Δ`, `Ω`, and `Ψ` are taken by the contexts of Core and of Core⁺, so the environment takes a letter of its own.
+`Ξ` is the environment of implicit handlers the module declares itself and the modules its header imports directly declare, and not those of a module reached only through another ([Modules](../06-Modules/01-Modules.md)). `Γ`, `Δ`, `Ω`, and `Ψ` are taken by the contexts of Core and of Core⁺, so the environment takes a letter of its own.
 
 **`Ξ` is checked where it is assembled**, which is where the module's imports are resolved rather than where any one declaration is. Acyclicity is a property of the environment and not of a declaration: two modules declaring `A ~> ( B )` and `B ~> ( A )` are each coherent on their own, and the cycle exists only for a module importing both. Checking it at assembly is early enough that no use site sees it, and late enough to see it at all.
 

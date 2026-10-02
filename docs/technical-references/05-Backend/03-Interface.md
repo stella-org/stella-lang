@@ -8,12 +8,15 @@ of each module it imports; a `.dmo` is read only to link or to execute.
 content being determined by what optimization across a module boundary turns out
 to require. What it carries **now** is the one thing a compiler already needs of
 an imported module and cannot obtain otherwise: the **definitional arity** of each
-value it exports.
+value it declares and exports.
 
-**Format 0 is therefore not yet the whole interface.** An importing module is type
-checked against the signature of each import, and format 0 holds no types: a
-compiler obtains `Σ` as it does today, from the modules it has in hand, and reads a
-`.dmi` beside it for the arities. What D34 describes is the file this one grows
+**Format 0 is therefore not yet the whole interface.** The whole of it is what a
+module contributes to the build environment once it is compiled — its exports, its
+declarations with their schemes, its implicit handlers, what it publishes to the
+catalog alone, and its arities ([Modules](../06-Modules/01-Modules.md)) — and a
+`.dmi` is where that is kept between builds. Format 0 keeps the arities alone and
+holds no types: a compiler obtains `Σ` as it does today, from the modules it has in
+hand, and reads a `.dmi` beside it for the arities. What D34 describes is the file this one grows
 into — it takes over the signature when Core types are serialized
 ([Open Questions](../99-Open-Questions/01-Open-Questions.md)), and separate
 compilation rests on the pair from then on. Until that, a `.dmi` is a sidecar and
@@ -84,10 +87,16 @@ it either way.
 | | |
 | --- | --- |
 | The module's own name | Once, so that the entries need not repeat it |
-| Per exported value with a definitional arity | Its own name, and that arity |
+| Per value the module declares and exports, with a definitional arity | Its own name, and that arity |
 
-**Only exported values.** A downstream module can name nothing else: Core names
-are fully qualified and an export list is what data abstraction is (D22). An
+**Only values the module declares and exports.** Source in a downstream module
+can name nothing else: Core names are fully qualified and an export list is what
+data abstraction is (D22). **A value the module re-exports has no entry**: it is another
+module's, and its arity stands in the interface of the module declaring it, so `B`
+re-exporting the `f` of `A` holds no `f`. **Nor has a value published to the catalog
+alone.** Core may refer to one, a synthesizer having inserted a reference to it,
+and no source can name it; its arity is left out, so a call to it is a `callu` —
+correct for every callee, and what an absent arity always costs. An
 elaboration-only entry, the constructor of `Base.Continuation`, is a constructor and
 has no entry here, as no constructor has: today it is in the full signature built
 from its module, which the Core type checker reads, and a linker finds it among the
@@ -111,9 +120,9 @@ definitional arity counts leading lambdas, so zero is what absence would be, and
 absence is not zero: a global installed as a function over a function of no
 parameters is a value whose arity is absent, not a value of arity zero.
 
-**Nothing else, yet.** The exported types belong here too — an importing module is
-type checked against the signature of each import — and they wait on a
-serialization of Core types, which is open
+**Nothing else, yet.** The rest of the interface belongs here too — an importing
+module is resolved against the exports of each import and type checked against
+the schemes of what it reaches — and it waits on a serialization of Core types, which is open
 ([Open Questions](../99-Open-Questions/01-Open-Questions.md)). So does everything
 optimization will want, the bodies eligible for inlining among them. Until then a
 `.dmi` is a header and one table.

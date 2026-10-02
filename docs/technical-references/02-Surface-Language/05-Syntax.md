@@ -272,7 +272,7 @@ rowItem ::= label "::" type | TAG "::" type | type | "..." typeAtom?
 - **`()` is `Unit`**; a parenthesized list of two or more is a tuple.
 - **Braces hold a record's row, `{| |}` an effect row, and brackets a variant's**, each row written by one element grammar ([Rows](../03-Typed-Core/02-Rows.md)): a labelled element `name :: τ`, a tag `'Ok :: τ`, an element standing alone such as an effect `State Int`, and a spread `...r`, `...`.
 - **`E ~> ρ` is the shape of a capability translation** ([Effect Handlers](02-Effect-Handlers.md)).
-- **`{{ d :: C τ by f }}` is a synthesized argument**, the parameter a constraint desugars to. `d` names it for the reader and binds nothing; the definition binds the parameter as it binds any other.
+- **`{{ d :: C τ by f }}` is a synthesized argument**, the parameter a constraint desugars to. `d` names it for the reader and binds nothing; the definition binds the parameter as it binds any other. It stands on the spine of a signature, where nothing but quantifiers, constraints, and other synthesized arguments stands before it, and nowhere else ([Modules](../06-Modules/01-Modules.md)).
 
 ## Expressions
 
