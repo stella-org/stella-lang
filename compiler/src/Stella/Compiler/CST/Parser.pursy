@@ -61,6 +61,7 @@ import Stella.Compiler.CST.Types as C
 %token EFFECT   "effect"   @ { { value: C.TokLowerName Nothing "effect" } }
 %token HANDLER  "handler"  @ { { value: C.TokLowerName Nothing "handler" } }
 %token FOREIGN  "foreign"  @ { { value: C.TokLowerName Nothing "foreign" } }
+%token ATTRIBUTE "attribute" @ { { value: C.TokLowerName Nothing "attribute" } }
 %token INFIX    "infix"    @ { { value: C.TokLowerName Nothing "infix" } }
 %token INFIXL   "infixl"   @ { { value: C.TokLowerName Nothing "infixl" } }
 %token INFIXR   "infixr"   @ { { value: C.TokLowerName Nothing "infixr" } }
@@ -122,12 +123,14 @@ import Stella.Compiler.CST.Types as C
 %type { C.ImportItem } importItem
 %type { Array C.Item } moduleItems moduleItem
 %type { C.Attribute } attribute
-%type { C.AttributeArg } attributeArg
+%type { C.Argument } argument
 %type { C.Directive } directive
 %type { C.Macro } macroCall
 %type { Array C.SourceToken } tokenTree tokenTrees tokenTreeItem
 %type { C.SourceToken } plainToken
 %type { C.Decl } decl handlerDecl
+%type { C.AttributeParameter } attributeParameter
+%type { C.Type } attributeParameterType
 %type { C.DataCtor } dataCtor
 %type { Array C.DataCtor } dataCtors
 %type { C.OperationSignature } operationSignature
@@ -247,6 +250,7 @@ label:
   | t = EFFECT   { B.name t }
   | t = HANDLER  { B.name t }
   | t = FOREIGN  { B.name t }
+  | t = ATTRIBUTE { B.name t }
   | t = INFIX    { B.name t }
   | t = INFIXL   { B.name t }
   | t = INFIXR   { B.name t }
@@ -289,6 +293,7 @@ export:
   | n = properName                 { C.ExportType n Nothing }
   | n = properName m = members     { C.ExportType n (Just m) }
   | MACRO_WORD n = ident           { C.ExportMacro n }
+  | ATTRIBUTE n = ident            { C.ExportAttribute n }
   | MODULE n = moduleName          { C.ExportModule n }
 
 members:
@@ -323,6 +328,7 @@ importItem:
   | n = properName                 { C.ImportType n Nothing }
   | n = properName m = members     { C.ImportType n (Just m) }
   | MACRO_WORD n = ident           { C.ImportMacro n }
+  | ATTRIBUTE n = ident            { C.ImportAttribute n }
 
 moduleItems:
   | iss = manySepOrEmpty(moduleItem, VSEP) { join iss }
@@ -346,17 +352,18 @@ moduleItem:
 --------------------------------------------------------------------------------
 
 attribute:
-  | o = LATTR n = manySep(label, DOT) as = manyOrEmpty(attributeArg) c = RSQUARE
+  | o = LATTR n = qualIdent as = manyOrEmpty(argument) c = RSQUARE
       { { range: { start: o.range.start, end: c.range.end }, name: n, args: as } }
 
-attributeArg:
-  | e = exprAtom                       { C.AttributePositional e }
-  | l = label EQUALS e = exprAtom      { C.AttributeKeyed l e }
+-- An argument of an attribute or a directive.
+argument:
+  | e = exprAtom                       { C.ArgumentPositional e }
+  | l = label EQUALS e = exprAtom      { C.ArgumentKeyed l e }
 
 directive:
   | t = DIRECTIVE                                              { B.directive t Nothing }
   | t = DIRECTIVE_ARGS LPAREN RPAREN                           { B.directive t (Just []) }
-  | t = DIRECTIVE_ARGS LPAREN es = manySep(exprAtom, COMMA) RPAREN { B.directive t (Just es) }
+  | t = DIRECTIVE_ARGS LPAREN es = manySep(argument, COMMA) RPAREN { B.directive t (Just es) }
 
 macroCall:
   | t = MACRO b = tokenTree { { name: B.name t, body: b } }
@@ -488,6 +495,28 @@ decl:
       { C.DeclFixity f (B.intLiteral p) n o }
   | f = fixity p = LIT_INT n = qualProperName AS o = operatorName
       { C.DeclFixity f (B.intLiteral p) n o }
+  | ATTRIBUTE n = ident ps = manyOrEmpty(attributeParameter)
+      { C.DeclAttribute n ps }
+
+-- A positional parameter is its type; a keyword parameter is written in
+-- parentheses, `(label :: type)`, with its default after `=` if it has one.
+attributeParameter:
+  | t = attributeParameterType                            { C.AttributePositional t }
+  | LPAREN l = label DCOLON t = type RPAREN               { C.AttributeKeyword l t Nothing }
+  | LPAREN l = label DCOLON t = type EQUALS e = expr RPAREN { C.AttributeKeyword l t (Just e) }
+
+-- The type of a positional parameter, which is closed: a type atom with
+-- no type variable at its top and no kind annotation, so that `(label :: τ)`
+-- reads as a keyword parameter.
+attributeParameterType:
+  | n = qualProperName                              { C.TypeConstructor n }
+  | o = LPAREN c = RPAREN                           { C.TypeUnit { start: o.range.start, end: c.range.end } }
+  | LPAREN t = type RPAREN                          { C.TypeParens t }
+  | LPAREN t = type COMMA ts = manySep(type, COMMA) RPAREN  { C.TypeTuple ([ t ] <> ts) }
+  | LBRACE RBRACE                                   { C.TypeRecord [] }
+  | LBRACE rs = rowItems RBRACE                     { C.TypeRecord rs }
+  | LSQUARE RSQUARE                                 { C.TypeVariant [] }
+  | LSQUARE rs = rowItems RSQUARE                   { C.TypeVariant rs }
 
 handlerDecl:
   | HANDLER n = ident ps = binderAtoms DCOLON t = type WHERE is = layout(handlerItem)
@@ -663,8 +692,6 @@ exprAtom:
   | o = LPAREN c = RPAREN   { C.ExprUnit { start: o.range.start, end: c.range.end } }
   | LPAREN e = expr RPAREN  { C.ExprParens e }
   | LPAREN e = expr COMMA es = exprs1 RPAREN      { C.ExprTuple ([ e ] <> es) }
-  | LSQUARE RSQUARE                               { C.ExprArray [] }
-  | LSQUARE es = exprs1 RSQUARE                   { C.ExprArray es }
   | LBRACE RBRACE                                 { C.ExprRecord [] }
   | LBRACE fs = recordFields RBRACE               { C.ExprRecord fs }
   | t = LOCALOPEN e = expr RPAREN                 { C.ExprLocalOpen (B.name t) e }

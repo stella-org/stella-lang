@@ -101,11 +101,12 @@ spec = describe "Stella.Compiler.CST.Parser" do
     it "refuses a spread other than one standing last" do
       exprRejected "{ ...a, x: 1 }"
       exprRejected "{ x: 1, ...a, ...b }"
-    it "reads tuples, unit, arrays and tags" do
+    it "reads tuples, unit and tags" do
       "(1, \"one\")" `exprIs` "(tuple 1 \"one\")"
       "()" `exprIs` "()"
-      "[1, 2]" `exprIs` "(array 1 2)"
       "'Ok 42" `exprIs` "('Ok 42)"
+    it "refuses brackets in an expression, an array being a library's macro" do
+      exprRejected "[1, 2]"
     it "reads discriminators, holes and operators as values" do
       "filter Just? xs" `exprIs` "((filter Just?) xs)"
       "?todo" `exprIs` "?todo"
@@ -208,12 +209,27 @@ spec = describe "Stella.Compiler.CST.Parser" do
     it "reads fixity declarations" do
       [ "infixr 5 add as +", "infixl 8 range as .." ] `itemsAre`
         [ "(infixr 5 add +)", "(infixl 8 range ..)" ]
-    it "reads a keyword as an attribute's name or label" do
-      [ "@[where]", "@[let]", "@[foo where=1 of=2]", "x = 1" ] `itemsAre`
-        [ "(@ where)", "(@ let)", "(@ foo where=1 of=2)", "(value x 1)" ]
+    it "reads a keyword as a label of an attribute's argument, and not as its name" do
+      [ "@[foo where=1 of=2]", "x = 1" ] `itemsAre`
+        [ "(@ foo where=1 of=2)", "(value x 1)" ]
+      rejects [ "@[where]", "x = 1" ]
+    it "reads attribute declarations, positional and keyword parameters, and defaults" do
+      [ "attribute instance"
+      , "attribute pair Int (Maybe String)"
+      , "attribute json (name :: String) (omitEmpty :: Boolean = false)"
+      ] `itemsAre`
+        [ "(attribute instance)"
+        , "(attribute pair Int (parens (Maybe String)))"
+        , "(attribute json (name :: String) (omitEmpty :: Boolean = false))"
+        ]
+    it "refuses `attribute` as a name, it being a keyword" do
+      rejects [ "attribute = 1" ]
+    it "reads an attribute named through an alias, and a directive's keyword arguments" do
+      [ "@[TC.priority 10]", "#inline(arity=2)", "f x y = x" ] `itemsAre`
+        [ "(@ TC.priority 10)", "(#inline (arity=2))", "(value f x y x)" ]
     it "reads attributes as items of their own" do
-      [ "@[entrypoint runner=myrunner]", "main :: Unit / {| Console |}", "@[typeclass.instance] showInt = 1" ] `itemsAre`
-        [ "(@ entrypoint runner=myrunner)", "(sig main (/ Unit (effects Console)))", "(@ typeclass.instance)", "(value showInt 1)" ]
+      [ "@[json name=\"main\"]", "main :: Unit / {| Console |}", "@[TC.instance] showInt = 1" ] `itemsAre`
+        [ "(@ json name=\"main\")", "(sig main (/ Unit (effects Console)))", "(@ TC.instance)", "(value showInt 1)" ]
     it "reads a modifier before a handler" do
       [ "implicit", "handler h :: E ~> () where", "  fast | op _ -> 0" ] `itemsAre`
         [ "(modifier implicit)", "(handler h (~> E ()) (group fast (| op _ 0)))" ]
@@ -234,6 +250,11 @@ spec = describe "Stella.Compiler.CST.Parser" do
           "(module M (macro format State(get set) Maybe(Just) macro) (import Fmt (macro format State(get) macro)) (import Fmt (macro macro) as F))"
     it "reads `macro` as an ordinary name outside a list" do
       itemsAre [ "macro = 1", "f macro = macro" ] [ "(value macro 1)", "(value f macro macro)" ]
+    it "reads attributes in lists" do
+      case parseModule "module M (attribute json) where\nimport TC (attribute instance) as TC" of
+        Left e -> fail (printSyntaxError e)
+        Right m -> sketchModule m `shouldEqual`
+          "(module M (attribute json) (import TC (attribute instance) as TC))"
     it "refuses `macro` before anything but a name" do
       rejects [ "import Fmt (macro (++))" ]
     it "refuses an empty export list" do

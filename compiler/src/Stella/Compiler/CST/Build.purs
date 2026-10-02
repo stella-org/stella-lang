@@ -22,7 +22,7 @@ import Prelude
 
 import Data.Array as Array
 import Data.Maybe (Maybe(..))
-import Stella.Compiler.CST.Types (Binder(..), Directive, Expr(..), LetBinding(..), Literal, Name, RecordBinder(..), RecordField(..), SourceRange, SourceToken, Token(..))
+import Stella.Compiler.CST.Types (Argument, Binder(..), Directive, Expr(..), LetBinding(..), Literal, Name, RecordBinder(..), RecordField(..), SourceRange, SourceToken, Token(..))
 
 range :: SourceToken -> SourceRange
 range = _.range
@@ -69,7 +69,7 @@ stringLiteral tok = case tok.value of
   TokString _ raw value -> { range: tok.range, raw, value }
   _ -> { range: tok.range, raw: "", value: "" }
 
-directive :: SourceToken -> Maybe (Array Expr) -> Directive
+directive :: SourceToken -> Maybe (Array Argument) -> Directive
 directive tok args = { name: name tok, args }
 
 -- | Atoms side by side. A constructor or a tag at the head takes the rest as

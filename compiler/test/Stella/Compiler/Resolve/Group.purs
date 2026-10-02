@@ -56,7 +56,7 @@ sketch = case _ of
 
 prefix :: Prefix -> Array String
 prefix = map case _ of
-  PrefixAttribute a -> "@" <> joinWith "." (map _.name a.name)
+  PrefixAttribute a -> "@" <> written a.name
   PrefixDirective d -> "#" <> d.name.name
   PrefixModifier n -> n.name
 
@@ -73,6 +73,12 @@ nameOf = case _ of
   DeclForeign n _ -> n.name
   DeclForeignType n _ -> n.name
   DeclFixity _ _ _ (n :: Name) -> n.name
+  DeclAttribute n _ -> n.name
+
+written :: Name -> String
+written n = case n.qualifier of
+  Nothing -> n.name
+  Just q -> q <> "." <> n.name
 
 spec :: Spec Unit
 spec = describe "Stella.Compiler.Resolve.Group" do
@@ -117,11 +123,11 @@ spec = describe "Stella.Compiler.Resolve.Group" do
     it "keep the order they were written in, whatever kind each is" do
       grouped
         [ "@[a]"
-        , "#d"
+        , "#observ(none)"
         , "@[b]"
-        , "x = 1"
+        , "foreign f :: Int -> Int"
         ]
-        [ "@a #d @b value x" ]
+        [ "@a #observ @b other f" ]
         []
 
     it "before a signature go with it, and to nothing else where its definition does not follow" do
@@ -195,6 +201,20 @@ spec = describe "Stella.Compiler.Resolve.Group" do
         ]
         [ "data Proxy kinded", "data T" ]
         [ { line: 4, column: 6, reason: KindSignatureWithoutDeclaration } ]
+
+  describe "directives" do
+    it "report `#observ(none)` before anything but a foreign, and given twice" do
+      grouped
+        [ "#observ(none)"
+        , "x = 1"
+        , "#observ(none)"
+        , "#observ(none)"
+        , "foreign f :: Int -> Int"
+        ]
+        [ "#observ value x", "#observ #observ other f" ]
+        [ { line: 2, column: 1, reason: DirectiveNotBeforeForeign }
+        , { line: 5, column: 1, reason: DirectiveTwice }
+        ]
 
   describe "imports" do
     it "are reported after a declaration" do

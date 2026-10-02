@@ -104,3 +104,32 @@ spec = describe "Stella.Compiler.CST.Check" do
         , { line: 5, column: 17, reason: ComputationTypeMisplaced }
         , { line: 7, column: 22, reason: ComputationTypeMisplaced }
         ]
+
+  describe "directives" do
+    it "admit `#observ(none)`, whatever it stands with" do
+      [ "#observ(none) foreign f :: Int -> Int" ] `reports` []
+
+    it "report one this version does not have, before a declaration and in a type" do
+      [ "#inline(arity=2)"
+      , "f x y = x"
+      , "data P = P (#unbox Int)"
+      ] `reports`
+        [ { line: 2, column: 1, reason: DirectiveUnsupported }
+        , { line: 4, column: 13, reason: DirectiveUnsupported }
+        ]
+
+    it "report `#observ(none)` in a type" do
+      [ "data P = P (#observ(none) Int)"
+      , "x :: (#observ(none) Int)"
+      ] `reports`
+        [ { line: 2, column: 13, reason: DirectiveInType }
+        , { line: 3, column: 7, reason: DirectiveInType }
+        ]
+
+    it "report `#observ` with an argument other than `none`" do
+      [ "#observ(all) foreign f :: Int -> Int"
+      , "#observ foreign g :: Int -> Int"
+      ] `reports`
+        [ { line: 2, column: 1, reason: DirectiveArgumentsInvalid }
+        , { line: 3, column: 1, reason: DirectiveArgumentsInvalid }
+        ]

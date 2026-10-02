@@ -10,7 +10,8 @@ import Prelude
 import Prim hiding (Type)
 
 import Data.Foldable (foldMap)
-import Stella.Compiler.CST.Types (AttributeArg(..), Binder(..), CaseBody(..), Clause(..), Decl(..), Expr(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Item(..), LetBinding(..), Module(..), Name, RecordBinder(..), RecordField(..), RowItem(..), SourceRange, Type(..))
+import Data.Maybe (Maybe(..))
+import Stella.Compiler.CST.Types (Argument(..), AttributeParameter(..), Directive, Binder(..), CaseBody(..), Clause(..), Decl(..), Expr(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Item(..), LetBinding(..), Module(..), Name, RecordBinder(..), RecordField(..), RowItem(..), SourceRange, Type(..))
 
 data CheckError = CheckError SourceRange CheckReason
 
@@ -30,6 +31,12 @@ data CheckReason
   -- | `τ / ρ` with no arrow for `/` to belong to, other than at the top of a
   -- | top-level signature.
   | ComputationTypeMisplaced
+  -- | A directive this version does not have.
+  | DirectiveUnsupported
+  -- | `#observ` with an argument other than `none`.
+  | DirectiveArgumentsInvalid
+  -- | A directive of this version in a type, where none stands.
+  | DirectiveInType
 
 derive instance Eq CheckReason
 
@@ -39,6 +46,9 @@ instance Show CheckReason where
     OperationArrowMisplaced -> "OperationArrowMisplaced"
     OperationArrowMissing -> "OperationArrowMissing"
     ComputationTypeMisplaced -> "ComputationTypeMisplaced"
+    DirectiveUnsupported -> "DirectiveUnsupported"
+    DirectiveArgumentsInvalid -> "DirectiveArgumentsInvalid"
+    DirectiveInType -> "DirectiveInType"
 
 printCheckReason :: CheckReason -> String
 printCheckReason = case _ of
@@ -52,6 +62,9 @@ printCheckReason = case _ of
   ComputationTypeMisplaced ->
     "A computation type `τ / ρ` can stand only at the top of a top-level signature;\
     \ write `Unit -> τ / ρ` where a suspended computation is meant"
+  DirectiveUnsupported -> "This directive is not supported; the one there is is `#observ(none)`"
+  DirectiveArgumentsInvalid -> "`#observ` takes the one argument `none`"
+  DirectiveInType -> "This directive cannot stand in a type"
 
 checkModule :: Module -> Array CheckError
 checkModule (Module m) = foldMap item m.items
@@ -59,16 +72,16 @@ checkModule (Module m) = foldMap item m.items
 item :: Item -> Array CheckError
 item = case _ of
   ItemImport _ -> []
-  ItemAttribute a -> foldMap attributeArg a.args
-  ItemDirective d -> foldMap (foldMap expr) d.args
+  ItemAttribute a -> foldMap argument a.args
+  ItemDirective d -> directive d <> foldMap (foldMap argument) d.args
   ItemModifier _ -> []
   ItemDecl d -> decl d
   ItemMacro _ -> []
   ItemBroken _ -> []
   where
-  attributeArg = case _ of
-    AttributePositional e -> expr e
-    AttributeKeyed _ e -> expr e
+  argument = case _ of
+    ArgumentPositional e -> expr e
+    ArgumentKeyed _ e -> expr e
 
 decl :: Decl -> Array CheckError
 decl = case _ of
@@ -83,13 +96,18 @@ decl = case _ of
   DeclForeign _ t -> type_ t
   DeclForeignType _ _ -> []
   DeclFixity _ _ _ _ -> []
+  DeclAttribute _ ps -> foldMap parameter ps
+  where
+  parameter = case _ of
+    AttributePositional t -> type_ t
+    AttributeKeyword _ t d -> type_ t <> foldMap expr d
 
 -- | An operation's signature: under its quantifiers, a spine of arrows with
 -- | exactly one `->*`, arguments to its left, and the resumption type to its
 -- | right. Neither side may hold another. The rule is that of first-order
 -- | operations.
 operationSignature :: { name :: Name, type :: Type } -> Array CheckError
-operationSignature op = computationTypes op.type <> case spine op.type of
+operationSignature op = computationTypes op.type <> typeDirectives op.type <> case spine op.type of
   { found: false, misplaced: [] } -> [ CheckError op.name.range OperationArrowMissing ]
   { misplaced } -> map (\r -> CheckError r OperationArrowMisplaced) misplaced
   where
@@ -107,13 +125,13 @@ operationSignature op = computationTypes op.type <> case spine op.type of
 -- | A type that is neither an operation's signature nor a top-level
 -- | signature, which holds no `->*` and no computation type.
 type_ :: Type -> Array CheckError
-type_ t = outsideOperation t <> computationTypes t
+type_ t = outsideOperation t <> computationTypes t <> typeDirectives t
 
 -- | A top-level signature, which may be a computation type at its top, under
 -- | its quantifiers and constraints. Parentheses around the whole of it change
 -- | nothing, there being no arrow for them to part it from.
 signature :: Type -> Array CheckError
-signature t = outsideOperation t <> top t
+signature t = outsideOperation t <> typeDirectives t <> top t
   where
   top = case _ of
     TypeForall _ body -> top body
@@ -121,6 +139,25 @@ signature t = outsideOperation t <> top t
     TypeParens body -> top body
     TypeEffect a _ r -> computationTypes a <> computationTypes r
     other -> computationTypes other
+
+-- | The directives a type holds, at any depth. None of this version stands in a
+-- | type, so one that is well formed is misplaced there.
+typeDirectives :: Type -> Array CheckError
+typeDirectives = case _ of
+  TypeDirective d t -> inType d <> typeDirectives t
+  t -> foldMap typeDirectives (subtypes t)
+  where
+  inType d = case directive d of
+    [] -> [ CheckError d.name.range DirectiveInType ]
+    errors -> errors
+
+-- | A directive of this version: `#observ(none)` is the one there is. Where it
+-- | may stand is decided where declarations are grouped.
+directive :: Directive -> Array CheckError
+directive d = case d.name.name, d.args of
+  "observ", Just [ ArgumentPositional (ExprVar n) ] | n.qualifier == Nothing && n.name == "none" -> []
+  "observ", _ -> [ CheckError d.name.range DirectiveArgumentsInvalid ]
+  _, _ -> [ CheckError d.name.range DirectiveUnsupported ]
 
 outsideOperation :: Type -> Array CheckError
 outsideOperation t = map (\r -> CheckError r OperationArrowOutsideOperation) (operationArrows t)
@@ -179,7 +216,6 @@ expr :: Expr -> Array CheckError
 expr = case _ of
   ExprParens e -> expr e
   ExprTuple es -> foldMap expr es
-  ExprArray es -> foldMap expr es
   ExprRecord fs -> foldMap field fs
   ExprApp f a -> expr f <> expr a
   ExprOp a _ b -> expr a <> expr b

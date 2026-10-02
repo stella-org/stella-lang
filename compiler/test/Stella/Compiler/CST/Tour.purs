@@ -13,9 +13,10 @@ import Test.Spec.Assertions (fail, shouldEqual)
 
 tour :: String
 tour =
-  """module Tour (Maybe(..), Id, answer, (++), module Data.Array) where
+  """module Tour (Maybe(..), Id, answer, (++), attribute json, module Data.Array) where
 
 import Prelude
+import TC (attribute instance, attribute priority) as TC
 import Data.Array (length, elem)
 import Data.Array (length, elem) as A
 import lazy Data.Array as DA
@@ -72,15 +73,23 @@ data Pixel = Pixel (#unbox Int) (#unbox Int)
 infixr 5 append as ++
 infixl 8 range as ..
 
+attribute priority Int
+attribute json (name :: String) (omitEmpty :: Boolean = false)
+
+@[TC.priority 10]
+@[json name="sum" omitEmpty=true]
+#inline(arity=2)
+sum2 x y = x + y
+
 @[test]
 additionIsCommutative :: Boolean
 additionIsCommutative = true
 
-@[entrypoint runner=myrunner]
+@[entrypoint]
 main :: Unit / {| Console |}
 main = Console.log "Hello, World!"
 
-@[typeclass.instance]
+@[TC.instance]
 showInt :: Show Int
 showInt = { show: Base.Int.toString }
 
@@ -109,10 +118,10 @@ randomInt =
   let n = random () in
   ceil n
 
-literals = [ 42, -1, 1_000_000, 3.14, -0.5, 6.02e23, 1e-3, 0xFF, 0b1010 ]
+literals = ( 42, -1, 1_000_000, 3.14, -0.5, 6.02e23, 1e-3, 0xFF, 0b1010 )
 arithmetic = (x - 1, x-1, f -1, negate x, a + b * c, n `rem` 3, (+))
-texts = [ "hello", "\u{1F600}" ]
-chars = [ 'a', '\n', '\'' ]
+texts = ( "hello", "\u{1F600}" )
+chars = ( 'a', '\n', '\'' )
 lambdas = (\x y -> x + y, \_ -> Console.log "later", \{ name } -> name)
 records = ({ name: "Stella", age: 3 }, { name, age }, person.name, { age = 4, ...person })
 variants = (1, 'Ok 42, 'Err "boom")

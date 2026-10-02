@@ -14,7 +14,7 @@ import Prim hiding (Type)
 
 import Data.Maybe (Maybe(..))
 import Data.String (joinWith)
-import Stella.Compiler.CST.Types (AttributeArg(..), Directive, Macro, Binder(..), CaseBody(..), Clause(..), Decl(..), DeclKeyword(..), Export(..), Expr(..), Fixity(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Import(..), ImportItem(..), Item(..), Kind(..), LetBinding(..), Marker(..), Members(..), Module(..), Name, Operator(..), RecordBinder(..), RecordField(..), RowItem(..), Type(..), TypeVarBinding(..), printToken)
+import Stella.Compiler.CST.Types (Argument(..), AttributeParameter(..), Directive, Macro, Binder(..), CaseBody(..), Clause(..), Decl(..), DeclKeyword(..), Export(..), Expr(..), Fixity(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Import(..), ImportItem(..), Item(..), Kind(..), LetBinding(..), Marker(..), Members(..), Module(..), Name, Operator(..), RecordBinder(..), RecordField(..), RowItem(..), Type(..), TypeVarBinding(..), printToken)
 
 list :: Array String -> String
 list xs = "(" <> joinWith " " xs <> ")"
@@ -44,6 +44,7 @@ sketchModule (Module m) =
     ExportOperator n -> "(" <> name n <> ")"
     ExportType n ms -> name n <> members ms
     ExportMacro n -> "macro " <> name n
+    ExportAttribute n -> "attribute " <> name n
     ExportModule n -> "module " <> name n
 
 members :: Maybe Members -> String
@@ -68,7 +69,7 @@ sketchItem = case _ of
                 Just a -> [ "as", name a ]
             )
       )
-  ItemAttribute a -> list ([ "@", names a.name ] <> map attributeArg a.args)
+  ItemAttribute a -> list ([ "@", name a.name ] <> map argument a.args)
   ItemDirective d -> directive d
   ItemModifier n -> list [ "modifier", name n ]
   ItemDecl d -> sketchDecl d
@@ -80,16 +81,19 @@ sketchItem = case _ of
     ImportOperator n -> "(" <> name n <> ")"
     ImportType n ms -> name n <> members ms
     ImportMacro n -> "macro " <> name n
-  attributeArg = case _ of
-    AttributePositional e -> sketchExpr e
-    AttributeKeyed k e -> name k <> "=" <> sketchExpr e
+    ImportAttribute n -> "attribute " <> name n
 
 directive :: Directive -> String
 directive d = list
   ( [ "#" <> name d.name ] <> case d.args of
       Nothing -> []
-      Just es -> [ list (map sketchExpr es) ]
+      Just es -> [ list (map argument es) ]
   )
+
+argument :: Argument -> String
+argument = case _ of
+  ArgumentPositional e -> sketchExpr e
+  ArgumentKeyed k e -> name k <> "=" <> sketchExpr e
 
 macro :: Macro -> String
 macro m = list [ name m.name <> "%", joinWith " " (map (printToken <<< _.value) m.body) ]
@@ -115,7 +119,12 @@ sketchDecl = case _ of
   DeclForeign n t -> list [ "foreign", name n, sketchType t ]
   DeclForeignType n k -> list [ "foreign-type", name n, sketchKind k ]
   DeclFixity f p n o -> list [ fixity f, p.raw, name n, name o ]
+  DeclAttribute n ps -> list ([ "attribute", name n ] <> map parameter ps)
   where
+  parameter = case _ of
+    AttributePositional t -> sketchType t
+    AttributeKeyword l t Nothing -> list [ name l, "::", sketchType t ]
+    AttributeKeyword l t (Just e) -> list [ name l, "::", sketchType t, "=", sketchExpr e ]
   keyword = case _ of
     KeywordData -> "data-kind"
     KeywordNewtype -> "newtype-kind"
@@ -190,7 +199,6 @@ sketchExpr = case _ of
   ExprUnit _ -> "()"
   ExprParens e -> list [ "parens", sketchExpr e ]
   ExprTuple es -> list ([ "tuple" ] <> map sketchExpr es)
-  ExprArray es -> list ([ "array" ] <> map sketchExpr es)
   ExprRecord fs -> list ([ "record" ] <> map field fs)
   ExprApp f a -> list [ sketchExpr f, sketchExpr a ]
   ExprOp a o b -> list [ operator o, sketchExpr a, sketchExpr b ]

@@ -19,12 +19,13 @@ module Stella.Compiler.CST.Types
   , ImportItem(..)
   , Item(..)
   , Attribute
-  , AttributeArg(..)
+  , Argument(..)
   , Directive
   , Macro
   , DeclKeyword(..)
   , Fixity(..)
   , Decl(..)
+  , AttributeParameter(..)
   , DataCtor
   , OperationSignature
   , TypeVarBinding(..)
@@ -162,6 +163,7 @@ keywords =
   , "effect"
   , "handler"
   , "foreign"
+  , "attribute"
   , "infix"
   , "infixl"
   , "infixr"
@@ -252,6 +254,7 @@ data Export
   | ExportOperator Name
   | ExportType Name (Maybe Members)
   | ExportMacro Name
+  | ExportAttribute Name
   | ExportModule Name
 
 -- | The members listed after a type name: `(..)`, or some of them. A data
@@ -272,6 +275,7 @@ data ImportItem
   | ImportOperator Name
   | ImportType Name (Maybe Members)
   | ImportMacro Name
+  | ImportAttribute Name
 
 data Item
   = ItemImport Import
@@ -285,15 +289,17 @@ data Item
   -- | What the parser could not read, up to the next item.
   | ItemBroken (Maybe SourceToken)
 
--- | `@[name arg …]`. The name may be dotted, `typeclass.instance`.
-type Attribute = { range :: SourceRange, name :: Array Name, args :: Array AttributeArg }
+-- | `@[name arg …]`. The name is that of an attribute, qualified or not,
+-- | `TC.instance`.
+type Attribute = { range :: SourceRange, name :: Name, args :: Array Argument }
 
-data AttributeArg
-  = AttributePositional Expr
-  | AttributeKeyed Name Expr
+-- | An argument of an attribute or a directive.
+data Argument
+  = ArgumentPositional Expr
+  | ArgumentKeyed Name Expr
 
 -- | `#name` or `#name(arg, …)`.
-type Directive = { name :: Name, args :: Maybe (Array Expr) }
+type Directive = { name :: Name, args :: Maybe (Array Argument) }
 
 -- | A macro and the tokens it is called on, its brackets included.
 type Macro = { name :: Name, body :: Array SourceToken }
@@ -320,6 +326,14 @@ data Decl
   | DeclForeign Name Type
   | DeclForeignType Name Kind
   | DeclFixity Fixity (Literal Int) Name Name
+  -- | `attribute name τ … (label :: τ) … (label :: τ = c) …`.
+  | DeclAttribute Name (Array AttributeParameter)
+
+-- | A parameter of an attribute declaration: positional, written as its type,
+-- | or keyword, with its default if it has one.
+data AttributeParameter
+  = AttributePositional Type
+  | AttributeKeyword Name Type (Maybe Expr)
 
 type DataCtor = { name :: Name, fields :: Array Type }
 
@@ -390,7 +404,6 @@ data Expr
   | ExprUnit SourceRange
   | ExprParens Expr
   | ExprTuple (Array Expr)
-  | ExprArray (Array Expr)
   | ExprRecord (Array RecordField)
   | ExprApp Expr Expr
   -- | Operators in the order written; fixity is applied later.
@@ -497,10 +510,11 @@ derive instance Generic Members _
 derive instance Generic Import _
 derive instance Generic ImportItem _
 derive instance Generic Item _
-derive instance Generic AttributeArg _
+derive instance Generic Argument _
 derive instance Generic DeclKeyword _
 derive instance Generic Fixity _
 derive instance Generic Decl _
+derive instance Generic AttributeParameter _
 derive instance Generic TypeVarBinding _
 derive instance Generic Kind _
 derive instance Generic Type _
@@ -536,7 +550,7 @@ instance Show ImportItem where
 instance Show Item where
   show x = genericShow x
 
-instance Show AttributeArg where
+instance Show Argument where
   show x = genericShow x
 
 instance Show DeclKeyword where
@@ -546,6 +560,9 @@ instance Show Fixity where
   show x = genericShow x
 
 instance Show Decl where
+  show x = genericShow x
+
+instance Show AttributeParameter where
   show x = genericShow x
 
 instance Show TypeVarBinding where
@@ -602,10 +619,11 @@ derive instance Eq Members
 derive instance Eq Import
 derive instance Eq ImportItem
 derive instance Eq Item
-derive instance Eq AttributeArg
+derive instance Eq Argument
 derive instance Eq DeclKeyword
 derive instance Eq Fixity
 derive instance Eq Decl
+derive instance Eq AttributeParameter
 derive instance Eq TypeVarBinding
 derive instance Eq Kind
 derive instance Eq Type

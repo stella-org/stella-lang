@@ -119,6 +119,10 @@ data GroupReason
   | ImportAfterDeclaration
   -- | A name bound twice by one block of bindings.
   | BoundTwice
+  -- | `#observ(none)` before anything but a `foreign` declaration.
+  | DirectiveNotBeforeForeign
+  -- | A second `#observ(none)` before one declaration.
+  | DirectiveTwice
 
 derive instance Eq PrefixItem
 derive instance Eq GroupError
@@ -137,6 +141,8 @@ instance Show GroupReason where
     KindSignatureWithoutDeclaration -> "KindSignatureWithoutDeclaration"
     ImportAfterDeclaration -> "ImportAfterDeclaration"
     BoundTwice -> "BoundTwice"
+    DirectiveNotBeforeForeign -> "DirectiveNotBeforeForeign"
+    DirectiveTwice -> "DirectiveTwice"
 
 printGroupReason :: GroupReason -> String
 printGroupReason = case _ of
@@ -148,6 +154,8 @@ printGroupReason = case _ of
     "A kind signature must be followed directly by the declaration it gives a kind to"
   ImportAfterDeclaration -> "Imports must come before every declaration"
   BoundTwice -> "This name is already bound in the same block"
+  DirectiveNotBeforeForeign -> "`#observ(none)` can stand only before a foreign declaration"
+  DirectiveTwice -> "This declaration already has this directive"
 
 -- | Whether a signature makes its declaration a computation: a computation
 -- | type at its top, under its quantifiers and constraints. Parentheses around
@@ -261,7 +269,7 @@ declare d s = s
   { declarations = Array.snoc s.declarations d
   , inBody = true
   , prefix = []
-  , errors = s.errors <> modifierErrors d
+  , errors = s.errors <> modifierErrors d <> directiveErrors d
   }
 
 -- | A modifier is `implicit`, which stands before a handler declaration alone.
@@ -275,6 +283,18 @@ modifierErrors = case _ of
   DeclarationMacro _ _ -> []
   where
   misplaced p = map (\n -> GroupError n.range ModifierNotBeforeHandler) (modifiersOf p)
+
+-- | `#observ(none)`, the one directive a declaration may have, stands before a
+-- | foreign declaration, once. One before a macro call is kept with the call.
+directiveErrors :: Declaration -> Array GroupError
+directiveErrors = case _ of
+  DeclarationOther p (DeclForeign _ _) -> map (\d -> GroupError d.name.range DirectiveTwice) (Array.drop 1 (directivesOf p))
+  DeclarationMacro _ _ -> []
+  DeclarationValue p _ -> misplaced p
+  DeclarationType p _ _ -> misplaced p
+  DeclarationOther p _ -> misplaced p
+  where
+  misplaced p = map (\d -> GroupError d.name.range DirectiveNotBeforeForeign) (directivesOf p)
 
 -- | A signature or a kind signature still waiting where something other than
 -- | its own declaration comes belongs to nothing. It is reported, and the
