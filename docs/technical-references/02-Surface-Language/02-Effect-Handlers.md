@@ -48,6 +48,8 @@ handler h :: E ~> ( t1, …, tn ) where …
 
 The left of `~>` is **one element**, because a `handle` names one key. The right is a **row fragment**, which may hold several elements or none; the empty target is written `()`.
 
+**The shape is quantified as a signature is.** A type variable it mentions that nothing binds is quantified implicitly, and a `forall` may stand in front of it, to give a variable its kind: `forall (s :: Type). State s ~> ()`. Its variables are in scope in the handler's parameters and body ([Name Resolution](06-Name-Resolution.md)).
+
 ```stella
 -- effect Verbosity where level :: Unit ->* Int
 handler quiet :: Verbosity ~> () where

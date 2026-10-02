@@ -50,15 +50,15 @@ The Surface AST is what name resolution builds from the concrete syntax tree and
 
 | Written | Stands | Held as |
 | --- | --- | --- |
-| `forall ā. C => τ / ρ` | at the top of a computation declaration's signature | `ComputationType`: the quantifiers and constraints in the order written, the result, and the row |
+| `forall ā. C => {{ d :: C τ̄ by f }} -> τ / ρ` | at the end of the spine of a computation declaration's signature | `ComputationType`: its spine — quantifiers, constraints, and synthesized arguments (`PrefixSynthesized`) — in the order written, the result, and the row |
 | `forall b̄. σ̄ ->* τ` | as an operation's signature | `OperationSignature`: its own type variables, the arguments, and the type it resumes with (D21) |
-| `E ~> ( t̄ )` | as a handler declaration's signature | `HandlerSignature`'s `Capability`: the source and the targets, each an effect application |
+| `forall ā. E ~> ( t̄ )` | as a handler declaration's signature, under its quantifiers | `HandlerSignature`'s `Capability`: the binders of each `forall` in front of `~>`, a group apiece in the order written, then the source and the targets, each an effect application |
 
-**An arrow holds the row `/` puts on it.** `τ1 -> τ2 / ρ` is a `TypeFunction` with the row, and an arrow with none is pure.
+**An arrow holds the row `/` puts on it.** `τ1 -> τ2 / ρ` is a `TypeFunction` with the row, and an arrow with none is pure. The arrow after a synthesized argument is pure and takes no row; a `/` after it is the computation type its spine ends in.
 
-**A type operator is applied to its two operands**, rebracketed by fixity: `TypeOperator` holds the operator, as the entity it names — a type constructor, a type synonym, or an effect — with the origin of where it was written, and then the operands. One naming an effect stands as the effect application it is where an element of an effect row does; anywhere else it is a `TypeOperator` like any other, and kinding judges it. The arrow, the `/` of a computation type, and `~>` are no type operators, and keep the forms above.
+**A type operator is applied to its two operands**, rebracketed by fixity: `TypeOperator` holds the operator, as the entity it names — a type constructor, a type synonym, or an effect — with the origin of where it was written, and then the operands. One naming an effect stands as the effect application it is where one is called for — an element of an effect row, the source or a target of `~>` — its arguments being its two operands and then any an application adds, `(a & b) c`; anywhere else it is a `TypeOperator` like any other, and kinding judges it. The arrow, the `/` of a computation type, and `~>` are no type operators, and keep the forms above.
 
-**A signature names the type variables it quantifies implicitly.** `Signature` holds them beside the type, outermost: those it mentions that nothing around it binds.
+**A signature names the type variables it quantifies implicitly.** `Signature` holds them beside the type, outermost: those it mentions that nothing around it binds. An operation's signature quantifies nothing implicitly, and is no `Signature` ([Name Resolution](06-Name-Resolution.md)).
 
 **A row is held by the bracket it is written in**, each with the items that bracket admits.
 
@@ -68,7 +68,7 @@ The Surface AST is what name resolution builds from the concrete syntax tree and
 | a variant, `[ … ]` | a tag `'Ok :: τ`, a label `ok :: τ`, a spread |
 | an effect row, `{\| … \|}` | an effect element `E τ̄`, an instance `name :: E τ̄`, a spread |
 
-- **An effect element and an instance hold an effect application**, a declared effect and its arguments. The head of an effect row's element is a declared effect (D16), and a type synonym cannot stand for one: an effect declaration is the only declaration producing `Effect`, and a synonym produces none (D24).
+- **An effect element and an instance hold an effect application**, a declared effect and its arguments. A name standing for an effect is written at the head of one and nowhere else; anywhere else it is no type, and an error ([Name Resolution](06-Name-Resolution.md)). The head of an effect row's element is a declared effect (D16), and a type synonym cannot stand for one: an effect declaration is the only declaration producing `Effect`, and a synonym produces none (D24).
 - **A spread with no operand is the anonymous one**, which every anonymous spread of one signature shares per row kind ([Rows](../03-Typed-Core/02-Rows.md)).
 
 **`{{ d :: C τ̄ by f }}` binds nothing.** `d` is a name written for the reader and for diagnostics; the parameter the synthesized argument is passed in is bound where the definition binds its parameters, as any other is.
@@ -120,7 +120,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 
 **Resolution reports every error in the module and goes on past each**, building what it can. A module with an error is not elaborated, so what is built around an error serves only to go on, and it is built by two rules.
 
-**An error in an expression, a type, a kind, a pattern, or a constant leaves an invalid node of that class** — `ExprInvalid`, `TypeInvalid`, `KindInvalid`, `BinderInvalid`, `ConstantInvalid` — where the erroneous form stood. A name that does not resolve, a form standing where it is not admitted, and a form not yet supported are among them.
+**An error in an expression, a type, a kind, a pattern, or a constant leaves an invalid node of that class** — `ExprInvalid`, `TypeInvalid`, `KindInvalid`, `BinderInvalid`, `ConstantInvalid` — where the erroneous form stood. A name that does not resolve, a form standing where it is not admitted, and a form not yet supported are among them. A chain of type operators holding one that does not resolve, or two that cannot be chained, is invalid as a whole, and a capability translation whose source is no effect applied to its arguments is held as an invalid signature written in full.
 
 **Any other error drops the smallest part around it that is a member of a sequence**: an import, a declaration, an attribute, an item of a row, a target of a capability, an item of a handling expression, or a clause.
 
@@ -129,7 +129,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | an import of a module that is not there | the import |
 | an attribute whose name does not resolve, or whose arguments do not match its declaration | the attribute |
 | `@[elaborationOnly]` on a declaration that is not exactly one the compiler lists | the attribute; the declaration is what it would be without it |
-| an effect element or instance, or a capability target, whose effect does not resolve | that item, or that target |
+| an item a row's bracket does not admit; an effect element or instance, or a capability target, that is no effect applied to its arguments, or whose effect does not resolve | that item, or that target |
 | an operation clause whose operation does not resolve or is not the group's effect's, a second return clause, a `reifiable full` clause with no continuation parameter | the clause |
 | a group whose effect cannot be determined | the group |
 | a handler declaration whose effect cannot be determined, a fixity declaration whose target does not resolve, a computation declaration with parameters | the declaration |
@@ -144,7 +144,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 
 - **A binder's bindings are numbered and entered into scope before what they scope over is resolved**, read off the syntax as written: the parameters of a declaration, a lambda, or a clause, the variables of a pattern, the bindings of a `let` block or a `where`, and the cells of a handler.
 - **A pattern left invalid still binds the variables written in it**, an or-pattern's among them. Its bindings stand in no node of the tree, the pattern being invalid, and a reference to one still resolves, so a body is not reported again for what its pattern got wrong.
-- **Where one group of bindings binds a name twice, the first written is the one a reference reaches.** The group is what binds together: the parameters of one declaration, lambda, or clause, one pattern, one `let` block or `where`, and the cells of one handler. The later binding keeps a number of its own, and nothing refers to it; `x` and `x!` alike reach the first.
+- **Where one group of bindings binds a name twice, the first written is the one a reference reaches.** The group is what binds together: the parameters of one declaration, lambda, or clause, one pattern, one `let` block or `where`, the cells of one handler, and the type variables of one `forall`. The later binding keeps a number of its own, and nothing refers to it; `x` and `x!` alike reach the first.
 
 ## From the concrete syntax tree
 
@@ -159,12 +159,15 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | `DeclEffect`, `DeclHandler`, `DeclForeign`, `DeclForeignType`, `DeclFixity`, `DeclAttribute` | the declaration of that name |
 | `DeclTypeFixity` | a type fixity declaration |
 | `KindName`, `KindApp` | `KindType`, `KindEffect`, and `KindRow`; any other name or application is invalid |
-| `TypeOp` | `TypeOperator`, rebracketed by fixity; an effect application where it names an effect and stands as an element of an effect row |
-| `TypeArrow` | `TypeFunction`, with the row where its result is a `TypeEffect` |
-| `TypeOperationArrow`, `TypeCapability`, a `TypeEffect` at the top of a signature | `OperationSignature`, `HandlerSignature`, and `ComputationType` |
+| `TypeOp` | `TypeOperator`, rebracketed by fixity; where it names an effect and stands where an effect application is called for — an element or an instance of an effect row, the source or a target of `~>` — an `EffectApplication`, any arguments an application adds following its two operands |
+| `TypeArrow` | `TypeFunction`, with the row where its result is a `TypeEffect`; one from a synthesized argument is pure, a `TypeFunction` with no row in a value's signature and a `PrefixSynthesized` on the spine of a computation declaration's signature |
+| `TypeForall`, `TypeConstrained` | `TypeForall` and `TypeConstrained`; on the spine of a computation declaration's signature, a `PrefixForall` and a `PrefixConstraint`; in front of `~>`, a `forall` is a group of `Capability`'s quantifiers |
+| `TypeEffect` | at the end of the spine of a computation declaration's signature, the result and the row of its `ComputationType`; after an arrow other than one from a synthesized argument, the row of that arrow; anywhere else invalid |
+| `TypeOperationArrow` | as an operation's signature, its `OperationSignature`; anywhere else invalid |
+| `TypeCapability` | as a handler declaration's signature, under its `forall`s, `HandlerSignature`'s `Capability`; anywhere else invalid |
 | `TypeParens`, `TypeUnit` | the type it encloses, and `Prim.Unit` |
 | `TypeDirective` | invalid; no directive of this version stands in a type |
-| `RowItem` | the item of the row its bracket gives; one the bracket does not admit is invalid |
+| `RowItem` | the item of the row its bracket gives; one the bracket does not admit is dropped |
 | `ExprVar`, `ExprConstructor`, `ExprDiscriminator`, `ExprOperatorValue` | the reference node of what it resolves to |
 | `ExprOp` | `ExprOperator`, rebracketed by fixity |
 | `ExprSection` | the lambda it stands for |

@@ -36,7 +36,7 @@ import Data.Array as Array
 import Data.Foldable (foldl)
 import Data.Maybe (Maybe(..), maybe)
 import Data.Set as Set
-import Stella.Compiler.CST.Types (Attribute, Binder(..), Decl(..), DeclKeyword(..), Directive, Export, Expr, Import(..), Item(..), Kind, LetBinding(..), Macro, Module(..), Name, RecordBinder(..), SourceRange, Type(..))
+import Stella.Compiler.CST.Types (Attribute, Binder(..), Decl(..), DeclKeyword(..), Directive, Export, Expr, Import(..), Item(..), Kind, LetBinding(..), Macro, Module(..), Name, RecordBinder(..), SourceRange, Type(..), isSynthesized)
 
 data PrefixItem
   = PrefixAttribute Attribute
@@ -158,14 +158,17 @@ printGroupReason = case _ of
   DirectiveTwice -> "This declaration already has this directive"
 
 -- | Whether a signature makes its declaration a computation: a computation
--- | type at its top, under its quantifiers and constraints. Parentheses around
--- | the whole of it change nothing, there being no arrow for them to part it
+-- | type at the end of its spine, after its quantifiers, constraints, and
+-- | synthesized arguments. The arrow after a synthesized argument is pure, so a
+-- | `/` following it belongs to the computation type. Parentheses around the
+-- | rest of the spine change nothing, there being no arrow for them to part it
 -- | from.
 isComputationSignature :: Type -> Boolean
 isComputationSignature = case _ of
   TypeForall _ t -> isComputationSignature t
   TypeConstrained _ t -> isComputationSignature t
   TypeParens t -> isComputationSignature t
+  TypeArrow a t | isSynthesized a -> isComputationSignature t
   TypeEffect _ _ _ -> true
   _ -> false
 

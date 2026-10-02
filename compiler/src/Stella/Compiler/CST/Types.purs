@@ -31,6 +31,7 @@ module Stella.Compiler.CST.Types
   , TypeVarBinding(..)
   , Kind(..)
   , Type(..)
+  , isSynthesized
   , RowItem(..)
   , Operator(..)
   , Expr(..)
@@ -388,6 +389,13 @@ data Type
   -- | `{{ name :: τ by f }}`.
   | TypeSynthesized (Maybe Name) Type Name
   | TypeDirective Directive Type
+
+-- | Whether a type is a synthesized argument, `{{ … }}`, in parentheses or not.
+isSynthesized :: Type -> Boolean
+isSynthesized = case _ of
+  TypeSynthesized _ _ _ -> true
+  TypeParens t -> isSynthesized t
+  _ -> false
 
 data RowItem
   = RowField Name Type

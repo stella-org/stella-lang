@@ -51,7 +51,7 @@ This document settles what a name written in source refers to. By the time a ter
 
 - **A constructor is a value.** It is applied, passed, and matched on as one, as in Core, where a constructor is an ordinary global name ([Modules](../06-Modules/01-Modules.md)).
 - **An operation is a value.** It is called as an ordinary function, `perform` not appearing in the surface (D17), and it belongs to the effect that declares it.
-- **An effect is a type-level name.** It stands in a row as an element, which is a type position.
+- **An effect is a type-level name.** Within a type, a name standing for an effect is written only at the head of an effect applied to its arguments: as an element or an instance of an effect row, and as the source or a target of `~>`. No type is an effect, so one written anywhere else in a type is an error. A declaration or a list naming an entity names an effect as it names any other: the target of a type fixity declaration, and an item of an import or export list. A type operator standing for an effect is not held to this: `a & b` is an application like any other, which kinding judges, and where an effect applied to its arguments is called for it is read as one, any arguments an application adds following its two operands, so `(a & b) c` is the effect applied to `a`, `b`, and `c`.
 - **A macro has a namespace of its own, because it is visible where a value is not.** A macro cannot be used in the module declaring it, so the module's own macros are not in its macro namespace and appear only in its exports. `m%` looks `m` up there, and a bare `m` in the value namespace; a value and a macro of one spelling stand together without either hiding the other, and a macro the module declares hides no imported macro of its name. That a macro is compiled to a Stella function is not visible at the source level.
 - **A macro produced by an expansion is no different.** It is not in the macro namespace of the module it was produced in, so it affects no later expansion there.
 - **Two imported macros of one name are ambiguous where they are called**, and a qualified call, `M.m%( … )`, tells them apart.
@@ -156,6 +156,26 @@ g xs = A.( length xs )           -- length is A.length
 - **What is opened is what a module can export**: the value, type, operator, type operator, and macro namespaces. An attribute is attached to a declaration and so never stands inside an expression, where an open is; `@[M.a]` and an import list reach one. A type in an annotation, an effect in a row, a constructor in a pattern, a discriminator, an operator, and a macro call inside `e` are resolved by the same rule; an operator opened this way takes its fixity from `M`. Local binders and cells are not a module's to open.
 - **What is opened is an alias.** A module imported without `as` has no qualifier, so its full name cannot be opened.
 - **The header still names every dependency.** The alias is declared by an import in either case, so local open adds nothing a build reads ([Modules](../06-Modules/01-Modules.md)).
+
+## Type variables
+
+**A type variable is bound by a `forall`, by the parameters of a declaration, or implicitly by a signature.** The variables of one `forall`, or of one declaration's parameters, are one group: a name bound twice in it is an error, and a reference reaches the first. A `forall` inside another binds over its own body, and a variable it binds hides one of its name outside it ([Shadowing](#shadowing)).
+
+**A signature quantifies implicitly** the type variables it mentions that nothing around it binds, outermost and in the order they first appear: `f :: b -> a -> b` is `forall b a. b -> a -> b`. A signature is that of a value, a computation, a foreign, a handler, or a `let` binding.
+
+**The variables a signature quantifies are in scope in what it is the signature of**: in the parameters and the body of the definition, its `where` among them, and in the signatures and annotations nested there, which quantify only the variables they mention beyond those. They are the ones it quantifies implicitly and those the `forall`s on its spine bind, wherever they stand among its constraints and synthesized arguments, and, for a capability translation, the `forall`s in front of `~>`.
+
+```stella
+f :: forall a. a -> a
+f x = go x
+  where
+    go :: a -> a      -- the a of f's signature; go quantifies nothing
+    go y = y
+```
+
+**Any other type binds nothing implicitly**, so a variable no binder binds is an error there: an annotation `e :: τ`, a field of a constructor, and the right side of a synonym, where the declaration's parameters are what is in scope.
+
+**An operation's signature is the exception among signatures: it quantifies nothing implicitly.** The parameters of its effect are in scope in it, and a variable of its own is written in a `forall`: `abort :: forall b. Unit ->* b`. A variable neither binds is an error, which catches a misspelt parameter of the effect; admitting implicit quantification later accepts more programs and refuses none.
 
 ## Shadowing
 

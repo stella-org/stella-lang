@@ -157,7 +157,7 @@ spec = describe "Stella.Compiler.Resolve.Group" do
         []
 
   describe "signatures" do
-    it "make a declaration a computation only with a computation type at their top" do
+    it "make a declaration a computation only with a computation type at the end of their spine" do
       grouped
         [ "f :: Int -> Int / {| E |}"
         , "f x = x"
@@ -166,8 +166,12 @@ spec = describe "Stella.Compiler.Resolve.Group" do
         , "v = 1"
         , "p :: ((Int / {| E |}))"
         , "p = 1"
+        , "s :: forall a. {{ d :: Show a by show }} -> a / {| E |}"
+        , "s d = 1"
+        , "g :: {{ d :: Show Int by show }} -> Int -> Int / {| E |}"
+        , "g d x = x"
         ]
-        [ "value f signed", "value c signed computation", "value v", "value p signed computation" ]
+        [ "value f signed", "value c signed computation", "value v", "value p signed computation", "value s signed computation", "value g signed" ]
         []
 
     it "are reported where the definition of their name does not follow them directly" do

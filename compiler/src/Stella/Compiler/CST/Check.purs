@@ -11,7 +11,7 @@ import Prim hiding (Type)
 
 import Data.Foldable (foldMap)
 import Data.Maybe (Maybe(..), isJust)
-import Stella.Compiler.CST.Types (Argument(..), AttributeParameter(..), Directive, Binder(..), CaseBody(..), Clause(..), Decl(..), Expr(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Import(..), Item(..), LetBinding(..), Module(..), Name, RecordBinder(..), RecordField(..), RowItem(..), SourceRange, Type(..))
+import Stella.Compiler.CST.Types (Argument(..), AttributeParameter(..), Directive, Binder(..), CaseBody(..), Clause(..), Decl(..), Expr(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Import(..), Item(..), LetBinding(..), Module(..), Name, RecordBinder(..), RecordField(..), RowItem(..), SourceRange, Type(..), isSynthesized)
 
 data CheckError = CheckError SourceRange CheckReason
 
@@ -28,8 +28,8 @@ data CheckReason
   | OperationArrowMisplaced
   -- | An operation's signature with no `->*`
   | OperationArrowMissing
-  -- | `τ / ρ` with no arrow for `/` to belong to, other than at the top of a
-  -- | top-level signature.
+  -- | `τ / ρ` with no arrow for `/` to belong to, other than at the end of the
+  -- | spine of the signature of a top-level value definition.
   | ComputationTypeMisplaced
   -- | A directive this version does not have.
   | DirectiveUnsupported
@@ -67,7 +67,7 @@ printCheckReason = case _ of
     "An operation's signature needs exactly one `->*` on the spine of its arrows;\
     \ type synonym is not allowed"
   ComputationTypeMisplaced ->
-    "A computation type `τ / ρ` can stand only at the top of a top-level signature;\
+    "A computation type `τ / ρ` can stand only at the end of the signature of a top-level value definition;\
     \ write `Unit -> τ / ρ` where a suspended computation is meant"
   DirectiveUnsupported -> "This directive is not supported; the one there is is `#observ(none)`"
   DirectiveArgumentsInvalid -> "`#observ` takes the one argument `none`"
@@ -142,9 +142,10 @@ operationSignature op = computationTypes op.type <> typeDirectives op.type <> ca
 type_ :: Type -> Array CheckError
 type_ t = outsideOperation t <> computationTypes t <> typeDirectives t
 
--- | A top-level signature, which may be a computation type at its top, under
--- | its quantifiers and constraints. Parentheses around the whole of it change
--- | nothing, there being no arrow for them to part it from.
+-- | The signature of a top-level value definition, which may end its spine in a
+-- | computation type, after its quantifiers, constraints, and synthesized
+-- | arguments. Parentheses around the rest of the spine change nothing, there
+-- | being no arrow for them to part it from.
 signature :: Type -> Array CheckError
 signature t = outsideOperation t <> typeDirectives t <> top t
   where
@@ -152,6 +153,7 @@ signature t = outsideOperation t <> typeDirectives t <> top t
     TypeForall _ body -> top body
     TypeConstrained c body -> computationTypes c <> top body
     TypeParens body -> top body
+    TypeArrow a body | isSynthesized a -> computationTypes a <> top body
     TypeEffect a _ r -> computationTypes a <> computationTypes r
     other -> computationTypes other
 
@@ -184,8 +186,9 @@ operationArrows = case _ of
   t -> foldMap operationArrows (subtypes t)
 
 -- | Every `τ / ρ` in a type whose `/` belongs to no arrow. A `/` belongs to the
--- | arrow it follows directly; parentheses between the two make the
--- | parenthesized type a computation type of its own.
+-- | arrow it follows directly, unless that arrow follows a synthesized argument,
+-- | which is pure; parentheses between the two make the parenthesized type a
+-- | computation type of its own.
 computationTypes :: Type -> Array CheckError
 computationTypes = go false
   where
@@ -194,7 +197,7 @@ computationTypes = go false
       (if resultOfArrow then [] else [ CheckError r ComputationTypeMisplaced ])
         <> go false a
         <> go false e
-    TypeArrow a b -> go false a <> go true b
+    TypeArrow a b -> go false a <> go (not (isSynthesized a)) b
     t -> foldMap (go false) (subtypes t)
 
 -- | The types a type is built from, in the order written.

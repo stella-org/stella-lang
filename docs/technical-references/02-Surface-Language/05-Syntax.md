@@ -35,8 +35,12 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | any type atom without a type variable at its top as a positional parameter of an attribute | a parameter type holding a type variable |
 | any integer literal as a precedence | one written other than as decimal digits: `-1`, `1_0`, `0x10` |
 | `name@atom` with any atom after the `@` | in an expression, anything but an unqualified name after it, `op@label`; the wider form stands for an as-pattern on the left of a guard block's binding, and an `@` not taken as one there is checked for this |
-| any upper case name in a kind | a name other than `Type`, `Effect`, `Row` |
-| a computation type anywhere a type stands | a computation type other than at the top of a top-level signature |
+| any upper case name in a kind | a name other than `Type`, `Effect`, `Row`; `Row` applied to anything but `Type` or `Effect` |
+| a computation type anywhere a type stands | a computation type other than at the end of the spine of a computation declaration's signature, the one a top-level value definition pairs with; a `foreign` declaration's signature among the rest (`Check`) |
+| `{{ … }}` wherever a type atom stands | one off the spine of a signature |
+| `E ~> ρ` wherever an arrow may stand | `~>` other than as a handler declaration's signature, under its quantifiers; a source or a target that is no effect applied to its arguments; targets other than `()` or effects in parentheses |
+| any row item in any bracket | an item the bracket does not admit; an element of an effect row that is no effect applied to its arguments ([Surface AST](08-Surface-AST.md)) |
+| any chain of operators | two operators of one precedence that cannot be chained |
 | `resume` anywhere | `resume` outside the immediate body of a `full` clause |
 | any parameters in a `reifiable full` clause | a clause with no parameter after the operation's arguments, which is the continuation it keeps |
 | a `reifiable full` clause in any module | one in a module that does not import `Base.Continuation`, which its desugaring depends on |
@@ -234,6 +238,7 @@ typeVar        ::= any ident but "by"
 - **A kind or a type is given to a declared name by a signature of its own**, never inline: `type T :: Type`, not `type (T :: Type)`. A parameter is a binder and may carry one: `data Proxy (a :: k) = Proxy`.
 - **An operation's type has exactly one `->*` on its spine, and no other type has one** (D21), which `Check` confirms, the grammar reading `->*` wherever an arrow may stand: `writeAt :: Int -> String ->* Unit`, `abort :: forall b. Unit ->* b`. It stands at the precedence of `->` and associates to the right, so what follows it is the type the continuation resumes with, a function included: `op :: A ->* B -> C` resumes with `B -> C`. Parentheses around the rest of the spine change nothing, `op :: A -> (B ->* C)`. **The `->*` is written in the signature itself**: no type synonym stands for an operation's signature, since a synonym's right side is no operation's signature and holds no `->*`. The rule is that of first-order operations, the only kind there is; a higher-order operation has a signature `->*` cannot write, and admitting one restates it ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
 - **A precedence is a decimal integer** from 0 to 2³¹−1, with no sign and no `_` ([Lexical Structure](04-Lexical-Structure.md)).
+- **Fixities rebracket a chain of operators**, of values and of types alike. The higher precedence binds tighter, and two operators of one precedence associate as both declare: to the left where both are `infixl`, to the right where both are `infixr`. Any other pair of one precedence — an `infixl` beside an `infixr`, or an `infix` beside any operator — cannot be chained, and is an error where the chain is resolved: `a == b == c` is written with parentheses.
 - A directive stands before the declaration it applies to: `#observ(none) foreign sqrt :: Number -> Number`.
 
 ## Kinds
@@ -272,11 +277,11 @@ typeAtom ::= "_" | HOLE | typeVar | qualProperName
 rowItem ::= label "::" type | TAG "::" type | type | "..." typeAtom?
 ```
 
-- **`/` follows the last arrow of a chain and belongs to it.** `Int -> String -> Unit / {| Console |}` is `Int -> (String -> Unit / {| Console |})`, the effect on the second arrow. With no arrow before it, `Int / {| Random |}`, it is a computation type ([Top-level Computation Declaration](../../proposals/05-Toplevel-Computation-Declaration.md)).
+- **`/` follows the last arrow of a chain and belongs to it.** `Int -> String -> Unit / {| Console |}` is `Int -> (String -> Unit / {| Console |})`, the effect on the second arrow. With no arrow before it, `Int / {| Random |}`, it is a computation type ([Top-level Computation Declaration](../../proposals/05-Toplevel-Computation-Declaration.md)). The arrow after a synthesized argument is pure and takes no `/`, so one following it with no other arrow between is a computation type too: `{{ d :: Show a by show }} -> a / {| Console |}` is a computation taking a synthesized argument.
 - **`()` is `Unit`**; a parenthesized list of two or more is a tuple.
 - **Braces hold a record's row, `{| |}` an effect row, and brackets a variant's**, each row written by one element grammar ([Rows](../03-Typed-Core/02-Rows.md)): a labelled element `name :: τ`, a tag `'Ok :: τ`, an element standing alone such as an effect `State Int`, and a spread `...r`, `...`.
 - **A type operator binds tighter than an arrow and looser than application**, and every one is read at one precedence and associates to the left, in the order written; declared fixities rebracket the chain afterwards, as they do an expression's. `/` is the grammar's and no type operator, so `a + b / ρ` is the computation type of `a + b`.
-- **`E ~> ρ` is the shape of a capability translation** ([Effect Handlers](02-Effect-Handlers.md)).
+- **`E ~> ρ` is the shape of a capability translation** ([Effect Handlers](02-Effect-Handlers.md)), and stands as a handler declaration's signature alone, under any `forall` written in front of it: `forall s. State s ~> ()`.
 - **`{{ d :: C τ by f }}` is a synthesized argument**, the parameter a constraint desugars to. `d` names it for the reader and binds nothing; the definition binds the parameter as it binds any other. It stands on the spine of a signature, where nothing but quantifiers, constraints, and other synthesized arguments stands before it, and nowhere else ([Modules](../06-Modules/01-Modules.md)).
 
 ## Expressions
@@ -313,7 +318,7 @@ recordField  ::= label ":" expr | label | label "=" expr
 letBinding  ::= ident "::" type | binder1 "=" expr
 ```
 
-- **Every operator is read at one precedence and associates to the left**, in the order written. Declared fixities rebracket the chain afterwards, as PureScript's rebracketing does, which is where an imported operator's fixity is known.
+- **Every operator is read at one precedence and associates to the left**, in the order written. Declared fixities rebracket the chain afterwards, by the rule above, which is where an imported operator's fixity is known.
 - **Application binds tighter than any operator.** A negative literal is one token, so `f -1` is `f` applied to `-1` ([Lexical Structure](04-Lexical-Structure.md)).
 - **A lambda, `let`, `case`, `handle`, and `using` extend as far to the right as they can**, and may stand as the last argument of an application: `map \x -> x + 1`.
 - **`_` is an anonymous argument**: `case _, _ of`, and the section `(_ + 1)`.

@@ -6,10 +6,10 @@
 -- | node covering what they enclosed.
 -- |
 -- | Three forms are confined to one position each, and so are not types of
--- | their own here: a computation type `τ / ρ` stands only at the top of a
--- | top-level signature (`ComputationType`), `->*` only in an operation's
--- | signature (`OperationSignature`), and `E ~> ρ` only in a handler's
--- | signature (`HandlerSignature`).
+-- | their own here: a computation type `τ / ρ` stands only at the end of the
+-- | spine of a computation declaration's signature (`ComputationType`), `->*` only in an
+-- | operation's signature (`OperationSignature`), and `E ~> ρ` only at the end
+-- | of the quantifiers of a handler's signature (`HandlerSignature`).
 module Stella.Compiler.Surface.Type
   ( Kind(..)
   , kindOrigin
@@ -168,9 +168,9 @@ type Signature a =
   , body :: a
   }
 
--- | The signature of a computation declaration, `forall ā. C => τ / ρ`: the
--- | quantifiers and constraints in the order written, then the type of what it
--- | produces and the row it performs.
+-- | The signature of a computation declaration, `forall ā. C => τ / ρ`: its
+-- | spine — quantifiers, constraints, and synthesized arguments — in the order
+-- | written, then the type of what it produces and the row it performs.
 type ComputationType =
   { origin :: Origin
   , prefix :: Array SignaturePrefix
@@ -181,6 +181,9 @@ type ComputationType =
 data SignaturePrefix
   = PrefixForall Origin (Array TypeVarBinder)
   | PrefixConstraint Type
+  -- | `{{ d :: C τ̄ by f }} ->`, behind a pure arrow: a `TypeSynthesized`, or
+  -- | `TypeInvalid` where resolution reported an error.
+  | PrefixSynthesized Type
 
 -- | An operation's signature, `forall b̄. σ1 -> … -> σn ->* τ`: its own type
 -- | variables, the arguments to the left of `->*`, and the type the
@@ -192,11 +195,13 @@ type OperationSignature =
   , resumesWith :: Type
   }
 
--- | A handler declaration's signature: the shape `E ~> ( t̄ )` of a capability
--- | translation, or a type written in full.
+-- | A handler declaration's signature: the shape `forall ā. E ~> ( t̄ )` of a
+-- | capability translation, with the binders of each `forall` in front of `~>`
+-- | in the order written, or a type written in full.
 data HandlerSignature
   = Capability
       { origin :: Origin
+      , quantifiers :: Array (Array TypeVarBinder)
       , source :: EffectApplication
       , targets :: Array EffectApplication
       }

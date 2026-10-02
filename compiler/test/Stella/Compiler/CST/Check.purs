@@ -82,6 +82,13 @@ spec = describe "Stella.Compiler.CST.Check" do
       , "  fast | op _ -> 0"
       ] `reports` []
 
+    it "reads `/` after the arrow of a synthesized argument, which is pure, as a computation type" do
+      [ "f :: {{ d :: Show Int by show }} -> Int / {| E |}"
+      , "g :: {{ d :: Show Int by show }} -> Int -> Int / {| E |}"
+      , "foreign h :: {{ d :: Show Int by show }} -> Int / {| E |}"
+      ] `reports`
+        [ { line: 4, column: 49, reason: ComputationTypeMisplaced } ]
+
     it "reports one in an argument, and in a parenthesized result" do
       [ "f :: (Int / {| E |}) -> Int"
       , "g :: Int -> (Int / {| E |})"
