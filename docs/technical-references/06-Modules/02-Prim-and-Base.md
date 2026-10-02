@@ -6,7 +6,7 @@ drawing.
 
 | Layer | What it holds | Settled by |
 | --- | --- | --- |
-| `Prim` | the types and constructors the rules of Core name | the Core specification |
+| `Prim` | the types and constructors the rules of Core name, and the attributes the compiler acts on | the Core specification, and for the attributes the surface language |
 | `Base.*` | the versioned runtime contract: portable primitive protocols, and the ABI surface a backend implements | the ABI specification and backend conformance profiles |
 | `Prelude` | the default portable environment: foundational types, classes, ordinary names, and syntax macros | the standard library specification |
 | portable libraries — `Data.*`, `Effect.*`, and the rest | portable API written in Stella over `Prelude` and, where necessary, `Base.*` | their library packages |
@@ -56,15 +56,17 @@ are written. Otherwise `Prelude` and a library downstream of it each need the ot
 | --- | --- | --- |
 | `List` | `Prelude` | `Data.List` |
 | `Maybe` | `Prelude` | `Data.Maybe` |
-| `Array` | `Base.Array`, being a manifest intrinsic | `Data.Array`, with literal syntax from `Prelude` |
+| `Array` | `Base.Array`, being a manifest intrinsic | `Data.Array`, with a construction macro from `Prelude` |
 | `Partial` | `Prelude` | handlers, wherever they are written |
 | `Console`, `LiftIO` | `Base.Effect.*`, being standard primitive capabilities | target adapters, and the terminal interpreter |
 | `State`, `Except` | the `Effect.*` library declaring each | the same library |
 
-`Array` is the case where the split does visible work. The `[ … ]` macro belongs
-to `Prelude`, and because the type is owned upstream, that macro expands to the
-low-level construction entries of `Base.Array` rather than to anything in
-`Data.Array`. `Data.Array` then adds a convenient API over the same
+`Array` is the case where the split does visible work. The macro building an
+array from its elements, `array%[ … ]`, belongs to `Prelude`, and because the type
+is owned upstream, it expands to the low-level construction entries of
+`Base.Array` rather than to anything in `Data.Array`. No surface form of the
+language writes an array: brackets in an expression are not syntax, until a
+parser a library supplies may give them a meaning ([Open Questions](../99-Open-Questions/01-Open-Questions.md)). `Data.Array` then adds a convenient API over the same
 `Base.Array.Array`, and `Prelude` does not depend on it.
 
 `Partial` is owned by `Prelude` for a different reason: elaboration emits

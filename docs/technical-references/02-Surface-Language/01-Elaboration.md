@@ -319,7 +319,7 @@ typeOf          : Expr -> Elab Type
 localContext    : Elab (Array (Ident, Type))
 localConstraints: Elab (Array Constraint)
 lookupGlobal    : QIdent -> Elab (Maybe Decl)
-declsWithAttr   : AttrKey -> Elab (Array QIdent)
+declsWithAttr   : QIdent -> Elab (Array QIdent)          -- the attribute, by its qualified name
 
 -- metavariables
 freshMetaType   : Scope -> KindView -> Elab Type

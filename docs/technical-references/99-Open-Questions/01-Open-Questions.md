@@ -219,6 +219,12 @@ What D40 settles is the part that would otherwise be hardest: the protocol holds
 
 ## Modules and surface syntax
 
+**Attributes beyond declarations.** An attribute is attached to a declaration and nowhere else ([Attributes, Modifiers, and Directives](../02-Surface-Language/07-Attributes-Modifiers-and-Directives.md)). Two places are left out on purpose. A position inside a declaration — a record type's field, a constructor, an operation — is wanted by a serializer naming a field or a derivation treating one specially; the shape it would take is the declaration's metadata, addressed by the position, and not an attribute standing in the type, which type equality would have to decide. An expression is wanted mostly by what is a directive here — a warning silenced, a call inlined — and otherwise by a tool reading a mark, a formatter or a coverage tool. Both are to be settled with the syntax API macros read declarations through.
+
+**Syntax a library supplies.** Brackets in an expression, `[ 1, 2, 3 ]`, are not syntax: a sequence is built by a macro named at its call, `array%[ … ]` or `list%[ … ]` ([Prim and Base](../06-Modules/02-Prim-and-Base.md)). Giving such a form a meaning without naming a macro waits on a parser a library can extend, which would also decide how the concrete syntax tree a formatter and an editor read stays fixed while the language it reads grows.
+
+**Conditional compilation.** A directive choosing what source is compiled — by target, by a feature — changes the program, and its contract is not fixed: what it may stand around, what a build is keyed by, and how a module's header stays complete when an import is conditional (D22).
+
 **How a declaration is published to the catalog alone.** An entry may be visible to the catalog, to Core, and to a linker without being exported to source, which is how a declaration a macro generates under a name nobody wrote reaches a synthesizer ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)). The meaning is settled; the marking is not — an attribute is the likely spelling, to be fixed when the first library needing it, the type class library, is written.
 
 **Anonymous `...` at `Row Type`.** The rule is that anonymous spreads in one signature denote one variable per kind ([Rows](../03-Typed-Core/02-Rows.md)). This is right for effect rows, but at `Row Type` the wish for two independent open rows arises more often.

@@ -44,7 +44,7 @@ main = Console.log "🌍️"
 | Declaration Form | Signature | Treatment |
 | --- | --- | --- |
 | Value | `main :: IO Unit` | used directly as the entrypoint |
-| Computation | `main :: τ / ρ` | a runner and a lowering plan are applied, as below |
+| Computation | `main :: Unit / ρ` | a runner and a lowering plan are applied, as below |
 | Others | without an annotation, and effectful | rejected with a hint of adding an annotation |
 
 The second is the case treated in the manner described here.
@@ -97,9 +97,11 @@ main :: Unit / {| Console |}
 main = Console.log "Hello, World!"
 ```
 
-> Note: The arguments of an attribute desugar to a record, `{ runner: myrunner }`,
-> whose values are limited to literals, names, and records and arrays of those.
-> `myrunner` is resolved as an ordinary name, and counts as a dependency of the module.
+> Note: `entrypoint` takes no parameter yet. `runner` would be a keyword parameter of it, and
+> the type it is given has to admit every runner `@[entry_runner]` admits, each with its own
+> closed row, which no closed parameter type does today; the standard runner, hidden in the
+> toolchain, would have to be nameable as its default. `myrunner` is resolved as an ordinary
+> name, and counts as a dependency of the module.
 
 In this case, the system applies an implicit lowering plan for `{| Console |} ~> {| LiftConsole |}`,
 wraps the computation in a thunk, and passes it to `myrunner`. For the time being, the allowed type

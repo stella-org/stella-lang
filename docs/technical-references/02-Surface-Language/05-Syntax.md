@@ -27,7 +27,8 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | a member of either case after any type name | one the declaration does not have: a constructor of a data type, an operation of an effect |
 | `module N` in any export list | the module naming itself, `module M (module M) where` |
 | `->*` wherever an arrow may stand | `->*` outside an effect's operation signature; an operation signature without exactly one on its spine, or with one inside an argument or the resumption type (`Check`) |
-| any atom as an attribute's value — unparenthesized, an argument is one atom, so `@[a f x]` has two | anything but a literal, a name, or a record or array of those |
+| any atom as an argument of an attribute — unparenthesized, an argument is one atom, so `@[a f x]` has two | anything but a constant: a literal, a name, a constructor applied to constants, or a record of those |
+| any type atom without a type variable at its top as a positional parameter of an attribute | a parameter type holding a type variable |
 | any integer literal as a precedence | one written other than as decimal digits: `-1`, `1_0`, `0x10` |
 | `name@atom` with any atom after the `@` | in an expression, anything but an unqualified name after it, `op@label`; the wider form stands for an as-pattern on the left of a guard block's binding, and an `@` not taken as one there is checked for this |
 | any upper case name in a kind | a name other than `Type`, `Effect`, `Row` |
@@ -36,6 +37,7 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | any parameters in a `reifiable full` clause | a clause with no parameter after the operation's arguments, which is the continuation it keeps |
 | a `reifiable full` clause in any module | one in a module that does not import `Base.Continuation`, which its desugaring depends on |
 | an attribute, a directive, or a modifier with no declaration after it | the same |
+| any directive, with any arguments, before an item or in a type | one other than `#observ(none)` (`Check`); `#observ(none)` before anything but a `foreign` declaration, or twice |
 | `implicit` before any item | one before anything but a handler declaration or a macro call, which keeps it |
 | an import anywhere among the items | one after a declaration |
 | a signature, or a kind signature, anywhere | one not followed directly by the definition of its name, or the declaration of its keyword and name |
@@ -109,7 +111,7 @@ handle work with { State full | get _ -> resume 0 | set _ -> resume () ; runToSt
 ### Where no block opens
 
 - **A keyword standing as a record label opens nothing**: after `{`, `{|`, `{{`, a comma inside one of them, and a `.` of field access. `{ type: 1, where: 2 }.where` holds no block.
-- **A keyword directly inside an attribute opens nothing**, being the attribute's name or a label of its arguments: `@[where]`, `@[foo where=1]`. Inside a bracket nested in the attribute the rule is the ordinary one.
+- **A keyword directly inside an attribute opens nothing**, being a label of its arguments: `@[foo where=1]`. Inside a bracket nested in the attribute the rule is the ordinary one.
 - **Inside a macro's bracket nothing is inserted at all.** The tokens after `name%` up to the matching bracket pass through as they were lexed, and the macro receives them with their positions.
 
 ## Notation
@@ -138,13 +140,14 @@ operatorName ::= OPERATOR | QUAL_OPERATOR | "/"
 ```text
 module     ::= "module" moduleName exports? "where" block(item)?
 exports    ::= "(" sep(export, ",") ")"
-export     ::= qualIdent | OPVALUE | properName members? | "macro" ident | "module" moduleName
+export     ::= qualIdent | OPVALUE | properName members? | "macro" ident | "attribute" ident
+             | "module" moduleName
 members    ::= "(..)" | "(" ")" | "(" sep(memberName, ",") ")"
 memberName ::= properName | ident
 
 import     ::= "import" "lazy"? moduleName importList? ("as" moduleName)?
 importList ::= "(" ")" | "(" sep(importItem, ",") ")"
-importItem ::= ident | OPVALUE | properName members? | "macro" ident
+importItem ::= ident | OPVALUE | properName members? | "macro" ident | "attribute" ident
 ```
 
 `(..)` is the token `..` as an operator value ([Lexical Structure](04-Lexical-Structure.md)), which after a type name means every member: every constructor of a data type, or every operation of an effect. A member named alone may be of either case, an operation being lower case, and which one it must be follows from the declaration ([Name Resolution](06-Name-Resolution.md)). `macro m` names a macro, which is spelled as a value is.
@@ -171,15 +174,15 @@ item ::= import
 **Where the parser carries on past an error, an item it cannot read is skipped up to the next item** and stands in the tree as a broken one, so that everything else in the module is still read. The generated parser has an entry point that does so beside the one that stops at the first error.
 
 ```text
-attribute ::= "@[" sep(label, ".") attributeArg* "]"
-attributeArg ::= exprAtom | label "=" exprAtom
-directive ::= DIRECTIVE | DIRECTIVE "(" sep(exprAtom, ",")? ")"
+attribute ::= "@[" qualIdent argument* "]"
+argument  ::= exprAtom | label "=" exprAtom
+directive ::= DIRECTIVE | DIRECTIVE "(" sep(argument, ",")? ")"
 macroCall ::= MACRO tokenTree
 ```
 
-- **An attribute's name may be dotted**: `@[typeclass.instance]`.
-- **An argument is positional, or keyed by `name=value`**: `@[synthesizedBy Typeclass.resolve]`, `@[entrypoint runner=myrunner]`.
-- **A directive's arguments are the parenthesis that follows it with no space**, `#observ(none)`.
+- **An attribute is named as any name is, through an alias where it is qualified**: `@[TC.instance]` ([Attributes, Modifiers, and Directives](07-Attributes-Modifiers-and-Directives.md)).
+- **An argument is positional, or keyed by `name=value`**: `@[priority 10]`, `@[json name="user_name"]`.
+- **A directive's arguments are the parenthesis that follows it with no space**, positional or keyed as an attribute's are: `#observ(none)`, `#inline(arity=2)`.
 
 ### Macro calls
 
@@ -210,8 +213,13 @@ decl ::= ident "::" type
        | "foreign" ident "::" type
        | "foreign" "type" properName "::" kind
        | ("infix" | "infixl" | "infixr") INT (qualIdent | qualProperName) "as" operatorName
+       | "attribute" ident attributeParameter*
 
 dataCtor ::= properName typeAtom*
+attributeParameter ::= attributeParameterType
+                     | "(" label "::" type ("=" expr)? ")"
+attributeParameterType ::= qualProperName | "(" ")" | "(" type ")" | "(" type "," sep(type, ",") ")"
+                         | "{" sep(rowItem, ",")? "}" | "[" sep(rowItem, ",")? "]"
 typeVarBinding ::= typeVar | "(" typeVar "::" kind ")"
 typeVar        ::= any ident but "by"
 ```
@@ -287,7 +295,6 @@ exprAtom ::= "_" | HOLE | qualIdent | qualProperName | DISCRIMINATOR
            | OPVALUE | TAG | "true" | "false" | INT | NUMBER | CHAR | STRING
            | "resume"
            | "(" ")" | "(" expr ")" | "(" expr "," sep(expr, ",") ")"
-           | "[" sep(expr, ",")? "]"
            | "{" recordFields? "}"
            | "M.(" expr ")"
            | macroCall

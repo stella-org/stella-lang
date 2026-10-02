@@ -42,6 +42,7 @@ This document settles what a name written in source refers to. By the time a ter
 | **type** | data types, newtypes, type synonyms, foreign types, effects | type variables | types, rows |
 | **operator** | the operators fixity declarations introduce | none | between operands, and as a value `(++)` |
 | **macro** | the macros the imports bring; none the module declares | none | the name of a macro call, `m%` |
+| **attribute** | the attributes declared by the module and the imports | none | the head of an attribute, `@[a …]` |
 | **module** | none; the aliases `as` introduces and the namespace tokens `import lazy` introduces, which the header declares | none | the qualifier `X.` of a name, and local open |
 | **cell** | none | the cells of a handler | `x!` and `x := e` |
 
@@ -53,6 +54,7 @@ This document settles what a name written in source refers to. By the time a ter
 - **A macro has a namespace of its own, because it is visible where a value is not.** A macro cannot be used in the module declaring it, so the module's own macros are not in its macro namespace and appear only in its exports. `m%` looks `m` up there, and a bare `m` in the value namespace; a value and a macro of one spelling stand together without either hiding the other, and a macro the module declares hides no imported macro of its name. That a macro is compiled to a Stella function is not visible at the source level.
 - **A macro produced by an expansion is no different.** It is not in the macro namespace of the module it was produced in, so it affects no later expansion there.
 - **Two imported macros of one name are ambiguous where they are called**, and a qualified call, `M.m%( … )`, tells them apart.
+- **An attribute is not a value.** It is declared by a declaration of its own and named at the head of `@[ … ]` alone, so it has a namespace of its own, and a value and an attribute of one spelling stand together ([Attributes, Modifiers, and Directives](07-Attributes-Modifiers-and-Directives.md)).
 - **An operator is another name for a value.** A fixity declaration `infixr 5 add as +` makes `+` refer to the value `add`. Type operators are not admitted ([Syntax](05-Syntax.md)).
 - **A cell is reached through its own syntax alone.** `x!` and `x := e` name a cell, a bare `x` never does, and a cell and a value variable of one spelling stand together without either hiding the other ([Effect Handlers](02-Effect-Handlers.md)).
 - **A kind variable is bound by the declaration it appears in**, implicitly and at the front (D3), and is in scope in the kind positions of that declaration alone. `Type`, `Effect`, and `Row` are a closed set of words with that meaning in a kind position, so a kind has no top-level entries to resolve ([Syntax](05-Syntax.md)).
@@ -93,7 +95,7 @@ This document settles what a name written in source refers to. By the time a ter
 
 | Export list | Exported |
 | --- | --- |
-| none | every declaration of the module: values, types with their constructors, effects with their operations, operators, and macros; nothing imported |
+| none | every declaration of the module: values, types with their constructors, effects with their operations, operators, macros, and attributes; nothing imported |
 | an item naming an entity in scope | that entity, the module's own or imported, qualified or not |
 | `module A`, `A` an alias | every name `A.` qualifies, across every import sharing the alias |
 | `module N`, `N` imported without `as` | every name that import brings in unqualified |
@@ -116,13 +118,14 @@ This document settles what a name written in source refers to. By the time a ter
 | `(++)` | operator |
 | `T`, `T(..)`, `T(A, B)`, `E(get, set)` | type: a data type with its constructors, or an effect with its operations |
 | `macro m` | macro |
+| `attribute a` | attribute |
 
 ```stella
 import M (Maybe(..), State(..), fromMaybe, (<>), macro format)
 ```
 
 - **A type and an effect need no word of their own.** Both are in the type namespace, where one module declares no name twice, so what the members after the name select — constructors or operations — follows from the declaration, and a member that is neither is an error.
-- **`macro` has this meaning in a list alone**, as `as` and `lazy` have theirs in an import, and is an ordinary name elsewhere.
+- **`macro` has this meaning in a list alone**, as `as` and `lazy` have theirs in an import, and is an ordinary name elsewhere. `attribute` is a keyword, beginning an attribute declaration.
 - **`type` before an item is reserved for type operators**, which are not admitted yet.
 
 ## Local open
@@ -140,7 +143,7 @@ g xs = A.( length xs )           -- length is A.length
 ```
 
 - **The two kinds of alias differ outside the construct alone.** `M.x` is usable anywhere in the module after `import … as M`, and nowhere after `import lazy … as M`, which is what keeps a lazy alias from adding anything to the module's scope ([Modules](../06-Modules/01-Modules.md)).
-- **What is opened is what a module can export**: the value, type, operator, and macro namespaces. A type in an annotation, an effect in a row, a constructor in a pattern, a discriminator, an operator, and a macro call inside `e` are resolved by the same rule; an operator opened this way takes its fixity from `M`. Local binders and cells are not a module's to open.
+- **What is opened is what a module can export**: the value, type, operator, and macro namespaces. An attribute is attached to a declaration and so never stands inside an expression, where an open is; `@[M.a]` and an import list reach one. A type in an annotation, an effect in a row, a constructor in a pattern, a discriminator, an operator, and a macro call inside `e` are resolved by the same rule; an operator opened this way takes its fixity from `M`. Local binders and cells are not a module's to open.
 - **What is opened is an alias.** A module imported without `as` has no qualifier, so its full name cannot be opened.
 - **The header still names every dependency.** The alias is declared by an import in either case, so local open adds nothing a build reads ([Modules](../06-Modules/01-Modules.md)).
 

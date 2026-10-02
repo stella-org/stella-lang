@@ -53,7 +53,7 @@ A name the compiler generates, such as `$entry_main`, is not a name of this gram
 ### Keywords
 
 ```text
-module where import data newtype type effect handler foreign
+module where import data newtype type effect handler foreign attribute
 infix infixl infixr let in case of forall handle with using
 full fast reifiable resume var true false
 ```

@@ -304,15 +304,21 @@ Of these, the Core type checker enforces only the first, through D23. The rest a
 ## Attributes
 
 ```text
-@[typeclass.instance]
-nonrec eqInt : Record ( eq : Int -> Int -> Boolean ) = …
+module TC
+  attribute instance
+
+module Main
+  @[ TC.instance ]
+  nonrec eqInt : Record ( eq : Int -> Int -> Boolean ) = …
 ```
 
-An attribute **has no meaning for the Core type checker**, which ignores attributes entirely.
+An attribute is declared by a declaration of its own, and a declaration carries the attributes attached to it: each the attribute's qualified name and its arguments, which are constants ([Attributes, Modifiers, and Directives](../02-Surface-Language/07-Attributes-Modifiers-and-Directives.md)).
+
+An attribute **has no meaning for the Core type checker**, which checks that its arguments have the types its declaration gives them and nothing else. No term refers to an attribute, and nothing of one reaches a `.dmo`.
 
 Attributes exist so that a resolver can search for declarations carrying one. They must therefore be persisted in a compiled module's interface and be queryable from elaborators in other modules ([Elaboration](../02-Surface-Language/01-Elaboration.md)).
 
-The namespace of attributes and the syntax of their values are decided by libraries. The compiler carries a string key and a structured value, nothing more.
+Which attributes there are is decided by the libraries declaring them, and what one means by whatever reads it. The compiler records them and answers for them, and is a reader of the few `Prim` declares for it.
 
 ## Declaration typing and the entry point
 
