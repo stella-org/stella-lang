@@ -133,3 +133,26 @@ spec = describe "Stella.Compiler.CST.Check" do
         [ { line: 2, column: 1, reason: DirectiveArgumentsInvalid }
         , { line: 3, column: 1, reason: DirectiveArgumentsInvalid }
         ]
+
+  describe "imports" do
+    it "report `hiding` on an import with a list, an alias, or `lazy`, each on its own, where the word stands" do
+      [ "import A hiding (x)"
+      , "import B (y) hiding (x)"
+      , "import C hiding (x) as C"
+      , "import lazy D hiding (x)"
+      , "import E hiding ()"
+      , "import F (y) hiding ()"
+      ] `reports`
+        [ { line: 3, column: 14, reason: HidingNotOnPlainImport }
+        , { line: 4, column: 10, reason: HidingNotOnPlainImport }
+        , { line: 5, column: 15, reason: HidingNotOnPlainImport }
+        , { line: 7, column: 14, reason: HidingNotOnPlainImport }
+        ]
+
+  describe "type operators" do
+    it "report `/` named as a type operator, and not as a term operator" do
+      [ "infixl 7 type Quotient as /"
+      , "infixl 7 div as /"
+      , "infixr 6 type Tuple as /\\"
+      ] `reports`
+        [ { line: 2, column: 27, reason: TypeOperatorReserved } ]

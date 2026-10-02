@@ -220,7 +220,7 @@ lex src = tailRec step initial
       | c == '[' -> ok TokLeftSquare (i + 1)
       | c == ']' -> ok TokRightSquare (i + 1)
       | c == ',' -> ok TokComma (i + 1)
-      | c == '\\' -> ok TokBackslash (i + 1)
+      | c == '\\' && runOf i isOpChar == 1 -> ok TokBackslash (i + 1)
       | c == '{' && is (i + 1) '|' -> ok TokLeftBar (i + 2)
       | c == '{' && is (i + 1) '{' -> ok TokLeftSynth (i + 2)
       | c == '{' -> ok TokLeftBrace (i + 1)
@@ -565,7 +565,7 @@ isHexDigit :: Char -> Boolean
 isHexDigit c = isDigit c || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 
 isOpChar :: Char -> Boolean
-isOpChar c = String.contains (String.Pattern (SCU.singleton c)) "!#$%&*+-/:.<=>?@^|~"
+isOpChar c = String.contains (String.Pattern (SCU.singleton c)) "!#$%&*+-/:.<=>?@\\^|~"
 
 isHighSurrogate :: Char -> Boolean
 isHighSurrogate c = toCharCode c >= 0xD800 && toCharCode c <= 0xDBFF
@@ -575,7 +575,7 @@ isLowSurrogate c = toCharCode c >= 0xDC00 && toCharCode c <= 0xDFFF
 
 -- | The operators that are reserved when written alone.
 isReservedAlone :: String -> Boolean
-isReservedAlone op = Array.elem op [ ".", "...", "=", "|", "@", "%", "#", "!", ":", "::", "->", "->*", "=>", "<-", ":=", "~>" ]
+isReservedAlone op = Array.elem op [ "\\", ".", "...", "=", "|", "@", "%", "#", "!", ":", "::", "->", "->*", "=>", "<-", ":=", "~>" ]
 
 digitValue :: Char -> Number
 digitValue c

@@ -92,8 +92,15 @@ spec = describe "Stella.Compiler.CST.Lexer" do
       "a DA.++ b" `lexesTo` [ lower "a", TokOperator (Just "DA") "++", lower "b" ]
     it "reads a local open" do
       "DA.( x )" `lexesTo` [ TokLocalOpen "DA", lower "x", TokRightParen ]
+    it "reads `\\` as an operator character, a lone one being the lambda's" do
+      "a /\\ b \\/ c" `lexesTo` [ lower "a", op "/\\", lower "b", op "\\/", lower "c" ]
+      "\\x -> x" `lexesTo` [ TokBackslash, lower "x", op "->", lower "x" ]
+      "(\\_ -> 1)" `lexesTo` [ TokLeftParen, TokBackslash, TokUnderscore, op "->", int "1" 1, TokRightParen ]
+      "f $\\x -> x" `lexesTo` [ lower "f", op "$\\", lower "x", op "->", lower "x" ]
     it "refuses a reserved operator as a value" do
       "(=)" `failsWith` ReservedOperatorValue "="
+      "(\\)" `failsWith` ReservedOperatorValue "\\"
+      "M.\\ x" `failsWith` ReservedOperatorValue "\\"
     it "reads an infix name" do
       "n `rem` 3 `M.mod` 2" `lexesTo` [ lower "n", TokInfixName Nothing "rem", int "3" 3, TokInfixName (Just "M") "mod", int "2" 2 ]
     it "refuses a lone `%` and `#`" do

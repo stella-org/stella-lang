@@ -90,6 +90,7 @@ import Stella.Compiler.CST.Types as C
 %token BY       "by"       @ { { value: C.TokLowerName Nothing "by" } }
 %token IMPLICIT "implicit" @ { { value: C.TokLowerName Nothing "implicit" } }
 %token MACRO_WORD "macro" @ { { value: C.TokLowerName Nothing "macro" } }
+%token HIDING   "hiding"   @ { { value: C.TokLowerName Nothing "hiding" } }
 
 %token LOWER          "a name"                  @ { { value: C.TokLowerName Nothing _ } }
 %token QUAL_LOWER     "a qualified name"        @ { { value: C.TokLowerName _ _ } }
@@ -114,7 +115,7 @@ import Stella.Compiler.CST.Types as C
 %start { C.Type } parseType
 %start { C.Expr } parseExpr
 
-%type { C.Name } ident typeVarIdent opIdent label qualIdent properName qualProperName moduleName operatorName
+%type { C.Name } ident typeVarIdent opIdent label qualIdent properName qualProperName moduleName operatorName typeOperatorName
 %type { C.Module } parseModule
 %type { Maybe (Array C.Export) } exportList
 %type { C.Export } export
@@ -138,7 +139,7 @@ import Stella.Compiler.CST.Types as C
 %type { C.TypeVarBinding } typeVarBinding
 %type { Array C.TypeVarBinding } typeVarBindings typeVarBindings1
 %type { C.Kind } kind kind1 kindAtom
-%type { C.Type } parseType type type1 type2 typeAtom
+%type { C.Type } parseType type type1 type2 typeAtom typeOp
 %type { Array C.Type } typeAtoms
 %type { C.RowItem } rowItem
 %type { Array C.RowItem } rowItems
@@ -200,6 +201,7 @@ ident:
   | t = RETURN   { B.name t }
   | t = BY       { B.name t }
   | t = IMPLICIT { B.name t }
+  | t = HIDING   { B.name t }
   | t = MACRO_WORD { B.name t }
 
 -- A type variable. `by` closes a synthesized argument, `{{ … by f }}`, and so
@@ -211,6 +213,7 @@ typeVarIdent:
   | t = RETURN   { B.name t }
   | t = IMPLICIT { B.name t }
   | t = MACRO_WORD { B.name t }
+  | t = HIDING   { B.name t }
 
 -- An operation's name in a clause, where `return` begins the return clause.
 opIdent:
@@ -221,6 +224,7 @@ opIdent:
   | t = BY         { B.name t }
   | t = IMPLICIT   { B.name t }
   | t = MACRO_WORD   { B.name t }
+  | t = HIDING     { B.name t }
 
 qualIdent:
   | n = ident        { n }
@@ -290,6 +294,7 @@ exportList:
 export:
   | n = qualIdent                  { C.ExportValue n }
   | t = OPVALUE                    { C.ExportOperator (B.name t) }
+  | TYPE t = OPVALUE               { C.ExportTypeOperator (B.name t) }
   | n = properName                 { C.ExportType n Nothing }
   | n = properName m = members     { C.ExportType n (Just m) }
   | MACRO_WORD n = ident           { C.ExportMacro n }
@@ -308,15 +313,22 @@ memberName:
   | n = ident      { n }
 
 importDecl:
-  | IMPORT n = moduleName is = importList a = importAlias
-      { C.Import { lazy: false, module: n, names: is, alias: a } }
-  | IMPORT LAZY n = moduleName is = importList a = importAlias
-      { C.Import { lazy: true, module: n, names: is, alias: a } }
+  | IMPORT n = moduleName is = importList h = importHiding a = importAlias
+      { C.Import { lazy: false, module: n, names: is, hiding: h, alias: a } }
+  | IMPORT LAZY n = moduleName is = importList h = importHiding a = importAlias
+      { C.Import { lazy: true, module: n, names: is, hiding: h, alias: a } }
 
 importList:
   |                                                   { Nothing }
   | LPAREN RPAREN                                     { Just [] }
   | LPAREN is = manySep(importItem, COMMA) RPAREN     { Just is }
+
+-- `hiding ( … )`, read after any import; that it stands on `import M` alone is
+-- checked afterwards.
+importHiding:
+  |                                                       { Nothing }
+  | h = HIDING LPAREN RPAREN                                  { Just { range: B.range h, items: [] } }
+  | h = HIDING LPAREN is = manySep(importItem, COMMA) RPAREN  { Just { range: B.range h, items: is } }
 
 importAlias:
   |                       { Nothing }
@@ -325,6 +337,7 @@ importAlias:
 importItem:
   | n = ident                      { C.ImportValue n }
   | t = OPVALUE                    { C.ImportOperator (B.name t) }
+  | TYPE t = OPVALUE               { C.ImportTypeOperator (B.name t) }
   | n = properName                 { C.ImportType n Nothing }
   | n = properName m = members     { C.ImportType n (Just m) }
   | MACRO_WORD n = ident           { C.ImportMacro n }
@@ -438,6 +451,9 @@ plainToken:
   | t = RETURN { t }
   | t = BY { t }
   | t = IMPLICIT { t }
+  | t = MACRO_WORD { t }
+  | t = HIDING { t }
+  | t = ATTRIBUTE { t }
   | t = LOWER { t }
   | t = QUAL_LOWER { t }
   | t = UPPER { t }
@@ -495,6 +511,8 @@ decl:
       { C.DeclFixity f (B.intLiteral p) n o }
   | f = fixity p = LIT_INT n = qualProperName AS o = operatorName
       { C.DeclFixity f (B.intLiteral p) n o }
+  | f = fixity p = LIT_INT TYPE n = qualProperName AS o = operatorName
+      { C.DeclTypeFixity f (B.intLiteral p) n o }
   | ATTRIBUTE n = ident ps = manyOrEmpty(attributeParameter)
       { C.DeclAttribute n ps }
 
@@ -564,13 +582,24 @@ type:
 
 -- `/` stands after the last arrow of a chain, and belongs to it.
 type1:
-  | t = type2 %shift                     { t }
-  | a = type2 RARROW b = type1           { C.TypeArrow a b }
+  | t = typeOp %shift                    { t }
+  | a = typeOp RARROW b = type1          { C.TypeArrow a b }
   -- `->*` is read wherever an arrow may stand; that an operation's signature
   -- holds exactly one, and nothing else holds any, is checked afterwards.
-  | a = type2 o = OPARROW b = type1      { C.TypeOperationArrow a (B.range o) b }
-  | a = type2 s = SLASH r = typeAtom     { C.TypeEffect a (B.range s) r }
-  | a = type2 SQUIGARROW b = type2 %shift { C.TypeCapability a b }
+  | a = typeOp o = OPARROW b = type1     { C.TypeOperationArrow a (B.range o) b }
+  | a = typeOp s = SLASH r = typeAtom    { C.TypeEffect a (B.range s) r }
+  | a = typeOp SQUIGARROW b = typeOp %shift { C.TypeCapability a b }
+
+-- Type operators are read in the order written, binding tighter than the arrows
+-- and looser than application; fixity rebrackets them later. `/` belongs to the
+-- grammar of types and is no operator there.
+typeOp:
+  | t = type2 %shift                                  { t }
+  | a = typeOp o = typeOperatorName b = type2 %shift  { C.TypeOp a o b }
+
+typeOperatorName:
+  | t = OPERATOR      { B.name t }
+  | t = QUAL_OPERATOR { B.name t }
 
 type2:
   | t = typeAtom                { t }

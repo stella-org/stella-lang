@@ -73,6 +73,7 @@ nameOf = case _ of
   DeclForeign n _ -> n.name
   DeclForeignType n _ -> n.name
   DeclFixity _ _ _ (n :: Name) -> n.name
+  DeclTypeFixity _ _ _ (n :: Name) -> n.name
   DeclAttribute n _ -> n.name
 
 written :: Name -> String

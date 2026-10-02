@@ -252,6 +252,8 @@ data Module = Module
 data Export
   = ExportValue Name
   | ExportOperator Name
+  -- | `type (op)`, a type operator.
+  | ExportTypeOperator Name
   | ExportType Name (Maybe Members)
   | ExportMacro Name
   | ExportAttribute Name
@@ -267,12 +269,17 @@ data Import = Import
   { lazy :: Boolean
   , module :: Name
   , names :: Maybe (Array ImportItem)
+  -- | `hiding ( … )`, the names left out of what the import brings, with where
+  -- | the word `hiding` stands.
+  , hiding :: Maybe { range :: SourceRange, items :: Array ImportItem }
   , alias :: Maybe Name
   }
 
 data ImportItem
   = ImportValue Name
   | ImportOperator Name
+  -- | `type (op)`, a type operator.
+  | ImportTypeOperator Name
   | ImportType Name (Maybe Members)
   | ImportMacro Name
   | ImportAttribute Name
@@ -326,6 +333,8 @@ data Decl
   | DeclForeign Name Type
   | DeclForeignType Name Kind
   | DeclFixity Fixity (Literal Int) Name Name
+  -- | `infixr n type T as op`, a type operator.
+  | DeclTypeFixity Fixity (Literal Int) Name Name
   -- | `attribute name τ … (label :: τ) … (label :: τ = c) …`.
   | DeclAttribute Name (Array AttributeParameter)
 
@@ -357,6 +366,8 @@ data Type
   | TypeHole Name
   | TypeUnit SourceRange
   | TypeApp Type Type
+  -- | Type operators in the order written; fixity is applied later.
+  | TypeOp Type Name Type
   | TypeArrow Type Type
   -- | `τ ->* σ`, in the signature of an operation, with where the `->*` stands.
   | TypeOperationArrow Type SourceRange Type

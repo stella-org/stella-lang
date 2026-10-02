@@ -42,6 +42,7 @@ sketchModule (Module m) =
   export = case _ of
     ExportValue n -> name n
     ExportOperator n -> "(" <> name n <> ")"
+    ExportTypeOperator n -> "type (" <> name n <> ")"
     ExportType n ms -> name n <> members ms
     ExportMacro n -> "macro " <> name n
     ExportAttribute n -> "attribute " <> name n
@@ -64,6 +65,11 @@ sketchItem = case _ of
                 Just is -> [ list (map importItem is) ]
             )
           <>
+            ( case i.hiding of
+                Nothing -> []
+                Just h -> [ "hiding", list (map importItem h.items) ]
+            )
+          <>
             ( case i.alias of
                 Nothing -> []
                 Just a -> [ "as", name a ]
@@ -79,6 +85,7 @@ sketchItem = case _ of
   importItem = case _ of
     ImportValue n -> name n
     ImportOperator n -> "(" <> name n <> ")"
+    ImportTypeOperator n -> "type (" <> name n <> ")"
     ImportType n ms -> name n <> members ms
     ImportMacro n -> "macro " <> name n
     ImportAttribute n -> "attribute " <> name n
@@ -119,6 +126,7 @@ sketchDecl = case _ of
   DeclForeign n t -> list [ "foreign", name n, sketchType t ]
   DeclForeignType n k -> list [ "foreign-type", name n, sketchKind k ]
   DeclFixity f p n o -> list [ fixity f, p.raw, name n, name o ]
+  DeclTypeFixity f p n o -> list [ fixity f, p.raw, "type", name n, name o ]
   DeclAttribute n ps -> list ([ "attribute", name n ] <> map parameter ps)
   where
   parameter = case _ of
@@ -155,6 +163,7 @@ sketchType = case _ of
   TypeHole n -> "?" <> name n
   TypeUnit _ -> "()"
   TypeApp f a -> list [ sketchType f, sketchType a ]
+  TypeOp a o b -> list [ name o, sketchType a, sketchType b ]
   TypeArrow a b -> list [ "->", sketchType a, sketchType b ]
   TypeOperationArrow a _ b -> list [ "->*", sketchType a, sketchType b ]
   TypeEffect t _ r -> list [ "/", sketchType t, sketchType r ]

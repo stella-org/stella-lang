@@ -57,6 +57,15 @@ spec = describe "Stella.Compiler.CST.Parser" do
       "(String -> Int) / {| Config |}" `typeIs` "(/ (parens (-> String Int)) (effects Config))"
     it "reads constraints" do
       "forall a. Show a => a -> String" `typeIs` "(forall a (=> (Show a) (-> a String)))"
+    it "reads type operators in the order written, tighter than an arrow and looser than application" do
+      "f a /\\ g b -> c" `typeIs` "(-> (/\\ (f a) (g b)) c)"
+      "a + b * c" `typeIs` "(* (+ a b) c)"
+      "a T.+ b" `typeIs` "(T.+ a b)"
+      "{ x :: a + b }" `typeIs` "(record x::(+ a b))"
+      "a + b => c" `typeIs` "(=> (+ a b) c)"
+    it "reads `/` after an operator chain as the row of a computation type, and as no operator" do
+      "a + b / e" `typeIs` "(/ (+ a b) e)"
+      typeRejected "a / e + b"
     it "reads records, tuples, variants and effect rows" do
       "{ name :: String, ...r }" `typeIs` "(record name::String ...r)"
       "(Int, String)" `typeIs` "(tuple Int String)"
@@ -123,6 +132,7 @@ spec = describe "Stella.Compiler.CST.Parser" do
       "let v = n! in n := v + 1" `exprIs` "(let (= v n!) (:= n (+ v 1)))"
     it "reads macro calls" do
       "format%\"Hello {world}\"" `exprIs` "(format% \"Hello {world}\")"
+      "m%( macro attribute hiding )" `exprIs` "(m% ( macro attribute hiding ))"
       "if%{ c then a else b }" `exprIs` "(if% { c then a else b })"
 
   describe "case" do
@@ -209,6 +219,9 @@ spec = describe "Stella.Compiler.CST.Parser" do
     it "reads fixity declarations" do
       [ "infixr 5 add as +", "infixl 8 range as .." ] `itemsAre`
         [ "(infixr 5 add +)", "(infixl 8 range ..)" ]
+    it "reads type fixity declarations" do
+      [ "infixr 0 type RowApply as +", "infixr 6 type T.Tuple as /\\" ] `itemsAre`
+        [ "(infixr 0 type RowApply +)", "(infixr 6 type T.Tuple /\\)" ]
     it "reads a keyword as a label of an attribute's argument, and not as its name" do
       [ "@[foo where=1 of=2]", "x = 1" ] `itemsAre`
         [ "(@ foo where=1 of=2)", "(value x 1)" ]
@@ -255,6 +268,24 @@ spec = describe "Stella.Compiler.CST.Parser" do
         Left e -> fail (printSyntaxError e)
         Right m -> sketchModule m `shouldEqual`
           "(module M (attribute json) (import TC (attribute instance) as TC))"
+    it "reads type operators in lists" do
+      case parseModule "module M (type (+), (+)) where\nimport R (type (+)) as R" of
+        Left e -> fail (printSyntaxError e)
+        Right m -> sketchModule m `shouldEqual` "(module M (type (+) (+)) (import R (type (+)) as R))"
+    it "reads `hiding` after an import, and as an ordinary name elsewhere" do
+      [ "import Prelude hiding (map, Maybe(..), (<>), type (+), macro m)"
+      , "import Data.List hiding ()"
+      , "hiding = 1"
+      , "f hiding = hiding"
+      ] `itemsAre`
+        [ "(import Prelude hiding (map Maybe(..) (<>) type (+) macro m))"
+        , "(import Data.List hiding ())"
+        , "(value hiding 1)"
+        , "(value f hiding hiding)"
+        ]
+    it "reads `hiding` on any import, which is checked afterwards" do
+      [ "import lazy M hiding (x) as N", "import M (a) hiding (b)" ] `itemsAre`
+        [ "(import-lazy M hiding (x) as N)", "(import M (a) hiding (b))" ]
     it "refuses `macro` before anything but a name" do
       rejects [ "import Fmt (macro (++))" ]
     it "refuses an empty export list" do

@@ -88,6 +88,9 @@ spec = describe "CST.Range" do
     it "covers an effectful arrow from its argument to its row" do
       expectType "Int -> Unit / e" (on 1 1 16)
 
+    it "covers a type operator from its left operand to its right" do
+      expectType "f a /\\ b" (on 1 1 9)
+
     it "covers a row with its brackets, empty or not" do
       expectType "{||}" (on 1 1 5)
       expectType "{| Console |}" (on 1 1 14)

@@ -10,8 +10,8 @@ import Prelude
 import Prim hiding (Type)
 
 import Data.Foldable (foldMap)
-import Data.Maybe (Maybe(..))
-import Stella.Compiler.CST.Types (Argument(..), AttributeParameter(..), Directive, Binder(..), CaseBody(..), Clause(..), Decl(..), Expr(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Item(..), LetBinding(..), Module(..), Name, RecordBinder(..), RecordField(..), RowItem(..), SourceRange, Type(..))
+import Data.Maybe (Maybe(..), isJust)
+import Stella.Compiler.CST.Types (Argument(..), AttributeParameter(..), Directive, Binder(..), CaseBody(..), Clause(..), Decl(..), Expr(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Import(..), Item(..), LetBinding(..), Module(..), Name, RecordBinder(..), RecordField(..), RowItem(..), SourceRange, Type(..))
 
 data CheckError = CheckError SourceRange CheckReason
 
@@ -37,6 +37,11 @@ data CheckReason
   | DirectiveArgumentsInvalid
   -- | A directive of this version in a type, where none stands.
   | DirectiveInType
+  -- | `hiding` on an import that is not `import M`: one with a list, an alias, or
+  -- | `lazy`.
+  | HidingNotOnPlainImport
+  -- | `/` named as a type operator, which belongs to the grammar of types.
+  | TypeOperatorReserved
 
 derive instance Eq CheckReason
 
@@ -49,6 +54,8 @@ instance Show CheckReason where
     DirectiveUnsupported -> "DirectiveUnsupported"
     DirectiveArgumentsInvalid -> "DirectiveArgumentsInvalid"
     DirectiveInType -> "DirectiveInType"
+    HidingNotOnPlainImport -> "HidingNotOnPlainImport"
+    TypeOperatorReserved -> "TypeOperatorReserved"
 
 printCheckReason :: CheckReason -> String
 printCheckReason = case _ of
@@ -65,13 +72,18 @@ printCheckReason = case _ of
   DirectiveUnsupported -> "This directive is not supported; the one there is is `#observ(none)`"
   DirectiveArgumentsInvalid -> "`#observ` takes the one argument `none`"
   DirectiveInType -> "This directive cannot stand in a type"
+  HidingNotOnPlainImport ->
+    "`hiding` can stand only on an import with no list, no alias, and no `lazy`"
+  TypeOperatorReserved -> "`/` belongs to the grammar of types and cannot be a type operator"
 
 checkModule :: Module -> Array CheckError
 checkModule (Module m) = foldMap item m.items
 
 item :: Item -> Array CheckError
 item = case _ of
-  ItemImport _ -> []
+  ItemImport (Import i) -> case i.hiding of
+    Just h | i.lazy || isJust i.names || isJust i.alias -> [ CheckError h.range HidingNotOnPlainImport ]
+    _ -> []
   ItemAttribute a -> foldMap argument a.args
   ItemDirective d -> directive d <> foldMap (foldMap argument) d.args
   ItemModifier _ -> []
@@ -96,6 +108,9 @@ decl = case _ of
   DeclForeign _ t -> type_ t
   DeclForeignType _ _ -> []
   DeclFixity _ _ _ _ -> []
+  DeclTypeFixity _ _ _ o
+    | o.qualifier == Nothing && o.name == "/" -> [ CheckError o.range TypeOperatorReserved ]
+    | otherwise -> []
   DeclAttribute _ ps -> foldMap parameter ps
   where
   parameter = case _ of
@@ -187,6 +202,7 @@ subtypes :: Type -> Array Type
 subtypes = case _ of
   TypeOperationArrow a _ b -> [ a, b ]
   TypeApp f a -> [ f, a ]
+  TypeOp a _ b -> [ a, b ]
   TypeArrow a b -> [ a, b ]
   TypeEffect t _ r -> [ t, r ]
   TypeCapability a b -> [ a, b ]

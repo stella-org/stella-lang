@@ -79,6 +79,7 @@ typeRange = case _ of
   TypeHole n -> n.range
   TypeUnit r -> r
   TypeApp f a -> covering (typeRange f) (typeRange a)
+  TypeOp a _ b -> covering (typeRange a) (typeRange b)
   TypeArrow a b -> covering (typeRange a) (typeRange b)
   TypeOperationArrow a _ b -> covering (typeRange a) (typeRange b)
   TypeEffect t _ e -> covering (typeRange t) (typeRange e)
