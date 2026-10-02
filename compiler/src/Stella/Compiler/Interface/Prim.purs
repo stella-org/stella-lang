@@ -49,6 +49,7 @@ primInterface =
       , types: Map.fromFoldable (map typeEntry (Map.toUnfoldable primSignature.types :: Array _))
       , effects: Map.empty
       , operators: Map.empty
+      , typeOperators: Map.empty
       , attributes: Map.fromFoldable (map (\n -> Tuple (Ident n) { positional: [], keyword: [] }) attributeNames)
       }
   , implicitHandlers: []

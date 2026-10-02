@@ -30,6 +30,7 @@ module Stella.Compiler.Interface.Module
   , EffectEntry
   , OperationEntry
   , OperatorEntry
+  , TypeOperatorEntry
   , AttributeEntry
   , KeywordParameterEntry
   , Attribute
@@ -55,6 +56,7 @@ import Data.Show.Generic (genericShow)
 import Stella.Compiler.Interface (Dmi)
 import Stella.Compiler.Interface.Scheme (Scheme, SchemeBody(..), coreBody)
 import Stella.Compiler.Surface.Decl (Associativity, FixityTarget, Observation)
+import Stella.Compiler.Surface.Type (TypeOperatorTarget)
 import Stella.Compiler.Surface.Name (OperatorName)
 import Stella.Compiler.TypedCore.Kind (KindScheme)
 import Stella.Compiler.TypedCore.Name (EffName, Ident(..), ModuleName, Qualified(..), Symbol, TyName)
@@ -87,6 +89,7 @@ type Exports =
   { values :: Map String (Export (Qualified Ident))
   , types :: Map String TypeExport
   , operators :: Map String (Export (Qualified OperatorName))
+  , typeOperators :: Map String (Export (Qualified OperatorName))
   , macros :: Map String (Export (Qualified Ident))
   , attributes :: Map String (Export (Qualified Ident))
   -- | The modules it re-exports whole, `module N`: every name of theirs is in
@@ -128,6 +131,7 @@ type Declarations =
   , types :: Map TyName TypeEntry
   , effects :: Map EffName EffectEntry
   , operators :: Map OperatorName OperatorEntry
+  , typeOperators :: Map OperatorName TypeOperatorEntry
   , attributes :: Map Ident AttributeEntry
   }
 
@@ -200,6 +204,14 @@ type OperatorEntry =
   , target :: FixityTarget
   }
 
+-- | `infixr 0 type RowApply as +`: what the type operator is another name for,
+-- | and how it binds.
+type TypeOperatorEntry =
+  { associativity :: Associativity
+  , precedence :: Int
+  , target :: TypeOperatorTarget
+  }
+
 -- | An attribute declaration: the types of its positional parameters and its
 -- | keyword parameters, each with its default where it has one.
 type AttributeEntry =
@@ -249,6 +261,7 @@ emptyExports =
   { values: Map.empty
   , types: Map.empty
   , operators: Map.empty
+  , typeOperators: Map.empty
   , macros: Map.empty
   , attributes: Map.empty
   , modules: []
@@ -260,6 +273,7 @@ emptyDeclarations =
   , types: Map.empty
   , effects: Map.empty
   , operators: Map.empty
+  , typeOperators: Map.empty
   , attributes: Map.empty
   }
 

@@ -29,6 +29,7 @@ module Stella.Compiler.Surface.Decl
   , FixityDeclaration
   , Associativity(..)
   , FixityTarget(..)
+  , TypeFixityDeclaration
   , AttributeDeclaration
   , KeywordParameter
   , Attribute
@@ -46,7 +47,7 @@ import Data.Show.Generic (genericShow)
 import Stella.Compiler.Surface.Expr (Binder, Expr, HandlerBody)
 import Stella.Compiler.Surface.Name (OperatorName)
 import Stella.Compiler.Surface.Origin (Origin)
-import Stella.Compiler.Surface.Type (ComputationType, HandlerSignature, Kind, OperationSignature, Signature, Type, TypeVarBinder)
+import Stella.Compiler.Surface.Type (ComputationType, HandlerSignature, Kind, OperationSignature, Signature, Type, TypeOperatorTarget, TypeVarBinder)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, ModuleName, Qualified, Symbol, TyName)
 import Stella.Compiler.TypedCore.Term (Literal)
 
@@ -74,6 +75,7 @@ data Declaration
   | DeclForeign ForeignDeclaration
   | DeclForeignType ForeignTypeDeclaration
   | DeclFixity FixityDeclaration
+  | DeclTypeFixity TypeFixityDeclaration
   | DeclAttribute AttributeDeclaration
 
 declarationOrigin :: Declaration -> Origin
@@ -88,6 +90,7 @@ declarationOrigin = case _ of
   DeclForeign d -> d.origin
   DeclForeignType d -> d.origin
   DeclFixity d -> d.origin
+  DeclTypeFixity d -> d.origin
   DeclAttribute d -> d.origin
 
 -- | A value, defined by one equation over irrefutable patterns.
@@ -212,6 +215,15 @@ data Associativity
 data FixityTarget
   = FixityValue (Qualified Ident)
   | FixityConstructor (Qualified Ident)
+
+-- | `infixr 0 type RowApply as +`, in the namespace of type operators.
+type TypeFixityDeclaration =
+  { origin :: Origin
+  , associativity :: Associativity
+  , precedence :: Int
+  , target :: TypeOperatorTarget
+  , operator :: OperatorName
+  }
 
 -- | `attribute name τ … (label :: τ = c) …`. Its parameter types are closed, so
 -- | a use of it needs no instantiation.

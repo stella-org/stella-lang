@@ -295,10 +295,10 @@ export:
   | n = qualIdent                  { C.ExportValue n }
   | t = OPVALUE                    { C.ExportOperator (B.name t) }
   | TYPE t = OPVALUE               { C.ExportTypeOperator (B.name t) }
-  | n = properName                 { C.ExportType n Nothing }
-  | n = properName m = members     { C.ExportType n (Just m) }
-  | MACRO_WORD n = ident           { C.ExportMacro n }
-  | ATTRIBUTE n = ident            { C.ExportAttribute n }
+  | n = qualProperName             { C.ExportType n Nothing }
+  | n = qualProperName m = members { C.ExportType n (Just m) }
+  | MACRO_WORD n = qualIdent       { C.ExportMacro n }
+  | ATTRIBUTE n = qualIdent        { C.ExportAttribute n }
   | MODULE n = moduleName          { C.ExportModule n }
 
 members:

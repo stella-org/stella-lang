@@ -31,6 +31,7 @@ module Stella.Compiler.Interface.Environment
   , lookupType
   , lookupEffect
   , lookupOperator
+  , lookupTypeOperator
   , lookupAttribute
   ) where
 
@@ -46,7 +47,7 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
-import Stella.Compiler.Interface.Module (AttributeEntry, EffectEntry, Exports, ModuleInterface, OperatorEntry, TypeEntry, ValueEntry)
+import Stella.Compiler.Interface.Module (AttributeEntry, EffectEntry, Exports, ModuleInterface, OperatorEntry, TypeEntry, TypeOperatorEntry, ValueEntry)
 import Stella.Compiler.Interface.Prim (primInterface)
 import Stella.Compiler.Surface.Name (OperatorName)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, ModuleName, Qualified(..), TyName)
@@ -139,6 +140,9 @@ lookupEffect q@(Qualified _ name) view = declaring q view >>= \i -> Map.lookup n
 
 lookupOperator :: Qualified OperatorName -> ModuleView -> Maybe OperatorEntry
 lookupOperator q@(Qualified _ name) view = declaring q view >>= \i -> Map.lookup name i.declarations.operators
+
+lookupTypeOperator :: Qualified OperatorName -> ModuleView -> Maybe TypeOperatorEntry
+lookupTypeOperator q@(Qualified _ name) view = declaring q view >>= \i -> Map.lookup name i.declarations.typeOperators
 
 lookupAttribute :: Qualified Ident -> ModuleView -> Maybe AttributeEntry
 lookupAttribute q@(Qualified _ name) view = declaring q view >>= \i -> Map.lookup name i.declarations.attributes

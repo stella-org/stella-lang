@@ -22,8 +22,8 @@ module Stella.Compiler.Surface
 -- imported qualified here as well.
 import Prim as P
 
-import Stella.Compiler.Surface.Decl (Associativity(..), Attribute, AttributeDeclaration, ComputationDeclaration, Constant(..), ConstructorDeclaration, DataDeclaration, Declaration(..), EffectDeclaration, FixityDeclaration, FixityTarget(..), ForeignDeclaration, ForeignTypeDeclaration, HandlerDeclaration, Import, KeywordArgument, KeywordParameter, Module, NewtypeDeclaration, Observation(..), OperationDeclaration, SynonymDeclaration, ValueDeclaration, constantOrigin, declarationOrigin)
+import Stella.Compiler.Surface.Decl (Associativity(..), Attribute, AttributeDeclaration, ComputationDeclaration, Constant(..), ConstructorDeclaration, DataDeclaration, Declaration(..), EffectDeclaration, FixityDeclaration, FixityTarget(..), ForeignDeclaration, ForeignTypeDeclaration, HandlerDeclaration, Import, KeywordArgument, KeywordParameter, Module, NewtypeDeclaration, Observation(..), OperationDeclaration, SynonymDeclaration, TypeFixityDeclaration, ValueDeclaration, constantOrigin, declarationOrigin)
 import Stella.Compiler.Surface.Expr (Alternative, AlternativeBody(..), Binder(..), CellDeclaration, ClauseForm(..), Expr(..), Group, GuardLine(..), HandlerBody, HandlerItem(..), LetBinding(..), OperationClause, RecordBinderField, RecordField(..), RecordRest, ReturnClause, binderOrigin, exprOrigin)
 import Stella.Compiler.Surface.Name (BindingId(..), CellVar(..), LocalVar(..), OperatorName(..), TypeVar(..))
 import Stella.Compiler.Surface.Origin (Origin(..), rangeOf, spanning)
-import Stella.Compiler.Surface.Type (ComputationType, EffectApplication, EffectRowItem(..), HandlerSignature(..), Kind(..), OperationSignature, RecordRowItem(..), Signature, SignaturePrefix(..), Type(..), TypeVarBinder, VariantRowItem(..), kindOrigin, typeOrigin)
+import Stella.Compiler.Surface.Type (ComputationType, EffectApplication, EffectRowItem(..), HandlerSignature(..), Kind(..), OperationSignature, RecordRowItem(..), Signature, SignaturePrefix(..), Type(..), TypeOperatorTarget(..), TypeVarBinder, VariantRowItem(..), kindOrigin, typeOrigin)

@@ -16,6 +16,7 @@ module Stella.Compiler.Surface.Type
   , Type(..)
   , typeOrigin
   , TypeVarBinder
+  , TypeOperatorTarget(..)
   , RecordRowItem(..)
   , VariantRowItem(..)
   , EffectRowItem(..)
@@ -72,6 +73,12 @@ data Type
   -- | `?name`, a typed hole. `?_` holds `_`.
   | TypeHole Origin String
   | TypeApp Origin Type Type
+  -- | A type operator applied to its two operands: the operator, then the
+  -- | operands, rebracketed by fixity. The operator is the entity it names, with
+  -- | the origin of where it was written; one naming an effect stands as an
+  -- | effect application where a row's element does, and is held here anywhere
+  -- | else, for kinding to judge.
+  | TypeOperator Origin { origin :: Origin, target :: TypeOperatorTarget } Type Type
   -- | `τ1 -> τ2`, with the row `/ ρ` puts on it where one is written. An arrow
   -- | without one is pure.
   | TypeFunction Origin Type Type (Maybe Type)
@@ -98,6 +105,7 @@ typeOrigin = case _ of
   TypeWildcard o -> o
   TypeHole o _ -> o
   TypeApp o _ _ -> o
+  TypeOperator o _ _ _ -> o
   TypeFunction o _ _ _ -> o
   TypeForall o _ _ -> o
   TypeConstrained o _ _ -> o
@@ -108,6 +116,14 @@ typeOrigin = case _ of
   TypeEffectRow o _ -> o
   TypeSynthesized o _ _ _ -> o
   TypeInvalid o -> o
+
+-- | What a type operator is another name for: an entity of the type namespace.
+-- | Whether applying it to two operands is well kinded is decided where the
+-- | application is kinded.
+data TypeOperatorTarget
+  = TargetTypeConstructor (Qualified TyName)
+  | TargetTypeSynonym (Qualified TyName)
+  | TargetEffect (Qualified EffName)
 
 -- | A type variable a `forall` or a declaration binds, with its kind where one
 -- | is written.
@@ -197,6 +213,12 @@ derive instance Generic Type _
 
 instance Show Type where
   show x = genericShow x
+
+derive instance Eq TypeOperatorTarget
+derive instance Generic TypeOperatorTarget _
+
+instance Show TypeOperatorTarget where
+  show = genericShow
 
 derive instance Eq RecordRowItem
 derive instance Generic RecordRowItem _
