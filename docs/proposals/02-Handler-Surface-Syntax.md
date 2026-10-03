@@ -227,9 +227,10 @@ semantics or backend, we enforce the following strict syntactic rule:
 
 > **The `resume` expression can only be used within the immediate lexical body of its introducing `full` clause. It must NOT cross any functional boundaries or evaluation-delay boundaries.**
 
-**The body of a handling expression is such a boundary.** `using h handle e` and
+**A handling expression is such a boundary, its items included.** `using h handle e` and
 `handle e with …` wrap their body in a thunk, and a handler item `h` is an arbitrary function,
-free to keep that thunk; a `resume` inside the body would escape through it.
+free to keep that thunk; a `resume` inside the body would escape through it. Every item after the
+first stands inside the thunk the item before it is applied to, and escapes the same way.
 
 The rule is deliberately strict for now. Relaxing it later only admits more programs, and breaks
 none that it accepts today.
@@ -274,13 +275,14 @@ Immediate evaluation paths (including conditional branches and composition) are 
 
 #### Compiler Verification Pipeline
 
-During elaboration (after macro expansion and desugaring), the compiler checks each `full` clause against the following rules:
+Name resolution checks each `full` clause against the following rules, from the syntax alone and on what a macro expands to as on what was written:
 
 1. `resume` must only appear inside a `full` clause context.
 2. Entering a nested lambda or local function definition **invalidates** the availability of the outer clause's `resume`.
-3. Entering the body of a handling expression (`handle … with …`, `using … handle …`) **invalidates** it likewise.
-4. Entering a nested handler clause **shadows** the outer clause's `resume` (if the inner clause is `full`, a new local `resume` context is established; if `fast`, `resume` is unavailable).
+3. Entering a handling expression (`handle … with …`, `using … handle …`), its items and its body alike, **invalidates** it likewise.
+4. Entering a nested handler clause **shadows** the outer clause's `resume` (if the inner clause is `full`, a new local `resume` context is established; if `fast` or `reifiable full`, `resume` is unavailable).
 5. Future extensions involving thunks or lazy expressions will treat them as evaluation-delay boundaries equivalent to function boundaries.
+6. `resume` stands applied, `resume e`; one bound to a name, passed as an argument, or returned is rejected.
 
 Through this design, the desugared Core language can still treat continuations as regular fresh variables (`k`), while the Surface language cleanly enforces the second-class restriction.
 

@@ -11,26 +11,26 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), maybe)
 import Data.Set as Set
 import Data.String (joinWith)
-import Data.Tuple (Tuple(..))
+import Data.Tuple (Tuple(..), fst)
 import Effect.Aff (Aff)
 import Stella.Compiler.CST (parseModule, printSyntaxError)
 import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
 import Stella.Compiler.Interface.Scheme (SchemeBody(..), plainScheme)
-import Stella.Compiler.Resolve.Expr (resolveDefinition)
+import Stella.Compiler.Resolve.Expr (resolveDefinition, resolveHandler)
 import Stella.Compiler.Resolve.Group (groupModule)
-import Stella.Compiler.Resolve.Monad (ResolveError(..), ResolveReason(..), ResolveWarning(..), contextOf, runResolve)
+import Stella.Compiler.Resolve.Monad (CellClosure(..), HandledEffectProblem(..), Resolve, ResolveError(..), ResolveReason(..), ResolveWarning(..), ResumeBlock(..), contextOf, runResolve)
 import Stella.Compiler.Resolve.Scope (resolveScope)
 import Stella.Compiler.Surface.Decl (Associativity(..), FixityTarget(..))
-import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder(..), Expr(..), GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..))
-import Stella.Compiler.Surface.Name (BindingId(..), LocalVar(..), OperatorName(..))
+import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder(..), ClauseForm(..), Expr(..), GuardLine(..), HandlerBody, HandlerItem(..), LetBinding(..), RecordField(..))
+import Stella.Compiler.Surface.Name (BindingId(..), CellVar(..), LocalVar(..), OperatorName(..))
 import Stella.Compiler.TypedCore.Domain (codePointOf, textOf)
-import Stella.Compiler.TypedCore.Kind (Kind(..), monoScheme)
+import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..), TyName(..))
 import Stella.Compiler.TypedCore.Prim (intTy)
 import Stella.Compiler.TypedCore.Term (Literal(..))
-import Stella.Compiler.TypedCore.Type (Type(..))
+import Stella.Compiler.TypedCore.Type (RowEntry(..), Type(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
@@ -45,19 +45,21 @@ inA = Qualified moduleA
 
 -- | `A` declares the values `x`, `plus`, `times`, `eq`, and `append`, the
 -- | computation `comp`, `data Maybe = Nothing | Just Int`, `data List = Nil |
--- | Cons Int List`, the effect `E` with its operation `get`, and the operators
+-- | Cons Int List`, the effect `E` with its operations `get :: Int ->* Int` and
+-- | `put :: Int -> Int ->* Int`, and the operators
 -- | `+` (`infixl 6 plus`), `*` (`infixl 7 times`), `<>` (`infixr 6 append`),
--- | `==` (`infix 4 eq`), and `:|` (`infixr 5 Cons`). `B` declares `len`.
+-- | `==` (`infix 4 eq`), and `:|` (`infixr 5 Cons`). `B` declares `len`, and
+-- | `Base.Continuation` nothing. `A` also declares `type Effects = {| E |}`.
 environment :: BuildEnvironment
-environment = case addInterface interfaceA initialEnvironment >>= addInterface interfaceB of
+environment = case addInterface interfaceA initialEnvironment >>= addInterface interfaceB >>= addInterface continuation of
   Right env -> env
   Left _ -> initialEnvironment
   where
-  interfaceA = interfaceOf moduleA
+  interfaceA = withEffects $ interfaceOf moduleA
     { values: [ "x", "plus", "times", "eq", "append" ]
     , computations: [ "comp" ]
     , types: [ Tuple "Maybe" [ Tuple "Nothing" 0, Tuple "Just" 1 ], Tuple "List" [ Tuple "Nil" 0, Tuple "Cons" 2 ] ]
-    , operations: [ "get" ]
+    , operations: [ Tuple "get" 1, Tuple "put" 2 ]
     , operators:
         [ Tuple "+" { associativity: AssociateLeft, precedence: 6, target: FixityValue (inA (Ident "plus")) }
         , Tuple "*" { associativity: AssociateLeft, precedence: 7, target: FixityValue (inA (Ident "times")) }
@@ -67,13 +69,26 @@ environment = case addInterface interfaceA initialEnvironment >>= addInterface i
         ]
     }
   interfaceB = interfaceOf moduleB { values: [ "len" ], computations: [], types: [], operations: [], operators: [] }
+  continuation = interfaceOf (ModuleName "Base.Continuation") { values: [], computations: [], types: [], operations: [], operators: [] }
+  -- `type Effects = {| E |}`, a row synonym.
+  withEffects i = i
+    { exports = i.exports { types = Map.insert "Effects" { entity: TypeEntity (inA (TyName "Effects")), via: Declared, members: [] } i.exports.types }
+    , declarations = i.declarations
+        { types = Map.insert (TyName "Effects")
+            { kind: monoScheme (KRow RowEffect)
+            , sort: Synonym { params: [], body: TRowExtend (RowEffectEntry (inA (EffName "E")) []) TRowEmpty }
+            , attributes: []
+            }
+            i.declarations.types
+        }
+    }
 
 interfaceOf
   :: ModuleName
   -> { values :: Array String
      , computations :: Array String
      , types :: Array (Tuple String (Array (Tuple String Int)))
-     , operations :: Array String
+     , operations :: Array (Tuple String Int)
      , operators :: Array (Tuple String { associativity :: Associativity, precedence :: Int, target :: FixityTarget })
      }
   -> ModuleInterface
@@ -81,7 +96,7 @@ interfaceOf name d =
   { name
   , imports: []
   , exports: emptyExports
-      { values = Map.fromFoldable (map (\n -> Tuple n (declared (Qualified name (Ident n)))) (d.values <> d.computations <> d.operations <> constructors))
+      { values = Map.fromFoldable (map (\n -> Tuple n (declared (Qualified name (Ident n)))) (d.values <> d.computations <> map fst d.operations <> constructors))
       , types = Map.fromFoldable
           ( map (\(Tuple t _) -> Tuple t { entity: TypeEntity (Qualified name (TyName t)), via: Declared, members: [] }) d.types
               <> (if Array.null d.operations then [] else [ Tuple "E" { entity: EffectEntity (Qualified name (EffName "E")), via: Declared, members: [] } ])
@@ -92,7 +107,7 @@ interfaceOf name d =
       { values = Map.fromFoldable
           ( map (\n -> Tuple (Ident n) { sort: SortValue, scheme: plain, attributes: [] }) d.values
               <> map (\n -> Tuple (Ident n) { sort: SortValue, scheme: { kindVars: [], body: Computation int TRowEmpty }, attributes: [] }) d.computations
-              <> map (\n -> Tuple (Ident n) { sort: SortOperation (Qualified name (EffName "E")), scheme: plain, attributes: [] }) d.operations
+              <> map (\(Tuple n _) -> Tuple (Ident n) { sort: SortOperation (Qualified name (EffName "E")), scheme: plain, attributes: [] }) d.operations
               <> Array.concatMap (\(Tuple t cs) -> map (\(Tuple c _) -> Tuple (Ident c) { sort: SortConstructor (Qualified name (TyName t)), scheme: plain, attributes: [] }) cs) d.types
           )
       , types = Map.fromFoldable
@@ -105,6 +120,13 @@ interfaceOf name d =
               )
               d.types
           )
+      , effects =
+          if Array.null d.operations then Map.empty
+          else Map.singleton (EffName "E")
+            { params: []
+            , operations: map (\(Tuple n arity) -> { name: Ident n, binders: [], arguments: Array.replicate arity int, resumesWith: int }) d.operations
+            , attributes: []
+            }
       , operators = Map.fromFoldable (map (\(Tuple op entry) -> Tuple (OperatorName op) entry) d.operators)
       }
   , implicitHandlers: []
@@ -125,17 +147,46 @@ type Ran = { result :: String, reasons :: Array ResolveReason, warnings :: Array
 -- | and as `M`, and `B` lazily as `L`, and declares the computation `c`, the
 -- | effect `Own` with its operation `tick`, and `<+>` (`infixl 4 own`).
 definition :: Array String -> (Ran -> Aff Unit) -> Aff Unit
-definition body k = case parseModule (joinWith "\n" (header <> body)) of
+definition = definitionIn []
+
+-- | The same, the module importing what the lines given import besides.
+definitionIn :: Array String -> Array String -> (Ran -> Aff Unit) -> Aff Unit
+definitionIn imports body = inModule imports body definitionOfF \d ->
+  resolveDefinition d.params d.body d.local <#> \r -> renderExpr r.body
+  where
+  definitionOfF = case _ of
+    CST.ItemDecl (CST.DeclValue n params rhs local) | n.name == "f" -> Just { params, body: rhs, local }
+    _ -> Nothing
+
+-- | The handler declaration `h` in the module `M`, shown as the effect it
+-- | handles and its body.
+handlerDeclaration :: Array String -> (Ran -> Aff Unit) -> Aff Unit
+handlerDeclaration body = inModule [] body handlerOfH \d ->
+  resolveHandler d.params d.signature d.items <#> \r ->
+    maybe "?" effectWord r.effect <> renderBody r.body
+  where
+  handlerOfH = case _ of
+    CST.ItemDecl (CST.DeclHandler n params signature items) | n.name == "h" -> Just { params, signature, items }
+    _ -> Nothing
+
+inModule
+  :: forall d
+   . Array String
+  -> Array String
+  -> (CST.Item -> Maybe d)
+  -> (d -> Resolve String)
+  -> (Ran -> Aff Unit)
+  -> Aff Unit
+inModule imports body pick resolve k = case parseModule (joinWith "\n" (header <> body)) of
   Left e -> fail (printSyntaxError e)
-  Right m@(CST.Module cst) -> case Array.findMap definitionOfF cst.items of
-    Nothing -> fail "no definition of f"
+  Right m@(CST.Module cst) -> case Array.findMap pick cst.items of
+    Nothing -> fail "no declaration to resolve"
     Just d -> do
       let
         grouped = (groupModule m).grouped
-        ran = runResolve (contextOf environment grouped (resolveScope environment grouped).scoped) 0
-          (resolveDefinition d.params d.body d.local)
+        ran = runResolve (contextOf environment grouped (resolveScope environment grouped).scoped) 0 (resolve d)
       k
-        { result: renderExpr ran.result.body
+        { result: ran.result
         , reasons: map (\(ResolveError _ reason) -> reason) ran.errors
         , warnings: map warningName ran.warnings
         }
@@ -145,16 +196,16 @@ definition body k = case parseModule (joinWith "\n" (header <> body)) of
     , "import A"
     , "import A as M"
     , "import lazy B as L"
-    , "c :: Int / {| |}"
-    , "c = 1"
-    , "effect Own where"
-    , "  tick :: Unit ->* Unit"
-    , "infixl 4 own as <+>"
-    , "own a b = a"
     ]
-  definitionOfF = case _ of
-    CST.ItemDecl (CST.DeclValue n params rhs local) | n.name == "f" -> Just { params, body: rhs, local }
-    _ -> Nothing
+      <> imports
+      <>
+        [ "c :: Int / {| |}"
+        , "c = 1"
+        , "effect Own where"
+        , "  tick :: Unit ->* Unit"
+        , "infixl 4 own as <+>"
+        , "own a b = a"
+        ]
   warningName = case _ of
     HidesTypeVariable _ n -> n
     HidesValue _ n -> n
@@ -162,6 +213,11 @@ definition body k = case parseModule (joinWith "\n" (header <> body)) of
 
 shows :: Array String -> String -> Array ResolveReason -> Aff Unit
 shows body expected reasons = definition body \r -> do
+  r.result `shouldEqual` expected
+  r.reasons `shouldEqual` reasons
+
+handles :: Array String -> String -> Array ResolveReason -> Aff Unit
+handles body expected reasons = handlerDeclaration body \r -> do
   r.result `shouldEqual` expected
   r.reasons `shouldEqual` reasons
 
@@ -237,11 +293,165 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
       shows [ "f a r = ({ a, b: 1 }, { c = 2, ...r }, r.a.b)" ] "({ a: a#0, b: 1 }, { c = 2, ...r#1 }, r#1.a.b)" []
       shows [ "f a = { a, a: 1, b: 2, b: 3 }" ] "{ a: a#0, a: 1, b: 2, b: 3 }" [ LabelTwice "a", LabelTwice "b" ]
 
+  describe "groups written in place" do
+    it "headed by an effect name its operations among the effect's, whatever is in scope" do
+      shows [ "f get = handle x with", "  E fast | get _ -> get", "  x" ]
+        "(handle A.x with A.E{fast A.get _ -> get#0}, A.x)"
+        []
+      shows [ "f = handle x with", "  E | M.get a -> a", "    | return r -> r" ]
+        "(handle A.x with A.E{full A.get a#0 -> a#0; return r#1 -> r#1})"
+        []
+
+    it "headed by an effect report a clause naming no operation of it, and leave the clause out" do
+      shows [ "f = handle x with", "  E | tick _ -> 0", "    | M.x _ -> 0", "    | get _ -> 1" ]
+        "(handle A.x with A.E{full A.get _ -> 1})"
+        [ NotAnOperationOf "tick" "E", NotAnOperationOf "M.x" "E" ]
+
+    it "headed by a label handle the effect of the operations in scope they name" do
+      shows [ "f get = handle x with", "  cache full | get _ -> resume 0" ]
+        "(handle A.x with cache:A.E{full A.get _ -> (resume 0)})"
+        []
+
+    it "headed by a label report clauses of several effects, and one with no operation clause" do
+      shows [ "f = handle x with", "  cache | get _ -> 0", "        | tick _ -> 0" ]
+        "(handle A.x with cache:A.E{full A.get _ -> 0})"
+        [ OperationOfOtherEffect "tick" "Own" "E" ]
+      shows [ "f = handle x with", "  cache | return r -> r", "  x" ] "(handle A.x with A.x)" [ LabelledGroupEmpty "cache" ]
+      shows [ "f = handle x with", "  cache | nope _ -> 0", "  x" ] "(handle A.x with A.x)" [ UnknownOperation "nope" ]
+
+    it "report a head that is no effect" do
+      shows [ "f = handle x with", "  Maybe | get _ -> 0", "  Nope | get _ -> 0", "  x" ] "(handle A.x with A.x)"
+        [ NotAnEffect "Maybe", UnknownType "Nope" ]
+
+    it "bind a clause's patterns as one group of irrefutable patterns, one per argument" do
+      shows [ "f = handle x with", "  E | put a b -> a", "    | get a b -> a" ]
+        "(handle A.x with A.E{full A.put a#0 b#1 -> a#0})"
+        [ ClauseArity "get" 1 2 false ]
+      shows [ "f = handle x with", "  E | get (Just a) -> a", "    | put a a -> a" ]
+        "(handle A.x with A.E{full A.get (A.Just a#0) -> a#0; full A.put a#1 a#2 -> a#1})"
+        [ RefutablePattern, BoundTwice "a" ]
+
+    it "report a second clause for one operation and a second return clause" do
+      shows [ "f = handle x with", "  E | get _ -> 0", "    | M.get _ -> 1", "    | return r -> r", "    | return s -> s" ]
+        "(handle A.x with A.E{full A.get _ -> 0; return r#0 -> r#0})"
+        [ ClauseTwice "M.get", ReturnTwice ]
+
+    it "take a `reifiable full` clause's continuation as its last pattern where `Base.Continuation` is imported" do
+      definitionIn [ "import Base.Continuation" ] [ "f = handle x with", "  E reifiable full | get a k -> a" ] \r -> do
+        r.result `shouldEqual` "(handle A.x with A.E{reifiable A.get a#0 k#1 -> a#0})"
+        r.reasons `shouldEqual` []
+      definitionIn [ "import lazy Base.Continuation as C" ] [ "f = handle x with", "  E reifiable full | get a k -> a" ] \r ->
+        r.reasons `shouldEqual` []
+      shows [ "f = handle x with", "  E reifiable full | get a -> a" ] "(handle A.x with A.E{})"
+        [ ContinuationNotImported, ClauseArity "get" 1 1 true ]
+
+  describe "cells" do
+    it "are one group, open in the operation clauses, beside a value of their name" do
+      shows [ "f n = handle x with", "  E", "    var n := n", "    var n := 1", "    | fast get _ -> n := n! + n" ]
+        "(handle A.x with A.E{var n#1 := n#0; var n#2 := 1; fast A.get _ -> (n#1 := <A.plus n#1! n#0>)})"
+        [ BoundTwice "n" ]
+
+    it "are closed in their handler's initial values and return clause, and unknown elsewhere" do
+      shows [ "f = handle n! with", "  E", "    var a := 0", "    var b := a!", "    | get _ -> a!", "    | return r -> a!" ]
+        "(handle ! with A.E{var a#0 := 0; var b#1 := !; full A.get _ -> a#0!; return r#2 -> !})"
+        [ CellClosedHere "a" InInitialValue, CellClosedHere "a" InReturnClause, UnknownCell "n" ]
+
+    it "of a group hide an outer cell of their name in the whole group, and others stay in scope" do
+      shows
+        [ "f = handle x with"
+        , "  E"
+        , "    var n := 0"
+        , "    var m := 0"
+        , "    | fast get _ -> handle x with"
+        , "      Own"
+        , "        var n := m!"
+        , "        var k := n!"
+        , "        | fast tick _ -> n! + m!"
+        ]
+        "(handle A.x with A.E{var n#0 := 0; var m#1 := 0; fast A.get _ -> (handle A.x with M.Own{var n#2 := m#1!; var k#3 := !; fast M.tick _ -> <A.plus n#2! m#1!>})})"
+        [ CellClosedHere "n" InInitialValue ]
+
+  describe "`resume`" do
+    it "stands applied in the immediate body of a `full` clause" do
+      shows [ "f = handle x with", "  E | get _ -> let z = resume 1 in (resume) z", "    | put _ _ -> (resume 1) 2" ]
+        "(handle A.x with A.E{full A.get _ -> (let z#0 = (resume 1) in (resume z#0)); full A.put _ _ -> ((resume 1) 2)})"
+        []
+
+    it "is reported outside a `full` clause, a `fast` and a `reifiable full` one among them" do
+      shows [ "f = resume 1" ] "(! 1)" [ ResumeMisplaced OutsideFullClause ]
+      definitionIn [ "import Base.Continuation" ] [ "f = handle x with", "  E fast | get _ -> resume 0", "    | reifiable full put _ _ k -> resume 0" ] \r ->
+        r.reasons `shouldEqual` [ ResumeMisplaced InFastClause, ResumeMisplaced InReifiableClause ]
+
+    it "is reported inside a lambda, a local function, or a handling expression within its clause" do
+      shows
+        [ "f = handle x with"
+        , "  E | get _ -> (\\y -> resume y) 1"
+        , "    | put _ _ -> let g y = resume y in using (resume 1) handle resume 2"
+        ]
+        "(handle A.x with A.E{full A.get _ -> ((\\y#0 -> (! y#0)) 1); full A.put _ _ -> (let g#1 y#2 = (! y#2) in (handle (! 2) with (! 1)))})"
+        [ ResumeMisplaced InsideLambda, ResumeMisplaced InsideLocalFunction, ResumeMisplaced InsideHandling, ResumeMisplaced InsideHandling ]
+
+    it "of a `full` clause of a group inside a clause is that clause's own" do
+      shows [ "f = handle x with", "  E | get _ -> handle x with", "      Own | tick _ -> resume ()" ]
+        "(handle A.x with A.E{full A.get _ -> (handle A.x with M.Own{full M.tick _ -> (resume Prim.Unit)})})"
+        []
+
+    it "is reported where it is not applied" do
+      shows [ "f = handle x with", "  E | get _ -> let k = resume in plus resume 1" ]
+        "(handle A.x with A.E{full A.get _ -> (let k#0 = ! in ((A.plus !) 1))})"
+        [ ResumeNotApplied, ResumeNotApplied ]
+
+  describe "handler declarations" do
+    it "handle the left of `~>`, or the one element a signature in full removes" do
+      handles [ "handler h :: E ~> () where", "  fast | get _ -> 0" ] "A.E{fast A.get _ -> 0}" []
+      handles [ "handler h :: (Unit -> a / {| E |}) -> a where", "  | get _ -> resume 0" ] "A.E{full A.get _ -> (resume 0)}" []
+      handles [ "handler h :: (Unit -> a / {| E, Own, ... |}) -> a / {| Own, ... |} where", "  | return r -> r" ] "A.E{return r#1 -> r#1}" []
+
+    it "report a signature in full the effect handled is not read from" do
+      handles [ "handler h :: Int -> Int where", "  | return r -> r" ] "?{return r#0 -> r#0}" [ HandledEffect HandlerShape ]
+      handles [ "handler h :: (Int -> a / {| E |}) -> a where", "  | return r -> r" ] "?{return r#1 -> r#1}" [ HandledEffect HandlerShape ]
+      handles [ "handler h :: (Unit -> a / {| E |}) -> a / {| E |} where", "  | return r -> r" ] "?{return r#1 -> r#1}" [ HandledEffect HandlesNothing ]
+      handles [ "handler h :: (Unit -> a / {| E, Own |}) -> a where", "  | return r -> r" ] "?{return r#1 -> r#1}" [ HandledEffect HandlesSeveral ]
+      handles [ "handler h :: (Unit -> a / {| cache :: E |}) -> a where", "  | return r -> r" ] "?{return r#1 -> r#1}" [ HandledEffect (HandlesInstance "cache") ]
+
+    it "read a row a type synonym without parameters names, its own or an imported one, and the rows it spreads" do
+      handles
+        [ "type Program = {| E, Own |}"
+        , "type Runtime = {| Own |}"
+        , "handler h :: (Unit -> a / Program) -> a / Runtime where"
+        , "  | return r -> r"
+        ]
+        "A.E{return r#1 -> r#1}"
+        []
+      handles [ "type Program = {| ...Effects, Own |}", "handler h :: (Unit -> a / {| ...Program, ... |}) -> a / {| Own, ... |} where", "  | return r -> r" ]
+        "A.E{return r#1 -> r#1}"
+        []
+      handles [ "handler h :: (Unit -> a / Effects) -> a where", "  | return r -> r" ] "A.E{return r#1 -> r#1}" []
+      handles [ "type Program = ({| E |} :: Row Effect)", "handler h :: (Unit -> a / Program) -> a where", "  | return r -> r" ] "A.E{return r#1 -> r#1}" []
+      handles [ "type Program = ({| E |} :: Row Effect)", "handler h :: (Unit -> a / {| ...Program |}) -> a where", "  | return r -> r" ] "A.E{return r#1 -> r#1}" []
+
+    it "do not read a row a synonym with parameters names, nor one naming itself" do
+      handles [ "type P x = {| E |}", "handler h :: (Unit -> a / (P Int)) -> a where", "  | return r -> r" ] "?{return r#1 -> r#1}" [ HandledEffect HandlerShape ]
+      handles [ "type C = {| ...D |}", "type D = {| E, ...C |}", "handler h :: (Unit -> a / C) -> a where", "  | return r -> r" ] "?{return r#1 -> r#1}"
+        [ HandledEffect HandlerShape ]
+
+    it "see their parameters in every initial value and clause, and report a `var` after a clause" do
+      handles [ "handler h (n :: Int) :: E ~> () where", "  var c := n", "  fast | get _ -> n", "  var d := 0", "  | return r -> c!" ]
+        "A.E{var c#1 := n#0; fast A.get _ -> n#0; return r#2 -> !}"
+        [ CellAfterClause "d", CellClosedHere "c" InReturnClause ]
+      handles [ "handler h (Just n) :: E ~> () where", "  fast | get _ -> n" ] "A.E{fast A.get _ -> n#0}" [ RefutablePattern ]
+
+  describe "row synonyms" do
+    it "stand for a whole row, or are spread into one, and are no effect, in a row or on either side of `~>`" do
+      shows [ "type Program = {| E |}", "f = (x :: Unit -> Int / Program, x :: Unit -> Int / {| Own, ...Program |})" ] "((A.x :: τ), (A.x :: τ))" []
+      shows [ "type Program = {| E |}", "f = (x :: Unit -> Int / {| Program |})" ] "(A.x :: τ)" [ SynonymAsEffect "Program" ]
+      handles [ "type S = {| E |}", "handler h :: S ~> () where", "  | return r -> r" ] "?{return r#0 -> r#0}" [ SynonymAtCapability "S" ]
+      handles [ "type S = {| E |}", "handler h :: E ~> ( S ) where", "  | return r -> r" ] "A.E{return r#0 -> r#0}" [ SynonymAtCapability "S" ]
+
   describe "what is not supported yet" do
     it "is reported where it stands" do
       shows [ "f = (_ + 1, m%(1), case _ of", "  _ -> 1)" ] "(<A.plus ! 1>, !, (case ! of _ -> 1))"
         [ NotYetSupported "The anonymous argument `_`", NotYetSupported "A macro call", NotYetSupported "`case _ of`" ]
-      shows [ "f = handle x with", "  E fast | get _ -> 0", "  x" ] "(handle A.x with A.x)" [ NotYetSupported "A handler group written in place" ]
 
 renderVar :: LocalVar -> String
 renderVar (LocalVar v) = case v.name, v.id of
@@ -268,8 +478,8 @@ renderExpr = case _ of
   ExprLet _ bs body -> "(let " <> joinWith "; " (map binding bs) <> " in " <> renderExpr body <> ")"
   ExprCase _ ss alts -> "(case " <> joinWith ", " (map renderExpr ss) <> " of " <> joinWith " ; " (map alternative alts) <> ")"
   ExprHandle _ items e -> "(handle " <> renderExpr e <> " with " <> joinWith ", " (map item items) <> ")"
-  ExprCellRead _ _ -> "cell!"
-  ExprCellWrite _ _ _ -> "cell:="
+  ExprCellRead _ c -> renderCell c <> "!"
+  ExprCellWrite _ c e -> "(" <> renderCell c <> " := " <> renderExpr e <> ")"
   ExprResume _ -> "resume"
   ExprInvalid _ -> "!"
   where
@@ -290,7 +500,30 @@ renderExpr = case _ of
     GuardOtherwise _ e -> "otherwise -> " <> renderExpr e
   item = case _ of
     HandlerApplied e -> renderExpr e
-    HandlerGroup _ -> "group"
+    HandlerGroup g -> maybe "" (\(Symbol l) -> l <> ":") g.label <> effectWord g.effect <> renderBody g.body
+
+renderCell :: CellVar -> String
+renderCell (CellVar v) = case v.name, v.id of
+  Ident n, BindingId i -> n <> "#" <> show i
+
+-- | A handler's body: its cells, its operation clauses, and its return
+-- | clause, in braces.
+renderBody :: HandlerBody -> String
+renderBody b = "{" <> joinWith "; " (map cell b.cells <> map operation b.operations <> Array.fromFoldable (map return b.return)) <> "}"
+  where
+  cell c = "var " <> renderCell c.cell <> " := " <> renderExpr c.initial
+  operation o = joinWith " " ([ form o.form, qualified o.operation ] <> map renderBinder o.arguments <> continuation o.form) <> " -> " <> renderExpr o.body
+  form = case _ of
+    ClauseFast -> "fast"
+    ClauseFull -> "full"
+    ClauseReifiable _ -> "reifiable"
+  continuation = case _ of
+    ClauseReifiable k -> [ renderBinder k ]
+    _ -> []
+  return r = "return " <> renderBinder r.binder <> " -> " <> renderExpr r.body
+
+effectWord :: Qualified EffName -> String
+effectWord (Qualified (ModuleName m) (EffName e)) = m <> "." <> e
 
 renderBinder :: Binder -> String
 renderBinder = case _ of

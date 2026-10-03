@@ -196,7 +196,7 @@ resolveHandlerSignature t = quantify t
       withTypeVariables b.scope (capability (Array.snoc quantifiers b.binders) body)
     CST.TypeParens inner -> capability quantifiers inner
     CST.TypeCapability source target -> do
-      source' <- effectApplication source
+      source' <- effectApplication AtCapability source
       targets <- capabilityTargets target
       pure case source' of
         Just s -> Capability { origin, quantifiers, source: s, targets }
@@ -342,8 +342,8 @@ variantItem item = case item of
 -- | arguments is dropped from the row.
 effectItem :: CST.RowItem -> Resolve (Maybe EffectRowItem)
 effectItem item = case item of
-  CST.RowElement t -> map EffectElement <$> effectApplication t
-  CST.RowField n t -> map (EffectInstance (itemOrigin item) (Symbol n.name)) <$> effectApplication t
+  CST.RowElement t -> map EffectElement <$> effectApplication InRow t
+  CST.RowField n t -> map (EffectInstance (itemOrigin item) (Symbol n.name)) <$> effectApplication InRow t
   CST.RowSpread _ t -> Just <<< EffectSpread (itemOrigin item) <$> traverse resolveType t
   _ -> misplaced item
 
@@ -360,15 +360,26 @@ itemRange = case _ of
   CST.RowElement t -> typeRange t
   CST.RowSpread r t -> maybe r (covering r <<< typeRange) t
 
+-- | Where an effect application stands: as an element of an effect row, or as
+-- | the source or a target of `~>`.
+data EffectPosition
+  = InRow
+  | AtCapability
+
 -- | An effect applied to its arguments: a name standing for an effect at the
 -- | head of an application, or a type operator standing for one, applied to its
 -- | two operands and then to whatever the application adds after them.
-effectApplication :: CST.Type -> Resolve (Maybe EffectApplication)
-effectApplication t = case application t of
+effectApplication :: EffectPosition -> CST.Type -> Resolve (Maybe EffectApplication)
+effectApplication position t = case application t of
   { head: CST.TypeConstructor n, arguments } -> lookupType n >>= case _ of
     Found (EffectReference effect) -> do
       arguments' <- traverse resolveType arguments
       pure (Just { origin: o, effect, arguments: arguments' })
+    Found (TypeSynonymReference _) ->
+      report (typeRange t) case position of
+        InRow -> SynonymAsEffect (written n)
+        AtCapability -> SynonymAtCapability (written n)
+        $> Nothing
     Found _ -> expected
     NotFound -> report n.range (UnknownType (written n)) $> Nothing
     Ambiguous -> report n.range (AmbiguousType (written n)) $> Nothing
@@ -391,8 +402,8 @@ effectApplication t = case application t of
 capabilityTargets :: CST.Type -> Resolve (Array EffectApplication)
 capabilityTargets t = case t of
   CST.TypeUnit _ -> pure []
-  CST.TypeParens inner -> Array.fromFoldable <$> effectApplication inner
-  CST.TypeTuple ts -> Array.catMaybes <$> traverse effectApplication ts
+  CST.TypeParens inner -> Array.fromFoldable <$> effectApplication AtCapability inner
+  CST.TypeTuple ts -> Array.catMaybes <$> traverse (effectApplication AtCapability) ts
   _ -> report (typeRange t) CapabilityTargetMalformed $> []
 
 -- | The variables a type mentions that neither a `forall` inside it nor the

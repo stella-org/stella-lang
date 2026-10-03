@@ -5,9 +5,9 @@
 -- | one: it numbers every binding of the group, reports a name the group binds
 -- | twice, and decides what the group puts in scope. A group is the parameters
 -- | of one declaration, lambda, or clause; the patterns of one `case`
--- | alternative; one binding of a guard block; or one `let` block or `where`,
+-- | alternative; one binding of a guard block; one `let` block or `where`,
 -- | whose members are the names its definitions bind and the patterns of its
--- | pattern bindings.
+-- | pattern bindings; or the cells of one handler.
 -- |
 -- | Every binding of a group is numbered, in the order written, before
 -- | anything in it is resolved, so a pattern left invalid still binds the
@@ -31,6 +31,7 @@ module Stella.Compiler.Resolve.Binder
   , resolveGroup
   , resolveBinders
   , resolveAlternative
+  , resolveCells
   , irrefutable
   , requireIrrefutable
   ) where
@@ -51,7 +52,7 @@ import Stella.Compiler.Resolve.Label (reportLabelsTwice)
 import Stella.Compiler.Resolve.Monad (Found(..), Resolve, ResolveReason(..), ResolveWarning(..), constructorOf, freshBinding, lookupValue, report, valueInScope, warn)
 import Stella.Compiler.Resolve.Type (resolveType)
 import Stella.Compiler.Surface.Expr (Binder(..), RecordBinderField)
-import Stella.Compiler.Surface.Name (LocalVar(..))
+import Stella.Compiler.Surface.Name (CellVar(..), LocalVar(..))
 import Stella.Compiler.Surface.Origin (Origin(..), rangeOf)
 import Stella.Compiler.TypedCore.Domain (scalarString, scalarValue)
 import Stella.Compiler.TypedCore.Name (Ident(..), Symbol(..), Tag(..))
@@ -105,6 +106,19 @@ resolveBinders bs = resolveGroup (map MemberPattern bs) <#> \r ->
   patternOf = case _ of
     ResolvedPattern b -> Just b
     ResolvedName _ -> Nothing
+
+-- | Binds the cells of a handler: each numbered, in the order written, and what
+-- | the handler puts in scope, the first cell of each name. Cells have a
+-- | namespace of their own, so no cell hides a value.
+resolveCells :: Array CST.Name -> Resolve { cells :: Array CellVar, bound :: Array CellVar }
+resolveCells ns = do
+  cells <- foldM step [] ns
+  pure { cells, bound: Array.nubByEq (\(CellVar a) (CellVar b) -> a.name == b.name) cells }
+  where
+  step acc n = do
+    when (Array.any (\(CellVar prior) -> prior.name == Ident n.name) acc) (report n.range (BoundTwice n.name))
+    id <- freshBinding
+    pure (Array.snoc acc (CellVar { id, name: Ident n.name }))
 
 -- | Binds the patterns of a `case` alternative: a row per or-choice at its
 -- | top, one pattern per scrutinee in each. Where there are several choices,

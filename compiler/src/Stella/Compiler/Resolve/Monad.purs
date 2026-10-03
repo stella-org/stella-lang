@@ -12,6 +12,7 @@ module Stella.Compiler.Resolve.Monad
   , Constructor
   , ResolveError(..)
   , ResolveReason(..)
+  , HandledEffectProblem(..)
   , ResolveWarning(..)
   , printResolveReason
   , printResolveWarning
@@ -29,11 +30,27 @@ module Stella.Compiler.Resolve.Monad
   , constructorOf
   , ValueKind(..)
   , valueKind
+  , Operation
+  , operationOf
+  , operationsOf
+  , Cell(..)
+  , CellClosure(..)
+  , withCells
+  , withCellsClosed
+  , lookupCell
+  , ResumeState(..)
+  , ResumeBlock(..)
+  , resumeState
+  , withResume
+  , blockResume
   , freshBinding
   , report
   , warn
   , Found(..)
   , lookupType
+  , SynonymBody(..)
+  , synonymBody
+  , speculatively
   , lookupTypeOperator
   , lookupValue
   , lookupOperator
@@ -57,32 +74,37 @@ import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.CST.Types (Decl(..), Fixity(..), Name, SourceRange)
+import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Interface.Environment (BuildEnvironment, ModuleView, viewFor)
 import Stella.Compiler.Interface.Environment as Environment
 import Stella.Compiler.Interface.Module (Export, TypeEntity(..), TypeExport, TypeSort(..), ValueSort(..), isComputation)
 import Stella.Compiler.Resolve.Group (Declaration(..), GroupReason, GroupedModule, printGroupReason)
 import Stella.Compiler.Resolve.Scope (Names, Scope, ScopedModule, emptyNames)
 import Stella.Compiler.Surface.Decl (Associativity(..), FixityTarget(..))
-import Stella.Compiler.Surface.Name (BindingId(..), LocalVar(..), OperatorName(..), TypeVar(..))
+import Stella.Compiler.Surface.Name (BindingId(..), CellVar(..), LocalVar(..), OperatorName(..), TypeVar(..))
 import Stella.Compiler.Surface.Type (TypeOperatorTarget(..))
-import Stella.Compiler.TypedCore.Name (EffName, Ident(..), ModuleName, Qualified(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Type as Core
 
 -- | What resolving a module's declarations reads of the module as a whole:
 -- | its scope, the build environment as the module sees it, which of its own
--- | type names are synonyms, the fixity of each type operator it declares,
+-- | type names are synonyms, with the number of their parameters and their
+-- | bodies as written, the fixity of each type operator it declares,
 -- | the fixity of each operator it declares, each constructor it declares
--- | under the identity it is declared with, and which of its values are
--- | operations and which computations.
+-- | under the identity it is declared with, each operation it declares with
+-- | its effect and the number of its arguments, which of its values are
+-- | computations, and whether it is or imports `Base.Continuation`.
 type Context =
   { module :: ModuleName
   , scope :: Scope
   , view :: Maybe ModuleView
-  , ownSynonyms :: Set String
+  , ownSynonyms :: Map String { params :: Int, body :: CST.Type }
   , ownTypeOperators :: Map String { associativity :: Associativity, precedence :: Int, target :: Name }
   , ownOperators :: Map String { associativity :: Associativity, precedence :: Int, target :: Name }
   , ownConstructors :: Map Ident Constructor
-  , ownOperations :: Set Ident
+  , ownOperations :: Map Ident { effect :: EffName, arity :: Int }
   , ownComputations :: Set Ident
+  , continuation :: Boolean
   }
 
 -- | What a pattern needs of a constructor: how many fields it has, and how many
@@ -90,13 +112,42 @@ type Context =
 type Constructor = { arity :: Int, siblings :: Int }
 
 -- | Where resolution stands: the module's context, the type variables in scope
--- | by the name they are written with, and the frames around it, innermost
--- | first.
+-- | by the name they are written with, the frames around it, innermost first,
+-- | the cells in scope by name, and whether `resume` may stand there.
 type Env =
   { context :: Context
   , typeVariables :: Map String TypeVar
   , frames :: List Frame
+  , cells :: Map String Cell
+  , resume :: ResumeState
   }
+
+-- | A cell in scope. One of the handler a return clause or an initial value
+-- | belongs to is closed there, its region not being open.
+data Cell
+  = CellOpen CellVar
+  | CellClosed CellVar CellClosure
+
+data CellClosure
+  = InInitialValue
+  | InReturnClause
+
+-- | Whether `resume` may stand where resolution stands: in the immediate body
+-- | of a `full` clause it may, and anywhere else it may not, for the reason
+-- | given.
+data ResumeState
+  = ResumeAvailable
+  | ResumeBlocked ResumeBlock
+
+data ResumeBlock
+  = OutsideFullClause
+  | InFastClause
+  | InReifiableClause
+  -- | Inside a lambda, a local function, or a handling expression, within a
+  -- | `full` clause: each could keep what it encloses beyond the clause.
+  | InsideLambda
+  | InsideLocalFunction
+  | InsideHandling
 
 -- | What a construct around the position puts in scope: the local values a
 -- | binding group binds, or the names a local open opens. An unqualified name
@@ -164,6 +215,10 @@ data ResolveReason
   -- | An element of an effect row, or the source or a target of `~>`, that is
   -- | not an effect applied to its arguments.
   | EffectExpected
+  -- | A type synonym written as an element of an effect row.
+  | SynonymAsEffect String
+  -- | A type synonym written as the source or a target of `~>`.
+  | SynonymAtCapability String
   -- | A row item the bracket it stands in does not admit.
   | RowItemMisplaced
   -- | `{{ … }}` off the spine of a signature.
@@ -208,6 +263,56 @@ data ResolveReason
   | LabelTwice String
   -- | A `let` block whose signatures and definitions do not pair up.
   | LetGrouping GroupReason
+  -- | `x!` or `x := e` where no cell of the name is in scope.
+  | UnknownCell String
+  -- | A cell reached from its handler's return clause or an initial value.
+  | CellClosedHere String CellClosure
+  -- | A `var` of a handler declaration standing after a clause.
+  | CellAfterClause String
+  -- | `resume` where it may not stand.
+  | ResumeMisplaced ResumeBlock
+  -- | `resume` other than applied to an argument.
+  | ResumeNotApplied
+  -- | A group's head that names something of the type namespace other than
+  -- | an effect.
+  | NotAnEffect String
+  -- | A clause naming no operation of the effect its handler handles: the
+  -- | name, and the effect.
+  | NotAnOperationOf String String
+  -- | A clause of a group headed by a label naming no operation in scope, or
+  -- | a value that is no operation.
+  | UnknownOperation String
+  -- | A clause of a group headed by a label naming an operation of another
+  -- | effect than the earlier clauses: the operation, its effect, and theirs.
+  | OperationOfOtherEffect String String String
+  -- | A group headed by a label with no operation clause.
+  | LabelledGroupEmpty String
+  -- | A clause with other than one pattern per argument of its operation: the
+  -- | operation, its arguments, the patterns written, and whether the clause
+  -- | takes its continuation as well.
+  | ClauseArity String Int Int Boolean
+  -- | A second clause for one operation.
+  | ClauseTwice String
+  -- | A second return clause.
+  | ReturnTwice
+  -- | A `reifiable full` clause in a module that does not import
+  -- | `Base.Continuation`.
+  | ContinuationNotImported
+  -- | A handler declaration's signature from which the effect it handles is
+  -- | not read.
+  | HandledEffect HandledEffectProblem
+
+-- | Why a handler declaration's signature does not tell the effect handled.
+data HandledEffectProblem
+  -- | The signature is neither `E ~> ( … )` nor a function from a thunk
+  -- | `Unit -> α / {| … |}` to a result, its rows written as rows.
+  = HandlerShape
+  -- | The thunk's row holds no element the result's row does not.
+  | HandlesNothing
+  -- | The thunk's row holds several elements the result's row does not.
+  | HandlesSeveral
+  -- | The one element the result's row does not hold is a labelled instance.
+  | HandlesInstance String
 
 data ResolveWarning
   -- | A type variable bound where another of its name is in scope.
@@ -220,6 +325,9 @@ data ResolveWarning
 
 derive instance Eq ResolveError
 derive instance Eq ResolveReason
+derive instance Eq HandledEffectProblem
+derive instance Eq CellClosure
+derive instance Eq ResumeBlock
 derive instance Eq ResolveWarning
 
 instance Show ResolveError where
@@ -247,6 +355,10 @@ printResolveReason = case _ of
   BoundTwice n -> "`" <> n <> "` is bound twice here"
   EffectNotType n -> "`" <> n <> "` is an effect, which stands only at the head of an effect application, in an effect row or a capability signature"
   EffectExpected -> "An effect applied to its arguments is expected here"
+  SynonymAsEffect n ->
+    "`" <> n <> "` is a type synonym, and an element of an effect row is one effect applied to its arguments; where `" <> n <> "` stands for a row of effects, write `/ " <> n <> "` for the row itself, or `..." <> n <> "` to bring its effects into another row"
+  SynonymAtCapability n ->
+    "`" <> n <> "` is a type synonym, and the source of `~>` and each target on its right name one effect applied to its arguments, written directly"
   RowItemMisplaced -> "This item cannot stand in a row of this bracket"
   SynthesizedMisplaced ->
     "A synthesized argument stands on the spine of a signature, before any ordinary parameter"
@@ -270,6 +382,42 @@ printResolveReason = case _ of
   LabelExpected -> "A label, the name of an instance, follows `@` here"
   LabelTwice l -> "The label `" <> l <> "` is written twice here"
   LetGrouping reason -> printGroupReason reason
+  UnknownCell n -> "There is no cell `" <> n <> "` here; a cell is reached from the operation clauses of the handler declaring it"
+  CellClosedHere n InInitialValue ->
+    "The cell `" <> n <> "` cannot be reached from an initial value; a cell is reached from the operation clauses of its handler alone"
+  CellClosedHere n InReturnClause ->
+    "The cell `" <> n <> "` cannot be reached from the return clause; a cell is reached from the operation clauses of its handler alone"
+  CellAfterClause n -> "The cell `" <> n <> "` is declared after a clause; every `var` of a handler stands ahead of its clauses"
+  ResumeMisplaced block -> case block of
+    OutsideFullClause -> "`resume` stands only in the body of a `full` clause"
+    InFastClause -> "A `fast` clause does not capture its continuation, so `resume` cannot stand in it; the body's value is what the operation resumes with"
+    InReifiableClause -> "A `reifiable full` clause takes its continuation as its last parameter; resume it with `Continuation.continue`"
+    InsideLambda -> "`resume` cannot stand inside a lambda within its clause, which could keep it beyond the clause; mark the clause `reifiable full` to keep the continuation"
+    InsideLocalFunction -> "`resume` cannot stand inside a local function within its clause, which could keep it beyond the clause; mark the clause `reifiable full` to keep the continuation"
+    InsideHandling -> "`resume` cannot stand inside a handling expression within its clause, whose handlers could keep it beyond the clause; mark the clause `reifiable full` to keep the continuation"
+  ResumeNotApplied -> "`resume` is applied to the value the operation resumes with, as `resume x`, and is no value of its own"
+  NotAnEffect n -> "`" <> n <> "` is not an effect; a group is headed by an effect or by a label"
+  NotAnOperationOf n e -> "`" <> n <> "` is not an operation of the effect `" <> e <> "`"
+  UnknownOperation n -> "There is no operation `" <> n <> "` in scope"
+  OperationOfOtherEffect n e first ->
+    "`" <> n <> "` is an operation of `" <> e <> "`, and the earlier clauses of this group handle `" <> first <> "`; a group handles one effect"
+  LabelledGroupEmpty l -> "The group headed by `" <> l <> "` has no operation clause, which is what tells the effect it handles"
+  ClauseArity n arguments written continuation ->
+    "The operation `" <> n <> "` takes " <> show arguments <> " argument(s)"
+      <> (if continuation then ", and the clause its continuation after them," else ",")
+      <> " and the clause binds "
+      <> show written
+      <> " pattern(s)"
+  ClauseTwice n -> "The operation `" <> n <> "` has a clause already"
+  ReturnTwice -> "This handler has a return clause already"
+  ContinuationNotImported -> "A `reifiable full` clause depends on `Base.Continuation`, which this module does not import"
+  HandledEffect problem -> case problem of
+    HandlerShape ->
+      "A handler's signature is `E ~> ( … )`, or a function from a thunk `Unit -> a / ρ` to its result, each row written with `{| … |}` or named by a type synonym without parameters"
+    HandlesNothing -> "Every effect the thunk's row holds is in the result's row too; a handler declaration removes one"
+    HandlesSeveral -> "The thunk's row holds several effects the result's row does not; a handler declaration removes one"
+    HandlesInstance l ->
+      "A handler declaration handles an effect, and `" <> l <> "` is a labelled instance; handle it with a group headed by `" <> l <> "`"
 
 printResolveWarning :: ResolveWarning -> String
 printResolveWarning = case _ of
@@ -284,12 +432,13 @@ contextOf env g scoped =
   , view: case viewFor (map _.module scoped.imports) env of
       Right v -> Just v
       Left _ -> Nothing
-  , ownSynonyms: Set.fromFoldable (Array.mapMaybe synonym g.declarations)
+  , ownSynonyms: Map.fromFoldable (Array.mapMaybe synonym g.declarations)
   , ownTypeOperators: Map.fromFoldable (Array.mapMaybe typeFixity g.declarations)
   , ownOperators: Map.fromFoldable (Array.mapMaybe fixity g.declarations)
   , ownConstructors: Map.fromFoldable (Array.concatMap constructors g.declarations)
-  , ownOperations: Set.fromFoldable (Array.concatMap operations g.declarations)
+  , ownOperations: Map.fromFoldable (Array.concatMap operations g.declarations)
   , ownComputations: Set.fromFoldable (Array.mapMaybe computation g.declarations)
+  , continuation: scoped.name == continuationModule || Array.any (\i -> i.module == continuationModule) scoped.imports
   }
   where
   -- A constructor is keyed by the identity the scope declares it under, which
@@ -307,14 +456,15 @@ contextOf env g scoped =
     Qualified owner i | owner == scoped.name -> Just i
     _ -> Nothing
   synonym = case _ of
-    DeclarationType _ _ (DeclType n _ _) -> Just n.name
+    DeclarationType _ _ (DeclType n params body) -> Just (Tuple n.name { params: Array.length params, body })
     _ -> Nothing
   fixity = case _ of
     DeclarationOther _ (DeclFixity f p target op) ->
       Just (Tuple op.name { associativity: associativityOf f, precedence: p.value, target })
     _ -> Nothing
   operations = case _ of
-    DeclarationOther _ (DeclEffect _ _ ops) -> map (\op -> Ident op.name.name) ops
+    DeclarationOther _ (DeclEffect e _ ops) ->
+      map (\op -> Tuple (Ident op.name.name) { effect: EffName e.name, arity: arityOf op.type }) ops
     _ -> []
   computation = case _ of
     DeclarationValue _ v | v.computation -> Just (Ident v.name.name)
@@ -327,16 +477,28 @@ contextOf env g scoped =
     Infix -> AssociateNone
     Infixl -> AssociateLeft
     Infixr -> AssociateRight
+  -- The arguments of an operation are the types left of its arrows, `->*`
+  -- the last of them.
+  arityOf = case _ of
+    CST.TypeForall _ body -> arityOf body
+    CST.TypeParens inner -> arityOf inner
+    CST.TypeArrow _ rest -> 1 + arityOf rest
+    CST.TypeOperationArrow _ _ _ -> 1
+    _ -> 0
 
--- | Runs a resolution against a module's context, with no type variable in
--- | scope and no frame around it, numbering bindings from the number given.
+continuationModule :: ModuleName
+continuationModule = ModuleName "Base.Continuation"
+
+-- | Runs a resolution against a module's context, with no type variable, frame,
+-- | or cell around it and outside every clause, numbering bindings from the
+-- | number given.
 runResolve
   :: forall a
    . Context
   -> Int
   -> Resolve a
   -> { result :: a, next :: Int, errors :: Array ResolveError, warnings :: Array ResolveWarning }
-runResolve ctx next (Resolve r) = case r { context: ctx, typeVariables: Map.empty, frames: Nil } { next, errors: [], warnings: [] } of
+runResolve ctx next (Resolve r) = case r { context: ctx, typeVariables: Map.empty, frames: Nil, cells: Map.empty, resume: ResumeBlocked OutsideFullClause } { next, errors: [], warnings: [] } of
   Tuple result s -> { result, next: s.next, errors: s.errors, warnings: s.warnings }
 
 asks :: forall a. (Env -> a) -> Resolve a
@@ -423,7 +585,7 @@ valueKind q@(Qualified owner name) = do
   pure
     if owner == ctx.module then
       if Map.member name ctx.ownConstructors then ConstructorValue
-      else if Set.member name ctx.ownOperations then OperationValue
+      else if Map.member name ctx.ownOperations then OperationValue
       else if Set.member name ctx.ownComputations then ComputationValue
       else PlainValue
     else case ctx.view >>= Environment.lookupValue q of
@@ -431,6 +593,72 @@ valueKind q@(Qualified owner name) = do
       Just { sort: SortOperation _ } -> OperationValue
       Just entry | isComputation entry.scheme -> ComputationValue
       _ -> PlainValue
+
+-- | An operation: the effect declaring it, and the number of its arguments.
+type Operation = { effect :: Qualified EffName, arity :: Int }
+
+operationOf :: Qualified Ident -> Resolve (Maybe Operation)
+operationOf q@(Qualified owner name) = do
+  ctx <- context
+  pure
+    if owner == ctx.module then
+      Map.lookup name ctx.ownOperations <#> \op -> { effect: Qualified owner op.effect, arity: op.arity }
+    else do
+      view <- ctx.view
+      entry <- Environment.lookupValue q view
+      case entry.sort of
+        SortOperation effect -> do
+          e <- Environment.lookupEffect effect view
+          op <- Array.find (\o -> o.name == name) e.operations
+          pure { effect, arity: Array.length op.arguments }
+        _ -> Nothing
+
+-- | The operations an effect declares, each by its name and the number of its
+-- | arguments.
+operationsOf :: Qualified EffName -> Resolve (Array { name :: Ident, arity :: Int })
+operationsOf e@(Qualified owner name) = do
+  ctx <- context
+  pure
+    if owner == ctx.module then
+      Array.mapMaybe (\(Tuple i op) -> if op.effect == name then Just { name: i, arity: op.arity } else Nothing)
+        (Map.toUnfoldable ctx.ownOperations)
+    else case ctx.view >>= Environment.lookupEffect e of
+      Just entry -> map (\op -> { name: op.name, arity: Array.length op.arguments }) entry.operations
+      Nothing -> []
+
+-- | Runs a resolution with the cells given open, each hiding a cell of its
+-- | name.
+withCells :: forall a. Array CellVar -> Resolve a -> Resolve a
+withCells = withCellsAs CellOpen
+
+-- | Runs a resolution with the cells given closed for the reason given, each
+-- | hiding a cell of its name.
+withCellsClosed :: forall a. CellClosure -> Array CellVar -> Resolve a -> Resolve a
+withCellsClosed why = withCellsAs (\v -> CellClosed v why)
+
+withCellsAs :: forall a. (CellVar -> Cell) -> Array CellVar -> Resolve a -> Resolve a
+withCellsAs k vs = locally \e -> e { cells = foldl (\m v@(CellVar c) -> Map.insert (unIdent c.name) (k v) m) e.cells vs }
+  where
+  unIdent (Ident n) = n
+
+lookupCell :: String -> Resolve (Maybe Cell)
+lookupCell n = asks (Map.lookup n <<< _.cells)
+
+resumeState :: Resolve ResumeState
+resumeState = asks _.resume
+
+-- | Runs a resolution with `resume` available or blocked as given, which is
+-- | what entering a clause does.
+withResume :: forall a. ResumeState -> Resolve a -> Resolve a
+withResume st = locally _ { resume = st }
+
+-- | Runs a resolution behind a boundary `resume` does not cross: where it is
+-- | available, it is blocked for the reason given, and otherwise it stays as
+-- | it is.
+blockResume :: forall a. ResumeBlock -> Resolve a -> Resolve a
+blockResume why = locally \e -> case e.resume of
+  ResumeAvailable -> e { resume = ResumeBlocked why }
+  ResumeBlocked _ -> e
 
 -- | A number for a binding, unique within the module.
 freshBinding :: Resolve BindingId
@@ -492,10 +720,35 @@ lookupType n = do
     EffectEntity e -> EffectReference e
     TypeEntity q@(Qualified owner (TyName name))
       | owner == ctx.module ->
-          if Set.member name ctx.ownSynonyms then TypeSynonymReference q else TypeConstructorReference q
+          if Map.member name ctx.ownSynonyms then TypeSynonymReference q else TypeConstructorReference q
       | otherwise -> case ctx.view >>= Environment.lookupType q of
           Just { sort: Synonym _ } -> TypeSynonymReference q
           _ -> TypeConstructorReference q
+
+-- | The body of a type synonym without parameters: one the module declares,
+-- | as written, or one an interface holds, expanded already.
+data SynonymBody
+  = OwnSynonym CST.Type
+  | ImportedSynonym Core.Type
+
+synonymBody :: Qualified TyName -> Resolve (Maybe SynonymBody)
+synonymBody q@(Qualified owner (TyName name)) = do
+  ctx <- context
+  pure
+    if owner == ctx.module then case Map.lookup name ctx.ownSynonyms of
+      Just s | s.params == 0 -> Just (OwnSynonym s.body)
+      _ -> Nothing
+    else case ctx.view >>= Environment.lookupType q of
+      Just { sort: Synonym s } | Array.null s.params -> Just (ImportedSynonym s.body)
+      _ -> Nothing
+
+-- | Runs a resolution at the module's top level, outside every binder and
+-- | frame, keeping its result alone: it takes no binding number and reports
+-- | nothing. What a declaration resolves to is read this way where another
+-- | declaration needs it before its own turn.
+speculatively :: forall a. Resolve a -> Resolve a
+speculatively (Resolve r) = Resolve \e s -> case r (e { typeVariables = Map.empty, frames = Nil, cells = Map.empty }) s of
+  Tuple a _ -> Tuple a s
 
 -- | How a type operator binds, and what it stands for. One whose target does
 -- | not resolve is reported where it is declared, and stands for nothing here.

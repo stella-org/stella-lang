@@ -81,6 +81,20 @@ handler toMaybe :: forall a. (Unit -> a / {| Partial, ... |}) -> Maybe a / {| ..
   | full abort _ -> Nothing
 ```
 
+**The effect handled is read off the signature.** Past its quantifiers, constraints, and synthesized arguments, the signature is a function from a thunk `Unit -> α / ρ` to a result, `β / ρ'` or a pure `β`, and the effect is the one element `ρ` holds and `ρ'` does not, elements being told apart by their keys: the effect, or the label of an instance.
+
+- **A row is written `{| … |}`, or named by a type synonym without parameters**, which is read through. A spread contributes the elements of the row it names: a synonym's, and none for a variable or `...` left open.
+- **Exactly one unlabelled element is removed.** A signature removing none, several, or a labelled instance is rejected, as is one whose rows are read neither way: a handler declaration handles one effect, and a labelled instance is handled in place by a group headed by its label.
+
+```stella
+type ProgramEffects = {| FS, Log, DB, LiftIO |}
+type RuntimeEffects = {| FS, Log, LiftIO |}
+
+handler runDatabase :: forall a. (Unit -> a / ProgramEffects) -> a / RuntimeEffects where …
+```
+
+`runDatabase` handles `DB`, the one element `ProgramEffects` holds and `RuntimeEffects` does not.
+
 ### Clause forms
 
 A clause is a `|`, a marker, the operation, a pattern for each of its arguments, and a body after `->`. The marker of a group is the default of its clauses, and a clause's own overrides it ([Syntax](05-Syntax.md)).
@@ -105,9 +119,13 @@ marker ::= "full" | "fast" | "reifiable" "full"
 | reifiable full log s k -> Base.IO.bind (Js.Console.log s) (Continuation.continue k)
 ```
 
-**`resume` does not leave the clause it belongs to.** It stands in the clause's immediate body, and not inside a lambda, a local function, or the body of a handling expression, any of which could keep it. A clause that keeps its continuation beyond itself — handing it to the host, storing it, returning it — is `reifiable full`, and its continuation is an abstract `Continuation`, resumed by `Continuation.continue`. Both reach Core as the same `full` clause, the continuation an ordinary variable there, wrapped for a `reifiable full` clause by a constructor only that desugaring writes ([Elaboration](01-Elaboration.md)); a module holding such a clause imports `Base.Continuation`, which the examples here import as `Continuation`. The difference between the two is a lifetime the surface promises, which no backend relies on until the distinction is carried into Core or the `.dmo`.
+**`resume` does not leave the clause it belongs to.** It stands in the clause's immediate body, and not inside a lambda, a local function, or a handling expression, any of which could keep it: the body of a handling expression is a thunk, and every item after the first stands inside the thunk the item before it is applied to. A `full` clause of a group written inside it brings a `resume` of its own, and a `fast` or `reifiable full` one none. **`resume` stands applied**, `resume e`: it is no value, so one bound to a name, passed as an argument, or returned is rejected. Name resolution checks both, from the syntax alone ([Handler Surface Syntax](../../proposals/02-Handler-Surface-Syntax.md)). A clause that keeps its continuation beyond itself — handing it to the host, storing it, returning it — is `reifiable full`, and its continuation is an abstract `Continuation`, resumed by `Continuation.continue`. Both reach Core as the same `full` clause, the continuation an ordinary variable there, wrapped for a `reifiable full` clause by a constructor only that desugaring writes ([Elaboration](01-Elaboration.md)); a module holding such a clause imports `Base.Continuation`, which the examples here import as `Continuation`. The difference between the two is a lifetime the surface promises, which no backend relies on until the distinction is carried into Core or the `.dmo`.
 
 **An unmarked clause is `full`.** Core writes the marker on every clause, so the desugaring settles which form an unmarked one means, and it means the unrestricted one. Nothing in Core falls back on a default.
+
+**A clause names an operation of the effect its handler handles, looked up among that effect's operations**, so a handler of `E` needs `E` in scope and not its operations, and a local value of an operation's name does not hide it. A qualified name is looked up in scope and must name an operation of that effect. A group headed by a label names no effect: its clauses name operations in scope, local values aside, and the effect they all belong to is the one it handles ([Name Resolution](06-Name-Resolution.md)).
+
+**A clause binds one pattern per argument of its operation**, followed for a `reifiable full` clause by its continuation, and the patterns are irrefutable, a clause having no other to fall through to. A handler has one clause per operation and one return clause at most. One for every operation of the effect is what a handler accepted in the end has: name resolution rejects a second clause for an operation, and the Core type checker a handler missing one.
 
 An operation declared with several arguments binds them one by one, the record Core packs them into being surface sugar ([Effects](../03-Typed-Core/03-Effects.md)).
 
@@ -143,7 +161,7 @@ handler counter :: Counter ~> () where
 
 ### Declarations come before the clauses
 
-Every `var` of a handler stands ahead of its clauses. The cells belong to the handler, as the clauses do, and fixing their place is what makes the two paragraphs below readable at a glance: nothing above a clause is inside the region, and nothing below it is outside.
+Every `var` of a handler stands ahead of its clauses. One after a clause is rejected. The cells belong to the handler, as the clauses do, and fixing their place is what makes the two paragraphs below readable at a glance: nothing above a clause is inside the region, and nothing below it is outside.
 
 ```stella
 -- effect Emit where emit :: String ->* Unit
@@ -168,6 +186,8 @@ Each application opens a region of its own. A handler is an ordinary function va
 Because the two spellings mention no ordinary variable, a cell name occupies no ordinary scope. A `var x` and a local `x` may stand together, the first reached by `x!` and `x :=` and the second by `x`, and neither shadows the other.
 
 Cells are visible **in the operation clauses alone** — not in the `return` clause, not in the computation the handler handles, and not in another cell's initial value. That the `return` clause cannot read one is what keeps a handler with cells from being a state monad in disguise: an ordinary return hands back the computation's value and no state of its own. A handler that wants its final state returned writes the parameter-passing interpreter instead and pays for the continuation.
+
+**The cells of a group written inside a clause stand beside those of the clause's handler.** The inner group's operation clauses see both, and its initial values and `return` clause see the outer ones alone, its own not being open there. A cell of the group hides the outer cell of its name throughout the group: its own clauses reach it, and in its initial values and `return` clause the name is closed rather than reaching the outer cell, so `x!` names one cell wherever it stands in the group. A group with cells inside a clause of a handler with cells is still rejected (below); the scope decides only which cell each name reaches.
 
 ### What reaches Core
 
@@ -369,7 +389,7 @@ Every node of the graph is an effect, so the terminal step — interpreting the 
 
 A row element is keyed, and `handles Console` fixes the key `EffectKey Console` (D16). Core has no key polymorphism, so a handler for one key is not a handler for another, and an implicit handler is registered in `Ξ` under **its key** rather than under its effect constructor.
 
-**Implicit insertion therefore reaches unlabelled instances only.** A labelled instance `( logger : Console )` is keyed `SymbolKey logger`, and lowering it needs a handler declared for that key. A labelled instance is written `{| logger :: Console |}` and handled in place by a group headed by its label ([Syntax](05-Syntax.md)); a top-level handler declaration names no effect and so no key, and how one would be declared for a labelled instance, to be registered for insertion, is not settled.
+**Implicit insertion therefore reaches unlabelled instances only.** A labelled instance `( logger : Console )` is keyed `SymbolKey logger`, and lowering it needs a handler declared for that key. A labelled instance is written `{| logger :: Console |}` and handled in place by a group headed by its label ([Syntax](05-Syntax.md)). **No handler declaration handles a labelled instance**, so no implicit handler serves one: a declaration handles one unlabelled effect, and an instance is labelled for the needs of one use, which the group written where it is handled meets.
 
 ## Scheduling
 

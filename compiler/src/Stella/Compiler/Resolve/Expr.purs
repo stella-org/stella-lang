@@ -13,14 +13,26 @@
 -- | block take irrefutable patterns, and a binding of a guard block is in scope
 -- | in the lines after it.
 -- |
+-- | **A handler's cells are in scope in its operation clauses**, and closed in
+-- | its initial values and its return clause, where a reference to one is
+-- | reported as such. A clause names an operation of the effect its handler
+-- | handles, looked up among that effect's operations whatever the imports
+-- | bring; a group headed by a label handles the effect of the operations in
+-- | scope its clauses name.
+-- |
+-- | **`resume` stands applied, in the immediate body of a `full` clause**: not
+-- | inside a lambda, a local function, or a handling expression there, each of
+-- | which could keep it beyond the clause
+-- | ([Effect Handlers](../../../../docs/technical-references/02-Surface-Language/02-Effect-Handlers.md)).
+-- |
 -- | The forms whose resolution belongs to a later part are reported as not
 -- | supported yet: the anonymous argument `_` and the sections and `case _ of`
--- | it makes, a macro call, and in a handling expression a group written in
--- | place, a cell, and `resume`.
+-- | it makes, and a macro call.
 module Stella.Compiler.Resolve.Expr
   ( resolveExpr
   , resolveLet
   , resolveDefinition
+  , resolveHandler
   ) where
 
 import Prelude
@@ -29,26 +41,32 @@ import Prim hiding (Type)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Enum (fromEnum)
-import Data.Foldable (foldl, traverse_)
-import Data.Maybe (Maybe(..), maybe)
+import Data.Foldable (foldM, foldl, traverse_)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.String.CodeUnits as CodeUnits
 import Data.String.CodePoints (toCodePointArray)
-import Data.Traversable (traverse)
+import Data.Set (Set)
+import Data.Set as Set
+import Data.Traversable (for, sequence, traverse)
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.CST.Range (binderRange, covering, exprRange, letBindingRange, nonEmpty)
+import Stella.Compiler.CST.Range (binderRange, covering, exprRange, letBindingRange, nonEmpty, typeRange)
 import Stella.Compiler.CST.Types as CST
-import Stella.Compiler.Resolve.Binder (Member(..), ResolvedMember(..), requireIrrefutable, resolveAlternative, resolveBinders, resolveGroup)
+import Stella.Compiler.Resolve.Binder (Member(..), ResolvedMember(..), requireIrrefutable, resolveAlternative, resolveBinders, resolveCells, resolveGroup)
 import Stella.Compiler.Resolve.Fixity (rebracket)
 import Stella.Compiler.Resolve.Group (GroupError(..), LocalBinding(..), groupBindings)
 import Stella.Compiler.Resolve.Label (reportLabelsTwice)
-import Stella.Compiler.Resolve.Monad (Found(..), Resolve, ResolveReason(..), ValueKind(..), ValueReference(..), lookupOperator, lookupValue, lookupValueReference, openedBy, report, valueKind, withOpened, withTypeVariables, withValues)
-import Stella.Compiler.Resolve.Type (resolveSignature, resolveType, signatureScope)
+import Stella.Compiler.Resolve.Monad (Cell(..), CellClosure(..), Found(..), HandledEffectProblem(..), Resolve, SynonymBody(..), ResolveReason(..), ResumeBlock(..), ResumeState(..), TypeReference(..), ValueKind(..), ValueReference(..), blockResume, context, lookupCell, lookupOperator, lookupType, lookupValue, lookupValueReference, openedBy, operationOf, operationsOf, report, resumeState, speculatively, synonymBody, valueKind, withCells, withCellsClosed, withOpened, withResume, withTypeVariables, withValues)
+import Stella.Compiler.Resolve.Type (handlerScope, resolveHandlerSignature, resolveSignature, resolveType, signatureScope)
 import Stella.Compiler.Surface.Decl (Associativity(..))
-import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder, Expr(..), GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..), exprOrigin)
+import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder, ClauseForm(..), Expr(..), Group, GuardLine(..), HandlerBody, HandlerItem(..), LetBinding(..), OperationClause, RecordField(..), exprOrigin)
+import Stella.Compiler.Surface.Name (CellVar)
 import Stella.Compiler.Surface.Origin (Origin(..), spanning)
+import Stella.Compiler.Surface.Type (EffectRowItem(..), HandlerSignature(..), Signature, Type(..))
 import Stella.Compiler.TypedCore.Domain (scalarString, scalarValue)
-import Stella.Compiler.TypedCore.Name (Ident, Qualified, Symbol(..), Tag(..))
-import Stella.Compiler.TypedCore.Prim (unitCtor)
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), Qualified(..), Symbol(..), Tag(..), TyName)
+import Stella.Compiler.TypedCore.Prim (unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Term (Literal(..))
+import Stella.Compiler.TypedCore.Type as Core
 
 resolveExpr :: CST.Expr -> Resolve Expr
 resolveExpr e = case e of
@@ -75,13 +93,15 @@ resolveExpr e = case e of
   CST.ExprParens inner -> resolveExpr inner
   CST.ExprTuple es -> ExprTuple o <$> traverse resolveExpr es
   CST.ExprRecord _ fields -> ExprRecord o <$> recordFields fields
-  CST.ExprApp f a -> ExprApp o <$> resolveExpr f <*> resolveExpr a
+  CST.ExprApp f a -> case unparenthesized f of
+    CST.ExprResume r -> ExprApp o <$> resumeAt r <*> resolveExpr a
+    _ -> ExprApp o <$> resolveExpr f <*> resolveExpr a
   CST.ExprOp _ _ _ -> operatorChain e
   CST.ExprTyped inner t -> ExprTyped o <$> resolveExpr inner <*> resolveType t
   CST.ExprAccess inner labels -> do
     inner' <- resolveExpr inner
     pure (foldl (\acc l -> ExprSelect (spanning (exprOrigin acc) (FromSource l.range)) acc (Symbol l.name)) inner' labels)
-  CST.ExprLambda bs body -> do
+  CST.ExprLambda bs body -> blockResume InsideLambda do
     r <- resolveBinders bs
     traverse_ requireIrrefutable r.binders
     ExprLambda o r.binders <$> withValues r.bound (resolveExpr body)
@@ -89,15 +109,20 @@ resolveExpr e = case e of
   CST.ExprCase scrutinees alternatives -> do
     scrutinees' <- traverse scrutinee scrutinees
     ExprCase o scrutinees' <$> traverse alternative alternatives
-  CST.ExprHandle inner items -> handling items inner
-  CST.ExprUsing items inner -> handling items inner
+  CST.ExprHandle inner items -> blockResume InsideHandling (handling items inner)
+  CST.ExprUsing items inner -> blockResume InsideHandling (handling items inner)
   CST.ExprLocalOpen alias inner -> open alias inner
   CST.ExprImportIn alias inner -> open alias inner
   CST.ExprMacro _ -> invalid (NotYetSupported "A macro call")
   CST.ExprAt n label -> operationAt n label
-  CST.ExprCellRead _ -> invalid (NotYetSupported "A cell")
-  CST.ExprCellWrite _ _ -> invalid (NotYetSupported "A cell")
-  CST.ExprResume _ -> invalid (NotYetSupported "`resume`")
+  CST.ExprCellRead n -> cell n <#> maybe (ExprInvalid o) (ExprCellRead o)
+  CST.ExprCellWrite n v -> do
+    c <- cell n
+    v' <- resolveExpr v
+    pure (maybe (ExprInvalid o) (\c' -> ExprCellWrite o c' v') c)
+  CST.ExprResume _ -> resumeState >>= case _ of
+    ResumeAvailable -> invalid ResumeNotApplied
+    ResumeBlocked why -> invalid (ResumeMisplaced why)
   where
   o = FromSource (exprRange e)
   invalid reason = report (exprRange e) reason $> ExprInvalid o
@@ -118,7 +143,7 @@ resolveExpr e = case e of
     ExprHandle o items' <$> resolveExpr inner
   handlerItem = case _ of
     CST.ListHandler h -> Just <<< HandlerApplied <$> resolveExpr h
-    CST.ListGroup g -> report g.head.range (NotYetSupported "A handler group written in place") $> Nothing
+    CST.ListGroup g -> map HandlerGroup <$> group g
 
   open alias inner = openedBy (written alias) >>= case _ of
     Just names -> withOpened names (resolveExpr inner)
@@ -251,7 +276,8 @@ resolveLet o items body = do
     Tuple (LocalValue v) (ResolvedName var) -> do
       signature <- traverse resolveSignature v.signature
       withTypeVariables (maybe [] signatureScope signature) do
-        d <- resolveDefinition v.binders v.body Nothing
+        d <- (if Array.null v.binders then identity else blockResume InsideLocalFunction)
+          (resolveDefinition v.binders v.body Nothing)
         pure (Just (LetValue { origin: FromSource (covering v.name.range (exprRange v.body)), var, signature, params: d.params, body: d.body }))
     Tuple (LocalPattern b v) (ResolvedPattern b') -> do
       requireIrrefutable b'
@@ -273,6 +299,301 @@ resolveDefinition params body local = do
     Nothing -> resolveExpr body
     Just items -> resolveLet (FromSource (nonEmpty ([ exprRange body ] <> map letBindingRange items))) items (resolveExpr body)
   pure { params: r.binders, body: body' }
+
+unparenthesized :: CST.Expr -> CST.Expr
+unparenthesized = case _ of
+  CST.ExprParens inner -> unparenthesized inner
+  e -> e
+
+-- | `resume` applied to an argument, where it stands.
+resumeAt :: CST.SourceRange -> Resolve Expr
+resumeAt r = resumeState >>= case _ of
+  ResumeAvailable -> pure (ExprResume (FromSource r))
+  ResumeBlocked why -> report r (ResumeMisplaced why) $> ExprInvalid (FromSource r)
+
+-- | The cell `x!` or `x := e` names, where it is open.
+cell :: CST.Name -> Resolve (Maybe CellVar)
+cell n = lookupCell n.name >>= case _ of
+  Just (CellOpen v) -> pure (Just v)
+  Just (CellClosed _ why) -> report n.range (CellClosedHere n.name why) $> Nothing
+  Nothing -> report n.range (UnknownCell n.name) $> Nothing
+
+-- | What a handler's clauses are read against: the effect it handles where
+-- | that is known before them, the label heading a group, or nothing where
+-- | neither resolved.
+data Handles
+  = HandlesEffect (Qualified EffName)
+  | HandlesLabel CST.Name
+  | HandlesUnknown
+
+-- | A handler's cells and clauses as written, each clause with the marker of
+-- | the block it stands in.
+type HandlerSource =
+  { cells :: Array { name :: CST.Name, value :: CST.Expr }
+  , clauses :: Array { block :: Maybe CST.Marker, clause :: CST.Clause }
+  }
+
+-- | A group written in place. A head written as a type name is the effect it
+-- | handles, and one written as a value name is a label; a group headed by a
+-- | label handles the effect its operations belong to. A group whose effect
+-- | is not decided is left out, what decided it not being reported again.
+group
+  :: { head :: CST.Name, marker :: Maybe CST.Marker, cells :: Array { name :: CST.Name, value :: CST.Expr }, clauses :: Array CST.Clause }
+  -> Resolve (Maybe Group)
+group g = do
+  handles <-
+    if isLabel g.head then pure (HandlesLabel g.head)
+    else lookupType g.head >>= case _ of
+      Found (EffectReference e) -> pure (HandlesEffect e)
+      Found _ -> report g.head.range (NotAnEffect (written g.head)) $> HandlesUnknown
+      NotFound -> report g.head.range (UnknownType (written g.head)) $> HandlesUnknown
+      Ambiguous -> report g.head.range (AmbiguousType (written g.head)) $> HandlesUnknown
+  r <- handlerBody handles { cells: g.cells, clauses: map { block: g.marker, clause: _ } g.clauses }
+  pure $ r.effect <#> \effect ->
+    { origin: FromSource (nonEmpty ([ g.head.range ] <> map cellRange g.cells <> map clauseRange g.clauses))
+    , label: if isLabel g.head then Just (Symbol g.head.name) else Nothing
+    , effect
+    , body: r.body
+    }
+  where
+  isLabel n = n.qualifier == Nothing && case CodeUnits.charAt 0 n.name of
+    Just c -> not (c >= 'A' && c <= 'Z')
+    Nothing -> false
+
+-- | A handler declaration's parts: its parameters, its signature, the effect
+-- | it handles, and its body. The type variables of the signature are in
+-- | scope in the parameters and the body, and the parameters, one binding
+-- | group of irrefutable patterns, in every initial value and clause.
+resolveHandler
+  :: Array CST.Binder
+  -> CST.Type
+  -> Array CST.HandlerItem
+  -> Resolve
+       { params :: Array Binder
+       , signature :: Signature HandlerSignature
+       , effect :: Maybe (Qualified EffName)
+       , body :: HandlerBody
+       }
+resolveHandler params t items = do
+  signature <- resolveHandlerSignature t
+  withTypeVariables (handlerScope signature) do
+    effect <- case signature.body of
+      Capability c -> pure (Just c.source.effect)
+      General g -> handledBy (typeRange t) g
+    r <- resolveBinders params
+    traverse_ requireIrrefutable r.binders
+    source <- declared items
+    body <- withValues r.bound (handlerBody (maybe HandlesUnknown HandlesEffect effect) source)
+    pure { params: r.binders, signature, effect, body: body.body }
+  where
+  -- Every `var` stands ahead of the clauses; one after them is reported and
+  -- left out.
+  declared = foldM step { cells: [], clauses: [] }
+  step acc = case _ of
+    CST.HandlerCell n v
+      | Array.null acc.clauses -> pure acc { cells = Array.snoc acc.cells { name: n, value: v } }
+      | otherwise -> report n.range (CellAfterClause n.name) $> acc
+    CST.HandlerClauses m cs -> pure acc { clauses = acc.clauses <> map { block: m, clause: _ } cs }
+
+-- | The effect a signature written in full handles: past its quantifiers,
+-- | constraints, and synthesized arguments, it is a function from a thunk
+-- | `Unit -> α / ρ` to a result, under `/ ρ'` or pure, and the effect is the
+-- | one element `ρ` holds and `ρ'` does not.
+-- |
+-- | A row is read as written, `{| … |}`, or as a type synonym without
+-- | parameters names it, a kind annotation around either aside, and a spread contributes what the row it names holds:
+-- | a synonym's, or none where it is a variable or left open. Elements are
+-- | told apart by their keys, the effect or the label.
+handledBy :: CST.SourceRange -> Type -> Resolve (Maybe (Qualified EffName))
+handledBy r t = case afterSpine t of
+  TypeInvalid _ -> pure Nothing
+  TypeFunction _ (TypeFunction _ (TypeConstructor _ u) _ (Just thunk)) _ residual | u == unitTy -> do
+    source <- rowKeys Set.empty thunk
+    result <- maybe (pure (Just [])) (rowKeys Set.empty) residual
+    case source, result of
+      Just s, Just res -> case Array.difference (Array.nub s) res of
+        [ Left e ] -> pure (Just e)
+        [ Right l ] -> problem (HandlesInstance l)
+        [] -> problem HandlesNothing
+        _ -> problem HandlesSeveral
+      _, _ -> problem HandlerShape
+  _ -> problem HandlerShape
+  where
+  problem p = report r (HandledEffect p) $> Nothing
+  afterSpine = case _ of
+    TypeForall _ _ body -> afterSpine body
+    TypeConstrained _ _ body -> afterSpine body
+    TypeFunction _ (TypeSynthesized _ _ _ _) body Nothing -> afterSpine body
+    other -> other
+
+-- | The key of an element of an effect row: the effect, or the label of an
+-- | instance.
+type RowKey = Either (Qualified EffName) String
+
+-- | The keys a row holds, where it is read: a row written out, or one a
+-- | synonym without parameters names. The synonyms being expanded are
+-- | carried, and one naming itself is not read.
+rowKeys :: Set (Qualified TyName) -> Type -> Resolve (Maybe (Array RowKey))
+rowKeys expanding = case _ of
+  TypeEffectRow _ items -> map Array.concat <<< sequence <$> traverse item items
+  TypeSynonym _ q -> synonymKeys expanding q
+  TypeKinded _ inner _ -> rowKeys expanding inner
+  _ -> pure Nothing
+  where
+  item = case _ of
+    EffectElement a -> pure (Just [ Left a.effect ])
+    EffectInstance _ (Symbol l) _ -> pure (Just [ Right l ])
+    EffectSpread _ Nothing -> pure (Just [])
+    EffectSpread _ (Just s) -> case s of
+      TypeVariable _ _ -> pure (Just [])
+      TypeWildcard _ -> pure (Just [])
+      _ -> rowKeys expanding s
+
+synonymKeys :: Set (Qualified TyName) -> Qualified TyName -> Resolve (Maybe (Array RowKey))
+synonymKeys expanding q
+  | Set.member q expanding = pure Nothing
+  | otherwise =
+      synonymBody q >>= case _ of
+        Just (OwnSynonym body) -> speculatively (resolveType body) >>= rowKeys (Set.insert q expanding)
+        Just (ImportedSynonym body) -> pure (coreKeys body)
+        Nothing -> pure Nothing
+      where
+      coreKeys = case _ of
+        Core.TRowEmpty -> Just []
+        Core.TRowExtend entry rest -> Array.cons <$> entryKey entry <*> coreKeys rest
+        Core.TRowUnion a b -> (<>) <$> coreKeys a <*> coreKeys b
+        Core.TVar _ -> Just []
+        _ -> Nothing
+      entryKey = case _ of
+        Core.RowEffectEntry e _ -> Just (Left e)
+        Core.RowLabelledEffectEntry (Symbol l) _ _ -> Just (Right l)
+        _ -> Nothing
+
+-- | A handler's body: its cells, one binding group, then its clauses in the
+-- | order written. An initial value and the return clause see the handler's
+-- | cells closed, and an operation clause sees them open; a cell of the
+-- | handler hides one of its name outside it either way.
+-- |
+-- | A clause names an operation of the effect handled where that is known,
+-- | and otherwise one in scope, which decides the effect. A clause whose
+-- | operation is not decided, one with other than a pattern per argument, and
+-- | a second clause for one operation or a second return clause are reported
+-- | where the problem is not reported already, and left out.
+handlerBody :: Handles -> HandlerSource -> Resolve { effect :: Maybe (Qualified EffName), body :: HandlerBody }
+handlerBody handles h = do
+  c <- resolveCells (map _.name h.cells)
+  initials <- withCellsClosed InInitialValue c.bound (traverse (resolveExpr <<< _.value) h.cells)
+  heads <- traverse (operationHead <<< _.clause) h.clauses
+  let
+    resolvedHeads = Array.catMaybes heads
+    effect = case handles of
+      HandlesEffect e -> Just e
+      HandlesLabel _ -> map _.op.effect (Array.head resolvedHeads)
+      HandlesUnknown -> Nothing
+  case handles of
+    HandlesLabel l | Array.null (Array.mapMaybe operationName h.clauses) -> report l.range (LabelledGroupEmpty l.name)
+    _ -> pure unit
+  -- A group headed by a label handles the effect of its first operation, and
+  -- a clause for another is reported and left out.
+  checked <- for heads case _ of
+    Just hd | Just e <- effect, hd.op.effect /= e -> do
+      report hd.at (OperationOfOtherEffect hd.written (effectWord hd.op.effect) (effectWord e))
+      pure Nothing
+    other -> pure other
+  ctx <- context
+  acc <- foldM (clause ctx c.bound) { operations: [], seen: [], return: Nothing }
+    (Array.zip h.clauses checked)
+  pure
+    { effect
+    , body:
+        { cells: Array.zipWith (\(Tuple d initial) var -> { origin: FromSource (cellRange d), cell: var, initial }) (Array.zip h.cells initials) c.cells
+        , operations: acc.operations
+        , return: acc.return
+        }
+    }
+  where
+  operationName = case _ of
+    { clause: CST.ClauseOperation _ n _ _ } -> Just n
+    _ -> Nothing
+
+  operationHead = case _ of
+    CST.ClauseOperation _ n _ _ -> case handles of
+      HandlesEffect e | n.qualifier == Nothing -> do
+        ops <- operationsOf e
+        case Array.find (\op -> op.name == Ident n.name) ops of
+          Just op -> pure (Just { at: n.range, written: written n, name: qualifiedLike e op.name, op: { effect: e, arity: op.arity } })
+          Nothing -> report n.range (NotAnOperationOf n.name (effectWord e)) $> Nothing
+      HandlesUnknown -> pure Nothing
+      _ -> inScope n
+    CST.ClauseReturn _ _ -> pure Nothing
+
+  -- An operation in scope, a global named by the clause; for a group whose
+  -- effect is known, one of that effect.
+  inScope n = lookupValue n >>= case _ of
+    Found q -> operationOf q >>= case _ of
+      Just op -> case handles of
+        HandlesEffect e | op.effect /= e -> report n.range (NotAnOperationOf (written n) (effectWord e)) $> Nothing
+        _ -> pure (Just { at: n.range, written: written n, name: q, op })
+      Nothing -> unknown
+    NotFound -> unknown
+    Ambiguous -> report n.range (AmbiguousValue (written n)) $> Nothing
+    where
+    unknown = case handles of
+      HandlesEffect e -> report n.range (NotAnOperationOf (written n) (effectWord e)) $> Nothing
+      _ -> report n.range (UnknownOperation (written n)) $> Nothing
+
+  clause ctx cells acc (Tuple { block, clause: written' } hd) = case written' of
+    CST.ClauseOperation m n bs body -> do
+      let marker = fromMaybe CST.Full (maybe block Just m)
+      when (marker == CST.ReifiableFull && not ctx.continuation) (report n.range ContinuationNotImported)
+      r <- resolveBinders bs
+      traverse_ requireIrrefutable r.binders
+      body' <- withValues r.bound (withCells cells (withResume (resumeIn marker) (resolveExpr body)))
+      let continuation = marker == CST.ReifiableFull
+      case hd of
+        Nothing -> pure acc
+        Just h'
+          | Array.length bs /= h'.op.arity + (if continuation then 1 else 0) -> do
+              report n.range (ClauseArity h'.written h'.op.arity (Array.length bs) continuation)
+              pure acc
+          | Array.elem h'.name acc.seen -> report n.range (ClauseTwice h'.written) $> acc
+          | otherwise -> do
+              let
+                form = case marker of
+                  CST.Full -> ClauseFull
+                  CST.Fast -> ClauseFast
+                  CST.ReifiableFull -> maybe ClauseFull ClauseReifiable (Array.last r.binders)
+                arguments = if continuation then fromMaybe [] (Array.init r.binders) else r.binders
+
+                operation :: OperationClause
+                operation = { origin: FromSource (covering n.range (exprRange body)), operation: h'.name, form, arguments, body: body' }
+              pure acc { operations = Array.snoc acc.operations operation, seen = Array.snoc acc.seen h'.name }
+    CST.ClauseReturn b body -> do
+      r <- resolveBinders [ b ]
+      traverse_ requireIrrefutable r.binders
+      body' <- withValues r.bound (withCellsClosed InReturnClause cells (resolveExpr body))
+      case acc.return, Array.head r.binders of
+        Just _, _ -> report (binderRange b) ReturnTwice $> acc
+        Nothing, Just b' -> pure acc { return = Just { origin: FromSource (covering (binderRange b) (exprRange body)), binder: b', body: body' } }
+        Nothing, Nothing -> pure acc
+
+  resumeIn = case _ of
+    CST.Full -> ResumeAvailable
+    CST.Fast -> ResumeBlocked InFastClause
+    CST.ReifiableFull -> ResumeBlocked InReifiableClause
+
+  qualifiedLike (Qualified owner _) i = Qualified owner i
+
+effectWord :: Qualified EffName -> String
+effectWord (Qualified _ (EffName e)) = e
+
+cellRange :: { name :: CST.Name, value :: CST.Expr } -> CST.SourceRange
+cellRange d = covering d.name.range (exprRange d.value)
+
+clauseRange :: CST.Clause -> CST.SourceRange
+clauseRange = case _ of
+  CST.ClauseOperation _ n _ body -> covering n.range (exprRange body)
+  CST.ClauseReturn b body -> covering (binderRange b) (exprRange body)
 
 written :: CST.Name -> String
 written n = maybe n.name (\q -> q <> "." <> n.name) n.qualifier

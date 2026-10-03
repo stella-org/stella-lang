@@ -89,8 +89,10 @@ The Surface AST is what name resolution builds from the concrete syntax tree and
 
 - **`handle e with …` and `using … handle e` are one node**, `ExprHandle`, holding the items from the first, outermost, to the last, and the computation. An item is a handler applied, or a group written in place ([Effect Handlers](02-Effect-Handlers.md)).
 - **A group holds the effect it handles**, and the label where it handles an instance. A group headed by a label is given its effect from the operations its clauses name.
-- **A handler declaration holds the effect it handles**: the left of `~>`, or, for a signature written in full, the one element the thunk's row holds and the result's row does not.
+- **A handler declaration holds the effect it handles**: the left of `~>`, or, for a signature written in full, the one element the thunk's row holds and the result's row does not, a row named by a type synonym read through it ([Effect Handlers](02-Effect-Handlers.md)).
 - **A clause holds the form in effect for it**, a group's marker and the default resolved: `ClauseFast`, `ClauseFull`, or `ClauseReifiable` with the pattern its continuation is bound by, the clause's last parameter.
+- **A clause holds one pattern per argument of its operation**, a `reifiable full` clause's continuation apart from them, and **a handler holds one clause per operation at most, and one return clause at most**. That every operation of the effect has a clause is not checked here: a handler missing one is rejected by the Core type checker.
+- **`ExprResume` stands only as the function of an `ExprApp`**, `resume e`, in the immediate body of a `full` clause: not inside a lambda, a local function, or a handling expression there ([Effect Handlers](02-Effect-Handlers.md)).
 - **A group and a handler declaration hold one `HandlerBody`**: the cells, the operation clauses, and the return clause where one is written.
 
 ## Declarations
@@ -124,7 +126,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 
 **An error in an expression, a type, a kind, a pattern, or a constant leaves an invalid node of that class** — `ExprInvalid`, `TypeInvalid`, `KindInvalid`, `BinderInvalid`, `ConstantInvalid` — where the erroneous form stood. A name that does not resolve, a form standing where it is not admitted, and a form not yet supported are among them. A chain of operators, of values or of types, holding one that does not resolve or two that cannot be chained is invalid as a whole. So is a local open of an alias no import declares, what it encloses being left unresolved. A capability translation whose source is no effect applied to its arguments is held as an invalid signature written in full. A constructor matched with other than one pattern per field, a tag with several, a `Number` literal, and an or-pattern binding a variable leave the pattern invalid. Where a `case` alternative has several choices at its top, each pattern of a choice that writes a variable is left invalid, and the other patterns of the row are kept: `x, One | Nothing, Two` holds `!, One` and `Nothing, Two`.
 
-**Any other error drops the smallest part around it that is a member of a sequence**: an import, a declaration, an attribute, an item of a row, a target of a capability, an item of a handling expression, or a clause.
+**Any other error drops the smallest part around it that is a member of a sequence**: an import, a declaration, an attribute, an item of a row, a target of a capability, an item of a handling expression, a cell, or a clause.
 
 | The error | What is dropped |
 | --- | --- |
@@ -132,7 +134,8 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | an attribute whose name does not resolve, or whose arguments do not match its declaration | the attribute |
 | `@[elaborationOnly]` on a declaration that is not exactly one the compiler lists | the attribute; the declaration is what it would be without it |
 | an item a row's bracket does not admit; an effect element or instance, or a capability target, that is no effect applied to its arguments, or whose effect does not resolve | that item, or that target |
-| an operation clause whose operation does not resolve or is not the group's effect's, a second return clause, a `reifiable full` clause with no continuation parameter | the clause |
+| an operation clause whose operation does not resolve or is not an operation of the effect handled, one with other than a pattern per argument of its operation and its continuation where it keeps one, a second clause for one operation, a second return clause | the clause |
+| a `var` of a handler declaration after a clause | the cell |
 | a group whose effect cannot be determined | the group |
 | a handler declaration whose effect cannot be determined, a fixity declaration whose target does not resolve, a computation declaration with parameters | the declaration |
 
@@ -146,7 +149,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 
 - **A binder's bindings are numbered and entered into scope before what they scope over is resolved**, read off the syntax as written: the parameters of a declaration, a lambda, or a clause, the variables of a pattern, the bindings of a `let` block or a `where`, and the cells of a handler. They are numbered in the order written and handed to what binds them in that order; a binding is never told apart from another by its range, an expansion giving several names one range.
 - **A pattern left invalid still binds the variables written in it**, an or-pattern's among them. Its bindings stand in no node of the tree, the pattern being invalid, and a reference to one still resolves, so a body is not reported again for what its pattern got wrong.
-- **Where one group of bindings binds a name twice, the first written is the one a reference reaches.** The group is what binds together: the parameters of one declaration, lambda, or clause; the patterns of one `case` alternative; one binding of a guard block; one `let` block or `where`, the names its definitions bind and the variables of its pattern bindings together; the cells of one handler; and the type variables of one `forall`. The later binding keeps a number of its own, and nothing refers to it; `x` and `x!` alike reach the first.
+- **Where one group of bindings binds a name twice, the first written is the one a reference reaches.** The group is what binds together: the parameters of one declaration, lambda, or clause, a `reifiable full` clause's continuation among its parameters; the patterns of one `case` alternative; one binding of a guard block; one `let` block or `where`, the names its definitions bind and the variables of its pattern bindings together; the cells of one handler; and the type variables of one `forall`. The later binding keeps a number of its own, and nothing refers to it; `x` and `x!` alike reach the first.
 
 ## From the concrete syntax tree
 

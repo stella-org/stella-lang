@@ -41,11 +41,16 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | any upper case name in a kind | a name other than `Type`, `Effect`, `Row`; `Row` applied to anything but `Type` or `Effect` |
 | a computation type anywhere a type stands | a computation type other than at the end of the spine of a computation declaration's signature, the one a top-level value definition pairs with; a `foreign` declaration's signature among the rest (`Check`) |
 | `{{ … }}` wherever a type atom stands | one off the spine of a signature |
-| `E ~> ρ` wherever an arrow may stand | `~>` other than as a handler declaration's signature, under its quantifiers; a source or a target that is no effect applied to its arguments; targets other than `()` or effects in parentheses |
-| any row item in any bracket | an item the bracket does not admit; an element of an effect row that is no effect applied to its arguments ([Surface AST](08-Surface-AST.md)) |
+| `E ~> ρ` wherever an arrow may stand | `~>` other than as a handler declaration's signature, under its quantifiers; a source or a target that is no effect applied to its arguments, a type synonym among them; targets other than `()` or effects in parentheses |
+| any type as a handler declaration's signature | one in full whose thunk's row and result's row, each written `{| … |}` or named by a type synonym without parameters, do not differ by exactly one unlabelled effect ([Effect Handlers](02-Effect-Handlers.md)) |
+| any row item in any bracket | an item the bracket does not admit; an element of an effect row that is no effect applied to its arguments, a type synonym standing for a row among them ([Surface AST](08-Surface-AST.md)) |
 | any chain of operators | two operators of one precedence that cannot be chained |
-| `resume` anywhere | `resume` outside the immediate body of a `full` clause |
-| any parameters in a `reifiable full` clause | a clause with no parameter after the operation's arguments, which is the continuation it keeps |
+| `resume` anywhere | `resume` outside the immediate body of a `full` clause, a lambda, a local function, or a handling expression inside the body included; `resume` other than applied, `resume e` |
+| any patterns after a clause's operation | other than one per argument of the operation, followed for a `reifiable full` clause by the continuation it keeps; a refutable one |
+| any name after a clause's `\|` | one naming no operation of the effect handled; in a group headed by a label, operations of several effects, or none |
+| any number of clauses for one operation | a second clause for one operation, a second `return` clause; no clause for an operation of the effect handled, which the Core type checker rejects |
+| `var` anywhere among a handler's items | one after a clause of a handler declaration; two of one name in one handler |
+| any type name or label at the head of a group | a type name that is no effect |
 | a `reifiable full` clause in any module | one in a module that does not import `Base.Continuation`, which its desugaring depends on |
 | an attribute, a directive, or a modifier with no declaration after it | the same |
 | any directive, with any arguments, before an item or in a type | one other than `#observ(none)` (`Check`); `#observ(none)` before anything but a `foreign` declaration, or twice |
@@ -284,6 +289,7 @@ rowItem ::= label "::" type | TAG "::" type | type | "..." typeAtom?
 - **`/` follows the last arrow of a chain and belongs to it.** `Int -> String -> Unit / {| Console |}` is `Int -> (String -> Unit / {| Console |})`, the effect on the second arrow. With no arrow before it, `Int / {| Random |}`, it is a computation type ([Top-level Computation Declaration](../../proposals/05-Toplevel-Computation-Declaration.md)). The arrow after a synthesized argument is pure and takes no `/`, so one following it with no other arrow between is a computation type too: `{{ d :: Show a by show }} -> a / {| Console |}` is a computation taking a synthesized argument.
 - **`()` is `Unit`**; a parenthesized list of two or more is a tuple.
 - **Braces hold a record's row, `{| |}` an effect row, and brackets a variant's**, each row written by one element grammar ([Rows](../03-Typed-Core/02-Rows.md)): a labelled element `name :: τ`, a tag `'Ok :: τ`, an element standing alone such as an effect `State Int`, and a spread `...r`, `...`.
+- **A type synonym may name an effect row**, and stands for the whole row: after `/`, `Unit / ProgramEffects`, and spread into another, `{| Trace, ...ProgramEffects |}`. It is no element of a row, so `{| ProgramEffects |}` is rejected ([Name Resolution](06-Name-Resolution.md)).
 - **A type operator binds tighter than an arrow and looser than application**, and every one is read at one precedence and associates to the left, in the order written; declared fixities rebracket the chain afterwards, as they do an expression's. `/` is the grammar's and no type operator, so `a + b / ρ` is the computation type of `a + b`.
 - **`E ~> ρ` is the shape of a capability translation** ([Effect Handlers](02-Effect-Handlers.md)), and stands as a handler declaration's signature alone, under any `forall` written in front of it: `forall s. State s ~> ()`.
 - **`{{ d :: C τ by f }}` is a synthesized argument**, the parameter a constraint desugars to. `d` names it for the reader and binds nothing; the definition binds the parameter as it binds any other. It stands on the spine of a signature, where nothing but quantifiers, constraints, and other synthesized arguments stands before it, and nowhere else ([Modules](../06-Modules/01-Modules.md)).
