@@ -122,7 +122,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 
 **Resolution reports every error in the module and goes on past each**, building what it can. A module with an error is not elaborated, so what is built around an error serves only to go on, and it is built by two rules.
 
-**An error in an expression, a type, a kind, a pattern, or a constant leaves an invalid node of that class** — `ExprInvalid`, `TypeInvalid`, `KindInvalid`, `BinderInvalid`, `ConstantInvalid` — where the erroneous form stood. A name that does not resolve, a form standing where it is not admitted, and a form not yet supported are among them. A chain of type operators holding one that does not resolve, or two that cannot be chained, is invalid as a whole, and a capability translation whose source is no effect applied to its arguments is held as an invalid signature written in full. A constructor matched with other than one pattern per field, a tag with several, a `Number` literal, and an or-pattern binding a variable leave the pattern invalid. Where a `case` alternative has several choices at its top, each pattern of a choice that writes a variable is left invalid, and the other patterns of the row are kept: `x, One | Nothing, Two` holds `!, One` and `Nothing, Two`.
+**An error in an expression, a type, a kind, a pattern, or a constant leaves an invalid node of that class** — `ExprInvalid`, `TypeInvalid`, `KindInvalid`, `BinderInvalid`, `ConstantInvalid` — where the erroneous form stood. A name that does not resolve, a form standing where it is not admitted, and a form not yet supported are among them. A chain of operators, of values or of types, holding one that does not resolve or two that cannot be chained is invalid as a whole. So is a local open of an alias no import declares, what it encloses being left unresolved. A capability translation whose source is no effect applied to its arguments is held as an invalid signature written in full. A constructor matched with other than one pattern per field, a tag with several, a `Number` literal, and an or-pattern binding a variable leave the pattern invalid. Where a `case` alternative has several choices at its top, each pattern of a choice that writes a variable is left invalid, and the other patterns of the row are kept: `x, One | Nothing, Two` holds `!, One` and `Nothing, Two`.
 
 **Any other error drops the smallest part around it that is a member of a sequence**: an import, a declaration, an attribute, an item of a row, a target of a capability, an item of a handling expression, or a clause.
 
@@ -140,7 +140,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 
 **A dropped declaration's name stays in scope.** The top-level scope is built before any declaration is resolved, so what refers to the name still resolves, and one error is not reported again at every use.
 
-**An error about a form that can still be held leaves it as it is.** A name bound twice keeps both bindings, and a declaration of a name declared already is kept beside the first; the error is reported and nothing is replaced.
+**An error about a form that can still be held leaves it as it is.** A name bound twice keeps both bindings, a declaration of a name declared already is kept beside the first, and a record writing a label twice keeps both fields; the error is reported and nothing is replaced.
 
 **Where a local name refers is decided by the bindings as written, whatever their errors.**
 

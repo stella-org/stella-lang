@@ -70,6 +70,8 @@ This document settles what a name written in source refers to. By the time a ter
 
 **A label is a key of a row, and keys are structural.** A record field, the label of an effect instance in `get@cache`, and the label heading a handler group are `SymbolKey`s, which no declaration introduces and no scope holds ([Rows](../03-Typed-Core/02-Rows.md)). Resolution leaves them as written.
 
+**A record writes each label once**: a record type, a record literal and its update, and a record pattern. A pun is a label, `{ a, a: x }` writing `a` twice, and a spread or a rest is none. Each label written after one of its spelling is an error, reported where it stands; in a pattern this is apart from a variable bound twice, so `{ a: x, a: x }` is both.
+
 ### Macro declarations
 
 **A top-level value declaration carrying `@[macro]` declares a macro.** Its name enters the macro namespace of the modules importing it, and no value namespace: no source names it as a value, the declaring module included. It is compiled as a global like any other, which is how an expansion runs it, and what type it must have is fixed with macro expansion.
@@ -156,6 +158,24 @@ g xs = A.( length xs )           -- length is A.length
 - **What is opened is what a module can export**: the value, type, operator, type operator, and macro namespaces. An attribute is attached to a declaration and so never stands inside an expression, where an open is; `@[M.a]` and an import list reach one. A type in an annotation, an effect in a row, a constructor in a pattern, a discriminator, an operator, and a macro call inside `e` are resolved by the same rule; an operator opened this way takes its fixity from `M`. Local binders and cells are not a module's to open.
 - **What is opened is an alias.** A module imported without `as` has no qualifier, so its full name cannot be opened.
 - **The header still names every dependency.** The alias is declared by an import in either case, so local open adds nothing a build reads ([Modules](../06-Modules/01-Modules.md)).
+- **An unqualified name is looked up in the innermost construct holding it**, a local open or a binding group, before the module's scope. A variable bound inside an open hides a name the open brings, and a name the open brings hides a local binding outside it, which is warned of at each reference it decides.
+- **An alias no import declares is an error**, and the open is invalid as a whole; what it encloses is not resolved.
+- **An operator means what its fixity declaration says wherever it is used.** The value a declared operator stands for is resolved where it is declared, so an open around a use changes which operator a spelling names and never what an operator stands for.
+
+## Local scopes
+
+**A construct binding values binds them as one group** ([Surface AST](08-Surface-AST.md)), and the group is in scope where the construct says.
+
+| Construct | Its bindings are in scope in |
+| --- | --- |
+| a declaration's or a lambda's parameters | its body, its `where` among it |
+| a `let` block or a `where` | every right-hand side of the block, and its body |
+| a `case` alternative's patterns | its body or its guard block |
+| a binding of a guard block | the lines of the block after it |
+
+**A `let` block and a `where` are recursive.** Everything the block binds — the names its definitions bind and the variables of its pattern bindings — is in scope in every right-hand side and in the body, as in Haskell and PureScript. **Initializing a block requires no reference to what it is initializing.** `fibAnd = Tuple "fib" \n -> … snd fibAnd …` is admitted: the recursive function is stored in the tuple, and reads `fibAnd` only when it is applied, after the block is initialized. `x = Tuple 1 x` is not, reading `x` while building it. Standing inside a lambda is not enough on its own, a lambda applied at once, `x = (\_ -> x) ()`, reading the reference during initialization all the same. How a block is judged, conservatively and decidably, is settled where it is elaborated ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
+
+**A local signature's type variables are in scope in its definition**, as a top-level signature's are ([Type variables](#type-variables)).
 
 ## Type variables
 
