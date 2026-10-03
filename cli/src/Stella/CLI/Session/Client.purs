@@ -362,8 +362,11 @@ kill (Session s) = do
   liftEffect s.child.kill
   liftAff s.child.exit
 
--- | A channel failure, judged once the process has ended: a process that ended
--- | without saying `closed` is that, whatever the channel reported first.
+-- | Determines the failure reason after a process ends.
+-- | 
+-- | OS-level channel errors (e.g., ECONNRESET) vary by platform and are 
+-- | normalized into `ExitedUnannounced`. However, application-level 
+-- | protocol violations (`SessionFailure`) are preserved as the root cause.
 lostWith :: forall r. Child -> SessionFailure -> Run (AFF + r) ClientFailure
 lostWith child failure = do
   exit <- liftAff child.exit
@@ -371,6 +374,7 @@ lostWith child failure = do
     Just reason -> NotStarted reason
     Nothing -> case failure of
       Peer.ChannelEnded -> ExitedUnannounced exit
+      Peer.ChannelFailed _ -> ExitedUnannounced exit
       _ -> ChannelLost failure exit
 
 describeExit :: Exit -> String
