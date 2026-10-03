@@ -108,7 +108,7 @@ The Surface AST is what name resolution builds from the concrete syntax tree and
 | handler | `implicit`, its parameters, its signature, the effect it handles, and its `HandlerBody` |
 | foreign | its `Observation` and its signature |
 | foreign type | its kind ([Foreign Types](../../proposals/06-Foreign-Types.md)) |
-| fixity | its associativity, its precedence, the value or constructor it names, and the operator |
+| fixity | its associativity, its precedence, the value or constructor it names, a computation among the values, and the operator |
 | type fixity | its associativity, its precedence, the type constructor, type synonym, or effect it names, and the operator |
 | attribute | its positional parameter types and its keyword parameters with their defaults |
 
@@ -116,7 +116,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 
 **What stands before a declaration is part of it.** A modifier and a directive are fields: `implicit` of a handler declaration, and `#observ(none)` of a foreign one, `Observation` being `MayObserve` where nothing is written and `ObservesNone` where it is. An attribute is its qualified name and its arguments **normalized**: as many positional arguments as the declaration has parameters, and every keyword argument in the order the declaration gives its parameters, a default standing for one left out. A default carries the origin of the attribute it was filled into.
 
-**An argument is a constant**: a literal, a global value, a constructor applied to constants, or a record of constants.
+**An argument is a constant**: a literal, a global value, a constructor applied to constants, or a record of constants. A computation and an operation are no constant, a reference to either standing for what running it does. A name in a constant is held qualified by the module defining it, which may be one the header imports or one reached through a re-export; resolution adds nothing to the module's dependencies for it.
 
 **A module holds its name, its imports, and its declarations.** The imports are the dependencies its header declares (D22); `Prim` is never among them, an `import Prim` choosing how its names are written and nothing else. What it exports is computed with its interface, rather than held here.
 
@@ -131,19 +131,20 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | The error | What is dropped |
 | --- | --- |
 | an import of a module that is not there | the import |
-| an attribute whose name does not resolve, or whose arguments do not match its declaration | the attribute |
+| an attribute whose name does not resolve, or whose arguments do not match its declaration; any attribute on a fixity or an attribute declaration; one the compiler reads on a declaration it is not for, or a second use of it on one declaration | the attribute |
+| a keyword parameter an attribute declaration declares a second time | that parameter |
 | `@[elaborationOnly]` on a declaration that is not exactly one the compiler lists | the attribute; the declaration is what it would be without it |
 | an item a row's bracket does not admit; an effect element or instance, or a capability target, that is no effect applied to its arguments, or whose effect does not resolve | that item, or that target |
 | an operation clause whose operation does not resolve or is not an operation of the effect handled, one with other than a pattern per argument of its operation and its continuation where it keeps one, a second clause for one operation, a second return clause | the clause |
 | a `var` of a handler declaration after a clause | the cell |
 | a group whose effect cannot be determined | the group |
-| a handler declaration whose effect cannot be determined, a fixity declaration whose target does not resolve, a computation declaration with parameters | the declaration |
+| a handler declaration whose effect cannot be determined, a fixity declaration whose target does not resolve, a computation declaration with parameters, a macro called at a declaration's position, which this version does not expand | the declaration |
 
 **An import whose module is there keeps its dependency**, whatever else is wrong with it: a lazy import with no alias, or with a list, is reported and opens no name, and its module stays among the dependencies the header declares.
 
 **A dropped declaration's name stays in scope.** The top-level scope is built before any declaration is resolved, so what refers to the name still resolves, and one error is not reported again at every use.
 
-**An error about a form that can still be held leaves it as it is.** A name bound twice keeps both bindings, a declaration of a name declared already is kept beside the first, and a record writing a label twice keeps both fields; the error is reported and nothing is replaced.
+**An error about a form that can still be held leaves it as it is.** A name bound twice keeps both bindings, a declaration of a name declared already is kept beside the first, a record writing a label twice keeps both fields, and a positional parameter an attribute declaration writes after a keyword one is kept among its positional parameters, in the order written; the error is reported and nothing is replaced.
 
 **Where a local name refers is decided by the bindings as written, whatever their errors.**
 

@@ -34,7 +34,7 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | a member of either case after any type name | one the declaration does not have: a constructor of a data type, an operation of an effect |
 | `module N` in any export list | the module naming itself, `module M (module M) where` |
 | `->*` wherever an arrow may stand | `->*` outside an effect's operation signature; an operation signature without exactly one on its spine, or with one inside an argument or the resumption type (`Check`) |
-| any atom as an argument of an attribute — unparenthesized, an argument is one atom, so `@[a f x]` has two | anything but a constant: a literal, a name, a constructor applied to constants, or a record of those |
+| any atom as an argument of an attribute — unparenthesized, an argument is one atom, so `@[a f x]` has two | anything but a constant: a literal, the name of a global value, a constructor applied to constants, or a record of those; a computation or an operation is none |
 | any type atom without a type variable at its top as a positional parameter of an attribute | a parameter type holding a type variable |
 | any integer literal as a precedence | one written other than as decimal digits: `-1`, `1_0`, `0x10` |
 | `name@atom` with any atom after the `@` | in an expression, anything but an unqualified name after it, `op@label`; the wider form stands for an as-pattern on the left of a guard block's binding, and an `@` not taken as one there is checked for this |
@@ -53,6 +53,9 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | any type name or label at the head of a group | a type name that is no effect |
 | a `reifiable full` clause in any module | one in a module that does not import `Base.Continuation`, which its desugaring depends on |
 | an attribute, a directive, or a modifier with no declaration after it | the same |
+| any attribute before any declaration | one on a fixity or an attribute declaration; one the compiler reads on a declaration it is not for, or used twice on one ([Attributes, Modifiers, and Directives](07-Attributes-Modifiers-and-Directives.md)); arguments that do not match the attribute's declaration |
+| attribute parameters, positional and keyword, in any order | a positional parameter after a keyword one; a keyword parameter declared twice |
+| parameters in any definition | parameters in the definition of a computation declaration |
 | any directive, with any arguments, before an item or in a type | one other than `#observ(none)` (`Check`); `#observ(none)` before anything but a `foreign` declaration, or twice |
 | `implicit` before any item | one before anything but a handler declaration or a macro call, which keeps it |
 | an import anywhere among the items | one after a declaration |
