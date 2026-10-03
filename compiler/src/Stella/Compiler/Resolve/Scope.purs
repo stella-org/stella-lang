@@ -34,6 +34,9 @@ module Stella.Compiler.Resolve.Scope
   , printScopeWarning
   , resolveScope
   , elaborationOnlyEntries
+  , elaborationOnlyEntry
+  , writtenBare
+  , actingUse
   ) where
 
 import Prelude
@@ -208,6 +211,33 @@ elaborationOnlyEntries
   :: Array { module :: ModuleName, type :: String, newtype :: Boolean, constructor :: String, internal :: String }
 elaborationOnlyEntries =
   [ { module: ModuleName "Base.Continuation", type: "Continuation", newtype: true, constructor: "Continuation", internal: "$Continuation" } ]
+
+-- | Whether an attribute is written with no argument. `@[macro]` and
+-- | `@[elaborationOnly]` take none, and the scope acts on one only where it is
+-- | written so and stands on a declaration it is for: `macro` on a value
+-- | declaration that is no computation, `elaborationOnly` on a data type or a
+-- | newtype. Anywhere else the scope leaves it to be reported where the
+-- | declaration's attributes are resolved.
+writtenBare :: Attribute -> Boolean
+writtenBare a = Array.null a.args
+
+-- | The use of an attribute the scope acts on, among the uses written of it:
+-- | the first, where it is written bare. A later use is a second one wherever
+-- | the first stands, so it is never the one acted on.
+actingUse :: (Attribute -> Boolean) -> Array Attribute -> Maybe Attribute
+actingUse isIt uses = Array.find isIt uses >>= \a -> if writtenBare a then Just a else Nothing
+
+-- | The entry the compiler lists for a data type or a newtype, where the
+-- | declaration is exactly one: its module, its name, its form, and its
+-- | constructors as written.
+elaborationOnlyEntry
+  :: ModuleName
+  -> String
+  -> Boolean
+  -> Array String
+  -> Maybe { module :: ModuleName, type :: String, newtype :: Boolean, constructor :: String, internal :: String }
+elaborationOnlyEntry m t isNewtype ctors =
+  Array.find (\e -> e.module == m && e.type == t && e.newtype == isNewtype && ctors == [ e.constructor ]) elaborationOnlyEntries
 
 ------------------------------------------------------------------------------
 -- Candidates
@@ -447,7 +477,9 @@ declareAll m attributeOf = foldl declaration { declared: emptyNames, macros: Map
   valueAs n entity s = enter ValueNamespace n (\st -> st { declared = st.declared { values = addCandidate n.name (declared entity) st.declared.values } }) s
   typeName n entity members s = enter TypeNamespace n (\st -> st { declared = st.declared { types = addType n.name { entity, via: Declared, members } st.declared.types } }) s
 
-  carries attr prefix = Array.filter (\a -> attributeOf a == Just (primAttribute attr)) (attributes prefix)
+  -- The use of an attribute of `Prim` the scope acts on: its first use, where
+  -- that one is written bare.
+  carries attr prefix = Array.fromFoldable (actingUse (\a -> attributeOf a == Just (primAttribute attr)) (attributes prefix))
 
   attributes :: Prefix -> Array Attribute
   attributes = Array.mapMaybe case _ of
@@ -456,7 +488,7 @@ declareAll m attributeOf = foldl declaration { declared: emptyNames, macros: Map
 
   declaration s = case _ of
     DeclarationValue p v
-      | not (Array.null (carries "macro" p)) ->
+      | not v.computation && not (Array.null (carries "macro" p)) ->
           enter MacroNamespace v.name (\st -> st { macros = addCandidate v.name.name (declared (own (Ident v.name.name))) st.macros }) s
       | otherwise -> value v.name s
     DeclarationType p _ d -> case d of
@@ -477,16 +509,14 @@ declareAll m attributeOf = foldl declaration { declared: emptyNames, macros: Map
     DeclarationMacro _ _ -> s
 
   -- A data type or newtype, and its constructors. One carrying
-  -- `@[elaborationOnly]` that is exactly a declaration the compiler lists has
+  -- `@[elaborationOnly]`, written bare, that is exactly a declaration the compiler lists has
   -- its constructor take the internal identity, and publishes it as no member
   -- of the type; on any other declaration the attribute is refused and the
   -- declaration is what it would be without it.
   dataType p isNewtype n ctors s =
     let
       marked = carries "elaborationOnly" p
-      listed = Array.find
-        (\e -> e.module == m && e.type == n.name && e.newtype == isNewtype && map _.name ctors == [ e.constructor ])
-        elaborationOnlyEntries
+      listed = elaborationOnlyEntry m n.name isNewtype (map _.name ctors)
       internal c = case listed of
         Just e | not (Array.null marked) && e.constructor == c.name -> Just (own (Ident e.internal))
         _ -> Nothing

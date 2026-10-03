@@ -54,6 +54,11 @@ module Stella.Compiler.Resolve.Monad
   , lookupTypeOperator
   , lookupValue
   , lookupOperator
+  , lookupAttribute
+  , AttributeShape
+  , AttributeDefault(..)
+  , attributeShape
+  , ownValue
   , lookupValueReference
   , ValueReference(..)
   , TypeReference(..)
@@ -78,6 +83,7 @@ import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Interface.Environment (BuildEnvironment, ModuleView, viewFor)
 import Stella.Compiler.Interface.Environment as Environment
 import Stella.Compiler.Interface.Module (Export, TypeEntity(..), TypeExport, TypeSort(..), ValueSort(..), isComputation)
+import Stella.Compiler.Interface.Module as Interface
 import Stella.Compiler.Resolve.Group (Declaration(..), GroupReason, GroupedModule, printGroupReason)
 import Stella.Compiler.Resolve.Scope (Names, Scope, ScopedModule, emptyNames)
 import Stella.Compiler.Surface.Decl (Associativity(..), FixityTarget(..))
@@ -93,7 +99,8 @@ import Stella.Compiler.TypedCore.Type as Core
 -- | the fixity of each operator it declares, each constructor it declares
 -- | under the identity it is declared with, each operation it declares with
 -- | its effect and the number of its arguments, which of its values are
--- | computations, and whether it is or imports `Base.Continuation`.
+-- | computations, the parameters of each attribute it declares, and whether it
+-- | is or imports `Base.Continuation`.
 type Context =
   { module :: ModuleName
   , scope :: Scope
@@ -104,6 +111,7 @@ type Context =
   , ownConstructors :: Map Ident Constructor
   , ownOperations :: Map Ident { effect :: EffName, arity :: Int }
   , ownComputations :: Set Ident
+  , ownAttributes :: Map Ident (Array CST.AttributeParameter)
   , continuation :: Boolean
   }
 
@@ -298,6 +306,33 @@ data ResolveReason
   -- | A `reifiable full` clause in a module that does not import
   -- | `Base.Continuation`.
   | ContinuationNotImported
+  -- | An attribute nothing in scope stands for, or several do.
+  | UnknownAttribute String
+  | AmbiguousAttribute String
+  -- | An attribute on a declaration it cannot stand on.
+  | AttributeMisplaced String
+  -- | A second use of an attribute the compiler reads, on one declaration.
+  | AttributeTwice String
+  -- | An attribute with other than as many positional arguments as its
+  -- | declaration has parameters: the attribute, its parameters, and the
+  -- | arguments written.
+  | AttributeArity String Int Int
+  -- | A keyword argument its attribute does not declare: the attribute, and
+  -- | the label.
+  | KeywordUnknown String String
+  -- | A keyword argument given twice.
+  | KeywordTwice String
+  -- | A keyword parameter without a default left out: the attribute, and the
+  -- | label.
+  | KeywordMissing String String
+  -- | An argument of an attribute, or a default, that is no constant.
+  | NotAConstant
+  -- | A positional parameter of an attribute declaration after a keyword one.
+  | PositionalAfterKeyword
+  -- | A keyword parameter of an attribute declaration declared twice.
+  | KeywordParameterTwice String
+  -- | A computation declaration with parameters.
+  | ComputationWithParameters String
   -- | A handler declaration's signature from which the effect it handles is
   -- | not read.
   | HandledEffect HandledEffectProblem
@@ -411,6 +446,19 @@ printResolveReason = case _ of
   ClauseTwice n -> "The operation `" <> n <> "` has a clause already"
   ReturnTwice -> "This handler has a return clause already"
   ContinuationNotImported -> "A `reifiable full` clause depends on `Base.Continuation`, which this module does not import"
+  UnknownAttribute n -> "There is no attribute `" <> n <> "` in scope"
+  AmbiguousAttribute n -> "The attribute `" <> n <> "` is ambiguous here; write it qualified"
+  AttributeMisplaced n -> "The attribute `" <> n <> "` cannot stand on this declaration"
+  AttributeTwice n -> "The attribute `" <> n <> "` stands on this declaration already"
+  AttributeArity n parameters written ->
+    "The attribute `" <> n <> "` takes " <> show parameters <> " positional argument(s), and is given " <> show written
+  KeywordUnknown n l -> "The attribute `" <> n <> "` has no keyword parameter `" <> l <> "`"
+  KeywordTwice l -> "The keyword argument `" <> l <> "` is given twice"
+  KeywordMissing n l -> "The attribute `" <> n <> "` needs the keyword argument `" <> l <> "`, which has no default"
+  NotAConstant -> "An argument of an attribute is a constant: a literal, a global value, a constructor applied to constants, or a record of constants"
+  PositionalAfterKeyword -> "The positional parameters of an attribute come before its keyword parameters"
+  KeywordParameterTwice l -> "The keyword parameter `" <> l <> "` is declared twice"
+  ComputationWithParameters n -> "The computation `" <> n <> "` takes no parameter; one that does is a function, whose signature is an arrow"
   HandledEffect problem -> case problem of
     HandlerShape ->
       "A handler's signature is `E ~> ( … )`, or a function from a thunk `Unit -> a / ρ` to its result, each row written with `{| … |}` or named by a type synonym without parameters"
@@ -438,6 +486,7 @@ contextOf env g scoped =
   , ownConstructors: Map.fromFoldable (Array.concatMap constructors g.declarations)
   , ownOperations: Map.fromFoldable (Array.concatMap operations g.declarations)
   , ownComputations: Set.fromFoldable (Array.mapMaybe computation g.declarations)
+  , ownAttributes: Map.fromFoldable (Array.mapMaybe attribute g.declarations)
   , continuation: scoped.name == continuationModule || Array.any (\i -> i.module == continuationModule) scoped.imports
   }
   where
@@ -468,6 +517,9 @@ contextOf env g scoped =
     _ -> []
   computation = case _ of
     DeclarationValue _ v | v.computation -> Just (Ident v.name.name)
+    _ -> Nothing
+  attribute = case _ of
+    DeclarationOther _ (DeclAttribute n params) -> Just (Tuple (Ident n.name) params)
     _ -> Nothing
   typeFixity = case _ of
     DeclarationOther _ (DeclTypeFixity f p target op) ->
@@ -822,6 +874,55 @@ lookupOperator n = do
 -- | A global of the value namespace.
 lookupValue :: Name -> Resolve (Found (Qualified Ident))
 lookupValue n = candidates _.values n <#> \cs -> found cs <#> \(c :: Export (Qualified Ident)) -> c.entity
+
+-- | An attribute, in the attribute namespace.
+lookupAttribute :: Name -> Resolve (Found (Qualified Ident))
+lookupAttribute n = candidates _.attributes n <#> \cs -> found cs <#> \(c :: Export (Qualified Ident)) -> c.entity
+
+-- | What normalizing an attribute's arguments reads of its declaration: how
+-- | many positional parameters it has, and its keyword parameters in the order
+-- | declared, each with its default where it has one.
+type AttributeShape =
+  { positional :: Int
+  , keyword :: Array { label :: String, default :: Maybe AttributeDefault }
+  }
+
+-- | A keyword parameter's default: as the module's own declaration writes it,
+-- | or as an interface holds it.
+data AttributeDefault
+  = OwnDefault CST.Expr
+  | ImportedDefault Interface.Constant
+
+attributeShape :: Qualified Ident -> Resolve (Maybe AttributeShape)
+attributeShape q@(Qualified owner name) = do
+  ctx <- context
+  pure
+    if owner == ctx.module then Map.lookup name ctx.ownAttributes <#> \params ->
+      { positional: Array.length (Array.filter positional params)
+      , keyword: Array.mapMaybe keyword params
+      }
+    else ctx.view >>= Environment.lookupAttribute q <#> \entry ->
+      { positional: Array.length entry.positional
+      , keyword: map (\k -> { label: k.label, default: map ImportedDefault k.default }) entry.keyword
+      }
+  where
+  positional = case _ of
+    CST.AttributePositional _ -> true
+    CST.AttributeKeyword _ _ _ -> false
+  keyword = case _ of
+    CST.AttributeKeyword l _ d -> Just { label: l.name, default: map OwnDefault d }
+    CST.AttributePositional _ -> Nothing
+
+-- | The entity a value the module declares is, by the name written: its own
+-- | name, or the internal identity an elaboration-only constructor takes.
+ownValue :: String -> Resolve (Qualified Ident)
+ownValue n = do
+  ctx <- context
+  let
+    own (c :: Export (Qualified Ident)) = case c.entity of
+      Qualified owner _ | owner == ctx.module -> Just c.entity
+      _ -> Nothing
+  pure (fromMaybe (Qualified ctx.module (Ident n)) (Array.findMap own (fromMaybe [] (Map.lookup n ctx.scope.declared.values))))
 
 -- | What a name of the value namespace stands for where an expression names
 -- | it.

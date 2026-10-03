@@ -32,6 +32,7 @@ module Stella.Compiler.Resolve.Expr
   ( resolveExpr
   , resolveLet
   , resolveDefinition
+  , resolveTopDefinition
   , resolveHandler
   ) where
 
@@ -264,10 +265,15 @@ resolveLet :: Origin -> Array CST.LetBinding -> Resolve Expr -> Resolve Expr
 resolveLet o items body = do
   let grouped = groupBindings items
   traverse_ (\(GroupError r reason) -> report r (LetGrouping reason)) grouped.errors
-  g <- resolveGroup (map member grouped.bindings)
+  localBlock o grouped.bindings body
+
+-- | A block of bindings grouped already, around what the body resolves to.
+localBlock :: Origin -> Array LocalBinding -> Resolve Expr -> Resolve Expr
+localBlock o bindings body = do
+  g <- resolveGroup (map member bindings)
   withValues g.bound do
-    bindings <- Array.catMaybes <$> traverse binding (Array.zip grouped.bindings g.members)
-    ExprLet o bindings <$> body
+    bindings' <- Array.catMaybes <$> traverse binding (Array.zip bindings g.members)
+    ExprLet o bindings' <$> body
   where
   member = case _ of
     LocalValue v -> MemberName v.name
@@ -299,6 +305,25 @@ resolveDefinition params body local = do
     Nothing -> resolveExpr body
     Just items -> resolveLet (FromSource (nonEmpty ([ exprRange body ] <> map letBindingRange items))) items (resolveExpr body)
   pure { params: r.binders, body: body' }
+
+-- | A top-level definition: its parameters and its body, under the bindings of
+-- | its `where`, which were grouped with the module's declarations.
+resolveTopDefinition
+  :: Array CST.Binder
+  -> CST.Expr
+  -> Array LocalBinding
+  -> Resolve { params :: Array Binder, body :: Expr }
+resolveTopDefinition params body local = do
+  r <- resolveBinders params
+  traverse_ requireIrrefutable r.binders
+  body' <- withValues r.bound
+    if Array.null local then resolveExpr body
+    else localBlock (FromSource (nonEmpty ([ exprRange body ] <> map localRange local))) local (resolveExpr body)
+  pure { params: r.binders, body: body' }
+  where
+  localRange = case _ of
+    LocalValue v -> covering v.name.range (exprRange v.body)
+    LocalPattern b v -> covering (binderRange b) (exprRange v)
 
 unparenthesized :: CST.Expr -> CST.Expr
 unparenthesized = case _ of

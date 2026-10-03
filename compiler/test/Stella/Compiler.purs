@@ -46,6 +46,7 @@ import Test.Stella.Compiler.CST.Tour as CSTTour
 import Test.Stella.Compiler.CST.Check as CSTCheck
 import Test.Stella.Compiler.CST.Range as CSTRange
 import Test.Stella.Compiler.Resolve.Group as ResolveGroup
+import Test.Stella.Compiler.Resolve.Module as ResolveModule
 import Test.Stella.Compiler.Resolve.Binder as ResolveBinder
 import Test.Stella.Compiler.Resolve.Expr as ResolveExpr
 import Test.Stella.Compiler.Resolve.Scope as ResolveScope
@@ -84,6 +85,7 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ResolveType.spec
   ResolveBinder.spec
   ResolveExpr.spec
+  ResolveModule.spec
   TypedCore.spec
   Row.spec
   Kinding.spec
