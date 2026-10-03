@@ -47,6 +47,7 @@ import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.CST.Range (binderRange, covering)
 import Stella.Compiler.CST.Types as CST
+import Stella.Compiler.Resolve.Label (reportLabelsTwice)
 import Stella.Compiler.Resolve.Monad (Found(..), Resolve, ResolveReason(..), ResolveWarning(..), constructorOf, freshBinding, lookupValue, report, valueInScope, warn)
 import Stella.Compiler.Resolve.Type (resolveType)
 import Stella.Compiler.Surface.Expr (Binder(..), RecordBinderField)
@@ -156,6 +157,7 @@ binder supply b = case b of
     | Array.null (Array.concatMap variablesOf bs) -> many supply bs <#> \r -> { binder: BinderOr o r.binders, supply: r.supply }
     | otherwise -> invalid OrPatternBinds
   CST.BinderRecord _ items -> do
+    reportLabelsTwice (Array.mapMaybe labelOf items)
     r <- foldM item { fields: [], rest: Nothing, supply } items
     pure { binder: BinderRecord o r.fields r.rest, supply: r.supply }
   CST.BinderTyped inner t -> do
@@ -200,6 +202,11 @@ binder supply b = case b of
         Just { head, tail } -> acc { rest = Just { origin: FromSource (covering r n'.range), var: Just head }, supply = tail }
         Nothing -> acc
       Nothing -> acc { rest = Just { origin: FromSource r, var: Nothing } }
+
+  labelOf = case _ of
+    CST.RecordBinderField n _ -> Just n
+    CST.RecordBinderPun n -> Just n
+    CST.RecordBinderRest _ _ -> Nothing
 
   variable s k = case Array.uncons s of
     Just { head, tail } -> { binder: k head, supply: tail }

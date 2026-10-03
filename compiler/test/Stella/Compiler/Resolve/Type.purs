@@ -122,6 +122,7 @@ resolving body pick k = case parseModule (joinWith "\n" ([ "module M where", "im
   warningName = case _ of
     HidesTypeVariable _ n -> n
     HidesValue _ n -> n
+    OpenHidesLocal _ n -> n
 
 signatureOf :: String -> Array CST.Decl -> Maybe CST.Type
 signatureOf n = Array.findMap case _ of
@@ -223,12 +224,18 @@ spec = describe "Stella.Compiler.Resolve.Type" do
 
     it "report one nothing stands for" do
       shows [ "f :: Int %% Int" ] "[] !" [ UnknownTypeOperator "%%" ]
+      shows [ "infixl 4 type Nope as <!>", "f :: Int <!> Int" ] "[] !" []
 
   describe "rows" do
     it "keep the items their bracket admits" do
       shows [ "f :: { a :: Int, ...r } -> ['Ok :: Int, err :: String, ...] -> Int / {| E, s :: State Int, Int & Int, ...e |}" ]
         "[r#0 e#1] ({ a :: Prim.Int, ...r#0 } -> ([ 'Ok :: Prim.Int, err :: Prim.String, ... ] -> Prim.Int / {| A.E, s :: A.State Prim.Int, A.Both Prim.Int Prim.Int, ...e#1 |}))"
         []
+
+    it "report a label a record type writes twice, keeping both fields" do
+      shows [ "f :: { a :: Int, b :: Int, a :: String, ...r } -> Int" ]
+        "[r#0] ({ a :: Prim.Int, b :: Prim.Int, a :: Prim.String, ...r#0 } -> Prim.Int)"
+        [ LabelTwice "a" ]
 
     it "drop an item their bracket does not admit, and an element of an effect row that is no effect" do
       shows [ "f :: { 'A :: Int, Int } -> [Int] -> {| a :: Int, T, x, 'B :: E |}" ]

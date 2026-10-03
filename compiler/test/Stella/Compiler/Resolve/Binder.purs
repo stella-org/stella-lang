@@ -104,6 +104,7 @@ resolvingF body f k = case parseModule (joinWith "\n" ([ "module M where", "impo
   warningName = case _ of
     HidesTypeVariable _ n -> n
     HidesValue _ n -> n
+    OpenHidesLocal _ n -> n
 
 -- | Runs a resolution on the parameters of `f`.
 resolving :: forall a. Array String -> (Array CST.Binder -> Resolve a) -> (Ran a -> Aff Unit) -> Aff Unit
@@ -208,6 +209,10 @@ spec = describe "Stella.Compiler.Resolve.Binder" do
       shows [ "f (One | Two _) { a, b: (c, _), ...r } (d :: Int) = 1" ]
         "(M.One | (M.Two _)) { a = a#0, b = (c#1, _), ...r#2 } (d#3 :: τ) | a#0 c#1 r#2 d#3"
         []
+
+    it "report a label a record pattern writes twice, apart from a variable bound twice" do
+      shows [ "f { a: x, a: y } { b, b: z } { c: w, c: w } = 1" ] "{ a = x#0, a = y#1 } { b = b#2, b = z#3 } { c = w#4, c = w#5 } | x#0 y#1 b#2 z#3 w#4"
+        [ BoundTwice "w", LabelTwice "a", LabelTwice "b", LabelTwice "c" ]
 
     it "report what is no pattern" do
       shows [ "f (g a) = 1" ] "! | g#0 a#1" [ NotAPattern ]

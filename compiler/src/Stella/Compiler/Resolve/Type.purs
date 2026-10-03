@@ -47,6 +47,7 @@ import Data.Tuple (Tuple(..))
 import Stella.Compiler.CST.Range (covering, kindRange, typeRange)
 import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Resolve.Fixity (rebracket)
+import Stella.Compiler.Resolve.Label (reportLabelsTwice)
 import Stella.Compiler.Resolve.Monad (Found(..), Resolve, ResolveReason(..), ResolveWarning(..), TypeReference(..), freshBinding, lookupType, lookupTypeOperator, lookupValue, report, typeVariable, typeVariables, warn, withTypeVariables)
 import Stella.Compiler.Surface.Name (TypeVar(..))
 import Stella.Compiler.Surface.Origin (Origin(..), spanning)
@@ -107,7 +108,9 @@ resolveType t = case t of
   CST.TypeKinded inner k -> TypeKinded o <$> resolveType inner <*> resolveKind k
   CST.TypeParens inner -> resolveType inner
   CST.TypeTuple ts -> TypeTuple o <$> traverse resolveType ts
-  CST.TypeRecord _ items -> TypeRecord o <$> rowItems recordItem items
+  CST.TypeRecord _ items -> do
+    reportLabelsTwice (Array.mapMaybe fieldLabel items)
+    TypeRecord o <$> rowItems recordItem items
   CST.TypeVariant _ items -> TypeVariant o <$> rowItems variantItem items
   CST.TypeEffectRow _ items -> TypeEffectRow o <$> rowItems effectItem items
   CST.TypeSynthesized _ _ _ -> invalid SynthesizedMisplaced
@@ -115,6 +118,9 @@ resolveType t = case t of
   where
   o = FromSource (typeRange t)
   invalid reason = report (typeRange t) reason $> TypeInvalid o
+  fieldLabel = case _ of
+    CST.RowField n _ -> Just n
+    _ -> Nothing
 
 -- | The signature of a value, a foreign, or a `let` binding.
 resolveSignature :: CST.Type -> Resolve (Signature Type)
@@ -308,18 +314,13 @@ operatorChain t = do
     CST.TypeOp a n b -> let c = flatten a in c { rest = Array.snoc c.rest (Tuple n b) }
     x -> { first: x, rest: [] }
   operator n = lookupTypeOperator n >>= case _ of
+    -- An operator whose target does not resolve is reported where it is
+    -- declared, and leaves the chain invalid here.
     Found (Tuple _ f) ->
-      pure (Just { name: n, target: f.target, fixity: { associativity: f.associativity, precedence: f.precedence } })
+      pure (f.target <#> \target -> { name: n, target, fixity: { associativity: f.associativity, precedence: f.precedence } })
     NotFound -> report n.range (UnknownTypeOperator (written n)) $> Nothing
     Ambiguous -> report n.range (AmbiguousTypeOperator (written n)) $> Nothing
-  apply op l r =
-    let
-      origin = spanning (typeOrigin l) (typeOrigin r)
-    in
-      case op.target of
-        Just target -> TypeOperator origin { origin: FromSource op.name.range, target } l r
-        -- The target is reported where the operator is declared.
-        Nothing -> TypeInvalid origin
+  apply op l r = TypeOperator (spanning (typeOrigin l) (typeOrigin r)) { origin: FromSource op.name.range, target: op.target } l r
 
 rowItems :: forall a. (CST.RowItem -> Resolve (Maybe a)) -> Array CST.RowItem -> Resolve (Array a)
 rowItems f items = Array.catMaybes <$> traverse f items

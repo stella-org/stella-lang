@@ -16,6 +16,8 @@ module Stella.Compiler.CST.Range
   , typeRange
   , kindRange
   , binderRange
+  , letBindingRange
+  , nonEmpty
   ) where
 
 import Prelude
