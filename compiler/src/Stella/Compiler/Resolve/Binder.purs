@@ -16,8 +16,8 @@
 -- |
 -- | A constructor is matched with one pattern per field, and a tag with one
 -- | pattern for its payload or none. An or-pattern binds no variable, and a
--- | `Number` is matched by no literal, its equality being no test a pattern
--- | can make.
+-- | `Number` is matched by no literal, its identity as a literal not being
+-- | numeric equality.
 -- |
 -- | **A binding position takes only an irrefutable pattern**: a variable, `_`,
 -- | a tuple, a record, or a constructor of a type with one constructor, each of

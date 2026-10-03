@@ -209,7 +209,7 @@ f :: forall a b. a -> b -> b
 f a = \a -> a      -- two warnings: the parameter hides the top-level a, and the lambda's hides the parameter
 ```
 
-- **One binding naming a variable twice is an error**, and not a hiding: `\x x -> …`, a record pattern binding one name twice, and two bindings of one name in a `let` block.
+- **One binding group binding a name twice is an error**, and not a hiding: `\x x -> …`, a record pattern binding one name twice, and two bindings of one name in a `let` block, a name a definition binds and a variable of a pattern binding among them. A reference reaches the first ([Surface AST](08-Surface-AST.md)).
 - **Names in different namespaces do not hide each other.** The value `a` and the type variable `a` above are unrelated, and so are a cell and a value variable of one spelling.
 - **Cells do not shadow cells.** A cell is reached from the operation clauses of the handler declaring it, and a handler with cells applied inside a clause of another handler with cells is rejected ([Effect Handlers](02-Effect-Handlers.md)), so no accepted program has two cell scopes nested. A handler with cells inside a clause of one without them is the ordinary case. Which construct owns a cell is to be revised, and rules for one cell hiding another come back with it ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
 - **Kind variables do not shadow.** Each is bound by the declaration it appears in, once and at the front (D3), and no binder of a kind variable stands inside another.

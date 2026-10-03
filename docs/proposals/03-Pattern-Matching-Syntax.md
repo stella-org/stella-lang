@@ -34,7 +34,8 @@ arguments of a handler clause. An irrefutable pattern is one of
 - a record pattern whose fields are all irrefutable;
 - a tuple pattern whose components are all irrefutable;
 - a constructor pattern of a data type with exactly one constructor, whose arguments are all
-  irrefutable, nested to any depth.
+  irrefutable, nested to any depth;
+- an as-pattern `x@p` or an annotated pattern `(p :: τ)` whose `p` is irrefutable.
 
 ```stella
 data Foo = Foo Int
@@ -44,9 +45,16 @@ unFoo (Foo n) = n          -- unFoo = \x -> case x of Foo n -> n
 ```
 
 A literal, a constructor of a type with several constructors, and a variant tag can fail, and are
-a compile error in a binding position, with a diagnostic pointing to `case`. Whether a pattern is
-irrefutable is decided by the constructor table alone, at name resolution, without type inference.
-No `Partial` is inferred: a function that is meant to be partial fails explicitly inside a `case`.
+a compile error in a binding position, with a diagnostic pointing to `case`. So can an or-pattern,
+even one whose choices cover every constructor of a type, such as `(True | False)`: the table says
+which constructors a type has, and nothing in this list reads it for what a set of choices covers.
+Whether a pattern is irrefutable is decided by the constructor table alone, at name resolution,
+without type inference. No `Partial` is inferred: a function that is meant to be partial fails
+explicitly inside a `case`.
+
+**A `Number` is matched by no literal.** Two `Number` literals are one where their bits are (D37):
+every NaN is one literal, and `+0.0` and `-0.0` are two. That identity is not numeric equality, so
+a pattern would choose one of the two without saying which; a guard writes the comparison it means.
 
 A function defined piecewise, in the manner of mathematical notation, is a library macro rather
 than a syntax of the language:

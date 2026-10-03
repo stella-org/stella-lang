@@ -79,7 +79,9 @@ The Surface AST is what name resolution builds from the concrete syntax tree and
 - **`e.a.b` is two selections**, one label at a time.
 - **A declaration's `where` is a `let`** around the body.
 - **A `case` alternative holds a row of patterns per or-choice at its top**, one pattern per scrutinee in each, and a body that is unconditional or a guard block. A guard block holds bindings, guards, and `otherwise`, which is a line of its own rather than a guard naming a value ([Pattern Matching](../../proposals/03-Pattern-Matching-Syntax.md)).
+- **A constructor pattern holds one pattern per field**, as many as the constructor has.
 - **A tag pattern holds one pattern for its payload, or none.** A variant element carries one payload, so several values are a tuple.
+- **A literal pattern is a `Boolean`, an `Int`, a `Char`, or a `String`.** A `Number` is matched by no literal: a literal's identity, bitwise for a `Number` (D37), is not numeric equality, and a guard writes the comparison it means.
 - **A pun is a field**: `{ x }` is `x: x`, in a record and in a record pattern alike.
 - **An or-pattern binds no variable** and is held as its choices.
 
@@ -120,7 +122,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 
 **Resolution reports every error in the module and goes on past each**, building what it can. A module with an error is not elaborated, so what is built around an error serves only to go on, and it is built by two rules.
 
-**An error in an expression, a type, a kind, a pattern, or a constant leaves an invalid node of that class** — `ExprInvalid`, `TypeInvalid`, `KindInvalid`, `BinderInvalid`, `ConstantInvalid` — where the erroneous form stood. A name that does not resolve, a form standing where it is not admitted, and a form not yet supported are among them. A chain of type operators holding one that does not resolve, or two that cannot be chained, is invalid as a whole, and a capability translation whose source is no effect applied to its arguments is held as an invalid signature written in full.
+**An error in an expression, a type, a kind, a pattern, or a constant leaves an invalid node of that class** — `ExprInvalid`, `TypeInvalid`, `KindInvalid`, `BinderInvalid`, `ConstantInvalid` — where the erroneous form stood. A name that does not resolve, a form standing where it is not admitted, and a form not yet supported are among them. A chain of type operators holding one that does not resolve, or two that cannot be chained, is invalid as a whole, and a capability translation whose source is no effect applied to its arguments is held as an invalid signature written in full. A constructor matched with other than one pattern per field, a tag with several, a `Number` literal, and an or-pattern binding a variable leave the pattern invalid. Where a `case` alternative has several choices at its top, each pattern of a choice that writes a variable is left invalid, and the other patterns of the row are kept: `x, One | Nothing, Two` holds `!, One` and `Nothing, Two`.
 
 **Any other error drops the smallest part around it that is a member of a sequence**: an import, a declaration, an attribute, an item of a row, a target of a capability, an item of a handling expression, or a clause.
 
@@ -142,9 +144,9 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 
 **Where a local name refers is decided by the bindings as written, whatever their errors.**
 
-- **A binder's bindings are numbered and entered into scope before what they scope over is resolved**, read off the syntax as written: the parameters of a declaration, a lambda, or a clause, the variables of a pattern, the bindings of a `let` block or a `where`, and the cells of a handler.
+- **A binder's bindings are numbered and entered into scope before what they scope over is resolved**, read off the syntax as written: the parameters of a declaration, a lambda, or a clause, the variables of a pattern, the bindings of a `let` block or a `where`, and the cells of a handler. They are numbered in the order written and handed to what binds them in that order; a binding is never told apart from another by its range, an expansion giving several names one range.
 - **A pattern left invalid still binds the variables written in it**, an or-pattern's among them. Its bindings stand in no node of the tree, the pattern being invalid, and a reference to one still resolves, so a body is not reported again for what its pattern got wrong.
-- **Where one group of bindings binds a name twice, the first written is the one a reference reaches.** The group is what binds together: the parameters of one declaration, lambda, or clause, one pattern, one `let` block or `where`, the cells of one handler, and the type variables of one `forall`. The later binding keeps a number of its own, and nothing refers to it; `x` and `x!` alike reach the first.
+- **Where one group of bindings binds a name twice, the first written is the one a reference reaches.** The group is what binds together: the parameters of one declaration, lambda, or clause; the patterns of one `case` alternative; one binding of a guard block; one `let` block or `where`, the names its definitions bind and the variables of its pattern bindings together; the cells of one handler; and the type variables of one `forall`. The later binding keeps a number of its own, and nothing refers to it; `x` and `x!` alike reach the first.
 
 ## From the concrete syntax tree
 

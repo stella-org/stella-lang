@@ -186,6 +186,7 @@ char        ::= "'" ( any character but "'", "\\", or a newline | escape | "\\'"
 This follows GraphQL's string grammar.
 
 - **An escape names a Unicode scalar value.** One naming a surrogate, D800 to DFFF, is a lexical error, whether written `\uXXXX` or `\u{…}`, and one beyond 10FFFF is too. A Stella `String` holds no unpaired surrogate (D27), and `\u{1F600}` is how a character beyond the Basic Multilingual Plane is written, so no rule joins two escapes into one character.
+- **A literal holds Unicode scalar values alone.** An unpaired surrogate written raw in a string or a character literal is a lexical error, as one an escape names is; a pair written raw is the one scalar value it encodes.
 - **A quoted string ends on its line.** A newline inside it is a lexical error.
 - **A block string is raw**: its one escape is `\"""`, which stands for `"""`. Its value is GraphQL's BlockStringValue of its text: line terminators become `\n`, the indentation common to every line after the first that is not blank is removed, and blank lines at the start and the end are dropped.
 

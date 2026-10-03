@@ -25,6 +25,9 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | --- | --- |
 | any pattern in a binding position | a pattern that can fail ([Pattern Matching](../../proposals/03-Pattern-Matching-Syntax.md)) |
 | an or-pattern binding a variable | a binding or-pattern |
+| any literal as a pattern | a `Number` literal |
+| a constructor followed by any patterns | other than one pattern per field |
+| a tag followed by any patterns | more than one |
 | `import lazy M` without `as`, or with a list | a lazy import that is not qualified and implicit |
 | `hiding ( … )` after any import | `hiding` on an import with a list, an alias, or `lazy` (`Check`); a name hidden that the module does not export |
 | any operator as a type operator in a fixity declaration | `/`, which belongs to the grammar of types (`Check`); a target that does not resolve in the type namespace |
@@ -354,6 +357,9 @@ recordBinder  ::= label ":" binder | label
 ```
 
 **Atoms side by side are a constructor or a tag applied to the rest**, `Just x`, `'Ok n`. Any other head is kept as written, for a `let` binding to read as a local function and for a pattern to be rejected.
+
+- **A constructor takes one pattern per field**, and **a tag one pattern for its payload, or none**: a variant element carries one value, so several are matched as a tuple, `'Ok (a, b)`.
+- **A `Number` is matched by no literal.** A literal's identity, bitwise for a `Number` (D37), is not numeric equality, and a pattern would choose one of the two without saying which; a guard writes the comparison it means.
 
 ## Handlers
 
