@@ -35,8 +35,7 @@ import Prim hiding (Type)
 import Data.Array as Array
 import Data.Foldable (foldl)
 import Data.Maybe (Maybe(..), maybe)
-import Data.Set as Set
-import Stella.Compiler.CST.Types (Attribute, Binder(..), Decl(..), DeclKeyword(..), Directive, Export, Expr, Import(..), Item(..), Kind, LetBinding(..), Macro, Module(..), Name, RecordBinder(..), SourceRange, Type(..), isSynthesized)
+import Stella.Compiler.CST.Types (Attribute, Binder, Decl(..), DeclKeyword(..), Directive, Export, Expr, Import(..), Item(..), Kind, LetBinding(..), Macro, Module(..), Name, SourceRange, Type(..), isSynthesized)
 
 data PrefixItem
   = PrefixAttribute Attribute
@@ -117,8 +116,6 @@ data GroupReason
   -- | An import after a declaration has begun. The imports are the module's
   -- | header.
   | ImportAfterDeclaration
-  -- | A name bound twice by one block of bindings.
-  | BoundTwice
   -- | `#observ(none)` before anything but a `foreign` declaration.
   | DirectiveNotBeforeForeign
   -- | A second `#observ(none)` before one declaration.
@@ -140,7 +137,6 @@ instance Show GroupReason where
     SignatureTwice -> "SignatureTwice"
     KindSignatureWithoutDeclaration -> "KindSignatureWithoutDeclaration"
     ImportAfterDeclaration -> "ImportAfterDeclaration"
-    BoundTwice -> "BoundTwice"
     DirectiveNotBeforeForeign -> "DirectiveNotBeforeForeign"
     DirectiveTwice -> "DirectiveTwice"
 
@@ -153,7 +149,6 @@ printGroupReason = case _ of
   KindSignatureWithoutDeclaration ->
     "A kind signature must be followed directly by the declaration it gives a kind to"
   ImportAfterDeclaration -> "Imports must come before every declaration"
-  BoundTwice -> "This name is already bound in the same block"
   DirectiveNotBeforeForeign -> "`#observ(none)` can stand only before a foreign declaration"
   DirectiveTwice -> "This declaration already has this directive"
 
@@ -328,12 +323,12 @@ unattached s =
       }
 
 -- | The bindings of a `let` block or a `where`, each signature joined to the
--- | definition after it. Every name of the block is bound once, whether by a
--- | definition or by a variable of a pattern.
+-- | definition after it. What the block binds, and a name it binds twice, are
+-- | decided where the block is resolved as one binding group.
 groupBindings :: Array LetBinding -> { bindings :: Array LocalBinding, errors :: Array GroupError }
 groupBindings items = finish (foldl stepBinding start items)
   where
-  start = { pendingSignature: Nothing, bindings: [], errors: [], bound: Set.empty }
+  start = { pendingSignature: Nothing, bindings: [], errors: [] }
 
   finish b = { bindings: b.bindings, errors: b.errors <> unused b.pendingSignature }
 
@@ -352,49 +347,8 @@ groupBindings items = finish (foldl stepBinding start items)
           _ -> Nothing
         errors = if signature == Nothing then unused b.pendingSignature else []
       in
-        binding [ n ] (LocalValue { name: n, signature, binders, body }) (b { errors = b.errors <> errors })
+        binding (LocalValue { name: n, signature, binders, body }) (b { errors = b.errors <> errors })
     LetPattern binder body ->
-      binding (variablesOf binder) (LocalPattern binder body) (b { errors = b.errors <> unused b.pendingSignature })
+      binding (LocalPattern binder body) (b { errors = b.errors <> unused b.pendingSignature })
 
-  binding names lb b =
-    let
-      bound = foldl (\acc n -> acc { seen = Set.insert n.name acc.seen, twice = acc.twice <> if Set.member n.name acc.seen then [ n ] else [] })
-        { seen: b.bound, twice: [] }
-        names
-    in
-      b
-        { pendingSignature = Nothing
-        , bindings = Array.snoc b.bindings lb
-        , bound = bound.seen
-        , errors = b.errors <> map (\n -> GroupError n.range BoundTwice) bound.twice
-        }
-
--- | The variables a pattern binds, in the order written.
-variablesOf :: Binder -> Array Name
-variablesOf = case _ of
-  BinderVar n -> [ n ]
-  BinderAs n b -> [ n ] <> variablesOf b
-  BinderConstructor _ bs -> Array.concatMap variablesOf bs
-  BinderTag _ bs -> Array.concatMap variablesOf bs
-  BinderParens b -> variablesOf b
-  BinderTuple bs -> Array.concatMap variablesOf bs
-  -- An or-pattern binds nothing; one that would is rejected where patterns are
-  -- resolved.
-  BinderOr _ -> []
-  BinderRecord _ fs -> Array.concatMap field fs
-  BinderTyped b _ -> variablesOf b
-  BinderApp _ _ -> []
-  BinderInvalid _ -> []
-  BinderWildcard _ -> []
-  BinderBoolean _ _ -> []
-  BinderInt _ -> []
-  BinderNumber _ -> []
-  BinderChar _ -> []
-  BinderString _ -> []
-  BinderUnit _ -> []
-  where
-  field = case _ of
-    RecordBinderField _ b -> variablesOf b
-    RecordBinderPun n -> [ n ]
-    RecordBinderRest _ (Just n) -> [ n ]
-    RecordBinderRest _ Nothing -> []
+  binding lb b = b { pendingSignature = Nothing, bindings = Array.snoc b.bindings lb }

@@ -171,6 +171,12 @@ spec = describe "Stella.Compiler.CST.Lexer" do
     it "refuses a surrogate escape and one beyond U+10FFFF" do
       "\"\\uD83D\"" `failsWith` SurrogateEscape
       "\"\\u{110000}\"" `failsWith` EscapeOutOfRange
+    it "refuses an unpaired surrogate written raw in a literal, and keeps a pair" do
+      "\"a\xD800z\"" `failsWith` UnpairedSurrogate
+      "\"\"\"a\xDE00\"\"\"" `failsWith` UnpairedSurrogate
+      "'\xD83D'" `failsWith` UnpairedSurrogate
+      "\"\xD83D\xDE00\"" `lexesTo` [ TokString Quoted "\"\xD83D\xDE00\"" "\xD83D\xDE00" ]
+      "'\xD83D\xDE00'" `lexesTo` [ TokChar "'\xD83D\xDE00'" "\xD83D\xDE00" ]
     it "refuses a line break in a quoted string" do
       "\"a\nb\"" `failsWith` UnterminatedString
     it "reads a block string, removing the common indentation" do

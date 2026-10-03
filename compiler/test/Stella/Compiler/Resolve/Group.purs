@@ -254,7 +254,7 @@ spec = describe "Stella.Compiler.Resolve.Group" do
           g.errors `shouldEqual` []
 
   describe "a block of bindings" do
-    it "joins each signature to its definition, and reports a name bound twice" do
+    it "joins each signature to its definition, leaving a name bound twice to where the block is resolved" do
       grouped
         [ "f x = y"
         , "  where"
@@ -264,9 +264,7 @@ spec = describe "Stella.Compiler.Resolve.Group" do
         , "  b = 2"
         ]
         [ "value f [y signed] [pattern] [b]" ]
-        [ { line: 6, column: 15, reason: BoundTwice }
-        , { line: 7, column: 3, reason: BoundTwice }
-        ]
+        []
 
     it "reports a signature the definition of its name does not follow" do
       grouped

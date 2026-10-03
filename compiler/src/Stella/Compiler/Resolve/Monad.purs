@@ -9,6 +9,7 @@
 module Stella.Compiler.Resolve.Monad
   ( Resolve
   , Context
+  , Constructor
   , Env
   , ResolveError(..)
   , ResolveReason(..)
@@ -21,6 +22,10 @@ module Stella.Compiler.Resolve.Monad
   , typeVariable
   , typeVariables
   , withTypeVariables
+  , localValue
+  , withValues
+  , valueInScope
+  , constructorOf
   , freshBinding
   , report
   , warn
@@ -39,37 +44,44 @@ import Data.Either (Either(..))
 import Data.Foldable (foldl)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.CST.Types (Decl(..), Fixity(..), Name, SourceRange)
 import Stella.Compiler.Interface.Environment (BuildEnvironment, ModuleView, viewFor)
 import Stella.Compiler.Interface.Environment as Environment
-import Stella.Compiler.Interface.Module (Export, TypeEntity(..), TypeExport, TypeSort(..))
+import Stella.Compiler.Interface.Module (Export, TypeEntity(..), TypeExport, TypeSort(..), ValueSort(..))
 import Stella.Compiler.Resolve.Group (Declaration(..), GroupedModule)
 import Stella.Compiler.Resolve.Scope (Names, Scope, ScopedModule)
 import Stella.Compiler.Surface.Decl (Associativity(..))
-import Stella.Compiler.Surface.Name (BindingId(..), OperatorName(..), TypeVar(..))
+import Stella.Compiler.Surface.Name (BindingId(..), LocalVar(..), OperatorName(..), TypeVar(..))
 import Stella.Compiler.Surface.Type (TypeOperatorTarget(..))
-import Stella.Compiler.TypedCore.Name (EffName, Ident, ModuleName, Qualified(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Name (EffName, Ident(..), ModuleName, Qualified(..), TyName(..), TyVar(..))
 
 -- | What resolving a module's declarations reads of the module as a whole:
 -- | its scope, the build environment as the module sees it, which of its own
--- | type names are synonyms, and the fixity of each type operator it declares.
+-- | type names are synonyms, the fixity of each type operator it declares,
+-- | and each constructor it declares, under the identity it is declared with.
 type Context =
   { module :: ModuleName
   , scope :: Scope
   , view :: Maybe ModuleView
   , ownSynonyms :: Set String
   , ownTypeOperators :: Map String { associativity :: Associativity, precedence :: Int, target :: Name }
+  , ownConstructors :: Map Ident Constructor
   }
 
--- | Where resolution stands: the module's context, and the type variables in
--- | scope, by the name they are written with.
+-- | What a pattern needs of a constructor: how many fields it has, and how many
+-- | constructors its type has.
+type Constructor = { arity :: Int, siblings :: Int }
+
+-- | Where resolution stands: the module's context, and the type variables and
+-- | local values in scope, by the name they are written with.
 type Env =
   { context :: Context
   , typeVariables :: Map String TypeVar
+  , values :: Map String LocalVar
   }
 
 type State =
@@ -140,10 +152,32 @@ data ResolveReason
   | CapabilityMisplaced
   -- | A target of `~>` that is not an effect applied to its arguments.
   | CapabilityTargetMalformed
+  -- | A name in a pattern that no constructor in scope stands for.
+  | UnknownConstructor String
+  -- | A name in a pattern that stands for a value other than a constructor.
+  | NotAConstructor String
+  -- | A constructor pattern with other than one pattern per field: the
+  -- | constructor, its fields, and the patterns written.
+  | ConstructorArity String Int Int
+  -- | A tag pattern with more than one pattern after it.
+  | TagPayloadMany
+  -- | A `Number` literal as a pattern.
+  | NumberPattern
+  -- | An or-pattern with a variable in one of its choices.
+  | OrPatternBinds
+  -- | A character or string literal holding something that is no Unicode
+  -- | scalar value.
+  | LiteralNotScalar
+  -- | Something written where a pattern stands that is no pattern.
+  | NotAPattern
+  -- | A refutable pattern in a binding position.
+  | RefutablePattern
 
 data ResolveWarning
   -- | A type variable bound where another of its name is in scope.
   = HidesTypeVariable SourceRange String
+  -- | A local value bound where a value of its name is in scope.
+  | HidesValue SourceRange String
 
 derive instance Eq ResolveError
 derive instance Eq ResolveReason
@@ -179,9 +213,21 @@ printResolveReason = case _ of
     "A synthesized argument stands on the spine of a signature, before any ordinary parameter"
   CapabilityMisplaced -> "`~>` stands only as the signature of a handler declaration, under its quantifiers"
   CapabilityTargetMalformed -> "What `~>` translates into is a list of effects, such as `( Console )` or `()`"
+  UnknownConstructor n -> "There is no constructor `" <> n <> "` in scope"
+  NotAConstructor n -> "`" <> n <> "` is not a constructor"
+  ConstructorArity n fields written ->
+    "The constructor `" <> n <> "` has " <> show fields <> " field(s), and is matched here with " <> show written <> " pattern(s)"
+  TagPayloadMany -> "A tag carries one value; match several with a tuple, `'T (a, b)`"
+  NumberPattern -> "A `Number` cannot be matched by a literal; compare it in a guard"
+  OrPatternBinds -> "The choices of an or-pattern cannot bind variables"
+  NotAPattern -> "This is not a pattern"
+  LiteralNotScalar -> "This literal holds something that is no Unicode scalar value"
+  RefutablePattern -> "This pattern can fail to match, which a binding cannot; match it with `case`"
 
 printResolveWarning :: ResolveWarning -> String
-printResolveWarning (HidesTypeVariable _ n) = "This binder hides the type variable `" <> n <> "`"
+printResolveWarning = case _ of
+  HidesTypeVariable _ n -> "This binder hides the type variable `" <> n <> "`"
+  HidesValue _ n -> "This binding hides the value `" <> n <> "`"
 
 contextOf :: BuildEnvironment -> GroupedModule -> ScopedModule -> Context
 contextOf env g scoped =
@@ -192,8 +238,23 @@ contextOf env g scoped =
       Left _ -> Nothing
   , ownSynonyms: Set.fromFoldable (Array.mapMaybe synonym g.declarations)
   , ownTypeOperators: Map.fromFoldable (Array.mapMaybe typeFixity g.declarations)
+  , ownConstructors: Map.fromFoldable (Array.concatMap constructors g.declarations)
   }
   where
+  -- A constructor is keyed by the identity the scope declares it under, which
+  -- for an elaboration-only one is its internal identity.
+  constructors = case _ of
+    DeclarationType _ _ (DeclData _ _ cs) ->
+      Array.mapMaybe (\c -> declaredAs c.name <#> \i -> Tuple i { arity: Array.length c.fields, siblings: Array.length cs }) cs
+    DeclarationType _ _ (DeclNewtype _ _ c _) ->
+      Array.fromFoldable (declaredAs c <#> \i -> Tuple i { arity: 1, siblings: 1 })
+    _ -> []
+  declaredAs n = Array.findMap own (fromMaybe [] (Map.lookup n.name scoped.scope.declared.values))
+
+  own :: Export (Qualified Ident) -> Maybe Ident
+  own c = case c.entity of
+    Qualified owner i | owner == scoped.name -> Just i
+    _ -> Nothing
   synonym = case _ of
     DeclarationType _ _ (DeclType n _ _) -> Just n.name
     _ -> Nothing
@@ -214,7 +275,7 @@ runResolve
   -> Int
   -> Resolve a
   -> { result :: a, next :: Int, errors :: Array ResolveError, warnings :: Array ResolveWarning }
-runResolve ctx next (Resolve r) = case r { context: ctx, typeVariables: Map.empty } { next, errors: [], warnings: [] } of
+runResolve ctx next (Resolve r) = case r { context: ctx, typeVariables: Map.empty, values: Map.empty } { next, errors: [], warnings: [] } of
   Tuple result s -> { result, next: s.next, errors: s.errors, warnings: s.warnings }
 
 asks :: forall a. (Env -> a) -> Resolve a
@@ -236,6 +297,46 @@ withTypeVariables vs (Resolve r) = Resolve \e s ->
   r (e { typeVariables = foldl (\m v@(TypeVar t) -> Map.insert (unTyVar t.name) v m) e.typeVariables vs }) s
   where
   unTyVar (TyVar n) = n
+
+localValue :: String -> Resolve (Maybe LocalVar)
+localValue n = asks (Map.lookup n <<< _.values)
+
+-- | Runs a resolution with the local values given in scope besides those
+-- | already there, each hiding one of its name.
+withValues :: forall a. Array LocalVar -> Resolve a -> Resolve a
+withValues vs (Resolve r) = Resolve \e s ->
+  r (e { values = foldl (\m v@(LocalVar l) -> Map.insert (unIdent l.name) v m) e.values vs }) s
+  where
+  unIdent (Ident n) = n
+
+-- | Whether a value of the name is in scope unqualified: a local one, or one
+-- | the module declares or imports.
+valueInScope :: String -> Resolve Boolean
+valueInScope n = do
+  local <- localValue n
+  ctx <- context
+  pure (isJust local || not (Array.null (candidatesIn _.values { range: nowhere, qualifier: Nothing, name: n } ctx.scope)))
+  where
+  nowhere = { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } }
+
+-- | What a pattern needs of a constructor, where the entity is one.
+constructorOf :: Qualified Ident -> Resolve (Maybe Constructor)
+constructorOf q@(Qualified owner name) = do
+  ctx <- context
+  pure
+    if owner == ctx.module then Map.lookup name ctx.ownConstructors
+    else do
+      view <- ctx.view
+      entry <- Environment.lookupValue q view
+      case entry.sort of
+        SortConstructor ty -> do
+          t <- Environment.lookupType ty view
+          case t.sort of
+            DataType d -> do
+              c <- Array.find (\c -> c.name == name) d.constructors
+              pure { arity: Array.length c.fields, siblings: Array.length d.constructors }
+            _ -> Nothing
+        _ -> Nothing
 
 -- | A number for a binding, unique within the module.
 freshBinding :: Resolve BindingId

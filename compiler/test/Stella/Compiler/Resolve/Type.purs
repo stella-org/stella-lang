@@ -113,12 +113,15 @@ resolving body pick k = case parseModule (joinWith "\n" ([ "module M where", "im
       k
         { result: ran.result
         , reasons: map (\(ResolveError _ reason) -> reason) ran.errors
-        , warnings: map (\(HidesTypeVariable _ n) -> n) ran.warnings
+        , warnings: map warningName ran.warnings
         }
   where
   declaration = case _ of
     CST.ItemDecl d -> Just d
     _ -> Nothing
+  warningName = case _ of
+    HidesTypeVariable _ n -> n
+    HidesValue _ n -> n
 
 signatureOf :: String -> Array CST.Decl -> Maybe CST.Type
 signatureOf n = Array.findMap case _ of

@@ -47,6 +47,7 @@ data LexErrorReason
   | UnterminatedChar
   | InvalidEscape
   | SurrogateEscape
+  | UnpairedSurrogate
   | EscapeOutOfRange
   | CharNotOneScalar
   | QuotedTagName
@@ -73,6 +74,7 @@ printLexErrorReason = case _ of
   UnterminatedChar -> "a character literal is not closed"
   InvalidEscape -> "an unknown escape sequence"
   SurrogateEscape -> "an escape naming a surrogate, which is no Unicode scalar value"
+  UnpairedSurrogate -> "an unpaired surrogate, which is no Unicode scalar value"
   EscapeOutOfRange -> "an escape beyond U+10FFFF"
   CharNotOneScalar -> "a character literal holds exactly one scalar value"
   QuotedTagName -> "a variant tag contains no `'`"
@@ -397,7 +399,18 @@ lex src = tailRec step initial
           Just '\\' -> case escape cur i false of
             Left e -> Done (Left e)
             Right r -> Loop { i: r.end, acc: r.value : acc }
-          Just c -> Loop { i: i + 1, acc: SCU.singleton c : acc }
+          Just _ -> case scalarWidth i of
+            Just w -> Loop { i: i + w, acc: slice i (i + w) : acc }
+            Nothing -> Done (errAt cur i UnpairedSurrogate)
+
+  -- The width in code units of the scalar value starting at `i`. A surrogate
+  -- that is not the first half of a pair is no scalar value.
+  scalarWidth :: Int -> Maybe Int
+  scalarWidth i = case charAt i of
+    Just c
+      | isHighSurrogate c && test (i + 1) isLowSurrogate -> Just 2
+      | isHighSurrogate c || isLowSurrogate c -> Nothing
+    _ -> Just 1
 
   -- An escape sequence starting at the backslash at `i`.
   escape :: Cursor -> Int -> Boolean -> Either LexError { value :: String, end :: Int }
@@ -447,7 +460,9 @@ lex src = tailRec step initial
                   (TokString Block (slice cur.index (i + 3)) (blockStringValue (joinWith "" (Array.fromFoldable (List.reverse acc)))))
                   (i + 3)
               )
-      Just c -> Loop { i: i + 1, acc: SCU.singleton c : acc }
+      Just _ -> case scalarWidth i of
+        Just w -> Loop { i: i + w, acc: slice i (i + w) : acc }
+        Nothing -> Done (errAt cur i UnpairedSurrogate)
 
   -- A character literal, or a variant tag.
   quote :: Cursor -> Either LexError { value :: Token, end :: Int }
@@ -473,10 +488,9 @@ lex src = tailRec step initial
         Nothing -> err cur UnterminatedChar
         Just '\n' -> err cur UnterminatedChar
         Just '\'' -> err cur CharNotOneScalar
-        Just c ->
-          let
-            width = if isHighSurrogate c && test (i + 2) isLowSurrogate then 2 else 1
-          in
+        Just _ -> case scalarWidth (i + 1) of
+          Nothing -> errAt cur (i + 1) UnpairedSurrogate
+          Just width ->
             if is (i + 1 + width) '\'' then
               ok (TokChar (slice i (i + 2 + width)) (slice (i + 1) (i + 1 + width))) (i + 2 + width)
             else if test (i + 1 + width) (_ /= '\n') then err cur CharNotOneScalar
