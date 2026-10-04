@@ -13,6 +13,7 @@ decl ::= data    T forall k̄. (ā : κ̄) = Ctor_1 τ̄1 | … | Ctor_n τ̄n  
        | foreign [#observ(none)] f : σκ
        | nonrec  x : σκ = e
        | rec     { x1 : σκ1 = v1 ; … }
+       | attribute a τ̄ (ℓ1 : τ1 [= c1]) …
        | @[ attr ] decl
 
 σκ ::= forall k1 .. kn . σ                (empty for most declarations)
@@ -421,10 +422,15 @@ Declarations extend the signature, so the judgement makes `Σ` explicit.
      the directive is recorded and nothing of it is checked; absent, the
      entry is read as one that may observe
 
+  ──────────────────────────────────────────────────────────────────
+  Σ ⊢ attribute a τ̄ (ℓ : τ = c) …  ⊣  Σ, M.a : (τ̄ ; ℓ : τ = c …)      registered, not yet checked
+
   Σ ⊢ decl ⊣ Σ'
-  ─────────────────────────      attributes do not affect type checking
-  Σ ⊢ @[ attr ] decl ⊣ Σ'
+  ──────────────────────────────────────────────────────────────────
+  Σ ⊢ @[ attr ] decl ⊣ Σ'          the attribute is checked by the module rule
 ```
+
+**An attribute declaration adds an entry to `Σ` and declares no value**: no term refers to one. Declaring it registers it and checks nothing, and neither does carrying one: both are checked once the whole module's signature is complete ([below](#the-module-rule)), so a declaration may carry an attribute declared after it, and a default or an argument may name a value declared after it.
 
 **The local context `Γ` cannot hold kind schemes**, so mutual recursion in a `rec` group cannot be supplied through `Γ`. Since Core's top-level names are fully qualified, every scheme is registered in `Σ` first and each `v_i` is then checked under its own `k̄_i`.
 
@@ -448,6 +454,8 @@ The join point context is empty. Join points do not cross a function boundary, a
   ──────────────────────────────────────────────────────────────────
   Σ_ty = Σ_Prim ∪ Σ_ABI(M) ∪ Σ_imp ∪ { all of the above }
 ```
+
+**An entry arriving through an import is checked as its declaration would have been**, where the signature is assembled: a type constructor's kind scheme, an effect's parameters and operations, and an attribute declaration's parameter types and defaults. An interface is read for its structure alone ([Interface](../05-Backend/03-Interface.md)), so this is where an entry no declaration of this module produced is held to the rules.
 
 `Σ_Prim` is the signature of `Prim` ([Prim and Base](02-Prim-and-Base.md)), which no module imports — a header's `import Prim` selects names and adds no import — and every module may name. `Σ_ABI(M)` is what the ABI manifest supplies to `M` itself, empty for every module it does not name, and the manifest names `Base.*` modules and the target namespaces it describes, and no others; a module holding a manifest intrinsic needs its own entries in scope before its declarations are collected.
 
@@ -483,9 +491,13 @@ Value declarations are folded from `Σ_decl` leftwards.
 ```text
   Σ^0 = Σ_decl        each i: Σ^i ⊢ bg_i ⊣ Σ^{i+1}        (bg is a nonrec or a rec)
   every exported name is present in Σ^n
+  every attribute declaration: ·  ⊢ each τ : Type, and each default c has τ under Σ^n
+  every attached attribute: it names an a ∈ Σ^n, it is normalized, and each argument has its parameter's type under Σ^n
   ──────────────────────────────────────────────────────────
   Σ_imp ⊢ module M where import … ; export ē ; decl_1 … decl_n   ok
 ```
+
+**Attributes are checked under the signature the whole module contributes**, `Σ^n`, so an attribute and the value or constructor an argument names may be declared anywhere in the module, before or after the declaration carrying it. An attribute declaration's parameter types are closed — well kinded at `Type` with nothing in scope — and a default has its parameter's type. An attached attribute names a declared attribute, is normalized — as many positional arguments as parameters, and every keyword argument in the order declared — and each argument has its parameter's type, by the rules [Attributes, Modifiers, and Directives](../02-Surface-Language/07-Attributes-Modifiers-and-Directives.md) gives. Nothing else about the declaration depends on it.
 
 The right-hand side of `nonrec x : σκ = e` must not refer to `x` itself or to any later value declaration; every cycle belongs to a `rec` group. Elaboration performs the dependency analysis, gathers strongly connected components into `rec` groups, and emits them in topological order. This invariant lets the fold close in a single left-to-right pass.
 

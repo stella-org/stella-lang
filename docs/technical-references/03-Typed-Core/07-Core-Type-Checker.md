@@ -20,12 +20,13 @@ The Core type checker is independent of the surface language, macros, elaborator
 14. That each `[[κ̄]]` matches the arity of the kind scheme and that every `κ` in it is a quantifiable kind
 15. That every site introducing a type variable — `forall`, `Λ`, declaration type parameters, operation type parameters — uses a quantifiable kind, and that `Row` is applied only to a row element kind
 16. Constraint well-formedness: that both sides share one row element kind and that the key is well formed for that kind
+17. Attributes ([Attributes, Modifiers, and Directives](../02-Surface-Language/07-Attributes-Modifiers-and-Directives.md)): that an attribute declaration's parameter types are closed and of kind `Type` and its defaults of their types, an imported declaration's among them; and that every attribute a declaration carries is declared, normalized, and holds arguments of its parameters' types
 
 ## What it does not verify
 
 - **Coverage of source patterns.** A tree that does not cover the original program merely carries a `Partial` effect and is well typed
 - **Termination.** A `letrec` may diverge
-- **The meaning of attributes**
+- **The meaning of attributes**, beyond the types of their arguments
 - **Hygiene**, which is complete by the time a term reaches Core
 - **The implementation of a `foreign`**, whose declared type is trusted. `#observ(none)` is recorded and not checked: it claims a property of code the checker never sees, so it stands with the rest of what `Σ ⊨ G` obliges a backend to, and not with `newtype`'s shape, which is a claim about the declaration itself ([Modules](../06-Modules/01-Modules.md))
 - **The correctness of optimizations**, which belong to Mid IR and beyond

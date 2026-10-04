@@ -76,7 +76,18 @@ eqInt = …
 
 **An attribute declaration is a declaration of Core**, carrying its name, its positional parameter types, and its keyword parameters with their defaults. It is not a value: no term refers to it, and nothing of it reaches a `.dmo`. An interface carries it, as it carries the attributes a module's declarations bear.
 
-**Every declaration carries the attributes attached to it**, each the attribute's qualified name and its normalized arguments. **Checking an attribute is checking its arguments**: each has the type its parameter declares, which the Core type checker confirms. Nothing about the declaration the attribute is attached to depends on it, and nothing is evaluated.
+**Every declaration carries the attributes attached to it**, each the attribute's qualified name and its normalized arguments: a value, a computation, and a handler, all values in Core, a `data` or `newtype`, an effect, and a foreign. **Checking an attribute is checking its arguments**: the attribute is declared, its arguments are normalized, and each has the type its parameter declares, which the Core type checker confirms. Nothing about the declaration the attribute is attached to depends on it, and nothing is evaluated.
+
+**A constant is checked against a known type**, its parameter's, which is closed, so the check decides rather than infers.
+
+| Constant | Has the type expected where |
+| --- | --- |
+| a literal | the type is the `Prim` type of its kind |
+| a global value | its scheme's outer kind and type quantifiers, instantiated as the type expected determines them, give that type; no constraint is discharged, no synthesizer runs, and nothing is inserted. A constructor is no value here |
+| a constructor applied to constants | the type's head is the constructor's type, there is one constant per field, and each has its field's type at the parameters the type expected gives — a constructor of no field among them |
+| a record of constants | the type is a record whose row is closed, and the labels are the row's exactly |
+
+**A type synonym and a foreign type have no Core declaration**, so the attributes written on one are held by its module's interface alone, and checked by the same rules where the Core part of that interface is built ([Interface](../05-Backend/03-Interface.md)). **An attribute declaration arriving through an import is checked again** where the signature it joins is assembled, an interface being read for its structure alone ([Modules](../06-Modules/01-Modules.md)).
 
 ### The attributes the compiler acts on
 
