@@ -55,7 +55,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Message (FrozenMessagePart(..), Mess
 import Stella.Compiler.Elaborate.Vocabulary.Request (Command(..), CommandAnswer(..), KernelAnswer(..), BuildRequest(..), KernelRequest(..), ObserveRequest(..), ReportRequest(..), SolveRequest(..), TermRequest(..))
 import Stella.Compiler.Elaborate.Vocabulary.Trace (Fate(..), TraceEvent(..), Tracing(..), fates)
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView(..), KindView(KindRow), PayloadView(..), TypeView(..))
-import Stella.Compiler.TypedCore (AttrValue(..), Attribute, Decl(..), Expr(..), Ident(..), Kind(..), KindVar(..), Literal(..), Module, ModuleName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyVar(..), Type(..), globalsOf, monoScheme)
+import Stella.Compiler.TypedCore (Attribute, Decl(..), Expr(..), Ident(..), Kind(..), KindVar(..), Literal(..), Module, ModuleName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyVar(..), Type(..), globalsOf, monoScheme)
 import Stella.Compiler.TypedCore.Declare (declare)
 import Stella.Compiler.TypedCore.Prim (booleanTy, intTy, primSignature, recordTy)
 import Stella.Compiler.TypedCore.Signature (Signature)
@@ -125,7 +125,7 @@ declarations =
   k = KindVar "k"
   t = TyVar "t"
   record a z = RecordExtend 1 keyA (Lit 1 a) (RecordExtend 1 keyZ (Lit 1 z) (RecordEmpty 1))
-  marked key = { key, value: AttrUnit }
+  marked key = { name: Qualified main (Ident key), positional: [], keyword: [] }
 
 valuesModule :: Module P.Int
 valuesModule =
@@ -133,7 +133,9 @@ valuesModule =
   , name: main
   , imports: []
   , exports: []
-  , decls: map (\d -> DeclNonRec 1 { name: Ident d.name, scheme: { kindVars: d.kindVars, body: d.type }, value: d.value, attributes: d.attributes }) declarations
+  , decls:
+      map (\n -> DeclAttribute 1 { name: Ident n, positional: [], keyword: [] }) [ "candidate", "other" ]
+        <> map (\d -> DeclNonRec 1 { name: Ident d.name, scheme: { kindVars: d.kindVars, body: d.type }, value: d.value, attributes: d.attributes }) declarations
   }
 
 signature :: Signature
@@ -169,11 +171,11 @@ registry = Map.fromFoldable
 
 -- | Answering from `Main.one`, then from the candidates.
 answering :: Policy
-answering = policy [ mainOne ] "candidate"
+answering = policy [ mainOne ] (Qualified main (Ident "candidate"))
 
 -- | Answering from the candidates alone.
 candidatesOnly :: Policy
-candidatesOnly = policy [] "candidate"
+candidatesOnly = policy [] (Qualified main (Ident "candidate"))
 
 -- | The policy given, misusing the kernel before the candidate named is tried:
 -- | a variable nothing binds.
@@ -401,7 +403,7 @@ spec = describe "Elaborate, a synthesis hole filled by the reference synthesizer
           Nothing -> fail "no job was queued"
           Just (Tuple id scheduler) -> case openConversation session id (w.queued { tentative { scheduler = scheduler } }) of
             OpenStopped attempt _ -> fail (show attempt)
-            Opened c0 -> case c0.goal, ask (ObserveRequest (DeclsWithAttr "candidate")) c0 of
+            Opened c0 -> case c0.goal, ask (ObserveRequest (DeclsWithAttr (Qualified main (Ident "candidate")))) c0 of
               Just goal, Answered (Returned (KernelAnswered (NamesAnswer before))) c1 -> case ask (ObserveRequest (GoalType goal)) c1 of
                 Answered (Returned (KernelAnswered (HandleAnswer ty))) c2 -> case ask (ObserveRequest (ViewType ty)) c2 of
                   Answered (Returned (KernelAnswered (TypeViewAnswer (MetaType m)))) c3 -> case ask (ReportRequest (Postpone [ m ])) c3 of
@@ -413,7 +415,7 @@ spec = describe "Elaborate, a synthesis hole filled by the reference synthesizer
                         Nothing -> fail "the goal was not woken"
                         Just (Tuple retried taken) -> case openConversation session retried (s2 { tentative { scheduler = taken } }) of
                           OpenStopped attempt _ -> fail (show attempt)
-                          Opened d0 -> case ask (ObserveRequest (DeclsWithAttr "candidate")) d0 of
+                          Opened d0 -> case ask (ObserveRequest (DeclsWithAttr (Qualified main (Ident "candidate")))) d0 of
                             Answered (Returned (KernelAnswered (NamesAnswer after))) _ -> after `shouldEqual` before
                             other -> fail (describeStep other)
                     other -> fail (describeStep other)

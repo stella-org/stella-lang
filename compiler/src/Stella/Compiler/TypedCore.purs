@@ -38,9 +38,9 @@ import Prim as P
 
 import Stella.Compiler.TypedCore.Check (CheckError(..), CheckFailure, Env, JoinInfo, Typed, check, envOf, infer, isFunVal, isValueForm, typeOf)
 import Stella.Compiler.TypedCore.Context (Context, assume, bindKindVars, bindTyVar, emptyContext, kindVarInScope, lookupTyVar)
-import Stella.Compiler.TypedCore.Declare (CheckedGroup, DeclError(..), DeclFailure, Declared, checkEffectEntries, checkTyConEntries, collectTypes, declare, declareAnnotated, initialSignature)
+import Stella.Compiler.TypedCore.Declare (CheckedGroup, DeclError(..), DeclFailure, Declared, checkAttributeEntries, checkEffectEntries, checkTyConEntries, collectTypes, declare, declareAnnotated, initialSignature)
 import Stella.Compiler.TypedCore.Domain (ScalarString, ScalarValue, codePointOf, compareNumber, sameNumber, scalarString, scalarStringOf, scalarValue, textOf)
-import Stella.Compiler.TypedCore.Decl (AttrField, AttrValue(..), Attribute, CtorDecl, DataDecl, Decl(..), declAnnotation, EffectDecl, Export(..), ForeignDecl, Module, OpDecl, ValueBinding)
+import Stella.Compiler.TypedCore.Decl (Attribute, AttributeDecl, Constant(..), CtorDecl, DataDecl, Decl(..), declAnnotation, EffectDecl, Export(..), ForeignDecl, KeywordArgument, KeywordParameter, Module, OpDecl, ValueBinding)
 import Stella.Compiler.TypedCore.Entailment (AtomicFacts, DecomposeError(..), addAssumption, decompose, entails, noFacts)
 import Stella.Compiler.TypedCore.Equality (constraintEquiv, rowEquiv, typeEquiv)
 import Stella.Compiler.TypedCore.Kind (Kind(..), KindScheme, RowElemKind(..), Scheme, kindVarsOf, monoScheme, substituteKind)

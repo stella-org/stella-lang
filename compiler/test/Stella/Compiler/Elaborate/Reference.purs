@@ -51,13 +51,13 @@ import Data.Maybe (Maybe(..))
 -- | the candidate, just before the candidate is referred to.
 type Policy =
   { globals :: P.Array (Qualified Ident)
-  , attribute :: P.String
+  , attribute :: Qualified Ident
   , beforeTrying :: Handle -> Handle -> Qualified Ident -> Facade Unit
   }
 
 -- | The policy answering from the globals and the attribute given, doing
 -- | nothing before a candidate is tried.
-policy :: P.Array (Qualified Ident) -> P.String -> Policy
+policy :: P.Array (Qualified Ident) -> Qualified Ident -> Policy
 policy globals attribute = { globals, attribute, beforeTrying: \_ _ _ -> pure unit }
 
 reference :: Policy -> Synthesizer
@@ -77,7 +77,7 @@ reference given goal = do
             Just found -> pure found
             Nothing -> F.throw
               [ TextPart "nothing the site binds, no global given, and no monomorphic declaration carrying the attribute"
-              , TextPart given.attribute
+              , NamePart given.attribute
               , TextPart "fits the type"
               , TypePart goalType
               ]

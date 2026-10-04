@@ -15,6 +15,7 @@ module Stella.Compiler.TypedCore.Signature
   , CtorInfo
   , EffectInfo
   , ValueInfo
+  , AttributeInfo
   , emptySignature
   , tyConKind
   , lookupTyCon
@@ -22,6 +23,7 @@ module Stella.Compiler.TypedCore.Signature
   , lookupEffect
   , lookupOperation
   , lookupValue
+  , lookupAttribute
   , effectParamKinds
   ) where
 
@@ -29,7 +31,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore.Decl (OpDecl)
+import Stella.Compiler.TypedCore.Decl (KeywordParameter, OpDecl)
 import Stella.Compiler.TypedCore.Kind (Kind, KindScheme)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, OpName, Qualified, TyName)
 import Stella.Compiler.TypedCore.Type (TyBinder, Type, TypeScheme)
@@ -44,6 +46,7 @@ type Signature =
   , ctors :: Map (Qualified Ident) CtorInfo
   , effects :: Map (Qualified EffName) EffectInfo
   , values :: Map (Qualified Ident) ValueInfo
+  , attributes :: Map (Qualified Ident) AttributeInfo
   }
 
 -- | A type constructor entry, which is a data entry or an intrinsic one.
@@ -103,12 +106,20 @@ type ValueInfo =
   , isForeign :: P.Boolean
   }
 
+-- | An attribute declaration as the rules read it: its parameter types, closed,
+-- | and its keyword parameters with their defaults.
+type AttributeInfo =
+  { positional :: P.Array Type
+  , keyword :: P.Array KeywordParameter
+  }
+
 emptySignature :: Signature
 emptySignature =
   { types: Map.empty
   , ctors: Map.empty
   , effects: Map.empty
   , values: Map.empty
+  , attributes: Map.empty
   }
 
 tyConKind :: TyConInfo -> KindScheme
@@ -134,6 +145,9 @@ lookupOperation sig name op = case lookupEffect sig name of
 
 lookupValue :: Signature -> Qualified Ident -> Maybe ValueInfo
 lookupValue sig name = Map.lookup name sig.values
+
+lookupAttribute :: Signature -> Qualified Ident -> Maybe AttributeInfo
+lookupAttribute sig name = Map.lookup name sig.attributes
 
 -- | `κ̄` of `E : κ̄ -> Effect`, which is what an element's payload is checked
 -- | against.

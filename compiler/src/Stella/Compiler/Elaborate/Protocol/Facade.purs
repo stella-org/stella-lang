@@ -433,7 +433,7 @@ lookupGlobal name = kernel (ObserveRequest (LookupGlobal name)) case _ of
   DeclAnswer decl -> Just decl
   _ -> Nothing
 
-declsWithAttr :: P.String -> Facade (P.Array (Qualified Ident))
+declsWithAttr :: Qualified Ident -> Facade (P.Array (Qualified Ident))
 declsWithAttr attribute = kernel (ObserveRequest (DeclsWithAttr attribute)) case _ of
   NamesAnswer names -> Just names
   _ -> Nothing

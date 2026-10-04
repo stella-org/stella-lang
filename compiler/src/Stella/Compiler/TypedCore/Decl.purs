@@ -14,17 +14,20 @@ module Stella.Compiler.TypedCore.Decl
   , EffectDecl
   , OpDecl
   , ForeignDecl
+  , AttributeDecl
+  , KeywordParameter
   , Attribute
-  , AttrValue(..)
-  , AttrField
+  , KeywordArgument
+  , Constant(..)
   ) where
 
 import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore.Name (EffName, Ident, KindVar, ModuleName, OpName, TyName)
-import Stella.Compiler.TypedCore.Term (Expr)
+import Stella.Compiler.TypedCore.Name (EffName, Ident, KindVar, ModuleName, OpName, Qualified, Symbol, TyName)
+import Stella.Compiler.TypedCore.Term (Expr, Literal)
+import Data.Maybe (Maybe)
 import Stella.Compiler.TypedCore.Type (TyBinder, Type, TypeScheme)
 import Data.Generic.Rep (class Generic)
 import Data.Show.Generic (genericShow)
@@ -62,6 +65,7 @@ data Decl a
   | DeclForeign a ForeignDecl
   | DeclNonRec a (ValueBinding a)
   | DeclRec a (P.Array (ValueBinding a))
+  | DeclAttribute a AttributeDecl
 
 declAnnotation :: forall a. Decl a -> a
 declAnnotation = case _ of
@@ -70,6 +74,7 @@ declAnnotation = case _ of
   DeclForeign a _ -> a
   DeclNonRec a _ -> a
   DeclRec a _ -> a
+  DeclAttribute a _ -> a
 
 -- | A top-level value binding. Its right-hand side is checked at ambient effect
 -- | row `()`: defining a value performs no effects.
@@ -137,28 +142,45 @@ type ForeignDecl =
   , attributes :: P.Array Attribute
   }
 
--- | An attribute. It has no meaning for the Core type checker, which ignores
--- | attributes entirely; it exists so that a resolver can search for
--- | declarations carrying one.
+-- | An attribute declaration, `attribute name τ … (label :: τ = c) …`: the
+-- | types of its positional parameters and its keyword parameters, each with its
+-- | default where it has one. Every type is closed, so a use of the attribute
+-- | needs no instantiation. It declares no value: no term refers to it.
+type AttributeDecl =
+  { name :: Ident
+  , positional :: P.Array Type
+  , keyword :: P.Array KeywordParameter
+  }
+
+type KeywordParameter =
+  { label :: P.String
+  , type :: Type
+  , default :: Maybe Constant
+  }
+
+-- | An attribute attached to a declaration, its arguments normalized: as many
+-- | positional arguments as its declaration has parameters, and every keyword
+-- | argument in the order the declaration gives them, a default standing for
+-- | one left out. What an attribute means is its reader's; the type checker
+-- | confirms that each argument has the type its parameter declares.
 type Attribute =
-  { key :: P.String
-  , value :: AttrValue
+  { name :: Qualified Ident
+  , positional :: P.Array Constant
+  , keyword :: P.Array KeywordArgument
   }
 
--- | The value of an attribute. The compiler carries a structured value and
--- | nothing more: what the keys and shapes mean is decided by libraries.
-data AttrValue
-  = AttrUnit
-  | AttrBoolean P.Boolean
-  | AttrInt P.Int
-  | AttrString P.String
-  | AttrArray (P.Array AttrValue)
-  | AttrObject (P.Array AttrField)
-
-type AttrField =
-  { key :: P.String
-  , value :: AttrValue
+type KeywordArgument =
+  { label :: P.String
+  , value :: Constant
   }
+
+-- | An argument of an attribute: a literal, a global value, a constructor
+-- | applied to constants, or a record of constants.
+data Constant
+  = ConstantLiteral Literal
+  | ConstantValue (Qualified Ident)
+  | ConstantConstructor (Qualified Ident) (P.Array Constant)
+  | ConstantRecord (P.Array { label :: Symbol, value :: Constant })
 
 derive instance Eq Export
 derive instance Ord Export
@@ -173,9 +195,9 @@ derive instance Generic (Decl a) _
 instance Show a => Show (Decl a) where
   show x = genericShow x
 
-derive instance Eq AttrValue
-derive instance Ord AttrValue
-derive instance Generic AttrValue _
+derive instance Eq Constant
+derive instance Ord Constant
+derive instance Generic Constant _
 
-instance Show AttrValue where
+instance Show Constant where
   show x = genericShow x

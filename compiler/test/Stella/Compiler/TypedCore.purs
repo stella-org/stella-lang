@@ -7,7 +7,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore (AttrValue(..), Constraint(..), Decl(..), DecisionTree(..), EffName(..), EffectDecl, Expr(..), Ident(..), Kind(..), ModuleName(..), OpClause(..), OpName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), RowPayload(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), declAnnotation, exprAnnotation, opClauseBody, rowEntryKey, rowEntryPayload)
+import Stella.Compiler.TypedCore (Constraint(..), Decl(..), DecisionTree(..), EffName(..), EffectDecl, Expr(..), Ident(..), Kind(..), ModuleName(..), OpClause(..), OpName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), RowPayload(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), declAnnotation, exprAnnotation, opClauseBody, rowEntryKey, rowEntryPayload)
 import Data.Array (index)
 import Data.Maybe (Maybe(..))
 import Test.Spec (Spec, describe, it)
@@ -173,11 +173,6 @@ spec = describe "Stella.Compiler.TypedCore" do
       rowEntryPayload (RowEffectEntry stateEff [ tInt ])
         `shouldEqual` EffectPayload stateEff [ tInt ]
 
-  describe "attributes" do
-    it "carry a key and a structured value, and nothing the checker reads" do
-      let attr = { key: "typeclass.instance", value: AttrObject [ { key: "priority", value: AttrInt 0 } ] }
-      attr.value `shouldEqual` AttrObject [ { key: "priority", value: AttrInt 0 } ]
-
 -- Helpers that summarise a structure as something comparable.
 
 handlerOf' :: forall a. Expr a -> Expr a
@@ -192,6 +187,7 @@ declKind = case _ of
   DeclForeign _ _ -> "foreign"
   DeclNonRec _ _ -> "nonrec"
   DeclRec _ _ -> "rec"
+  DeclAttribute _ _ -> "attribute"
 
 treeShape :: forall a. Expr a -> Maybe (P.Array P.String)
 treeShape = case _ of

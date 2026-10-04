@@ -83,7 +83,7 @@ import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Interface.Environment (BuildEnvironment, ModuleView, viewFor)
 import Stella.Compiler.Interface.Environment as Environment
 import Stella.Compiler.Interface.Module (Export, TypeEntity(..), TypeExport, TypeSort(..), ValueSort(..), isComputation)
-import Stella.Compiler.Interface.Module as Interface
+import Stella.Compiler.TypedCore.Decl (Constant)
 import Stella.Compiler.Resolve.Group (Declaration(..), GroupReason, GroupedModule, printGroupReason)
 import Stella.Compiler.Resolve.Scope (Names, Scope, ScopedModule, emptyNames)
 import Stella.Compiler.Surface.Decl (Associativity(..), FixityTarget(..))
@@ -891,7 +891,7 @@ type AttributeShape =
 -- | or as an interface holds it.
 data AttributeDefault
   = OwnDefault CST.Expr
-  | ImportedDefault Interface.Constant
+  | ImportedDefault Constant
 
 attributeShape :: Qualified Ident -> Resolve (Maybe AttributeShape)
 attributeShape q@(Qualified owner name) = do

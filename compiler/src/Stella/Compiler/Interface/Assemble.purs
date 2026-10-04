@@ -38,7 +38,8 @@ import Data.Set as Set
 import Data.Show.Generic (genericShow)
 import Data.Traversable (for, traverse)
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.Interface.Module (Attribute, Constant(..), ConstructorEntry, Exports, ModuleInterface, OperatorEntry, TypeEntry, TypeOperatorEntry, TypeSort(..), ValueEntry, ValueSort(..), Via(..))
+import Stella.Compiler.Interface.Module (Attribute, ConstructorEntry, Exports, ModuleInterface, OperatorEntry, TypeEntry, TypeOperatorEntry, TypeSort(..), ValueEntry, ValueSort(..), Via(..))
+import Stella.Compiler.TypedCore.Decl (Constant(..))
 import Stella.Compiler.Interface.Scheme (Scheme)
 import Stella.Compiler.Surface.Decl as Surface
 import Stella.Compiler.Surface.Decl (FixityTarget(..))

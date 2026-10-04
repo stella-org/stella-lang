@@ -62,12 +62,12 @@ catalogOf entries = ModuleCatalog (Map.fromFoldable (map (\e -> Tuple e.name e) 
 lookupEntry :: ModuleCatalog -> Qualified Ident -> Maybe CatalogEntry
 lookupEntry (ModuleCatalog entries) name = Map.lookup name entries
 
--- | The names of the entries carrying an attribute of the key given, in
--- | ascending order of their qualified names, so that a search over them takes
--- | one order whatever order the interfaces were read in.
-namesWithAttr :: ModuleCatalog -> P.String -> P.Array (Qualified Ident)
-namesWithAttr (ModuleCatalog entries) key =
-  Array.fromFoldable (Map.keys (Map.filter (\e -> Array.any (\a -> a.key == key) e.attributes) entries))
+-- | The names of the entries carrying the attribute given, in ascending order
+-- | of their qualified names, so that a search over them takes one order
+-- | whatever order the interfaces were read in.
+namesWithAttr :: ModuleCatalog -> Qualified Ident -> P.Array (Qualified Ident)
+namesWithAttr (ModuleCatalog entries) attribute =
+  Array.fromFoldable (Map.keys (Map.filter (\e -> Array.any (\a -> a.name == attribute) e.attributes) entries))
 
 derive instance Eq EntrySort
 derive instance Generic EntrySort _

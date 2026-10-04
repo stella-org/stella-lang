@@ -17,6 +17,7 @@ module Stella.Compiler.TypedCore.Declare
   , initialSignature
   , checkTyConEntries
   , checkEffectEntries
+  , checkAttributeEntries
   , collectTypes
   , declare
   , declareAnnotated
@@ -35,7 +36,8 @@ import Stella.Compiler.TypedCore.Name (EffName, Ident, KindVar, ModuleName, OpNa
 import Stella.Compiler.TypedCore.Prim (asFunction, primModule, primSignature, pureFn)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
 import Stella.Compiler.TypedCore.Row (nf)
-import Stella.Compiler.TypedCore.Signature (CtorInfo, EffectInfo, Signature, TyConInfo(..), ValueInfo, tyConKind)
+import Stella.Compiler.TypedCore.Signature (AttributeInfo, CtorInfo, EffectInfo, Signature, TyConInfo(..), ValueInfo, lookupAttribute, tyConKind)
+import Stella.Compiler.TypedCore.AttributeCheck (AttributeError, checkAttribute, checkAttributeDecl)
 import Stella.Compiler.TypedCore.Term (Expr)
 import Stella.Compiler.TypedCore.Type (RowEntry(..), TyBinder, Type(..), TypeScheme)
 import Data.Array as Array
@@ -101,6 +103,14 @@ data DeclError
   -- | The same for a constructor or a value, which share a namespace.
   | ConflictingValue (Qualified Ident)
   | IllKinded KindError
+  | DuplicateAttribute (Qualified Ident)
+  | ConflictingAttribute (Qualified Ident)
+  -- | An attribute declaration, or an attribute attached to a declaration, that
+  -- | does not check.
+  | AttributeIllTyped AttributeError
+  -- | An attribute entry, which no declaration of this module produced, that
+  -- | does not check.
+  | AttributeEntryError (Qualified Ident) AttributeError
 
 -- | `Σ_Prim ∪ Σ_ABI(M) ∪ Σ_imp`, the signature a module is checked under.
 -- |
@@ -115,6 +125,7 @@ initialSignature parts = do
   sig <- foldM merge primSignature parts
   checkTyConEntries sig
   checkEffectEntries sig
+  checkAttributeEntries sig
   pure sig
 
 -- | Two parts of a signature, agreeing wherever they meet.
@@ -129,8 +140,9 @@ merge acc part = do
   effects <- mergeTable ConflictingEffect acc.effects part.effects
   ctors <- mergeTable ConflictingValue acc.ctors part.ctors
   values <- mergeTable ConflictingValue acc.values part.values
+  attributes <- mergeTable ConflictingAttribute acc.attributes part.attributes
   traverse_ (Left <<< ConflictingValue) (sharedKeys ctors values)
-  pure { types, ctors, effects, values }
+  pure { types, ctors, effects, values, attributes }
 
 mergeTable
   :: forall k v e
@@ -208,6 +220,18 @@ checkEffectEntries sig =
     Left err -> Left (EffectEntryError name err)
     Right value -> Right value
 
+-- | Every attribute entry is what an `attribute` declaration would have
+-- | produced: its parameter types closed and of kind `Type`, and each default of
+-- | its parameter's type. An entry arriving through an assembled interface is
+-- | checked here, as a type constructor or an effect entry is.
+checkAttributeEntries :: Signature -> Either DeclError Unit
+checkAttributeEntries sig =
+  traverse_ entryOk (Map.toUnfoldable sig.attributes :: P.Array (Tuple (Qualified Ident) AttributeInfo))
+  where
+  entryOk (Tuple name info) = case checkAttributeDecl sig info of
+    Left err -> Left (AttributeEntryError name err)
+    Right _ -> Right unit
+
 -- | `Σ_ty`, the kinds of the type constructors and effect constructors a module
 -- | declares, added to what `Prim`, the primitive surface, and the imports
 -- | supply.
@@ -277,6 +301,7 @@ declareAnnotated imported m = do
   sigDecl <- foldM (addDecl m sigTy) sigTy m.decls
   declared <- foldM (addValue' m sigTy) { signature: sigDecl, values: [] } m.decls
   checkExports m declared.signature
+  traverse_ (checkAttributes m declared.signature) m.decls
   pure declared
 
 -- | `Σ_decl`: what a data, effect, or foreign declaration contributes, checked
@@ -306,6 +331,31 @@ addDecl m sigTy acc = case _ of
   DeclNonRec _ _ -> pure acc
 
   DeclRec _ _ -> pure acc
+
+  DeclAttribute at decl -> do
+    attributes <- insertUnique (\name -> { at, error: DuplicateAttribute name }) (Qualified m.name decl.name)
+      { positional: decl.positional, keyword: decl.keyword }
+      acc.attributes
+    pure acc { attributes = attributes }
+
+-- | The attributes a declaration carries, and an attribute declaration's
+-- | parameters, checked under the signature the whole module contributes: an
+-- | argument may name a value or a constructor declared anywhere in it.
+checkAttributes :: forall a. Module a -> Signature -> Decl a -> Either (DeclFailure a) Unit
+checkAttributes m sig = case _ of
+  DeclData at decl -> attached at decl.attributes
+  DeclEffect at decl -> attached at decl.attributes
+  DeclForeign at decl -> attached at decl.attributes
+  DeclNonRec at binding -> attached at binding.attributes
+  DeclRec at bindings -> traverse_ (attached at <<< _.attributes) bindings
+  DeclAttribute at decl -> case lookupAttribute sig (Qualified m.name decl.name) of
+    Just info -> failing at (checkAttributeDecl sig info)
+    Nothing -> pure unit
+  where
+  attached at = traverse_ (failing at <<< checkAttribute sig)
+  failing at = case _ of
+    Left err -> Left { at, error: AttributeIllTyped err }
+    Right _ -> Right unit
 
 -- | The value declarations, folded leftwards from `Σ_decl`.
 -- |

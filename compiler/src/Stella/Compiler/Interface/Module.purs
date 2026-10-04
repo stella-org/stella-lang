@@ -34,7 +34,6 @@ module Stella.Compiler.Interface.Module
   , AttributeEntry
   , KeywordParameterEntry
   , Attribute
-  , Constant(..)
   , ImplicitHandler
   , ForeignSummary
   , emptyExports
@@ -57,10 +56,11 @@ import Stella.Compiler.Surface.Decl (Associativity, FixityTarget, Observation)
 import Stella.Compiler.Surface.Type (TypeOperatorTarget)
 import Stella.Compiler.Surface.Name (OperatorName)
 import Stella.Compiler.TypedCore.Kind (KindScheme)
-import Stella.Compiler.TypedCore.Name (EffName, Ident, ModuleName, Qualified, Symbol, TyName)
+import Stella.Compiler.TypedCore.Decl (KeywordParameter)
+import Stella.Compiler.TypedCore.Decl as Core
+import Stella.Compiler.TypedCore.Name (EffName, Ident, ModuleName, Qualified, TyName)
 import Stella.Compiler.TypedCore.Prim (asFunction, ioTy)
-import Stella.Compiler.TypedCore.Signature (CanonicalClass)
-import Stella.Compiler.TypedCore.Term (Literal)
+import Stella.Compiler.TypedCore.Signature (AttributeInfo, CanonicalClass)
 import Stella.Compiler.TypedCore.Type (RowEntry, TyBinder, Type(..))
 
 type ModuleInterface =
@@ -211,33 +211,14 @@ type TypeOperatorEntry =
   }
 
 -- | An attribute declaration: the types of its positional parameters and its
--- | keyword parameters, each with its default where it has one.
-type AttributeEntry =
-  { positional :: Array Type
-  , keyword :: Array KeywordParameterEntry
-  }
+-- | keyword parameters, each with its default where it has one, as Core
+-- | holds them.
+type AttributeEntry = AttributeInfo
 
-type KeywordParameterEntry =
-  { label :: String
-  , type :: Type
-  , default :: Maybe Constant
-  }
+-- | An attribute attached to a declaration, as Core holds it.
+type Attribute = Core.Attribute
 
--- | An attribute attached to a declaration, its arguments normalized: every
--- | positional argument, and every keyword argument in the order its
--- | declaration gives them, a default standing for one left out.
-type Attribute =
-  { name :: Qualified Ident
-  , positional :: Array Constant
-  , keyword :: Array { label :: String, value :: Constant }
-  }
-
--- | An argument of an attribute.
-data Constant
-  = ConstantLiteral Literal
-  | ConstantValue (Qualified Ident)
-  | ConstantConstructor (Qualified Ident) (Array Constant)
-  | ConstantRecord (Array { label :: Symbol, value :: Constant })
+type KeywordParameterEntry = KeywordParameter
 
 -- | An implicit handler, as insertion reads it: the element it handles and the
 -- | elements it performs in its place.
@@ -326,9 +307,3 @@ derive instance Generic TypeSort _
 
 instance Show TypeSort where
   show = genericShow
-
-derive instance Eq Constant
-derive instance Generic Constant _
-
-instance Show Constant where
-  show x = genericShow x

@@ -32,7 +32,7 @@ import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), 
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), UnifyError(..), emptyContext, freshKindMeta, freshMeta)
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView(..), KindView(..), PayloadView(..), TypeView(..))
 import Stella.Compiler.TypedCore as Core
-import Stella.Compiler.TypedCore (AttrValue(..), EffName(..), Ident(..), Kind(..), Literal(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore (EffName(..), Ident(..), Kind(..), Literal(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set as Set
@@ -73,13 +73,16 @@ kinding =
 showInt :: Qualified Ident
 showInt = Qualified (ModuleName "Data.Show") (Ident "showInt")
 
+instanceAttribute :: Qualified Ident
+instanceAttribute = Qualified (ModuleName "TC") (Ident "instance")
+
 session :: SessionEnv
 session =
   { catalog: catalogOf
       [ { name: showInt
         , sort: ValueEntry
         , scheme: { kindVars: [], body: xInt }
-        , attributes: [ { key: "typeclass.instance", value: AttrUnit } ]
+        , attributes: [ { name: instanceAttribute, positional: [], keyword: [] } ]
         }
       ]
   , kinding
@@ -313,7 +316,7 @@ spec = describe "Elaborate.Observe" do
         action = do
           decl <- lookupGlobal showInt
           absent <- lookupGlobal (Qualified prim (Ident "absent"))
-          instances <- declsWithAttr "typeclass.instance"
+          instances <- declsWithAttr instanceAttribute
           case decl of
             Just d -> do
               scheme <- viewType d.scheme

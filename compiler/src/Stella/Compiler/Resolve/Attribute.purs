@@ -36,7 +36,7 @@ import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.CST.Range (covering, exprRange, typeRange)
 import Stella.Compiler.CST.Types as CST
-import Stella.Compiler.Interface.Module as Interface
+import Stella.Compiler.TypedCore.Decl as Core
 import Stella.Compiler.Resolve.Label (reportLabelsTwice)
 import Stella.Compiler.Resolve.Monad (AttributeDefault(..), Found(..), Resolve, ResolveReason(..), ValueKind(..), attributeShape, constructorOf, lookupAttribute, lookupValue, report, speculatively, valueKind)
 import Stella.Compiler.Resolve.Scope (writtenBare)
@@ -222,12 +222,12 @@ resolveAttributeDeclaration params = do
 
 -- | A constant as an interface holds it, given the origin of the attribute it
 -- | is filled into.
-fromInterface :: Origin -> Interface.Constant -> Constant
+fromInterface :: Origin -> Core.Constant -> Constant
 fromInterface o = case _ of
-  Interface.ConstantLiteral l -> ConstantLiteral o l
-  Interface.ConstantValue q -> ConstantValue o q
-  Interface.ConstantConstructor q cs -> ConstantConstructor o q (map (fromInterface o) cs)
-  Interface.ConstantRecord fs -> ConstantRecord o (map (\f -> f { value = fromInterface o f.value }) fs)
+  Core.ConstantLiteral l -> ConstantLiteral o l
+  Core.ConstantValue q -> ConstantValue o q
+  Core.ConstantConstructor q cs -> ConstantConstructor o q (map (fromInterface o) cs)
+  Core.ConstantRecord fs -> ConstantRecord o (map (\f -> f { value = fromInterface o f.value }) fs)
 
 -- | A constant with every origin in it replaced by the one given.
 reorigin :: Origin -> Constant -> Constant

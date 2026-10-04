@@ -42,7 +42,8 @@ import Stella.Compiler.Bytecode.Bytes (Bytes, DecodeError(..), EncodeError(..), 
 import Stella.Compiler.Bytecode.Container (E, Strings, qname, qnameR, runE, section, str, strR, strings, text, throwE, vec)
 import Stella.Compiler.Bytecode.Container as C
 import Stella.Compiler.Bytecode.Module (abiVersion)
-import Stella.Compiler.Interface.Module (Attribute, AttributeEntry, Constant(..), Declarations, EffectEntry, Export, Exports, ImplicitHandler, ModuleInterface, OperatorEntry, TypeEntity(..), TypeEntry, TypeExport, TypeOperatorEntry, TypeSort(..), ValueEntry, ValueSort(..), Via(..))
+import Stella.Compiler.Interface.Module (Attribute, AttributeEntry, Declarations, EffectEntry, Export, Exports, ImplicitHandler, ModuleInterface, OperatorEntry, TypeEntity(..), TypeEntry, TypeExport, TypeOperatorEntry, TypeSort(..), ValueEntry, ValueSort(..), Via(..))
+import Stella.Compiler.TypedCore.Decl (Constant(..))
 import Stella.Compiler.Interface.Scheme (Scheme, SchemeBody(..))
 import Stella.Compiler.Surface.Decl (Associativity(..), FixityTarget(..), Observation(..))
 import Stella.Compiler.Surface.Name (OperatorName(..))

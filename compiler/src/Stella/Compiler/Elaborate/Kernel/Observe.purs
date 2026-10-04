@@ -161,11 +161,11 @@ lookupGlobal name = do
             }
         )
 
--- | The names carrying an attribute of the key given, in ascending order.
-declsWithAttr :: P.String -> Elab (P.Array (Qualified Ident))
-declsWithAttr key = do
+-- | The names carrying the attribute given, in ascending order.
+declsWithAttr :: Qualified Ident -> Elab (P.Array (Qualified Ident))
+declsWithAttr attribute = do
   env <- askEnv
-  pure (namesWithAttr env.session.catalog key)
+  pure (namesWithAttr env.session.catalog attribute)
 
 -- The frame, which a kernel operation reading where it stands requires.
 currentFrame :: Elab Frame

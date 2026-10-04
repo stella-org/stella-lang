@@ -375,7 +375,7 @@ probes =
   , p "localContext" F.localContext
   , p "localConstraints" F.localConstraints
   , p "lookupGlobal" (F.lookupGlobal name)
-  , p "declsWithAttr" (F.declsWithAttr "instance")
+  , p "declsWithAttr" (F.declsWithAttr (Qualified (ModuleName "TC") (Ident "instance")))
   , p "throw" (F.throw [ TextPart "no" ] :: Facade Unit)
   , p "warn" (F.warn [ TextPart "w" ])
   , p "postpone" (F.postpone [ s ] :: Facade Unit)

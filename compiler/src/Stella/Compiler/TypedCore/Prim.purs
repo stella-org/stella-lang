@@ -137,4 +137,7 @@ primSignature = emptySignature
       , fields: []
       , scheme: monoScheme (TCon unitTy [])
       }
+  -- The attributes the compiler reads, none of which takes a parameter.
+  , attributes = Map.fromFoldable
+      (map (\n -> Tuple (Qualified primModule (Ident n)) { positional: [], keyword: [] }) [ "macro", "entrypoint", "elaborationOnly" ])
   }

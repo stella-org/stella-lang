@@ -36,7 +36,7 @@ import Stella.Compiler.Interface (noImports)
 import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.TypedCore.Check (CheckError(..))
 import Stella.Compiler.TypedCore.Declare (DeclError(..))
-import Stella.Compiler.TypedCore (AttrValue, Decl(..), DecisionTree(..), Expr(..), Ident(..), KindVar, Literal, Module, ModuleName(..), OpName, Occurrence(..), Qualified(..), RowEntry(..), RowElemKind, RowKey(..), ScalarString, ScalarValue, Symbol, Tag, TyName(..), TyVar(..), Type(..), Kind(..), declareAnnotated, monoScheme, primSignature)
+import Stella.Compiler.TypedCore (Constant, Decl(..), DecisionTree(..), Expr(..), Ident(..), KindVar, Literal, Module, ModuleName(..), OpName, Occurrence(..), Qualified(..), RowEntry(..), RowElemKind, RowKey(..), ScalarString, ScalarValue, Symbol, Tag, TyName(..), TyVar(..), Type(..), Kind(..), declareAnnotated, monoScheme, primSignature)
 import Stella.Compiler.TypedCore.Prim (asFunction, fn, intTy, pureFn, unitTy)
 import Test.Stella.Compiler.Elaborate.Facade (probes)
 import Test.Spec (Spec, describe, it)
@@ -165,8 +165,8 @@ instance HostShape MessagePart where
 instance HostShape EntrySort where
   hostShape _ = twin "EntrySort"
 
-instance HostShape AttrValue where
-  hostShape _ = twin "AttrValue"
+instance HostShape Constant where
+  hostShape _ = twin "Constant"
 
 class FieldShapes :: RowList P.Type -> P.Constraint
 class FieldShapes rl where
@@ -242,7 +242,7 @@ mirrored =
   , Tuple "Literal" (hostCtors (Proxy :: Proxy Literal))
   , Tuple "MessagePart" (hostCtors (Proxy :: Proxy MessagePart))
   , Tuple "EntrySort" (hostCtors (Proxy :: Proxy EntrySort))
-  , Tuple "AttrValue" (hostCtors (Proxy :: Proxy AttrValue))
+  , Tuple "Constant" (hostCtors (Proxy :: Proxy Constant))
   ]
 
 -- Probes --------------------------------------------------------------------------------

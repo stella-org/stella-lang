@@ -295,13 +295,11 @@ types =
       , ctor "NormalRow" [ rowView ]
       ]
   , simple "EntrySort" [ ctor "ValueEntry" [], ctor "ForeignEntry" [], ctor "ConstructorEntry" [] ]
-  , simple "AttrValue"
-      [ ctor "AttrUnit" []
-      , ctor "AttrBoolean" [ boolean ]
-      , ctor "AttrInt" [ int ]
-      , ctor "AttrString" [ string ]
-      , ctor "AttrArray" [ list (con "AttrValue") ]
-      , ctor "AttrObject" [ list (record [ Tuple "key" string, Tuple "value" (con "AttrValue") ]) ]
+  , simple "Constant"
+      [ ctor "ConstantLiteral" [ con "Literal" ]
+      , ctor "ConstantValue" [ name ]
+      , ctor "ConstantConstructor" [ name, list (con "Constant") ]
+      , ctor "ConstantRecord" [ list (record [ Tuple "label" string, Tuple "value" (con "Constant") ]) ]
       ]
   , simple "MessagePart"
       [ ctor "TextPart" [ string ]
@@ -414,7 +412,7 @@ types =
       , ctor "LocalContext" []
       , ctor "LocalConstraints" []
       , ctor "LookupGlobal" [ name ]
-      , ctor "DeclsWithAttr" [ string ]
+      , ctor "DeclsWithAttr" [ name ]
       ]
   , simple "ReportRequest"
       [ ctor "Throw" [ list (con "MessagePart") ]
@@ -509,7 +507,15 @@ types =
     , Tuple "sort" (con "EntrySort")
     , Tuple "kindVars" (list string)
     , Tuple "scheme" handle
-    , Tuple "attributes" (list (record [ Tuple "key" string, Tuple "value" (con "AttrValue") ]))
+    , Tuple "attributes"
+        ( list
+            ( record
+                [ Tuple "name" name
+                , Tuple "positional" (list (con "Constant"))
+                , Tuple "keyword" (list (record [ Tuple "label" string, Tuple "value" (con "Constant") ]))
+                ]
+            )
+        )
     ]
 
 -- The facade ---------------------------------------------------------------------------------

@@ -156,7 +156,7 @@ data ObserveRequest
   | LocalContext
   | LocalConstraints
   | LookupGlobal (Qualified Ident)
-  | DeclsWithAttr P.String
+  | DeclsWithAttr (Qualified Ident)
 
 -- | Failing, warning, and waiting.
 data ReportRequest
