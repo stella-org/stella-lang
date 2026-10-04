@@ -35,6 +35,7 @@ import Stella.Compiler.Elaborate.CorePlus.Kind (XKind)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, knownKeys, rigidTails, sharedKey, xnf)
 import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XType)
 import Stella.Compiler.TypedCore (Ident, KindVar, Qualified, RowKey, TyVar)
+import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Entailment (AtomicFacts, addDisjoint, addLacks, noFacts)
 import Data.Array as Array
 import Data.Either (Either(..))
@@ -64,12 +65,15 @@ type XContext =
   }
 
 -- | Where a context came from, for diagnostics: the declaration whose
--- | elaboration built it.
+-- | elaboration built it, and, where the surface elaborator built it, the node of
+-- | the Surface AST it stands for.
 -- |
 -- | Everything carrying a context carries this beside it — a job, so that a
 -- | failure names where the goal was written, and an obligation, so that one
 -- | broken by an assignment elsewhere names where it was assumed.
-data Origin = InDeclaration (Qualified Ident)
+data Origin
+  = InDeclaration (Qualified Ident)
+  | AtSource { declaration :: Qualified Ident, origin :: Surface.Origin }
 
 -- | Applying what `Ψ` has solved, which the session supplies.
 type Zonk = XType -> XType

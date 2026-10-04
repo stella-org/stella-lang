@@ -27,6 +27,7 @@ module Stella.Compiler.Elaborate.Mechanism.Kinding
   , settledIn
   , quantifiable
   , wellFormedKey
+  , instantiate
   ) where
 
 import Prelude

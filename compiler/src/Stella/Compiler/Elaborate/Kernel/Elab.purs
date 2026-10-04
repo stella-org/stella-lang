@@ -41,6 +41,8 @@ module Stella.Compiler.Elaborate.Kernel.Elab
   , transact
   , unify
   , freshTypeMeta
+  , freshKindMeta
+  , equateKinds
   , freshTermMeta
   , createSynthesis
   , checkSynthesisTarget
@@ -82,7 +84,7 @@ import Stella.Compiler.Elaborate.Environment.Effects (EffectEnv, emptyEffectEnv)
 import Stella.Compiler.Elaborate.CorePlus.Context (XContext)
 import Stella.Compiler.Elaborate.CorePlus.Context as Context
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Warning, Defect(..), Diagnostic(..), MalformedGoal(..))
-import Stella.Compiler.Elaborate.CorePlus.Kind (XKind)
+import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Mechanism.Kinding (KindingEnv, emptyKindingEnv)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (Arena, ExprObject, GoalObject, Handle, HandleClass(..), HandleError(..), HandleObject(..), BinderObject, JoinObject, OccurrenceObject, ScopeId(..), ScopeObject, SessionId, TreeObject, TypeObject, emptyArena, issueIn, resolveIn)
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce, recheck)
@@ -93,9 +95,10 @@ import Stella.Compiler.Elaborate.CorePlus.Term (Region, TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..), assignTermMeta, regionWithin, termScopeOf, zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta as TermMeta
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint, XType(..))
-import Stella.Compiler.TypedCore (Ident(..), JoinName(..), TyVar(..))
+import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar, TyVar(..))
 import Stella.Compiler.Elaborate.Vocabulary.Trace (TraceEvent, Tracing(..))
-import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupTermMeta, substitute, unifyType)
+import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement, MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupTermMeta, substitute, unifyKind, unifyType)
+import Stella.Compiler.Elaborate.Mechanism.Unify as Unify
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
 import Data.Generic.Rep (class Generic)
@@ -677,6 +680,29 @@ freshTypeMeta context kind = Elab \_ s ->
     Tuple m metas = freshMeta { kind, scope } s.tentative.metas
   in
     Tuple (Done (XMeta m)) (s { tentative { metas = metas } })
+
+-- | A kind metavariable, which may mention the kind variables given and no other,
+-- | and which only a kind meeting the requirements given solves. A kind left
+-- | unwritten is one: the elaborator creates it, constrains it by `equateKinds`,
+-- | and asks after quiescence that it be solved.
+freshKindMeta :: Set KindVar -> Set KindRequirement -> Elab XKind
+freshKindMeta scope requirements = Elab \_ s ->
+  let
+    Tuple k metas = Unify.freshKindMeta { scope, requirements } s.tentative.metas
+  in
+    Tuple (Done (XKMeta k)) (s { tentative { metas = metas } })
+
+-- | `κ1 = κ2`, assigning kind metavariables. **Kinds are first order and never
+-- | wait**, so the equation is decided here, solved or refused; no job waits on a
+-- | kind metavariable, and an assignment wakes none. A refusal installs nothing.
+equateKinds :: Site -> XKind -> XKind -> Elab Unit
+equateKinds site k1 k2 = do
+  metas <- metaContext
+  case unifyKind metas k1 k2 of
+    Left err
+      | misuse err -> break (UnifierMisuse site.origin err)
+      | otherwise -> raiseDiagnostic (EquationFailed site.origin err)
+    Right solved -> Elab \_ s -> Tuple (Done unit) (s { tentative { metas = solved } })
 
 -- | A term metavariable at the type given, created under the context given and in
 -- | the region of cells given, where it stands in one.

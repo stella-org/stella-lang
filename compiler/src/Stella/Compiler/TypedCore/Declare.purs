@@ -19,6 +19,8 @@ module Stella.Compiler.TypedCore.Declare
   , checkEffectEntries
   , checkAttributeEntries
   , collectTypes
+  , dataEntry
+  , ctorInfo
   , declare
   , declareAnnotated
   ) where
