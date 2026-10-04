@@ -25,3 +25,11 @@ export const read = (array, i) => array.slots[i];
 export const write = (array, i, value) => {
   array.slots[i] = value;
 };
+
+export const newOwned = () => new WeakSet();
+
+export const ownImpl = (owned, array) => {
+  owned.add(array);
+};
+
+export const ownsImpl = (owned, array) => owned.has(array);

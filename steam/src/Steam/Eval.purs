@@ -29,12 +29,15 @@ module Steam.Eval
   , Failure(..)
   , EVAL
   , enter
+  , enterClosed
   , applyFunction
   , Outcome(..)
+  , Halt(..)
   , Suspension
   , Pause
   , Slice
   , invoke
+  , invokeClosed
   , resumeWith
   , resumePaused
   ) where
@@ -66,7 +69,9 @@ import Steam.Value (Activation, Callee(..), Cell, Clause, Closure, Continuation(
 import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName, KeyIx(..), OpIx(..), PrimIx(..), Reg(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Constant)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
-import Stella.Compiler.Primitive (PrimOp, arityOfOp)
+import Stella.Compiler.Primitive (InClosedRun(..), PrimOp, arityOfOp, inClosedRunOf)
+import Steam.Array (Owned)
+import Steam.Array as Arr
 import Stella.Compiler.TypedCore.Name (Ident, Qualified)
 import Type.Row (type (+))
 
@@ -179,6 +184,9 @@ data Bug
   -- | A `perform` answered by a root boundary in a run no invocation began, which
   -- | pushes none: nothing a run of its own holds can carry one.
   | AskedOutsideInvocation
+  -- | A run that is not closed halted as only a closed one does: only
+  -- | `invokeClosed` begins one.
+  | HaltedOutsideClosedRun
 
 -- | What ends a run before its value.
 data Failure
@@ -201,7 +209,23 @@ type Machine =
   -- | with. The identity is the registry's, assigned once across everything
   -- | loaded, so one value serves whichever module is running.
   , unit :: Value
+  -- | The arrays a closed run made, where the run is one.
+  , owned :: Maybe Owned
   }
+
+-- | How a closed run reached outside it: an effect no handler of it answers, a
+-- | foreign the host carries out, state the run did not make, or an operation no
+-- | closed run carries out.
+data Halt
+  = EffectPerformed KeyId
+  | HostForeignCalled (Qualified Ident)
+  | StateNotOwned PrimOp
+  | OperationWithheld PrimOp
+
+derive instance Eq Halt
+derive instance Generic Halt _
+instance Show Halt where
+  show = genericShow
 
 -- | Where a run stands: inside an activation, carrying a value to whatever takes
 -- | it, or done.
@@ -213,6 +237,8 @@ data State
   -- | the instruction after the `PERF`, the register the answer belongs in, and
   -- | the argument the host is asked with.
   | Asking Activation Reg Value
+  -- | Stopped where a closed run reached outside it, as how.
+  | Halting Halt
 
 -- | What executing one instruction leaves the machine to do.
 data Next
@@ -240,6 +266,8 @@ data Next
   -- | A `PERF` a root boundary answers: the register the answer belongs in, and
   -- | the argument.
   | Ask Reg Value
+  -- | A `PERF` that reached the bottom of a closed run, as the key it performs.
+  | Escape KeyId
 
 -- Registers, captures, and tables -------------------------------------------------
 
@@ -405,19 +433,22 @@ answererOf machine key = do
   stack <- liftEffect (Ref.read machine.stack)
   case visible stack answering of
     Just { at, found: Left marker } -> pure (AtMarker at marker)
-    Just { found: Right root } -> pure (AtRoot root)
+    Just { found: Right (Just root) } -> pure (AtRoot root)
+    Just { found: Right Nothing } -> pure AtClosed
     Nothing -> bug (NoHandlerInstalled key)
   where
   answering = case _ of
     HandlerMarker marker | marker.key == key -> Just (Left marker)
-    RootBoundary root | root.key == key -> Just (Right root)
+    RootBoundary root | root.key == key -> Just (Right (Just root))
+    ClosedBoundary -> Just (Right Nothing)
     _ -> Nothing
 
--- | What answers a `perform`: a handler's marker and where it stands, or the root
--- | boundary.
+-- | What answers a `perform`: a handler's marker and where it stands, the root
+-- | boundary, or the bottom of a closed run, which answers by ending it.
 data Answerer
   = AtMarker P.Int Marker
   | AtRoot Root
+  | AtClosed
 
 -- | The cell keyed thus of the innermost visible region declaring it, found by the
 -- | walk `PERF` finds a marker by.
@@ -453,9 +484,29 @@ enter registry closure args = do
     Just loaded -> pure loaded.unit
     Nothing -> bug (NoSuchModule closure.func.module)
   stack <- liftEffect (Ref.new [])
-  let machine = { registry, stack, unit }
+  let machine = { registry, stack, unit, owned: Nothing }
   activation <- activationOf machine closure args
   loop machine (Running activation)
+
+-- | Run a closure with its arguments as a closed run, to the value it returns or
+-- | to where it halted. **The arrays it may reach are those in `owned`**, which the
+-- | caller hands over: one set may serve several runs that are to share what they
+-- | make, as the initializers of one module do. Nothing bounds the run.
+enterClosed :: forall r. Registry -> Owned -> Closure -> P.Array Value -> Run (EVAL r) (Either Halt Value)
+enterClosed registry owned closure args = do
+  unit <- case Map.lookup closure.func.module registry of
+    Just loaded -> pure loaded.unit
+    Nothing -> bug (NoSuchModule closure.func.module)
+  stack <- liftEffect (Ref.new [ ClosedBoundary ])
+  let machine = { registry, stack, unit, owned: Just owned }
+  activation <- activationOf machine closure args
+  go machine (Running activation)
+  where
+  go machine state = case state of
+    Finished value -> pure (Right value)
+    Halting halt -> pure (Left halt)
+    Asking _ _ _ -> bug AskedOutsideInvocation
+    _ -> step machine state >>= go machine
 
 -- | Apply a function value to arguments, as a run of its own.
 -- |
@@ -481,7 +532,7 @@ machineOver registry entries = do
     Just { value: loaded } -> pure loaded.unit
     Nothing -> bug RegistryEmpty
   stack <- liftEffect (Ref.new entries)
-  pure { registry, stack, unit }
+  pure { registry, stack, unit, owned: Nothing }
 
 -- | A run no invocation began, to its value. It holds no root boundary, so no
 -- | `perform` of it stops.
@@ -496,6 +547,9 @@ data Outcome
   -- | Stopped at a `perform` the root boundary answers, with its argument. The run
   -- | goes on only where the suspension is resumed with the answer.
   | Asked Value Suspension
+  -- | Stopped where a closed run reached outside it, as how. The run does not go
+  -- | on.
+  | Halted Halt
   -- | Stopped because the steps this part was allowed ran out, the run needing
   -- | another. It goes on only where the pause is resumed.
   | Paused Pause
@@ -545,6 +599,22 @@ invoke registry root allowed callee args = do
   state <- applyTo machine callee args
   driveFor allowed machine state
 
+-- | Apply a function value to arguments, as a run that reaches nothing outside
+-- | it. It halts, before anything is carried out, at a `perform` no handler of
+-- | the run answers, at a call of a foreign the host carries out, and at an
+-- | operation on state the run did not make; an effect it handles itself is not
+-- | seen. **The arrays it may reach are those it made**, recorded with the
+-- | machine, so a pause and its resumption keep them and the run's end drops them.
+-- |
+-- | It runs at most `allowed` steps before it pauses.
+invokeClosed :: forall r. Registry -> P.Int -> Value -> P.Array Value -> Run (EVAL r) Slice
+invokeClosed registry allowed callee args = do
+  open <- machineOver registry [ ClosedBoundary ]
+  owned <- liftEffect Arr.newOwned
+  let machine = open { owned = Just owned }
+  state <- applyTo machine callee args
+  driveFor allowed machine state
+
 -- | Go on with a stopped run, the answer written where the `PERF` put its value,
 -- | for at most `allowed` steps.
 resumeWith :: forall r. P.Int -> Suspension -> Value -> Run (EVAL r) Slice
@@ -577,6 +647,7 @@ driveFor allowed machine = go 0
     Asking activation dest argument -> do
       resumed <- liftEffect (Ref.new false)
       pure { spent, outcome: Asked argument (Suspension { machine, activation, dest, resumed }) }
+    Halting halt -> pure { spent, outcome: Halted halt }
     _
       | spent >= allowed -> do
           resumed <- liftEffect (Ref.new false)
@@ -589,6 +660,7 @@ drive :: forall r. Machine -> State -> Run (EVAL r) Value
 drive machine state = case state of
   Finished value -> pure value
   Asking _ _ _ -> bug AskedOutsideInvocation
+  Halting _ -> bug HaltedOutsideClosedRun
   _ -> step machine state >>= drive machine
 
 -- | One step of the machine.
@@ -597,6 +669,7 @@ step machine = case _ of
   Finished value -> pure (Finished value)
   -- a stop is the driver's to answer, and a step leaves it where it is
   Asking activation dest argument -> pure (Asking activation dest argument)
+  Halting halt -> pure (Halting halt)
 
   -- a value reaching the bottom of the stack is what the run produces
   Returning value -> do
@@ -618,6 +691,7 @@ step machine = case _ of
       Just (ClauseBoundary _) -> pure (Returning value)
       -- the bottom of an invocation, which the value passes on its way out
       Just (RootBoundary _) -> pure (Returning value)
+      Just ClosedBoundary -> pure (Returning value)
 
   -- an activation runs against the tables of its own module, which is the one its
   -- function belongs to
@@ -649,6 +723,7 @@ step machine = case _ of
             applyTo machine clause [ argument ]
           Moved state -> pure state
           Ask dest argument -> pure (Asking (resuming activation) dest argument)
+          Escape key -> pure (Halting (EffectPerformed key))
       Nothing -> transfer machine loaded activation
   where
   resuming activation = activation { ip = activation.ip + 1 }
@@ -1058,6 +1133,7 @@ exec machine loaded activation = case _ of
     state <- carryOutForeign machine entry.carriedOutBy values
     case state of
       Returning value -> advance (writeReg activation d value)
+      Halting halt -> pure (Moved (Halting halt))
       _ -> bug (NotOfClass ACallable)
 
   -- an operation is a `Base` entry this interpreter carries out itself, and what
@@ -1068,6 +1144,7 @@ exec machine loaded activation = case _ of
     state <- carryOutOp machine op values
     case state of
       Returning value -> advance (writeReg activation d value)
+      Halting halt -> pure (Moved (Halting halt))
       _ -> bug (NotOfClass ACallable)
   -- the innermost marker of the key answers, and which reduction applies is the
   -- clause's form (D28); where none does, the root boundary asks the host
@@ -1079,6 +1156,7 @@ exec machine loaded activation = case _ of
       AtRoot root -> do
         op <- opAt loaded opIx
         if op == root.op then pure (Ask d argument) else bug (NoClauseForOperation opIx)
+      AtClosed -> pure (Escape key)
       AtMarker at marker -> do
         clause <- clauseFor loaded marker opIx
         case clause.form of
@@ -1148,6 +1226,7 @@ carryOutForeign :: forall r. Machine -> Foreign -> P.Array Value -> Run (EVAL r)
 carryOutForeign machine carriedOutBy args = case carriedOutBy of
   ForeignOperation op -> carryOutOp machine op args
 
+  ForeignHosted name _ | Just _ <- machine.owned -> pure (Halting (HostForeignCalled name))
   ForeignHosted name body -> do
     outcome <- liftEffect (try (runEffectFn1 body args))
     case outcome of
@@ -1183,13 +1262,32 @@ carryOutForeign machine carriedOutBy args = case carriedOutBy of
 -- | own code, so a throw from one is a defect here rather than a failure the ABI
 -- | admits, and swallowing it would hide the defect.
 carryOutOp :: forall r. Machine -> PrimOp -> P.Array Value -> Run (EVAL r) State
-carryOutOp machine op args = do
-  outcome <- liftEffect (Op.carryOut machine.unit op args)
-  case outcome of
-    Right value -> pure (Returning value)
-    Left (Op.Faulted reason) -> fault reason
-    Left Op.WrongOperands -> bug (WrongOperands op)
-    Left (Op.NotImplemented _) -> unimplemented "an operation"
+carryOutOp machine op args = case machine.owned, inClosedRunOf op of
+  Nothing, _ -> carried
+  Just _, Admitted -> carried
+  Just _, Withheld -> pure (Halting (OperationWithheld op))
+  Just owned, RunLocalState -> do
+    reached <- liftEffect (traverse (ownedBy owned) args)
+    if Array.all identity reached then do
+      state <- carried
+      case state of
+        Returning (VOpaque o) | Just array <- Arr.fromOpaque o -> liftEffect (Arr.own owned array)
+        _ -> pure unit
+      pure state
+    else pure (Halting (StateNotOwned op))
+  where
+  -- an array among the operands is one the run made
+  ownedBy owned = case _ of
+    VOpaque o | Just array <- Arr.fromOpaque o -> Arr.owns owned array
+    _ -> pure true
+
+  carried = do
+    outcome <- liftEffect (Op.carryOut machine.unit op args)
+    case outcome of
+      Right value -> pure (Returning value)
+      Left (Op.Faulted reason) -> fault reason
+      Left Op.WrongOperands -> bug (WrongOperands op)
+      Left (Op.NotImplemented _) -> unimplemented "an operation"
 
 -- | The callee a `CALLEES` entry stands for.
 calleeOf :: forall r. CalleeTarget -> Run (EVAL r) Callee

@@ -82,6 +82,13 @@ data SessionDefect
   -- | `Stella.Elab`, which the interpreter builds and installs itself, could not be
   -- | made ready, as what went wrong.
   | ElaborationUnavailable P.String
+  -- | `Stella.Syntax`, which the interpreter builds and installs itself with the
+  -- | module it depends on, could not be made ready or installed, or a parse found
+  -- | it other than it was installed, as what went wrong.
+  | SyntaxUnavailable P.String
+  -- | What a parser returned, a `Result (Syntax Term)` by the descriptor, was
+  -- | refused by the canonical encoder, as where and why.
+  | ResultUnencodable P.String
   -- | A value a guest asked with carried an identity no committed name accounts
   -- | for, as which.
   | ValueUnaccounted P.String
@@ -194,6 +201,12 @@ report = case _ of
   SessionDefect (ElaborationUnavailable reason) ->
     "Internal error in the interpreter: Stella.Elab could not be made ready: " <> reason
 
+  SessionDefect (SyntaxUnavailable reason) ->
+    "Internal error in the interpreter: Stella.Syntax is not usable: " <> reason
+
+  SessionDefect (ResultUnencodable reason) ->
+    "Internal error in the interpreter: what a parser returned has no canonical encoding at " <> reason
+
   SessionDefect (ValueUnaccounted reason) ->
     "Internal error in the interpreter: a guest's command carries " <> reason
 
@@ -208,6 +221,7 @@ refused = case _ of
   ProtocolUnsupported -> "the client asked for a protocol version this session does not speak"
   ProfileUnsupported -> "the client asked for a profile this session does not offer"
   CapabilityUnsupported -> "the client required a capability this session does not have"
+  CapabilityIncomplete -> "the client required a capability without one it needs"
 
 sessionFailure :: SessionFailure -> P.String
 sessionFailure = case _ of

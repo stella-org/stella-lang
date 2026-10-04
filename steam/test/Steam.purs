@@ -20,6 +20,7 @@ import Test.Steam.Load as Load
 import Test.Steam.Marshal as Marshal
 import Test.Steam.Session as Session
 import Test.Steam.SessionKernel as SessionKernel
+import Test.Steam.Parse as Parse
 import Test.Steam.SessionGuest as SessionGuest
 import Test.Steam.Structural as Structural
 import Test.Steam.Ops as Ops
@@ -49,6 +50,7 @@ main = do
     Session.spec
     SessionGuest.spec
     SessionKernel.spec
+    Parse.spec
     Facade.spec
     Reference.spec
     Equivalence.spec

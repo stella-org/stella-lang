@@ -172,6 +172,7 @@ runGuest machine name arguments answers = liftEffect case globalNamed machine.st
           Left why -> Stopped asked ("the result does not read: " <> unencodable why)
           Right result -> Returned asked result
       Paused _ -> pure (Stopped asked "the guest took more steps than the budget")
+      Halted _ -> pure (Stopped asked "the guest performed an effect nothing answered")
       Asked argument suspension -> do
         names <- namesOf machine.store
         case toWire machine.store names argument of

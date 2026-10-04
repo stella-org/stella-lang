@@ -42,6 +42,7 @@ import Steam.CLI.Effect.Tuning as Tuning
 import Stella.CLI.Effect.Transport (TRANSPORT)
 import Stella.CLI.Effect.Log (LOG)
 import Stella.Compiler.Bytecode (Dmo, decode)
+import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.TypedCore.Name (Qualified(..))
 import Type.Row (type (+))
 
@@ -59,10 +60,14 @@ program opts = case opts.command of
     elaboration <- case Elaboration.prepare of
       Left reason -> Except.throw (SessionDefect (ElaborationUnavailable reason))
       Right elaboration -> pure elaboration
+    -- and so is `Stella.Syntax`, with the module it depends on
+    syntax <- case compiled of
+      Left reason -> Except.throw (SessionDefect (SyntaxUnavailable reason))
+      Right syntax -> pure syntax
     identities <- liftEffect (Ref.new noIdentities)
     unit <- liftEffect (unitValue identities)
     quantum <- Tuning.quantum
-    Session.serve { manifest, base: baseOf sessionOptions.manifest, identities, unit, elaboration, quantum }
+    Session.serve { manifest, base: baseOf sessionOptions.manifest, identities, unit, elaboration, syntax, quantum }
 
 -- | Load the modules given, in the order given, and execute the entry point.
 -- |

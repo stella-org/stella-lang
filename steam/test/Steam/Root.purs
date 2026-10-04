@@ -213,6 +213,7 @@ stretched quantum i = invokingFor quantum i >>= go { asked: [], spent: 0 }
           Asked (VInt n) suspension -> resumingFor quantum suspension (n + 10) >>= go { asked: Array.snoc acc.asked n, spent }
           Asked _ _ -> pure { asked: acc.asked, value: Elsewhere, spent }
           Paused pause -> resumingPaused quantum pause >>= go { asked: acc.asked, spent }
+          Halted _ -> pure { asked: acc.asked, value: Elsewhere, spent }
 
 -- | What an outcome was, as far as a test needs it.
 data Seen

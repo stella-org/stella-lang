@@ -21,12 +21,17 @@ module Steam.Array
   , length
   , read
   , write
+  , Owned
+  , newOwned
+  , own
+  , owns
   ) where
 
 import Prelude
 
 import Data.Maybe (Maybe(..))
-import Effect.Uncurried (EffectFn1, EffectFn2, EffectFn3)
+import Effect (Effect)
+import Effect.Uncurried (EffectFn1, EffectFn2, EffectFn3, runEffectFn2)
 import Prim as P
 import Steam.Value (Opaque, Value)
 import Unsafe.Coerce (unsafeCoerce)
@@ -52,6 +57,22 @@ foreign import length :: EffectFn1 MutableArray P.Int
 foreign import read :: EffectFn2 MutableArray P.Int Value
 
 foreign import write :: EffectFn3 MutableArray P.Int Value Unit
+
+-- | The arrays one closed run made, which are the only ones it reaches. Held
+-- | weakly: an array nothing else holds goes when the run is done with it.
+foreign import data Owned :: P.Type
+
+foreign import newOwned :: Effect Owned
+
+foreign import ownImpl :: EffectFn2 Owned MutableArray Unit
+
+foreign import ownsImpl :: EffectFn2 Owned MutableArray P.Boolean
+
+own :: Owned -> MutableArray -> Effect Unit
+own = runEffectFn2 ownImpl
+
+owns :: Owned -> MutableArray -> Effect P.Boolean
+owns = runEffectFn2 ownsImpl
 
 unsafeAsArray :: Opaque -> MutableArray
 unsafeAsArray = unsafeCoerce

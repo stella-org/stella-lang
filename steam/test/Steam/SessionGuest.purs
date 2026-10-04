@@ -3,7 +3,7 @@
 -- | What is asserted is what a client sees: the answer to each request, the order
 -- | answers come in, and how the process ended. The guests are Core modules compiled
 -- | here, and two `.dmo`s written by hand for states no compiler produces.
-module Test.Steam.SessionGuest (spec) where
+module Test.Steam.SessionGuest (spec, writeGuests, steamWith) where
 
 import Prelude
 

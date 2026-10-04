@@ -348,6 +348,11 @@ data StackEntry
   -- | marker. A value reaching it passes down unchanged and is what the run
   -- | produces.
   | RootBoundary Root
+  -- | The bottom of a closed invocation, which nothing outside answers. A
+  -- | `perform` whose search reaches it ends the run, as the key performed
+  -- | ([Eval](Eval.purs)). Like a root boundary it is no handler, and a value
+  -- | reaching it passes down unchanged and is what the run produces.
+  | ClosedBoundary
 
 -- | The key a root boundary answers, and the one operation of it.
 type Root =

@@ -32,7 +32,9 @@ module Steam.Load
   , moduleNamed
   , globalNamed
   , LoadError(..)
+  , Initialization(..)
   , load
+  , loadWith
   ) where
 
 import Prelude
@@ -57,7 +59,8 @@ import Effect.Ref as Ref
 import Run (EFFECT, Run, liftEffect)
 import Run.Except (EXCEPT)
 import Run.Except as Except
-import Steam.Eval (Failure, enter)
+import Steam.Array as Arr
+import Steam.Eval (Failure, Halt, enter, enterClosed)
 import Steam.Foreign (ForeignTable)
 import Steam.Foreign as Foreign
 import Steam.Module (CalleeTarget(..), CtorRef, ForeignRef, GlobalSlot, HandlerRef, Loaded, Prepared, Registry, prepare)
@@ -258,6 +261,9 @@ data LoadError
   -- | A global whose initialization did not produce a value. The module is not
   -- | committed, so nothing of it is visible to what comes next.
   | InitializationFailed (Qualified Ident) Failure
+  -- | A global whose closed initialization reached outside it, as how. The module
+  -- | is not committed.
+  | InitializationHalted (Qualified Ident) Halt
 
 type LOAD r = (EXCEPT LoadError + EFFECT + r)
 
@@ -266,9 +272,22 @@ refuse = Except.throw
 
 -- Loading ---------------------------------------------------------------------------
 
+-- | How a module's globals are initialized. **A closed initialization reaches
+-- | nothing outside the module**: its initializers run as closed runs sharing one
+-- | set of arrays, the ones they make, so what the module holds depends on its
+-- | code and on the values of the modules it imports, and on nothing loaded or
+-- | run before it.
+data Initialization
+  = OpenInitialization
+  | ClosedInitialization
+
 -- | Load one module against the store, or refuse it.
 load :: forall r. Store -> Dmo -> Run (LOAD r) Store
-load store dmo = do
+load = loadWith OpenInitialization
+
+-- | Load one module, initialized as given, against the store, or refuse it.
+loadWith :: forall r. Initialization -> Store -> Dmo -> Run (LOAD r) Store
+loadWith initialization store dmo = do
   when (dmo.name == primModule) (refuse (ReservedModuleName dmo.name))
   when (isJust (Map.lookup dmo.name store.byName)) (refuse (ModuleTwice dmo.name))
   checkDeclarations dmo
@@ -345,7 +364,7 @@ load store dmo = do
     -- is what a `run` global's own code runs against
     working = Map.insert moduleId candidate withDeclarations.modules
 
-  initialize working dmo candidate declaredGlobals
+  initialize initialization working dmo candidate declaredGlobals
 
   pure withDeclarations
     { modules = working
@@ -814,14 +833,17 @@ nodesOf function =
 -- | over an empty capture list.
 initialize
   :: forall r
-   . Registry
+   . Initialization
+  -> Registry
   -> Dmo
   -> Loaded
   -> Map (Qualified Ident) GlobalSlot
   -> Run (LOAD r) Unit
-initialize working dmo candidate slots = traverse_ one dmo.globals
+initialize initialization working dmo candidate slots = do
+  owned <- liftEffect Arr.newOwned
+  traverse_ (one owned) dmo.globals
   where
-  one entry = case Map.lookup entry.name slots of
+  one owned entry = case Map.lookup entry.name slots of
     Nothing -> refuse (NoSuchGlobal entry.name)
     Just slot -> case entry.init of
       GFunc ix -> do
@@ -829,9 +851,12 @@ initialize working dmo candidate slots = traverse_ one dmo.globals
         liftEffect (Ref.write (Just (VClos closure)) slot)
       GRun ix -> do
         closure <- closureOver ix
-        outcome <- Except.runExcept (enter working closure [])
+        outcome <- case initialization of
+          OpenInitialization -> map (map Right) (Except.runExcept (enter working closure []))
+          ClosedInitialization -> Except.runExcept (enterClosed working owned closure [])
         case outcome of
-          Right value -> liftEffect (Ref.write (Just value) slot)
+          Right (Right value) -> liftEffect (Ref.write (Just value) slot)
+          Right (Left halt) -> refuse (InitializationHalted entry.name halt)
           Left failure -> refuse (InitializationFailed entry.name failure)
 
   -- how a global is installed was checked against the function it names, so what is
