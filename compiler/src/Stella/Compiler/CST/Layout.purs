@@ -64,7 +64,7 @@ isIndented = case _ of
   _ -> false
 
 lytToken :: SourcePos -> Token -> SourceToken
-lytToken pos value = { range: { start: pos, end: pos }, spaceBefore: false, value }
+lytToken pos value = { range: { start: pos, end: pos }, leading: [], value }
 
 -- | Inserts the block tokens the offside rule calls for.
 insertLayout :: Array SourceToken -> Array SourceToken

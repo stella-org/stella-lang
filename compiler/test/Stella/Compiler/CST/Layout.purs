@@ -16,7 +16,7 @@ import Test.Spec.Assertions (shouldEqual)
 blocks :: String -> String
 blocks src = case lex src of
   Left e -> show e
-  Right toks -> joinWith " " (map (render <<< _.value) (insertLayout toks))
+  Right lexed -> joinWith " " (map (render <<< _.value) (insertLayout lexed.tokens))
   where
   render = case _ of
     TokLayoutStart _ -> "{"

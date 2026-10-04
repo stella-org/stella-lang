@@ -1,12 +1,13 @@
 -- | Turning source text into tokens.
 -- |
 -- | The lexer reads the whole text at once and hands back every token or the
--- | first error. Comments and whitespace do not become tokens; whether any
--- | stood before a token is kept on it as `spaceBefore`, which is what the
--- | rules depending on adjacency read.
+-- | first error. Comments and whitespace do not become tokens: they are the
+-- | trivia a token keeps before it, as written, and what follows the last token
+-- | is kept apart, so that no character of the text is lost.
 module Stella.Compiler.CST.Lexer
   ( LexError(..)
   , LexErrorReason(..)
+  , Lexed
   , lex
   , printLexErrorReason
   ) where
@@ -21,7 +22,7 @@ import Data.Enum (toEnum)
 import Data.Int as Int
 import Data.List (List(..), (:))
 import Data.List as List
-import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing)
 import Data.Number as Number
 import Data.String (joinWith)
 import Data.String as String
@@ -29,7 +30,7 @@ import Data.String.CodeUnits as SCU
 import Data.String.Regex (split) as Regex
 import Data.String.Regex.Flags (global) as Regex
 import Data.String.Regex.Unsafe (unsafeRegex) as Regex
-import Stella.Compiler.CST.Types (SourcePos, SourceToken, StringStyle(..), Token(..))
+import Stella.Compiler.CST.Types (SourcePos, SourceToken, StringStyle(..), Token(..), Trivia(..))
 
 data LexError = LexError SourcePos LexErrorReason
 
@@ -95,7 +96,15 @@ type State =
   , tokens :: List SourceToken
   }
 
-lex :: String -> Either LexError (Array SourceToken)
+-- | The tokens of a text, the trivia after the last of them, and where the text
+-- | ends.
+type Lexed =
+  { tokens :: Array SourceToken
+  , trailing :: Array Trivia
+  , end :: SourcePos
+  }
+
+lex :: String -> Either LexError Lexed
 lex src = tailRec step initial
   where
   len = SCU.length src
@@ -142,35 +151,46 @@ lex src = tailRec step initial
   pos :: Cursor -> SourcePos
   pos cur = { line: cur.line, column: cur.column }
 
-  step :: State -> Step State (Either LexError (Array SourceToken))
+  step :: State -> Step State (Either LexError Lexed)
   step st = case skipSpace st.cursor of
     Left e -> Done (Left e)
-    Right { cursor, space } ->
-      if cursor.index >= len then Done (Right (Array.fromFoldable (List.reverse st.tokens)))
-      else case token st.previous space cursor of
-        Left e -> Done (Left e)
-        Right { value, end } ->
-          let
-            endCursor = move cursor end
-            tok = { range: { start: pos cursor, end: pos endCursor }, spaceBefore: space, value }
-          in
-            Loop { cursor: endCursor, previous: Just value, tokens: tok : st.tokens }
+    Right { cursor, trivia } ->
+      if cursor.index >= len then
+        Done (Right { tokens: Array.fromFoldable (List.reverse st.tokens), trailing: trivia, end: pos cursor })
+      else
+        let
+          -- the first token stands apart, there being nothing before it
+          space = isNothing st.previous || not (Array.null trivia)
+        in
+          case token st.previous space cursor of
+            Left e -> Done (Left e)
+            Right { value, end } ->
+              let
+                endCursor = move cursor end
+                tok = { range: { start: pos cursor, end: pos endCursor }, leading: trivia, value }
+              in
+                Loop { cursor: endCursor, previous: Just value, tokens: tok : st.tokens }
 
-  -- Whitespace and comments.
-  skipSpace :: Cursor -> Either LexError { cursor :: Cursor, space :: Boolean }
-  skipSpace start = tailRec go { cursor: start, space: start.index == 0 || start.index == 1 && is 0 '\xFEFF' }
+  -- Whitespace and comments, each kept as written.
+  skipSpace :: Cursor -> Either LexError { cursor :: Cursor, trivia :: Array Trivia }
+  skipSpace start = tailRec go { cursor: start, trivia: [] }
     where
-    go { cursor, space } = case charAt cursor.index of
-      Just ' ' -> Loop { cursor: move cursor (cursor.index + 1), space: true }
-      Just '\n' -> Loop { cursor: move cursor (cursor.index + 1), space: true }
-      Just '\r' -> Loop { cursor: move cursor (cursor.index + 1), space: true }
+    go { cursor, trivia } = case charAt cursor.index of
+      Just ' ' -> piece Spaces (cursor.index + runOf cursor.index (_ == ' '))
+      Just '\n' -> piece Newline (cursor.index + 1)
+      Just '\r' -> piece Newline (cursor.index + if is (cursor.index + 1) '\n' then 2 else 1)
       Just '\t' -> Done (Left (LexError (pos cursor) TabCharacter))
-      Just '-' | isLineComment cursor.index ->
-        Loop { cursor: move cursor (lineEnd cursor.index), space: true }
+      Just '-' | isLineComment cursor.index -> piece LineComment (lineEnd cursor.index)
       Just '{' | is (cursor.index + 1) '-' -> case blockCommentEnd (cursor.index + 2) 1 of
         Nothing -> Done (Left (LexError (pos cursor) UnterminatedComment))
-        Just end -> Loop { cursor: move cursor end, space: true }
-      _ -> Done (Right { cursor, space })
+        Just end -> piece BlockComment end
+      _ -> Done (Right { cursor, trivia })
+      where
+      piece kind end =
+        let
+          next = move cursor end
+        in
+          Loop { cursor: next, trivia: Array.snoc trivia (kind (slice cursor.index end) { start: pos cursor, end: pos next }) }
 
   -- `--` and any further dashes, not followed by another operator character.
   isLineComment :: Int -> Boolean

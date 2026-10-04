@@ -7,6 +7,8 @@ import Test.Stella.Compiler.TypedCore as TypedCore
 import Test.Stella.Compiler.Primitive as Primitive
 import Test.Stella.Compiler.Interface as Interface
 import Test.Stella.Compiler.Interface.Environment as InterfaceEnvironment
+import Test.Stella.Compiler.Macro.Bundle as MacroBundle
+import Test.Stella.Compiler.Macro.Tree as MacroTree
 import Test.Stella.Compiler.Interface.File as InterfaceFile
 import Test.Stella.Compiler.Interface.Assemble as InterfaceAssemble
 import Test.Stella.Compiler.Bytecode.Effects as BytecodeEffects
@@ -108,6 +110,8 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   Fixtures.spec
   Interface.spec
   InterfaceEnvironment.spec
+  MacroTree.spec
+  MacroBundle.spec
   InterfaceFile.spec
   InterfaceAssemble.spec
   VerticalSlice.spec

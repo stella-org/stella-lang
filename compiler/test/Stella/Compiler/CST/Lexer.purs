@@ -3,18 +3,20 @@ module Test.Stella.Compiler.CST.Lexer (spec) where
 
 import Prelude
 
+import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
 import Effect.Aff (Aff)
 import Stella.Compiler.CST.Lexer (LexError(..), LexErrorReason(..), lex)
-import Stella.Compiler.CST.Types (StringStyle(..), Token(..))
+import Stella.Compiler.CST.Layout (insertLayout)
+import Stella.Compiler.CST.Types (SourceRange, SourceToken, StringStyle(..), Token(..), Trivia(..), hasLeadingTrivia, isSeparated)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
 tokens :: String -> Either LexErrorReason (Array Token)
 tokens src = case lex src of
   Left (LexError _ reason) -> Left reason
-  Right toks -> Right (map _.value toks)
+  Right lexed -> Right (map _.value lexed.tokens)
 
 lexesTo :: String -> Array Token -> Aff Unit
 lexesTo src expected = tokens src `shouldEqual` Right expected
@@ -31,6 +33,20 @@ upper = TokUpperName Nothing
 op :: String -> Token
 op = TokOperator Nothing
 
+range :: Int -> Int -> Int -> Int -> SourceRange
+range l1 c1 l2 c2 = { start: { line: l1, column: c1 }, end: { line: l2, column: c2 } }
+
+-- | Whether each token stands apart from the one before it.
+separations :: Array SourceToken -> Array Boolean
+separations ts = Array.mapWithIndex (\i t -> isSeparated (if i == 0 then Nothing else Array.index ts (i - 1)) t) ts
+
+isLayout :: Token -> Boolean
+isLayout = case _ of
+  TokLayoutStart _ -> true
+  TokLayoutSep _ -> true
+  TokLayoutEnd _ -> true
+  _ -> false
+
 int :: String -> Int -> Token
 int = TokInt
 
@@ -45,13 +61,37 @@ spec = describe "Stella.Compiler.CST.Lexer" do
       "a\tb" `failsWith` TabCharacter
     it "refuses an unclosed block comment" do
       "{- a" `failsWith` UnterminatedComment
-    it "records whether space stood before a token" do
+    it "records whether a token stands apart from the one before it, the first one standing apart" do
       case lex "f (x)g" of
-        Right toks -> map _.spaceBefore toks `shouldEqual` [ true, true, false, false, false ]
+        Right lexed -> map hasLeadingTrivia lexed.tokens `shouldEqual` [ false, true, false, false, false ]
+        Left e -> fail (show e)
+      case lex "f (x)g" of
+        Right lexed -> separations lexed.tokens `shouldEqual` [ true, true, false, false, false ]
+        Left e -> fail (show e)
+    it "keeps the whitespace and comments before a token as written, each line break as it is spelt" do
+      case lex "a -- note\r\n{- {- inner -} outer -}\r  b" of
+        Right lexed -> map _.leading (Array.index lexed.tokens 1) `shouldEqual` Just
+          [ Spaces " " (range 1 2 1 3)
+          , LineComment "-- note" (range 1 3 1 10)
+          , Newline "\r\n" (range 1 10 2 1)
+          , BlockComment "{- {- inner -} outer -}" (range 2 1 2 24)
+          , Newline "\r" (range 2 24 3 1)
+          , Spaces "  " (range 3 1 3 3)
+          ]
+        Left e -> fail (show e)
+    it "keeps what follows the last token apart, with where the text ends" do
+      case lex "a -- end\n" of
+        Right lexed -> do
+          lexed.trailing `shouldEqual` [ Spaces " " (range 1 2 1 3), LineComment "-- end" (range 1 3 1 9), Newline "\n" (range 1 9 2 1) ]
+          lexed.end `shouldEqual` { line: 2, column: 1 }
+        Left e -> fail (show e)
+    it "gives the tokens layout inserts no trivia" do
+      case lex "f = x\n  where\n  x = 1" of
+        Right lexed -> Array.filter (\t -> isLayout t.value && not (Array.null t.leading)) (insertLayout lexed.tokens) `shouldEqual` []
         Left e -> fail (show e)
     it "counts lines and columns from 1" do
       case lex "a\n  bc" of
-        Right toks -> map _.range toks `shouldEqual`
+        Right lexed -> map _.range lexed.tokens `shouldEqual`
           [ { start: { line: 1, column: 1 }, end: { line: 1, column: 2 } }
           , { start: { line: 2, column: 3 }, end: { line: 2, column: 5 } }
           ]

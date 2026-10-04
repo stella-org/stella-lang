@@ -4,6 +4,9 @@ module Stella.Compiler.CST.Types
   ( SourcePos
   , SourceRange
   , SourceToken
+  , Trivia(..)
+  , hasLeadingTrivia
+  , isSeparated
   , Token(..)
   , StringStyle(..)
   , Qualifier
@@ -67,14 +70,36 @@ type SourcePos = { line :: Int, column :: Int }
 -- | The first position a token covers and the position just after it.
 type SourceRange = { start :: SourcePos, end :: SourcePos }
 
--- | A token with where it stands. `spaceBefore` records whether whitespace or a
--- | comment separates it from the token before it, which is what the rules
--- | depending on adjacency read.
+-- | A token with where it stands, and the whitespace and comments before it,
+-- | as written. Nothing of the text is lost: every character of a source is
+-- | in a token, in the trivia before one, or in the trivia after the last, a
+-- | byte order mark at its start aside, which marks an encoding and is no text.
 type SourceToken =
   { range :: SourceRange
-  , spaceBefore :: Boolean
+  , leading :: Array Trivia
   , value :: Token
   }
+
+-- | What stands between tokens: a run of spaces, one line break as written —
+-- | `\n`, `\r\n`, or `\r` — a line comment up to its line break, and a block
+-- | comment, nested ones within it included.
+data Trivia
+  = Spaces String SourceRange
+  | Newline String SourceRange
+  | LineComment String SourceRange
+  | BlockComment String SourceRange
+
+-- | Whether whitespace or a comment stands before a token.
+hasLeadingTrivia :: SourceToken -> Boolean
+hasLeadingTrivia t = not (Array.null t.leading)
+
+-- | Whether a token stands apart from the one before it, which is what the
+-- | rules depending on adjacency read: the first token of a text does, there
+-- | being nothing before it to adjoin.
+isSeparated :: Maybe SourceToken -> SourceToken -> Boolean
+isSeparated previous t = case previous of
+  Nothing -> true
+  Just _ -> hasLeadingTrivia t
 
 -- | The module part of a qualified name, `Data.Array` in `Data.Array.length`.
 type Qualifier = Maybe String
@@ -138,6 +163,12 @@ data Token
   | TokLayoutStart Int
   | TokLayoutSep Int
   | TokLayoutEnd Int
+
+derive instance Eq Trivia
+derive instance Generic Trivia _
+
+instance Show Trivia where
+  show = genericShow
 
 derive instance Eq Token
 

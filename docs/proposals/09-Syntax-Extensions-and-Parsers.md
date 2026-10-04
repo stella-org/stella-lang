@@ -111,7 +111,6 @@ A parser produces `Syntax c`, syntax of category `c`:
 | a tree of tokens and delimiters | what the host reads |
 | logical layout groups, and the boundaries between their items | blocks, decided already rather than written as indentation |
 | an origin per token and per node — a group, a layout group, an item boundary | diagnostics reach the source, and the host places what it inserts for a group, an empty one included |
-| annotations on tokens | a role — keyword, binder, operator — a tool reads |
 
 **A layout group is not the `layout` combinator.** The combinator interprets the trivia of an
 input; a group is structure an output already has. Where the host reads `Syntax c`, each group
@@ -211,8 +210,9 @@ The contract above is built so that each of these adds to it rather than replace
   captures no name written in source.
 - **Other categories.** Declarations, with the attribute prefix a declaration-position call keeps;
   types; patterns.
-- **Tooling metadata.** Annotations turned into semantic tokens by the language server, completion,
-  hover, folding, and formatting.
+- **Tooling metadata.** Annotations a parser puts on the syntax it builds — the role a token has
+  there, keyword, binder, operator — which the language server turns into semantic tokens; and
+  completion, hover, folding, and formatting.
 
 ## Open Questions
 

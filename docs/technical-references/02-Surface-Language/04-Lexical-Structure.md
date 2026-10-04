@@ -8,7 +8,7 @@ This document settles how source text becomes tokens. The lexer is `Stella.Compi
 
 **A token is the longest match**, apart from the exceptions each rule below names: a negative literal, a comment, `|}`, and `@[`.
 
-**Some tokens depend on adjacency.** Whether whitespace or a comment stands before a token is recorded on it, as `spaceBefore`, and several rules read it: the `%` of a macro call, the argument list of a directive, a typed hole, the `@` of a label and of an as-pattern, the `!` of a cell read, an operator as a value, and the `-` of a negative literal.
+**Some tokens depend on adjacency.** The whitespace and comments before a token are kept on it as written, its leading trivia — every run of spaces, every line break as spelt, and every comment — and what follows the last token is kept apart, so that no character of a text is lost but a byte order mark at its start, which marks the encoding and is no text. Whether a token stands apart from the one before it is read off its trivia, the first token of a text standing apart, and several rules read it: the `%` of a macro call, the argument list of a directive, a typed hole, the `@` of a label and of an as-pattern, the `!` of a cell read, an operator as a value, and the `-` of a negative literal.
 
 **Positions** count lines from 1 and columns from 1, in UTF-16 code units, which is what an editor protocol counts.
 

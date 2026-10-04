@@ -70,9 +70,9 @@ run
   -> Either SyntaxError a
 run parser src = case lex src of
   Left e -> Left (LexFailure e)
-  Right toks ->
+  Right lexed ->
     let
-      laidOut = insertLayout toks
+      laidOut = insertLayout lexed.tokens
     in
       case parser laidOut of
         Right a -> Right a
