@@ -11,6 +11,7 @@
 -- | enough to be long is checked all the same.
 module Stella.CLI.Session.Value.Shape
   ( conforms
+  , conformsTo
   ) where
 
 import Prelude
@@ -34,7 +35,12 @@ type Check = { path :: List Step, shape :: Shape, value :: WireValue }
 -- | That the value is one of the named data type: a constructor of it, each field
 -- | of the shape its declaration gives, a token exactly where a field is one.
 conforms :: Descriptor -> Qualified TyName -> WireValue -> Either ValueProblem Unit
-conforms descriptor top value = Rec.tailRec go ({ path: Nil, shape: ShapeData top [], value } : Nil)
+conforms descriptor top = conformsTo descriptor (ShapeData top [])
+
+-- | That the value is one of the shape given, a data type applied to the shapes of
+-- | its arguments among them.
+conformsTo :: Descriptor -> Shape -> WireValue -> Either ValueProblem Unit
+conformsTo descriptor shape value = Rec.tailRec go ({ path: Nil, shape, value } : Nil)
   where
   go = case _ of
     Nil -> Rec.Done (Right unit)

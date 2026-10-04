@@ -13,13 +13,21 @@
 -- | session opens with one profile and the capabilities the handshake settled, and
 -- | neither changes afterwards**; a request of a family not in force is refused.
 -- | Only what is implemented is advertised: `modules`, which loads modules into the
--- | session, and `invoke`, which applies a guest function to tokens.
+-- | session; `invoke`, which applies a guest function to tokens; `kernel`, which a
+-- | running invocation asks the client by; and `parse`, which runs a parser a loaded
+-- | module declares.
+-- |
+-- | **A capability may need another in force beside it**: `parse` runs what
+-- | `modules` loaded, so it needs `modules`. One asked for without what it needs is
+-- | not put in force, and a session required to put it in force is refused as
+-- | `capabilityIncomplete`.
 module Stella.CLI.Session.Protocol
   ( protocolVersion
   , elaborationProfile
   , modulesCapability
   , invokeCapability
   , kernelCapability
+  , parseCapability
   , supportedCapabilities
   , capabilityFor
   , Hello
@@ -80,9 +88,19 @@ invokeCapability = "invoke"
 kernelCapability :: String
 kernelCapability = "kernel"
 
+-- | `parse`.
+parseCapability :: String
+parseCapability = "parse"
+
 -- | The capabilities this side can put in force.
 supportedCapabilities :: Array String
-supportedCapabilities = [ modulesCapability, invokeCapability, kernelCapability ]
+supportedCapabilities = [ modulesCapability, invokeCapability, kernelCapability, parseCapability ]
+
+-- | The capabilities one needs in force beside it.
+needs :: String -> Array String
+needs = case _ of
+  "parse" -> [ modulesCapability ]
+  _ -> []
 
 -- | The capability a request of that kind belongs to, where it belongs to one. The
 -- | lifecycle requests belong to none, being the protocol itself.
@@ -92,6 +110,7 @@ capabilityFor = case _ of
   "invoke" -> Just invokeCapability
   "cancel" -> Just invokeCapability
   "kernel" -> Just kernelCapability
+  "parse" -> Just parseCapability
   _ -> Nothing
 
 type Hello =
@@ -107,7 +126,12 @@ type Ready =
   , capabilities :: Array String
   }
 
-data RefusalReason = ProtocolUnsupported | ProfileUnsupported | CapabilityUnsupported
+data RefusalReason
+  = ProtocolUnsupported
+  | ProfileUnsupported
+  | CapabilityUnsupported
+  -- | A capability required, and what it needs not asked for.
+  | CapabilityIncomplete
 
 derive instance Eq RefusalReason
 derive instance Generic RefusalReason _
@@ -131,21 +155,22 @@ supported =
   }
 
 -- | Open, or say why not. The capabilities in force are those asked for, by
--- | `offers` or `requires`, that this side has; every one required must be among
--- | them.
+-- | `offers` or `requires`, that this side has and whose needs are among them;
+-- | every one required must be in force.
 negotiate :: Hello -> Either Refusal Ready
 negotiate hello
   | hello.protocol /= protocolVersion = refuse ProtocolUnsupported
   | hello.profile /= elaborationProfile = refuse ProfileUnsupported
   | not (Array.all (_ `Array.elem` supportedCapabilities) hello.requires) =
       refuse CapabilityUnsupported
-  | otherwise = Right
-      { protocol: protocolVersion
-      , profile: hello.profile
-      , capabilities: Array.filter
-          (\c -> Array.elem c hello.offers || Array.elem c hello.requires)
-          supportedCapabilities
-      }
+  | otherwise =
+      let
+        asked = Array.filter (\c -> Array.elem c hello.offers || Array.elem c hello.requires) supportedCapabilities
+        inForce = Array.filter (\c -> Array.all (_ `Array.elem` asked) (needs c)) asked
+      in
+        if Array.all (_ `Array.elem` inForce) hello.requires then
+          Right { protocol: protocolVersion, profile: hello.profile, capabilities: inForce }
+        else refuse CapabilityIncomplete
 
 refuse :: RefusalReason -> Either Refusal Ready
 refuse reason = Left { reason, supported }
@@ -228,12 +253,14 @@ reasonCode = case _ of
   ProtocolUnsupported -> "protocol"
   ProfileUnsupported -> "profile"
   CapabilityUnsupported -> "capability"
+  CapabilityIncomplete -> "capabilityIncomplete"
 
 reasonOf :: String -> Maybe RefusalReason
 reasonOf = case _ of
   "protocol" -> Just ProtocolUnsupported
   "profile" -> Just ProfileUnsupported
   "capability" -> Just CapabilityUnsupported
+  "capabilityIncomplete" -> Just CapabilityIncomplete
   _ -> Nothing
 
 field :: String -> Object Json -> Maybe Json

@@ -28,6 +28,7 @@ module Stella.CLI.Session.Client
   , Answering
   , invokeAnswering
   , cancel
+  , parse
   , close
   , abandon
   , kill
@@ -58,6 +59,7 @@ import Stella.CLI.Session.Guest (InvocationFailure, InvokeRequest, LoadFailure, 
 import Stella.CLI.Session.Kernel (KernelCall, decodeKernel, kernelKind)
 import Stella.CLI.Session.Peer (Peer, Reply, SessionFailure)
 import Stella.CLI.Session.Peer as Peer
+import Stella.CLI.Session.Parse (ParseAnswer(..), ParseRequest, budgetExceededKind, decodeBudgetExceeded, decodeExecutionFailed, decodeParseFailed, decodeParsed, encodeParse, executionFailedKind, parseFailedKind, parseKind, parsedKind)
 import Stella.CLI.Session.Protocol (Hello, Ready, Refusal, closeKind, closedKind, decodeReady, decodeRefusal, emptyPayload, encodeHello, helloKind, kernelCapability, pingKind, pongKind, readyKind, refusedKind)
 import Stella.CLI.Session.ProtocolError (decodeProtocolError, protocolErrorKind)
 import Stella.CLI.Session.ProtocolError as ProtocolError
@@ -274,6 +276,21 @@ invoke session invocation = request session invokeKind (encodeInvoke invocation)
   Right reply
     | reply.kind == returnedKind -> answered (Right <$> decodeReturned reply.payload) reply.kind
     | reply.kind == invocationFailedKind -> answered (Left <$> decodeInvocationFailed reply.payload) reply.kind
+    | otherwise -> Left <<< SessionLost <$> misbehaved session (AnswerUnexpected reply.kind)
+  where
+  answered decoded kind = case decoded of
+    Just outcome -> pure (Right outcome)
+    Nothing -> Left <<< SessionLost <$> misbehaved session (AnswerMalformed kind)
+
+-- | `parse`: run a parser a loaded module declares.
+parse :: forall r. Session -> ParseRequest -> Run (AFF + EFFECT + r) (Either RequestFailure ParseAnswer)
+parse session r = request session parseKind (encodeParse r) >>= case _ of
+  Left failure -> pure (Left failure)
+  Right reply
+    | reply.kind == parsedKind -> answered (Parsed <$> decodeParsed reply.payload) reply.kind
+    | reply.kind == parseFailedKind -> answered (ParseFailed <$> decodeParseFailed reply.payload) reply.kind
+    | reply.kind == executionFailedKind -> answered (ExecutionFailed <$> decodeExecutionFailed reply.payload) reply.kind
+    | reply.kind == budgetExceededKind -> answered (BudgetExceeded <$ decodeBudgetExceeded reply.payload) reply.kind
     | otherwise -> Left <<< SessionLost <$> misbehaved session (AnswerUnexpected reply.kind)
   where
   answered decoded kind = case decoded of

@@ -219,6 +219,16 @@ handshakes = describe "handshakes" do
     reasonOf (hello { profile = "repl" }) `shouldEqual` Just ProfileUnsupported
     reasonOf (hello { requires = [ "someday" ] }) `shouldEqual` Just CapabilityUnsupported
 
+  it "puts parse in force only beside modules, and refuses to open requiring it without" do
+    let reasonOf h = map _.reason (either Just (const Nothing) (negotiate h))
+    map _.capabilities (negotiate (hello { offers = [ "parse", "modules" ] })) `shouldEqual` Right [ "modules", "parse" ]
+    map _.capabilities (negotiate (hello { offers = [ "parse" ] })) `shouldEqual` Right []
+    map _.capabilities (negotiate (hello { offers = [ "modules" ], requires = [ "parse" ] })) `shouldEqual` Right [ "modules", "parse" ]
+    reasonOf (hello { requires = [ "parse" ] }) `shouldEqual` Just CapabilityIncomplete
+    case negotiate (hello { requires = [ "parse" ] }) of
+      Left refusal -> decodeRefusal (encodeRefusal refusal) `shouldEqual` Just refusal
+      Right _ -> fail "opened requiring parse alone"
+
   it "round-trips its messages" do
     decodeHello (encodeHello hello) `shouldEqual` Just hello
     let ready = { protocol: 1, profile: "elaboration", capabilities: [ "someday" ] }
