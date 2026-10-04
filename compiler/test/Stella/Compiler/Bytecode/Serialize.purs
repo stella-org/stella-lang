@@ -15,10 +15,10 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Bytecode (Bytes, Constant(..), DecodeError(..), Dmo, EncodeError(..), Fault(..), Function, Instr(..), JoinName(..), Key(..), Node, Reg(..), Tail(..), abiVersion, decode, encode, formatVersion, lower, validate)
-import Stella.Compiler.Bytecode.Bytes (byte, runR, skipR, structuralR, svar, svarR, utf8R, uvar, uvarR, vecR)
+import Stella.Compiler.Bytecode.Bytes (byte, runR, skipR, structuralR, svar, svarR, utf8, utf8R, uvar, uvarR, vecR)
 import Stella.Compiler.Interface (noImports)
 import Stella.Compiler.MiddleEnd (Rep(..), translate)
-import Stella.Compiler.TypedCore (Module, ModuleName(..), declare, declareAnnotated, primSignature, scalarString, scalarValue)
+import Stella.Compiler.TypedCore (Module, ModuleName(..), declare, declareAnnotated, primSignature, scalarString, scalarValue, textOf)
 import Data.Array as Array
 import Data.Char as Char
 import Data.Either (Either(..), isLeft)
@@ -275,6 +275,12 @@ spec = describe "Stella.Compiler.Bytecode.Serialize" do
       runR (uvar 5 <> [ 0x01, 0x02 ]) (vecR byte) `shouldEqual` Left UnexpectedEnd
       runR (uvar 2147483647) (vecR byte) `shouldEqual` Left UnexpectedEnd
       runR (uvar 2 <> [ 0x01, 0x02 ]) (vecR byte) `shouldEqual` Right [ 0x01, 0x02 ]
+
+    it "reads text of any length, in a stack of one frame" do
+      let text = Array.fold (Array.replicate 30_000 "a\x3b1\x1F600")
+      case utf8 text of
+        Left err -> fail (show err)
+        Right bytes -> map textOf (runR bytes (utf8R (Array.length bytes))) `shouldEqual` Right text
 
     it "refuses a length of text above what is left to read" do
       isLeft (runR [ 0x61 ] (utf8R 5)) `shouldEqual` true

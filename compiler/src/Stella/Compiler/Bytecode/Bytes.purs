@@ -48,6 +48,8 @@ import Stella.Compiler.Bytecode.Float as Float
 import Stella.Compiler.TypedCore.Domain (ScalarString, scalarStringOf, scalarValue)
 import Stella.Compiler.TypedCore.Name (Ident)
 import Data.Array as Array
+import Data.List (List(..), (:))
+import Data.List as List
 import Data.Either (Either(..))
 import Data.Enum (fromEnum)
 import Data.Generic.Rep (class Generic)
@@ -378,32 +380,37 @@ u32R = do
 utf8R :: P.Int -> R ScalarString
 utf8R n = do
   bytes <- takeR n
-  case scalars 0 bytes [] of
+  case scalars 0 bytes Nil of
     Left err -> throwR err
     Right values -> pure (scalarStringOf values)
   where
+  -- a loop, so text of any length is read in a stack of one frame
   scalars i bytes acc = case Array.index bytes i of
-    Nothing -> Right acc
-    Just b
-      | b < 0x80 -> keep 1 b i bytes acc
-      | b < 0xC2 -> Left BadUtf8
-      | b < 0xE0 -> sequenceOf 2 (Bits.and b 0x1F) 0x80 i bytes acc
-      | b < 0xF0 -> sequenceOf 3 (Bits.and b 0x0F) 0x800 i bytes acc
-      | b < 0xF5 -> sequenceOf 4 (Bits.and b 0x07) 0x10000 i bytes acc
-      | otherwise -> Left BadUtf8
+    Nothing -> Right (Array.reverse (List.toUnfoldable acc))
+    Just b -> case scalarAt i b bytes of
+      Left err -> Left err
+      Right one -> scalars (i + one.width) bytes (one.value : acc)
 
-  sequenceOf width lead least i bytes acc =
+  scalarAt i b bytes
+    | b < 0x80 = keep 1 b
+    | b < 0xC2 = Left BadUtf8
+    | b < 0xE0 = sequenceOf 2 (Bits.and b 0x1F) 0x80 i bytes
+    | b < 0xF0 = sequenceOf 3 (Bits.and b 0x0F) 0x800 i bytes
+    | b < 0xF5 = sequenceOf 4 (Bits.and b 0x07) 0x10000 i bytes
+    | otherwise = Left BadUtf8
+
+  sequenceOf width lead least i bytes =
     case continuations (i + 1) (width - 1) bytes lead of
       Left err -> Left err
       Right code
         | code < least -> Left BadUtf8
-        | otherwise -> keep width code i bytes acc
+        | otherwise -> keep width code
 
   -- the one place a code becomes a scalar value, so the surrogates and the
   -- range are refused once and in one way
-  keep width code i bytes acc = case scalarValue code of
+  keep width code = case scalarValue code of
     Nothing -> Left (NotAScalarValue code)
-    Just value -> scalars (i + width) bytes (Array.snoc acc value)
+    Just value -> Right { width, value }
 
   continuations i remaining bytes acc
     | remaining == 0 = Right acc
