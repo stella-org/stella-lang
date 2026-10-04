@@ -20,16 +20,30 @@ module Stella.Compiler.Primitive
   , codeOfOp
   , opOfCode
   , arityOfOp
+  , InClosedRun(..)
+  , inClosedRunOf
+  , typeOfOp
+  , schemeOfOp
+  , arrayTy
+  , withBaseTypes
+  , baseModuleNames
+  , baseModule
   ) where
 
 import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..))
 import Data.Array as Array
+import Data.Map as Map
+import Stella.Compiler.TypedCore.Decl (Decl(..), Export(..), Module)
+import Stella.Compiler.TypedCore.Kind (Kind(..), monoScheme)
+import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Prim (asFunction, booleanTy, charTy, intTy, numberTy, pureFn, stringTy, unitTy)
+import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
+import Stella.Compiler.TypedCore.Type (Type(..), TypeScheme)
 import Data.Generic.Rep (class Generic)
-import Data.Maybe (Maybe)
+import Data.Maybe (Maybe(..))
 import Data.Show.Generic (genericShow)
 
 -- | The operations `stella-base-0.1` fixes.
@@ -83,6 +97,10 @@ data PrimOp
 -- | `entryOfOp`. Carrying the two independently anywhere would let a reader
 -- | check one entry while a machine ran another operation.
 -- |
+-- | `scheme` is what the entry is declared at, and `arity` the arrows of it: the
+-- | two are read off one type, `typeOfOp`, so a declaration and a call site agree
+-- | by construction.
+-- |
 -- | **What an operation means, and whether it may fault, is not here and is not
 -- | the compiler's to say.** The ABI specification fixes it, which is what obliges
 -- | every backend to one observable meaning: `stella-base-0.1` has `Base.Int.add`
@@ -94,6 +112,7 @@ type PrimEntry =
   { op :: PrimOp
   , entry :: Qualified Ident
   , arity :: P.Int
+  , scheme :: TypeScheme
   }
 
 -- | The `Base` entry an operation realizes. Total, and the one place the
@@ -188,47 +207,158 @@ codeOfOp = case _ of
 opOfCode :: P.Int -> Maybe PrimOp
 opOfCode code = map _.op (Array.find (\e -> codeOfOp e.op == code) primTable)
 
--- | How many arguments saturate an operation. Total, and the one place the
--- | arity is written.
+-- | What an operation is to a closed run, one whose result is to depend on its
+-- | input alone: carried out as it is, carried out on state the run itself made,
+-- | or not carried out at all.
+data InClosedRun
+  = Admitted
+  -- | Its state operands are the run's own, and state it makes becomes the run's.
+  | RunLocalState
+  | Withheld
+
+-- | Total, and the one place an operation is classified, so an operation added
+-- | to the table is classified where it is added.
+inClosedRunOf :: PrimOp -> InClosedRun
+inClosedRunOf = case _ of
+  IntAdd -> Admitted
+  IntSub -> Admitted
+  IntMul -> Admitted
+  IntQuot -> Admitted
+  IntRem -> Admitted
+  IntEq -> Admitted
+  IntLt -> Admitted
+  IntToNumber -> Admitted
+  IntToString -> Admitted
+  NumberAdd -> Admitted
+  NumberSub -> Admitted
+  NumberMul -> Admitted
+  NumberDivide -> Admitted
+  NumberNegate -> Admitted
+  NumberEq -> Admitted
+  NumberLt -> Admitted
+  NumberFloor -> Admitted
+  NumberCeil -> Admitted
+  NumberTrunc -> Admitted
+  NumberToInt -> Admitted
+  NumberToString -> Admitted
+  StringLength -> Admitted
+  StringCodePointAt -> Admitted
+  StringAppend -> Admitted
+  StringSlice -> Admitted
+  StringSingleton -> Admitted
+  StringEq -> Admitted
+  StringLt -> Admitted
+  CharToCodePoint -> Admitted
+  CharFromCodePoint -> Admitted
+  ArrayLength -> RunLocalState
+  ArrayUnsafeNew -> RunLocalState
+  ArrayUnsafeSet -> RunLocalState
+  ArrayUnsafeIndex -> RunLocalState
+
+-- | The type an operation's entry is declared at. Total, and the one place the
+-- | type is written. `Base.Array`'s entries quantify their element type in the
+-- | type itself, a kind scheme binding kind variables only.
+typeOfOp :: PrimOp -> Type
+typeOfOp = case _ of
+  IntAdd -> fn2 int int int
+  IntSub -> fn2 int int int
+  IntMul -> fn2 int int int
+  IntQuot -> fn2 int int int
+  IntRem -> fn2 int int int
+  IntEq -> fn2 int int boolean
+  IntLt -> fn2 int int boolean
+  IntToNumber -> pureFn int number
+  IntToString -> pureFn int string
+  NumberAdd -> fn2 number number number
+  NumberSub -> fn2 number number number
+  NumberMul -> fn2 number number number
+  NumberDivide -> fn2 number number number
+  NumberNegate -> pureFn number number
+  NumberEq -> fn2 number number boolean
+  NumberLt -> fn2 number number boolean
+  NumberFloor -> pureFn number number
+  NumberCeil -> pureFn number number
+  NumberTrunc -> pureFn number number
+  NumberToInt -> pureFn number int
+  NumberToString -> pureFn number string
+  StringLength -> pureFn string int
+  StringCodePointAt -> fn2 int string char
+  StringAppend -> fn2 string string string
+  StringSlice -> pureFn int (fn2 int string string)
+  StringSingleton -> pureFn char string
+  StringEq -> fn2 string string boolean
+  StringLt -> fn2 string string boolean
+  CharToCodePoint -> pureFn char int
+  CharFromCodePoint -> pureFn int char
+  ArrayLength -> forallA (pureFn (arrayOf a) int)
+  ArrayUnsafeNew -> forallA (pureFn int (arrayOf a))
+  ArrayUnsafeSet -> forallA (pureFn int (fn2 a (arrayOf a) unit))
+  ArrayUnsafeIndex -> forallA (fn2 (arrayOf a) int a)
+  where
+  con name = TCon name []
+  int = con intTy
+  number = con numberTy
+  string = con stringTy
+  char = con charTy
+  boolean = con booleanTy
+  unit = con unitTy
+  fn2 x y r = pureFn x (pureFn y r)
+  a = TVar (TyVar "a")
+  forallA = TForall (TyVar "a") KType
+  arrayOf = TApp (con arrayTy)
+
+-- | The scheme an operation's entry is declared at.
+schemeOfOp :: PrimOp -> TypeScheme
+schemeOfOp = monoScheme <<< typeOfOp
+
+-- | How many arguments saturate an operation: the arrows of its type, beneath
+-- | its quantifiers.
 arityOfOp :: PrimOp -> P.Int
-arityOfOp = case _ of
-  IntAdd -> 2
-  IntSub -> 2
-  IntMul -> 2
-  IntQuot -> 2
-  IntRem -> 2
-  IntEq -> 2
-  IntLt -> 2
-  IntToNumber -> 1
-  IntToString -> 1
-  NumberAdd -> 2
-  NumberSub -> 2
-  NumberMul -> 2
-  NumberDivide -> 2
-  NumberNegate -> 1
-  NumberEq -> 2
-  NumberLt -> 2
-  NumberFloor -> 1
-  NumberCeil -> 1
-  NumberTrunc -> 1
-  NumberToInt -> 1
-  NumberToString -> 1
-  StringLength -> 1
-  StringCodePointAt -> 2
-  StringAppend -> 2
-  StringSlice -> 3
-  StringSingleton -> 1
-  StringEq -> 2
-  StringLt -> 2
-  CharToCodePoint -> 1
-  CharFromCodePoint -> 1
-  ArrayUnsafeIndex -> 2
-  ArrayUnsafeNew -> 1
-  ArrayUnsafeSet -> 3
-  ArrayLength -> 1
+arityOfOp = arrows <<< typeOfOp
+  where
+  arrows = case _ of
+    TForall _ _ body -> arrows body
+    ty -> case asFunction ty of
+      Just f -> 1 + arrows f.result
+      Nothing -> 0
+
+-- | `Base.Array.Array`, the type constructor the ABI supplies to `Base.Array`.
+arrayTy :: Qualified TyName
+arrayTy = Qualified (ModuleName "Base.Array") (TyName "Array")
+
+-- | A signature with the types the ABI supplies and no declaration produces:
+-- | `Base.Array.Array`, an intrinsic of the opaque class
+-- | ([Prim and Base](../../../../docs/technical-references/06-Modules/02-Prim-and-Base.md)).
+withBaseTypes :: Signature -> Signature
+withBaseTypes sig = sig
+  { types = Map.insert arrayTy (IntrinsicTyCon (monoScheme (KFun KType KType)) CanonicalOpaque) sig.types }
+
+-- | The `Base` modules whose entries are operations, in the order of the table.
+baseModuleNames :: P.Array ModuleName
+baseModuleNames = Array.nub (map (\e -> moduleOf e.entry) primTable)
+  where
+  moduleOf (Qualified m _) = m
+
+-- | The `Base` module of that name as Core: a `foreign` declaration of each
+-- | operation's entry, at its scheme, in the order of the table, all exported,
+-- | every annotation the one given. Such a module is compiled and loaded as any
+-- | other, and a consumer carries out each entry as the operation it is.
+baseModule :: forall a. a -> ModuleName -> Module a
+baseModule annotation name =
+  { annotation
+  , name
+  , imports: []
+  , exports: map (ExportValue <<< _.name) entries
+  , decls: map (\e -> DeclForeign annotation { name: e.name, scheme: e.scheme, attributes: [] }) entries
+  }
+  where
+  entries = Array.mapMaybe ownEntry primTable
+  ownEntry e = case e.entry of
+    Qualified m x | m == name -> Just { name: x, scheme: e.scheme }
+    _ -> Nothing
 
 primTable :: P.Array PrimEntry
-primTable = map (\op -> { op, entry: entryOfOp op, arity: arityOfOp op })
+primTable = map (\op -> { op, entry: entryOfOp op, arity: arityOfOp op, scheme: schemeOfOp op })
   [ IntAdd
   , IntSub
   , IntMul
@@ -268,6 +398,11 @@ primTable = map (\op -> { op, entry: entryOfOp op, arity: arityOfOp op })
 -- | The operation a `Base` entry is, where it is one.
 lookupPrim :: Qualified Ident -> Maybe PrimEntry
 lookupPrim name = Array.find (\e -> e.entry == name) primTable
+
+derive instance Eq InClosedRun
+derive instance Generic InClosedRun _
+instance Show InClosedRun where
+  show = genericShow
 
 derive instance Eq PrimOp
 derive instance Ord PrimOp

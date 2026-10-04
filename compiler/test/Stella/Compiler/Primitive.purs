@@ -12,7 +12,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Primitive (PrimOp(..), arityOfOp, codeOfOp, entryOfOp, opOfCode, primTable)
+import Stella.Compiler.Primitive (InClosedRun(..), PrimOp(..), arityOfOp, inClosedRunOf, baseModule, baseModuleNames, codeOfOp, entryOfOp, opOfCode, primTable, schemeOfOp, withBaseTypes)
 import Stella.Compiler.Bytecode (CalleeEntry(..), Dmo, LowerError, lower)
 import Stella.Compiler.Interface (noImports)
 import Stella.Compiler.MiddleEnd (TranslateError(..), translate)
@@ -22,7 +22,7 @@ import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
 import Test.Spec (Spec, describe, it)
-import Test.Spec.Assertions (shouldEqual)
+import Test.Spec.Assertions (fail, shouldEqual)
 
 int :: Type
 int = TCon intTy []
@@ -216,6 +216,27 @@ spec = describe "Stella.Compiler.Abi » operations of the Base surface" do
       map (\op -> opOfCode (codeOfOp op)) ops `shouldEqual` map Just ops
       opOfCode 0x7F `shouldEqual` Nothing
 
+    -- a `Base` module is compiled from the table, so what it declares is what the
+    -- table holds, one entry at a time
+    -- what a closed run admits is the table's to say, so an operation added is
+    -- classified where it is added
+    it "gives the operations on arrays to a closed run as state of its own, and admits the rest" do
+      map _.op (Array.filter (\e -> inClosedRunOf e.op /= Admitted) primTable)
+        `shouldEqual` [ ArrayUnsafeIndex, ArrayUnsafeNew, ArrayUnsafeSet, ArrayLength ]
+      Array.all (\e -> inClosedRunOf e.op == RunLocalState || inClosedRunOf e.op == Admitted) primTable `shouldEqual` true
+
+    it "gives each Base module its operations as foreign declarations, at their schemes" do
+      baseModuleNames `shouldEqual` map ModuleName [ "Base.Int", "Base.Number", "Base.String", "Base.Char", "Base.Array" ]
+      Array.concatMap (foreignsOf <<< baseModule 0) baseModuleNames
+        `shouldEqual` map (\e -> { name: e.entry, scheme: schemeOfOp e.op }) primTable
+      Array.foldM
+        ( \_ name -> case declareAnnotated (withBaseTypes primSignature) (baseModule 0 name) of
+            Left err -> fail (show name <> " does not declare: " <> show err.error)
+            Right _ -> pure unit
+        )
+        unit
+        baseModuleNames
+
   describe "an operation short of its arguments" do
 
     it "waits as an operation rather than as the name of an implementation" do
@@ -266,3 +287,12 @@ spec = describe "Stella.Compiler.Abi » operations of the Base surface" do
       -- the wrong arity would run with the wrong number of operands
       midOf nullary [ bareDecl nullary ] `shouldEqual`
         Right (Left (AbiArityMismatch intAdd 2 0))
+
+-- | What a module declares, as foreigns of its name.
+foreignsOf :: Module P.Int -> P.Array { name :: Qualified Ident, scheme :: TypeScheme }
+foreignsOf m = Array.mapMaybe
+  ( case _ of
+      DeclForeign _ f -> Just { name: Qualified m.name f.name, scheme: f.scheme }
+      _ -> Nothing
+  )
+  m.decls

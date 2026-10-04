@@ -55,13 +55,13 @@ import Prim as P
 
 import Data.Array as Array
 import Data.Enum (toEnum)
-import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String.CodePoints as CodePoints
 import Data.Tuple (Tuple(..))
+import Stella.Compiler.Primitive (arrayTy, baseModule, withBaseTypes)
 import Stella.Compiler.TypedCore (CtorBranch, Decl(..), DecisionTree(..), Export(..), Expr(..), Ident(..), JoinName(..), Kind(..), LitBranch, Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), monoScheme, primSignature, scalarString, scalarStringOf, scalarValue)
 import Stella.Compiler.TypedCore.Prim (booleanTy, charTy, intTy, numberTy, pureFn, recordTy, stringTy, unitCtor, unitTy, variantTy)
-import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
+import Stella.Compiler.TypedCore.Signature (Signature)
 import Test.Stella.Compiler.Fixtures.Value (Expected(..), ExpectedKey(..))
 
 -- Names --------------------------------------------------------------------------------
@@ -165,30 +165,7 @@ litCase scrutinee branches default =
 -- | `Base.Int`, every entry of `stella-base-0.1`. Each is an operation, so what
 -- | carries it out is settled by its name where the module is used.
 intModule :: Module P.Int
-intModule = baseModule intName
-  [ Tuple "add" (fn2 int int int)
-  , Tuple "sub" (fn2 int int int)
-  , Tuple "mul" (fn2 int int int)
-  , Tuple "quot" (fn2 int int int)
-  , Tuple "rem" (fn2 int int int)
-  , Tuple "eq" (fn2 int int bool)
-  , Tuple "lt" (fn2 int int bool)
-  , Tuple "toNumber" (pureFn int number)
-  , Tuple "toString" (pureFn int string)
-  ]
-
--- | A module of `foreign` declarations, one per entry, all exported.
-baseModule :: ModuleName -> P.Array (Tuple P.String Type) -> Module P.Int
-baseModule name entries =
-  { annotation: 0
-  , name
-  , imports: []
-  , exports: map (\(Tuple x _) -> ExportValue (Ident x)) entries
-  , decls:
-      Array.mapWithIndex
-        (\i (Tuple x ty) -> DeclForeign (i + 1) { name: Ident x, scheme: monoScheme ty, attributes: [] })
-        entries
-  }
+intModule = baseModule 0 intName
 
 fn2 :: Type -> Type -> Type -> Type
 fn2 a b r = pureFn a (pureFn b r)
@@ -460,66 +437,26 @@ unitType :: Type
 unitType = TCon unitTy []
 
 arrayTyName :: Qualified TyName
-arrayTyName = Qualified arrayName (TyName "Array")
+arrayTyName = arrayTy
 
 arrayOf :: Type -> Type
 arrayOf t = TApp (TCon arrayTyName []) t
 
--- | `Σ_Prim` with what the ABI manifest supplies to `Base.Array`: the type
--- | constructor `Array`, an intrinsic of the opaque class. No declaration produces
--- | it ([Prim and Base](../../../../../docs/technical-references/06-Modules/02-Prim-and-Base.md)).
+-- | `Σ_Prim` with the types the ABI supplies.
 abiSignature :: Signature
-abiSignature = primSignature
-  { types = Map.insert arrayTyName
-      (IntrinsicTyCon (monoScheme (KFun KType KType)) CanonicalOpaque)
-      primSignature.types
-  }
+abiSignature = withBaseTypes primSignature
 
 numberModule :: Module P.Int
-numberModule = baseModule numberName
-  [ Tuple "add" (fn2 number number number)
-  , Tuple "sub" (fn2 number number number)
-  , Tuple "mul" (fn2 number number number)
-  , Tuple "divide" (fn2 number number number)
-  , Tuple "negate" (pureFn number number)
-  , Tuple "eq" (fn2 number number bool)
-  , Tuple "lt" (fn2 number number bool)
-  , Tuple "floor" (pureFn number number)
-  , Tuple "ceil" (pureFn number number)
-  , Tuple "trunc" (pureFn number number)
-  , Tuple "toInt" (pureFn number int)
-  , Tuple "toString" (pureFn number string)
-  ]
+numberModule = baseModule 0 numberName
 
 stringModule :: Module P.Int
-stringModule = baseModule stringName
-  [ Tuple "length" (pureFn string int)
-  , Tuple "codePointAt" (fn2 int string char')
-  , Tuple "append" (fn2 string string string)
-  , Tuple "slice" (pureFn int (fn2 int string string))
-  , Tuple "singleton" (pureFn char' string)
-  , Tuple "eq" (fn2 string string bool)
-  , Tuple "lt" (fn2 string string bool)
-  ]
+stringModule = baseModule 0 stringName
 
 charModule :: Module P.Int
-charModule = baseModule charName
-  [ Tuple "toCodePoint" (pureFn char' int)
-  , Tuple "fromCodePoint" (pureFn int char')
-  ]
+charModule = baseModule 0 charName
 
--- | `Base.Array`. A kind scheme binds kind variables only (D3), so the type-level
--- | `forall` is part of each type.
 arrayModule :: Module P.Int
-arrayModule = baseModule arrayName
-  [ Tuple "length" (forallA (pureFn (arrayOf a) int))
-  , Tuple "unsafeNew" (forallA (pureFn int (arrayOf a)))
-  , Tuple "unsafeSet" (forallA (pureFn int (fn2 a (arrayOf a) unitType)))
-  , Tuple "unsafeIndex" (forallA (fn2 (arrayOf a) int a))
-  ]
-  where
-  a = TVar (TyVar "a")
-  forallA = TForall (TyVar "a") KType
+arrayModule = baseModule 0 arrayName
 
 baseModules :: P.Array (Module P.Int)
 baseModules = [ intModule, numberModule, stringModule, charModule, arrayModule ]
