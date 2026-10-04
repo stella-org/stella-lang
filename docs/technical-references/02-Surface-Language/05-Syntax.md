@@ -218,6 +218,8 @@ tokenTreeItem ::= tokenTree | any token but a bracket
 
 A macro call stands where an expression does, and where an item does: `format%"{n}"`, `class%{ … }`.
 
+**What an expansion produces is read by this grammar** ([Name Resolution](06-Name-Resolution.md)). A call standing where an expression does is replaced by one expression, read from the tokens the macro returned with the trivia it gave each, and each block it returned as a layout group stands as the virtual tokens the layout inserts for a block — one opening it, one between two items, one closing it — so nothing is recomputed from indentation and no source `;` is involved. What is read is checked as an expression of source is.
+
 ## Declarations
 
 ```text

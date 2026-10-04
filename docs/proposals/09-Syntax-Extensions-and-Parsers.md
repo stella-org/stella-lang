@@ -188,10 +188,13 @@ Expansion is a stage of its own between the import scope and name resolution
 items grouped → import scope → expansion → top-level scope → resolution
 ```
 
-- **A call is resolved by name in the macro namespace the header fixes**, and nothing else is
-  resolved before the expansion it belongs to.
+- **A call is resolved by name in the macro namespace the header fixes**, within a local open
+  together with what its alias brings, and nothing else is resolved before the expansion it
+  belongs to.
 - **What an expansion produces is read and expanded again**: a call in its output is expanded in
-  turn, to a depth past which the call is an error.
+  turn, to a depth past which the call is an error. The depth is that of one chain of expansions,
+  a call written in source at depth 1, and its limit is the build's to set, a module raising it
+  in no way.
 - **A failure is reported at the call**, whether the parser failed, the code failed, the budget ran
   out, or what it produced is not what its category reads.
 - **Every token and node an expansion produces keeps its origin**: the call's input or a quotation,
@@ -200,6 +203,11 @@ items grouped → import scope → expansion → top-level scope → resolution
 
 **Part 1 is not hygienic.** A name an expansion writes is resolved where the call stands, as though
 written there.
+
+For a call standing where an expression does, this stage is implemented as [Name
+Resolution](../technical-references/02-Surface-Language/06-Name-Resolution.md) and [Surface
+AST](../technical-references/02-Surface-Language/08-Surface-AST.md) describe it, origins
+included.
 
 ## Part 2: Later stages
 
@@ -226,7 +234,6 @@ The contract above is built so that each of these adds to it rather than replace
 ## Open Questions
 
 - The spelling of quotation and antiquotation.
-- The depth past which repeated expansion is an error, and whether a module may raise it.
 - **What a trigger hands its parser.** A parser selected by a trigger cannot run inside the host
   parser's states, so a `SyntaxSpec` says how far the host reads the call as a token tree — a
   delimited group, a layout block, until a set of tokens — and whether the trigger itself is part

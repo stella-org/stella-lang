@@ -7,8 +7,8 @@ This document settles what a name written in source refers to. By the time a ter
 **Resolution and macro expansion are one pass from the concrete syntax tree to the Surface AST**, and they run in stages, because expanding a macro call needs the macro's name resolved and the expansion's result needs resolving in turn.
 
 1. **The import scope** is built from the header alone: what each import makes visible, unqualified and through each alias.
-2. **Macro calls are expanded**, and a call an expansion produced is expanded in turn, until no call remains. What this stage resolves is **the name of each call and nothing else**, in the macro namespace. That namespace holds what the imports bring and nothing the module declares, so it is fixed by the header, and the order expansions run in changes nothing a call resolves to. A call inside a local open is resolved against the macros the open brings, the extent of the construct being known before anything is expanded.
-3. **The module's top-level scope** is the import scope together with every top-level declaration, those an expansion produced among them.
+2. **Macro calls are expanded**, and a call an expansion produced is expanded in turn. This version expands a call standing where an expression does, until none remains; a call at a declaration's position or in an attribute's argument passes this stage as it stands and is reported as not yet supported where it is resolved. What this stage resolves is **the name of each call and nothing else**, in the macro namespace. That namespace holds what the imports bring and nothing the module declares, so it is fixed by the header, and the order expansions run in changes nothing a call resolves to. A call inside a local open is resolved against the macros the open brings, the extent of the construct being known before anything is expanded. How a call is expanded is in [Expanding a macro call](#expanding-a-macro-call).
+3. **The module's top-level scope** is the import scope together with every top-level declaration. An expansion at a declaration's position is to add the declarations it produces; one where an expression stands produces none, and is the only one this version expands.
 4. **Every other name is resolved**, against the top-level scope and the bindings around it, whether it was written in source or produced by an expansion. In `f x = m%{ x }`, the `x` an expansion places in the body is resolved here, under the binding of `f`'s parameter, and could not have been at stage 2, where neither the top-level scope nor any local binding exists yet.
 
 ### What it produces
@@ -27,10 +27,28 @@ This document settles what a name written in source refers to. By the time a ter
 - **A global is qualified by the module that declares it.** An alias is replaced by the module it stands for, and a name a module re-exports is the entity it was in the module declaring it, so `M.a` after `import Long.Module as M` is `Long.Module.a` where `Long.Module` declares `a`, and `Other.a` where it re-exports the `a` of `Other`.
 - **A binding carries the name it was written with**, beside the identity that tells two bindings of one spelling apart, for diagnostics and for the names Core is given.
 - **What a name refers to is told by the node holding it.** A reference to a value and a reference to a computation are different nodes, as are a constructor, an operation, and a discriminator, and as are a type constructor and a type synonym; what else is known of an entity is read from the module's environment and the interfaces, so no resolved name carries it.
-- **Every node is annotated with where it came from**: its source range, for a node built from source. What a node an expansion produced carries is fixed with macro expansion.
+- **Every node is annotated with where it came from**: its source range, for a node built from source, and for one built from what an expansion produced, its range in that expansion, through which the call and what its tokens were written as are reached ([Surface AST](08-Surface-AST.md)).
 - **A name that does not resolve is an error node, and resolution carries on**, so that every error in the module is reported; a module holding one is not elaborated.
 
 **An expansion produces declarations and expressions, and never an import or a module header.** The header is what the dependencies are read from (D22), and the import scope has been fixed before any expansion runs.
+
+### Expanding a macro call
+
+**A call standing where an expression does is expanded; this version expands no other.** A call at a declaration's position and one in an attribute's argument are reported as not yet supported where they stand ([Syntax Extensions and Parsers](../../proposals/09-Syntax-Extensions-and-Parsers.md)).
+
+**The name of a call is looked up in three places, the first that holds it deciding.**
+
+1. A qualified call, `A.m%[ … ]`, under its alias, an alias no import declares being an error. A lazy alias opens nowhere but in a local open, so it qualifies no call.
+2. An unqualified call in the innermost local open around it that brings the name, `A.( … )` and `import A in …` alike, a lazy alias's included.
+3. Otherwise, in what the imports bring unqualified.
+
+A name standing for two macros is ambiguous where it is called. A name the module declares as a macro — a value carrying `macro` as the module's own scope decides it ([Macro declarations](#macro-declarations)) — is in no namespace of the module's, and a call of it is reported as such, a macro being for the modules importing it. **What the name stands for must be a parser of terms**: a value carrying `Prim.macro` whose scheme, as its interface carries it, is exactly `Stella.Syntax.Parser (Stella.Syntax.Syntax Stella.Syntax.Term)`.
+
+**A call is run, and what it produced is read as written source is.** The macro's parser is run on the token tree of the call's bracket or string, the input ending at the closing delimiter or at the end of the string. The syntax it returns is checked — every group closed as its delimiter closes, every origin one the call's input carried, every token and its trivia what the lexer reads them as — and read by the grammar as one expression, each layout group standing as the virtual tokens the layout inserts ([Syntax](05-Syntax.md)). The expression is then checked as an expression of source is, so an expansion can produce nothing written source could not be.
+
+**What an expansion produced is expanded in turn, where the call stands.** A call written in the source is at depth 1, and a call an expansion at depth `n` produced is at depth `n + 1`; a call deeper than the limit the build sets is not run. The depth is that of one chain of expansions and not a count over the module, so any number of calls side by side reaches no limit. An outer call is expanded before what it produced, and what it produced in the order written; a call in it resolves its name against the local opens around the call it came from, the expansion being in place of that call.
+
+**A call that is not expanded is reported once, where it stands, and stands as an invalid expression** that no later stage reports again: a name that resolves to no macro, to several, or to no parser of terms; a parser that fails, does not run to an answer, or runs out of steps; syntax that does not read back or does not read as a well-formed expression; and a call too deep.
 
 ## Namespaces
 

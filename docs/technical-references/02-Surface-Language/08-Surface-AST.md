@@ -6,7 +6,19 @@ The Surface AST is what name resolution builds from the concrete syntax tree and
 
 ## Origins
 
-**Every node carries an `Origin`**, which a diagnostic about the node is located by. A node built from source carries `FromSource` and the range of the source it was built from. A node an expansion or a desugaring produces carries what it was produced from, in a form fixed with macro expansion.
+**Every node carries an `Origin`**, which a diagnostic about the node is located by. A node built from source carries `FromSource` and the range of the source it was built from. A node built from what an expansion of a macro produced carries `FromExpansion`.
+
+```text
+Origin = FromSource range
+       | FromExpansion { range, macro, call :: Origin, written :: Origin }
+```
+
+**Every range is in one text**: the source, or what one expansion produced. An expansion's text is numbered apart from every other's, and two ranges are of one text where they are of the source, or of the expansion of one number. **A token of an expansion stands at its place in what was produced**, the `n`th covering column `n` of line 1, and the expansion records the macro, the range of its call — in the text the call stands in — and, for each of its tokens, the range of the token it came from: a token of the call's input, or, once a parser can write one, of a quotation. So a range of an expansion covers a run of its tokens, and its origin is read off the range alone:
+
+- `macro` is the macro expanded, and `call` the origin of the call, which is itself `FromExpansion` where an expansion wrote the call;
+- `written` is the origin of what the tokens it covers came from, the ranges they came from joined where they are of one text, and the call's where it covers none.
+
+**A diagnostic is located at the call written in source** that the expansions a node came through began at, and the chain of `call` and `written` says which expansion, of which macro, it stands in and what it was written as. A node an expansion produced stands under one holding the call's range, so no node of one text covers a range of another: **ranges are joined only within one text**, and joining two of different texts keeps the first.
 
 **A range is composed from the concrete syntax tree** ([Syntax](05-Syntax.md)). A node built from several covers the smallest range holding theirs, so a node's range begins at its first part and ends at its last; a keyword and a grouping parenthesis are not part of it, and `\x -> e` covers `x -> e`, `(f x)` covers `f x`. A form made by its brackets — `()`, a record, a row, a variant, a record pattern — covers its brackets, so `()` and `{}` have a range like any other node.
 
@@ -124,7 +136,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 
 **Resolution reports every error in the module and goes on past each**, building what it can. A module with an error is not elaborated, so what is built around an error serves only to go on, and it is built by two rules.
 
-**An error in an expression, a type, a kind, a pattern, or a constant leaves an invalid node of that class** — `ExprInvalid`, `TypeInvalid`, `KindInvalid`, `BinderInvalid`, `ConstantInvalid` — where the erroneous form stood. A name that does not resolve, a form standing where it is not admitted, and a form not yet supported are among them. A chain of operators, of values or of types, holding one that does not resolve or two that cannot be chained is invalid as a whole. So is a local open of an alias no import declares, what it encloses being left unresolved. A capability translation whose source is no effect applied to its arguments is held as an invalid signature written in full. A constructor matched with other than one pattern per field, a tag with several, a `Number` literal, and an or-pattern binding a variable leave the pattern invalid. Where a `case` alternative has several choices at its top, each pattern of a choice that writes a variable is left invalid, and the other patterns of the row are kept: `x, One | Nothing, Two` holds `!, One` and `Nothing, Two`.
+**An error in an expression, a type, a kind, a pattern, or a constant leaves an invalid node of that class** — `ExprInvalid`, `TypeInvalid`, `KindInvalid`, `BinderInvalid`, `ConstantInvalid` — where the erroneous form stood. A name that does not resolve, a form standing where it is not admitted, and a form not yet supported are among them. So is a macro call that was not expanded, which the expansion reported where it stands and which nothing reports again. A chain of operators, of values or of types, holding one that does not resolve or two that cannot be chained is invalid as a whole. So is a local open of an alias no import declares, what it encloses being left unresolved. A capability translation whose source is no effect applied to its arguments is held as an invalid signature written in full. A constructor matched with other than one pattern per field, a tag with several, a `Number` literal, and an or-pattern binding a variable leave the pattern invalid. Where a `case` alternative has several choices at its top, each pattern of a choice that writes a variable is left invalid, and the other patterns of the row are kept: `x, One | Nothing, Two` holds `!, One` and `Nothing, Two`.
 
 **Any other error drops the smallest part around it that is a member of a sequence**: an import, a declaration, an attribute, an item of a row, a target of a capability, an item of a handling expression, a cell, or a clause.
 
@@ -158,7 +170,8 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | --- | --- |
 | `ItemImport` | an import of the module, unless it names `Prim`, which is no dependency; its list, alias, and `hiding` decide names and leave nothing in the tree |
 | `ItemAttribute`, `ItemDirective`, `ItemModifier` | the declaration's attributes, `Observation`, and `implicit`, joined to it where declarations are grouped |
-| `ItemMacro`, `ExprMacro` | the expansion, resolved |
+| `ExprMacro` | what its expansion produced, resolved where the call stands; `ExprInvalid` where it was not expanded |
+| `ItemMacro` | nothing yet: the declaration is dropped, a call at a declaration's position not being expanded in this version |
 | `ItemBroken` | nothing; the parser reported it |
 | `DeclSignature` and `DeclValue` | a value, or a computation where the signature is a computation type |
 | `DeclKindSignature` and `DeclData`, `DeclNewtype`, `DeclType` | a data type, a newtype, or a type synonym, with its kind |
