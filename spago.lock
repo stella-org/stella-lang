@@ -119,6 +119,7 @@
         "core": {
           "dependencies": [
             "aff",
+            "argonaut-core",
             "argparse-basic",
             "arrays",
             "avar",
@@ -159,7 +160,8 @@
             "node-fs",
             "partial",
             "spec",
-            "spec-node"
+            "spec-node",
+            "transformers"
           ]
         }
       },

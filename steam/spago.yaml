@@ -3,6 +3,7 @@ package:
   description: The Stella abstract machine
   dependencies:
     - aff
+    - argonaut-core
     - argparse-basic
     - arrays
     - avar
@@ -14,8 +15,8 @@ package:
     - enums
     - exceptions
     - fmt
-    - foreign-object
     - foldable-traversable
+    - foreign-object
     - integers
     - lists
     - maybe
@@ -45,3 +46,4 @@ package:
       - partial
       - spec
       - spec-node
+      - transformers
