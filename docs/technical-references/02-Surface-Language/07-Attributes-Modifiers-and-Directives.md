@@ -131,7 +131,7 @@ eqInt = …
 | Arguments | `none`, the one there is |
 | Rejected | with another argument, by the check of the tree; before anything but a `foreign` declaration, or twice, where declarations are grouped |
 | Absent | the entry may observe |
-| Kept | in `Σ`, and in the interface's foreign summary ([Interface](../05-Backend/03-Interface.md)); a `.dmo` carries none |
+| Kept | in `Σ`, and in the interface as the foreign's observation, which its effect summary is derived from ([Interface](../05-Backend/03-Interface.md)); a `.dmo` carries none |
 | Build key | through the interface, as any change to a declaration is |
 
 What it asserts is what [Modules](../06-Modules/01-Modules.md) gives it to assert, and a breach of it is the implementation's.

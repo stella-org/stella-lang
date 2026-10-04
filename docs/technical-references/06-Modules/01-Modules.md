@@ -333,7 +333,7 @@ Which attributes there are is decided by the libraries declaring them, and what 
 | declarations | every top-level declaration it makes, by what each declares: values, types, effects, operators, type operators, attributes |
 | implicit handlers | the implicit handlers it declares, each with the element it handles and the elements it performs in its place ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md)) |
 | catalog only | the values it publishes to the catalog without exporting them to source ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)) |
-| arities | the definitional arity of each value it declares and exports that has one |
+| arities | the definitional arity of each value it declares, that a module downstream can reach, and that has one ([Interface](../05-Backend/03-Interface.md)) |
 
 **Names and entities are held apart.** An export is a name as an importer writes it, the entity it is another name for — qualified by the module declaring it — and the way it reached the module: declared there, or imported from a module the header names and re-exported. A type's export also lists the members published with it, a data type's constructors or an effect's operations, each of which is in the value table as well. What an entity is — its scheme, its constructors, its attributes — is held by the interface of the module declaring it and by no other, so a module re-exporting a name holds the name and the way it came, and nothing of the entity. **Core keeps nothing of the way**; it is for a tool, which may offer a name from a module re-exporting it or from the module declaring it.
 

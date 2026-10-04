@@ -2,27 +2,66 @@
 
 A `.dmo` is one of a pair, and beside it stands the **`.dmi`**, the interface of
 the same module ([Bytecode](01-Bytecode.md)). Compiling a module reads the `.dmi`
-of each module it imports; a `.dmo` is read only to link or to execute.
+of each module it depends on; a `.dmo` is read only to link or to execute.
 
-**What a `.dmi` carries is settled when the optimizer is written** (D34), its
-content being determined by what optimization across a module boundary turns out
-to require. What it carries **now** is the one thing a compiler already needs of
-an imported module and cannot obtain otherwise: the **definitional arity** of each
-value it declares and exports.
+**A `.dmi` holds the module's whole interface**: what a module contributes to the
+build environment once it is compiled — what it publishes, every declaration with
+its Core types, its implicit handlers, what it publishes to the catalog alone, and
+its arities ([Modules](../06-Modules/01-Modules.md)). Name resolution and
+elaboration of a module downstream read it, and so does translation. **What
+optimization across a module boundary wants beyond that is settled when the
+optimizer is written** (D34): the bodies eligible for inlining are not here.
 
-**Format 0 is therefore not yet the whole interface.** The whole of it is what a
-module contributes to the build environment once it is compiled — its exports, its
-declarations with their schemes, its implicit handlers, what it publishes to the
-catalog alone, and its arities ([Modules](../06-Modules/01-Modules.md)) — and a
-`.dmi` is where that is kept between builds. Format 0 keeps the arities alone and
-holds no types: a compiler obtains `Σ` as it does today, from the modules it has in
-hand, and reads a `.dmi` beside it for the arities. What D34 describes is the file this one grows
-into — it takes over the signature when Core types are serialized
-([Open Questions](../99-Open-Questions/01-Open-Questions.md)), and separate
-compilation rests on the pair from then on. Until that, a `.dmi` is a sidecar and
-says so.
+## What it holds
 
-## Why an arity is the minimum
+| Part | Holds |
+| --- | --- |
+| Module | The module's name |
+| Imports | The modules its header imports, which are its dependencies (D22) |
+| Exports | The names it publishes, one table per namespace — value, type, operator, type operator, macro, attribute — each the name as an importer writes it, the entity it stands for, qualified by the module declaring it, and the way it came: declared, or imported from a module and re-exported; a type's members; and the modules it re-exports whole |
+| Values | Every value it declares — a value, a computation, a foreign with its observation, a handler, a constructor with the type it builds, an operation with the effect declaring it — with its scheme and its attributes |
+| Types | Every type it declares — a data type or newtype with its parameters and each constructor's fields, a synonym with its parameters and its body, a foreign type — with its kind and its attributes |
+| Effects | Every effect it declares, with its parameters, each operation's own type variables, arguments, and the type it resumes with, and its attributes |
+| Operators, type operators | Every fixity it declares: the associativity, the precedence, and what the operator stands for |
+| Attributes | Every attribute it declares: its positional parameter types, and its keyword parameters with their types and defaults |
+| Implicit handlers | Each handler it declares `implicit`, with the element it handles and the elements it performs in its place |
+| Catalog only | The values it publishes to the catalog without exporting them to source |
+| Arities | The definitional arity of each value it declares that a module downstream can reach, where it has one |
+| Build hash | Where one was computed, the module's build hash |
+
+**The declarations are every top-level declaration of the module**, and not only
+those it exports: an exported scheme may mention a type the module keeps abstract,
+and Core refers to an entry published to the catalog alone. Which names source may
+write is the export tables' to say.
+
+**A module re-exporting a name holds the name and the way it came, and nothing of
+the entity.** `B` re-exporting the `f` of `A` holds an export of `f` standing for
+`A.f`, imported from `A`; what `A.f` is stands in `A`'s file alone. So a module
+downstream of `B` reads `A`'s file as well, and a build environment holds the file
+of every module the imports reach, directly or through the imports of those
+imported.
+
+**An elaboration-only entry is a declaration like any other here**, under its
+internal name beginning with `$`: the constructor of `Base.Continuation` is among
+that module's values, and no export names it. A reader building the environment
+source names resolve against, an editor's completion, or a list of a module's API
+leaves it out ([Modules](../06-Modules/01-Modules.md)).
+
+**The build hash is about the file, not the module.** What compiling a module
+produces depends on more than the types and exports of what it imports: a
+synthesizer may find an entry a module reaches only transitively, and a macro or a
+synthesizer a dependency carries decides what elaborating it produces
+([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)). So the hash is
+recursive, over the compiler's version, the options that change what is produced —
+the target, the ABI and profile, and any feature that changes meaning — the
+module's own source, and each direct dependency's identity with its hash, taken in
+a fixed order and with the hash field itself left out of the input. A change
+anywhere a module reaches changes its hash, and rebuilding it is decided from that
+alone. How the hash is computed and compared is settled with the package manager;
+until then the file carries one as bytes it does not read, and none where none was
+computed.
+
+## Arities
 
 `callk` names a top-level value together with its definitional arity, which is the
 number of leading lambdas its erased right-hand side has
@@ -30,13 +69,14 @@ number of leading lambdas its erased right-hand side has
 being translated that is read off the right-hand side. For an imported one there is
 nothing to read: a signature gives the type, and **a type does not give the
 arity** — `Int -> Int -> Int` is the type of a value of arity 2, of arity 1
-returning a closure, and of one evaluated at initialization alike.
+returning a closure, and of one evaluated at initialization alike. The arities are
+the one part of the file no type carries.
 
 ### An absent arity and a wrong one are not alike
 
 **Absent an arity a call is `callu`**, which is correct for every callee. So what
-this file buys where it is silent is **sharpness**: a module compiled without the
-`.dmi` of an import computes what it would have computed with it, through calls
+an arity buys where the file is silent is **sharpness**: a module compiled without
+the arity of a callee computes what it would have computed with it, through calls
 that resolve their arity at run time.
 
 **An arity that is wrong is a different matter, and it is not a matter of
@@ -72,79 +112,37 @@ interface before compiling against it compares the two files itself — the arit
 `.dmo` states of its own exported globals are what a `.dmi` of that module holds —
 and nothing in either format requires that of a loader.
 
-A build that writes the pair writes both from one Mid IR module, so the two agree by
-construction. What the call-site check is for is a `.dmi` that has gone stale beside
-a recompiled `.dmo`, or one that never came from the module it claims.
+A build that writes the pair takes the arities from the Mid IR module it lowers, so
+the two agree by construction. What the call-site check is for is a `.dmi` that has
+gone stale beside a recompiled `.dmo`, or one that never came from the module it
+claims.
 
-**Absent is not zero.** A `nonrec alias = Main.f` has no definitional arity — what
-it stores is a function of `Main.f`'s arity — and reading zero there would make
-every call to `alias` an over-application of a nullary function. A value with no
-definitional arity is therefore **not listed**, which is what a reader does with
-it either way.
+### Which values have one
 
-## What it holds
+**A value the module declares and that a module downstream can reach**: one it
+exports under its name, a macro it exports in the macro namespace, and a value an
+operator it declares and exports stands for. Core names are fully qualified, and
+what source can reach is what an export list publishes (D22). **A value the module
+re-exports has no entry**: it is another module's, and its arity stands in the
+file of the module declaring it. **Nor has a value published to the catalog
+alone**: Core may refer to one, a synthesizer having inserted a reference to it, and
+its arity is left out, so a call to it is a `callu` — correct for every callee, and
+what an absent arity always costs. A constructor has none, a linker finding it
+among the constructors a `.dmo` describes.
 
-| | |
-| --- | --- |
-| The module's own name | Once, so that the entries need not repeat it |
-| Per value the module declares and exports, with a definitional arity | Its own name, and that arity |
+**An arity is at least one, and a value of none has no entry.** A definitional arity
+counts leading lambdas, so zero is what absence would be, and absence is not zero:
+a `nonrec alias = Main.f` stores a function of `Main.f`'s arity, and reading zero
+there would make every call to `alias` an over-application of a nullary function.
 
-**Only values the module declares and exports.** Source in a downstream module
-can name nothing else: Core names are fully qualified and an export list is what
-data abstraction is (D22). **A value the module re-exports has no entry**: it is another
-module's, and its arity stands in the interface of the module declaring it, so `B`
-re-exporting the `f` of `A` holds no `f`. **Nor has a value published to the catalog
-alone.** Core may refer to one, a synthesizer having inserted a reference to it,
-and no source can name it; its arity is left out, so a call to it is a `callu` —
-correct for every callee, and what an absent arity always costs. An
-elaboration-only entry, the constructor of `Base.Continuation`, is a constructor and
-has no entry here, as no constructor has: today it is in the full signature built
-from its module, which the Core type checker reads, and a linker finds it among the
-constructors a `.dmo` describes. Once this file carries types it carries that entry
-too, under its internal name beginning with `$`, and a reader building the
-environment source names resolve against, an editor's completion, or a list of a
-module's API leaves it out ([Modules](../06-Modules/01-Modules.md)).
-
-**The table is a finite map from a name to an arity**, which is what makes a name
-occur once by construction rather than by a rule an encoder must keep: an export
-list that names a value twice yields one entry.
-
-**The entries ascend strictly by name**, and that is the format's order rather than
-a host's: a name is compared by the bytes of its UTF-8, which is the same order as
-by its scalar values, UTF-8 being order-preserving. Two encoders therefore write one
-file, and a **reader rejects entries that do not ascend** — which is also what
-refuses a name twice, a repeat not ascending.
-
-**An arity is at least one, and a value of none contributes no entry.** A
-definitional arity counts leading lambdas, so zero is what absence would be, and
-absence is not zero: a global installed as a function over a function of no
-parameters is a value whose arity is absent, not a value of arity zero.
-
-**Nothing else, yet.** The rest of the interface belongs here too — an importing
-module is resolved against the exports of each import and type checked against
-the schemes of what it reaches — and it waits on a serialization of Core types, which is open
-([Open Questions](../99-Open-Questions/01-Open-Questions.md)). So does everything
-optimization will want, the bodies eligible for inlining among them. Until then a
-`.dmi` is a header and one table.
-
-**The file is also where a module's build hash is to be held.** What compiling a
-module produces depends on more than the types and exports of what it imports: a
-synthesizer may find an entry a module reaches only transitively, and a macro or a
-synthesizer a dependency carries decides what elaborating it produces
-([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)). So the hash is
-recursive, over the compiler's version, the options that change what is produced —
-the target, the ABI and profile, and any feature that changes meaning — the
-module's own source, and each direct dependency's identity with its hash, taken in
-a fixed order and with the hash field itself left out of the input. A change
-anywhere a module reaches changes its hash, and rebuilding it is decided from that
-alone. How the hash is computed and compared is settled with the package manager.
+## The effect summary of a foreign
 
 **What optimization will want first is an effect summary per exported foreign.** An
 entry pure in its type may still write to memory, and may still fault, so a call of
 it whose result nothing reads is not dead — and the type says so nowhere, which is
-why the fact has to cross the boundary with the module that declares it. This file
-is where it belongs rather than a `.dmo`: an optimizer reads it before a `.dmo`
-exists, and an interpreter, which performs no optimization, would never read it
+why the fact has to cross the boundary with the module that declares it. It is read
+off this file rather than a `.dmo`: an optimizer reads it before a `.dmo` exists,
+and an interpreter, which performs no optimization, would never read it
 ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
 
 **The summary is two fields, and neither is read off the other.**
@@ -158,6 +156,11 @@ ForeignSummary = { observational : None | MayObserve
 | --- | --- |
 | `observational` | `#observ(none)` written on the declaration gives `None`; nothing written gives `MayObserve` ([Modules](../06-Modules/01-Modules.md)) |
 | `returnsIO` | derived from the result type, and stated nowhere |
+
+**The file holds what the summary is derived from, and not the summary.** A foreign's
+value entry carries its observation and its scheme, and the summary is computed from
+the two wherever it is read, so it cannot disagree with the declaration it
+summarizes.
 
 **Faulting is inside `observational` and is not a field of its own.** Dropping a
 call that would have faulted removes the fault and reordering two changes which is
@@ -210,89 +213,156 @@ is decided afterwards, and an optimizer reads the summary without knowing which
 
 ## The bytes
 
-The primitives are the ones [Encoding](02-Encoding.md) fixes: a `uvar` is minimal
-and carries at most 32 bits, a structural value is at most `0x7FFFFFFF`, and text
-is well-formed UTF-8 holding no surrogate.
+**The layout is a `.dmo`'s**: a header, a string table, and sections whose ids ascend
+([Encoding](02-Encoding.md)). The primitives are the ones that document fixes: a
+`uvar` is minimal and carries at most 32 bits, an `svar` is a zigzag over it, an
+`f64` is eight bytes with every NaN the one quiet NaN, a structural value is at most
+`0x7FFFFFFF`, and text is well-formed UTF-8 holding no surrogate.
 
 ```text
 magic            "DMI\0" — the bytes 0x44 0x4D 0x49 0x00
-format version   uvar — 0, the version this document describes
+format version   uvar — 1, the version this document describes
 flags            uvar — 0
-module name      uvar byteLength, then that many bytes of UTF-8
-arities          vec ( uvar byteLength, that many bytes of UTF-8, uvar arity )
+ABI version      uvar byteLength, then that many bytes of UTF-8
+section*         u8 id, uvar byteLength, then the payload
 ```
 
-**No string table.** No name occurs twice in this file, so a table would buy an
-indirection and save nothing. A `.dmo` has one because a name there is reached
-from several tables.
+**The ABI version is the `.dmo`'s.** A file carries Core types naming the intrinsics
+of `Prim`, and foreigns whose observation an optimizer acts on, and what those mean
+is that version's; a reader holding another version reads none of it.
 
-**No ABI version.** Nothing here has a meaning that version fixes: an arity is a
-count, and no operation, `Rep`, or instruction appears.
+| Id | Section | Payload |
+| --- | --- | --- |
+| `0x01` | `STRINGS` | `vec(text)`: every name in the file is an index into it |
+| `0x02` | `MODULE` | the module's name |
+| `0x03` | `IMPORTS` | `vec(module)` |
+| `0x04` | `EXPORTS` | the value, type, operator, type operator, macro, and attribute tables, each a map from a name, then `vec(module)` of the modules re-exported whole |
+| `0x05` | `VALUES` | a map from a name to a value entry |
+| `0x06` | `TYPES` | a map from a name to a type entry |
+| `0x07` | `EFFECTS` | a map from a name to an effect entry |
+| `0x08` | `OPERATORS` | a map from an operator to its fixity |
+| `0x09` | `TYPE_OPERATORS` | the same, for type operators |
+| `0x0A` | `ATTRIBUTES` | a map from a name to an attribute declaration |
+| `0x0B` | `IMPLICIT_HANDLERS` | `vec`, in the order declared |
+| `0x0C` | `CATALOG_ONLY` | a map from a name to nothing |
+| `0x0D` | `ARITIES` | a map from a name to `uvar arity` |
+| `0x70` | `BUILD_HASH` | `uvar byteLength`, then the hash; absent where none was computed |
 
-**Names are unqualified and the module's own name stands once**, so a `.dmi`
-speaks for its own module and cannot claim an arity for a name belonging to
-another.
+**The sections `0x01` to `0x0D` that format 1 defines are all required**, empty or
+not. No other id below `0x70` is defined, and a reader rejects one where it stands. **An id at or above `0x70` carries no meaning** and a reader
+skips one it does not know: the build hash stands there because nothing reads it to
+decide what the module means. A section that bears on name resolution, type
+checking, or optimization is one below the boundary, or a new format version.
 
-**No sections.** The file is a header and one table, and there is nothing to skip
-or to reorder. A **reader rejects a byte after the table**: a longer file is a
-later format, not this one with something ignorable at the end, and that is what
-keeps a reader of format 0 from reading a file it does not understand as though it
-had ended.
+**A name is an index into the string table, and a qualified name is two**: the
+module, then the name within it. A module speaks for itself, so the names of its
+own declarations are unqualified.
+
+**A map is written in ascending order of its keys**, compared by their scalar values
+rather than by a host's order, which is the order of the bytes of their UTF-8. A
+reader rejects keys that do not ascend, which is also what refuses a key twice. An
+array keeps the order that means something: the constructors in the order of their
+tags, the operations as declared, the arguments of an attribute as normalized.
+
+**The string table is in order of first use**, the sections written in the order of
+their ids and each in the order above. With the maps ordered, one interface has one
+file, and a build may compare two by their bytes.
+
+**Every form is a tag byte followed by its parts**, each part encoded as its own
+form. An optional part is `0` for none, or `1` followed by it; a boolean is `0` or
+`1`.
+
+| Form | Tags |
+| --- | --- |
+| kind | `0` a kind variable, `1` `Type`, `2` `Effect`, `3` `Row` then `0` for `Type` or `1` for `Effect`, `4` an arrow |
+| type | `0` a variable, `1` a constructor with its kind arguments, `2` an application, `3` `forall` with the variable and its kind, `4` a constrained type, `5` the empty row, `6` a row extended by an entry, `7` the union of two rows |
+| row entry | `0` a key and a type, `1` an effect and its arguments, `2` a labelled effect instance, `3` a region and its cells |
+| row key | `0` a symbol, `1` a tag, `2` a position, `3` an effect, `4` the region |
+| constraint | `0` `k ∉ ρ`, `1` `ρ1 # ρ2` |
+| scheme body | `0` a type, `1` a computation's result and row, `2` `forall`, `3` a constraint, `4` a synthesized parameter — its name if written, its dictionary type, its synthesizer |
+| value sort | `0` a value, `1` a foreign then its observation, `2` a handler, `3` a constructor then its type, `4` an operation then its effect |
+| observation | `0` it may observe, `1` `#observ(none)` |
+| type sort | `0` a data type — parameters, constructors, and whether it is a newtype — `1` a synonym, `2` a foreign type, `3` an intrinsic and its canonical class |
+| canonical class | `0` literal, `1` function, `2` record, `3` variant, `4` opaque |
+| export's way | `0` declared, `1` imported from a module |
+| type export | `0` a type, `1` an effect |
+| associativity | `0` `infix`, `1` `infixl`, `2` `infixr` |
+| fixity target | `0` a value, `1` a constructor; for a type operator `0` a type constructor, `1` a synonym, `2` an effect |
+| constant | `0` a literal, `1` a value, `2` a constructor and its arguments, `3` a record |
+| literal | `0` an `Int` as `svar`, `1` a `Number` as `f64`, `2` a `String` as an index, `3` a `Char` as its code point, `4` a `Boolean` |
+
+A scheme and a kind scheme lead with the kind variables they quantify; a type
+variable binder is a name and a kind.
 
 ## What a reader rejects
 
 | The file | Why |
 | --- | --- |
-| Other magic, or a format version it does not implement | It is not a `.dmi` this document describes |
+| Other magic, a format version it does not implement, or another ABI version | It is not a `.dmi` this document describes, or what it names means something else |
 | A flag bit it does not know | What it would ask for is not implemented |
-| A varint that is not minimal, over five bytes, or over 32 bits; a structural value above `0x7FFFFFFF` | As in a `.dmo` ([Encoding](02-Encoding.md)) |
-| A count or a length above what is left of the file | The same, and for the same reason: a few bytes must not cost a reader what they claim |
-| Ill-formed UTF-8, or a surrogate | A name is text a Stella `String` could hold (D27) |
+| A required section missing, sections out of order or repeated, an unknown id below `0x70`, a payload that does not end where its length says | As in a `.dmo` ([Encoding](02-Encoding.md)) |
+| A tag it does not know, or an index outside the string table | Nothing it could read stands there |
+| A varint that is not minimal, over five bytes, or over 32 bits; a structural value above `0x7FFFFFFF`; a count or a length above what is left of the file | As in a `.dmo` |
+| Ill-formed UTF-8, a surrogate, or a `Char` that is no scalar value | A name and a literal are text a Stella `String` could hold (D27) |
 | An arity of zero | A definitional arity is a count of leading lambdas and is at least one; a value with none is not listed, and absence is not zero |
-| Entries that do not ascend by name, a repeated name among them | The order is the format's, and one module has one file |
-| A byte after the table | See above |
+| A map whose keys do not ascend, a repeated key among them | The order is the format's, and one interface has one file |
 
-**What a reader of these bytes does not check is whether they are true.** Whether
-the module exports the name at all, and whether its type admits that many arguments,
-are questions for `Σ`. Nothing establishes that an arity is the one the declaring
-module's `.dmo` states, either: what a loader establishes is that the `callk`s and
-`pap`s a translation produced agree with the modules declaring their callees, which
-is what the section above is about.
+**What a reader checks is the bytes, and not the interface.** Whether a type is well
+kinded, whether an export names a declaration that exists, and whether an arity is
+the one the declaring module's `.dmo` states are not its questions: the first two
+are the build environment's and the type checker's, and the last a loader's,
+through the calls a translation produced (above).
 
 ## What an encoder refuses
 
-**What an encoder writes, a decoder returns.** The table being a map, and an arity
-of none being no entry, leave an encoder two things to refuse.
+**What an encoder writes, a decoder returns.**
 
 | The interface holds | Why |
 | --- | --- |
 | A name carrying an unpaired surrogate | A name is text a Stella `String` could hold (D27), and no reader may read what is not |
 | An arity below one | A definitional arity counts leading lambdas; a value with none is absent from the table |
+| A precedence or a row position below zero | Each is a count, which a reader reads as one |
 
-Neither arises from the ordinary route: a translation gives a global installed as a
-function a definitional arity of at least one, and a name reaching it came from a
-lexer. **A name is not yet a type that carries the invariant**, though — a
-`ModuleName` and an `Ident` are text — so hand-written Core, and a `.dmi` assembled
-by hand, are where the refusals do their work, as the same refusal does for a `.dmo`
-([Encoding](02-Encoding.md)).
+None arises from the ordinary route: a translation gives a global installed as a
+function an arity of at least one, a precedence is written as decimal digits, and a
+name reaching an interface came from a lexer. **A name is not yet a type that
+carries the invariant**, though — a `ModuleName` and an `Ident` are text — so an
+interface assembled by hand is where the refusals do their work, as the same refusal
+does for a `.dmo` ([Encoding](02-Encoding.md)).
 
-## Where it comes from, and what reads it
+## Where it comes from
 
-**The compiler writes a `.dmi` from the same Mid IR module it lowers.** A global
-installed as a function has a definitional arity, which is the number of
-parameters of the function table entry it names; one evaluated at initialization
-has none ([Mid IR](../04-MiddleEnd/01-Mid-IR.md)). So the arity is read off the
-term once, where the `.dmo`'s own entry is decided, and nothing computes it twice.
+**An interface is decided in three places, and assembled from them.**
 
-**Translation is what reads one.** The arities of the imports are what let a
-saturated call to an imported value be a `callk`; without them the same call is a
-`callu` ([Translation](../04-MiddleEnd/02-Translation.md)).
+| Part | Decided by | Holds |
+| --- | --- | --- |
+| Surface | name resolution | the module's name and imports, its exports, what each declaration is and its members — a data type's constructors, an effect's operations — its fixities, its attributes with their arguments normalized, its attribute declarations' keyword parameters and defaults, which handlers are `implicit`, what it publishes to the catalog alone, and each foreign's observation |
+| Core | elaboration | every scheme and kind, a data type's parameters and constructor fields, a synonym's parameters and body, each operation's signature, each attribute parameter's type, and what each implicit handler handles and performs |
+| Arities | lowering | read off the Mid IR module the `.dmo` is lowered from: a global installed as a function has the number of parameters of the function table entry it names, and one evaluated at initialization has none ([Mid IR](../04-MiddleEnd/01-Mid-IR.md)) |
 
-**What translation reads is a checked environment, not a collection of files.** An
-interface a compiler holds need not have come through a reader of these bytes — a
-name and a table of arities are ordinary data — and a wrong arity is a soundness
-matter rather than a performance one, so the reader's condition on an arity is
-checked again where the interfaces are gathered, together with one thing beyond it.
+**The parts are keyed by the declarations, and assembling them checks that they
+speak of one module.** An interface is made only where the checks pass.
+
+| The parts | Why |
+| --- | --- |
+| A value, type, effect, attribute declaration, or implicit handler the surface part holds and the Core part does not, or a Core entry for none | Each of these has one entry, made of both parts; a fixity is the surface part's alone |
+| A type declaration of one sort in one part and another in the other | A data type's fields, a synonym's body, and a foreign type's nothing are not interchangeable |
+| A data type with another number of constructors in each, an effect with another number of operations, an attribute declaration with another number of parameters | The two are joined member by member |
+| An arity of a value the module does not declare, or that no module downstream can reach; an arity below one | See [Which values have one](#which-values-have-one) |
+
+## What reads it
+
+**Name resolution and elaboration read a build environment** made of the interfaces
+of the modules a module depends on, every module the imports reach among them
+([Modules](../06-Modules/01-Modules.md)). A name resolves through the export tables
+of the modules the header imports, and what it stands for is read from the file of
+the module declaring it.
+
+**Translation reads a checked environment of arities, not a collection of files.**
+An interface a compiler holds need not have come through a reader of these bytes,
+and a wrong arity is a soundness matter rather than a performance one, so the
+reader's condition on an arity is checked again where the interfaces are gathered,
+together with one thing beyond it.
 
 | The interfaces hold | Why |
 | --- | --- |
@@ -304,11 +374,13 @@ cannot be handed an arity nothing checked. **What it checks is the arity and not
 else**: whether the bytes are well formed is a reader's question, and whether an
 arity is the one the declaring module states is a loader's.
 
-**An arity is read out of that environment through the import list of the module
-being translated.** A term names a value of a module its own module imports, so an
-interface of any other module says nothing about a name that term carries — and the
-module being translated is one of those others. The arity of its own values is read
-off their right-hand sides, and an interface claiming one for a value that has none,
-a `nonrec` holding a function rather than being one, would make a `callk` of a call
-that must stay a `callu`. An interface of a module that is not imported is not
-consulted rather than refused: an absent arity costs nothing.
+**An arity is read for the modules the one being translated depends on**: those it
+imports, and those each of them imports in turn. A name a term carries is qualified
+by the module declaring it, which is among them, whether the term reached it through
+an import of that module or through a re-export, so a re-exported value is called
+with the arity its declaring module publishes. **A module outside the dependencies
+sharpens nothing**, and nor does the module being translated: the arity of its own
+values is read off their right-hand sides, and an interface claiming one for a value
+that has none, a `nonrec` holding a function rather than being one, would make a
+`callk` of a call that must stay a `callu`. An interface that is not consulted is not
+refused: an absent arity costs nothing.

@@ -51,25 +51,21 @@ the same module, and the two together are what the compiler writes.
 
 | File | Holds |
 | --- | --- |
-| `.dmi` | A module's exported types, and what a module downstream of it needs in order to optimize across the boundary — the bodies of functions eligible for inlining among them |
+| `.dmi` | The module's interface: what it publishes, its declarations with their Core types, and the arities of the values it declares that a module downstream can reach; and, once the optimizer is written, what a module downstream needs to optimize across the boundary — the bodies of functions eligible for inlining among them |
 | `.dmo` | The module's tables and the code of its functions |
 
-**What a `.dmi` carries is settled when the optimizer is written**, its content
-being determined by what optimization across a module boundary turns out to
-require. What is fixed already is the split: compiling a module reads the `.dmi`
-of each module it imports, and reads a `.dmo` only to link or to execute.
+**What a `.dmi` carries beyond the interface is settled when the optimizer is
+written**, being determined by what optimization across a module boundary turns
+out to require. What is fixed already is the split: compiling a module reads the
+`.dmi` of each module it depends on, and reads a `.dmo` only to link or to execute.
 
 One thing in this document depends on that file already. `callk` names a
 top-level value together with its **definitional arity**, which is the number of
 leading lambdas its right-hand side has and not something its type says
 ([Translation](../04-MiddleEnd/02-Translation.md)); for an imported value the
 `.dmi` is where it comes from. Where it is absent the call is a `callu`, which is
-correct for every callee, so a `.dmi` that does not yet publish arity costs
-sharpness and nothing else.
-
-**That much of the file is therefore fixed**, and [Interface](03-Interface.md)
-fixes it: what a `.dmi` holds today is the definitional arity of each value a
-module exports, and what it holds tomorrow is what the optimizer asks for.
+correct for every callee, so a missing arity costs sharpness and nothing else
+([Interface](03-Interface.md)).
 
 ### What it therefore carries
 
