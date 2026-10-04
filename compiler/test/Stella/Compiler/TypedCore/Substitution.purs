@@ -68,6 +68,10 @@ spec = describe "Stella.Compiler.TypedCore.substituteType" do
     substituteType (Map.singleton a (TVar b)) (TForall b KType (pureFn (TVar a) (TVar b)))
       `shouldEqual` TForall (TyVar "b1") KType (pureFn (TVar b) (TVar (TyVar "b1")))
 
+  it "renames a binder hiding one substitution and capturing another's value" do
+    substituteType (Map.fromFoldable [ Tuple a (TVar b), Tuple b int ]) (TForall b KType (TVar a))
+      `shouldEqual` TForall (TyVar "b1") KType (TVar b)
+
   it "substitutes all at once" do
     substituteType (Map.fromFoldable [ Tuple a (TVar b), Tuple b (TVar a) ]) (pureFn (TVar a) (TVar b))
       `shouldEqual` pureFn (TVar b) (TVar a)
