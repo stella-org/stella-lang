@@ -212,12 +212,6 @@ va = tv "a"
 vb :: Type
 vb = tv "b"
 
-ve :: Type
-ve = tv "e"
-
-vs :: Type
-vs = tv "s"
-
 int :: Type
 int = TCon intTy []
 
@@ -619,22 +613,20 @@ values =
                 Nothing
         }
       ]
-  -- its type variables are named apart from those of `bind`, which it
-  -- instantiates at them
-  , value "sepBy" (quantified [ "e", "s" ] (fns [ parser ve, parser vs ] (parser (list ve))))
-      $ tylam [ "e", "s" ]
-      $ lam [ Tuple "p" (parser ve), Tuple "sep" (parser vs) ]
+  , value "sepBy" (quantified [ "a", "b" ] (fns [ parser va, parser vb ] (parser (list va))))
+      $ tylam [ "a", "b" ]
+      $ lam [ Tuple "p" (parser va), Tuple "sep" (parser vb) ]
       $
-        call "orElse" [ list ve ]
-          [ call "bind" [ ve, list ve ]
+        call "orElse" [ list va ]
+          [ call "bind" [ va, list va ]
               [ v "p"
-              , lam [ Tuple "x" ve ] $
-                  call "map" [ list ve, list ve ]
-                    [ lam [ Tuple "xs" (list ve) ] (cons ve (v "x") (v "xs"))
-                    , call "many" [ ve ] [ call "bind" [ vs, ve ] [ v "sep", lam [ Tuple "u" vs ] (v "p") ] ]
+              , lam [ Tuple "x" va ] $
+                  call "map" [ list va, list va ]
+                    [ lam [ Tuple "xs" (list va) ] (cons va (v "x") (v "xs"))
+                    , call "many" [ va ] [ call "bind" [ vb, va ] [ v "sep", lam [ Tuple "u" vb ] (v "p") ] ]
                     ]
               ]
-          , call "pure" [ list ve ] [ nil ve ]
+          , call "pure" [ list va ] [ nil va ]
           ]
   -- the trees continuing an item: up to a tree beginning a line at or left of
   -- the block's column

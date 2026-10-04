@@ -115,6 +115,8 @@ The distinction is also the unit of **separate compilation**. `Σ` is what a mod
 
 **`Unit` is not a literal.** `Prim` declares `data Unit = Unit`, so `Prim.Unit` is an ordinary data constructor of arity 0 and one `switchCtor` branch exhausts it. As a literal it would fall under `switchLit`, where a default is mandatory because literals cannot be exhausted. Surface syntax writes the value `()`; Core writes `Prim.Unit`.
 
+**Substituting a type for a type variable is capture-avoiding and simultaneous**, as `τ[a := σ]` is meant: a `forall` binding `a` again leaves it alone beneath it, a `forall` binding a variable free in `σ` is renamed first, and `τ[ā := τ̄]` replaces every variable at once rather than one after another. Core gives no binder a name unique across a module — a scheme is instantiated at the variables of whatever term uses it — so neither condition can be left to the names chosen.
+
 The rules for global names instantiate a kind scheme with `κ̄'`, which is **pure substitution**: `κ̄'` is written in the term, so the checker neither guesses nor searches for it. It verifies only that the arity matches and that each `κ'` is a quantifiable kind. Where a global name has an empty scheme, `[[]]` is omitted and the rule reads as `(M.x : σ) ∈ Σ`, which is the case for most of Core.
 
 ## Records and variants

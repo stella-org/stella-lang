@@ -27,7 +27,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.TypedCore.Kind (Kind, Scheme, substituteKind)
-import Stella.Compiler.TypedCore.Name (EffName, KindVar, Qualified, Symbol, Tag, TyName, TyVar)
+import Stella.Compiler.TypedCore.Name (EffName, KindVar, Qualified, Symbol, Tag, TyName, TyVar(..))
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
 import Data.Map as Map
@@ -127,34 +127,66 @@ rowEntryPayload = case _ of
   RowLabelledEffectEntry _ e args -> EffectPayload e args
   RowRegionEntry var cells -> RegionPayload var cells
 
--- | Instantiate type variables.
+-- | Instantiate type variables, all at once: what a variable is replaced by is
+-- | not substituted into again, so `{a := b, b := a}` swaps the two.
 -- |
--- | Every bound variable of a Core term is unique within its context, so a
--- | substitution passes under a binder without renaming it: no binder it meets
--- | can capture a variable of what is substituted in.
+-- | **No binder captures a variable of what is substituted in.** A `forall`
+-- | shadows the variable it binds, which the substitution then leaves alone
+-- | beneath it; and a `forall` binding a variable free in what is substituted
+-- | is renamed first, to the variable's name followed by the least number
+-- | that clashes with nothing in scope, so the result is the same type up to
+-- | the names of its binders. Core gives no binder a name unique across a
+-- | module: a scheme is instantiated at the variables of whatever term uses it.
 substituteType :: Map TyVar Type -> Type -> Type
-substituteType sub = go
-  where
-  go = case _ of
-    TVar a -> fromMaybe (TVar a) (Map.lookup a sub)
-    TCon name kinds -> TCon name kinds
-    TApp f x -> TApp (go f) (go x)
-    TForall a kind body -> TForall a kind (go body)
-    TConstrained constraint body -> TConstrained (substituteConstraint sub constraint) (go body)
-    TRowEmpty -> TRowEmpty
-    TRowExtend entry rest -> TRowExtend (goEntry entry) (go rest)
-    TRowUnion left right -> TRowUnion (go left) (go right)
-
-  goEntry = case _ of
-    RowTypeEntry key ty -> RowTypeEntry key (go ty)
-    RowEffectEntry name args -> RowEffectEntry name (map go args)
-    RowLabelledEffectEntry s name args -> RowLabelledEffectEntry s name (map go args)
-    RowRegionEntry var cells -> RowRegionEntry (go var) (go cells)
+substituteType sub = goType sub
 
 substituteConstraint :: Map TyVar Type -> Constraint -> Constraint
-substituteConstraint sub = case _ of
-  Lacks key row -> Lacks key (substituteType sub row)
-  Disjoint left right -> Disjoint (substituteType sub left) (substituteType sub right)
+substituteConstraint sub = goConstraintIn sub
+
+goType :: Map TyVar Type -> Type -> Type
+goType sub ty
+  | Map.isEmpty sub = ty
+  | otherwise = case ty of
+      TVar a -> fromMaybe (TVar a) (Map.lookup a sub)
+      TCon name kinds -> TCon name kinds
+      TApp f x -> TApp (goType sub f) (goType sub x)
+      TForall a kind body ->
+        let
+          inner = Map.delete a sub
+          substituted = foldMap freeTypeVars (Map.values inner)
+        in
+          if Set.member a substituted then
+            let
+              renamed = freshVar (substituted <> freeTypeVars body <> Set.fromFoldable (Map.keys inner)) a
+            in
+              TForall renamed kind (goType (Map.insert a (TVar renamed) inner) body)
+          else TForall a kind (goType inner body)
+      TConstrained constraint body -> TConstrained (goConstraintIn sub constraint) (goType sub body)
+      TRowEmpty -> TRowEmpty
+      TRowExtend entry rest -> TRowExtend (goEntryIn sub entry) (goType sub rest)
+      TRowUnion left right -> TRowUnion (goType sub left) (goType sub right)
+
+goConstraintIn :: Map TyVar Type -> Constraint -> Constraint
+goConstraintIn sub = case _ of
+  Lacks key row -> Lacks key (goType sub row)
+  Disjoint left right -> Disjoint (goType sub left) (goType sub right)
+
+goEntryIn :: Map TyVar Type -> RowEntry -> RowEntry
+goEntryIn sub = case _ of
+  RowTypeEntry key ty -> RowTypeEntry key (goType sub ty)
+  RowEffectEntry name args -> RowEffectEntry name (map (goType sub) args)
+  RowLabelledEffectEntry s name args -> RowLabelledEffectEntry s name (map (goType sub) args)
+  RowRegionEntry var cells -> RowRegionEntry (goType sub var) (goType sub cells)
+
+-- | The variable's name followed by the least number that names nothing given.
+freshVar :: Set TyVar -> TyVar -> TyVar
+freshVar taken (TyVar base) = go 1
+  where
+  go n =
+    let
+      candidate = TyVar (base <> show n)
+    in
+      if Set.member candidate taken then go (n + 1) else candidate
 
 -- | Instantiate the kind variables a declaration's scheme binds, which is what
 -- | `M.x [[κ̄]]` asks for. Kinds reach a type through the arguments of a

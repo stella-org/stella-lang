@@ -23,6 +23,7 @@ import Test.Stella.Compiler.TypedCore.Annotation as Annotation
 import Test.Stella.Compiler.TypedCore.Check as Check
 import Test.Stella.Compiler.TypedCore.Declare as Declare
 import Test.Stella.Compiler.TypedCore.AttributeCheck as AttributeCheck
+import Test.Stella.Compiler.TypedCore.Substitution as Substitution
 import Test.Stella.Compiler.TypedCore.Domain as Domain
 import Test.Stella.Compiler.TypedCore.Kinding as Kinding
 import Test.Stella.Compiler.TypedCore.Row as Row
@@ -96,6 +97,7 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   Kinding.spec
   Declare.spec
   AttributeCheck.spec
+  Substitution.spec
   Domain.spec
   Check.spec
   Annotation.spec
