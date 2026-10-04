@@ -19,6 +19,7 @@ import Prim as P
 
 import Stella.Compiler.Primitive (PrimOp, codeOfOp)
 import Stella.Compiler.Bytecode.Bytes (Bytes, EncodeError(..), f64, svar, u8, utf8, uvar)
+import Stella.Compiler.Bytecode.Container (E, qname, runE, section, str, strings, throwE, vec, vecOf)
 import Stella.Compiler.Bytecode.Format as F
 import Stella.Compiler.Bytecode.Validate (validate)
 import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg(..), Tail(..))
@@ -28,83 +29,12 @@ import Stella.Compiler.Bytecode.Module as BM
 import Stella.Compiler.MiddleEnd.Rep (Rep(..))
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
 import Stella.Compiler.TypedCore.Domain (codePointOf, textOf)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), OpName(..), Qualified(..), Symbol(..), Tag(..), TyName(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), OpName(..), Symbol(..), Tag(..), TyName(..))
 import Data.Array as Array
 import Data.Either (Either(..))
-import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
-
--- | The string table as it is built: what each string was given, and the
--- | strings in the order they were first reached.
-type Table =
-  { indices :: Map P.String P.Int
-  , strings :: P.Array P.String
-  }
-
-newtype E a = E (Table -> Either EncodeError (Tuple a Table))
-
-runE :: forall a. Table -> E a -> Either EncodeError (Tuple a Table)
-runE table (E f) = f table
-
-instance Functor E where
-  map f (E g) = E \t -> case g t of
-    Left err -> Left err
-    Right (Tuple a t') -> Right (Tuple (f a) t')
-
-instance Apply E where
-  apply = ap
-
-instance Applicative E where
-  pure a = E \t -> Right (Tuple a t)
-
-instance Bind E where
-  bind (E g) f = E \t -> case g t of
-    Left err -> Left err
-    Right (Tuple a t') -> case f a of E h -> h t'
-
-instance Monad E
-
-throwE :: forall a. EncodeError -> E a
-throwE err = E \_ -> Left err
-
--- | A string, as the index it is given. One that has been written before keeps
--- | the index it was given, which is what leaves the table free of duplicates.
-str :: P.String -> E Bytes
-str text = E \t -> case Map.lookup text t.indices of
-  Just i -> Right (Tuple (uvar i) t)
-  Nothing ->
-    let
-      i = Array.length t.strings
-    in
-      Right
-        ( Tuple (uvar i)
-            { indices: Map.insert text i t.indices
-            , strings: Array.snoc t.strings text
-            }
-        )
-
--- | A qualified name: the module, then the name within it.
-qname :: forall a. (a -> P.String) -> Qualified a -> E Bytes
-qname spelling (Qualified (ModuleName m) name) = do
-  a <- str m
-  b <- str (spelling name)
-  pure (a <> b)
-
--- | A count, then that many of what follows it.
-vec :: forall a. (a -> E Bytes) -> P.Array a -> E Bytes
-vec item items = do
-  written <- traverse item items
-  pure (uvar (Array.length items) <> Array.concat written)
-
--- | The same, where the item needs no string.
-vecOf :: forall a. (a -> Bytes) -> P.Array a -> Bytes
-vecOf item items = uvar (Array.length items) <> Array.concatMap item items
-
-section :: P.Int -> Bytes -> Bytes
-section id payload = u8 id <> uvar (Array.length payload) <> payload
 
 -- | **What this writes, a decoder returns.** A module claiming another format or
 -- | another ABI version cannot be written faithfully — what a byte means is this
@@ -122,16 +52,8 @@ encode dmo = do
     Right _ -> Right unit
   Tuple sections table <- runE { indices: Map.empty, strings: [] } (body dmo)
   head <- header dmo
-  strings <- traverse text table.strings
-  pure
-    ( head
-        <> section F.sectionStrings (uvar (Array.length table.strings) <> Array.concat strings)
-        <> sections
-    )
-  where
-  text s = do
-    written <- utf8 s
-    pure (uvar (Array.length written) <> written)
+  stringTable <- strings table.strings
+  pure (head <> section F.sectionStrings stringTable <> sections)
 
 header :: Dmo -> Either EncodeError Bytes
 header dmo = do

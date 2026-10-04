@@ -41,7 +41,6 @@ module Stella.Compiler.Interface.Module
   , emptyDeclarations
   , isComputation
   , foreignSummary
-  , dmiOf
   ) where
 
 import Prelude
@@ -53,13 +52,12 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set (Set)
 import Data.Show.Generic (genericShow)
-import Stella.Compiler.Interface (Dmi)
 import Stella.Compiler.Interface.Scheme (Scheme, SchemeBody(..), coreBody)
 import Stella.Compiler.Surface.Decl (Associativity, FixityTarget, Observation)
 import Stella.Compiler.Surface.Type (TypeOperatorTarget)
 import Stella.Compiler.Surface.Name (OperatorName)
 import Stella.Compiler.TypedCore.Kind (KindScheme)
-import Stella.Compiler.TypedCore.Name (EffName, Ident(..), ModuleName, Qualified(..), Symbol, TyName)
+import Stella.Compiler.TypedCore.Name (EffName, Ident, ModuleName, Qualified, Symbol, TyName)
 import Stella.Compiler.TypedCore.Prim (asFunction, ioTy)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass)
 import Stella.Compiler.TypedCore.Term (Literal)
@@ -303,19 +301,6 @@ foreignSummary entry = case entry.sort of
       Nothing -> case t of
         TApp (TCon name _) _ -> name == ioTy
         _ -> false
-
--- | The part of an interface a translation reads: the arity of each value the
--- | module declares and exports, under its own name. A name it re-exports is
--- | another module's, and has no entry here whatever the table holds. The
--- | interface is read as built, its export table saying which names the module
--- | declares; checking that against its declarations is not this function's.
-dmiOf :: ModuleInterface -> Dmi
-dmiOf i = { name: i.name, arities: Map.filterKeys ownExport i.arities }
-  where
-  ownExport name = case Map.lookup (unwrapIdent name) i.exports.values of
-    Just { entity: Qualified m n, via: Declared } -> m == i.name && n == name
-    _ -> false
-  unwrapIdent (Ident s) = s
 
 derive instance Eq TypeEntity
 derive instance Ord TypeEntity

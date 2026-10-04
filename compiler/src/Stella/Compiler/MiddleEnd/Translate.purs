@@ -981,11 +981,11 @@ translate imports m declared =
     { signature: declared.signature
     , locals: Map.empty
     , joins: Map.empty
-    -- an arity is taken from the environment only for a module this one imports,
-    -- and the names cannot collide: this module speaks for its own
+    -- an arity is taken from the environment for the modules this one depends
+    -- on, and this one speaks for its own
     , arities:
         Map.union (definitionalArities m.name declared)
-          (importedArities m.imports imports)
+          (importedArities m.name m.imports imports)
     }
 
 -- | The number of leading lambdas a top-level right-hand side has, where it has

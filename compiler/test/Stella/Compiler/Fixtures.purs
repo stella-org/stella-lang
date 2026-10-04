@@ -34,7 +34,8 @@ import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Class (liftEffect)
 import Stella.Compiler.Bytecode (Dmo, decode, encode, lower)
-import Stella.Compiler.Interface (Dmi, importsOf, interfaceOf)
+import Stella.Compiler.Interface (aritiesOf, importsOf)
+import Data.Map (Map)
 import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.Primitive (primTable)
 import Stella.Compiler.TypedCore (Ident(..), Module, ModuleName(..), Qualified(..), declareAnnotated)
@@ -63,7 +64,8 @@ foreign import removeTree :: P.String -> Effect Unit
 
 -- Compiling ---------------------------------------------------------------------------
 
-type Compiled = { dmo :: Dmo, dmi :: Dmi }
+-- | A compiled module: its `.dmo`, and the arities its interface carries.
+type Compiled = { dmo :: Dmo, dmi :: { name :: ModuleName, imports :: P.Array ModuleName, arities :: Map Ident P.Int } }
 
 -- | Each module checked against the signatures before it and translated against
 -- | the interfaces of those it imports, then carried through the container.
@@ -77,7 +79,7 @@ compileAll modules = _.out <$> foldM step { signature: abiSignature, dmis: [], o
     lowered <- stage "lower" (lower mid)
     bytes <- stage "encode" (encode lowered.dmo)
     dmo <- stage "decode" (decode bytes)
-    let dmi = interfaceOf mid.module
+    let dmi = { name: mid.module.name, imports: mid.module.imports, arities: aritiesOf mid.module }
     pure { signature: declared.signature, dmis: Array.snoc acc.dmis dmi, out: Array.snoc acc.out { dmo, dmi } }
 
 stage :: forall e a. Show e => P.String -> Either e a -> Either P.String a

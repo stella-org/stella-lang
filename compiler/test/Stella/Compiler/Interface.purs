@@ -1,34 +1,30 @@
--- | The `.dmi`, and what it buys: a saturated call to an imported value.
+-- | The arities an interface carries, and what they buy: a saturated call to an
+-- | imported value.
 -- |
 -- | Two modules stand behind these cases. `Lib` exports a function of two
 -- | arguments and a value that is not a function; `Main` calls the first,
 -- | saturated. **With the interface of `Lib` the call is a `callk` and without it
 -- | the same call is a `callu`**, which is the whole of what the file is for.
 -- |
--- | The cases after that are the format's: what an interface holds, that the
--- | entries ascend by scalar value rather than by the host's order, and what each
--- | direction refuses.
+-- | The cases after that are the environment's: what it holds, and what it
+-- | refuses. The bytes are [Interface.File](Interface/File.purs)'s.
 module Test.Stella.Compiler.Interface (spec) where
 
 import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Bytecode.Bytes (Bytes, DecodeError(..), EncodeError(..))
-import Stella.Compiler.Interface (Dmi, InterfaceError(..), importedArities, importsOf, interfaceOf, noImports)
-import Stella.Compiler.Interface.File as File
+import Stella.Compiler.Interface (InterfaceError(..), aritiesOf, importedArities, importsOf, noImports)
 import Stella.Compiler.MiddleEnd as M
 import Stella.Compiler.TypedCore (Decl(..), Export(..), Expr(..), Ident(..), Literal(..), Module, ModuleName(..), Qualified(..), Type(..), monoScheme)
 import Stella.Compiler.TypedCore.Declare (declare, declareAnnotated)
 import Stella.Compiler.TypedCore.Prim (intTy, primSignature, pureFn)
 import Stella.Compiler.TypedCore.Signature (Signature)
 import Data.Array as Array
-import Data.Char as Char
 import Data.Either (Either(..))
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe)
-import Data.String.CodeUnits as CodeUnits
+import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Test.Stella.Compiler.TypedCore.VerticalSlice (intModule)
 import Test.Spec (Spec, describe, it)
@@ -155,7 +151,7 @@ library = case declare primSignature intModule of
 
 -- | The body of the function the last declaration of a version of `Main` becomes,
 -- | translated against the interfaces given.
-bodyOf :: P.Array Dmi -> Module P.Int -> Either P.String M.Expr
+bodyOf :: P.Array Arities -> Module P.Int -> Either P.String M.Expr
 bodyOf interfaces m = do
   lib <- library
   case importsOf interfaces of
@@ -168,50 +164,27 @@ bodyOf interfaces m = do
           Nothing -> Left "Main holds no function"
           Just f -> Right f.body
 
-libInterface :: Either P.String Dmi
-libInterface = map (interfaceOf <<< _.mid) library
+-- | What translation reads of an interface: the module, and its arities.
+type Arities = { name :: ModuleName, imports :: P.Array ModuleName, arities :: Map Ident P.Int }
 
--- Fixtures of the format ----------------------------------------------------------
+libInterface :: Either P.String Arities
+libInterface = map (\l -> { name: l.mid.name, imports: l.mid.imports, arities: aritiesOf l.mid }) library
+
+-- Fixtures ---------------------------------------------------------------------------
 
 -- | An interface of one module and one entry.
-oneEntry :: P.String -> P.Int -> Dmi
+oneEntry :: P.String -> P.Int -> Arities
 oneEntry name arity =
   { name: mainModuleName
+  , imports: []
   , arities: Map.singleton (Ident name) arity
   }
-
--- | Two names whose order by scalar value is the reverse of their order by code
--- | unit: an astral character is a pair beginning `0xD83D`, which a host compares
--- | below `U+E000`, and a scalar value puts above it.
-astral :: P.String
-astral = "😀"
-
-privateUse :: Maybe P.String
-privateUse = map CodeUnits.singleton (Char.fromCharCode 0xE000)
-
-loneSurrogate :: Maybe P.String
-loneSurrogate = map CodeUnits.singleton (Char.fromCharCode 0xD800)
 
 -- | The arities of an environment built from the interfaces given, every module
 -- | among them named, which is how an environment is compared here: `Imports`
 -- | itself is opaque.
-aritiesOf :: P.Array Dmi -> Either InterfaceError (Map (Qualified Ident) P.Int)
-aritiesOf interfaces = importedArities (map _.name interfaces) <$> importsOf interfaces
-
-bytesOf :: Dmi -> Bytes
-bytesOf dmi = case File.encode dmi of
-  Left _ -> []
-  Right bytes -> bytes
-
--- | Where a run of bytes stands in another, which is how the order of two entries
--- | is read off a file.
-indexOfBytes :: Bytes -> Bytes -> Maybe P.Int
-indexOfBytes needle haystack = go 0
-  where
-  go i
-    | i + Array.length needle > Array.length haystack = Nothing
-    | Array.slice i (i + Array.length needle) haystack == needle = Just i
-    | otherwise = go (i + 1)
+environmentOf :: P.Array Arities -> Either InterfaceError (Map (Qualified Ident) P.Int)
+environmentOf interfaces = importedArities (ModuleName "Elsewhere") (map _.name interfaces) <$> importsOf interfaces
 
 spec :: Spec Unit
 spec = describe "Stella.Compiler.Interface" do
@@ -233,11 +206,10 @@ spec = describe "Stella.Compiler.Interface" do
             )
         )
 
-    it "leaves a call unknown where the interface is of a module this one does not import" do
+    it "leaves a call unknown where the interface is of the module being translated" do
       -- an interface naming the module being translated claims an arity for a
-      -- right-hand side whose arity is read off the term, and a term may name only
-      -- a module its own module imports, so neither source sharpens this call
-      let selfNamed = { name: mainModuleName, arities: Map.singleton (Ident "alias") 2 }
+      -- right-hand side whose arity is read off the term, so it sharpens nothing
+      let selfNamed = { name: mainModuleName, imports: [], arities: Map.singleton (Ident "alias") 2 }
       bodyOf [ selfNamed ] aliasModule `shouldEqual` Right
         ( M.ETail
             ( M.CCallUnknown (M.AGlobal mainAlias)
@@ -257,102 +229,36 @@ spec = describe "Stella.Compiler.Interface" do
       map _.name libInterface `shouldEqual` Right libModuleName
 
   describe "the environment a translation reads" do
-    it "carries the arities of the modules named, under the qualified names" do
+    it "carries the arities of the modules imported, under the qualified names, and not the module translated" do
       case libInterface of
         Left err -> fail err
-        Right dmi -> do
-          (importedArities [ libModuleName ] <$> importsOf [ dmi ])
+        Right lib -> do
+          (importedArities mainModuleName [ libModuleName ] <$> importsOf [ lib ])
             `shouldEqual` Right (Map.singleton add2 2)
-          -- an interface of a module a term cannot name says nothing about it
-          (importedArities [] <$> importsOf [ dmi ])
+          (importedArities libModuleName [ libModuleName ] <$> importsOf [ lib ])
             `shouldEqual` Right Map.empty
+
+    it "reaches a module through the imports of those imported, and no module outside them" do
+      -- `C` imports `B`, which imports `A`; `U` is in the environment and in no
+      -- module's imports
+      let
+        a = { name: ModuleName "A", imports: [], arities: Map.singleton (Ident "f") 2 }
+        b = { name: ModuleName "B", imports: [ ModuleName "A" ], arities: Map.empty }
+        u = { name: ModuleName "U", imports: [], arities: Map.singleton (Ident "g") 1 }
+      (importedArities (ModuleName "C") [ ModuleName "B" ] <$> importsOf [ a, b, u ])
+        `shouldEqual` Right (Map.singleton (Qualified (ModuleName "A") (Ident "f")) 2)
 
     it "refuses an arity of zero, and one below it" do
       -- an interface in memory need not have come through a reader, and
       -- translation splits an application spine at the arity it is given: at zero
       -- a saturated call would become a known call of no arguments
-      aritiesOf [ oneEntry "f" 0 ]
+      environmentOf [ oneEntry "f" 0 ]
         `shouldEqual` Left (NotAnArity mainModuleName (Ident "f") 0)
-      aritiesOf [ oneEntry "f" (-1) ]
+      environmentOf [ oneEntry "f" (-1) ]
         `shouldEqual` Left (NotAnArity mainModuleName (Ident "f") (-1))
 
     it "refuses two interfaces of one module" do
       -- which arity each of that module's names has would otherwise depend on the
       -- order the two were read in
-      aritiesOf [ oneEntry "f" 1, oneEntry "g" 1 ]
+      environmentOf [ oneEntry "f" 1, oneEntry "g" 1 ]
         `shouldEqual` Left (ModuleTwice mainModuleName)
-
-  describe "the bytes" do
-    it "begin with the magic, the format version, and the flags" do
-      Array.take 6 (bytesOf (oneEntry "f" 1))
-        `shouldEqual` [ 0x44, 0x4D, 0x49, 0x00, 0x00, 0x00 ]
-
-    it "carry an interface through and back" do
-      case libInterface of
-        Left err -> fail err
-        Right dmi -> File.decode (bytesOf dmi) `shouldEqual` Right dmi
-
-    it "order the entries by scalar value and not by the host's order" do
-      -- `Ord String` compares code units, which puts the astral name first; the
-      -- format compares scalar values, which puts `U+E000` first
-      case privateUse of
-        Nothing -> fail "a code unit is the only way to write one"
-        Just name -> do
-          let
-            two =
-              { name: mainModuleName
-              , arities: Map.fromFoldable
-                  [ Tuple (Ident astral) 1, Tuple (Ident name) 2 ]
-              }
-            bytes = bytesOf two
-          (indexOfBytes [ 0xEE, 0x80, 0x80 ] bytes < indexOfBytes [ 0xF0, 0x9F, 0x98, 0x80 ] bytes)
-            `shouldEqual` true
-          File.decode bytes `shouldEqual` Right two
-
-  describe "what a reader refuses" do
-    it "other magic" do
-      File.decode [ 0x44, 0x4D, 0x4F, 0x00 ] `shouldEqual` Left BadMagic
-
-    it "a format version it does not implement" do
-      File.decode (mutated 4 0x01 (bytesOf (oneEntry "f" 1)))
-        `shouldEqual` Left (UnsupportedFormatVersion 1)
-
-    it "a flag it does not know" do
-      File.decode (mutated 5 0x01 (bytesOf (oneEntry "f" 1)))
-        `shouldEqual` Left (UnknownFlags 1)
-
-    it "an entry whose arity is not positive" do
-      -- `"Main"`, then one entry of the one-byte name `f` at arity 0
-      File.decode (header <> [ 0x01, 0x01, 0x66, 0x00 ])
-        `shouldEqual` Left (ArityNotPositive 0)
-
-    it "entries that do not ascend, a repeated name among them" do
-      File.decode (header <> [ 0x02, 0x01, 0x62, 0x01, 0x01, 0x61, 0x02 ])
-        `shouldEqual` Left EntriesOutOfOrder
-      File.decode (header <> [ 0x02, 0x01, 0x61, 0x01, 0x01, 0x61, 0x02 ])
-        `shouldEqual` Left EntriesOutOfOrder
-
-    it "a byte after the table" do
-      -- a longer file is a later format, not this one with something ignorable
-      -- at the end
-      File.decode (bytesOf (oneEntry "f" 1) <> [ 0x00 ])
-        `shouldEqual` Left TrailingBytes
-
-  describe "what an encoder refuses" do
-    it "an arity below one, absence being what a value without one has" do
-      File.encode (oneEntry "f" 0)
-        `shouldEqual` Left (ArityBelowOne (Ident "f") 0)
-
-    it "a name carrying an unpaired surrogate" do
-      case loneSurrogate of
-        Nothing -> fail "a code unit is the only way to write one"
-        Just name ->
-          File.encode (oneEntry name 1) `shouldEqual` Left (NotScalarText name)
-
--- | The header of a file of module `Main`, up to the count of the entries.
-header :: Bytes
-header = [ 0x44, 0x4D, 0x49, 0x00, 0x00, 0x00, 0x04, 0x4D, 0x61, 0x69, 0x6E ]
-
--- | The bytes with one of them replaced.
-mutated :: P.Int -> P.Int -> Bytes -> Bytes
-mutated at value bytes = fromMaybe bytes (Array.updateAt at value bytes)

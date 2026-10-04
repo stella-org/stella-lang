@@ -19,7 +19,9 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Primitive (PrimOp, opOfCode)
-import Stella.Compiler.Bytecode.Bytes (Bytes, DecodeError(..), R, TableKind(..), TagKind(..), atEndR, byte, expect, f64R, positionR, runR, skipR, structuralR, svarR, throwR, utf8R, uvarR, vecR)
+import Stella.Compiler.Bytecode.Bytes (Bytes, DecodeError(..), R, TableKind(..), TagKind(..), byte, expect, f64R, runR, structuralR, svarR, throwR, uvarR, vecR)
+import Stella.Compiler.Bytecode.Container (Strings, qnameR, strR, text)
+import Stella.Compiler.Bytecode.Container as C
 import Stella.Compiler.Bytecode.Format as F
 import Stella.Compiler.Bytecode.Validate (validate)
 import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg(..), Tail(..))
@@ -28,8 +30,8 @@ import Stella.Compiler.Bytecode.Module (CalleeEntry(..), Constant(..), Dmo, Glob
 import Stella.Compiler.Bytecode.Module as BM
 import Stella.Compiler.MiddleEnd.Rep (Rep(..))
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
-import Stella.Compiler.TypedCore.Domain (ScalarString, scalarString, scalarValue, textOf)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), OpName(..), Qualified(..), Symbol(..), Tag(..), TyName(..))
+import Stella.Compiler.TypedCore.Domain (scalarString, scalarValue, textOf)
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), OpName(..), Symbol(..), Tag(..), TyName(..))
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (traverse_)
@@ -44,16 +46,6 @@ decode bytes = do
     Left fault -> Left (Malformed fault)
     Right _ -> Right unit
   pure dmo
-
--- | The strings a file holds, which every name in it is an index into.
-type Strings = P.Array P.String
-
--- | A section's payload together with the id it stood at, which the next section
--- | must exceed.
-type Read a =
-  { value :: a
-  , previous :: P.Int
-  }
 
 dmoR :: R Dmo
 dmoR = do
@@ -117,69 +109,17 @@ headerR = do
   when (abi /= abiVersion) (throwR (UnknownAbiVersion abi))
   pure { formatVersion: format, abiVersion: abi }
 
--- | A length-prefixed run of UTF-8, which is how the string table and the ABI
--- | version are written.
-text :: R ScalarString
-text = do
-  n <- structuralR
-  utf8R n
+-- | What the `.dmo` says of its sections.
+layout :: C.Layout
+layout = { skippableFrom: F.skippableFrom, required: F.requiredSections }
 
--- | One section, at the id it must stand at.
--- |
--- | The ids ascend strictly, so an id at or below the one before is out of order
--- | and a repeated section is the same failure. An unknown id at or above the
--- | boundary carries no meaning and is skipped; one below it bears on what the
--- | module computes, and a reader that does not know it stops.
-sectionR :: forall a. P.Int -> P.Int -> R a -> R (Read a)
-sectionR previous wanted payload = go previous
-  where
-  go prev = do
-    done <- atEndR
-    if done then throwR (SectionMissing wanted)
-    else do
-      id <- byte
-      len <- structuralR
-      if id <= prev then throwR (SectionOutOfOrder prev id)
-      else if id == wanted then do
-        start <- positionR
-        value <- payload
-        end <- positionR
-        if end - start /= len then throwR (SectionLengthMismatch id)
-        else pure { value, previous: id }
-      else if id >= F.skippableFrom then do
-        skipR len
-        go id
-      else if Array.elem id F.requiredSections then throwR (SectionMissing wanted)
-      else throwR (UnknownSection id)
+sectionR :: forall a. P.Int -> P.Int -> R a -> R (C.Read a)
+sectionR = C.sectionR layout
 
 -- | What stands after the last required section: anything above the boundary, in
 -- | ascending order, and nothing else.
 trailingR :: P.Int -> R Unit
-trailingR previous = do
-  done <- atEndR
-  if done then pure unit
-  else do
-    id <- byte
-    len <- structuralR
-    if id <= previous then throwR (SectionOutOfOrder previous id)
-    else if id >= F.skippableFrom then do
-      skipR len
-      trailingR id
-    else throwR (UnknownSection id)
-
--- | A string, by its index into the table.
-strR :: Strings -> R P.String
-strR strings = do
-  i <- structuralR
-  case Array.index strings i of
-    Nothing -> throwR (IndexOutOfRange StringTable i)
-    Just s -> pure s
-
-qnameR :: forall a. Strings -> (P.String -> a) -> R (Qualified a)
-qnameR strings name = do
-  m <- strR strings
-  n <- strR strings
-  pure (Qualified (ModuleName m) (name n))
+trailingR previous = void (C.trailingR layout (const (Nothing :: Maybe (R Unit))) previous)
 
 constantR :: Strings -> R Constant
 constantR strings = do

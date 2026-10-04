@@ -13,7 +13,7 @@ import Data.Set as Set
 import Effect.Aff (Aff)
 import Stella.Compiler.Interface (importedArities, importsOf)
 import Stella.Compiler.Interface.Environment (BuildEnvironment, EnvironmentError(..), ModuleView, addInterface, exportsOf, initialEnvironment, lookupAttribute, lookupType, lookupValue, reachable, viewFor)
-import Stella.Compiler.Interface.Module (ModuleInterface, TypeSort(..), ValueEntry, ValueSort(..), Via(..), dmiOf, emptyDeclarations, emptyExports, foreignSummary, isComputation)
+import Stella.Compiler.Interface.Module (ModuleInterface, TypeSort(..), ValueEntry, ValueSort(..), Via(..), emptyDeclarations, emptyExports, foreignSummary, isComputation)
 import Stella.Compiler.Interface.Prim (primAttribute)
 import Stella.Compiler.Interface.Scheme (SchemeBody(..), coreScheme, plainBody, plainScheme)
 import Stella.Compiler.Surface.Decl (Observation(..))
@@ -138,18 +138,9 @@ spec = describe "Stella.Compiler.Interface.Environment" do
         }
 
     it "come from the interface, checked as an interface of their own" do
-      case importsOf [ dmiOf withF ] of
+      case importsOf [ withF ] of
         Left e -> fail (show e)
-        Right imports -> importedArities [ moduleA ] imports `shouldEqual` Map.singleton f 2
-
-    it "are those of the values the module declares and exports, and of no value it re-exports" do
-      let
-        reexporting = (bare moduleB [ moduleA ])
-          { exports = emptyExports { values = Map.singleton "f" { entity: f, via: ThroughImport moduleA } }
-          , arities = Map.singleton (Ident "f") 2
-          }
-      (dmiOf reexporting).arities `shouldEqual` Map.empty
-      (dmiOf (withF { exports = emptyExports })).arities `shouldEqual` Map.empty
+        Right imports -> importedArities moduleB [ moduleA ] imports `shouldEqual` Map.singleton f 2
 
   describe "a scheme" do
     let

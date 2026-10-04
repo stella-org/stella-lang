@@ -101,6 +101,8 @@ data EncodeError
   -- | leading lambdas, so a value with none is absent from an interface rather than
   -- | present at zero.
   | ArityBelowOne Ident P.Int
+  -- | A precedence or a row position below zero, which a count is never.
+  | CountBelowZero P.Int
 
 -- Writing ------------------------------------------------------------------------
 
@@ -182,6 +184,25 @@ data TagKind
   | DefaultTag
   | BooleanByte
   | NewtypeByte
+  -- What an interface holds.
+  | KindTag
+  | RowKindTag
+  | TypeTag
+  | RowEntryTag
+  | RowKeyTag
+  | ConstraintTag
+  | SchemeTag
+  | OptionByte
+  | ViaTag
+  | EntityTag
+  | ValueSortTag
+  | ObservationTag
+  | TypeSortTag
+  | CanonicalClassTag
+  | AssociativityTag
+  | FixityTargetTag
+  | LiteralTag
+  | AttributeConstantTag
 
 -- | What an index was an index into.
 data TableKind
