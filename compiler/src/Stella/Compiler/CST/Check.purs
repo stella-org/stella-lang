@@ -3,6 +3,7 @@ module Stella.Compiler.CST.Check
   ( CheckError(..)
   , CheckReason(..)
   , checkModule
+  , checkExpr
   , printCheckReason
   ) where
 
@@ -230,6 +231,11 @@ subtypes = case _ of
     RowTag _ t -> [ t ]
     RowElement t -> [ t ]
     RowSpread _ t -> foldMap pure t
+
+-- | The checks of an expression, as an expression of a module is checked: what
+-- | an expansion produced is checked as written source is.
+checkExpr :: Expr -> Array CheckError
+checkExpr = expr
 
 expr :: Expr -> Array CheckError
 expr = case _ of

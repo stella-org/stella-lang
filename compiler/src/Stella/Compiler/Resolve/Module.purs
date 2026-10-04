@@ -11,7 +11,9 @@
 module Stella.Compiler.Resolve.Module
   ( ResolutionError(..)
   , ResolutionWarning(..)
+  , Resolved
   , resolveModule
+  , resolveModuleExpanding
   ) where
 
 import Prelude
@@ -24,9 +26,11 @@ import Stella.Compiler.CST.Range (binderRange, covering, exprRange, kindRange, n
 import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Interface.Environment (BuildEnvironment)
 import Stella.Compiler.Interface.Module (Exports)
+import Stella.Compiler.Macro.Expand (ExpansionError, expandModule)
+import Stella.Compiler.Macro.Run (ExpansionSettings, RunParser)
 import Stella.Compiler.Resolve.Attribute (DeclarationSort(..), resolveAttributeDeclaration, resolveAttributes)
 import Stella.Compiler.Resolve.Expr (resolveHandler, resolveTopDefinition)
-import Stella.Compiler.Resolve.Group (Declaration(..), GroupError, Prefix, ValueDeclaration, attributesOf, directivesOf, groupModule, modifiersOf)
+import Stella.Compiler.Resolve.Group (Declaration(..), GroupError, GroupedModule, Prefix, ValueDeclaration, attributesOf, directivesOf, groupModule, modifiersOf)
 import Stella.Compiler.Resolve.Monad (Found(..), Resolve, ResolveError, ResolveReason(..), ResolveWarning, TypeReference(..), ValueKind(..), context, contextOf, lookupType, lookupValue, ownValue, report, runResolve, valueKind, withTypeVariables)
 import Stella.Compiler.Resolve.Scope (ScopeError, ScopeWarning, elaborationOnlyEntry, resolveScope)
 import Stella.Compiler.Resolve.Type (bindTypeVariables, computationScope, resolveComputationSignature, resolveKind, resolveOperationSignature, resolveSignature, resolveType, signatureScope)
@@ -38,6 +42,7 @@ import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName, Quali
 
 data ResolutionError
   = GroupingError GroupError
+  | ExpandingError ExpansionError
   | ScopingError ScopeError
   | ResolvingError ResolveError
 
@@ -51,14 +56,34 @@ derive instance Eq ResolutionWarning
 instance Show ResolutionError where
   show = case _ of
     GroupingError e -> show e
+    ExpandingError e -> show e
     ScopingError e -> show e
     ResolvingError e -> show e
 
-resolveModule
+type Resolved = { module :: Surface.Module, exports :: Exports, errors :: Array ResolutionError, warnings :: Array ResolutionWarning }
+
+-- | Resolve a module whose macro calls are left unexpanded, each reported as
+-- | what this resolution does not do.
+resolveModule :: BuildEnvironment -> CST.Module -> Resolved
+resolveModule env m = resolveGrouped env (groupModule m) []
+
+-- | Resolve a module, expanding every macro call standing where an expression
+-- | does first, with the parsers run as given: the imports' macro namespace
+-- | is fixed once the items are grouped, so the calls are expanded before the
+-- | declarations are collected, and what was expanded is resolved as written
+-- | source is.
+resolveModuleExpanding :: forall m. Monad m => RunParser m -> ExpansionSettings -> BuildEnvironment -> CST.Module -> m Resolved
+resolveModuleExpanding run settings env m = do
+  let grouped = groupModule m
+  expanded <- expandModule run settings env grouped.grouped
+  pure (resolveGrouped env (grouped { grouped = expanded.grouped }) expanded.errors)
+
+resolveGrouped
   :: BuildEnvironment
-  -> CST.Module
-  -> { module :: Surface.Module, exports :: Exports, errors :: Array ResolutionError, warnings :: Array ResolutionWarning }
-resolveModule env m =
+  -> { grouped :: GroupedModule, errors :: Array GroupError }
+  -> Array ExpansionError
+  -> Resolved
+resolveGrouped env grouped expansionErrors =
   { module:
       { origin: originOf grouped.grouped.name.range
       , name: scoped.scoped.name
@@ -66,11 +91,10 @@ resolveModule env m =
       , declarations: ran.result
       }
   , exports: scoped.scoped.exports
-  , errors: map GroupingError grouped.errors <> map ScopingError scoped.errors <> map ResolvingError ran.errors
+  , errors: map GroupingError grouped.errors <> map ExpandingError expansionErrors <> map ScopingError scoped.errors <> map ResolvingError ran.errors
   , warnings: map ScopingWarning scoped.warnings <> map ResolvingWarning ran.warnings
   }
   where
-  grouped = groupModule m
   scoped = resolveScope env grouped.grouped
   ran = runResolve (contextOf env grouped.grouped scoped.scoped) 0
     (Array.catMaybes <$> traverse declaration grouped.grouped.declarations)

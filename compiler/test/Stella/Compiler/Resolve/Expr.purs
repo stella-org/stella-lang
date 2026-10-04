@@ -1,6 +1,6 @@
 -- | Expressions resolved against a module's scope, each shown as a compact
 -- | rendering of the Surface AST it becomes.
-module Test.Stella.Compiler.Resolve.Expr (spec) where
+module Test.Stella.Compiler.Resolve.Expr (spec, renderExpr) where
 
 import Prelude
 import Prim hiding (Type)

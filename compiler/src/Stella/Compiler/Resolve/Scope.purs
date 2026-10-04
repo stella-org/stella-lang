@@ -33,6 +33,9 @@ module Stella.Compiler.Resolve.Scope
   , printScopeReason
   , printScopeWarning
   , resolveScope
+  , ImportScope
+  , importScope
+  , declaredMacros
   , elaborationOnlyEntries
   , elaborationOnlyEntry
   , writtenBare
@@ -47,6 +50,7 @@ import Data.Foldable (foldl)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.CST.Types (Attribute, Decl(..), Import(..), ImportItem(..), Members(..), Name, SourceRange, inSource)
@@ -287,6 +291,20 @@ exportedNames via e =
   where
   one :: forall x. Map String (Export x) -> Candidates x
   one = map (\x -> [ x { via = via } ])
+
+-- | What the imports alone bring, which is fixed before anything the module
+-- | declares is collected: the names brought unqualified, and those each alias
+-- | reaches, a lazy alias apart. A macro call is resolved against this.
+type ImportScope =
+  { imported :: Names
+  , qualified :: Map String Names
+  , lazy :: Map String Names
+  }
+
+importScope :: BuildEnvironment -> GroupedModule -> ImportScope
+importScope env g = { imported: s.imported, qualified: s.qualified, lazy: s.lazy }
+  where
+  s = importAll env g.imports
 
 ------------------------------------------------------------------------------
 -- Imports
@@ -531,6 +549,41 @@ declareAll m attributeOf = foldl declaration { declared: emptyNames, macros: Map
 ------------------------------------------------------------------------------
 -- The module
 
+-- | The attribute an attribute of a declaration's prefix names, resolved against
+-- | the module's own attribute declarations and the attributes its imports
+-- | bring, which is all that deciding a macro and an elaboration-only entry
+-- | needs here.
+attributeIn
+  :: forall r
+   . ModuleName
+  -> { imported :: Names, qualified :: Map String Names | r }
+  -> GroupedModule
+  -> Attribute
+  -> Maybe (Qualified Ident)
+attributeIn moduleName imported g a = case a.name.qualifier of
+  Nothing
+    | Set.member a.name.name ownAttributes -> Just (Qualified moduleName (Ident a.name.name))
+    | otherwise -> unique (Map.lookup a.name.name imported.imported.attributes)
+  Just q -> unique (Map.lookup q imported.qualified >>= \names -> Map.lookup a.name.name names.attributes)
+  where
+  ownAttributes = Set.fromFoldable (Array.mapMaybe ownAttribute g.declarations)
+  ownAttribute = case _ of
+    DeclarationOther _ (DeclAttribute n _) -> Just n.name
+    _ -> Nothing
+
+  unique = case _ of
+    Just [ c ] -> Just c.entity
+    _ -> Nothing
+
+-- | The names of the macros the module declares, which are in its macro
+-- | namespace no more than in any other: what declares one is decided here as
+-- | the scope decides it.
+declaredMacros :: BuildEnvironment -> GroupedModule -> Set String
+declaredMacros env g = Map.keys (declareAll moduleName (attributeIn moduleName imported g) g.declarations).macros
+  where
+  moduleName = ModuleName g.name.name
+  imported = importAll env g.imports
+
 resolveScope
   :: BuildEnvironment
   -> GroupedModule
@@ -544,26 +597,7 @@ resolveScope env g =
   moduleName = ModuleName g.name.name
   imported = importAll env g.imports
 
-  -- The attributes a declaration's prefix names resolve against the module's
-  -- own attribute declarations and the attributes its imports bring, which
-  -- is all that deciding a macro and an elaboration-only entry needs here.
-  ownAttributes = Set.fromFoldable (Array.mapMaybe ownAttribute g.declarations)
-  ownAttribute = case _ of
-    DeclarationOther _ (DeclAttribute n _) -> Just n.name
-    _ -> Nothing
-
-  attributeOf :: Attribute -> Maybe (Qualified Ident)
-  attributeOf a = case a.name.qualifier of
-    Nothing
-      | Set.member a.name.name ownAttributes -> Just (Qualified moduleName (Ident a.name.name))
-      | otherwise -> unique (Map.lookup a.name.name imported.imported.attributes)
-    Just q -> unique (Map.lookup q imported.qualified >>= \names -> Map.lookup a.name.name names.attributes)
-
-  unique = case _ of
-    Just [ c ] -> Just c.entity
-    _ -> Nothing
-
-  declared = declareAll moduleName attributeOf g.declarations
+  declared = declareAll moduleName (attributeIn moduleName imported g) g.declarations
 
   scope =
     { module: moduleName

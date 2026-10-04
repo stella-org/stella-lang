@@ -9,6 +9,7 @@ import Test.Stella.Compiler.Interface as Interface
 import Test.Stella.Compiler.Interface.Environment as InterfaceEnvironment
 import Test.Stella.Compiler.Macro.Bundle as MacroBundle
 import Test.Stella.Compiler.Macro.Check as MacroCheck
+import Test.Stella.Compiler.Macro.Expand as MacroExpand
 import Test.Stella.Compiler.Macro.Tree as MacroTree
 import Test.Stella.Compiler.Interface.File as InterfaceFile
 import Test.Stella.Compiler.Interface.Assemble as InterfaceAssemble
@@ -116,6 +117,7 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   MacroTree.spec
   MacroBundle.spec
   MacroCheck.spec
+  MacroExpand.spec
   InterfaceFile.spec
   InterfaceAssemble.spec
   VerticalSlice.spec
