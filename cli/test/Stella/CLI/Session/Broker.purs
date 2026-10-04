@@ -54,7 +54,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Vocabulary.Outcome (Attempt(..))
 import Stella.Compiler.Elaborate.Vocabulary.Trace (TraceEvent(..), Tracing(..))
-import Stella.Compiler.TypedCore (AttrValue(..), Ident(..), ModuleName(..), Qualified(..))
+import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
 import Stella.Compiler.TypedCore.Prim (intTy, primSignature)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual, shouldSatisfy)
@@ -68,7 +68,7 @@ env =
       [ { name: Qualified (ModuleName "Main") (Ident "bad\xD800")
         , sort: ValueEntry
         , scheme: { kindVars: [], body: XCon intTy [] }
-        , attributes: [ { key: "marked", value: AttrUnit } ]
+        , attributes: [ { name: Qualified (ModuleName "Main") (Ident "marked"), positional: [], keyword: [] } ]
         }
       ]
   , kinding: kindingOf primSignature
@@ -284,7 +284,7 @@ spec = describe "Stella.CLI.Session.Broker" do
       result <- liftEffect (Ref.new Nothing)
       pinged <- liftEffect (Ref.new false)
       seen <- withSession
-        "const guest = async (p) => { note(answerOf(await kernel(p.attempt, cmd('ObserveRequest', d('DeclsWithAttr', [{ string: 'marked' }]))))); return failed('abandoned'); };"
+        "const guest = async (p) => { note(answerOf(await kernel(p.attempt, cmd('ObserveRequest', d('DeclsWithAttr', [d('Name', [{ string: 'Main' }, { string: 'marked' }])]))))); return failed('abandoned'); };"
         \session -> do
           b <- running session 1
           liftEffect (Ref.write (Just b) result)

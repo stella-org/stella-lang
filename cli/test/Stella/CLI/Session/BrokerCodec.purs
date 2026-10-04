@@ -26,7 +26,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle(..), HandleClass(..),
 import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Vocabulary.Request (BuildRequest(..), Command(..), CommandAnswer(..), HandlerRequest(..), KernelAnswer(..), KernelRequest(..), ObserveRequest(..), ReportRequest(..), TermRequest(..))
 import Stella.Compiler.Elaborate.Vocabulary.View (KindView(..), PayloadView(..), TypeView(..))
-import Stella.Compiler.TypedCore (AttrValue(..), EffName(..), Ident(..), Literal(..), ModuleName(..), OpName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore (Constant(..), EffName(..), Ident(..), Literal(..), ModuleName(..), OpName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore as Core
 import Stella.Compiler.TypedCore.Domain (scalarString, scalarValue)
 import Test.Spec (Spec, describe, it)
@@ -93,7 +93,7 @@ answers =
   , TypeViewAnswer (NormalRow { elementKind: Just RowType, known: [ { key: PositionKey 0, payload: TypePayload (h 1) } ], rigid: [ TyVar "r" ], flexible: [ { meta: h 2, type: h 3 } ] })
   , TypeViewAnswer (VarType (TyVar "a"))
   , ContextAnswer [ { name: Ident "x", type: h 0 } ]
-  , DeclAnswer (Just { name: qualified "M" "f", sort: ValueEntry, kindVars: [ Core.KindVar "k" ], scheme: h 0, attributes: [ { key: "a", value: AttrObject [ { key: "b", value: AttrArray [ AttrInt 1, AttrUnit ] } ] } ] })
+  , DeclAnswer (Just { name: qualified "M" "f", sort: ValueEntry, kindVars: [ Core.KindVar "k" ], scheme: h 0, attributes: [ { name: qualified "M" "a", positional: [ ConstantRecord [ { label: Symbol "b", value: ConstantConstructor (qualified "M" "C") [ ConstantLiteral (LitInt 1) ] } ] ], keyword: [ { label: "k", value: ConstantValue (qualified "M" "v") } ] } ] })
   , DeclAnswer Nothing
   , NamesAnswer [ qualified "M" "a", qualified "M" "b" ]
   , BinderAnswer { binder: h 0, variable: h 1, bodyScope: h 2 }
@@ -108,12 +108,12 @@ deepKind n = go n KindType
   go 0 acc = acc
   go i acc = go (i - 1) (KindFun acc KindType)
 
--- | An attribute value nested that deep.
-deepAttr :: Int -> AttrValue
-deepAttr n = go n AttrUnit
+-- | An attribute argument nested that deep.
+deepConstant :: Int -> Constant
+deepConstant n = go n (ConstantLiteral (LitInt 0))
   where
   go 0 acc = acc
-  go i acc = go (i - 1) (if i `mod` 2 == 0 then AttrArray [ acc ] else AttrObject [ { key: "k", value: acc } ])
+  go i acc = go (i - 1) (if i `mod` 2 == 0 then ConstantConstructor (qualified "M" "C") [ acc ] else ConstantRecord [ { label: Symbol "k", value: acc } ])
 
 spec :: Spec Unit
 spec = describe "Stella.CLI.Session.Broker.Codec" do
@@ -172,7 +172,7 @@ spec = describe "Stella.CLI.Session.Broker.Codec" do
       sameAfterRoundTrip (deepKind 100000) `shouldEqual` true
 
     it "converts attributes nested 100,000 deep without running out of stack" do
-      sameAfterRoundTrip (deepAttr 100000) `shouldEqual` true
+      sameAfterRoundTrip (deepConstant 100000) `shouldEqual` true
 
     it "converts a list of 100,000 names without running out of stack" do
       let names = map (\i -> qualified "M" ("x" <> show i)) (Array.range 1 100000)

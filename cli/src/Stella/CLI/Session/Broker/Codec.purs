@@ -64,7 +64,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle(..), HandleClass(..),
 import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart)
 import Stella.Compiler.Elaborate.Vocabulary.Request (BuildRequest, Command(..), CommandAnswer(..), HandlerRequest, KernelAnswer, KernelRequest, ObserveRequest, RecordRequest, ReportRequest, SolveRequest, TermRequest, TreeRequest)
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView, KindView, PayloadView, TypeView)
-import Stella.Compiler.TypedCore (AttrValue, EffName(..), Ident(..), KindVar(..), Literal, ModuleName(..), OpName(..), Qualified(..), RowElemKind, RowKey, Symbol(..), Tag(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore (Constant, EffName(..), Ident(..), KindVar(..), Literal, ModuleName(..), OpName(..), Qualified(..), RowElemKind, RowKey, Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Domain (ScalarString, ScalarValue, scalarString, textOf)
 import Type.Proxy (Proxy(..))
 
@@ -459,7 +459,7 @@ instance Guest EntrySort where
   toGuest x = genericToGuest x
   fromGuest path w = genericFromGuest path w
 
-instance Guest AttrValue where
+instance Guest Constant where
   toGuest x = genericToGuest x
   fromGuest path w = genericFromGuest path w
 
