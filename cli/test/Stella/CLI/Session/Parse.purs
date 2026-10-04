@@ -12,8 +12,9 @@ import Data.Maybe (Maybe(..))
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Foreign.Object as Object
-import Stella.CLI.Session.Parse (ExecutionReason(..), ParseAnswer(..), decodeBudgetExceeded, decodeExecutionFailed, decodeParse, decodeParseFailed, decodeParsed, encodeBudgetExceeded, encodeExecutionFailed, encodeParse, encodeParseFailed, encodeParsed)
-import Stella.CLI.Session.Syntax (ParseOutcome(..), inputOf, positionShape, readAnswer, treesShape)
+import Stella.Compiler.Macro.Run (ExecutionReason(..), ParseOutcome(..))
+import Stella.CLI.Session.Parse (ParseAnswer(..), decodeBudgetExceeded, decodeExecutionFailed, decodeParse, decodeParseFailed, decodeParsed, encodeBudgetExceeded, encodeExecutionFailed, encodeParse, encodeParseFailed, encodeParsed)
+import Stella.CLI.Session.Syntax (inputOf, positionShape, readAnswer, treesShape)
 import Stella.CLI.Session.Value (WireValue(..), decodeValue, encodeValue)
 import Stella.CLI.Session.Value.Shape (conformsTo)
 import Stella.Compiler.Macro.Bundle (bundle, syntaxModuleName)

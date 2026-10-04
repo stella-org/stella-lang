@@ -26,7 +26,6 @@
 -- | Stella.Syntax.TokenTree` and `end` a `Stella.Syntax.Position`.
 module Stella.CLI.Session.Parse
   ( ParseRequest
-  , ExecutionReason(..)
   , ExecutionFailure
   , ParseAnswer(..)
   , parseKind
@@ -50,14 +49,13 @@ import Prelude
 
 import Data.Argonaut.Core (Json, caseJsonObject, caseJsonString, fromNumber, fromObject, fromString)
 import Data.Array as Array
-import Data.Generic.Rep (class Generic)
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
-import Data.Show.Generic (genericShow)
 import Data.Tuple (Tuple(..))
 import Foreign.Object (Object)
 import Foreign.Object as Object
 import Stella.CLI.Session.Guest (GlobalName, positiveOf)
+import Stella.Compiler.Macro.Run (ExecutionReason(..))
 
 -- | A `parse`: the global holding the parser, the trees it reads and where they
 -- | end, and the steps it may take.
@@ -66,35 +64,6 @@ type ParseRequest =
   , input :: { trees :: Json, end :: Json }
   , budget :: Int
   }
-
--- | Why a parser did not run to an answer of its own.
-data ExecutionReason
-  = NoSuchModule
-  | NoSuchGlobal
-  -- | The global holds no `Stella.Syntax.Parser`.
-  | NotAParser
-  -- | The global holds a `Stella.Syntax.Parser` whose function is not callable.
-  | ParserNotCallable
-  -- | The input is no canonical value, or none of the type its place wants.
-  | InputInvalid
-  -- | The parser performed an effect it handles nowhere.
-  | EffectRequested
-  -- | The parser called a foreign the host carries out.
-  | ForeignRequested
-  -- | The parser reached state it did not make: an array made before it ran.
-  | StateRequested
-  -- | The parser called an operation no parser may.
-  | OperationWithheld
-  -- | The parser faulted.
-  | Fault
-  -- | What the parser returned is not a `Stella.Syntax.Result (Stella.Syntax.Syntax
-  -- | Stella.Syntax.Term)`.
-  | ResultInvalid
-
-derive instance Eq ExecutionReason
-derive instance Generic ExecutionReason _
-instance Show ExecutionReason where
-  show = genericShow
 
 type ExecutionFailure = { reason :: ExecutionReason, detail :: String }
 

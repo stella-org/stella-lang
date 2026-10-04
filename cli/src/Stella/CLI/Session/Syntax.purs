@@ -16,8 +16,6 @@ module Stella.CLI.Session.Syntax
   , treesShape
   , positionShape
   , resultShape
-  , ParseFailure
-  , ParseOutcome(..)
   , readAnswer
   ) where
 
@@ -29,11 +27,11 @@ import Data.Array as Array
 import Data.Either (Either(..), note)
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
-import Data.Set (Set)
 import Data.Set as Set
 import Data.Traversable (traverse)
 import Foreign.Object as Object
-import Stella.CLI.Session.Parse (ExecutionFailure, ParseAnswer(..))
+import Stella.CLI.Session.Parse (ParseAnswer(..))
+import Stella.Compiler.Macro.Run (ParseFailure, ParseOutcome(..))
 import Stella.CLI.Session.Value (WireValue(..), decodeValue, encodeValue, renderPath)
 import Stella.CLI.Session.Value.Shape (conformsTo)
 import Stella.Compiler.Elaborate.Protocol.Guest.Shape (Descriptor, Shape(..))
@@ -41,17 +39,6 @@ import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Macro.Tree (Delimiter(..), OriginRef(..), Position(..), Range(..), Syntax(..), SyntaxItem(..), SyntaxNode(..), Term, Token(..), TokenKind(..), TokenTree(..), Trivia(..))
 import Stella.Compiler.TypedCore.Domain (scalarString, textOf)
 import Stella.Compiler.TypedCore.Name (Ident(..), Qualified(..), TyName(..))
-
--- | Why a parser failed, as the host takes it: where, the set of what it
--- | expected there, and the labels of the contexts it was in.
-type ParseFailure = { position :: Position, expected :: Set String, labels :: Array String }
-
--- | What a `parse` came to.
-data ParseOutcome
-  = ParsedAs (Syntax Term)
-  | FailedAs ParseFailure
-  | ExecutionFailedAs ExecutionFailure
-  | BudgetExceededAs
 
 -- The input ------------------------------------------------------------------------------
 

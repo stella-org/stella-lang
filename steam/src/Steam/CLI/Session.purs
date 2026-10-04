@@ -82,8 +82,9 @@ import Stella.CLI.Session.Guest (InvocationFailure, InvocationReason(..), Invoke
 import Stella.CLI.Session.Kernel (encodeKernel, kernelKind)
 import Stella.CLI.Session.Peer (Answer, Incoming, Peer, SessionFailure(..), answer)
 import Stella.CLI.Session.Peer as Peer
-import Stella.CLI.Session.Parse (ExecutionReason(EffectRequested, ForeignRequested, InputInvalid, NotAParser, ParserNotCallable, ResultInvalid, StateRequested), ParseRequest, budgetExceededKind, decodeParse, encodeBudgetExceeded, encodeExecutionFailed, encodeParseFailed, encodeParsed, executionFailedKind, parseFailedKind, parseKind, parsedKind)
-import Stella.CLI.Session.Parse as Parse
+import Stella.Compiler.Macro.Run (ExecutionReason(EffectRequested, ForeignRequested, InputInvalid, NotAParser, ParserNotCallable, ResultInvalid, StateRequested))
+import Stella.Compiler.Macro.Run (ExecutionReason(..)) as Parse
+import Stella.CLI.Session.Parse (ParseRequest, budgetExceededKind, decodeParse, encodeBudgetExceeded, encodeExecutionFailed, encodeParseFailed, encodeParsed, executionFailedKind, parseFailedKind, parseKind, parsedKind)
 import Stella.CLI.Session.Protocol (Ready, Refusal, capabilityFor, closeKind, closedKind, decodeHello, emptyPayload, encodeReady, encodeRefusal, helloKind, kernelCapability, negotiate, parseCapability, pingKind, pongKind, readyKind, refusedKind)
 import Stella.CLI.Session.ProtocolError (ProtocolError(..), encodeProtocolError, protocolErrorKind)
 import Stella.CLI.Session.Syntax (positionShape, resultShape, treesShape)
