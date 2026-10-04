@@ -39,7 +39,7 @@ import Stella.Compiler.Bytecode (Dmo, encode, lower)
 import Stella.Compiler.Bytecode.Instr (FuncIx(..), Instr(..), JoinName(..), KeyIx(..), OpIx(..), Reg(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (GlobalInit(..), Key(..))
 import Stella.Compiler.Elaborate.Protocol.Guest (commandOp, elabModule, guestModule, handleTy, kernelEffect, withGuest)
-import Stella.Compiler.Interface (importsOf, interfaceOf, noImports)
+import Stella.Compiler.Interface (importsOf, aritiesOf, noImports)
 import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.MiddleEnd.Rep (Rep(..))
 import Stella.Compiler.TypedCore (DecisionTree(..), Decl(..), Expr(..), Ident(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), TyName(..), Type(..), declareAnnotated, monoScheme, primSignature)
@@ -120,7 +120,7 @@ compiledSynth :: Either P.String Dmo
 compiledSynth = do
   elabDeclared <- declared (withGuest primSignature) guestModule
   elabMid <- translated noImports guestModule elabDeclared
-  imports <- case importsOf [ interfaceOf elabMid.module ] of
+  imports <- case importsOf [ { name: elabMid.module.name, imports: elabMid.module.imports, arities: aritiesOf elabMid.module } ] of
     Left err -> Left (show err)
     Right imports -> Right imports
   synthDeclared <- declared elabDeclared.signature synthModule

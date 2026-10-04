@@ -31,7 +31,7 @@ import Steam.Foreign (emptyTable)
 import Steam.Load (LoadError(..), Store, emptyStore, globalNamed, load, moduleNamed, noIdentities)
 import Steam.Value (Value(..))
 import Stella.Compiler.Bytecode (Dmo, decode, encode, lower)
-import Stella.Compiler.Interface (importsOf, interfaceOf, noImports)
+import Stella.Compiler.Interface (importsOf, aritiesOf, noImports)
 import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), Function, Instr(..), Reg(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (CalleeEntry(..), GlobalInit(..))
@@ -169,7 +169,7 @@ compiled = case declareAnnotated primSignature intModule of
       Right libDeclared -> do
         libMid <- translated libModule noImports libDeclared
         libDmo <- lowered libMid
-        imports <- case importsOf [ interfaceOf libMid.module ] of
+        imports <- case importsOf [ { name: libMid.module.name, imports: libMid.module.imports, arities: aritiesOf libMid.module } ] of
           Left err -> Left (show err)
           Right imports -> Right imports
         case declareAnnotated libDeclared.signature mainModule of

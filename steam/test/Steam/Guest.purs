@@ -62,7 +62,7 @@ import Stella.CLI.Session.Value (WireValue(..), renderPath)
 import Stella.Compiler.Bytecode (Dmo, lower)
 import Stella.Compiler.Elaborate.Protocol.Guest (elabModule, guestModule, handleTy, withGuest)
 import Stella.Compiler.Elaborate.Protocol.Guest as Guest
-import Stella.Compiler.Interface (importsOf, interfaceOf, noImports)
+import Stella.Compiler.Interface (importsOf, aritiesOf, noImports)
 import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.TypedCore (Expr(..), Ident(..), Literal(..), Module, Qualified(..), TyName(..), Type(..), declareAnnotated, primSignature)
 import Stella.Compiler.TypedCore.Domain (scalarString)
@@ -89,7 +89,7 @@ compileGuestsOver supplied modules = do
   elabDeclared <- declared (supplied (withGuest primSignature)) guestModule
   elabMid <- translated noImports guestModule elabDeclared
   compiled <- Array.foldM step
-    { signature: elabDeclared.signature, interfaces: [ interfaceOf elabMid.module ], dmos: [] }
+    { signature: elabDeclared.signature, interfaces: [ { name: elabMid.module.name, imports: elabMid.module.imports, arities: aritiesOf elabMid.module } ], dmos: [] }
     modules
   pure compiled.dmos
   where
@@ -104,7 +104,7 @@ compileGuestsOver supplied modules = do
       Right out -> Right out
     pure
       { signature: d.signature
-      , interfaces: Array.snoc acc.interfaces (interfaceOf mid.module)
+      , interfaces: Array.snoc acc.interfaces ({ name: mid.module.name, imports: mid.module.imports, arities: aritiesOf mid.module })
       , dmos: Array.snoc acc.dmos out.dmo
       }
 

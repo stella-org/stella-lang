@@ -38,7 +38,7 @@ import Steam.Foreign (emptyTable)
 import Steam.Load (LoadError, Store, emptyStore, globalNamed, load, namesOf, noIdentities)
 import Steam.Value (Value(..))
 import Stella.Compiler.Bytecode (Dmo, decode, encode, lower)
-import Stella.Compiler.Interface (importsOf, interfaceOf, noImports)
+import Stella.Compiler.Interface (importsOf, aritiesOf, noImports)
 import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.TypedCore (DecisionTree(..), Decl(..), Export(..), Expr(..), Ident(..), Kind(..), Literal(..), Module, ModuleName(..), Qualified(..), TyName(..), TyVar(..), Type(..), declareAnnotated, monoScheme, primSignature)
 import Stella.Compiler.TypedCore.Prim (booleanTy, intTy, pureFn, unitCtor, unitTy)
@@ -353,7 +353,7 @@ compiled = case declareAnnotated manifest arrayModule of
           Left err -> Left ("Main did not declare: " <> show err.error)
           Right mainDeclared -> do
             mainMid <- translated mainModule noImports mainDeclared
-            imports <- case importsOf [ interfaceOf mainMid.module ] of
+            imports <- case importsOf [ { name: mainMid.module.name, imports: mainMid.module.imports, arities: aritiesOf mainMid.module } ] of
               Left err -> Left (show err)
               Right imports -> Right imports
             mainMid2 <- translated mainModule imports mainDeclared
