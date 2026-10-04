@@ -12,7 +12,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Effect.Aff (Aff)
 import Stella.Compiler.CST (parseExpr, printSyntaxError)
-import Stella.Compiler.CST.Types (Expr(..), SourceRange)
+import Stella.Compiler.CST.Types (Expr(..), SourceRange, inSource)
 import Stella.Compiler.Macro.Tree (Delimiter(..), OriginRef(..), Position(..), Range(..), Token(..), TokenKind(..), TokenTree(..), Trivia(..), treeOf)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -58,5 +58,5 @@ spec = describe "Stella.Compiler.Macro.Tree" do
                 ]
               origin `shouldEqual` OriginRef 2
           r.next `shouldEqual` 3
-          Map.lookup 1 r.origins `shouldEqual` Just { start: { line: 1, column: 5 }, end: { line: 1, column: 6 } }
+          Map.lookup 1 r.origins `shouldEqual` Just (inSource { line: 1, column: 5 } { line: 1, column: 6 })
         _ -> fail "not one bracket of one name"

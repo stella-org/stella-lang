@@ -21,7 +21,7 @@ import Data.List (List(..), (:))
 import Data.List as List
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..), snd)
-import Stella.Compiler.CST.Types (SourcePos, SourceToken, Token(..))
+import Stella.Compiler.CST.Types (SourcePos, SourceToken, Token(..), inSource)
 
 data Delim
   = LytRoot
@@ -64,7 +64,7 @@ isIndented = case _ of
   _ -> false
 
 lytToken :: SourcePos -> Token -> SourceToken
-lytToken pos value = { range: { start: pos, end: pos }, leading: [], value }
+lytToken pos value = { range: inSource pos pos, leading: [], value }
 
 -- | Inserts the block tokens the offside rule calls for.
 insertLayout :: Array SourceToken -> Array SourceToken

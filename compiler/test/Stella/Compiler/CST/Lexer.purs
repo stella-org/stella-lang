@@ -9,7 +9,7 @@ import Data.Maybe (Maybe(..))
 import Effect.Aff (Aff)
 import Stella.Compiler.CST.Lexer (LexError(..), LexErrorReason(..), lex)
 import Stella.Compiler.CST.Layout (insertLayout)
-import Stella.Compiler.CST.Types (SourceRange, SourceToken, StringStyle(..), Token(..), Trivia(..), hasLeadingTrivia, isSeparated)
+import Stella.Compiler.CST.Types (SourceRange, SourceToken, StringStyle(..), Token(..), Trivia(..), hasLeadingTrivia, inSource, isSeparated)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
@@ -34,7 +34,7 @@ op :: String -> Token
 op = TokOperator Nothing
 
 range :: Int -> Int -> Int -> Int -> SourceRange
-range l1 c1 l2 c2 = { start: { line: l1, column: c1 }, end: { line: l2, column: c2 } }
+range l1 c1 l2 c2 = inSource { line: l1, column: c1 } { line: l2, column: c2 }
 
 -- | Whether each token stands apart from the one before it.
 separations :: Array SourceToken -> Array Boolean
@@ -92,8 +92,8 @@ spec = describe "Stella.Compiler.CST.Lexer" do
     it "counts lines and columns from 1" do
       case lex "a\n  bc" of
         Right lexed -> map _.range lexed.tokens `shouldEqual`
-          [ { start: { line: 1, column: 1 }, end: { line: 1, column: 2 } }
-          , { start: { line: 2, column: 3 }, end: { line: 2, column: 5 } }
+          [ (inSource { line: 1, column: 1 } { line: 1, column: 2 })
+          , (inSource { line: 2, column: 3 } { line: 2, column: 5 })
           ]
         Left e -> fail (show e)
 

@@ -28,14 +28,20 @@ import Data.Array.NonEmpty as NonEmptyArray
 import Data.Foldable (foldMap, foldl)
 import Data.Maybe (Maybe(..))
 import Data.Semigroup.Foldable (foldl1)
-import Stella.Compiler.CST.Types (Binder(..), CaseBody(..), Clause(..), Expr(..), GuardLine(..), HandlerListItem(..), Kind(..), LetBinding(..), SourcePos, SourceRange, Type(..), TypeVarBinding(..))
+import Stella.Compiler.CST.Types (Binder(..), CaseBody(..), Clause(..), Expr(..), GuardLine(..), HandlerListItem(..), Kind(..), LetBinding(..), SourcePos, SourceRange, Type(..), TypeVarBinding(..), inSource, sameSpace)
 
--- | The smallest range covering both, whichever order they stand in.
+-- | The smallest range covering both, whichever order they stand in. **Two
+-- | ranges are joined only where they are in one text**: a range of another is
+-- | left out, the first standing as it is. A node a parse of an expansion
+-- | produced stands under one the enclosing text holds, whose range is the
+-- | call's, so a well-formed tree never asks for the two to be joined.
 covering :: SourceRange -> SourceRange -> SourceRange
-covering a b = { start: earlier a.start b.start, end: later a.end b.end }
-  where
-  earlier p q = if before q p then q else p
-  later p q = if before p q then q else p
+covering a b
+  | not (sameSpace a.space b.space) = a
+  | otherwise = { space: a.space, start: earlier a.start b.start, end: later a.end b.end }
+      where
+      earlier p q = if before q p then q else p
+      later p q = if before p q then q else p
 
 before :: SourcePos -> SourcePos -> Boolean
 before p q = p.line < q.line || (p.line == q.line && p.column < q.column)
@@ -58,7 +64,7 @@ nonEmpty rs = case NonEmptyArray.fromArray rs of
 
 -- | Line 0, which is no position of a source text.
 nowhere :: SourceRange
-nowhere = { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } }
+nowhere = inSource { line: 0, column: 0 } { line: 0, column: 0 }
 
 kindRange :: Kind -> SourceRange
 kindRange = case _ of
@@ -127,6 +133,8 @@ exprRange = case _ of
   ExprLocalOpen n e -> covering n.range (exprRange e)
   ExprImportIn n e -> covering n.range (exprRange e)
   ExprMacro m -> cover m.name.range (map _.range m.body)
+  ExprExpanded e -> e.call
+  ExprInvalid r -> r
   ExprAt n e -> covering n.range (exprRange e)
   ExprCellRead n -> n.range
   ExprCellWrite n e -> covering n.range (exprRange e)

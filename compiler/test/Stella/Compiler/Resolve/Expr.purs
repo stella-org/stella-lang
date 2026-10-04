@@ -18,12 +18,13 @@ import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
 import Stella.Compiler.Interface.Scheme (SchemeBody(..), plainScheme)
-import Stella.Compiler.Resolve.Expr (resolveDefinition, resolveHandler)
+import Stella.Compiler.Resolve.Expr (resolveDefinition, resolveExpr, resolveHandler)
 import Stella.Compiler.Resolve.Group (groupModule)
 import Stella.Compiler.Resolve.Monad (CellClosure(..), HandledEffectProblem(..), Resolve, ResolveError(..), ResolveReason(..), ResolveWarning(..), ResumeBlock(..), contextOf, runResolve)
 import Stella.Compiler.Resolve.Scope (resolveScope)
 import Stella.Compiler.Surface.Decl (Associativity(..), FixityTarget(..))
-import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder(..), ClauseForm(..), Expr(..), GuardLine(..), HandlerBody, HandlerItem(..), LetBinding(..), RecordField(..))
+import Stella.Compiler.Surface.Origin (Origin(..))
+import Stella.Compiler.Surface.Expr (exprOrigin, AlternativeBody(..), Binder(..), ClauseForm(..), Expr(..), GuardLine(..), HandlerBody, HandlerItem(..), LetBinding(..), RecordField(..))
 import Stella.Compiler.Surface.Name (BindingId(..), CellVar(..), LocalVar(..), OperatorName(..))
 import Stella.Compiler.TypedCore.Domain (codePointOf, textOf)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
@@ -223,6 +224,25 @@ handles body expected reasons = handlerDeclaration body \r -> do
 
 spec :: Spec Unit
 spec = describe "Stella.Compiler.Resolve.Expr" do
+  describe "what an expansion produced" do
+    let
+      call = CST.inSource { line: 9, column: 5 } { line: 9, column: 12 }
+      space = CST.Expansion { id: CST.ExpansionId 0, macro: inA (Ident "m"), call, written: [ CST.inSource { line: 9, column: 8 } { line: 9, column: 11 } ] }
+      inExpansion c = { space, start: { line: 1, column: c }, end: { line: 1, column: c + 1 } }
+      resolving e k = inModule [] [ "f = 1" ] (const (Just unit)) (\_ -> renderExpr <$> resolveExpr e) k
+
+    it "is resolved where the call stands, located in the expansion and through it at the call" do
+      let expanded = CST.ExprExpanded { call, expr: CST.ExprVar { range: inExpansion 1, qualifier: Nothing, name: "own" } }
+      inModule [] [ "f = 1" ] (const (Just unit)) (\_ -> resolveExpr expanded <#> \e -> show (exprOrigin e)) \r -> do
+        r.reasons `shouldEqual` []
+        r.result `shouldEqual` show (FromExpansion { range: inExpansion 1, macro: inA (Ident "m"), call: FromSource call, written: FromSource (CST.inSource { line: 9, column: 8 } { line: 9, column: 11 }) })
+      resolving expanded \r -> r.result `shouldEqual` "M.own"
+
+    it "leaves a call whose expansion failed invalid, and reports nothing more" do
+      resolving (CST.ExprInvalid call) \r -> do
+        r.result `shouldEqual` "!"
+        r.reasons `shouldEqual` []
+
   describe "references" do
     it "become the node of what they name" do
       shows [ "f a = (a, x, comp, c, Just, Nothing?, get, tick, own, 'T, ?h, 1, true, 'c', \"s\", 1.5, ())" ]

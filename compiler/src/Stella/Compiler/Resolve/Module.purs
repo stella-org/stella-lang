@@ -32,7 +32,7 @@ import Stella.Compiler.Resolve.Scope (ScopeError, ScopeWarning, elaborationOnlyE
 import Stella.Compiler.Resolve.Type (bindTypeVariables, computationScope, resolveComputationSignature, resolveKind, resolveOperationSignature, resolveSignature, resolveType, signatureScope)
 import Stella.Compiler.Surface.Decl (Associativity(..), Declaration(..), FixityTarget(..), Module, Observation(..)) as Surface
 import Stella.Compiler.Surface.Name (OperatorName(..))
-import Stella.Compiler.Surface.Origin (Origin(..))
+import Stella.Compiler.Surface.Origin (originOf)
 import Stella.Compiler.Surface.Type (TypeOperatorTarget(..))
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName, Qualified(..), TyName(..))
 
@@ -60,9 +60,9 @@ resolveModule
   -> { module :: Surface.Module, exports :: Exports, errors :: Array ResolutionError, warnings :: Array ResolutionWarning }
 resolveModule env m =
   { module:
-      { origin: FromSource grouped.grouped.name.range
+      { origin: originOf grouped.grouped.name.range
       , name: scoped.scoped.name
-      , imports: map (\i -> { origin: FromSource i.range, module: i.module }) scoped.scoped.imports
+      , imports: map (\i -> { origin: originOf i.range, module: i.module }) scoped.scoped.imports
       , declarations: ran.result
       }
   , exports: scoped.scoped.exports
@@ -100,7 +100,7 @@ value p v = do
       d <- withTypeVariables (maybe [] signatureScope signature) (resolveTopDefinition v.binders v.body v.localBindings)
       pure (Just (Surface.DeclValue { origin, attributes, name, signature, params: d.params, body: d.body }))
   where
-  origin = FromSource (nonEmpty ([ v.name.range, exprRange v.body ] <> map binderRange v.binders))
+  origin = originOf (nonEmpty ([ v.name.range, exprRange v.body ] <> map binderRange v.binders))
 
 typeDeclaration :: Prefix -> Maybe CST.Kind -> CST.Decl -> Resolve (Maybe Surface.Declaration)
 typeDeclaration p kindSignature d = do
@@ -114,7 +114,7 @@ typeDeclaration p kindSignature d = do
         ( \c -> do
             name <- ownValue c.name.name
             fields <- traverse resolveType c.fields
-            pure { origin: FromSource (nonEmpty ([ c.name.range ] <> map typeRange c.fields)), name, fields }
+            pure { origin: originOf (nonEmpty ([ c.name.range ] <> map typeRange c.fields)), name, fields }
         )
         ctors
       pure (Just (Surface.DeclData { origin, attributes, name: tyName ctx.module n, kind, params: b.binders, constructors }))
@@ -123,7 +123,7 @@ typeDeclaration p kindSignature d = do
       b <- bindTypeVariables params
       name <- ownValue c.name
       field' <- withTypeVariables b.scope (resolveType field)
-      let constructor = { origin: FromSource (covering c.range (typeRange field)), name, field: field' }
+      let constructor = { origin: originOf (covering c.range (typeRange field)), name, field: field' }
       pure (Just (Surface.DeclNewtype { origin, attributes, name: tyName ctx.module n, kind, params: b.binders, constructor }))
     CST.DeclType n params body -> do
       attributes <- resolveAttributes OnSynonym false (attributesOf p)
@@ -132,7 +132,7 @@ typeDeclaration p kindSignature d = do
       pure (Just (Surface.DeclSynonym { origin, attributes, name: tyName ctx.module n, kind, params: b.binders, body: body' }))
     _ -> pure Nothing
   where
-  origin = FromSource (declarationRange d)
+  origin = originOf (declarationRange d)
   listed m n isNewtype ctors = isJust (elaborationOnlyEntry m n.name isNewtype (map _.name ctors))
 
 other :: Prefix -> CST.Decl -> Resolve (Maybe Surface.Declaration)
@@ -145,7 +145,7 @@ other p d = do
       operations <- withTypeVariables b.scope $ traverse
         ( \op -> do
             signature <- resolveOperationSignature op.type
-            pure { origin: FromSource (covering op.name.range (typeRange op.type)), name: Qualified ctx.module (Ident op.name.name), signature }
+            pure { origin: originOf (covering op.name.range (typeRange op.type)), name: Qualified ctx.module (Ident op.name.name), signature }
         )
         ops
       pure (Just (Surface.DeclEffect { origin, attributes, name: Qualified ctx.module (EffName n.name), params: b.binders, operations }))
@@ -206,7 +206,7 @@ other p d = do
       pure (Just (Surface.DeclAttribute { origin, name: Qualified ctx.module (Ident n.name), positional: r.positional, keyword: r.keyword }))
     _ -> pure Nothing
   where
-  origin = FromSource (declarationRange d)
+  origin = originOf (declarationRange d)
   associativityOf = case _ of
     CST.Infix -> Surface.AssociateNone
     CST.Infixl -> Surface.AssociateLeft

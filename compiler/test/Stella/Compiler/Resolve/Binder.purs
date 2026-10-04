@@ -167,7 +167,7 @@ spec = describe "Stella.Compiler.Resolve.Binder" do
 
     it "are handed out in the order written, whatever ranges their names carry" do
       let
-        r = { start: { line: 1, column: 1 }, end: { line: 1, column: 2 } }
+        r = CST.inSource { line: 1, column: 1 } { line: 1, column: 2 }
         named n = CST.BinderVar { range: r, qualifier: Nothing, name: n }
       resolving [ "f = 1" ] (\_ -> resolveBinders [ named "a", CST.BinderTuple [ named "b", named "c" ] ] <#> render)
         \ran -> ran.result `shouldEqual` "a#0 (b#1, c#2) | a#0 b#1 c#2"

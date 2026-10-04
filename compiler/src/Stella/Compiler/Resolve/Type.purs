@@ -50,7 +50,7 @@ import Stella.Compiler.Resolve.Fixity (rebracket)
 import Stella.Compiler.Resolve.Label (reportLabelsTwice)
 import Stella.Compiler.Resolve.Monad (Found(..), Resolve, ResolveReason(..), ResolveWarning(..), TypeReference(..), freshBinding, lookupType, lookupTypeOperator, lookupValue, report, typeVariable, typeVariables, warn, withTypeVariables)
 import Stella.Compiler.Surface.Name (TypeVar(..))
-import Stella.Compiler.Surface.Origin (Origin(..), spanning)
+import Stella.Compiler.Surface.Origin (Origin, originOf, spanning)
 import Stella.Compiler.Surface.Type (ComputationType, EffectApplication, EffectRowItem(..), HandlerSignature(..), Kind(..), OperationSignature, RecordRowItem(..), Signature, SignaturePrefix(..), Type(..), TypeOperatorTarget(..), TypeVarBinder, VariantRowItem(..), typeOrigin)
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
 import Stella.Compiler.TypedCore.Name (Ident(..), KindVar(..), Symbol(..), Tag(..), TyVar(..))
@@ -71,7 +71,7 @@ resolveKind k = case k of
   CST.KindParens inner -> resolveKind inner
   _ -> report (kindRange k) KindMalformed $> KindInvalid o
   where
-  o = FromSource (kindRange k)
+  o = originOf (kindRange k)
   word = case _ of
     CST.KindName n | n.qualifier == Nothing -> Just n.name
     CST.KindParens inner -> word inner
@@ -116,7 +116,7 @@ resolveType t = case t of
   CST.TypeSynthesized _ _ _ -> invalid SynthesizedMisplaced
   CST.TypeDirective _ _ -> pure (TypeInvalid o)
   where
-  o = FromSource (typeRange t)
+  o = originOf (typeRange t)
   invalid reason = report (typeRange t) reason $> TypeInvalid o
   fieldLabel = case _ of
     CST.RowField n _ -> Just n
@@ -148,12 +148,12 @@ resolveComputationSignature t = quantify t (go [] t)
       pure { origin, prefix, result: result', row: row' }
     other -> do
       result <- resolveType other
-      pure { origin, prefix, result, row: TypeInvalid (FromSource (typeRange other)) }
-  origin = FromSource (typeRange t)
+      pure { origin, prefix, result, row: TypeInvalid (originOf (typeRange other)) }
+  origin = originOf (typeRange t)
   -- The binders of a `forall`, which are never none.
   bindersOrigin x bs = case Array.uncons bs of
     Just { head, tail } -> Array.foldl (\acc b -> spanning acc b.origin) head.origin tail
-    Nothing -> FromSource (typeRange x)
+    Nothing -> originOf (typeRange x)
 
 -- | An operation's signature, with the parameters of its effect in scope. It
 -- | quantifies nothing implicitly: its own type variables are written in a
@@ -161,7 +161,7 @@ resolveComputationSignature t = quantify t (go [] t)
 resolveOperationSignature :: CST.Type -> Resolve OperationSignature
 resolveOperationSignature t = go [] [] t
   where
-  origin = FromSource (typeRange t)
+  origin = originOf (typeRange t)
   go binders arguments x = case x of
     CST.TypeForall bs body -> do
       b <- bindTypeVariables bs
@@ -184,7 +184,7 @@ resolveHandlerSignature :: CST.Type -> Resolve (Signature HandlerSignature)
 resolveHandlerSignature t = quantify t
   if isCapability t then capability [] t else General <$> spine t
   where
-  origin = FromSource (typeRange t)
+  origin = originOf (typeRange t)
   isCapability = case _ of
     CST.TypeForall _ body -> isCapability body
     CST.TypeParens inner -> isCapability inner
@@ -225,7 +225,7 @@ bindTypeVariables bs = do
     else when (isJust outer) (warn (HidesTypeVariable n.range n.name))
     id <- freshBinding
     kind <- traverse resolveKind k
-    pure (Array.snoc acc { origin: FromSource range, var: TypeVar { id, name: TyVar n.name }, kind })
+    pure (Array.snoc acc { origin: originOf range, var: TypeVar { id, name: TyVar n.name }, kind })
 
 -- | The type variables a signature puts in scope over the body of what it is
 -- | the signature of: those it quantifies implicitly, then those the
@@ -280,7 +280,7 @@ spine t = case t of
     _ -> TypeFunction o <$> synthesized a <*> spine rest <*> pure Nothing
   _ -> resolveType t
   where
-  o = FromSource (typeRange t)
+  o = originOf (typeRange t)
 
 synthesized :: CST.Type -> Resolve Type
 synthesized t = case t of
@@ -293,7 +293,7 @@ synthesized t = case t of
       Ambiguous -> report f.range (AmbiguousValue (written f)) $> TypeInvalid o
   _ -> resolveType t
   where
-  o = FromSource (typeRange t)
+  o = originOf (typeRange t)
 
 -- | A chain of type operators, rebracketed by fixity. An operator nothing in
 -- | scope stands for, or two that cannot be chained, leave the chain invalid.
@@ -309,7 +309,7 @@ operatorChain t = do
       Left { first: a, second: b } ->
         report b.name.range (OperatorsUnordered (written b.name) (written a.name)) $> TypeInvalid o
   where
-  o = FromSource (typeRange t)
+  o = originOf (typeRange t)
   flatten = case _ of
     CST.TypeOp a n b -> let c = flatten a in c { rest = Array.snoc c.rest (Tuple n b) }
     x -> { first: x, rest: [] }
@@ -320,7 +320,7 @@ operatorChain t = do
       pure (f.target <#> \target -> { name: n, target, fixity: { associativity: f.associativity, precedence: f.precedence } })
     NotFound -> report n.range (UnknownTypeOperator (written n)) $> Nothing
     Ambiguous -> report n.range (AmbiguousTypeOperator (written n)) $> Nothing
-  apply op l r = TypeOperator (spanning (typeOrigin l) (typeOrigin r)) { origin: FromSource op.name.range, target: op.target } l r
+  apply op l r = TypeOperator (spanning (typeOrigin l) (typeOrigin r)) { origin: originOf op.name.range, target: op.target } l r
 
 rowItems :: forall a. (CST.RowItem -> Resolve (Maybe a)) -> Array CST.RowItem -> Resolve (Array a)
 rowItems f items = Array.catMaybes <$> traverse f items
@@ -351,7 +351,7 @@ misplaced :: forall a. CST.RowItem -> Resolve (Maybe a)
 misplaced item = report (itemRange item) RowItemMisplaced $> Nothing
 
 itemOrigin :: CST.RowItem -> Origin
-itemOrigin = FromSource <<< itemRange
+itemOrigin = originOf <<< itemRange
 
 itemRange :: CST.RowItem -> CST.SourceRange
 itemRange = case _ of
@@ -391,7 +391,7 @@ effectApplication position t = case application t of
     _ -> expected
   _ -> expected
   where
-  o = FromSource (typeRange t)
+  o = originOf (typeRange t)
   expected = report (typeRange t) EffectExpected $> Nothing
   application x = case x of
     CST.TypeApp f a -> let s = application f in s { arguments = Array.snoc s.arguments a }

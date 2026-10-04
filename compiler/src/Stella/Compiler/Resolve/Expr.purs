@@ -61,7 +61,7 @@ import Stella.Compiler.Resolve.Type (handlerScope, resolveHandlerSignature, reso
 import Stella.Compiler.Surface.Decl (Associativity(..))
 import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder, ClauseForm(..), Expr(..), Group, GuardLine(..), HandlerBody, HandlerItem(..), LetBinding(..), OperationClause, RecordField(..), exprOrigin)
 import Stella.Compiler.Surface.Name (CellVar)
-import Stella.Compiler.Surface.Origin (Origin(..), spanning)
+import Stella.Compiler.Surface.Origin (Origin, originOf, spanning)
 import Stella.Compiler.Surface.Type (EffectRowItem(..), HandlerSignature(..), Signature, Type(..))
 import Stella.Compiler.TypedCore.Domain (scalarString, scalarValue)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), Qualified(..), Symbol(..), Tag(..), TyName)
@@ -101,7 +101,7 @@ resolveExpr e = case e of
   CST.ExprTyped inner t -> ExprTyped o <$> resolveExpr inner <*> resolveType t
   CST.ExprAccess inner labels -> do
     inner' <- resolveExpr inner
-    pure (foldl (\acc l -> ExprSelect (spanning (exprOrigin acc) (FromSource l.range)) acc (Symbol l.name)) inner' labels)
+    pure (foldl (\acc l -> ExprSelect (spanning (exprOrigin acc) (originOf l.range)) acc (Symbol l.name)) inner' labels)
   CST.ExprLambda bs body -> blockResume InsideLambda do
     r <- resolveBinders bs
     traverse_ requireIrrefutable r.binders
@@ -115,6 +115,9 @@ resolveExpr e = case e of
   CST.ExprLocalOpen alias inner -> open alias inner
   CST.ExprImportIn alias inner -> open alias inner
   CST.ExprMacro _ -> invalid (NotYetSupported "A macro call")
+  CST.ExprExpanded expanded -> resolveExpr expanded.expr
+  -- the expansion that failed was reported where it failed
+  CST.ExprInvalid _ -> pure (ExprInvalid o)
   CST.ExprAt n label -> operationAt n label
   CST.ExprCellRead n -> cell n <#> maybe (ExprInvalid o) (ExprCellRead o)
   CST.ExprCellWrite n v -> do
@@ -125,7 +128,7 @@ resolveExpr e = case e of
     ResumeAvailable -> invalid ResumeNotApplied
     ResumeBlocked why -> invalid (ResumeMisplaced why)
   where
-  o = FromSource (exprRange e)
+  o = originOf (exprRange e)
   invalid reason = report (exprRange e) reason $> ExprInvalid o
 
   constructor k n = lookupValue n >>= case _ of
@@ -136,7 +139,7 @@ resolveExpr e = case e of
     Ambiguous -> invalid (AmbiguousValue (written n))
 
   scrutinee = case _ of
-    CST.ExprSection r -> report r (NotYetSupported "`case _ of`") $> ExprInvalid (FromSource r)
+    CST.ExprSection r -> report r (NotYetSupported "`case _ of`") $> ExprInvalid (originOf r)
     s -> resolveExpr s
 
   handling items inner = do
@@ -189,7 +192,7 @@ operatorChain e = do
       Right result -> pure result
       Left { first: a, second: b } -> report b.name.range (OperatorsUnordered (written b.name) (written a.name)) $> ExprInvalid o
   where
-  o = FromSource (exprRange e)
+  o = originOf (exprRange e)
   flatten = case _ of
     CST.ExprOp a op b -> let c = flatten a in c { rest = Array.snoc c.rest (Tuple op b) }
     x -> { first: x, rest: [] }
@@ -199,12 +202,12 @@ operatorChain e = do
       -- declared, and leaves the chain invalid here.
       Found f -> case f.target of
         Just q -> do
-          target <- global (FromSource n.range) q
+          target <- global (originOf n.range) q
           pure (Just { name: n, fixity: { associativity: f.associativity, precedence: f.precedence }, target })
         Nothing -> pure Nothing
       NotFound -> report n.range (UnknownOperator (written n)) $> Nothing
       Ambiguous -> report n.range (AmbiguousOperator (written n)) $> Nothing
-    CST.OperatorName n -> reference (FromSource n.range) n <#> case _ of
+    CST.OperatorName n -> reference (originOf n.range) n <#> case _ of
       ExprInvalid _ -> Nothing
       target -> Just { name: n, fixity: { associativity: AssociateLeft, precedence: 9 }, target }
   apply op l r = ExprOperator (spanning (exprOrigin l) (exprOrigin r)) op.target l r
@@ -220,10 +223,10 @@ recordFields fields = do
     CST.FieldUpdate n _ -> Just n
     CST.FieldSpread _ -> Nothing
   field = case _ of
-    CST.FieldValue n v -> FieldValue (FromSource (covering n.range (exprRange v))) (Symbol n.name) <$> resolveExpr v
-    CST.FieldPun n -> FieldValue (FromSource n.range) (Symbol n.name) <$> reference (FromSource n.range) n
-    CST.FieldUpdate n v -> FieldUpdate (FromSource (covering n.range (exprRange v))) (Symbol n.name) <$> resolveExpr v
-    CST.FieldSpread v -> FieldSpread (FromSource (exprRange v)) <$> resolveExpr v
+    CST.FieldValue n v -> FieldValue (originOf (covering n.range (exprRange v))) (Symbol n.name) <$> resolveExpr v
+    CST.FieldPun n -> FieldValue (originOf n.range) (Symbol n.name) <$> reference (originOf n.range) n
+    CST.FieldUpdate n v -> FieldUpdate (originOf (covering n.range (exprRange v))) (Symbol n.name) <$> resolveExpr v
+    CST.FieldSpread v -> FieldSpread (originOf (exprRange v)) <$> resolveExpr v
 
 alternative :: CST.CaseAlternative -> Resolve { origin :: Origin, patterns :: Array (Array Binder), body :: AlternativeBody }
 alternative alt = do
@@ -231,7 +234,7 @@ alternative alt = do
   body <- withValues r.bound case alt.body of
     CST.Unconditional b -> Unconditional <$> resolveExpr b
     CST.GuardBlock lines -> Guarded <$> guardLines lines
-  pure { origin: FromSource (nonEmpty (map binderRange (Array.concat alt.patterns) <> bodyRanges)), patterns: r.patterns, body }
+  pure { origin: originOf (nonEmpty (map binderRange (Array.concat alt.patterns) <> bodyRanges)), patterns: r.patterns, body }
   where
   bodyRanges = case alt.body of
     CST.Unconditional b -> [ exprRange b ]
@@ -250,9 +253,9 @@ guardLines lines = case Array.uncons lines of
       r <- resolveBinders [ b ]
       traverse_ requireIrrefutable r.binders
       rest <- withValues r.bound (guardLines tail)
-      pure (Array.fromFoldable (Array.head r.binders <#> \b' -> GuardBinding (FromSource (covering (binderRange b) (exprRange v))) b' v') <> rest)
+      pure (Array.fromFoldable (Array.head r.binders <#> \b' -> GuardBinding (originOf (covering (binderRange b) (exprRange v))) b' v') <> rest)
     CST.Guard condition body -> do
-      let o = FromSource (covering (exprRange condition) (exprRange body))
+      let o = originOf (covering (exprRange condition) (exprRange body))
       line <- case condition of
         CST.ExprVar n | n.qualifier == Nothing && n.name == "otherwise" -> GuardOtherwise o <$> resolveExpr body
         _ -> GuardWhen o <$> resolveExpr condition <*> resolveExpr body
@@ -284,11 +287,11 @@ localBlock o bindings body = do
       withTypeVariables (maybe [] signatureScope signature) do
         d <- (if Array.null v.binders then identity else blockResume InsideLocalFunction)
           (resolveDefinition v.binders v.body Nothing)
-        pure (Just (LetValue { origin: FromSource (covering v.name.range (exprRange v.body)), var, signature, params: d.params, body: d.body }))
+        pure (Just (LetValue { origin: originOf (covering v.name.range (exprRange v.body)), var, signature, params: d.params, body: d.body }))
     Tuple (LocalPattern b v) (ResolvedPattern b') -> do
       requireIrrefutable b'
       v' <- resolveExpr v
-      pure (Just (LetPattern { origin: FromSource (covering (binderRange b) (exprRange v)), binder: b', body: v' }))
+      pure (Just (LetPattern { origin: originOf (covering (binderRange b) (exprRange v)), binder: b', body: v' }))
     _ -> pure Nothing
 
 -- | A definition: its parameters, one binding group of irrefutable patterns,
@@ -303,7 +306,7 @@ resolveDefinition params body local = do
   traverse_ requireIrrefutable r.binders
   body' <- withValues r.bound case local of
     Nothing -> resolveExpr body
-    Just items -> resolveLet (FromSource (nonEmpty ([ exprRange body ] <> map letBindingRange items))) items (resolveExpr body)
+    Just items -> resolveLet (originOf (nonEmpty ([ exprRange body ] <> map letBindingRange items))) items (resolveExpr body)
   pure { params: r.binders, body: body' }
 
 -- | A top-level definition: its parameters and its body, under the bindings of
@@ -318,7 +321,7 @@ resolveTopDefinition params body local = do
   traverse_ requireIrrefutable r.binders
   body' <- withValues r.bound
     if Array.null local then resolveExpr body
-    else localBlock (FromSource (nonEmpty ([ exprRange body ] <> map localRange local))) local (resolveExpr body)
+    else localBlock (originOf (nonEmpty ([ exprRange body ] <> map localRange local))) local (resolveExpr body)
   pure { params: r.binders, body: body' }
   where
   localRange = case _ of
@@ -333,8 +336,8 @@ unparenthesized = case _ of
 -- | `resume` applied to an argument, where it stands.
 resumeAt :: CST.SourceRange -> Resolve Expr
 resumeAt r = resumeState >>= case _ of
-  ResumeAvailable -> pure (ExprResume (FromSource r))
-  ResumeBlocked why -> report r (ResumeMisplaced why) $> ExprInvalid (FromSource r)
+  ResumeAvailable -> pure (ExprResume (originOf r))
+  ResumeBlocked why -> report r (ResumeMisplaced why) $> ExprInvalid (originOf r)
 
 -- | The cell `x!` or `x := e` names, where it is open.
 cell :: CST.Name -> Resolve (Maybe CellVar)
@@ -375,7 +378,7 @@ group g = do
       Ambiguous -> report g.head.range (AmbiguousType (written g.head)) $> HandlesUnknown
   r <- handlerBody handles { cells: g.cells, clauses: map { block: g.marker, clause: _ } g.clauses }
   pure $ r.effect <#> \effect ->
-    { origin: FromSource (nonEmpty ([ g.head.range ] <> map cellRange g.cells <> map clauseRange g.clauses))
+    { origin: originOf (nonEmpty ([ g.head.range ] <> map cellRange g.cells <> map clauseRange g.clauses))
     , label: if isLabel g.head then Just (Symbol g.head.name) else Nothing
     , effect
     , body: r.body
@@ -531,7 +534,7 @@ handlerBody handles h = do
   pure
     { effect
     , body:
-        { cells: Array.zipWith (\(Tuple d initial) var -> { origin: FromSource (cellRange d), cell: var, initial }) (Array.zip h.cells initials) c.cells
+        { cells: Array.zipWith (\(Tuple d initial) var -> { origin: originOf (cellRange d), cell: var, initial }) (Array.zip h.cells initials) c.cells
         , operations: acc.operations
         , return: acc.return
         }
@@ -591,7 +594,7 @@ handlerBody handles h = do
                 arguments = if continuation then fromMaybe [] (Array.init r.binders) else r.binders
 
                 operation :: OperationClause
-                operation = { origin: FromSource (covering n.range (exprRange body)), operation: h'.name, form, arguments, body: body' }
+                operation = { origin: originOf (covering n.range (exprRange body)), operation: h'.name, form, arguments, body: body' }
               pure acc { operations = Array.snoc acc.operations operation, seen = Array.snoc acc.seen h'.name }
     CST.ClauseReturn b body -> do
       r <- resolveBinders [ b ]
@@ -599,7 +602,7 @@ handlerBody handles h = do
       body' <- withValues r.bound (withCellsClosed InReturnClause cells (resolveExpr body))
       case acc.return, Array.head r.binders of
         Just _, _ -> report (binderRange b) ReturnTwice $> acc
-        Nothing, Just b' -> pure acc { return = Just { origin: FromSource (covering (binderRange b) (exprRange body)), binder: b', body: body' } }
+        Nothing, Just b' -> pure acc { return = Just { origin: originOf (covering (binderRange b) (exprRange body)), binder: b', body: body' } }
         Nothing, Nothing -> pure acc
 
   resumeIn = case _ of

@@ -221,6 +221,8 @@ sketchExpr = case _ of
   ExprLocalOpen n e -> list [ "open", name n, sketchExpr e ]
   ExprImportIn n e -> list [ "import-in", name n, sketchExpr e ]
   ExprMacro m -> macro m
+  ExprExpanded x -> "(expanded " <> sketchExpr x.expr <> ")"
+  ExprInvalid _ -> "(invalid)"
   ExprAt n e -> name n <> "@" <> sketchExpr e
   ExprCellRead n -> name n <> "!"
   ExprCellWrite n e -> list [ ":=", name n, sketchExpr e ]

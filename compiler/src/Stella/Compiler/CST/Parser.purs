@@ -1679,7 +1679,7 @@ semanticActionTable =
         c = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
       in
         Puppy.Runtime.box
-          ((C.TypeUnit { start: o.range.start, end: c.range.end }) :: C.Type)
+          ((C.TypeUnit { space: o.range.space, start: o.range.start, end: c.range.end }) :: C.Type)
   , \puppyValues ->
       let
         t :: C.Type
@@ -2098,7 +2098,7 @@ semanticActionTable =
         c = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
       in
         Puppy.Runtime.box
-          ((C.ExprUnit { start: o.range.start, end: c.range.end }) :: C.Expr)
+          ((C.ExprUnit { space: o.range.space, start: o.range.start, end: c.range.end }) :: C.Expr)
   , \puppyValues ->
       let
         e :: C.Expr
@@ -2662,7 +2662,7 @@ semanticActionTable =
         c = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
       in
         Puppy.Runtime.box
-          ((C.BinderUnit { start: o.range.start, end: c.range.end }) :: C.Binder)
+          ((C.BinderUnit { space: o.range.space, start: o.range.start, end: c.range.end }) :: C.Binder)
   , \puppyValues ->
       let
         b :: C.Binder
@@ -4391,7 +4391,7 @@ semanticActionTable =
         c = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
       in
         Puppy.Runtime.box
-          ((C.TypeUnit { start: o.range.start, end: c.range.end }) :: C.Type)
+          ((C.TypeUnit { space: o.range.space, start: o.range.start, end: c.range.end }) :: C.Type)
   , \puppyValues ->
       let
         t :: C.Type
@@ -4468,7 +4468,7 @@ semanticActionTable =
         c = Puppy.Runtime.unbox (Puppy.Runtime.slot 3 puppyValues)
       in
         Puppy.Runtime.box
-          (({ range: { start: o.range.start, end: c.range.end }, name: n, args: as }) :: C.Attribute)
+          (({ range: { space: o.range.space, start: o.range.start, end: c.range.end }, name: n, args: as }) :: C.Attribute)
   , \_ ->
       Puppy.Runtime.box
         ([])

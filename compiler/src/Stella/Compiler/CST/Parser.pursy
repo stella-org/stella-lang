@@ -366,7 +366,7 @@ moduleItem:
 
 attribute:
   | o = LATTR n = qualIdent as = manyOrEmpty(argument) c = RSQUARE
-      { { range: { start: o.range.start, end: c.range.end }, name: n, args: as } }
+      { { range: { space: o.range.space, start: o.range.start, end: c.range.end }, name: n, args: as } }
 
 -- An argument of an attribute or a directive.
 argument:
@@ -528,7 +528,7 @@ attributeParameter:
 -- reads as a keyword parameter.
 attributeParameterType:
   | n = qualProperName                              { C.TypeConstructor n }
-  | o = LPAREN c = RPAREN                           { C.TypeUnit { start: o.range.start, end: c.range.end } }
+  | o = LPAREN c = RPAREN                           { C.TypeUnit { space: o.range.space, start: o.range.start, end: c.range.end } }
   | LPAREN t = type RPAREN                          { C.TypeParens t }
   | LPAREN t = type COMMA ts = manySep(type, COMMA) RPAREN  { C.TypeTuple ([ t ] <> ts) }
   | o = LBRACE c = RBRACE                                   { C.TypeRecord (B.between o c) [] }
@@ -610,7 +610,7 @@ typeAtom:
   | t = HOLE                                        { C.TypeHole (B.name t) }
   | n = typeVarIdent                                { C.TypeVar n }
   | n = qualProperName                              { C.TypeConstructor n }
-  | o = LPAREN c = RPAREN                           { C.TypeUnit { start: o.range.start, end: c.range.end } }
+  | o = LPAREN c = RPAREN                           { C.TypeUnit { space: o.range.space, start: o.range.start, end: c.range.end } }
   | LPAREN t = type RPAREN                          { C.TypeParens t }
   | LPAREN t = type COMMA ts = manySep(type, COMMA) RPAREN  { C.TypeTuple ([ t ] <> ts) }
   | LPAREN t = type DCOLON k = kind RPAREN          { C.TypeKinded t k }
@@ -718,7 +718,7 @@ exprAtom:
   | t = LIT_CHAR            { C.ExprChar (B.charLiteral t) }
   | t = LIT_STRING          { C.ExprString (B.stringLiteral t) }
   | t = RESUME              { C.ExprResume (B.range t) }
-  | o = LPAREN c = RPAREN   { C.ExprUnit { start: o.range.start, end: c.range.end } }
+  | o = LPAREN c = RPAREN   { C.ExprUnit { space: o.range.space, start: o.range.start, end: c.range.end } }
   | LPAREN e = expr RPAREN  { C.ExprParens e }
   | LPAREN e = expr COMMA es = exprs1 RPAREN      { C.ExprTuple ([ e ] <> es) }
   | o = LBRACE c = RBRACE                                 { C.ExprRecord (B.between o c) [] }
@@ -790,7 +790,7 @@ binderAtom:
   | t = LIT_NUMBER                      { C.BinderNumber (B.numberLiteral t) }
   | t = LIT_CHAR                        { C.BinderChar (B.charLiteral t) }
   | t = LIT_STRING                      { C.BinderString (B.stringLiteral t) }
-  | o = LPAREN c = RPAREN               { C.BinderUnit { start: o.range.start, end: c.range.end } }
+  | o = LPAREN c = RPAREN               { C.BinderUnit { space: o.range.space, start: o.range.start, end: c.range.end } }
   | LPAREN b = binder RPAREN            { C.BinderParens b }
   | LPAREN b = binder COMMA bs = manySep(binder, COMMA) RPAREN
       { C.BinderTuple ([ b ] <> bs) }

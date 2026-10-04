@@ -42,7 +42,7 @@ import Stella.Compiler.Resolve.Monad (AttributeDefault(..), Found(..), Resolve, 
 import Stella.Compiler.Resolve.Scope (writtenBare)
 import Stella.Compiler.Resolve.Type (resolveType)
 import Stella.Compiler.Surface.Decl (Attribute, Constant(..), KeywordParameter)
-import Stella.Compiler.Surface.Origin (Origin(..))
+import Stella.Compiler.Surface.Origin (Origin, originOf)
 import Stella.Compiler.Surface.Type (Type)
 import Stella.Compiler.TypedCore.Domain (scalarString, scalarValue)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), Symbol(..))
@@ -126,7 +126,7 @@ normalize q a = attributeShape q >>= case _ of
         Just { origin: o, name: q, positional: positional', keyword: keyword' }
       _, _ -> Nothing
   where
-  o = FromSource a.range
+  o = originOf a.range
   positionalOf = case _ of
     CST.ArgumentPositional e -> Just e
     CST.ArgumentKeyed _ _ -> Nothing
@@ -177,7 +177,7 @@ resolveConstant e = case e of
     { head: CST.ExprVar n, arguments: [] } -> global n
     _ -> invalid NotAConstant
   where
-  o = FromSource (exprRange e)
+  o = originOf (exprRange e)
   invalid reason = report (exprRange e) reason $> ConstantInvalid o
   global n = lookupValue n >>= case _ of
     Found q -> valueKind q >>= case _ of
@@ -218,7 +218,7 @@ resolveAttributeDeclaration params = do
           t' <- resolveType t
           d' <- traverse resolveConstant d
           let range = maybe (covering l.range (typeRange t)) (covering l.range <<< exprRange) d
-          pure acc { keyword = Array.snoc acc.keyword { origin: FromSource range, label: l.name, type: t', default: d' } }
+          pure acc { keyword = Array.snoc acc.keyword { origin: originOf range, label: l.name, type: t', default: d' } }
 
 -- | A constant as an interface holds it, given the origin of the attribute it
 -- | is filled into.

@@ -49,7 +49,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.CST.Types (Attribute, Decl(..), Import(..), ImportItem(..), Members(..), Name, SourceRange)
+import Stella.Compiler.CST.Types (Attribute, Decl(..), Import(..), ImportItem(..), Members(..), Name, SourceRange, inSource)
 import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Interface.Environment (BuildEnvironment, lookupInterface)
 import Stella.Compiler.Interface.Module (Export, Exports, TypeEntity(..), TypeExport, Via(..), emptyExports)
@@ -442,7 +442,7 @@ withMember :: Array Ident -> Ident -> Array Ident
 withMember ms m = if Array.elem m ms then ms else Array.snoc ms m
 
 nowhere :: SourceRange
-nowhere = { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } }
+nowhere = inSource { line: 0, column: 0 } { line: 0, column: 0 }
 
 ------------------------------------------------------------------------------
 -- Declarations

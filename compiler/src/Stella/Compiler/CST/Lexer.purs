@@ -30,7 +30,7 @@ import Data.String.CodeUnits as SCU
 import Data.String.Regex (split) as Regex
 import Data.String.Regex.Flags (global) as Regex
 import Data.String.Regex.Unsafe (unsafeRegex) as Regex
-import Stella.Compiler.CST.Types (SourcePos, SourceToken, StringStyle(..), Token(..), Trivia(..))
+import Stella.Compiler.CST.Types (SourcePos, SourceToken, StringStyle(..), Token(..), Trivia(..), inSource)
 
 data LexError = LexError SourcePos LexErrorReason
 
@@ -167,7 +167,7 @@ lex src = tailRec step initial
             Right { value, end } ->
               let
                 endCursor = move cursor end
-                tok = { range: { start: pos cursor, end: pos endCursor }, leading: trivia, value }
+                tok = { range: inSource (pos cursor) (pos endCursor), leading: trivia, value }
               in
                 Loop { cursor: endCursor, previous: Just value, tokens: tok : st.tokens }
 
@@ -190,7 +190,7 @@ lex src = tailRec step initial
         let
           next = move cursor end
         in
-          Loop { cursor: next, trivia: Array.snoc trivia (kind (slice cursor.index end) { start: pos cursor, end: pos next }) }
+          Loop { cursor: next, trivia: Array.snoc trivia (kind (slice cursor.index end) (inSource (pos cursor) (pos next))) }
 
   -- `--` and any further dashes, not followed by another operator character.
   isLineComment :: Int -> Boolean

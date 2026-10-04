@@ -23,7 +23,7 @@ import Prelude
 
 import Data.Array as Array
 import Data.Maybe (Maybe(..))
-import Stella.Compiler.CST.Types (Argument, Binder(..), Directive, Expr(..), LetBinding(..), Literal, Name, RecordBinder(..), RecordField(..), SourceRange, SourceToken, Token(..))
+import Stella.Compiler.CST.Types (Argument, Binder(..), Directive, Expr(..), LetBinding(..), Literal, Name, RecordBinder(..), RecordField(..), SourceRange, SourceToken, Token(..), inSource)
 
 range :: SourceToken -> SourceRange
 range = _.range
@@ -31,7 +31,7 @@ range = _.range
 -- | The range from the start of one token to the end of another: a bracket
 -- | and the one closing it.
 between :: SourceToken -> SourceToken -> SourceRange
-between open close = { start: open.range.start, end: close.range.end }
+between open close = { space: open.range.space, start: open.range.start, end: close.range.end }
 
 -- | The name a token carries. Only a token carrying one reaches here.
 name :: SourceToken -> Name
@@ -127,7 +127,7 @@ toBinder = case _ of
     FieldPun l -> RecordBinderPun l
     FieldUpdate l e -> RecordBinderField l (BinderInvalid e)
     FieldSpread (ExprVar n) -> RecordBinderRest n.range (Just n)
-    FieldSpread e -> RecordBinderField { range: { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } }, qualifier: Nothing, name: "" } (BinderInvalid e)
+    FieldSpread e -> RecordBinderField { range: inSource { line: 0, column: 0 } { line: 0, column: 0 }, qualifier: Nothing, name: "" } (BinderInvalid e)
 
   spine = case _, _ of
     ExprApp f a, args -> spine f (Array.cons a args)

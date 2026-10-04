@@ -53,7 +53,7 @@ import Stella.Compiler.Resolve.Monad (Found(..), Resolve, ResolveReason(..), Res
 import Stella.Compiler.Resolve.Type (resolveType)
 import Stella.Compiler.Surface.Expr (Binder(..), RecordBinderField)
 import Stella.Compiler.Surface.Name (CellVar(..), LocalVar(..))
-import Stella.Compiler.Surface.Origin (Origin(..), rangeOf)
+import Stella.Compiler.Surface.Origin (Origin, originOf, rangeOf)
 import Stella.Compiler.TypedCore.Domain (scalarString, scalarValue)
 import Stella.Compiler.TypedCore.Name (Ident(..), Symbol(..), Tag(..))
 import Stella.Compiler.TypedCore.Prim (unitCtor)
@@ -140,7 +140,7 @@ resolveAlternative rows = do
       )
       { at: 0, rows: [] } >>> map _.rows
   checkChoice (Tuple w b)
-    | several && not (Array.null (variablesOf w)) = report (binderRange w) OrPatternBinds $> BinderInvalid (FromSource (binderRange w))
+    | several && not (Array.null (variablesOf w)) = report (binderRange w) OrPatternBinds $> BinderInvalid (originOf (binderRange w))
     | otherwise = pure b
 
 binder :: Supply -> CST.Binder -> Resolve { binder :: Binder, supply :: Supply }
@@ -181,7 +181,7 @@ binder supply b = case b of
   CST.BinderApp _ _ -> invalid NotAPattern
   CST.BinderInvalid _ -> invalid NotAPattern
   where
-  o = FromSource (binderRange b)
+  o = originOf (binderRange b)
   done x = pure { binder: x, supply }
   -- A pattern left invalid passes over the bindings it writes, which stay
   -- bound.
@@ -201,21 +201,21 @@ binder supply b = case b of
   item acc = case _ of
     CST.RecordBinderField n p -> do
       r <- binder acc.supply p
-      let f = { origin: FromSource (covering n.range (binderRange p)), label: Symbol n.name, binder: r.binder }
+      let f = { origin: originOf (covering n.range (binderRange p)), label: Symbol n.name, binder: r.binder }
       pure acc { fields = Array.snoc acc.fields f, supply = r.supply }
     CST.RecordBinderPun n ->
       let
-        r = variable acc.supply (BinderVar (FromSource n.range))
+        r = variable acc.supply (BinderVar (originOf n.range))
 
         f :: RecordBinderField
-        f = { origin: FromSource n.range, label: Symbol n.name, binder: r.binder }
+        f = { origin: originOf n.range, label: Symbol n.name, binder: r.binder }
       in
         pure acc { fields = Array.snoc acc.fields f, supply = r.supply }
     CST.RecordBinderRest r n -> pure case n of
       Just n' -> case Array.uncons acc.supply of
-        Just { head, tail } -> acc { rest = Just { origin: FromSource (covering r n'.range), var: Just head }, supply = tail }
+        Just { head, tail } -> acc { rest = Just { origin: originOf (covering r n'.range), var: Just head }, supply = tail }
         Nothing -> acc
-      Nothing -> acc { rest = Just { origin: FromSource r, var: Nothing } }
+      Nothing -> acc { rest = Just { origin: originOf r, var: Nothing } }
 
   labelOf = case _ of
     CST.RecordBinderField n _ -> Just n

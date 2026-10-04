@@ -3,6 +3,11 @@
 module Stella.Compiler.CST.Types
   ( SourcePos
   , SourceRange
+  , RangeSpace(..)
+  , Expansion
+  , ExpansionId(..)
+  , inSource
+  , sameSpace
   , SourceToken
   , Trivia(..)
   , hasLeadingTrivia
@@ -62,13 +67,53 @@ import Data.Show.Generic (genericShow)
 
 import Data.Array as Array
 import Data.Maybe (Maybe(..))
+import Stella.Compiler.TypedCore.Name (Ident, Qualified)
 
 -- | A position in the source. Lines count from 1; columns count UTF-16 code
 -- | units from 1, which is what an editor protocol counts.
 type SourcePos = { line :: Int, column :: Int }
 
--- | The first position a token covers and the position just after it.
-type SourceRange = { start :: SourcePos, end :: SourcePos }
+-- | The first position a token covers and the position just after it, in the
+-- | coordinates of the text it stands in.
+type SourceRange = { space :: RangeSpace, start :: SourcePos, end :: SourcePos }
+
+-- | The text a range is in: the source, or what one expansion of a macro
+-- | produced. **Positions of two texts are never compared or joined**, so a
+-- | range of an expansion locates a token within that expansion and nothing
+-- | else.
+data RangeSpace
+  = SourceFile
+  | Expansion Expansion
+
+-- | One expansion of a macro: which, the macro expanded, the call it expanded,
+-- | whose range is in the text the call stands in, and where each token of what
+-- | it produced was written.
+-- |
+-- | **A token of an expansion stands at its place in what was produced**: the
+-- | `n`th, counting from 1, covers column `n` to `n + 1` of line 1, so a range
+-- | in the expansion covers a run of its tokens, and `written` holds, for the
+-- | `n`th, the range of the token or quotation it came from at index `n - 1`.
+type Expansion =
+  { id :: ExpansionId
+  , macro :: Qualified Ident
+  , call :: SourceRange
+  , written :: Array SourceRange
+  }
+
+-- | An expansion, numbered apart from every other of the module.
+newtype ExpansionId = ExpansionId Int
+
+-- | A range of the source.
+inSource :: SourcePos -> SourcePos -> SourceRange
+inSource start end = { space: SourceFile, start, end }
+
+-- | Whether two ranges are in one text. **An expansion is told by its
+-- | number**, which the expansion stage gives one expansion alone.
+sameSpace :: RangeSpace -> RangeSpace -> Boolean
+sameSpace = case _, _ of
+  SourceFile, SourceFile -> true
+  Expansion a, Expansion b -> a.id == b.id
+  _, _ -> false
 
 -- | A token with where it stands, and the whitespace and comments before it,
 -- | as written. Nothing of the text is lost: every character of a source is
@@ -163,6 +208,17 @@ data Token
   | TokLayoutStart Int
   | TokLayoutSep Int
   | TokLayoutEnd Int
+
+derive instance Eq ExpansionId
+derive instance Ord ExpansionId
+derive instance Generic ExpansionId _
+instance Show ExpansionId where
+  show = genericShow
+
+derive instance Eq RangeSpace
+derive instance Generic RangeSpace _
+instance Show RangeSpace where
+  show x = genericShow x
 
 derive instance Eq Trivia
 derive instance Generic Trivia _
@@ -471,6 +527,12 @@ data Expr
   | ExprLocalOpen Name Expr
   | ExprImportIn Name Expr
   | ExprMacro Macro
+  -- | What expanding the macro call standing at `call` produced. The range is
+  -- | the call's, in the text the call stands in, and the expression is in the
+  -- | text of the expansion.
+  | ExprExpanded { call :: SourceRange, expr :: Expr }
+  -- | A macro call whose expansion failed, and was reported where it failed.
+  | ExprInvalid SourceRange
   -- | `name@atom`: an operation of a labelled effect, `get@cache`, and in a
   -- | guard block the as-pattern a binding's left may be, `m@(Just x)`.
   | ExprAt Name Expr
