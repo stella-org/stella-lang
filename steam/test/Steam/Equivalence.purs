@@ -65,7 +65,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Vocabulary.Request (Command(..), KernelRequest(..), ObserveRequest(..), TermRequest(..))
 import Stella.Compiler.Elaborate.Vocabulary.Trace (Fate(..), TraceEvent(..), Tracing(..), fates)
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView(LacksView), KindView(KindRow), TypeView(ConType, MetaType))
-import Stella.Compiler.TypedCore (AttrValue(..), Attribute, Decl(..), Expr(..), Ident(..), Kind(..), KindVar(..), Literal(..), Module, ModuleName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyVar(..), Type(..), globalsOf, monoScheme)
+import Stella.Compiler.TypedCore (Attribute, Decl(..), Expr(..), Ident(..), Kind(..), KindVar(..), Literal(..), Module, ModuleName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyVar(..), Type(..), globalsOf, monoScheme)
 import Stella.Compiler.TypedCore.Declare (declare)
 import Stella.Compiler.TypedCore.Prim (booleanTy, intTy, primSignature, recordTy)
 import Stella.Compiler.TypedCore.Signature (Signature)
@@ -122,7 +122,7 @@ declarations =
   k = KindVar "k"
   t = TyVar "t"
   record a z = RecordExtend 1 keyA (Lit 1 a) (RecordExtend 1 keyZ (Lit 1 z) (RecordEmpty 1))
-  marked key = { key, value: AttrUnit }
+  marked key = { name: Qualified main (Ident key), positional: [], keyword: [] }
 
 valuesModule :: Module P.Int
 valuesModule =
@@ -130,7 +130,9 @@ valuesModule =
   , name: main
   , imports: []
   , exports: []
-  , decls: map (\d -> DeclNonRec 1 { name: Ident d.name, scheme: { kindVars: d.kindVars, body: d.type }, value: d.value, attributes: d.attributes }) declarations
+  , decls:
+      map (\n -> DeclAttribute 1 { name: Ident n, positional: [], keyword: [] }) [ "candidate", "other" ]
+        <> map (\d -> DeclNonRec 1 { name: Ident d.name, scheme: { kindVars: d.kindVars, body: d.type }, value: d.value, attributes: d.attributes }) declarations
   }
 
 signature :: Signature
@@ -168,11 +170,11 @@ hostPolicy goal = do
     MetaType m -> F.postpone [ m ]
     view -> F.localContext >>= findLocal view >>= case _ of
       Just local -> F.localVariable root local
-      Nothing -> F.declsWithAttr "candidate" >>= search root goalType >>= case _ of
+      Nothing -> F.declsWithAttr (Qualified main (Ident "candidate")) >>= search root goalType >>= case _ of
         Just found -> pure found
         Nothing -> F.throw
           [ TextPart "nothing the site binds, no global given, and no monomorphic declaration carrying the attribute"
-          , TextPart "candidate"
+          , NamePart (Qualified main (Ident "candidate"))
           , TextPart "fits the type"
           , TypePart goalType
           ]

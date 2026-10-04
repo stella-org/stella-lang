@@ -453,11 +453,11 @@ search = DeclRec unit
   inner = field occ0 "Just" 0
   next = call (own "search") [ var "hook", var "root", var "wanted", var "rest" ]
 
--- | `referenceWith : List Name -> String -> Hook -> Handle -{ ρ }-> Handle`, the
+-- | `referenceWith : List Name -> Name -> Hook -> Handle -{ ρ }-> Handle`, the
 -- | policy.
 referenceWith :: Decl Unit
-referenceWith = pureDecl "referenceWith" (pureFn (listT nameT) (pureFn stringT (pureFn hookT (fn handleT elabRow handleT))))
-  $ lambdas [ Tuple "globals" (listT nameT), Tuple "attribute" stringT, Tuple "hook" hookT, Tuple "goal" handleT ]
+referenceWith = pureDecl "referenceWith" (pureFn (listT nameT) (pureFn nameT (pureFn hookT (fn handleT elabRow handleT))))
+  $ lambdas [ Tuple "globals" (listT nameT), Tuple "attribute" nameT, Tuple "hook" hookT, Tuple "goal" handleT ]
   $ Let unit (Ident "root") handleT (call (global "rootScope") [ unitValue ])
   $ Let unit (Ident "goalType") handleT (call (global "goalType") [ var "goal" ])
   $ Case unit [ call (global "viewType") [ var "goalType" ] ]
@@ -496,7 +496,7 @@ referenceWith = pureDecl "referenceWith" (pureFn (listT nameT) (pureFn stringT (
   thrown = call (TyApp unit (global "throw") handleT)
     [ listAt elabRow (elabT "MessagePart")
         [ construct elabRow "TextPart" [] [ text "nothing the site binds, no global given, and no monomorphic declaration carrying the attribute" ]
-        , construct elabRow "TextPart" [] [ var "attribute" ]
+        , construct elabRow "NamePart" [] [ var "attribute" ]
         , construct elabRow "TextPart" [] [ text "fits the type" ]
         , construct elabRow "TypePart" [] [ var "goalType" ]
         ]
@@ -504,12 +504,12 @@ referenceWith = pureDecl "referenceWith" (pureFn (listT nameT) (pureFn stringT (
 
 -- The synthesizers ---------------------------------------------------------------------------
 
--- | `synthesizer (referenceWith globals "candidate" hook)`, under the name given, the
+-- | `synthesizer (referenceWith globals Main.candidate hook)`, under the name given, the
 -- | globals named in `Main`.
 synthesizing :: P.String -> P.Array P.String -> Expr Unit -> Decl Unit
 synthesizing name globals hook = pureDecl name (fn handleT (TRowExtend (RowEffectEntry kernelEffect []) TRowEmpty) handleT) $
   App unit (global "synthesizer")
-    (applyAt TRowEmpty (own "referenceWith") [ listAt TRowEmpty nameT (map (mainName TRowEmpty) globals), text "candidate", hook ])
+    (applyAt TRowEmpty (own "referenceWith") [ listAt TRowEmpty nameT (map (mainName TRowEmpty) globals), mainName TRowEmpty "candidate", hook ])
 
 -- | Answering from `Main.one`, then from the candidates.
 answering :: Decl Unit
@@ -662,7 +662,7 @@ spec = describe "the reference policy, a guest" do
         , goalTypeOfGoal
         , viewTypeOf "goalType"
         , kernel "ObserveRequest" (wire "LocalContext" [])
-        , kernel "ObserveRequest" (wire "DeclsWithAttr" [ wireText "candidate" ])
+        , kernel "ObserveRequest" (wire "DeclsWithAttr" [ mainWire "candidate" ])
         , wire "BeginTransaction" []
         , kernel "ObserveRequest" (wire "LookupGlobal" [ mainWire "cand0" ])
         , wire "CommitTransaction" []
@@ -670,7 +670,7 @@ spec = describe "the reference policy, a guest" do
             ( wire "Throw"
                 [ wireList
                     [ wire "TextPart" [ wireText "nothing the site binds, no global given, and no monomorphic declaration carrying the attribute" ]
-                    , wire "TextPart" [ wireText "candidate" ]
+                    , wire "NamePart" [ mainWire "candidate" ]
                     , wire "TextPart" [ wireText "fits the type" ]
                     , wire "TypePart" [ tokenValue "goalType" ]
                     ]
@@ -706,7 +706,7 @@ spec = describe "the reference policy, a guest" do
         , goalTypeOfGoal
         , viewTypeOf "goalType"
         , kernel "ObserveRequest" (wire "LocalContext" [])
-        , kernel "ObserveRequest" (wire "DeclsWithAttr" [ wireText "candidate" ])
+        , kernel "ObserveRequest" (wire "DeclsWithAttr" [ mainWire "candidate" ])
         , wire "BeginTransaction" []
         , kernel "ObserveRequest" (wire "LookupGlobal" [ mainWire "cand2" ])
         , kernel "TermRequest" (wire "GlobalRef" [ tokenValue "root", mainWire "cand2", wireList [] ])
