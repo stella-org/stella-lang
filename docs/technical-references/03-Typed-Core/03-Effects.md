@@ -113,15 +113,17 @@ writeAt0 "foo"                -- control reaches the handler's clause
 
 ### Core operations take one argument
 
-A Core operation takes a single argument. Multi-argument operations are realized by the surface packing arguments into a record and generating a curried function.
+A Core operation takes a single argument. An operation written with none takes `Prim.Unit`, one written with one takes it, and one written with several takes a record of them, each under its position — `PositionKey 0`, `PositionKey 1`, and so on; the surface packs the arguments and generates a curried function. Core has no tuple of its own: what source writes as a tuple is such a record.
 
 ```text
 -- surface: writeAt :: Int -> String ->* Unit
--- Σ:       writeAt : { line : Int, text : String } ->* Unit
+-- Σ:       writeAt : Record ( #0 : Int | ( #1 : String | () ) ) ->* Unit
 -- generated function:
 writeAt = λ(line : Int). λ(text : String).
-            perform Console.writeAt (extend line line (extend text text {}))
+            perform Console.writeAt (extend #0 line (extend #1 text {}))
 ```
+
+`#n` stands for `PositionKey n` here, a key no source writes.
 
 Core requires no change, and destructuring in handler clauses is likewise surface sugar.
 

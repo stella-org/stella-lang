@@ -379,6 +379,20 @@ Residual computation over an unknown tail takes this shape: `normalizeRow` extra
 
 **The Core type checker checks the reference as it checks any other**, as the application of a newtype constructor, and does not ask who wrote it. That no other term builds a `Continuation` is a guarantee of surface elaboration, and of nothing beneath it.
 
+## The surface elaborator
+
+**The surface elaborator is the host's**, and builds Core⁺ from the Surface AST on the mechanism above directly, without the handles and requests a guest uses ([Elaborator API](03-Elaborator-API.md)). What it builds carries the Surface AST's origins as its annotations, through to the Core it becomes, and every site it creates carries the node it stands for, so a failure is reported where it was written.
+
+### A signature's type
+
+**A kind left unwritten is a kind metavariable**, and the type is read with an equation for every kind it stands at: a type constructor at an instance of its kind scheme, each kind variable of the scheme a fresh metavariable; an application at the arrow its head must be, the result a fresh metavariable; and an arrow's two sides and a `forall`'s body at `Type`. A kind equation is decided where it is met ([Kind unification](#kind-unification)), so reading a signature leaves nothing waiting on a kind.
+
+**A type variable is introduced only at a quantifiable kind.** A kind written on a binder is checked to be one, and refused at the binder otherwise. A kind left unwritten — an implicitly quantified variable's, a binder's, a kind argument of a constructor's scheme — is a metavariable carrying `Quantifiable`, so a solution that is no quantifiable kind is refused where it would be assigned.
+
+**Every kind left unwritten is asked after once the elaboration it belongs to is done**, and a binder whose kind is still undetermined is reported where it stands, an implicitly quantified variable where it is first mentioned. Only then is the signature a Core scheme.
+
+**This version reads a subset of types**: type variables, type constructors, applications, pure arrows, `forall`, and kind annotations. A type synonym, a constraint, a synthesized argument, a wildcard, a typed hole, a type operator, a tuple, a record, a variant, an effect row, and an arrow carrying one are reported as outside it where they stand, and each stands meanwhile as a fresh metavariable, so what surrounds it is still read; a form resolution already reported is not reported again.
+
 ## What an elaborator may and may not do
 
 An elaborator may:

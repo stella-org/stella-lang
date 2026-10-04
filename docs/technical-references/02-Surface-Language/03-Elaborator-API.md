@@ -50,7 +50,8 @@ Pending =
 Site =
   { context   Γ as it stood where the job was created, the row constraints
               assumed there among it, as they were written
-  , origin    where it came from, for diagnostics
+  , origin    where it came from, for diagnostics: the declaration, and where
+              the surface elaborator created it, the node of the Surface AST
   }
 
 job = JobUnify           EqualityGoal    { kind, τ1, τ2 }
@@ -97,7 +98,9 @@ What the **guest** sees of a synthesis job is the expected type, with its site r
 
 **What `lookupGlobal` and `declsWithAttr` read is assembled before the first job is created, and its domain does not grow.** It holds two things: the entries the interfaces of the modules the header reaches publish to the catalog, immutable throughout ([below](#what-the-catalog-reaches)), and every top-level name this module declares, with that declaration's attributes and its scheme — the written one where a signature is given, and one carrying metavariables where the scheme is to be inferred. `Ξ`, the implicit handlers the imports make visible, is assembled at the same point ([Effect Handlers](02-Effect-Handlers.md)).
 
-**Both halves are there because `declsWithAttr` reaches across modules.** An attribute is persisted in a compiled interface exactly so that a resolver can find an instance another module declares ([Modules](../06-Modules/01-Modules.md)); a catalog of local declarations alone would answer half of every question put to it.
+**The imported part of what Core checks against is read from the same interfaces, and holds more.** It holds every declaration of every module the header reaches, a private one among them, since an exported scheme may mention a type its module does not export and an attribute's default a value it does not: each value and foreign at its Core scheme, each data type with its constructors as Core declares one, each effect, each attribute declaration, and each foreign type as an intrinsic of the class opaque under its module's name ([Foreign Types](../../proposals/06-Foreign-Types.md)); the types the ABI manifest supplies to those modules are added from the manifest, which no interface holds. **The signature the module is checked against is that part and more**: the types the manifest supplies to the module itself, and its own declarations. A type synonym is no entry, being expanded where it is used. An operation written with other than one argument takes the one argument Core has as one value: none is `Prim.Unit`, and several are a record of them, each under its position ([Effects](../03-Typed-Core/03-Effects.md)). **What elaboration reads of types — the kinds of type constructors, the constructors, and the effects — is derived from the signature**, so no interface is read by two rules.
+
+**Both halves of the catalog — the entries the interfaces publish and the module's own — are there because `declsWithAttr` reaches across modules.** An attribute is persisted in a compiled interface exactly so that a resolver can find an instance another module declares ([Modules](../06-Modules/01-Modules.md)); a catalog of local declarations alone would answer half of every question put to it.
 
 **Were it to grow, a synthesizer's candidates would depend on when its goal was attempted.** A goal created while one binding group is being elaborated and woken while a later one is would see declarations the first attempt could not. This is not a corner: an instance is an ordinary declaration carrying an attribute ([Modules](../06-Modules/01-Modules.md)), so a growing environment is one in which coherence turns on the schedule — the thing the restart contract exists to rule out.
 
