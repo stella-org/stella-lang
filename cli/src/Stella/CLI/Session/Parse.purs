@@ -11,8 +11,8 @@
 -- | **The session runs `Stella.Syntax.runParser` on the parser's value**, the
 -- | trees, and the position the input ends at, and answers with what it
 -- | returns: `parsed` with the syntax, or `parseFailed` with the failure. A
--- | parser reaches nothing but its input, so an effect it performs and handles
--- | nowhere ends it, as one failing to execute does.
+-- | parser reaches no observable state outside its run, so an effect it performs
+-- | and handles nowhere ends it, as one failing to execute does.
 -- |
 -- | **A budget bounds the steps a parse takes**, an integer from 1 to
 -- | 2147483647, as it bounds an invocation's; a parser needing more is answered

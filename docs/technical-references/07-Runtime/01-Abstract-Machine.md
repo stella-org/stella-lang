@@ -323,19 +323,23 @@ request.
 answered by `ready { protocol, profile, capabilities }`, naming the capabilities in
 force, which a client checks against what it asked — the same protocol and
 profile, every required capability in force, and none it did not offer or require — or by `refused { reason, supported }`, the reason being `protocol`, `profile`,
-or `capability` and `supported` what this side can open with. **The lifecycle requests are the protocol itself** — the handshake, `ping` answered by
+`capability`, or `capabilityIncomplete` and `supported` what this side can open with. **The lifecycle requests are the protocol itself** — the handshake, `ping` answered by
 `pong`, and `close` answered by `closed` — and every open session answers them, whatever
 it negotiated. A capability names an optional family of requests beyond them; the set
 the handshake put in force is held for the life of the session, and a request of a
 family not in force is a protocol error. Only what is implemented is advertised:
-protocol `1`, the profile `elaboration`, and the capabilities `modules`, `invoke`, and
-`kernel` (below). A request before the handshake, a second handshake, and any request
+protocol `1`, the profile `elaboration`, and the capabilities `modules`, `invoke`,
+`kernel`, and `parse` (below). **A capability may need another in force beside it**:
+`parse` runs what `modules` loaded, so one asked for without `modules` is not put in
+force, and a handshake requiring it so is refused as `capabilityIncomplete`. A request before the handshake, a second handshake, and any request
 once `close` has arrived are protocol errors.
 
-**`ready` means `Stella.Elab` is there.** An accepted `hello` is not answered at once:
+**`ready` means `Stella.Elab` is there**, and `Stella.Syntax` where `parse` is in force. An accepted `hello` is not answered at once:
 the session first installs `Stella.Elab`, the module every guest is written against,
 which the interpreter builds from the compiler it is built with rather than loading
-from anywhere. Every request arriving meanwhile is answered after `ready`: one
+from anywhere. Where `parse` is in force it then installs `Base.Int` and `Stella.Syntax`,
+the module every parser is written against and the one it depends on, built the same
+way and loaded in that order through the loader, closed (below). Every request arriving meanwhile is answered after `ready`: one
 admitted waits its turn behind the installation, and an answer settled at once — a
 `pong`, a protocol error, a refusal once `close` has arrived — is held there too, in
 the order its request arrived. Once `ready` has gone out, such answers are written at
@@ -350,7 +354,7 @@ arrives, the channel layer knowing nothing of the session's stages.
 | the channel ending or failing unasked, or a frame with no boundary to trust | `1` |
 | the client answering a `kernel` request in a way the protocol does not admit | `1` |
 | a defect of the interpreter answering a request, or reached while loading or running what was asked | `3` |
-| `Stella.Elab` failing to be built or installed | `3`, before `ready` |
+| `Stella.Elab`, or `Stella.Syntax` where `parse` is in force, failing to be built or installed | `3`, before `ready` |
 | a manifest given at start that does not read, or names another target | `1`, before the handshake |
 
 **The process ends by having nothing left to do**, the last frame written and the
@@ -373,13 +377,14 @@ supply is refused where it loads.
 | `invoke` | `invoke { global: { module, name }, arguments: [ token ], attempt, budget }` | `returned { token }`, or `invocationFailed { reason, detail }` with a `class` where the reason is `notAToken` or `commandNotEncodable` |
 | `invoke` | `cancel { attempt }` | `cancelled {}` |
 | `kernel` | `kernel { attempt, command }`, **sent by the session** while an invocation waits | `answered { answer }`, or `abandoned {}` |
+| `parse` | `parse { parser: { module, name }, input: { trees, end }, budget }` | `parsed { syntax }`, `parseFailed { failure }`, `executionFailed { reason, detail }`, or `budgetExceeded {}` |
 
 Every payload has exactly those fields, and a request whose payload has another shape
 is a protocol error rather than a failed load or invocation. A `load` path is resolved
 against the session's working directory; a manifest's own specifiers against the
 manifest's directory.
 
-**`load`, `invoke`, and `close` run one at a time, in the order they arrived**, not in
+**`load`, `invoke`, `parse`, and `close` run one at a time, in the order they arrived**, not in
 the order of their numbers, while the receiver goes on reading. So a module one request
 loads is there for the next, one module is never initialized twice, and nothing closes
 under a request still running. Once a well-formed `close` has arrived the session is
@@ -401,9 +406,10 @@ its payload of another shape — takes none.
 
 **A module under the `Stella` prefix is refused by its name**, whatever the path
 holds: once the bytes decode, a module named `Stella` or `Stella.…` is `loadFailed`
-at the stage `refused`, before any implementation is reached. `Stella.Elab` is the
-interpreter's own to install, and a module of that name from anywhere else would
-decide what a guest's commands and answers are.
+at the stage `refused`, before any implementation is reached. `Stella.Elab` and
+`Stella.Syntax` are the interpreter's own to install, and a module of either name from
+anywhere else would decide what a guest's commands and answers are, or what a parser
+reads and returns.
 
 **A load commits whole or not at all.** The module, its globals, and the foreign entries
 reached for it enter the session together; a load failing at any stage — the path
@@ -521,6 +527,76 @@ invocation it cancelled does not settle within its grace.
 | --- | --- |
 | `budgetExhausted` | the guest took the steps its budget allows and needed another |
 | `cancelled` | the client cancelled it, queued or running |
+
+#### Running a parser
+
+**A parse runs a macro's parser on the token tree of a call**
+([Syntax Extensions and Parsers](../../proposals/09-Syntax-Extensions-and-Parsers.md)).
+The parser is a global of a loaded module holding a `Stella.Syntax.Parser`; `trees`
+is a `Stella.Syntax.List Stella.Syntax.TokenTree` and `end` a `Stella.Syntax.Position`,
+the position the input ends at, both generic values. The session applies the trusted
+`Stella.Syntax.runParser` to the parser, the trees, and the end, as a closed run
+(above), and answers with what it returns: `parsed` with the syntax, a
+`Stella.Syntax.Syntax Stella.Syntax.Term`, or `parseFailed` with the failure, a
+`Stella.Syntax.Failure`. What a failure expected may name one thing more than once;
+taking it as a set is the client's.
+
+**The session holds no type**, so what it checks is what each value is. The type a
+macro's declaration gives it is the compiler's to check, against the interface it
+imports the macro through. Here the global holds a `Parser` whose field is a function;
+the input is a canonical value of the types its place wants, by the descriptor of
+`Stella.Syntax`, before anything of it is taken into the machine; and what the parser
+returns is a `Result (Syntax Term)` by the same descriptor, before anything of it is
+sent. **Every failure of these is the parser's or the request's**, answered as
+`executionFailed` with one of these reasons, and the session goes on:
+
+| Reason | What it means |
+| --- | --- |
+| `noSuchModule` | no module of that name is loaded |
+| `noSuchGlobal` | the module is loaded, and declares no global of that name |
+| `notAParser` | the global holds no `Parser` |
+| `parserNotCallable` | it holds a `Parser` around what is not a function |
+| `inputInvalid` | the input is no canonical value, or none of the type its place wants |
+| `effectRequested` | the parser performed an effect it handles nowhere |
+| `foreignRequested` | the parser called a foreign the host carries out |
+| `stateRequested` | the parser reached an array it did not make |
+| `operationWithheld` | the parser called an operation no closed run carries out |
+| `fault` | the parser faulted |
+| `resultInvalid` | what it returned is no `Result (Syntax Term)` |
+
+`Stella.Syntax` found other than the session installed it, or a result the descriptor
+admits and the canonical encoder refuses, is a defect of the interpreter, status `3`.
+
+**A budget bounds a parse as it bounds an invocation**: steps are counted the same way,
+the parse runs in stretches, and one needing a step past its budget is answered with
+`budgetExceeded`. A parse has no attempt and is not cancelled: it waits on nothing
+outside it, and the budget ends it.
+
+**A session running parsers keeps what it loads from reaching outside**, which is what
+keeps a parse from depending on any observable state outside its run: what it
+produces depends on the parser, its input, and the values of the modules loaded.
+Where `parse` is in force:
+
+- **A module declaring a foreign the host carries out is not loaded.** It fails at the
+  stage `refused` before the manifest is consulted for it, before any host module is
+  reached, and before anything of it is initialized. The operations and the two
+  `Base.IO` entries are the interpreter's and stay admitted, and a declaration asserting
+  `#observ(none)` is refused all the same, since no session can check what a host
+  implementation does.
+- **Every module a client loads is initialized closed**, and so are `Base.Int` and
+  `Stella.Syntax` ([Loading](#loading-and-the-repls-module-lifecycle)), so nothing an
+  invocation or another module's initializer wrote reaches a module's values, and
+  through them a parse. One that halts fails at the stage `initialization`.
+  `Stella.Elab`, installed first and in every session, is initialized open: it is the
+  interpreter's own, built from the compiler it is built with, and its initializers
+  make closures and nothing else.
+- **`Base.Int` is the session's**, installed before `ready`, and a client loading a
+  module of that name is refused as any second module of one name is.
+
+With no such module loaded, no parse reaches a foreign the host carries out; the
+closed run halting at one is a second guard, which answers before the host is reached.
+Using host foreigns for invocations and parsers in one session would take a store of
+the parser's own, which this session does not keep.
 
 #### What the process makes of the outcome
 
@@ -755,6 +831,7 @@ StackEntry
   | RegionFrame     { cells }
   | ClauseBoundary  { distance to the answering marker }
   | RootBoundary    { key, op }
+  | ClosedBoundary
 ```
 
 `Resume` is the only entry that carries a destination register. A tail call pushes
@@ -770,6 +847,7 @@ none, which is the whole of what makes it a tail call, and `TAILHNDL` differs fr
 | a `RegionFrame` whose owner is gone | it pops with no return clause, and the value reaches the entry below |
 | a `ClauseBoundary` | it pops, and the value — a `fast` clause's — reaches the entry below, the `Resume` of the `PERF` it answers |
 | a `RootBoundary` | it pops, and the value is what the invocation produces |
+| a `ClosedBoundary` | it pops, and the value is what the closed run produces |
 
 The three rows about a marker and a frame are the three completion paths, and a marker's `owner` flag is what
 distinguishes them ([Bytecode](../05-Backend/01-Bytecode.md)). Nothing in a `.dmo`
@@ -834,6 +912,31 @@ A `PERF` of its key naming another operation is refused as a defect; where the
 root names the one operation its effect declares, as a well-formed elaboration
 root does, no `.dmo` reaches that state.
 
+**A closed run reaches nothing outside it.** It is the run a parser is executed as
+(below), and what it produces depends on the function, its arguments, and the
+values of the modules loaded, and on nothing that ran before it. It pushes a
+`ClosedBoundary` first, which answers every key, and it **halts** — before anything
+is carried out, and for good — where it would reach outside:
+
+| The run reaches | It halts as |
+| --- | --- |
+| a `PERF` whose search finds no marker above the boundary | the key performed |
+| a call of a foreign the host carries out | that foreign |
+| an operation the ABI classifies as run-local state, applied to an array the run did not make | that operation |
+| an operation the ABI withholds from a closed run | that operation |
+
+An effect the run handles itself is not seen, and an operation over values alone is
+carried out as anywhere else ([Prim and Base](../06-Modules/02-Prim-and-Base.md)).
+**The arrays a closed run made are recorded with the machine**: an array an operation
+of run-local state produces is added, and every array among the operands of one is
+asked for, so an array made before the run — by a module's initialization, by an
+invocation, by an earlier run — is neither read, measured, nor written, and one the
+run made cannot be passed off as another. A pause and its resumption keep the record,
+and the run's end drops it. Every way of reaching an operation or a foreign — the
+instructions, a callee, a saturated partial application — carries it out in one place,
+which is where both are asked. A run that is not closed never halts; reaching that
+state is a defect.
+
 ## Loading, and the REPL's module lifecycle
 
 There is no linker. There is a **persistent registry** of loaded modules, and
@@ -868,6 +971,14 @@ module's constants, calls the closures its earlier `func` globals installed, and
 names its own globals through `GLOBALREFS`, all of which need the candidate's tables
 and slots to be reachable while nothing of it is yet loaded. The working registry is
 private to the load.
+
+**A load initializes open or closed.** Open, each initializer is a run of its own, as
+it is everywhere but in a session running parsers. Closed, each is a closed run
+(above), and **the initializers of one module share one record of arrays**, so an array
+one of them makes is the module's to read and write and an array made outside the
+module is not: what the module holds then depends on its code and on the values of the
+modules it imports, and not on what any invocation or other module's initializer wrote
+before it. An initializer that halts fails the load, which commits nothing.
 
 **A module is committed only once it has initialized.** One whose initialization
 faults leaves the persistent registry as it was, and the working registry is

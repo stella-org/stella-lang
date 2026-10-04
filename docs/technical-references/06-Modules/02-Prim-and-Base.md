@@ -667,6 +667,36 @@ each is built from — equal, and less than — and everything else is written o
 them. A three-way comparison is not among the entries: `lt` and `eq` express it, and
 adding one later would widen the surface without changing any meaning.
 
+#### One entry says everything about an operation
+
+**Each operation's type is fixed with it**, beside its code and its meaning, and its
+arity is the number of arrows of that type beneath its quantifiers. A compiler builds
+the `Base` modules declaring the operations from the same table — one `foreign` per
+entry, at its type, in the order of the table — so a declaration, the arity a call is
+checked against, and the code a `.dmo` carries cannot disagree. Such a module is
+compiled and loaded as any other.
+
+#### What a closed run carries out
+
+**A closed run reaches no observable state outside it**: what it produces depends on the
+function, its arguments, the values of the modules loaded, and state it made itself — the
+run a macro's parser is executed as ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)) — and
+the ABI says of every operation what it is to one:
+
+| Class | What a closed run does with it | Operations of this version |
+| --- | --- | --- |
+| admitted | carries it out as anywhere else | every entry of `Base.Int`, `Base.Number`, `Base.String`, and `Base.Char` |
+| run-local state | carries it out only on state the run itself made, and the state it makes becomes the run's | every entry of `Base.Array` |
+| withheld | carries it out nowhere | none |
+
+**The class follows from what an operation reaches, not from whether it faults.** An
+admitted operation depends on its operands alone. An array is state a program can
+share, so an array made before the run — by a module's initialization or by another
+run — could carry that history into the run's result; reading it is excluded as much
+as writing it. `Base.Array.length`, which reads only what never changes, is run-local
+state all the same, since what it is applied to is an array and an array is what the
+rule follows. An operation added to the ABI is classified where it is added.
+
 #### Integer division truncates, and `div` is `Prelude`'s
 
 `Base.Int.quot` and `Base.Int.rem` divide **towards zero**, which is what every host

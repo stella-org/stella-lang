@@ -269,6 +269,17 @@ D34 settles where the artefacts are and which of them others build on: the compi
 **Recursive bindings that are no functions.** A `let` block and a `where` are recursive, and initializing one requires no reference to what it is initializing ([Name Resolution](../02-Surface-Language/06-Name-Resolution.md)): `fibAnd = Tuple "fib" \n -> … snd fibAnd …` is admitted as it stores a recursive function in data, as a recursive dictionary does.
 `x = Tuple 1 x`, reading `x` at once, is not. Two things are open. **The judgement**, which is to be conservative and decidable: a reference inside a lambda is not delayed by that alone, since `x = (\_ -> x) ()` applies the lambda during initialization, and so does passing one to a function that applies it. **The lowering**: Core's `letrec` binds `FunVal`s alone ([Terms and Matching](../03-Typed-Core/04-Terms-and-Matching.md)), so an admitted binding that is no function is lowered by elaboration, through a function the cycle is closed by and a value built from it, or by a `letrec` admitting more than `FunVal`s.
 
+**What a parser may share, and with what.** A parser runs closed, reaching no array it
+did not make, and a session running parsers loads no module declaring a foreign the host
+carries out ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)). Two things this
+rules out are open. **A table a module builds once**, an array of keywords a parser
+consults, cannot be read by a parser: an array is state, and nothing yet tells one no run
+writes after its module is initialized — an immutable array, or a freeze at the end of
+initialization, would. **A host foreign that observes nothing**, a pure string utility,
+cannot be used by a parser's module either: `#observ(none)` is asserted and not checked.
+And a client using host foreigns through invocations and parsers in one session would
+need the parsers run against a store of their own.
+
 **Kind inference for mutually recursive data and effect declarations.** Core assumes every kind is explicit; the procedure by which elaboration supplies them must be settled.
 
 ## The runtime ABI

@@ -467,7 +467,7 @@ data Loading
 -- |
 -- | **A session running parsers loads no module declaring a foreign the host
 -- | carries out**, and refuses one before anything of it is reached or
--- | initialized: a parse is to depend on its input and its parser alone, and a
+-- | initialized: a parse is to reach no observable state outside its run, and a
 -- | module that reached the host as it initialized would carry what it saw into
 -- | every parse after. The operations and the `IO` entries the interpreter carries
 -- | out itself are not the host's, and stay admitted.

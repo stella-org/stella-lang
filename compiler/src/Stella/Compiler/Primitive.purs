@@ -207,8 +207,8 @@ codeOfOp = case _ of
 opOfCode :: P.Int -> Maybe PrimOp
 opOfCode code = map _.op (Array.find (\e -> codeOfOp e.op == code) primTable)
 
--- | What an operation is to a closed run, one whose result is to depend on its
--- | input alone: carried out as it is, carried out on state the run itself made,
+-- | What an operation is to a closed run, one that reaches no observable state
+-- | outside it: carried out as it is, carried out on state the run itself made,
 -- | or not carried out at all.
 data InClosedRun
   = Admitted

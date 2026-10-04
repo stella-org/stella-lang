@@ -49,8 +49,10 @@ leaving tokens unread fails, naming what it expected next.
 
 **The type is checked, since the category is read from it.** The declaration's checked scheme,
 its synonyms expanded, is `Parser (Syntax Term)` exactly — no quantifier and no constraint — or
-`@[macro]` on it is rejected. The session that runs it checks again, against the interface it was
-imported through, that the global it is asked to run has that scheme and a value of that shape.
+`@[macro]` on it is rejected. A module importing the macro checks the same of the scheme its
+interface carries. **The session that runs it holds no type**, and checks instead what the global
+holds and what crosses: a `Parser` around a function, an input of the types `Stella.Syntax` gives
+the token tree, and a result that is a `Result (Syntax Term)`.
 
 **A macro is compiled to a global and has no identity as a value in source.** Its name enters the
 macro namespace of the modules importing it and no value namespace, so neither those modules nor
@@ -155,17 +157,24 @@ its declaration was checked at, through a request the session advertises as the 
 
 | Request | Answer |
 | --- | --- |
-| `parse { parser: { module, name }, input: TokenTree, budget }` | `parsed { syntax }`, `parseFailed { diagnostic }`, `executionFailed { diagnostic }`, or `budgetExceeded {}` |
+| `parse { parser: { module, name }, input: { trees, end }, budget }` | `parsed { syntax }`, `parseFailed { failure }`, `executionFailed { reason, detail }`, or `budgetExceeded {}` |
 
 **The category is the parser's**, read from the type its declaration gives it; a request names no
-category of its own. `parseFailed` is the parser failing as a parser does, with the farthest
+category of its own. The input is the trees of the call and the position they end at, which is
+what the trusted `Stella.Syntax.runParser` the session applies takes. `parseFailed` is the parser
+failing as a parser does, with the farthest
 position, the tokens expected, and its labels; `executionFailed` is the code failing; and
 `budgetExceeded` is the step budget spent. The token tree and the syntax cross as the session's
 generic values.
 
-**A parser reaches nothing but its input.** It does not reach the elaborator's kernel — no goal, no
-metavariable, no term — and performs no effect a host could observe, so what an expansion produces
-depends on its input and the parser alone, and a build may key it as it keys a module.
+**A parser reaches no observable state outside its run.** It does not reach the elaborator's
+kernel — no goal, no metavariable, no term — and performs no effect a host could observe, so what
+an expansion produces depends on the parser, its input, and the values of the modules it reaches,
+and a build may key it as it keys a module. The session makes this so rather than trusting it: a
+parser runs closed, halting at an effect it handles nowhere, a foreign the host carries out, and an
+array it did not make; and a session running parsers loads no module declaring such a foreign and
+initializes every module a client loads closed
+([Abstract Machine](../technical-references/07-Runtime/01-Abstract-Machine.md)).
 
 The types — `TokenTree`, `Trivia`, `Syntax`, `Parser`, and the combinators — are a module of
 guest code the compiler supplies, as it supplies `Stella.Elab`.
