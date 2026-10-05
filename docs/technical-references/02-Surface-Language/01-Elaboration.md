@@ -389,9 +389,45 @@ Residual computation over an unknown tail takes this shape: `normalizeRow` extra
 
 **A type variable is introduced only at a quantifiable kind.** A kind written on a binder is checked to be one, and refused at the binder otherwise. A kind left unwritten — an implicitly quantified variable's, a binder's, a kind argument of a constructor's scheme — is a metavariable carrying `Quantifiable`, so a solution that is no quantifiable kind is refused where it would be assigned.
 
-**Every kind left unwritten is asked after once the elaboration it belongs to is done**, and a binder whose kind is still undetermined is reported where it stands, an implicitly quantified variable where it is first mentioned. Only then is the signature a Core scheme.
+**Every kind left unwritten is asked after once the elaboration it belongs to is done**, and each place still holding an undetermined one is reported once: a binder where it stands, an implicitly quantified variable where it is first mentioned, and a type constructor whose kind arguments nothing decided where it is written — `T` at `forall k. Type`, its `k` mentioned nowhere else, decides nothing of `k`. A metavariable none of these accounts for is reported where the signature's type stands, so a signature that is not made a scheme is always reported somewhere. Only then is the signature a Core scheme.
 
 **This version reads a subset of types**: type variables, type constructors, applications, pure arrows, `forall`, and kind annotations. A type synonym, a constraint, a synthesized argument, a wildcard, a typed hole, a type operator, a tuple, a record, a variant, an effect row, and an arrow carrying one are reported as outside it where they stand, and each stands meanwhile as a fresh metavariable, so what surrounds it is still read; a form resolution already reported is not reported again.
+
+### A value declaration's body
+
+**A body is checked against its declaration's scheme.** The scheme's quantifiers are opened by type abstractions, the parameters are bound by `λ`s at the argument types its arrows give, and the body is checked against what is left.
+
+**Checking is bidirectional.** An application infers its function and checks its argument at the arrow the function's type must be; a type that is no arrow yet is equated with a fresh pure arrow. A local has the type its binder gave it. A global or a constructor is instantiated: each kind variable of its scheme becomes a fresh kind metavariable carrying `Quantifiable`, and each `forall` a type application to a fresh type metavariable. A literal has its literal type. An annotation is read at `Type` under the type variables of the signature around it, and its expression checked against it. A `λ` is checked against an arrow. A form that is only inferred is checked by equating what it is inferred at with what is expected.
+
+**Every equation is stated where the node it is about stands**, and is decided at once where it can be. One that cannot be decided yet becomes an equality job and the body goes on ([Elaborator API](03-Elaborator-API.md#an-equation-the-surface-elaborator-cannot-decide-yet-becomes-a-job)).
+
+**This version elaborates a subset**: locals, globals, constructors, literals, application, `λ` over variables where its type is known, and annotations, over pure arrows. A `λ` whose type is not known where it stands, a parameter that is no variable, a global whose scheme is constrained, and every other form are reported as outside it where they stand, and the declaration holding one is not elaborated further.
+
+### A module's values
+
+**Every signature is read before any body.** A declaration's scheme is what every other declaration refers to it at, so each signature is read as an attempt of its own and its kinds settled ([A signature's type](#a-signatures-type)); the schemes are then entered into the catalog beside what the imports publish, each value with the attributes written on it. A body may refer to any value of the module, itself and those declared after it among them. **A value declaration needs a signature in this version**, a fixity gives Core nothing, and every other declaration is reported as outside what it elaborates.
+
+**Each body is elaborated as an attempt of its own.** A body that fails, or holds a form this version does not read, leaves nothing behind. What the bodies leave undecided stands as jobs, which the loop runs once every body has been elaborated, so an equation one body states may be decided by what another does. Once the loop is done, each body is zonked and made a Core term, and each place a type nothing decided stands is reported once.
+
+**A body is a value only once everything stated for it holds.** The loop stops at the first failure ([Elaborator API](03-Elaborator-API.md#the-loop)), so where it stops is read per declaration, through the site of each job:
+
+| Where the loop stops | Reported | Not a value |
+| --- | --- | --- |
+| a job refused | the diagnostic, which names the declaration of each site it holds — an assignment that broke an obligation may name two | each declaration it names |
+| jobs left waiting on what nothing assigned | each of them, as undecided where it was stated | each declaration such a job belongs to |
+| fuel run out | the job next to be retried, as undecided where it was stated | the declaration it belongs to |
+| a refusal, or fuel run out, and another declaration with a job still waiting | that declaration, as left unchecked | that declaration |
+| a defect | the defect | every declaration |
+
+### The Core module
+
+**The values are grouped by what they refer to.** The edges are the references each Core term makes to the module's own values, and each strongly connected component is a group: a recursive one — more than one member, or one referring to itself — becomes a `DeclRec`, any other a `DeclNonRec`. **The groups stand in a stable topological order**: each after every group it refers to, and among the groups that may stand next, the one holding the declaration written first. A declaration is placed by its ordinal in the module's list of declarations rather than by its range, since declarations a macro produces may share one. A group lists its members in that order too.
+
+**A recursive group binds function values alone.** Core's `letrec` admits only `FunVal`s (D14), and the surface admits more: `fibAnd = Tuple "fib" \n -> … snd fibAnd …` initializes without reading what it is initializing ([Name Resolution](06-Name-Resolution.md)). How such a binding is judged and lowered is open ([Open Questions](../99-Open-Questions/01-Open-Questions.md)), so **this version reports a member of a recursive group that is no `FunVal` as a form it does not elaborate**, where that member is declared. This is no statement about the program: `fibAnd` and `n = n` are reported alike, and which of them the language admits is decided where the lowering is.
+
+**A Core module is made only of a module with no error.** A module missing a declaration would refer to what it does not bind. The Core module imports what the module imports, in the order written, a module imported twice once, and exports each value it declares that is reached from outside — by its name, as a macro, or through an operator it exports — which is the rule its interface's arities are checked by ([Interface](../05-Backend/03-Interface.md#which-values-have-one)); a re-export reaches what another module declares and is no export of its Core. Each binding carries the attributes written on its declaration. What the Core module is annotated with is where the module stands, a `DeclNonRec` where its declaration does, and a `DeclRec` where its first member does.
+
+**The Core checker refusing the module is the elaborator's fault**, and reported as such, with one exception: an attribute's arguments are checked against its declaration by the Core checker alone ([Core Type Checker](../03-Typed-Core/07-Core-Type-Checker.md#what-it-verifies)), so an attribute whose arguments do not check is the author's, reported where its declaration stands — for a recursive group, where the group's first member does.
 
 ## What an elaborator may and may not do
 

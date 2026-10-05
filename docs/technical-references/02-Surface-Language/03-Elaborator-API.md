@@ -376,7 +376,7 @@ on quiescence:
 
 The three-way outcome is what separates "unsolvable" from "not enough information yet", and it is the same split at each of the three job kinds.
 
-**The loop stops at the first failure.** A failed attempt is rolled back, so the jobs retried after it would be retried without what the failed equation would have told them, and nothing yet tells a failure of their own from one that follows from it. Collecting several diagnostics waits on a rule for recovering from one, and where it arrives, what the mechanism reports keeps the jobs still waiting beside the diagnostics; which of them an author is shown is the presentation's to decide.
+**The loop stops at the first failure.** A failed attempt is rolled back, so the jobs retried after it would be retried without what the failed equation would have told them, and nothing yet tells a failure of their own from one that follows from it. What the mechanism reports keeps the jobs still waiting beside the diagnostic, and recovery is the driver's: the surface elaborator reads them to tell the declarations the failure is about from those it left unchecked ([Elaboration](01-Elaboration.md#a-modules-values)). Which diagnostics an author is shown is the presentation's to decide.
 
 **Fuel is spent by a retry and by nothing else.** A first attempt spends none, whether it is made where a job is submitted or taken from the ready queue a job created inside an attempt was put on; the queue marks each entry as a first attempt or a retry, and a wake is what queues a retry. A retry the fuel does not reach stays on the ready queue and is named where the loop stops, and one that has been attempted has spent its unit whatever it came to.
 
@@ -385,6 +385,23 @@ The three-way outcome is what separates "unsolvable" from "not enough informatio
 **The loop is one, whatever carries out an attempt.** An attempt may be carried out in a monad — one that waits on a guest running in another process, or one that stops the driver without an attempt, as a compilation called off does — and the loop, the submission, and the fuel are the same in every monad; the host's own runner is the loop over the identity monad. A monad is a way to carry out an attempt, and never a second loop.
 
 **A synthesizer is resolved once its attempt has opened.** A job whose target is malformed is reported as that, and no attempt opens; a name the session holds no synthesizer for is a defect of the session, and the attempt that opened is abandoned having asked nothing. The loop records no trace of its own, and neither reads nor drains one.
+
+### An equation the surface elaborator cannot decide yet becomes a job
+
+**`equate` is `unify` but where unification is stuck.** The surface elaborator elaborates a declaration's body as one attempt, and that attempt is no job: postponing it would leave nothing to run it again, and re-running a whole body for one equation it cannot decide yet would redo everything else it holds. So the kernel gives the host a second entry for an equation:
+
+```text
+equate(site, τ1 ≡ τ2), inside an attempt:
+  solved      install what it reached, as unify does
+  mismatch    fail, as unify does; a misuse of the unifier is a defect
+  stuck       install what it reached, as unify does,
+              create the equation as a job, queued for its first attempt,
+              and go on
+```
+
+**What was reached is installed through the single entry an assignment goes through** ([`assign`](#assign-enqueues-and-runs-nothing)), obligations re-decided and jobs woken; the job is the whole equation, and its attempt decides it again against whatever has been assigned by then. **Only that outcome is turned into a job**: a postponement of any other cause, and one the action asks for itself, still postpones the action. **The job is the attempt's**, created inside it as any job created there is, so a rollback of the attempt takes the job back with the progress.
+
+`equate` is the host's alone. A guest's attempt is itself a job, which the scheduler runs again once what it waits on is assigned, so `unify` postponing it is what a guest needs.
 
 ### Which job may be attempted
 
