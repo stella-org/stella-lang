@@ -8,7 +8,7 @@ import Prim hiding (Type)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), isNothing)
 import Data.Set as Set
 import Data.String (joinWith)
 import Data.Tuple (Tuple(..), snd)
@@ -26,7 +26,7 @@ import Stella.Compiler.Elaborate.Protocol.Facade as F
 import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Environment.Imported (importedCatalog, importedSignature, sessionEnvOf)
 import Stella.Compiler.Elaborate.Kernel.Elab (createSynthesis, equate, freshTypeMeta, initialState)
-import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), elaborateValues, settleBodies)
+import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), elaborateModule, settleBodies)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
@@ -36,10 +36,10 @@ import Stella.Compiler.Interface.Scheme (plainScheme)
 import Stella.Compiler.Resolve.Module (resolveModule)
 import Stella.Compiler.Surface.Origin (rangeOf)
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.TypedCore (Decl(..), Module, declare, primSignature)
+import Stella.Compiler.TypedCore (Attribute, Decl(..), Export(..), Module, primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..), TyVar(..))
-import Stella.Compiler.TypedCore.Prim (intTy, pureFn)
+import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy)
 import Stella.Compiler.TypedCore.Signature (Signature)
 import Stella.Compiler.TypedCore.Type (RowKey(..), Type(..))
 import Stella.Compiler.TypedCore.Term (Literal(..))
@@ -53,23 +53,38 @@ int :: Type
 int = TCon intTy []
 
 -- | `Lib`: `inc : Int -> Int`, `id : forall a. a -> a`, and
--- | `const : forall a b. a -> b -> a`; and `foreign type Phantom` at
--- | `forall k. Type`.
+-- | `const : forall a b. a -> b -> a`; `data Tuple a b = Tuple a b` and
+-- | `snd : forall a b. Tuple a b -> b`; and `foreign type Phantom` at
+-- | `forall k. Type`; and `attribute label (text :: String)`.
 libInterface :: ModuleInterface
 libInterface =
   { name: lib
   , imports: []
   , exports: emptyExports
-      { values = Map.fromFoldable (map (\n -> Tuple n { entity: Qualified lib (Ident n), via: Declared }) [ "inc", "id", "const" ])
-      , types = Map.singleton "Phantom" { entity: TypeEntity (Qualified lib (TyName "Phantom")), via: Declared, members: [] }
+      { values = Map.fromFoldable (map (\n -> Tuple n { entity: Qualified lib (Ident n), via: Declared }) [ "inc", "id", "const", "snd", "Tuple" ])
+      , types = Map.fromFoldable
+          [ Tuple "Phantom" { entity: TypeEntity (Qualified lib (TyName "Phantom")), via: Declared, members: [] }
+          , Tuple "Tuple" { entity: TypeEntity (Qualified lib (TyName "Tuple")), via: Declared, members: [ Ident "Tuple" ] }
+          ]
+      , attributes = Map.singleton "label" { entity: Qualified lib (Ident "label"), via: Declared }
       }
   , declarations: emptyDeclarations
       { values = Map.fromFoldable
           [ value "inc" (pureFn int int)
           , value "id" (TForall a KType (pureFn (TVar a) (TVar a)))
           , value "const" (TForall a KType (TForall b KType (pureFn (TVar a) (pureFn (TVar b) (TVar a)))))
+          , value "snd" (TForall a KType (TForall b KType (pureFn (tuple (TVar a) (TVar b)) (TVar b))))
+          , Tuple (Ident "Tuple") { sort: SortConstructor (Qualified lib (TyName "Tuple")), scheme: plainScheme (monoScheme (TForall a KType (TForall b KType (pureFn (TVar a) (pureFn (TVar b) (tuple (TVar a) (TVar b))))))), attributes: [] }
           ]
-      , types = Map.singleton (TyName "Phantom") { kind: { kindVars: [ KindVar "k" ], body: KType }, sort: ForeignType, attributes: [] }
+      , types = Map.fromFoldable
+          [ Tuple (TyName "Phantom") { kind: { kindVars: [ KindVar "k" ], body: KType }, sort: ForeignType, attributes: [] }
+          , Tuple (TyName "Tuple")
+              { kind: monoScheme (KFun KType (KFun KType KType))
+              , sort: DataType { params: [ { name: a, kind: KType }, { name: b, kind: KType } ], constructors: [ { name: Ident "Tuple", fields: [ TVar a, TVar b ] } ], isNewtype: false }
+              , attributes: []
+              }
+          ]
+      , attributes = Map.singleton (Ident "label") { positional: [ TCon stringTy [] ], keyword: [] }
       }
   , implicitHandlers: []
   , catalogOnly: Set.empty
@@ -79,19 +94,28 @@ libInterface =
   a = TyVar "a"
   b = TyVar "b"
   value n ty = Tuple (Ident n) { sort: SortForeign MayObserve, scheme: plainScheme (monoScheme ty), attributes: [] }
+  tuple x y = TApp (TApp (TCon (Qualified lib (TyName "Tuple")) []) x) y
 
 environment :: Either String BuildEnvironment
 environment = case addInterface libInterface initialEnvironment of
   Right env -> Right env
   Left err -> Left (show err)
 
-type Ran = { values :: Array ElaboratedValue, errors :: Array ElaborationError, signature :: Signature }
+type Ran =
+  { values :: Array ElaboratedValue
+  , errors :: Array ElaborationError
+  , module :: Maybe { core :: Module Surface.Origin, signature :: Signature }
+  }
 
 -- | The module `M`, importing `Lib`, declaring the lines given; elaborated.
 elaborating :: Array String -> (Ran -> Aff Unit) -> Aff Unit
-elaborating body k = case environment of
+elaborating = elaboratingUnder "module M where"
+
+-- | `elaborating`, the module's header the one given.
+elaboratingUnder :: String -> Array String -> (Ran -> Aff Unit) -> Aff Unit
+elaboratingUnder header body k = case environment of
   Left err -> fail err
-  Right env -> case parseModule (joinWith "\n" ([ "module M where", "import Lib" ] <> body)) of
+  Right env -> case parseModule (joinWith "\n" ([ header, "import Lib" ] <> body)) of
     Left err -> fail (printSyntaxError err)
     Right cst -> do
       let resolved = resolveModule env cst
@@ -99,28 +123,35 @@ elaborating body k = case environment of
         [], Right view -> case importedSignature env view of
           Left err -> fail (show err)
           Right signature -> do
-            let elaborated = elaborateValues signature (importedCatalog env view) resolved.module
-            k { values: elaborated.values, errors: elaborated.errors, signature }
+            let elaborated = elaborateModule signature (importedCatalog env view) resolved.module resolved.exports
+            k { values: elaborated.values, errors: elaborated.errors, module: elaborated.module }
         errors, _ -> fail ("not resolved: " <> show errors)
 
--- | The values as a Core module, in the order written, which the Core checker
--- | is to accept.
-checked :: Ran -> Aff Unit
-checked r = case declare r.signature coreModule of
-  Left err -> fail ("the Core checker refused it: " <> show err.error)
-  Right _ -> pure unit
+-- | The Core module made, which the Core checker accepted.
+checked :: Ran -> (Module Surface.Origin -> Aff Unit) -> Aff Unit
+checked r k = case r.module of
+  Just made -> k made.core
+  Nothing -> fail ("no Core module: " <> show (map at r.errors))
+
+-- | Each declaration of a Core module, as `rec` or `nonrec` and the names it
+-- | binds.
+shapes :: Module Surface.Origin -> Array String
+shapes m = Array.mapMaybe
+  ( case _ of
+      DeclNonRec _ b -> Just ("nonrec " <> nameOf b.name)
+      DeclRec _ bs -> Just ("rec " <> joinWith " " (map (nameOf <<< _.name) bs))
+      _ -> Nothing
+  )
+  m.decls
   where
-  coreModule :: Module Surface.Origin
-  coreModule =
-    { annotation: case Array.head r.values of
-        Just v -> v.origin
-        Nothing -> Surface.FromSource (inSource { line: 0, column: 0 } { line: 0, column: 0 })
-    , name: ModuleName "M"
-    , imports: [ lib ]
-    , exports: []
-    , decls: map (\v -> DeclNonRec v.origin { name: nameOf v.name, scheme: v.scheme, value: v.body, attributes: [] }) r.values
-    }
-  nameOf (Qualified _ n) = n
+  nameOf (Ident n) = n
+
+-- | The attributes the bindings of a declaration carry.
+attributesOf :: Decl Surface.Origin -> Array Attribute
+attributesOf = case _ of
+  DeclNonRec _ b -> b.attributes
+  DeclRec _ bs -> Array.concatMap _.attributes bs
+  _ -> []
 
 -- | Where an error stands, as line and column of the source.
 at :: ElaborationError -> String
@@ -135,6 +166,8 @@ at = case _ of
   EquationUndecided _ -> "undecided"
   TypeUndetermined o -> located o <> " type undetermined"
   LeftUnchecked o _ -> located o <> " left unchecked"
+  AttributeRejected o _ -> located o <> " attribute rejected"
+  CoreRefused _ -> "the Core checker refused it"
   Broken _ -> "broken"
   AttemptPostponed -> "postponed"
   where
@@ -159,12 +192,13 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         \r -> do
           map (\e -> at e) r.errors `shouldEqual` []
           map _.name r.values `shouldEqual` map (Qualified (ModuleName "M") <<< Ident) [ "f", "twice", "n", "m", "k" ]
-          checked r
+          checked r \core -> shapes core `shouldEqual` [ "nonrec f", "nonrec twice", "nonrec n", "nonrec m", "nonrec k" ]
 
     it "may refer to a value the module declares after it, itself among them" do
       elaborating [ "a :: Int -> Int", "a x = b (a x)", "b :: Int -> Int", "b y = a y" ] \r -> do
         map at r.errors `shouldEqual` []
         map _.name r.values `shouldEqual` map (Qualified (ModuleName "M") <<< Ident) [ "a", "b" ]
+        checked r \core -> shapes core `shouldEqual` [ "rec a b" ]
 
   describe "what is not elaborated" do
     it "is reported where it stands, and leaves the rest elaborated" do
@@ -195,6 +229,65 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "p :: Phantom -> Int", "p x = 1", "ok :: Int", "ok = 1" ] \r -> do
         map at r.errors `shouldEqual` [ "3:6 kind undetermined" ]
         map _.name r.values `shouldEqual` [ Qualified (ModuleName "M") (Ident "ok") ]
+
+  describe "the Core module" do
+    it "binds each value after what it refers to, the one written first taken first, and a recursive group as one" do
+      elaborating
+        [ "x :: Int"
+        , "x = inc y"
+        , "y :: Int"
+        , "y = 1"
+        , "even :: Int -> Int"
+        , "even n = odd n"
+        , "odd :: Int -> Int"
+        , "odd n = even n"
+        , "loop :: Int -> Int"
+        , "loop n = loop n"
+        , "pair :: Tuple Int Int"
+        , "pair = Tuple 1 2"
+        ]
+        \r -> checked r \core -> do
+          shapes core `shouldEqual` [ "nonrec y", "nonrec x", "rec even odd", "rec loop", "nonrec pair" ]
+          core.imports `shouldEqual` [ lib ]
+
+    it "is not made of a recursive value that is no function, which this version does not elaborate" do
+      elaborating [ "n :: Int", "n = n", "ok :: Int", "ok = 1" ] \r -> do
+        map at r.errors `shouldEqual` [ "4:1 outside: a recursive value that is no function" ]
+        isNothing r.module `shouldEqual` true
+      -- a recursive function stored in data is no different yet
+      elaborating [ "fibAnd :: Tuple Int (Int -> Int)", "fibAnd = Tuple 0 (\\n -> snd fibAnd n)" ] \r -> do
+        map at r.errors `shouldEqual` [ "4:1 outside: a recursive value that is no function" ]
+        isNothing r.module `shouldEqual` true
+
+    it "exports each value reached from outside, and carries every attribute" do
+      elaboratingUnder "module M (macro mac, (+++), shown) where"
+        [ "infixl 6 plus as +++"
+        , "plus :: Int -> Int -> Int"
+        , "plus x y = x"
+        , "@[macro]"
+        , "mac :: Int"
+        , "mac = 1"
+        , "shown :: Int"
+        , "shown = 1"
+        , "hidden :: Int"
+        , "hidden = 1"
+        ]
+        \r -> checked r \core -> do
+          core.exports `shouldEqual` map (ExportValue <<< Ident) [ "plus", "mac", "shown" ]
+          Array.concatMap attributesOf core.decls `shouldEqual`
+            [ { name: Qualified (ModuleName "Prim") (Ident "macro"), positional: [], keyword: [] } ]
+
+    it "is made of a module declaring no value" do
+      elaborating [] \r -> checked r \core -> do
+        core.decls `shouldEqual` []
+        core.exports `shouldEqual` []
+
+    it "reports an attribute whose arguments do not check where its declaration stands, and is not made" do
+      elaborating [ "@[label 1]", "v :: Int", "v = 1" ] \r -> do
+        map at r.errors `shouldEqual` [ "5:1 attribute rejected" ]
+        isNothing r.module `shouldEqual` true
+      elaborating [ "@[label \"v\"]", "v :: Int", "v = 1" ] \r -> checked r \core ->
+        map _.name (Array.concatMap attributesOf core.decls) `shouldEqual` [ Qualified lib (Ident "label") ]
 
   describe "the bodies once their jobs are run" do
     it "are values only where every equation stated for them holds" do
@@ -236,4 +329,4 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     )
   inM = Qualified (ModuleName "M") <<< Ident
   siteIn name line = { context: emptyXContext, origin: AtSource { declaration: inM name, origin: origin line } }
-  body (Tuple name line) = { name: inM name, origin: origin line, scheme: { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1) }
+  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1) }

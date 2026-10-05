@@ -21,6 +21,8 @@ module Stella.Compiler.Interface.Assemble
   , Table(..)
   , AssembleError(..)
   , surfaceInterface
+  , coreAttribute
+  , reachedFromOutside
   , assemble
   ) where
 
@@ -28,7 +30,7 @@ import Prelude
 import Prim hiding (Type, Symbol)
 
 import Data.Array as Array
-import Data.Either (Either(..))
+import Data.Either (Either(..), hush)
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
 import Data.Map as Map
@@ -41,7 +43,8 @@ import Data.Tuple (Tuple(..))
 import Stella.Compiler.Interface.Module (Attribute, ConstructorEntry, Exports, ModuleInterface, OperatorEntry, TypeEntry, TypeOperatorEntry, TypeSort(..), ValueEntry, ValueSort(..), Via(..))
 import Stella.Compiler.TypedCore.Decl (Constant(..))
 import Stella.Compiler.Interface.Scheme (Scheme)
-import Stella.Compiler.Surface.Decl as Surface
+import Stella.Compiler.Surface.Decl (Attribute, Constant(..), Declaration(..), Module) as Surface
+import Stella.Compiler.Surface.Origin (Origin) as Surface
 import Stella.Compiler.Surface.Decl (FixityTarget(..))
 import Stella.Compiler.Surface.Name (OperatorName(..))
 import Stella.Compiler.TypedCore.Kind (KindScheme)
@@ -213,7 +216,7 @@ declaration = case _ of
   Surface.DeclTypeFixity d ->
     pure [ TypeOperatorDecl d.operator { associativity: d.associativity, precedence: d.precedence, target: d.target } ]
   Surface.DeclAttribute d -> do
-    keyword <- for d.keyword \k -> { label: k.label, default: _ } <$> traverse constant k.default
+    keyword <- for d.keyword \k -> { label: k.label, default: _ } <$> traverse (hush <<< constant) k.default
     pure [ AttributeDecl (local d.name) { positional: Array.length d.positional, keyword } ]
   where
   value name sort attributes = do
@@ -224,18 +227,23 @@ local :: forall a. Qualified a -> a
 local (Qualified _ a) = a
 
 attribute :: Surface.Attribute -> Maybe Attribute
-attribute a = do
+attribute = hush <<< coreAttribute
+
+-- | A resolved attribute as Core carries it, or where it holds an invalid
+-- | constant.
+coreAttribute :: Surface.Attribute -> Either Surface.Origin Attribute
+coreAttribute a = do
   positional <- traverse constant a.positional
   keyword <- for a.keyword \k -> { label: k.label, value: _ } <$> constant k.value
   pure { name: a.name, positional, keyword }
 
-constant :: Surface.Constant -> Maybe Constant
+constant :: Surface.Constant -> Either Surface.Origin Constant
 constant = case _ of
-  Surface.ConstantLiteral _ l -> Just (ConstantLiteral l)
-  Surface.ConstantValue _ q -> Just (ConstantValue q)
+  Surface.ConstantLiteral _ l -> Right (ConstantLiteral l)
+  Surface.ConstantValue _ q -> Right (ConstantValue q)
   Surface.ConstantConstructor _ q cs -> ConstantConstructor q <$> traverse constant cs
   Surface.ConstantRecord _ fs -> ConstantRecord <$> for fs \f -> { label: f.label, value: _ } <$> constant f.value
-  Surface.ConstantInvalid _ -> Nothing
+  Surface.ConstantInvalid o -> Left o
 
 -- | The interface the parts make, or where they do not speak of one module.
 assemble :: SurfaceInterface -> CoreInterface -> Map Ident Int -> Either AssembleError ModuleInterface
@@ -285,19 +293,7 @@ assemble s c arities = do
     , arities
     }
   where
-  -- A value is reached from outside by its name, as a macro by its name in the
-  -- macro namespace, or through an operator the module declares and exports.
-  ownExport name = Map.member name s.values && (declaredIn s.exports.values || declaredIn s.exports.macros || throughOperator)
-    where
-    declaredIn table = case Map.lookup (identText name) table of
-      Just { entity: Qualified m n, via: Declared } -> m == s.name && n == name
-      _ -> false
-    throughOperator = Array.any exportedTarget (Map.toUnfoldable s.operators :: Array (Tuple OperatorName OperatorEntry))
-    exportedTarget (Tuple op entry) = case entry.target of
-      FixityValue (Qualified m n) | m == s.name && n == name -> case Map.lookup (operatorText op) s.exports.operators of
-        Just { entity: Qualified m' o, via: Declared } -> m' == s.name && o == op
-        _ -> false
-      _ -> false
+  ownExport name = Map.member name s.values && reachedFromOutside s.name s.exports s.operators name
 
   typeEntry k v core = case v.sort, core.sort of
     SurfaceData d, CoreData cd
@@ -315,6 +311,23 @@ assemble s c arities = do
     where
     entry :: TypeSort -> TypeEntry
     entry sort = { kind: core.kind, sort, attributes: v.attributes }
+
+-- | Whether a value the module declares is reached from outside: by its name,
+-- | as a macro by its name in the macro namespace, or through an operator the
+-- | module declares and exports. A re-export reaches what another module
+-- | declares, and is none of these.
+reachedFromOutside :: ModuleName -> Exports -> Map OperatorName OperatorEntry -> Ident -> Boolean
+reachedFromOutside self exports operators name =
+  declaredIn exports.values || declaredIn exports.macros || Array.any exportedTarget (Map.toUnfoldable operators :: Array (Tuple OperatorName OperatorEntry))
+  where
+  declaredIn table = case Map.lookup (identText name) table of
+    Just { entity: Qualified m n, via: Declared } -> m == self && n == name
+    _ -> false
+  exportedTarget (Tuple op entry) = case entry.target of
+    FixityValue (Qualified m n) | m == self && n == name -> case Map.lookup (operatorText op) exports.operators of
+      Just { entity: Qualified m' o, via: Declared } -> m' == self && o == op
+      _ -> false
+    _ -> false
 
 -- | Both parts hold one key set for a table.
 sameKeys :: forall k a b. Ord k => Table -> (k -> String) -> Map k a -> Map k b -> Either AssembleError Unit

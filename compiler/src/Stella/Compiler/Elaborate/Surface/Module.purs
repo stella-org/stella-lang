@@ -16,12 +16,14 @@
 -- | A body is a value only once every equation stated for it holds; one the
 -- | loop stopped before deciding is reported, never returned.
 -- |
--- | **A value declaration needs a signature in this version**, and every other
--- | declaration is outside what it elaborates.
+-- | **A value declaration needs a signature in this version**, a fixity gives
+-- | Core nothing, and every other declaration is outside what it elaborates.
 module Stella.Compiler.Elaborate.Surface.Module
   ( ElaborationError(..)
   , ElaboratedValue
   , Elaborating
+  , ElaboratedModule
+  , elaborateModule
   , elaborateValues
   , settleBodies
   ) where
@@ -33,8 +35,9 @@ import Data.Array as Array
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
+import Data.Traversable (traverse)
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
@@ -51,12 +54,19 @@ import Stella.Compiler.Elaborate.Surface.Expr (elaborateValue, runSurf)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..), elaborateSignature, settledScheme)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect, Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
+import Stella.Compiler.Elaborate.Surface.Group (groups)
+import Stella.Compiler.Interface.Assemble (coreAttribute, reachedFromOutside)
+import Stella.Compiler.Interface.Module (Exports)
 import Stella.Compiler.Surface.Decl (Declaration(..), declarationOrigin)
 import Stella.Compiler.Surface.Decl (Module) as Surface
 import Stella.Compiler.Surface.Expr (Binder, Expr)
 import Stella.Compiler.Surface.Origin (Origin) as Surface
-import Stella.Compiler.TypedCore (Expr) as Core
-import Stella.Compiler.TypedCore.Name (Ident, Qualified)
+import Stella.Compiler.TypedCore (Expr, Module) as Core
+import Stella.Compiler.TypedCore (Attribute, DeclError(..), DeclFailure, Decl(..), Export(..), declare)
+import Stella.Compiler.TypedCore.AttributeCheck (AttributeError)
+import Stella.Compiler.TypedCore.Check (isFunVal)
+import Stella.Compiler.TypedCore.Reference (globalsOf)
+import Stella.Compiler.TypedCore.Name (Ident, Qualified(..))
 import Stella.Compiler.TypedCore.Signature (Signature)
 import Stella.Compiler.TypedCore.Type (TypeScheme)
 
@@ -79,15 +89,23 @@ data ElaborationError
   | LeftUnchecked Surface.Origin (Qualified Ident)
   -- | The mechanism used against its contract, which is the elaborator's fault.
   | Broken Defect
+  -- | An attribute a declaration carries whose arguments do not check against
+  -- | its declaration, where the declaration stands.
+  | AttributeRejected Surface.Origin AttributeError
+  -- | A Core module the Core checker refused, which is the elaborator's fault.
+  | CoreRefused (DeclFailure Surface.Origin)
   -- | An attempt that postponed itself, which nothing the elaborator states
   -- | does: it is the elaborator's fault.
   | AttemptPostponed
 
--- | A value declaration elaborated: its name, where it was declared, its
--- | scheme, and its definition as a Core term, located by the Surface AST.
+-- | A value declaration elaborated: its name, where it was declared and its
+-- | ordinal among the module's declarations, its attributes, its scheme, and
+-- | its definition as a Core term, located by the Surface AST.
 type ElaboratedValue =
   { name :: Qualified Ident
   , origin :: Surface.Origin
+  , ordinal :: Int
+  , attributes :: Array Attribute
   , scheme :: TypeScheme
   , body :: Core.Expr Surface.Origin
   }
@@ -97,11 +115,20 @@ type ElaboratedValue =
 type Elaborating =
   { name :: Qualified Ident
   , origin :: Surface.Origin
+  , ordinal :: Int
+  , attributes :: Array Attribute
   , scheme :: TypeScheme
   , body :: XExpr Surface.Origin
   }
 
-type Declared = { name :: Qualified Ident, origin :: Surface.Origin, params :: Array Binder, body :: Expr }
+type Declared =
+  { name :: Qualified Ident
+  , origin :: Surface.Origin
+  , ordinal :: Int
+  , attributes :: Array Attribute
+  , params :: Array Binder
+  , body :: Expr
+  }
 
 -- | Elaborate the module's value declarations against the signature and the
 -- | catalog its imports give.
@@ -117,13 +144,20 @@ elaborateValues signature imported m =
   where
   initial = initialState (SessionId 0) 1_000_000
 
-  -- the value declarations, and what else the module declares
-  candidates = map candidate m.declarations
-  candidate = case _ of
-    DeclValue d -> case d.signature of
-      Just signature' -> Right { declared: { name: d.name, origin: d.origin, params: d.params, body: d.body }, signature: signature' }
-      Nothing -> Left (WithoutSignature d.origin d.name)
-    other -> Left (Unsupported (OutsideSubset (declarationOrigin other) "this declaration"))
+  -- the value declarations, and what else the module declares; a fixity
+  -- gives Core nothing
+  candidates = Array.catMaybes (Array.mapWithIndex candidate m.declarations)
+  candidate ordinal = case _ of
+    DeclValue d -> Just case d.signature, traverse coreAttribute d.attributes of
+      Nothing, _ -> Left (WithoutSignature d.origin d.name)
+      _, Left o -> Left (Unsupported (ReportedAlready o))
+      Just signature', Right attributes -> Right
+        { declared: { name: d.name, origin: d.origin, ordinal, attributes, params: d.params, body: d.body }
+        , signature: signature'
+        }
+    DeclFixity _ -> Nothing
+    DeclTypeFixity _ -> Nothing
+    other -> Just (Left (Unsupported (OutsideSubset (declarationOrigin other) "this declaration")))
   unsupported = Array.mapMaybe
     ( case _ of
         Left e -> Just e
@@ -164,8 +198,8 @@ elaborateValues signature imported m =
     settled
 
   -- the catalog the bodies are elaborated against: what the imports publish,
-  -- and every value the module declares at its scheme
-  own = map (\v -> { name: v.declared.name, sort: ValueEntry, scheme: { kindVars: v.scheme.kindVars, body: fromCore v.scheme.body }, attributes: [] }) schemes
+  -- and every value the module declares at its scheme, with its attributes
+  own = map (\v -> { name: v.declared.name, sort: ValueEntry, scheme: { kindVars: v.scheme.kindVars, body: fromCore v.scheme.body }, attributes: v.declared.attributes }) schemes
   session = sessionEnvOf signature (imported <> own)
 
   -- every body, as one attempt each, a body that does not elaborate leaving
@@ -173,7 +207,7 @@ elaborateValues signature imported m =
   bodies = foldl bodyOne { state: read.state, bodies: [], errors: [] } schemes
   bodyOne acc v =
     case runAttempt session (runSurf (elaborateValue v.declared.name v.declared.origin v.scheme v.declared.params v.declared.body)) acc.state of
-      Tuple (Done (Right body)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, scheme: v.scheme, body } }
+      Tuple (Done (Right body)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, body } }
       Tuple (Done (Left problem)) _ -> acc { errors = Array.snoc acc.errors (Unsupported problem) }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
   bodyErrors = bodies.errors
@@ -220,7 +254,7 @@ settleBodies attempter state bodies =
       | Set.member b.name names -> Tuple [] Nothing
       | Set.member b.name waiting -> Tuple [ LeftUnchecked b.origin b.name ] Nothing
       | otherwise -> case toCoreExpr (zonkExpr after.tentative.metas b.body) of
-          Right body -> Tuple [] (Just { name: b.name, origin: b.origin, scheme: b.scheme, body })
+          Right body -> Tuple [] (Just { name: b.name, origin: b.origin, ordinal: b.ordinal, attributes: b.attributes, scheme: b.scheme, body })
           -- a place is reported once, however many undecided types stand there
           Left residues -> Tuple (map TypeUndetermined (Array.nubEq (map residueOrigin (NonEmptyArray.toArray residues)))) Nothing
 
@@ -252,3 +286,87 @@ failure = case _ of
   -- nothing the surface elaborator states postpones it: an equation it cannot
   -- decide becomes a job
   _ -> AttemptPostponed
+
+-- | A module elaborated into a Core module the Core checker accepts, and the
+-- | signature checking it gives; or what kept it from being one.
+type ElaboratedModule =
+  { module :: Maybe { core :: Core.Module Surface.Origin, signature :: Signature }
+  , values :: Array ElaboratedValue
+  , errors :: Array ElaborationError
+  }
+
+-- | Elaborate a module, as `elaborateValues` does, into a Core module checked
+-- | against the signature its imports give.
+-- |
+-- | **Its values are grouped by what they refer to**, in a stable dependency
+-- | order: a recursive group becomes a `DeclRec`, any other value a
+-- | `DeclNonRec`. Core binds only function values recursively, so a recursive
+-- | group with a member that is none is reported at that member as a form this
+-- | version does not elaborate. **A Core module is made only of a module with no error**: one
+-- | missing a declaration would refer to what it does not bind. It imports what
+-- | the module imports, and exports each value it declares that is reached from
+-- | outside — by its name, as a macro, or through an operator it exports.
+-- | **The Core checker refusing it is the elaborator's fault**, reported as
+-- | such, but for an attribute's arguments, which only the Core checker checks:
+-- | one that does not check is reported where its declaration stands.
+elaborateModule
+  :: Signature
+  -> Array CatalogEntry
+  -> Surface.Module
+  -> Exports
+  -> ElaboratedModule
+elaborateModule signature imported m exports =
+  { module: result.module
+  , values: elaborated.values
+  , errors: errors <> result.refused
+  }
+  where
+  elaborated = elaborateValues signature imported m
+  values = elaborated.values
+
+  ordinalOf = Map.fromFoldable (Array.mapWithIndex (\i v -> Tuple v.name i) values)
+  grouped = groups (map (\v -> Set.fromFoldable (Array.mapMaybe (\g -> Map.lookup g ordinalOf) (Array.fromFoldable (globalsOf v.body)))) values)
+  members g = Array.mapMaybe (Array.index values) g.members
+
+  -- Core binds only function values recursively: a member that is none is
+  -- outside what this version lowers, whether or not the surface admits it
+  recursiveValues = Array.concatMap
+    ( \g ->
+        if g.recursive then map (\v -> Unsupported (OutsideSubset v.origin "a recursive value that is no function")) (Array.filter (not <<< isFunVal <<< _.body) (members g))
+        else []
+    )
+    grouped
+  errors = elaborated.errors <> recursiveValues
+
+  decls = map
+    ( \g -> case members g of
+        [ v ] | not g.recursive -> DeclNonRec v.origin (binding v)
+        vs -> DeclRec (maybe m.origin _.origin (Array.head vs)) (map binding vs)
+    )
+    grouped
+  binding v = { name: nameOf v.name, scheme: v.scheme, value: v.body, attributes: v.attributes }
+
+  operators = Map.fromFoldable
+    ( Array.mapMaybe
+        ( case _ of
+            DeclFixity d -> Just (Tuple d.operator { associativity: d.associativity, precedence: d.precedence, target: d.target })
+            _ -> Nothing
+        )
+        m.declarations
+    )
+  core =
+    { annotation: m.origin
+    , name: m.name
+    , imports: Array.nub (map _.module m.imports)
+    , exports: map (ExportValue <<< nameOf <<< _.name) (Array.filter (reachedFromOutside m.name exports operators <<< nameOf <<< _.name) values)
+    , decls
+    }
+  result
+    | Array.null errors = case declare signature core of
+        Right signature' -> { module: Just { core, signature: signature' }, refused: [] }
+        -- an attribute's arguments are checked by Core alone
+        Left { at, error: AttributeIllTyped err } -> { module: Nothing, refused: [ AttributeRejected at err ] }
+        Left refusal -> { module: Nothing, refused: [ CoreRefused refusal ] }
+    | otherwise = { module: Nothing, refused: [] }
+
+  nameOf (Qualified _ n) = n
