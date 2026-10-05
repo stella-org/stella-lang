@@ -6,6 +6,7 @@ module Test.Stella.Compiler.Elaborate.SurfaceType (spec) where
 import Prelude
 import Prim hiding (Type)
 
+import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
@@ -26,7 +27,7 @@ import Stella.Compiler.Surface.Type (Kind(..), Type(..))
 import Stella.Compiler.TypedCore (Decl(..), Module, declare, primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..)) as Core
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
-import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Name (Ident(..), KindVar(..), ModuleName(..), Qualified(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy, pureFn)
 import Stella.Compiler.TypedCore.Type (Type(..), TypeScheme) as Core
 import Test.Spec (Spec, describe, it)
@@ -35,7 +36,7 @@ import Test.Spec.Assertions (fail, shouldEqual)
 lib :: ModuleName
 lib = ModuleName "Lib"
 
--- | `data Box a = Box a`.
+-- | `data Box a = Box a`, and `data Phantom = Phantom` at `forall k. Type`.
 libCore :: Module Unit
 libCore =
   { annotation: unit
@@ -43,7 +44,9 @@ libCore =
   , imports: []
   , exports: []
   , decls:
-      [ DeclData unit { name: TyName "Box", kindVars: [], params: [ { name: TyVar "a", kind: Core.KType } ], constructors: [ { name: Ident "Box", tag: 0, fields: [ Core.TVar (TyVar "a") ] } ], isNewtype: false, attributes: [] } ]
+      [ DeclData unit { name: TyName "Box", kindVars: [], params: [ { name: TyVar "a", kind: Core.KType } ], constructors: [ { name: Ident "Box", tag: 0, fields: [ Core.TVar (TyVar "a") ] } ], isNewtype: false, attributes: [] }
+      , DeclData unit { name: TyName "Phantom", kindVars: [ KindVar "k" ], params: [], constructors: [ { name: Ident "Phantom", tag: 0, fields: [] } ], isNewtype: false, attributes: [] }
+      ]
   }
 
 -- | A position of line 1, standing for where a node was written.
@@ -88,7 +91,9 @@ elaborating implicit body k = case declare primSignature libCore of
     k
       { outcome
       , scheme: case outcome of
-          Done e -> settledScheme state.tentative.metas e
+          Done e -> case settledScheme state.tentative.metas e of
+            Left places -> Left (NonEmptyArray.toArray places)
+            Right scheme -> Right scheme
           _ -> Left []
       }
 
@@ -113,7 +118,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Type" do
           }
       -- `f a -> Int` decides `f` at `? -> Type` and nothing of `a`
       elaborating [ f, a ] (arrow (app (v f) (v a)) int) \r ->
-        r.scheme `shouldEqual` Left [ at 1, at 1 ]
+        r.scheme `shouldEqual` Left [ at 1 ]
 
     it "binds a forall's variables at the kinds written" do
       elaborating [] (TypeForall (at 6) [ { origin: at 7, var: f, kind: Just (KindArrow (at 8) (KindType (at 8)) (KindType (at 8))) } ] (arrow (app (v f) int) int)) \r ->
@@ -153,6 +158,11 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Type" do
     it "names the binder whose kind nothing decides" do
       elaborating [] (TypeForall (at 6) [ { origin: at 7, var: a, kind: Nothing } ] int) \r ->
         r.scheme `shouldEqual` Left [ at 7 ]
+
+    it "names a constructor whose kind arguments nothing decides" do
+      -- `Phantom` is at `forall k. Type`, and nothing it stands in says what `k` is
+      elaborating [] (arrow (TypeConstructor (at 11) (Qualified lib (TyName "Phantom"))) int) \r ->
+        r.scheme `shouldEqual` Left [ at 11 ]
 
     it "reports what this version does not read, and reads what surrounds it" do
       elaborating [ a ] (arrow (TypeRecord (at 9) []) (TypeSynonym (at 10) (Qualified lib (TyName "S")))) \r -> case r.outcome of

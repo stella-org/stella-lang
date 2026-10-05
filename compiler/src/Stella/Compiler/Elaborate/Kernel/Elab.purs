@@ -40,6 +40,7 @@ module Stella.Compiler.Elaborate.Kernel.Elab
   , postpone
   , transact
   , unify
+  , equate
   , freshTypeMeta
   , freshKindMeta
   , equateKinds
@@ -568,6 +569,33 @@ unify site goal = do
       settle site progress
       written <- writtenSoFar
       postponeWith (SolverStuck { blockedOn, written })
+
+-- | `τ1 ≡ τ2` as the surface elaborator states it: decided where it can be, and
+-- | otherwise left to the loop without stopping what states it.
+-- |
+-- | **It is `unify` but where unification is stuck.** A solution and a refusal
+-- | are what `unify` makes of them. Stuck, the progress made is kept and the
+-- | equation itself becomes an equality job, queued to be attempted once the
+-- | action is done, and the action goes on. **Only that outcome is turned into a
+-- | job**: a postponement of any other cause, and one an action asks for itself,
+-- | still postpones the action. The job is part of the attempt that stated it,
+-- | and a rollback of that attempt takes it back with the progress.
+equate :: Site -> EqualityGoal -> Elab Unit
+equate site goal = do
+  metas <- metaContext
+  case unifyType { kindVars: site.context.kindVars } metas goal.kind goal.left goal.right of
+    Mismatch err
+      | misuse err -> break (UnifierMisuse site.origin err)
+      | otherwise -> raiseDiagnostic (EquationFailed site.origin err)
+    Solved progress ->
+      settle site progress
+    Stuck { progress } -> do
+      settle site progress
+      Elab \_ s ->
+        let
+          Tuple id created = create site (JobUnify goal) s.tentative.scheduler
+        in
+          Tuple (Done unit) (s { tentative { scheduler = enqueueInitial id created } })
 
 -- | Which of a unification's errors is about the caller rather than about the
 -- | program.

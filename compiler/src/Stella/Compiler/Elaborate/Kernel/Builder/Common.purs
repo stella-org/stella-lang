@@ -48,6 +48,8 @@ module Stella.Compiler.Elaborate.Kernel.Builder.Common
   , constrainedShape
   , instantiatedAt
   , substitutedAt
+  , substituteKindVars
+  , substituteTyVars
   , instantiateConstructorFields
   ) where
 

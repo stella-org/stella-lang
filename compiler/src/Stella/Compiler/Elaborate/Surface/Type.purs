@@ -6,8 +6,8 @@
 -- | instance of its kind scheme, an application at the arrow its head must be,
 -- | an arrow's sides and a `forall`'s body at `Type`. The equations are decided
 -- | as they are met, kinds never waiting; whether every kind ended up solved is
--- | asked once the elaboration they belong to is done, of each binder that left
--- | one unwritten.
+-- | asked once the elaboration they belong to is done, of each place that left
+-- | one unwritten: a binder, or a constructor instantiated at fresh kinds.
 -- |
 -- | **This version reads a subset of types**: variables, constructors,
 -- | applications, pure arrows, `forall`, and kind annotations. Anything else is
@@ -16,7 +16,10 @@
 module Stella.Compiler.Elaborate.Surface.Type
   ( Unsupported(..)
   , Elaborated
+  , Read
   , elaborateSignature
+  , elaborateType
+  , xFunction
   , settledScheme
   ) where
 
@@ -24,6 +27,8 @@ import Prelude
 import Prim hiding (Type)
 
 import Data.Array as Array
+import Data.Array.NonEmpty (NonEmptyArray)
+import Data.Array.NonEmpty as NonEmptyArray
 import Data.Foldable (foldr)
 import Data.Map (Map)
 import Data.Map as Map
@@ -33,7 +38,7 @@ import Data.Set as Set
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Data.Either (Either(..))
-import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
+import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..), kindMetasOf)
 import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), toCore)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, equateKinds, freshKindMeta, freshTypeMeta, raiseDiagnostic)
@@ -55,11 +60,13 @@ data Unsupported
   = OutsideSubset Surface.Origin String
   | ReportedAlready Surface.Origin
 
--- | A signature elaborated: the kind variables its kinds mention, which its
--- | scheme binds; its type; each binder whose kind was left unwritten, with
--- | the metavariable standing for it; and what was outside the subset.
+-- | A signature elaborated: where its type stands; the kind variables its
+-- | kinds mention, which its scheme binds; its type; each place a kind was
+-- | left unwritten, with the kind standing for it; and what was outside the
+-- | subset.
 type Elaborated =
-  { kindVars :: Array KindVar
+  { origin :: Surface.Origin
+  , kindVars :: Array KindVar
   , type :: XType
   , unwritten :: Array { origin :: Surface.Origin, kind :: XKind }
   , unsupported :: Array Unsupported
@@ -67,7 +74,7 @@ type Elaborated =
 
 -- | What a type is read under: the declaration it belongs to, the kind
 -- | variables in scope, and the kind of each type variable bound.
-type Scope = { declaration :: Qualified Ident, kindVars :: Set KindVar, tyVars :: Map TypeVar XKind }
+type Scope = { declaration :: Qualified Ident, kindVars :: Set KindVar, tyVars :: Map TyVar XKind }
 
 -- | What reading one type gave.
 type Read = { type :: XType, kind :: XKind, unwritten :: Array { origin :: Surface.Origin, kind :: XKind }, unsupported :: Array Unsupported }
@@ -82,16 +89,27 @@ elaborateSignature declaration signature = do
     scope =
       { declaration
       , kindVars
-      , tyVars: Map.fromFoldable (map (\i -> Tuple i.var i.kind) implicit)
+      , tyVars: Map.fromFoldable (map (\i -> Tuple (nameOf i.var) i.kind) implicit)
       }
   body <- checkAt scope XKType signature.body
   pure
-    { kindVars: Array.fromFoldable kindVars
+    { origin: typeOrigin signature.body
+    , kindVars: Array.fromFoldable kindVars
     , type: foldr (\i t -> XForall (nameOf i.var) i.kind t) body.type implicit
     -- an implicit variable is written first where it is first mentioned
     , unwritten: map (\i -> { origin: fromMaybe (typeOrigin signature.body) (firstMention i.var signature.body), kind: i.kind }) implicit <> body.unwritten
     , unsupported: body.unsupported
     }
+
+-- | A type written inside a declaration, at `Type`, under the kind variables and
+-- | the type variables the context binds: an annotation, whose variables are
+-- | those of the signature around it.
+elaborateType :: Qualified Ident -> XContext -> Type -> Elab Read
+elaborateType declaration context = checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars } XKType
+
+-- | `τ1 -{ρ}-> τ2`.
+xFunction :: XType -> XType -> XType -> XType
+xFunction argument row result = XApp (XApp (XApp (XCon functionTy []) argument) row) result
 
 -- | A type at the kind given.
 checkAt :: Scope -> XKind -> Type -> Elab Read
@@ -102,7 +120,7 @@ checkAt scope expected t = do
 
 readType :: Scope -> Type -> Elab Read
 readType scope t = case t of
-  TypeVariable o v -> case Map.lookup v scope.tyVars of
+  TypeVariable o v -> case Map.lookup (nameOf v) scope.tyVars of
     Just kind -> pure (plain (XVar (nameOf v)) kind)
     Nothing -> unsupported (OutsideSubset o "a type variable bound outside the signature")
   TypeConstructor o name -> do
@@ -110,7 +128,12 @@ readType scope t = case t of
     case Map.lookup name env.session.kinding.types of
       Just scheme -> do
         args <- traverse (\_ -> freshKindMeta scope.kindVars quantifiable) scheme.kindVars
-        pure (plain (XCon name args) (instantiate scheme args))
+        pure
+          { type: XCon name args
+          , kind: instantiate scheme args
+          , unwritten: map (\kind -> { origin: o, kind }) args
+          , unsupported: []
+          }
       Nothing -> unsupported (OutsideSubset o "a type constructor the signature does not hold")
   TypeApp o f x -> do
     f' <- readType scope f
@@ -121,11 +144,11 @@ readType scope t = case t of
   TypeFunction _ a b Nothing -> do
     a' <- checkAt scope XKType a
     b' <- checkAt scope XKType b
-    pure (joined [ a', b' ] (XApp (XApp (XApp (XCon functionTy []) a'.type) XRowEmpty) b'.type) XKType)
+    pure (joined [ a', b' ] (xFunction a'.type XRowEmpty b'.type) XKType)
   TypeFunction o _ _ (Just _) -> unsupported (OutsideSubset o "an effect row")
   TypeForall _ binders body -> do
     bound <- traverse (binder scope) binders
-    let inner = scope { tyVars = foldr (\b m -> Map.insert b.var b.kind m) scope.tyVars bound }
+    let inner = scope { tyVars = foldr (\b m -> Map.insert (nameOf b.var) b.kind m) scope.tyVars bound }
     body' <- checkAt inner XKType body
     pure
       { type: foldr (\b ty -> XForall (nameOf b.var) b.kind ty) body'.type bound
@@ -232,15 +255,18 @@ typeKindVars = case _ of
     _ -> []
 
 -- | The Core scheme of a signature once its kinds are decided: every
--- | metavariable solved, or the origin of each binder whose kind was left
--- | undetermined.
-settledScheme :: MetaContext -> Elaborated -> Either (Array Surface.Origin) TypeScheme
+-- | metavariable solved, or each place whose kind was left undetermined, once
+-- | however many kinds stand there. A metavariable left where no such place
+-- | accounts for it is reported where the signature's type stands.
+settledScheme :: MetaContext -> Elaborated -> Either (NonEmptyArray Surface.Origin) TypeScheme
 settledScheme metas e =
-  case Array.filter (\u -> not (Set.isEmpty (kindMetasOf (substituteKind metas u.kind)))) e.unwritten of
-    [] -> case toCore (substitute metas e.type) of
+  case NonEmptyArray.fromArray (Array.nubEq (map _.origin (Array.filter undetermined e.unwritten))) of
+    Just places -> Left places
+    Nothing -> case toCore (substitute metas e.type) of
       Just body -> Right { kindVars: e.kindVars, body }
-      Nothing -> Left []
-    undetermined -> Left (map _.origin undetermined)
+      Nothing -> Left (NonEmptyArray.singleton e.origin)
+  where
+  undetermined u = not (Set.isEmpty (kindMetasOf (substituteKind metas u.kind)))
 
 derive instance Eq Unsupported
 
