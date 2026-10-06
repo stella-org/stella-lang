@@ -52,10 +52,10 @@ import Stella.Compiler.Elaborate.Protocol.Guest as Guest
 import Stella.Compiler.Interface (importsOf, noImports)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Macro.Compiled (Compiled, compiled)
-import Stella.Compiler.Macro.Tree (Position(..), Syntax(..), SyntaxNode(..), Token(..), TokenTree, treeOf)
+import Stella.Compiler.Macro.Tree (Delimiter(..), OriginRef(..), Position(..), Syntax(..), SyntaxNode(..), Token(..), TokenKind(..), TokenTree, treeOf)
 import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.Primitive (arrayTy, baseModule, withBaseTypes)
-import Stella.Compiler.TypedCore (Kind(..), DecisionTree(..), Decl(..), Export(..), Expr(..), Ident(..), Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Signature, TyName(..), TyVar(..), Type(..), declareAnnotated, monoScheme, primSignature)
+import Stella.Compiler.TypedCore (Kind(..), DecisionTree(..), Decl(..), Export(..), Expr(..), Ident(..), Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Signature, TyName(..), TyVar(..), Type(..), declareAnnotated, monoScheme, primSignature, scalarString)
 import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, stringTy, unitCtor, unitTy)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -154,7 +154,7 @@ parsersModule =
   , name: parsersName
   , imports: [ ModuleName "Base.Int", arrayModule, syntaxModuleName ]
   , exports: map (ExportValue <<< Ident)
-      [ "names", "items", "twice", "stuck", "faulting", "spinning", "identity", "seven", "table", "readsTable", "ownArray" ]
+      [ "names", "items", "twice", "stuck", "faulting", "spinning", "identity", "seven", "table", "readsTable", "ownArray", "rebuilt", "reversed", "quotedSplice" ]
   , decls:
       [ value "names" (parserOf syntaxTerm) $
           mapTo trees asSyntax (ap (g "brackets" [ trees ]) [ ap (g "sepBy" [ tree, tree ]) [ g "tree" [], g "comma" [] ] ])
@@ -179,10 +179,34 @@ parsersModule =
       , value "table" arrayOfInt arrayOfSeven
       , value "readsTable" (parserOf syntaxTerm) (computing (baseArray "unsafeIndex" [ Global 0 (Qualified parsersName (Ident "table")) [], lit 0 ]))
       , value "ownArray" (parserOf syntaxTerm) (readingOne (Let 0 (Ident "own") arrayOfInt arrayOfSeven (baseArray "unsafeIndex" [ var "own", lit 0 ])))
+      -- the items, each a node, folded from the right and from the left
+      , value "rebuilt" (parserOf syntaxTerm) $
+          mapTo trees (lam "ts" trees (asNodes (ap (g "foldr" [ tree, nodes ]) [ lam "t" tree (lam "acc" nodes (consNode (var "t") (var "acc"))), noNodes, var "ts" ]))) commaSeparated
+      , value "reversed" (parserOf syntaxTerm) $
+          mapTo trees (lam "ts" trees (asNodes (ap (g "foldl" [ tree, nodes ]) [ lam "acc" nodes (lam "t" tree (consNode (var "t") (var "acc"))), noNodes, var "ts" ]))) commaSeparated
+      -- the items spliced in parentheses a quotation of this module wrote
+      , value "quotedSplice" (parserOf syntaxTerm) $
+          mapTo trees
+            ( lam "ts" trees $ asNodes $
+                ap (g "Cons" [ ty "SyntaxNode" ])
+                  [ ap (g "$spliced" [ ty "Term" ]) [ ap (g "$QuotedOrigin" []) [ text "Parsers", position 2 1, position 2 5 ], ap (g "Syntax" [ ty "Term" ]) [ ap (g "nodesOf" []) [ var "ts" ] ] ]
+                  , noNodes
+                  ]
+            )
+            commaSeparated
       ]
   }
   where
   commaAsSyntax = mapTo tree (lam "u" tree emptySyntax) (g "comma" [])
+  commaSeparated = ap (g "brackets" [ trees ]) [ ap (g "sepBy" [ tree, tree ]) [ g "tree" [], g "comma" [] ] ]
+  nodes = app "List" (ty "SyntaxNode")
+  noNodes = g "Nil" [ ty "SyntaxNode" ]
+  consNode t rest = ap (g "Cons" [ ty "SyntaxNode" ]) [ ap (g "nodeOf" []) [ t ], rest ]
+  asNodes ns = ap (g "Syntax" [ ty "Term" ]) [ ns ]
+  position line column = ap (g "Position" []) [ lit line, lit column ]
+  text t = case scalarString t of
+    Just str -> Lit 0 (LitString str)
+    Nothing -> lit 0
 
 arrayModule :: ModuleName
 arrayModule = ModuleName "Base.Array"
@@ -410,6 +434,20 @@ spec = describe "steam session, parsing" case compiled of
           run syntax session "names" "m%[a, b]" 100_000 >>= shouldEqual "parsed a b"
           run syntax session "names" "m%[]" 100_000 >>= shouldEqual "parsed"
           run syntax session "names" "m%[a b]" 100_000 >>= shouldEqual "failed at (Position 1 6) expecting [\"the end\"]"
+
+      it "fold a list from the right and from the left" do
+        withSession parsing \session -> do
+          run syntax session "rebuilt" "m%[a, b]" 100_000 >>= shouldEqual "parsed a b"
+          run syntax session "reversed" "m%[a, b]" 100_000 >>= shouldEqual "parsed b a"
+
+      it "splice syntax in parentheses standing where a quotation's origin does, which crosses as the constructor it is" do
+        withSession parsing \session -> answerTo session "Parsers" "quotedSplice" "m%[a, b]" 100_000 >>= case _ of
+          Left why -> fail why
+          Right answer -> case readAnswer syntax.descriptor answer of
+            Right (ParsedAs (Syntax [ SyntaxGroup origin Paren (Token GroupBracket "(" _ _ _) inner [ Token GroupBracket ")" _ _ _ ] ])) -> do
+              origin `shouldEqual` QuotedOrigin "Parsers" (Position 2 1) (Position 2 5)
+              Array.length inner `shouldEqual` 2
+            other -> fail ("not one parenthesized group: " <> show (map summary other))
 
       it "begin an item of a layout block where a line break stands in a comment" do
         withSession parsing \session -> do
