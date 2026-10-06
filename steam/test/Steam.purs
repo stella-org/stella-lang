@@ -21,6 +21,7 @@ import Test.Steam.Marshal as Marshal
 import Test.Steam.Session as Session
 import Test.Steam.SessionKernel as SessionKernel
 import Test.Steam.Parse as Parse
+import Test.Steam.Lists as Lists
 import Test.Steam.SessionGuest as SessionGuest
 import Test.Steam.Structural as Structural
 import Test.Steam.Ops as Ops
@@ -51,6 +52,7 @@ main = do
     SessionGuest.spec
     SessionKernel.spec
     Parse.spec
+    Lists.spec
     Facade.spec
     Reference.spec
     Equivalence.spec
