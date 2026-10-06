@@ -54,6 +54,8 @@
             "maybe",
             "node-buffer",
             "node-fs",
+            "node-glob-basic",
+            "node-path",
             "nullable",
             "numbers",
             "ordered-collections",
@@ -198,18 +200,26 @@
             "console",
             "effect",
             "either",
+            "fmt",
+            "foldable-traversable",
             "maybe",
             "node-process",
             "prelude",
+            "refs",
             "run",
+            "strings",
             "typelevel-prelude"
           ]
         },
         "test": {
           "dependencies": [
+            "dodo-printer",
             "effect",
+            "exceptions",
+            "ordered-collections",
             "spec",
-            "spec-node"
+            "spec-node",
+            "tuples"
           ]
         }
       }
@@ -1616,6 +1626,28 @@
         "partial",
         "prelude",
         "strings"
+      ]
+    },
+    "node-glob-basic": {
+      "type": "registry",
+      "version": "2.0.0",
+      "integrity": "sha256-bGqHSBqz99RgUAuoFEllfm5dIlNBGV6x1QSXbQhsbLk=",
+      "dependencies": [
+        "aff",
+        "effect",
+        "either",
+        "foldable-traversable",
+        "lists",
+        "maybe",
+        "node-fs",
+        "node-path",
+        "node-process",
+        "ordered-collections",
+        "parallel",
+        "prelude",
+        "refs",
+        "strings",
+        "tuples"
       ]
     },
     "node-human-signals": {

@@ -4,38 +4,22 @@ import Prelude
 
 import ArgParse.Basic (ArgParser)
 import ArgParse.Basic as ArgParser
-import Data.Array as Array
-import Data.Either (Either, note)
+import Data.Either (Either)
 import Data.Generic.Rep (class Generic)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe)
 import Data.Show.Generic (genericShow)
 import Stella.CLI.Effect.FS (FilePath)
 import Stella.CLI.Effect.Log (LogLevel(..))
 import Stella.CLI.Options (loglevel, moduleName)
-import Stella.Compiler.TypedCore (ModuleName(..))
-
-data BuildTarget = JS | Wasm
-
-instance Show BuildTarget where
-  show = case _ of
-    JS -> "JS"
-    Wasm -> "Wasm"
-
-buildTarget :: ArgParser String -> ArgParser BuildTarget
-buildTarget = ArgParser.unformat "TARGET" parseBuildTarget
-  where
-  parseBuildTarget = note "Invaid build target. Acceptable: js | wasm"
-    <<< case _ of
-      "js" -> Just JS
-      "wasm" -> Just Wasm
-      _ -> Nothing
+import Stella.Compiler.TypedCore (ModuleName)
 
 type BuildOptions =
   { output :: FilePath
-  , main :: ModuleName
-  , inputs :: Array FilePath
-  , target :: Maybe BuildTarget
+  , workdir :: FilePath
+  , src :: Array String
   , traceOpt :: Maybe ModuleName
+  , emitCore :: Boolean
+  , steamCmd :: String
   }
 
 data Command = Build BuildOptions
@@ -65,8 +49,7 @@ options =
     , command:
         ArgParser.choose "command"
           [ ArgParser.command [ "build" ]
-              "Build all modules in given filepaths.\n\
-              \Note: glob patterns is not supported yet."
+              "Build the modules of a package"
               ((Build <$> buildOptions) <* ArgParser.flagHelp)
           ]
     }
@@ -78,27 +61,30 @@ options =
           "Path to output directory in which all module artifacts placed\n\
           \Defaults to `output` in current directory"
           # ArgParser.default "output"
-    , inputs:
-        ArgParser.anyNotFlag "path/to/MODULE.stel"
-          "Absolute path to all module file (with `.stel` extension)"
-          # ArgParser.many
-          # map Array.fromFoldable
-    , main:
-        ArgParser.argument [ "-m", "--main" ]
-          "Entrypoint module which exports value with `entrypoint` attribute"
-          # moduleName
-          # ArgParser.default (ModuleName "Main")
+    , workdir:
+        ArgParser.argument [ "--workdir" ]
+          "Working directory for the build process.\n\
+          \Defaults to the current directory"
+          # ArgParser.default "."
+    , src:
+        ArgParser.argument [ "--src" ]
+          "Glob pattern, from the package root, of the source files to build.\n\
+          \May be given more than once. Defaults to `src/**/*.stel`"
+          # ArgParser.unfolded
+    , emitCore:
+        ArgParser.flag [ "--emit-core" ]
+          "Emit the Typed Core of each module as `<MODULE>.core.json`"
+          # ArgParser.boolean
+    , steamCmd:
+        ArgParser.argument [ "--steam-cmd" ]
+          "The Steam executable, which runs macros at compile time.\n\
+          \Defaults to `steam`"
+          # ArgParser.default "steam"
     , traceOpt:
         ArgParser.argument [ "--trace-opt" ]
           "Emit optimizer trace of specified module.\n\
           \Useful to inspect how module is simplified through optimizaion."
           # moduleName
-          # ArgParser.optional
-    , target:
-        ArgParser.argument [ "-t", "--target" ]
-          "Build target. Acceptable value: `js` | `wasm`\n\
-          \If not specified, build finishes after emitting bytecode object file."
-          # buildTarget
           # ArgParser.optional
     }
 

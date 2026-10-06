@@ -10,16 +10,24 @@ package:
     - console
     - effect
     - either
+    - fmt
+    - foldable-traversable
     - maybe
     - node-process
     - prelude
+    - refs
     - run
+    - strings
     - typelevel-prelude
   run:
     main: Stella
   test:
     main: Test.Stella
     dependencies:
+      - dodo-printer
       - effect
+      - exceptions
+      - ordered-collections
       - spec
       - spec-node
+      - tuples

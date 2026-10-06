@@ -18,6 +18,8 @@ import Stella.CLI.Effect.FS (FS)
 import Stella.CLI.Effect.FS as FS
 import Stella.CLI.Effect.Log (LOG)
 import Stella.CLI.Effect.Log as Log
+import Stella.CLI.Effect.Process (PROCESS)
+import Stella.CLI.Effect.Process as ProcessEffect
 import Stella.CLI.Runner.Node as Node
 import Stellac.Options as Options
 import Stellac.Program (program)
@@ -28,11 +30,12 @@ type ErrorType = String
 runNode
   :: forall a
    . Log.LoggerConfig
-  -> Run (LOG + FS + EXCEPT ErrorType + AFF + EFFECT + ()) a
+  -> Run (LOG + FS + PROCESS + EXCEPT ErrorType + AFF + EFFECT + ()) a
   -> Aff (Either ErrorType a)
 runNode loggerConfig m = m
   # Log.interpret (Node.jsConsoleHandler loggerConfig)
   # FS.interpret Node.nodeFsHandler
+  # ProcessEffect.interpret Node.nodeProcessHandler
   # Except.runExcept
   # runBaseAff'
 
@@ -61,4 +64,5 @@ main = do
       runNode loggerConfig (program opts) >>= case _ of
         Right _ -> pure unit
         Left err -> liftEffect do
-          Console.error (err)
+          Console.error err
+          Process.exit' 1
