@@ -10,9 +10,15 @@ import Effect.Aff (attempt, makeAff, nonCanceler)
 import Effect.Class.Console as Console
 import Effect.Exception (message)
 import Node.Buffer as Buffer
-import Data.Bifunctor (lmap)
+import Data.Array as Array
+import Data.String (Pattern(..), Replacement(..))
+import Data.String as String
+import Data.Bifunctor (bimap, lmap)
 import Node.Encoding (Encoding(..))
 import Node.FS.Aff as FS
+import Node.FS.Perms as Perms
+import Node.Glob.Basic (expandGlobs)
+import Node.Path as Path
 import Run (AFF, EFFECT, Run, liftEffect)
 import Run as Run
 import Control.Promise (Promise, toAffE)
@@ -71,6 +77,24 @@ nodeFsHandler = case _ of
   ReadText path reply -> do
     read <- Run.liftAff (attempt (FS.readTextFile UTF8 path))
     pure (reply (lmap message read))
+  WriteBytes path bytes reply -> do
+    buffer <- Run.liftEffect (Buffer.fromArray bytes)
+    written <- Run.liftAff (attempt (FS.writeFile path buffer))
+    pure (reply (lmap message written))
+  WriteText path text reply -> do
+    written <- Run.liftAff (attempt (FS.writeTextFile UTF8 path text))
+    pure (reply (lmap message written))
+  MakeDirectory path reply -> do
+    made <- Run.liftAff (attempt (FS.mkdir' path { recursive: true, mode: Perms.mkPerms Perms.all Perms.all Perms.all }))
+    pure (reply (lmap message made))
+  IsAbsolute path reply -> pure (reply (Path.isAbsolute path))
+  Glob root patterns reply -> do
+    found <- Run.liftAff (attempt (expandGlobs root patterns))
+    pure (reply (bimap message (Array.sort <<< map (slashed <<< Path.relative root) <<< Array.fromFoldable) found))
+  where
+  -- a path the effect hands out has `/` between its segments, whatever the host
+  -- separates them with
+  slashed path = if Path.sep == "/" then path else String.replaceAll (Pattern Path.sep) (Replacement "/") path
 
 -- | Reaching a manifest entry on this host is importing the module its `specifier`
 -- | names, and reading the exports off it.

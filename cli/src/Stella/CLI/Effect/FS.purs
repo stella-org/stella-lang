@@ -1,4 +1,5 @@
--- | Reading what a command was pointed at.
+-- | Reading what a command was pointed at, finding the files a pattern names,
+-- | and writing what it made.
 -- |
 -- | **The operation is an effect rather than a call into the host**, for the same
 -- | reason logging is: a command's logic should say what it needs and not where it
@@ -15,6 +16,11 @@ module Stella.CLI.Effect.FS
   , interpret
   , readBytes
   , readText
+  , writeBytes
+  , writeText
+  , makeDirectory
+  , glob
+  , isAbsolute
   ) where
 
 import Prelude
@@ -38,6 +44,17 @@ data FileSystem a
   -- | it**: what an encoding is belongs to the host, and a caller that wanted text
   -- | should not have to know which one this host writes.
   | ReadText P.String (Either P.String P.String -> a)
+  -- | Write the bytes as the file, replacing what was there.
+  | WriteBytes P.String Bytes (Either P.String Unit -> a)
+  | WriteText P.String P.String (Either P.String Unit -> a)
+  -- | Make the directory, and every directory above it that is not there.
+  | MakeDirectory P.String (Either P.String Unit -> a)
+  -- | The files under the directory given that the patterns name, each as its
+  -- | path from that directory with `/` between its segments, in order.
+  | Glob P.String (P.Array P.String) (Either P.String (P.Array P.String) -> a)
+  -- | Whether a path names a file from the root of the file system, by the
+  -- | host's own rule.
+  | IsAbsolute P.String (P.Boolean -> a)
 
 derive instance Functor FileSystem
 
@@ -56,3 +73,17 @@ readBytes path = Run.lift _fs (ReadBytes path identity)
 readText :: forall r. P.String -> Run (FS + r) (Either P.String P.String)
 readText path = Run.lift _fs (ReadText path identity)
 
+writeBytes :: forall r. P.String -> Bytes -> Run (FS + r) (Either P.String Unit)
+writeBytes path bytes = Run.lift _fs (WriteBytes path bytes identity)
+
+writeText :: forall r. P.String -> P.String -> Run (FS + r) (Either P.String Unit)
+writeText path text = Run.lift _fs (WriteText path text identity)
+
+makeDirectory :: forall r. P.String -> Run (FS + r) (Either P.String Unit)
+makeDirectory path = Run.lift _fs (MakeDirectory path identity)
+
+glob :: forall r. P.String -> P.Array P.String -> Run (FS + r) (Either P.String (P.Array P.String))
+glob root patterns = Run.lift _fs (Glob root patterns identity)
+
+isAbsolute :: forall r. P.String -> Run (FS + r) P.Boolean
+isAbsolute path = Run.lift _fs (IsAbsolute path identity)

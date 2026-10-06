@@ -25,6 +25,8 @@ package:
     - maybe
     - node-buffer
     - node-fs
+    - node-glob-basic
+    - node-path
     - nullable
     - numbers
     - ordered-collections

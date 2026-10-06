@@ -12,6 +12,7 @@
 module Stella.CLI.Session.RunParser
   ( ParserRunnerError(..)
   , sessionParser
+  , openingParser
   ) where
 
 import Prelude
@@ -19,9 +20,13 @@ import Prelude
 import Data.Either (Either(..))
 import Data.Generic.Rep (class Generic)
 import Data.Show.Generic (genericShow)
-import Run (AFF, EFFECT, Run)
+import Data.Maybe (Maybe(..))
+import Effect.Ref (Ref)
+import Effect.Ref as Ref
+import Run (AFF, EFFECT, Run, liftEffect)
+import Stella.CLI.Effect.Process (PROCESS)
 import Run.Except (EXCEPT, throw)
-import Stella.CLI.Session.Client (RequestFailure, Session)
+import Stella.CLI.Session.Client (Launch, OpenFailure, RequestFailure, Session)
 import Stella.CLI.Session.Client as Client
 import Stella.CLI.Session.Syntax (inputOf, readAnswer)
 import Stella.Compiler.Elaborate.Protocol.Guest.Shape (Descriptor)
@@ -30,8 +35,10 @@ import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..))
 import Type.Row (type (+))
 
 data ParserRunnerError
+  -- | The session could not be opened.
+  = SessionNotOpened OpenFailure
   -- | The session refused the request, or was lost.
-  = RequestFailed RequestFailure
+  | RequestFailed RequestFailure
   -- | The input could not be written as a value of the wire.
   | InputUnencodable String
   -- | The answer is not what a parser returns.
@@ -55,3 +62,15 @@ derive instance Generic ParserRunnerError _
 
 instance Show ParserRunnerError where
   show = genericShow
+
+-- | `sessionParser` on a session opened by the launch given when the first
+-- | parser is run, and kept in the reference given for the parsers after it: a
+-- | build that runs none opens none. Closing what was opened is the caller's.
+openingParser :: forall r. Ref (Maybe Session) -> Launch -> Descriptor -> RunParser (Run (EXCEPT ParserRunnerError + PROCESS + AFF + EFFECT + r))
+openingParser held launch descriptor name call = do
+  session <- liftEffect (Ref.read held) >>= case _ of
+    Just session -> pure session
+    Nothing -> Client.open launch >>= case _ of
+      Left failure -> throw (SessionNotOpened failure)
+      Right session -> session <$ liftEffect (Ref.write (Just session) held)
+  sessionParser session descriptor name call
