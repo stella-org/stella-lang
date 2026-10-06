@@ -17,6 +17,7 @@
 module Stella.Compiler.Elaborate.Environment.Imported
   ( ImportError(..)
   , importedSignature
+  , compilationSignature
   , importedCatalog
   , sessionEnvOf
   , operationArgument
@@ -59,8 +60,18 @@ data ImportError
 -- | A foreign type has no Core declaration and stands as an opaque type of the
 -- | module declaring it.
 importedSignature :: BuildEnvironment -> ModuleView -> Either ImportError Signature
-importedSignature env view = do
-  let parts = map part (Array.filter (_ /= primModule) (Set.toUnfoldable (reachable view)))
+importedSignature env view = reachedSignature env view []
+
+-- | The signature a module is compiled against: what its imports reach, as
+-- | `importedSignature` gives it, and the types the ABI manifest supplies to
+-- | the module itself.
+compilationSignature :: BuildEnvironment -> ModuleView -> ModuleName -> Either ImportError Signature
+compilationSignature env view self = reachedSignature env view
+  [ foldl (addType self) emptySignature (Map.toUnfoldable (abiOf self env) :: Array _) ]
+
+reachedSignature :: BuildEnvironment -> ModuleView -> Array Signature -> Either ImportError Signature
+reachedSignature env view own = do
+  let parts = map part (Array.filter (_ /= primModule) (Set.toUnfoldable (reachable view))) <> own
   case initialSignature parts of
     Left err -> Left (SignatureRejected err)
     Right sig -> Right sig

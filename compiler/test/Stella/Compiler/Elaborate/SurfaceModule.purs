@@ -6,6 +6,7 @@ import Prelude
 import Prim hiding (Type)
 
 import Data.Array as Array
+import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..), isNothing)
@@ -36,11 +37,10 @@ import Stella.Compiler.Interface.Scheme (plainScheme)
 import Stella.Compiler.Resolve.Module (resolveModule)
 import Stella.Compiler.Surface.Origin (rangeOf)
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.TypedCore (Attribute, Decl(..), Export(..), Module, primSignature)
+import Stella.Compiler.TypedCore (Attribute, Decl(..), Declared, Export(..), Module, primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy)
-import Stella.Compiler.TypedCore.Signature (Signature)
 import Stella.Compiler.TypedCore.Type (RowKey(..), Type(..))
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Test.Spec (Spec, describe, it)
@@ -104,7 +104,7 @@ environment = case addInterface libInterface initialEnvironment of
 type Ran =
   { values :: Array ElaboratedValue
   , errors :: Array ElaborationError
-  , module :: Maybe { core :: Module Surface.Origin, signature :: Signature }
+  , module :: Maybe { core :: Module Surface.Origin, declared :: Declared Surface.Origin }
   }
 
 -- | The module `M`, importing `Lib`, declaring the lines given; elaborated.
@@ -124,7 +124,9 @@ elaboratingUnder header body k = case environment of
           Left err -> fail (show err)
           Right signature -> do
             let elaborated = elaborateModule signature (importedCatalog env view) resolved.module resolved.exports
-            k { values: elaborated.values, errors: elaborated.errors, module: elaborated.module }
+            k case elaborated.result of
+              Left errors -> { values: elaborated.values, errors: NonEmptyArray.toArray errors, module: Nothing }
+              Right made -> { values: elaborated.values, errors: [], module: Just made }
         errors, _ -> fail ("not resolved: " <> show errors)
 
 -- | The Core module made, which the Core checker accepted.

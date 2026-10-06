@@ -11,6 +11,7 @@ import Test.Stella.Compiler.Elaborate.Imported as ElaborateImported
 import Test.Stella.Compiler.Elaborate.Equate as ElaborateEquate
 import Test.Stella.Compiler.Elaborate.SurfaceType as ElaborateSurfaceType
 import Test.Stella.Compiler.Elaborate.Group as ElaborateGroup
+import Test.Stella.Compiler.Build as Build
 import Test.Stella.Compiler.Elaborate.SurfaceModule as ElaborateSurfaceModule
 import Test.Stella.Compiler.Macro.Bundle as MacroBundle
 import Test.Stella.Compiler.Macro.Check as MacroCheck
@@ -125,6 +126,7 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateEquate.spec
   ElaborateSurfaceType.spec
   ElaborateGroup.spec
+  Build.spec
   ElaborateSurfaceModule.spec
   MacroCheck.spec
   MacroExpand.spec

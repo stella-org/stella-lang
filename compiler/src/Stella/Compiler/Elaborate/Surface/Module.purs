@@ -32,6 +32,7 @@ import Prelude
 import Prim hiding (Type)
 
 import Data.Array as Array
+import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
@@ -59,10 +60,9 @@ import Stella.Compiler.Interface.Assemble (coreAttribute, reachedFromOutside)
 import Stella.Compiler.Interface.Module (Exports)
 import Stella.Compiler.Surface.Decl (Declaration(..), declarationOrigin)
 import Stella.Compiler.Surface.Decl (Module) as Surface
-import Stella.Compiler.Surface.Expr (Binder, Expr)
 import Stella.Compiler.Surface.Origin (Origin) as Surface
 import Stella.Compiler.TypedCore (Expr, Module) as Core
-import Stella.Compiler.TypedCore (Attribute, DeclError(..), DeclFailure, Decl(..), Export(..), declare)
+import Stella.Compiler.TypedCore (Attribute, DeclError(..), DeclFailure, Decl(..), Declared, Export(..), declareAnnotated)
 import Stella.Compiler.TypedCore.AttributeCheck (AttributeError)
 import Stella.Compiler.TypedCore.Check (isFunVal)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
@@ -119,15 +119,6 @@ type Elaborating =
   , attributes :: Array Attribute
   , scheme :: TypeScheme
   , body :: XExpr Surface.Origin
-  }
-
-type Declared =
-  { name :: Qualified Ident
-  , origin :: Surface.Origin
-  , ordinal :: Int
-  , attributes :: Array Attribute
-  , params :: Array Binder
-  , body :: Expr
   }
 
 -- | Elaborate the module's value declarations against the signature and the
@@ -287,12 +278,12 @@ failure = case _ of
   -- decide becomes a job
   _ -> AttemptPostponed
 
--- | A module elaborated into a Core module the Core checker accepts, and the
--- | signature checking it gives; or what kept it from being one.
+-- | A module elaborated into a Core module the Core checker accepts, and what
+-- | checking it declared — the signature and the checked values — or what kept
+-- | it from being one; and the values elaborated either way.
 type ElaboratedModule =
-  { module :: Maybe { core :: Core.Module Surface.Origin, signature :: Signature }
+  { result :: Either (NonEmptyArray ElaborationError) { core :: Core.Module Surface.Origin, declared :: Declared Surface.Origin }
   , values :: Array ElaboratedValue
-  , errors :: Array ElaborationError
   }
 
 -- | Elaborate a module, as `elaborateValues` does, into a Core module checked
@@ -302,8 +293,8 @@ type ElaboratedModule =
 -- | order: a recursive group becomes a `DeclRec`, any other value a
 -- | `DeclNonRec`. Core binds only function values recursively, so a recursive
 -- | group with a member that is none is reported at that member as a form this
--- | version does not elaborate. **A Core module is made only of a module with no error**: one
--- | missing a declaration would refer to what it does not bind. It imports what
+-- | version does not elaborate. **A Core module is made only of a module with
+-- | no error**: one missing a declaration would refer to what it does not bind. It imports what
 -- | the module imports, and exports each value it declares that is reached from
 -- | outside — by its name, as a macro, or through an operator it exports.
 -- | **The Core checker refusing it is the elaborator's fault**, reported as
@@ -316,10 +307,7 @@ elaborateModule
   -> Exports
   -> ElaboratedModule
 elaborateModule signature imported m exports =
-  { module: result.module
-  , values: elaborated.values
-  , errors: errors <> result.refused
-  }
+  { result, values: elaborated.values }
   where
   elaborated = elaborateValues signature imported m
   values = elaborated.values
@@ -361,12 +349,12 @@ elaborateModule signature imported m exports =
     , exports: map (ExportValue <<< nameOf <<< _.name) (Array.filter (reachedFromOutside m.name exports operators <<< nameOf <<< _.name) values)
     , decls
     }
-  result
-    | Array.null errors = case declare signature core of
-        Right signature' -> { module: Just { core, signature: signature' }, refused: [] }
-        -- an attribute's arguments are checked by Core alone
-        Left { at, error: AttributeIllTyped err } -> { module: Nothing, refused: [ AttributeRejected at err ] }
-        Left refusal -> { module: Nothing, refused: [ CoreRefused refusal ] }
-    | otherwise = { module: Nothing, refused: [] }
+  result = case NonEmptyArray.fromArray errors of
+    Just es -> Left es
+    Nothing -> case declareAnnotated signature core of
+      Right declared -> Right { core, declared }
+      -- an attribute's arguments are checked by Core alone
+      Left { at, error: AttributeIllTyped err } -> Left (NonEmptyArray.singleton (AttributeRejected at err))
+      Left refusal -> Left (NonEmptyArray.singleton (CoreRefused refusal))
 
   nameOf (Qualified _ n) = n

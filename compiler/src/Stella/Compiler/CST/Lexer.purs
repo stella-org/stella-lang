@@ -8,7 +8,9 @@ module Stella.Compiler.CST.Lexer
   ( LexError(..)
   , LexErrorReason(..)
   , Lexed
+  , Ahead
   , lex
+  , lexWhile
   , printLexErrorReason
   ) where
 
@@ -90,10 +92,11 @@ printLexErrorReason = case _ of
 
 type Cursor = { index :: Int, line :: Int, column :: Int }
 
-type State =
+type State s =
   { cursor :: Cursor
   , previous :: Maybe Token
   , tokens :: List SourceToken
+  , going :: s
   }
 
 -- | The tokens of a text, the trivia after the last of them, and where the text
@@ -104,16 +107,33 @@ type Lexed =
   , end :: SourcePos
   }
 
+-- | What the lexer sees before it reads a token: the token before it, whether
+-- | a line break stands between the two, where the token begins, and whether
+-- | the text there begins with the word given.
+type Ahead =
+  { previous :: Maybe Token
+  , onNewLine :: Boolean
+  , at :: SourcePos
+  , startsWithWord :: String -> Boolean
+  }
+
 lex :: String -> Either LexError Lexed
-lex src = tailRec step initial
+lex = lexWhile unit (\_ _ -> Just unit)
+
+-- | Lex a text up to the first token the function given stops before, read off
+-- | what stands ahead and a state it carries from token to token; what follows
+-- | that token is not lexed, and the text ends there.
+lexWhile :: forall s. s -> (s -> Ahead -> Maybe s) -> String -> Either LexError Lexed
+lexWhile seed continue src = tailRec step initial
   where
   len = SCU.length src
 
-  initial :: State
+  initial :: State s
   initial =
     { cursor: skipBom { index: 0, line: 1, column: 1 }
     , previous: Nothing
     , tokens: Nil
+    , going: seed
     }
 
   skipBom cur = if charAt cur.index == Just '\xFEFF' then cur { index = 1 } else cur
@@ -151,25 +171,42 @@ lex src = tailRec step initial
   pos :: Cursor -> SourcePos
   pos cur = { line: cur.line, column: cur.column }
 
-  step :: State -> Step State (Either LexError Lexed)
+  step :: State s -> Step (State s) (Either LexError Lexed)
   step st = case skipSpace st.cursor of
     Left e -> Done (Left e)
     Right { cursor, trivia } ->
-      if cursor.index >= len then
-        Done (Right { tokens: Array.fromFoldable (List.reverse st.tokens), trailing: trivia, end: pos cursor })
-      else
+      let
+        ended = Done (Right { tokens: Array.fromFoldable (List.reverse st.tokens), trailing: trivia, end: pos cursor })
+      in
+        if cursor.index >= len then ended
+        else case continue st.going (ahead st cursor) of
+          Nothing -> ended
+          Just going ->
+            let
+              -- the first token stands apart, there being nothing before it
+              space = isNothing st.previous || not (Array.null trivia)
+            in
+              case token st.previous space cursor of
+                Left e -> Done (Left e)
+                Right { value, end } ->
+                  let
+                    endCursor = move cursor end
+                    tok = { range: inSource (pos cursor) (pos endCursor), leading: trivia, value }
+                  in
+                    Loop { cursor: endCursor, previous: Just value, tokens: tok : st.tokens, going }
+
+  -- a line break stands before the token where the trivia passed over one,
+  -- a comment's among them
+  ahead st cursor =
+    { previous: st.previous
+    , onNewLine: cursor.line > st.cursor.line
+    , at: pos cursor
+    , startsWithWord: \w ->
         let
-          -- the first token stands apart, there being nothing before it
-          space = isNothing st.previous || not (Array.null trivia)
+          after = cursor.index + SCU.length w
         in
-          case token st.previous space cursor of
-            Left e -> Done (Left e)
-            Right { value, end } ->
-              let
-                endCursor = move cursor end
-                tok = { range: inSource (pos cursor) (pos endCursor), leading: trivia, value }
-              in
-                Loop { cursor: endCursor, previous: Just value, tokens: tok : st.tokens }
+          slice cursor.index after == w && not (test after isIdentChar)
+    }
 
   -- Whitespace and comments, each kept as written.
   skipSpace :: Cursor -> Either LexError { cursor :: Cursor, trivia :: Array Trivia }
