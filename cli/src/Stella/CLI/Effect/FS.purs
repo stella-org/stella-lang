@@ -19,6 +19,7 @@ module Stella.CLI.Effect.FS
   , writeBytes
   , writeText
   , makeDirectory
+  , remove
   , glob
   , isAbsolute
   ) where
@@ -49,6 +50,8 @@ data FileSystem a
   | WriteText P.String P.String (Either P.String Unit -> a)
   -- | Make the directory, and every directory above it that is not there.
   | MakeDirectory P.String (Either P.String Unit -> a)
+  -- | Remove the file, a file that is not there being removed already.
+  | Remove P.String (Either P.String Unit -> a)
   -- | The files under the directory given that the patterns name, each as its
   -- | path from that directory with `/` between its segments, in order.
   | Glob P.String (P.Array P.String) (Either P.String (P.Array P.String) -> a)
@@ -81,6 +84,9 @@ writeText path text = Run.lift _fs (WriteText path text identity)
 
 makeDirectory :: forall r. P.String -> Run (FS + r) (Either P.String Unit)
 makeDirectory path = Run.lift _fs (MakeDirectory path identity)
+
+remove :: forall r. P.String -> Run (FS + r) (Either P.String Unit)
+remove path = Run.lift _fs (Remove path identity)
 
 glob :: forall r. P.String -> P.Array P.String -> Run (FS + r) (Either P.String (P.Array P.String))
 glob root patterns = Run.lift _fs (Glob root patterns identity)

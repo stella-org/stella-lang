@@ -87,6 +87,9 @@ nodeFsHandler = case _ of
   MakeDirectory path reply -> do
     made <- Run.liftAff (attempt (FS.mkdir' path { recursive: true, mode: Perms.mkPerms Perms.all Perms.all Perms.all }))
     pure (reply (lmap message made))
+  Remove path reply -> do
+    removed <- Run.liftAff (attempt (FS.rm' path { force: true, maxRetries: 0, recursive: false, retryDelay: 0 }))
+    pure (reply (lmap message removed))
   IsAbsolute path reply -> pure (reply (Path.isAbsolute path))
   Glob root patterns reply -> do
     found <- Run.liftAff (attempt (expandGlobs root patterns))
