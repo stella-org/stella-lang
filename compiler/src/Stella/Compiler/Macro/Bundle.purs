@@ -22,6 +22,15 @@
 -- | item. A token begins a line where a line break stands in its trivia, a
 -- | block comment spanning lines among them.
 -- |
+-- | **An origin says where a token or a node came from, for diagnostics
+-- | alone**: the input of the call, by a reference the host issued for it,
+-- | `InputOrigin`, which nothing a parser writes can make; or a quotation,
+-- | `$QuotedOrigin`, by the module and the range it declares. `OriginRef` is
+-- | exported abstract. `$QuotedOrigin` and `$spliced`, which a quotation is
+-- | written with, are elaboration-only entries: their names are no identifier,
+-- | and they are in no export of the module's interface, so neither source nor
+-- | a synthesizer reaches them.
+-- |
 -- | The module has lists and optional values of its own, as the protocol's
 -- | types, and depends on `Base.Int` alone, for the columns and counts it
 -- | compares.
@@ -31,6 +40,7 @@ module Stella.Compiler.Macro.Bundle
   , syntaxModule
   , syntaxModuleName
   , originRefTy
+  , issuedOriginTy
   , withSyntax
   ) where
 
@@ -51,30 +61,37 @@ import Stella.Compiler.TypedCore.Prim (booleanTy, intTy, pureFn, stringTy, unitC
 syntaxModuleName :: ModuleName
 syntaxModuleName = ModuleName "Stella.Syntax"
 
--- | `Stella.Syntax.OriginRef`, an intrinsic opaque type: a reference the host
--- | issues, which nothing a parser writes can make.
+-- | `Stella.Syntax.OriginRef`: where a token or a node came from.
 originRefTy :: Qualified TyName
 originRefTy = Qualified syntaxModuleName (TyName "OriginRef")
 
--- | A signature with `Stella.Syntax.OriginRef` in it, which checking the module,
--- | and a parser over it, needs.
+-- | `Stella.Syntax.IssuedOrigin`, an intrinsic opaque type: a reference the
+-- | host issues for a token of a call's input, which nothing a parser writes can
+-- | make.
+issuedOriginTy :: Qualified TyName
+issuedOriginTy = Qualified syntaxModuleName (TyName "IssuedOrigin")
+
+-- | A signature with `Stella.Syntax.IssuedOrigin` in it, which checking the
+-- | module, and a parser over it, needs.
 withSyntax :: Signature -> Signature
 withSyntax sig = sig
-  { types = Map.insert originRefTy (IntrinsicTyCon (monoScheme KType) CanonicalOpaque) sig.types }
+  { types = Map.insert issuedOriginTy (IntrinsicTyCon (monoScheme KType) CanonicalOpaque) sig.types }
 
--- | The module, the signature fragment that gives `OriginRef` its type, and the
--- | shape descriptor of the types a value crossing to the host has: the token
--- | tree a parser reads, the syntax it builds, and how it came out. A parser
--- | itself is a function, and never crosses.
+-- | The module, the signature fragment that gives `IssuedOrigin` its type, the
+-- | entries its interface exports none of, and the shape descriptor of the
+-- | types a value crossing to the host has: the token tree a parser reads, the
+-- | syntax it builds, and how it came out. A parser itself is a function, and
+-- | never crosses.
 type Bundle =
   { module :: Module Unit
   , withSignature :: Signature -> Signature
+  , unexported :: P.Array Ident
   , descriptor :: Descriptor
   }
 
 bundle :: Either P.String Bundle
-bundle = describe originRefTy syntaxModule { decls = Array.filter crossing syntaxModule.decls } <#> \descriptor ->
-  { module: syntaxModule, withSignature: withSyntax, descriptor }
+bundle = describe issuedOriginTy syntaxModule { decls = Array.filter crossing syntaxModule.decls } <#> \descriptor ->
+  { module: syntaxModule, withSignature: withSyntax, unexported: map Ident [ "InputOrigin", "$QuotedOrigin", "$spliced" ], descriptor }
   where
   crossing = case _ of
     DeclData _ d -> not (Array.elem d.name (map TyName [ "State", "Reply", "Parser", "LayoutItem", "Block", "ItemRun" ]))
@@ -145,6 +162,10 @@ types =
       , Tuple "NumberLiteral" [ TCon (Qualified (ModuleName "Prim") (TyName "Number")) [] ]
       , Tuple "CharLiteral" [ string ]
       , Tuple "StringLiteral" [ string ]
+      ]
+  , simple "OriginRef"
+      [ Tuple "InputOrigin" [ TCon issuedOriginTy [] ]
+      , Tuple "$QuotedOrigin" [ string, con "Position", con "Position" ]
       ]
   , simple "Token" [ Tuple "Token" [ con "TokenKind", string, con "Range", list (con "Trivia"), originRef ] ]
   , simple "Delimiter"
@@ -769,8 +790,43 @@ values =
               Nothing
         }
       ]
+  , recursive
+      [ { name: "foldr"
+        , type: quantified [ "a", "b" ] (fns [ fns [ va, vb ] vb, vb, list va ] vb)
+        , value: tylam [ "a", "b" ] $ lam [ Tuple "f" (fns [ va, vb ] vb), Tuple "z" vb, Tuple "xs" (list va) ] $
+            match (v "xs")
+              [ branch "Nil" [] (v "z")
+              , branch "Cons" [ "x", "rest" ] (ap (v "f") [ v "x", call "foldr" [ va, vb ] [ v "f", v "z", v "rest" ] ])
+              ]
+              Nothing
+        }
+      ]
+  , recursive
+      [ { name: "foldl"
+        , type: quantified [ "a", "b" ] (fns [ fns [ vb, va ] vb, vb, list va ] vb)
+        , value: tylam [ "a", "b" ] $ lam [ Tuple "f" (fns [ vb, va ] vb), Tuple "z" vb, Tuple "xs" (list va) ] $
+            match (v "xs")
+              [ branch "Nil" [] (v "z")
+              , branch "Cons" [ "x", "rest" ] (call "foldl" [ va, vb ] [ v "f", ap (v "f") [ v "z", v "x" ], v "rest" ])
+              ]
+              Nothing
+        }
+      ]
+  -- syntax spliced into a quotation, in parentheses standing where the origin
+  -- given does
+  , value "$spliced" (quantified [ "c" ] (fns [ originRef, TApp (con "Syntax") (TVar (TyVar "c")) ] node))
+      $ tylam [ "c" ]
+      $ lam [ Tuple "o" originRef, Tuple "s" (TApp (con "Syntax") (TVar (TyVar "c"))) ]
+      $ match (v "s")
+          [ branch "Syntax" [ "nodes" ] $
+              call "SyntaxGroup" [] [ v "o", g "Paren" [], bracket "(", v "nodes", cons token (bracket ")") (nil token) ]
+          ]
+          Nothing
   ]
   where
+  bracket t = call "Token" [] [ g "GroupBracket" [], text t, nowhere, nil (con "Trivia"), v "o" ]
+  nowhere = call "Range" [] [ call "Position" [] [ zero, zero ], call "Position" [] [ zero, zero ] ]
+
   closingAt closes end = match closes [ branch "Cons" [ "close", "_" ] (call "startOf" [] [ v "close" ]) ] (Just end)
 
   delimiterIs n c = value n (pureFn (con "Delimiter") boolean) $ lam [ Tuple "d" (con "Delimiter") ] $

@@ -16,7 +16,7 @@ import Data.Symbol (class IsSymbol, reflectSymbol)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.Protocol.Guest.Shape (Descriptor, Shape(..))
 import Stella.Compiler.Macro.Bundle (bundle, syntaxModule, syntaxModuleName, withSyntax)
-import Stella.Compiler.Macro.Tree (Delimiter, Failure, OriginRef, Position, Range, Result, Syntax, SyntaxItem, SyntaxNode, Token, TokenKind, TokenTree, Trivia)
+import Stella.Compiler.Macro.Tree (Delimiter, Failure, IssuedOrigin, OriginRef, Position, Range, Result, Syntax, SyntaxItem, SyntaxNode, Token, TokenKind, TokenTree, Trivia)
 import Stella.Compiler.TypedCore (Ident(..), Qualified(..), TyName(..), declare, declareAnnotated, primSignature)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -41,8 +41,11 @@ instance HostShape P.Number where
 instance HostShape P.String where
   hostShape _ = ShapeString
 
-instance HostShape OriginRef where
+instance HostShape IssuedOrigin where
   hostShape _ = ShapeToken
+
+instance HostShape OriginRef where
+  hostShape _ = twin "OriginRef"
 
 instance HostShape a => HostShape (Maybe a) where
   hostShape _ = ShapeData (Qualified syntaxModuleName (TyName "Maybe")) [ hostShape (Proxy :: Proxy a) ]
@@ -127,6 +130,8 @@ mirrored =
   , Tuple "Range" (hostCtors (Proxy :: Proxy Range))
   , Tuple "Trivia" (hostCtors (Proxy :: Proxy Trivia))
   , Tuple "TokenKind" (hostCtors (Proxy :: Proxy TokenKind))
+  -- the host's `QuotedOrigin` is the elaboration-only `$QuotedOrigin`
+  , Tuple "OriginRef" (map (\c -> if c.name == "QuotedOrigin" then c { name = "$QuotedOrigin" } else c) (hostCtors (Proxy :: Proxy OriginRef)))
   , Tuple "Token" (hostCtors (Proxy :: Proxy Token))
   , Tuple "Delimiter" (hostCtors (Proxy :: Proxy Delimiter))
   , Tuple "TokenTree" (hostCtors (Proxy :: Proxy TokenTree))

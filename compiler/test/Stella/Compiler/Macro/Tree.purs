@@ -13,7 +13,7 @@ import Data.Maybe (Maybe(..))
 import Effect.Aff (Aff)
 import Stella.Compiler.CST (parseExpr, printSyntaxError)
 import Stella.Compiler.CST.Types (Expr(..), SourceRange, inSource)
-import Stella.Compiler.Macro.Tree (Delimiter(..), OriginRef(..), Position(..), Range(..), Token(..), TokenKind(..), TokenTree(..), Trivia(..), treeOf)
+import Stella.Compiler.Macro.Tree (Delimiter(..), IssuedOrigin(..), OriginRef(..), Position(..), Range(..), Token(..), TokenKind(..), TokenTree(..), Trivia(..), treeOf)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
@@ -45,8 +45,8 @@ spec = describe "Stella.Compiler.Macro.Tree" do
     treeOfCall "m%[ x -- note\n  ]" \r -> do
       case r.trees of
         [ Group Bracket open [ Leaf x ] [ close ] ] -> do
-          open `shouldEqual` Token GroupBracket "[" (Range (Position 1 3) (Position 1 4)) [] (OriginRef 0)
-          x `shouldEqual` Token (LowerName Nothing "x") "x" (Range (Position 1 5) (Position 1 6)) [ Spaces " " (Range (Position 1 4) (Position 1 5)) ] (OriginRef 1)
+          open `shouldEqual` Token GroupBracket "[" (Range (Position 1 3) (Position 1 4)) [] (InputOrigin (IssuedOrigin 0))
+          x `shouldEqual` Token (LowerName Nothing "x") "x" (Range (Position 1 5) (Position 1 6)) [ Spaces " " (Range (Position 1 4) (Position 1 5)) ] (InputOrigin (IssuedOrigin 1))
           case close of
             Token _ text _ leading origin -> do
               text `shouldEqual` "]"
@@ -56,7 +56,7 @@ spec = describe "Stella.Compiler.Macro.Tree" do
                 , Newline "\n" (Range (Position 1 14) (Position 2 1))
                 , Spaces "  " (Range (Position 2 1) (Position 2 3))
                 ]
-              origin `shouldEqual` OriginRef 2
+              origin `shouldEqual` InputOrigin (IssuedOrigin 2)
           r.next `shouldEqual` 3
           Map.lookup 1 r.origins `shouldEqual` Just (inSource { line: 1, column: 5 } { line: 1, column: 6 })
         _ -> fail "not one bracket of one name"

@@ -10,9 +10,10 @@ import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (foldM)
 import Data.Map as Map
+import Data.Set as Set
 import Data.Maybe (Maybe(..))
 import Effect.Aff (Aff)
-import Stella.Compiler.Elaborate.Environment.Imported (importedSignature)
+import Stella.Compiler.Elaborate.Environment.Imported (importedCatalog, importedSignature)
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment, viewFor)
 import Stella.Compiler.Interface.FromCore (FromCoreError(..), interfaceOfCore)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeSort(..), ValueSort(..))
@@ -99,12 +100,25 @@ spec = describe "Stella.Compiler.Interface.FromCore" do
         Left err -> fail err
         Right syntax -> do
           case Array.find (\i -> i.name == syntaxModuleName) syntax.moduleInterfaces of
-            Just i -> map (show <<< _.sort) (Map.lookup (TyName "OriginRef") i.declarations.types) `shouldEqual` Just (show (Intrinsic CanonicalOpaque))
+            Just i -> do
+              map (show <<< _.sort) (Map.lookup (TyName "IssuedOrigin") i.declarations.types) `shouldEqual` Just (show (Intrinsic CanonicalOpaque))
+              -- an origin is abstract, and what a quotation is written with in
+              -- no export and not published to the catalog
+              Array.filter (\n -> Map.member n i.exports.values) [ "InputOrigin", "$QuotedOrigin", "$spliced", "foldr", "foldl" ] `shouldEqual` [ "foldr", "foldl" ]
+              map _.members (Map.lookup "OriginRef" i.exports.types) `shouldEqual` Just []
+              i.catalogOnly `shouldEqual` Set.empty
+              -- an arity is of a value a module downstream reaches
+              Map.member (Ident "$spliced") i.arities `shouldEqual` false
+              Map.member (Ident "foldr") i.arities `shouldEqual` true
             Nothing -> fail "no Stella.Syntax"
           case foldM (flip addInterface) initialEnvironment syntax.moduleInterfaces of
             Left err -> fail (show err)
             Right env -> case viewFor [ syntaxModuleName ] env of
               Left err -> fail (show err)
-              Right view -> case importedSignature env view of
-                Left err -> fail (show err)
-                Right _ -> pure unit
+              Right view -> do
+                case importedSignature env view of
+                  Left err -> fail (show err)
+                  Right _ -> pure unit
+                -- the catalog a synthesizer reads holds none of them
+                Array.filter (\e -> Array.elem e.name (map (Qualified syntaxModuleName <<< Ident) [ "InputOrigin", "$QuotedOrigin", "$spliced" ])) (importedCatalog env view)
+                  `shouldEqual` []

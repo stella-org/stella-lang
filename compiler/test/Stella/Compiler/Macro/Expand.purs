@@ -25,8 +25,8 @@ import Stella.Compiler.Interface.Prim (primAttribute)
 import Stella.Compiler.Interface.Scheme (plainScheme)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Macro.Run (ExecutionReason(..), ExpansionSettings, ParseOutcome(..), RunParser, defaultSettings)
-import Stella.Compiler.CST.Types (inSource)
-import Stella.Compiler.Macro.Tree (OriginRef(..), Position(..), Range(..), Syntax(..), SyntaxItem(..), SyntaxNode(..), Token(..), TokenKind(..), TokenTree(..), Trivia(..))
+import Stella.Compiler.CST.Types (RangeSpace(..), inSource)
+import Stella.Compiler.Macro.Tree (IssuedOrigin(..), OriginRef(..), Position(..), Range(..), Syntax(..), SyntaxItem(..), SyntaxNode(..), Token(..), TokenKind(..), TokenTree(..), Trivia(..))
 import Stella.Compiler.Resolve.Module (resolveModuleExpanding)
 import Stella.Compiler.Surface.Decl (Declaration(..))
 import Stella.Compiler.Surface.Expr (exprOrigin)
@@ -93,7 +93,7 @@ environment = case addInterface (exporting moduleA macrosOfA) initialEnvironment
   Right env -> env
   Left _ -> initialEnvironment
   where
-  macrosOfA = [ "unwrap", "block", "refused", "failing", "broken", "spent", "forged", "misspelled", "relabelled", "glued", "retrivia", "tight" ]
+  macrosOfA = [ "unwrap", "block", "refused", "failing", "broken", "spent", "forged", "misspelled", "relabelled", "glued", "retrivia", "tight", "quoted", "quotedElsewhere", "quotedBackwards" ]
 
 -- The parsers, run as a table ------------------------------------------------------------
 
@@ -110,8 +110,13 @@ parsers (Qualified _ (Ident name)) { input } = Identity case name, input.trees o
   "failing", _ -> FailedAs { position: Position 3 9, expected: Set.fromFoldable [ "`,`", "`,`" ], labels: [ "list" ] }
   "broken", _ -> ExecutionFailedAs { reason: Fault, detail: "boom" }
   "spent", _ -> BudgetExceededAs
+  -- `1`, written by a quotation of `A`, of another module, or with a range
+  -- ending before it begins
+  "quoted", _ -> ParsedAs (Syntax [ SyntaxToken (Token (IntLiteral 1) "1" anywhere [] (QuotedOrigin "A" (Position 2 3) (Position 2 4))) ])
+  "quotedElsewhere", _ -> ParsedAs (Syntax [ SyntaxToken (Token (IntLiteral 1) "1" anywhere [] (QuotedOrigin "Z" (Position 2 3) (Position 2 4))) ])
+  "quotedBackwards", _ -> ParsedAs (Syntax [ SyntaxToken (Token (IntLiteral 1) "1" anywhere [] (QuotedOrigin "A" (Position 2 5) (Position 2 3))) ])
   -- a token under an origin the host never issued
-  "forged", _ -> ParsedAs (Syntax [ SyntaxToken (Token (IntLiteral 1) "1" anywhere [] (OriginRef 999)) ])
+  "forged", _ -> ParsedAs (Syntax [ SyntaxToken (Token (IntLiteral 1) "1" anywhere [] (InputOrigin (IssuedOrigin 999))) ])
   -- the first token of the input, its text no longer the token its kind says
   "misspelled", [ Group _ _ inner _ ] | Just (Leaf (Token kind _ r trivia o)) <- Array.head inner ->
     ParsedAs (Syntax [ SyntaxToken (Token kind "nope" r trivia o) ])
@@ -154,7 +159,7 @@ parsers (Qualified _ (Ident name)) { input } = Identity case name, input.trees o
 
   originOfTree item = case Array.head item of
     Just t -> treeOrigin t
-    Nothing -> OriginRef 0
+    Nothing -> InputOrigin (IssuedOrigin 0)
 
 untrivia :: TokenTree -> TokenTree
 untrivia = case _ of
@@ -220,6 +225,16 @@ spec = describe "Stella.Compiler.Macro.Expand" do
           rangeOf out.origin `shouldEqual` call
         other -> fail ("not from an expansion: " <> show other)
 
+    it "locates what a quotation wrote through the expansion at the quotation, in the module it is written in" do
+      expanding defaultSettings [ "import A" ] [ "f = quoted%[x]" ] \out -> do
+        out.body `shouldEqual` "1"
+        out.errors `shouldEqual` []
+        case out.origin of
+          FromExpansion e -> do
+            e.written `shouldEqual` FromSource { space: Quotation moduleA, start: { line: 2, column: 3 }, end: { line: 2, column: 4 } }
+            rangeOf out.origin `shouldEqual` sourceRange 3 5 15
+          other -> fail ("not from an expansion: " <> show other)
+
     it "reads a layout group as the block the host's own layout makes" do
       expands [ "f = block%[let a = 1, b = a in b]" ] "(let a#0 = 1; b#1 = a#0 in b#1)" []
       -- a virtual token stands between two items, so what begins one is never
@@ -276,6 +291,10 @@ spec = describe "Stella.Compiler.Macro.Expand" do
     it "is one whose syntax the host did not issue, or does not read" do
       expands [ "f = A.forged%[1]" ] "!" [ "ExpansionError 4:5 SyntaxInvalid (OriginNotIssued 999)" ]
       expands [ "f = A.misspelled%[x]" ] "!" [ "ExpansionError 4:5 SyntaxInvalid (NotAsLexed \"nope\")" ]
+
+    it "is one whose syntax a quotation wrote in a module the macro's does not reach, or with no range" do
+      expands [ "f = A.quotedElsewhere%[1]" ] "!" [ "ExpansionError 4:5 SyntaxInvalid (QuotedElsewhere \"Z\")" ]
+      expands [ "f = A.quotedBackwards%[1]" ] "!" [ "ExpansionError 4:5 SyntaxInvalid (QuotedRangeMalformed \"A\")" ]
 
     it "is one whose tokens, written as they are, the lexer reads otherwise" do
       expands [ "f = A.relabelled%[x]" ] "!" [ "ExpansionError 4:5 SyntaxInvalid (NotAsLexed \"1\")" ]

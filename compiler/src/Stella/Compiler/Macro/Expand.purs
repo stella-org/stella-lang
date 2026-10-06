@@ -42,7 +42,7 @@ import Stella.Compiler.CST.Check (CheckError(..), checkExpr, printCheckReason)
 import Stella.Compiler.CST.Range (exprRange)
 import Stella.Compiler.CST.Types (CaseBody(..), Clause(..), Decl(..), Expr(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Import(..), LetBinding(..), Macro, Name, RecordField(..), SourceRange)
 import Stella.Compiler.CST.Types as CST
-import Stella.Compiler.Interface.Environment (BuildEnvironment, ModuleView, lookupInterface, viewFor)
+import Stella.Compiler.Interface.Environment (BuildEnvironment, ModuleView, lookupInterface, reachable, viewFor)
 import Stella.Compiler.Macro.Check (MacroRefusal(..), checkMacro)
 import Stella.Compiler.Macro.Reparse (SyntaxProblem, reparse)
 import Stella.Compiler.Macro.Run (ExecutionReason, ExpansionSettings, ParseFailure, ParseOutcome(..), RunParser)
@@ -120,6 +120,7 @@ gets f = Ex \s -> pure (Tuple (f s) s)
 -- | chain of expansions the expression stands in.
 type Context m =
   { run :: RunParser m
+  , environment :: BuildEnvironment
   , settings :: ExpansionSettings
   , scope :: ImportScope
   , opens :: List (Candidates (Qualified Ident))
@@ -135,6 +136,7 @@ expandModule run settings env g = do
   where
   ctx =
     { run
+    , environment: env
     , settings
     , scope: importScope env g
     , opens: Nil
@@ -259,7 +261,7 @@ call ctx m = case resolveMacro ctx m.name of
           ParsedAs syntax -> do
             id <- gets _.nextExpansion
             modify (\s -> s { nextExpansion = s.nextExpansion + 1 })
-            case reparse { id: CST.ExpansionId id, macro, call: range, issued: tree.origins } syntax of
+            case reparse { id: CST.ExpansionId id, macro, call: range, issued: tree.origins, quotable: quotableFor macro } syntax of
               Left problem -> failed (SyntaxInvalid problem)
               Right produced -> case checkExpr produced of
                 [] -> do
@@ -272,6 +274,12 @@ call ctx m = case resolveMacro ctx m.name of
   failed reason = do
     modify (\s -> s { errors = Array.snoc s.errors (ExpansionError range reason) })
     pure (ExprInvalid range)
+
+  -- the modules a quotation the macro returns may be written in: its own, and
+  -- those it reaches through its imports
+  quotableFor (Qualified declaring _) = case viewFor [ declaring ] ctx.environment of
+    Right view -> reachable view
+    Left _ -> Set.singleton declaring
 
   -- a position of the input is one of the text the call stands in
   at (Position line column) = { space: range.space, start: { line, column }, end: { line, column } }

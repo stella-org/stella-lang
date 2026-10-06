@@ -5,12 +5,17 @@
 -- | **What a parser returns is checked before it is read.** Every group opens
 -- | and closes as its delimiter does, a bracket stands at the edge of a group and
 -- | nowhere else, the tokens and their trivia, written as they are, are what the
--- | lexer reads them as, and every origin is one the host issued for the call;
--- | a parser cannot make one, and can only pass on those its input carried.
+-- | lexer reads them as, and every origin is one the host issued for the call
+-- | or a quotation's. A parser cannot make an origin of the input, and can only
+-- | pass on those its input carried; an origin of a quotation declares a
+-- | module the macro's own reaches through its imports, itself among them, and
+-- | a range whose positions are positions and in order, which is all that is
+-- | checked of it: whether a quotation stands there is not.
 -- |
 -- | **The tokens become tokens of the expansion's text.** Each stands at its
 -- | place in what was produced, the `n`th covering column `n` of line 1, and
--- | the expansion records, for each, the range of the token it came from, so an
+-- | the expansion records, for each, the range of the token or quotation it
+-- | came from — a quotation's in the source of the module it is written in — so an
 -- | origin read off any range of the expansion reaches what its tokens were
 -- | written as. A layout group becomes the virtual tokens the host's own layout
 -- | inserts — one opening the block, one between two items, one closing it —
@@ -28,6 +33,8 @@ import Data.Either (Either(..))
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
+import Data.Set (Set)
+import Data.Set as Set
 import Data.String (Pattern(..), stripPrefix)
 import Data.Foldable (foldMap)
 import Data.List (List(..), (:))
@@ -37,23 +44,30 @@ import Stella.Compiler.CST.Lexer (lex)
 import Stella.Compiler.CST.Parser as P
 import Stella.Compiler.CST.Types (Expr, RangeSpace(..), SourceRange, SourceToken, StringStyle(..), printToken)
 import Stella.Compiler.CST.Types as CST
-import Stella.Compiler.Macro.Tree (Delimiter(..), OriginRef(..), Syntax(..), SyntaxItem(..), SyntaxNode(..), Term, Token(..), TokenKind(..), Trivia(..))
-import Stella.Compiler.TypedCore.Name (Ident, Qualified)
+import Stella.Compiler.Macro.Tree (Delimiter(..), IssuedOrigin(..), OriginRef(..), Position(..), Syntax(..), SyntaxItem(..), SyntaxNode(..), Term, Token(..), TokenKind(..), Trivia(..))
+import Stella.Compiler.TypedCore.Name (Ident, ModuleName(..), Qualified)
 
 -- | The call a syntax was returned for: the expansion it is read into, the
--- | macro, the call's range in the text it stands in, and the origins the host
--- | issued for its input, each standing for the range of an input token.
+-- | macro, the call's range in the text it stands in, the origins the host
+-- | issued for its input, each standing for the range of an input token, and
+-- | the modules a quotation it returns may be written in.
 type Call =
   { id :: CST.ExpansionId
   , macro :: Qualified Ident
   , call :: SourceRange
   , issued :: Map Int SourceRange
+  , quotable :: Set ModuleName
   }
 
 -- | Why a returned syntax is not read.
 data SyntaxProblem
   -- | An origin the host did not issue for the call.
   = OriginNotIssued Int
+  -- | An origin of a quotation written in a module the macro's does not reach.
+  | QuotedElsewhere String
+  -- | An origin of a quotation whose range is no range: a position before the
+  -- | first line or column, or an end before its start.
+  | QuotedRangeMalformed String
   -- | A bracket standing where no group opens or closes.
   | BracketOutsideGroup String
   -- | A group whose opening or closing tokens are not its delimiter's.
@@ -81,9 +95,19 @@ reparse call (Syntax nodes) = do
     Right e -> Right e
     Left e -> Left (NotAnExpression (map (\t -> printToken t.value) e.found) e.expected)
   where
-  issuedFor (OriginRef n) = case Map.lookup n call.issued of
-    Just r -> Right r
-    Nothing -> Left (OriginNotIssued n)
+  issuedFor = case _ of
+    InputOrigin (IssuedOrigin n) -> case Map.lookup n call.issued of
+      Just r -> Right r
+      Nothing -> Left (OriginNotIssued n)
+    QuotedOrigin m (Position startLine startColumn) (Position endLine endColumn)
+      | not (Set.member (ModuleName m) call.quotable) -> Left (QuotedElsewhere m)
+      | startLine < 1 || startColumn < 1 || endColumn < 1 || endLine < startLine || endLine == startLine && endColumn < startColumn ->
+          Left (QuotedRangeMalformed m)
+      | otherwise -> Right
+          { space: Quotation (ModuleName m)
+          , start: { line: startLine, column: startColumn }
+          , end: { line: endLine, column: endColumn }
+          }
 
   node :: SyntaxNode -> Either SyntaxProblem (Array Placed)
   node = case _ of
@@ -250,6 +274,8 @@ derive instance Eq SyntaxProblem
 instance Show SyntaxProblem where
   show = case _ of
     OriginNotIssued n -> "OriginNotIssued " <> show n
+    QuotedElsewhere m -> "QuotedElsewhere " <> show m
+    QuotedRangeMalformed m -> "QuotedRangeMalformed " <> show m
     BracketOutsideGroup t -> "BracketOutsideGroup " <> show t
     GroupMismatched t -> "GroupMismatched " <> show t
     NotAsLexed t -> "NotAsLexed " <> show t

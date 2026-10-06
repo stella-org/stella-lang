@@ -1,5 +1,7 @@
 {
   "name": "@stella-lang/lib-compiler",
   "type": "module",
-  "devDependencies": {}
+  "devDependencies": {
+    "purs-puppy": "^0.2.0"
+  }
 }

@@ -67,7 +67,7 @@ import Data.Show.Generic (genericShow)
 
 import Data.Array as Array
 import Data.Maybe (Maybe(..))
-import Stella.Compiler.TypedCore.Name (Ident, Qualified)
+import Stella.Compiler.TypedCore.Name (Ident, ModuleName, Qualified)
 
 -- | A position in the source. Lines count from 1; columns count UTF-16 code
 -- | units from 1, which is what an editor protocol counts.
@@ -77,13 +77,15 @@ type SourcePos = { line :: Int, column :: Int }
 -- | coordinates of the text it stands in.
 type SourceRange = { space :: RangeSpace, start :: SourcePos, end :: SourcePos }
 
--- | The text a range is in: the source, or what one expansion of a macro
--- | produced. **Positions of two texts are never compared or joined**, so a
--- | range of an expansion locates a token within that expansion and nothing
--- | else.
+-- | The text a range is in: the source, what one expansion of a macro
+-- | produced, or the source of the module a quotation is written in, which a
+-- | token an expansion produced may have been written as. **Positions of two
+-- | texts are never compared or joined**, so a range of an expansion locates a
+-- | token within that expansion and nothing else.
 data RangeSpace
   = SourceFile
   | Expansion Expansion
+  | Quotation ModuleName
 
 -- | One expansion of a macro: which, the macro expanded, the call it expanded,
 -- | whose range is in the text the call stands in, and where each token of what
@@ -113,6 +115,7 @@ sameSpace :: RangeSpace -> RangeSpace -> Boolean
 sameSpace = case _, _ of
   SourceFile, SourceFile -> true
   Expansion a, Expansion b -> a.id == b.id
+  Quotation a, Quotation b -> a == b
   _, _ -> false
 
 -- | A token with where it stands, and the whitespace and comments before it,

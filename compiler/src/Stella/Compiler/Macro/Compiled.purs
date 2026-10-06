@@ -5,6 +5,11 @@
 -- | **`Base.Int` is compiled from the ABI table** ([Primitive](../Primitive.purs))
 -- | as any `Base` module is, so the session loads it as it loads every module,
 -- | and carries out each of its entries as the operation the entry is.
+-- |
+-- | **What `Stella.Syntax` keeps from source is in its bytecode's exports and in
+-- | no export of its interface**: a module compiled against it may refer to
+-- | it, and the session link it, while neither source nor a synthesizer, which
+-- | reads the catalog the interface's exports make, reaches it.
 module Stella.Compiler.Macro.Compiled
   ( Interface
   , Compiled
@@ -26,13 +31,13 @@ import Stella.Compiler.Macro.Bundle (bundle)
 import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.Primitive (baseModule, withBaseTypes)
 import Stella.Compiler.TypedCore (Export(..), Module, Signature, declareAnnotated, primSignature)
-import Stella.Compiler.TypedCore.Name (Ident, ModuleName(..))
+import Stella.Compiler.TypedCore.Name (Ident, ModuleName(..), Qualified(..))
 
 -- | What a translation reads of a module it is compiled against.
 type Interface = { name :: ModuleName, imports :: Array ModuleName, arities :: Map Ident Int }
 
 -- | The modules in the order they load, `Base.Int` first; the signature holding
--- | both, `OriginRef` among its types; what a translation reads of each; the
+-- | both, `IssuedOrigin` among its types; what a translation reads of each; the
 -- | interface of each, which a module importing them is resolved and
 -- | elaborated against; and the descriptor of the types a value crossing to the
 -- | host has.
@@ -55,9 +60,23 @@ compiled = do
     { modules: [ base.dmo, own.dmo ]
     , signature: own.signature
     , interfaces: [ base.interface, own.interface ]
-    , moduleInterfaces: [ base.moduleInterface, own.moduleInterface ]
+    , moduleInterfaces: [ base.moduleInterface, unexported syntax.unexported own.moduleInterface ]
     , descriptor: syntax.descriptor
     }
+
+-- | An interface with the values given in no export table, a constructor among
+-- | them in no type's members, and none of them with an arity, an arity being
+-- | of a value a module downstream reaches: a call to one is a `callu`.
+unexported :: Array Ident -> ModuleInterface -> ModuleInterface
+unexported names i = i
+  { exports = i.exports
+      { values = Map.filter (\e -> not (Array.elem (local e.entity) names)) i.exports.values
+      , types = map (\t -> t { members = Array.filter (\m -> not (Array.elem m names)) t.members }) i.exports.types
+      }
+  , arities = Map.filterKeys (\n -> not (Array.elem n names)) i.arities
+  }
+  where
+  local (Qualified _ n) = n
 
 compile
   :: Signature

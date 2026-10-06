@@ -8,12 +8,17 @@
 -- | guest module `Stella.Syntax` constructor for constructor, which is how a
 -- | value crosses to a parser running as guest code and back.
 -- |
--- | **An origin is a reference the host issues**, and a parser cannot make
--- | one: it can only pass on those its input carried. What each stands for —
--- | a range of the source, and later the expansion it came through — is the
--- | host's table, keyed by the reference.
+-- | **An origin says where a token or a node came from, for diagnostics
+-- | alone**: nothing resolves a name, or decides what a program means, by it.
+-- | A token of the call's input carries a reference the host issued, which a
+-- | parser cannot make, and which stands for a range the host's table keys by
+-- | the reference. A token of a quotation carries the module and the range its
+-- | origin declares — where a quotation compiled from source stands, which the
+-- | compiler writes — and the host checks the module is one the macro's
+-- | reaches and the range a range, and no more.
 module Stella.Compiler.Macro.Tree
   ( OriginRef(..)
+  , IssuedOrigin(..)
   , Position(..)
   , Range(..)
   , Trivia(..)
@@ -45,8 +50,16 @@ import Data.List as List
 import Stella.Compiler.CST.Types (SourcePos, SourceRange, SourceToken, Token(..), printToken) as CST
 import Stella.Compiler.CST.Types (Trivia(..)) as CSTTrivia
 
--- | A reference to where a token or a node came from.
-newtype OriginRef = OriginRef Int
+-- | Where a token or a node came from: a token of the call's input, by the
+-- | reference the host issued for it, or a quotation, by the module and the
+-- | range it declares. `QuotedOrigin` is `Stella.Syntax.$QuotedOrigin`.
+data OriginRef
+  = InputOrigin IssuedOrigin
+  | QuotedOrigin String Position Position
+
+-- | A reference the host issued for a token of a call's input, which stands
+-- | for the token's range in the host's table.
+newtype IssuedOrigin = IssuedOrigin Int
 
 data Position = Position Int Int
 
@@ -171,7 +184,7 @@ treeOf first body =
 type Numbered = { number :: Int, token :: CST.SourceToken }
 
 tokenOf :: Numbered -> Token
-tokenOf n = Token (kindOf n.token.value) (textOf n.token.value) (rangeOf n.token.range) (map triviaOf n.token.leading) (OriginRef n.number)
+tokenOf n = Token (kindOf n.token.value) (textOf n.token.value) (rangeOf n.token.range) (map triviaOf n.token.leading) (InputOrigin (IssuedOrigin n.number))
 
 opening :: CST.Token -> Maybe Delimiter
 opening = case _ of
@@ -232,6 +245,12 @@ triviaOf = case _ of
   CSTTrivia.LineComment s r -> LineComment s (rangeOf r)
   CSTTrivia.BlockComment s r -> BlockComment s (rangeOf r)
 
+derive instance Eq IssuedOrigin
+derive instance Ord IssuedOrigin
+derive instance Generic IssuedOrigin _
+instance Show IssuedOrigin where
+  show = genericShow
+
 derive instance Eq OriginRef
 derive instance Ord OriginRef
 derive instance Generic OriginRef _
@@ -239,6 +258,7 @@ instance Show OriginRef where
   show = genericShow
 
 derive instance Eq Position
+derive instance Ord Position
 derive instance Generic Position _
 instance Show Position where
   show = genericShow

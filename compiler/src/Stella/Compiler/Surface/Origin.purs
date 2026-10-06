@@ -24,7 +24,9 @@ import Stella.Compiler.CST.Types (RangeSpace(..), SourceRange)
 import Stella.Compiler.TypedCore.Name (Ident, Qualified)
 
 data Origin
-  -- | Built from the source text the range covers.
+  -- | Built from the source text the range covers: the module's, or that of
+  -- | the module a quotation is written in, which only what a token of an
+  -- | expansion was written as is.
   = FromSource SourceRange
   -- | Built from what an expansion produced: the range in it, the macro
   -- | expanded, where its call stands, and where its tokens were written.
@@ -42,6 +44,7 @@ data Origin
 originOf :: SourceRange -> Origin
 originOf range = case range.space of
   SourceFile -> FromSource range
+  Quotation _ -> FromSource range
   Expansion e ->
     let
       call = originOf e.call
