@@ -4,8 +4,9 @@
 -- | **The host's types mirror those of `Stella.Syntax` constructor for
 -- | constructor** ([Tree](../../../../../compiler/src/Stella/Compiler/Macro/Tree.purs)),
 -- | so a value crosses as the constructor it is. A list is `Stella.Syntax.List`
--- | and an optional value `Stella.Syntax.Maybe`, and an origin is a token the
--- | session carries unread, `{ "origin": n }`.
+-- | and an optional value `Stella.Syntax.Maybe`. An origin is the constructor
+-- | it is too: one of the input holds a token the session carries unread,
+-- | `{ "origin": n }`, and one of a quotation its module and its range.
 -- |
 -- | **What comes back is checked before it is read**: it is a canonical value,
 -- | and one of the type its place wants by the descriptor of `Stella.Syntax`.
@@ -36,7 +37,7 @@ import Stella.CLI.Session.Value (WireValue(..), decodeValue, encodeValue, render
 import Stella.CLI.Session.Value.Shape (conformsTo)
 import Stella.Compiler.Elaborate.Protocol.Guest.Shape (Descriptor, Shape(..))
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
-import Stella.Compiler.Macro.Tree (Delimiter(..), OriginRef(..), Position(..), Range(..), Syntax(..), SyntaxItem(..), SyntaxNode(..), Term, Token(..), TokenKind(..), TokenTree(..), Trivia(..))
+import Stella.Compiler.Macro.Tree (Delimiter(..), IssuedOrigin(..), OriginRef(..), Position(..), Range(..), Syntax(..), SyntaxItem(..), SyntaxNode(..), Term, Token(..), TokenKind(..), TokenTree(..), Trivia(..))
 import Stella.Compiler.TypedCore.Domain (scalarString, textOf)
 import Stella.Compiler.TypedCore.Name (Ident(..), Qualified(..), TyName(..))
 
@@ -70,7 +71,8 @@ tokenValue (Token kind text range trivia origin) = do
   k <- kindValue kind
   t <- textValue text
   tr <- traverse triviaValue trivia
-  pure (ctor "Token" [ k, t, rangeValue range, listValue tr, originValue origin ])
+  o <- originValue origin
+  pure (ctor "Token" [ k, t, rangeValue range, listValue tr, o ])
 
 kindValue :: TokenKind -> Either String WireValue
 kindValue = case _ of
@@ -125,8 +127,10 @@ rangeValue (Range s e) = ctor "Range" [ positionValue s, positionValue e ]
 positionValue :: Position -> WireValue
 positionValue (Position line column) = ctor "Position" [ WInt line, WInt column ]
 
-originValue :: OriginRef -> WireValue
-originValue (OriginRef n) = WToken (Object.singleton "origin" (fromNumber (Int.toNumber n)))
+originValue :: OriginRef -> Either String WireValue
+originValue = case _ of
+  InputOrigin (IssuedOrigin n) -> pure (ctor "InputOrigin" [ WToken (Object.singleton "origin" (fromNumber (Int.toNumber n))) ])
+  QuotedOrigin m start end -> textValue m <#> \m' -> ctor "$QuotedOrigin" [ m', positionValue start, positionValue end ]
 
 textValue :: String -> Either String WireValue
 textValue s = WString <$> note ("a text holding an unpaired surrogate: " <> show s) (scalarString s)
@@ -263,15 +267,17 @@ positionOf = case _ of
   WData _ [ WInt line, WInt column ] -> pure (Position line column)
   _ -> unread
 
--- | An origin read from the token it crosses as, `{ "origin": n }`. Only the
--- | form is checked here: whether the host issued that origin for the call is
--- | the expansion's to check, against what it issued.
+-- | An origin read from the constructor it crosses as, one of the input from
+-- | the token it holds, `{ "origin": n }`. Only the form is checked here:
+-- | whether the host issued that origin for the call, or a quotation's names a
+-- | module and a range it may, is the expansion's to check.
 originOf :: WireValue -> Either String OriginRef
 originOf = case _ of
-  WToken o
+  WData (Qualified _ (Ident "InputOrigin")) [ WToken o ]
     | [ "origin" ] <- Object.keys o
-    , Just n <- Object.lookup "origin" o >>= caseJsonNumber Nothing Int.fromNumber -> pure (OriginRef n)
-  _ -> Left "a token that is not of the form of an origin"
+    , Just n <- Object.lookup "origin" o >>= caseJsonNumber Nothing Int.fromNumber -> pure (InputOrigin (IssuedOrigin n))
+  WData (Qualified _ (Ident "$QuotedOrigin")) [ m, start, end ] -> QuotedOrigin <$> stringOf m <*> positionOf start <*> positionOf end
+  _ -> Left "a value that is not of the form of an origin"
 
 stringOf :: WireValue -> Either String String
 stringOf = case _ of
