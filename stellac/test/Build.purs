@@ -92,6 +92,7 @@ inMemory files faults = case _ of
   WriteBytes path bytes reply -> writing path (Binary bytes) reply
   WriteText path text reply -> writing path (Text text) reply
   MakeDirectory _ reply -> pure (reply (Right unit))
+  Remove path reply -> reply (Right unit) <$ Run.liftEffect (Ref.modify_ (Map.delete path) files)
   IsAbsolute path reply -> pure (reply (String.take 1 path == "/"))
   Glob root _ reply -> Run.liftEffect (Ref.read files) <#> \fs ->
     reply (Right (Array.sort (Array.mapMaybe (fromRoot root) (Array.filter (contains (Pattern ".stel")) (Array.fromFoldable (Map.keys fs))))))
@@ -117,19 +118,35 @@ written r = Array.fromFoldable (Map.keys (Map.filterKeys (contains (Pattern "out
 source :: String -> Array String -> Tuple String File
 source path lines = Tuple path (Text (joinWith "\n" lines))
 
+-- | What an earlier build left of `Main`.
+staleDmo :: Tuple String File
+staleDmo = Tuple "output/_build/Main.dmo" (Binary [ 1, 2, 3 ])
+
+staleDmi :: Tuple String File
+staleDmi = Tuple "output/_build/Main.dmi" (Binary [ 4, 5, 6 ])
+
 mainModule :: Tuple String File
 mainModule = source "src/Main.stel" [ "module Main where", "n :: Int", "n = 1" ]
 
 spec :: Spec Unit
 spec = describe "stellac build" do
-  it "writes each module's bytecode under _build, modules none of which imports another in a stable order" do
+  it "writes each module's bytecode and interface under _build, modules none of which imports another in a stable order" do
     building identity noFaults
       [ source "src/Main.stel" [ "module Main where", "n :: Int", "n = 1" ]
       , source "src/Data/Util.stel" [ "module Data.Util where", "k :: Int", "k = 2" ]
       ]
       \r -> do
         r.result `shouldEqual` Right unit
-        written r `shouldEqual` [ "output/_build/Data.Util.dmo", "output/_build/Main.dmo" ]
+        written r `shouldEqual` [ "output/_build/Data.Util.dmi", "output/_build/Data.Util.dmo", "output/_build/Main.dmi", "output/_build/Main.dmo" ]
+        Array.take 2 r.said `shouldEqual` [ "[1/2] Compiling Data.Util (src/Data/Util.stel)", "[2/2] Compiling Main (src/Main.stel)" ]
+
+  it "compiles a module against the modules of the package it imports" do
+    building identity noFaults
+      [ source "src/Main.stel" [ "module Main where", "import Data.Util", "n :: Int", "n = k" ]
+      , source "src/Data/Util.stel" [ "module Data.Util where", "k :: Int", "k = 2" ]
+      ]
+      \r -> do
+        r.result `shouldEqual` Right unit
         Array.take 2 r.said `shouldEqual` [ "[1/2] Compiling Data.Util (src/Data/Util.stel)", "[2/2] Compiling Main (src/Main.stel)" ]
 
   it "writes the optimizer's trace of the module --trace-opt names" do
@@ -141,7 +158,7 @@ spec = describe "stellac build" do
   it "takes the source files, and writes its output, under --workdir" do
     building (_ { workdir = "pkg" }) noFaults [ Tuple "pkg/src/Main.stel" (snd mainModule) ] \r -> do
       r.result `shouldEqual` Right unit
-      written r `shouldEqual` [ "pkg/output/_build/Main.dmo" ]
+      written r `shouldEqual` [ "pkg/output/_build/Main.dmi", "pkg/output/_build/Main.dmo" ]
       Array.take 1 r.said `shouldEqual` [ "[1/1] Compiling Main (pkg/src/Main.stel)" ]
 
   it "writes its output where an absolute --output names, whatever --workdir is" do
@@ -156,10 +173,15 @@ spec = describe "stellac build" do
         Array.elem "src/Main.stel:3:5: There is no value `nope` in scope" r.said `shouldEqual` true
         written r `shouldEqual` []
 
-    it "is one whose bytecode could not be written, what an earlier build left there standing" do
-      let stale = Tuple "output/_build/Main.dmo" (Binary [ 1, 2, 3 ])
-      building identity noFaults { unwritable = [ "output/_build/Main.dmo" ] } [ mainModule, stale ] \r -> do
+    it "is one whose bytecode could not be written, which leaves neither file of the module's pair" do
+      building identity noFaults { unwritable = [ "output/_build/Main.dmo" ] } [ mainModule, staleDmo, staleDmi ] \r -> do
         r.result `shouldEqual` Left "The build failed"
         Array.elem "`output/_build/Main.dmo` could not be written: the disk is full" r.said `shouldEqual` true
-        written r `shouldEqual` [ "output/_build/Main.dmo" ]
+        written r `shouldEqual` []
+
+    it "is one whose interface could not be written, which leaves neither file of the module's pair" do
+      building identity noFaults { unwritable = [ "output/_build/Main.dmi" ] } [ mainModule, staleDmo, staleDmi ] \r -> do
+        r.result `shouldEqual` Left "The build failed"
+        Array.elem "`output/_build/Main.dmi` could not be written: the disk is full" r.said `shouldEqual` true
+        written r `shouldEqual` []
 

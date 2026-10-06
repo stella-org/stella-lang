@@ -1,26 +1,33 @@
 -- | `stellac build`: the modules of a package compiled, each module's bytecode
--- | written under `_build` ([Paths](Paths.purs)), where a package manager finds it.
+-- | and interface written under `_build` ([Paths](Paths.purs)), where a package
+-- | manager finds them.
 -- |
 -- | **The build is the compiler's driver, `Stella.Compiler.Build`, given what
 -- | this command does for it**: the files the patterns name under the package's
 -- | root, read as the driver asks; each macro's parser run on a compile-time
--- | session, opened at the first one; and what each phase makes written as the
+-- | session, opened at the first one, a macro of the package run from the
+-- | bytecode written for its module; and what each phase makes written as the
 -- | phase ends. The modules are built against `Prim` and the modules the
 -- | compiler carries, `Base.Int` and `Stella.Syntax`.
 -- |
 -- | **A build succeeds only where everything it was to write was written**: a
 -- | file a phase could not write fails the build once the modules are built, so
 -- | that what an earlier build left under `_build` is never taken for what this
--- | one made. A session that did not close cleanly fails it too.
+-- | one made. **A module's bytecode and interface are written as a pair**: a
+-- | module whose pair could not be written in full leaves neither file of it,
+-- | and its macros are not run. A session that did not close cleanly fails the
+-- | build too.
 module Stellac.Build (cmd) where
 
 import Prelude
 
 import Data.Array as Array
 import Data.Array.NonEmpty as NonEmptyArray
+import Data.Bifunctor (lmap)
 import Data.Either (Either(..), either)
 import Data.Foldable (foldM, for_)
 import Data.Maybe (Maybe(..))
+import Data.Set as Set
 import Data.String (Pattern(..), joinWith, split)
 import Data.Traversable (for)
 import Effect.Ref as Ref
@@ -37,7 +44,9 @@ import Stella.CLI.Session.Client as Client
 import Stella.CLI.Session.RunParser (ParserRunnerError, openingParser)
 import Stella.Compiler.Build (BuildError, CompileWarning, CompilerAction, DiagnosticLocation, build, buildMessages, defaultHooks, defaultSourceRoots, printCompileWarning, warningLocationOf)
 import Stella.Compiler.Bytecode (encode)
+import Stella.Compiler.Bytecode.Bytes (Bytes)
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment)
+import Stella.Compiler.Interface.File as Interface
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (defaultSettings)
 import Stella.Compiler.TypedCore (ModuleName(..))
@@ -66,19 +75,49 @@ cmd opts = do
   session <- liftEffect (Ref.new Nothing)
   trace <- liftEffect (Ref.new [])
   unwritten <- liftEffect (Ref.new [])
+  -- the modules whose pair was written, and those the session loaded
+  paired <- liftEffect (Ref.new Set.empty)
+  loaded <- liftEffect (Ref.new Set.empty)
   let
     files = map (\within -> { path: underRoot within, within: split (Pattern "/") within }) found
 
-    -- a file a phase could not write, kept to fail the build with once it ends
-    write :: String -> Either String Unit -> Building Unit
+    -- what a phase could not write, kept to fail the build with once it ends
+    failing :: String -> Building Unit
+    failing why = liftEffect (Ref.modify_ (\ws -> Array.snoc ws why) unwritten)
+
+    write :: String -> Either String Unit -> Building Boolean
     write path = case _ of
-      Left why -> liftEffect (Ref.modify_ (\ws -> Array.snoc ws (fmt @"`{path}` could not be written: {why}" { path, why })) unwritten)
-      Right _ -> pure unit
+      Left why -> false <$ failing (fmt @"`{path}` could not be written: {why}" { path, why })
+      Right _ -> pure true
+
+    -- the bytecode, then the interface beside it; where either is not
+    -- written, neither is left
+    writePair :: ModuleName -> Either String { dmo :: Bytes, dmi :: Bytes } -> Building Unit
+    writePair name encoded = do
+      let
+        dmo = builtPath output name "dmo"
+        dmi = builtPath output name "dmi"
+      both <- case encoded of
+        Left why -> false <$ failing (internal why)
+        Right bytes -> do
+          wrote <- write dmo =<< FS.writeBytes dmo bytes.dmo
+          if wrote then write dmi =<< FS.writeBytes dmi bytes.dmi else pure false
+      if both then liftEffect (Ref.modify_ (Set.insert name) paired)
+      else for_ [ dmo, dmi ] \path -> FS.remove path >>= case _ of
+        Left why -> failing (fmt @"`{path}` could not be removed: {why}" { path, why })
+        Right _ -> pure unit
+
+    loading =
+      { loaded
+      , locate: \name -> do
+          written <- liftEffect (Ref.read paired)
+          pure if Set.member name written then Just (builtPath output name "dmo") else Nothing
+      }
 
     action :: CompilerAction Building
     action =
       { readSource: FS.readText
-      , runParser: openingParser session { command: steam.command, args: steam.args, output: Inherit, hello: parsing } syntax.descriptor
+      , runParser: openingParser session { command: steam.command, args: steam.args, output: Inherit, hello: parsing } syntax.descriptor loading
       , hooks: defaultHooks
           { onStartCompile = \progress file ->
               Log.info (fmt @"[{current}/{total}] Compiling {name} ({path})" { current: progress.current, total: progress.total, name: moduleText file.name, path: file.path })
@@ -88,17 +127,18 @@ cmd opts = do
           , onEnterOptimizeIter = \mid -> traced mid.name "pre-optimised (fixpoint input)"
           , onContinueOptimizeIter = \round mid -> traced mid.name (fmt @"round {round}" { round })
           , onLeaveOptimizeIter = \mid -> traced mid.name "converged"
-          , onLowered = \bytecode -> do
-              let path = builtPath output bytecode.dmo.name "dmo"
-              case encode bytecode.dmo of
-                Left err -> write path (Left (internal (show err)))
-                Right bytes -> write path =<< FS.writeBytes path bytes
+          , onLowered = \made -> do
+              let name = moduleText made.dmo.name
+              writePair made.dmo.name do
+                dmo <- lmap (\err -> fmt @"the bytecode of {name} could not be encoded: {err}" { name, err: show err }) (encode made.dmo)
+                dmi <- lmap (\err -> fmt @"the interface of {name} could not be encoded: {err}" { name, err: show err }) (Interface.encode { interface: made.interface, buildHash: Nothing })
+                pure { dmo, dmi }
           , onModuleDone = \done -> do
               for_ done.warnings (warning done.path)
               when (Just done.name == opts.traceOpt) do
                 chunks <- liftEffect (Ref.read trace)
                 let path = builtPath output done.name "mir"
-                write path =<< FS.writeText path (traceText chunks)
+                void (write path =<< FS.writeText path (traceText chunks))
           }
       }
 
