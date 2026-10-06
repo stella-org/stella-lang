@@ -195,6 +195,7 @@
             "aff",
             "argparse-basic",
             "arrays",
+            "bifunctors",
             "cli",
             "compiler",
             "console",
@@ -204,6 +205,7 @@
             "foldable-traversable",
             "maybe",
             "node-process",
+            "ordered-collections",
             "prelude",
             "refs",
             "run",
@@ -216,7 +218,6 @@
             "dodo-printer",
             "effect",
             "exceptions",
-            "ordered-collections",
             "spec",
             "spec-node",
             "tuples"
