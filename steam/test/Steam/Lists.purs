@@ -1,6 +1,9 @@
--- | A module written in source, calling a macro of a module written in Core,
--- | compiled by the build driver with its parser run on a session, then loaded
--- | and run: the front end end to end.
+-- | Modules written in source, calling a macro of a module written in Core or
+-- | of a module of the same build, compiled by the build driver with each
+-- | parser run on a session, then loaded and run: the front end end to end.
+-- |
+-- | A macro of the build runs from the bytecode the build wrote for its module,
+-- | which the session loads before the parser is run.
 -- |
 -- | `Lists` declares `List` and the macro `ls`, which reads `[ e, … ]` and gives
 -- | back `Cons (e) (Cons (…) Nil)`. The elements keep their tokens and origins;
@@ -19,6 +22,7 @@ import Data.Either (Either(..))
 import Data.Foldable (foldM, foldl, foldr)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
+import Data.Set as Set
 import Data.String (joinWith)
 import Data.String as String
 import Data.Tuple (Tuple(..))
@@ -28,7 +32,7 @@ import Effect.Ref as Ref
 import Fmt (fmt)
 import Node.Buffer as Buffer
 import Node.FS.Aff as FS
-import Run (AFF, EFFECT, Run, runBaseEffect)
+import Run (AFF, EFFECT, Run, liftAff, runBaseEffect)
 import Run.Except (EXCEPT)
 import Run.Except as Except
 import Steam.Foreign (emptyTable)
@@ -36,7 +40,7 @@ import Steam.Load (emptyStore, globalNamed, load, noIdentities)
 import Steam.Value (CtorId, Value(..))
 import Stella.CLI.Session.Client as Client
 import Stella.CLI.Effect.Process (PROCESS)
-import Stella.CLI.Session.RunParser (ParserRunnerError, sessionParser)
+import Stella.CLI.Session.RunParser (ParserRunnerError(..), loadingParser)
 import Stella.Compiler.Build (CompilerAction, build, buildMessages, defaultHooks, defaultSourceRoots)
 import Stella.Compiler.Bytecode (Dmo, encode, lower)
 import Stella.Compiler.Interface (aritiesOf, importsOf)
@@ -238,11 +242,18 @@ compiledLists syntax = case declareAnnotated syntax.signature listsModule of
 
 type Ran = { result :: Either P.String (P.Array P.String), values :: Map.Map P.String P.String }
 
--- | `src/Main.stel`, its lines after its header, built against `Base.Int`,
--- | `Stella.Syntax`, and `Lists` with `ls` run on a session; then those and
--- | `Main` loaded, in that order, and each of the globals named rendered.
-building :: P.Array P.String -> P.Array P.String -> (Ran -> Aff Unit) -> Aff Unit
-building lines globals k = case compiled of
+-- | `src/Main.stel`, its lines after its header importing `Lists`, built as
+-- | `building` builds a package.
+buildingMain :: P.Array P.String -> P.Array P.String -> (Ran -> Aff Unit) -> Aff Unit
+buildingMain lines = building [] [ Tuple "Main" ([ "import Lists" ] <> lines) ]
+
+-- | The modules given, each its lines after its header, built in one build
+-- | against `Base.Int`, `Stella.Syntax`, and `Lists`, each parser run on a
+-- | session; each module's bytecode written as it is built, but that of the
+-- | modules named first. Then the modules loaded, in the order built, and each
+-- | of the globals of `Main` named rendered.
+building :: P.Array P.String -> P.Array (Tuple P.String (P.Array P.String)) -> P.Array P.String -> (Ran -> Aff Unit) -> Aff Unit
+building unwritten modules globals k = case compiled of
   Left err -> fail err
   Right syntax -> case compiledLists syntax of
     Left err -> fail ("Lists " <> err)
@@ -254,28 +265,44 @@ building lines globals k = case compiled of
         openInProcess 1_000 hello { offers = [ "modules", "parse" ] } >>= case _ of
           Left failure -> fail ("the session did not open: " <> show failure)
           Right session -> do
+            -- `Lists` is no module of the build, and is loaded beforehand
             node (Client.load session (pathOf "Lists")) >>= case _ of
               Right (Right _) -> pure unit
               _ -> fail "did not load Lists"
             lowered <- liftEffect (Ref.new [])
+            written <- liftEffect (Ref.new Set.empty)
+            inSession <- liftEffect (Ref.new Set.empty)
             let
-              source = joinWith "\n" ([ "module Main where", "import Lists" ] <> lines)
+              sources = map (\(Tuple name lines) -> Tuple (fmt @"src/{name}.stel" { name }) (joinWith "\n" ([ fmt @"module {name} where" { name } ] <> lines))) modules
+              loading =
+                { loaded: inSession
+                , locate: \name -> liftEffect (Ref.read written) <#> \names ->
+                    if Set.member name names then Just (pathOf (moduleText name)) else Nothing
+                }
 
               action :: CompilerAction (Run (EXCEPT ParserRunnerError + PROCESS + AFF + EFFECT + ()))
               action =
-                { readSource: \_ -> pure (Right source)
-                , runParser: sessionParser session syntax.descriptor
-                , hooks: defaultHooks { onLowered = \b -> liftEffect (Ref.modify_ (\ds -> Array.snoc ds b.dmo) lowered) }
+                { readSource: \path -> pure case Array.find (\(Tuple p _) -> p == path) sources of
+                    Just (Tuple _ body) -> Right body
+                    Nothing -> Left "no such file"
+                , runParser: loadingParser loading session syntax.descriptor
+                , hooks: defaultHooks
+                    { onLowered = \b -> do
+                        liftEffect (Ref.modify_ (\ds -> Array.snoc ds b.dmo) lowered)
+                        unless (Array.elem (moduleText b.dmo.name) unwritten) do
+                          liftAff (write (moduleText b.dmo.name) b.dmo)
+                          liftEffect (Ref.modify_ (Set.insert b.dmo.name) written)
+                    }
                 }
-            outcome <- node (Except.runExcept (build action defaultSettings env defaultSourceRoots [ { path: "src/Main.stel", within: [ "src", "Main.stel" ] } ]))
+            outcome <- node (Except.runExcept (build action defaultSettings env defaultSourceRoots (map (\(Tuple path _) -> { path, within: String.split (String.Pattern "/") path }) sources)))
             void (node (Client.close session))
-            mains <- liftEffect (Ref.read lowered)
+            built <- liftEffect (Ref.read lowered)
             case outcome of
-              Left failure -> fail ("the runner failed: " <> show failure)
+              Left failure -> k { result: Left (runnerFailure failure), values: Map.empty }
               Right (Left err) -> k { result: Left (describe err), values: Map.empty }
-              Right (Right built) -> do
-                values <- loaded (syntax.modules <> [ lists.dmo ] <> mains) globals
-                k { result: Right (map (\b -> moduleText b.name) built), values }
+              Right (Right names) -> do
+                values <- loaded (syntax.modules <> [ lists.dmo ] <> built) globals
+                k { result: Right (map (\b -> moduleText b.name) names), values }
   where
   write name dmo = case encode dmo of
     Left err -> fail (fmt @"could not encode {name}: {err}" { name, err: show err })
@@ -283,6 +310,9 @@ building lines globals k = case compiled of
       buffer <- liftEffect (Buffer.fromArray bytes)
       FS.writeFile (pathOf name) buffer
   describe err = joinWith "; " (map (\m -> fmt @"{at} {message}" { at: joinWith " " (map (\l -> fmt @"{line}:{column}" { line: l.start.line, column: l.start.column }) m.locations), message: m.message }) (NonEmptyArray.toArray (buildMessages err)))
+  runnerFailure = case _ of
+    ModuleUnavailable m -> "unavailable " <> moduleText m
+    failure -> show failure
 
 -- | The modules loaded in the order given, and each global of `Main` named,
 -- | rendered.
@@ -327,13 +357,34 @@ moduleText (ModuleName m) = m
 spec :: Spec Unit
 spec = describe "Steam, the front end end to end" do
   it "builds a module calling a macro of a module written in Core, and runs what it built" do
-    building [ "xs :: List Int", "xs = ls%[1, 2]", "none :: List Int", "none = ls%[]" ] [ "xs", "none" ] \r -> do
+    buildingMain [ "xs :: List Int", "xs = ls%[1, 2]", "none :: List Int", "none = ls%[]" ] [ "xs", "none" ] \r -> do
       r.result `shouldEqual` Right [ "Main" ]
       Map.lookup "xs" r.values `shouldEqual` Just "Cons(1, Cons(2, Nil))"
       Map.lookup "none" r.values `shouldEqual` Just "Nil"
 
   it "reports a call the parser refuses where in its input it stopped, then at the call" do
-    building [ "xs :: List Int", "xs = ls%(1)" ] [] \r ->
+    buildingMain [ "xs :: List Int", "xs = ls%(1)" ] [] \r ->
       case r.result of
         Left message -> String.take 8 message `shouldEqual` "4:9 4:6 "
         Right _ -> fail "built"
+
+  describe "a macro of the build" do
+    let
+      pass = Tuple "Pass"
+        [ "import Stella.Syntax (List, Parser, Syntax(..), Term, TokenTree, brackets, many, map, nodesOf, tree)"
+        , "asSyntax :: List TokenTree -> Syntax Term"
+        , "asSyntax ts = Syntax (nodesOf ts)"
+        , "@[macro]"
+        , "pass :: Parser (Syntax Term)"
+        , "pass = brackets (map asSyntax (many tree))"
+        ]
+      main = Tuple "Main" [ "import Pass", "n :: Int", "n = pass%[2]" ]
+
+    it "is run from the bytecode the build wrote, its module loaded into the session first" do
+      building [] [ main, pass ] [ "n" ] \r -> do
+        r.result `shouldEqual` Right [ "Pass", "Main" ]
+        Map.lookup "n" r.values `shouldEqual` Just "2"
+
+    it "is not run where its module's bytecode was not written" do
+      building [ "Pass" ] [ main, pass ] [] \r ->
+        r.result `shouldEqual` Left "unavailable Pass"
