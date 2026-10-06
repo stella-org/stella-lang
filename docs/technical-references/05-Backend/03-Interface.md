@@ -332,7 +332,7 @@ does for a `.dmo` ([Encoding](02-Encoding.md)).
 
 ## Where it comes from
 
-**An interface is decided in three places, and assembled from them.**
+**The interface of a module written in source is decided in three places, and assembled from them.**
 
 | Part | Decided by | Holds |
 | --- | --- | --- |
@@ -349,6 +349,23 @@ speak of one module.** An interface is made only where the checks pass.
 | A type declaration of one sort in one part and another in the other | A data type's fields, a synonym's body, and a foreign type's nothing are not interchangeable |
 | A data type with another number of constructors in each, an effect with another number of operations, an attribute declaration with another number of parameters | The two are joined member by member |
 | An arity of a value the module does not declare, or that no module downstream can reach; an arity below one | See [Which values have one](#which-values-have-one) |
+
+### A module written in Core
+
+**A module written in Core has a canonical interface, read off the module and its checked signature.** Such a module has no source and so no surface part: `Base.Int`, `Stella.Syntax`, and the modules the compiler or a test writes in Core. Its interface is `Stella.Compiler.Interface.FromCore` applied to the module, what checking it declared, and the arities of its translation. It is a projection of what Core holds, and no inverse of a surface part: what Core keeps nothing of is given one value.
+
+| What | In the interface |
+| --- | --- |
+| a top-level value | a value |
+| a foreign | a foreign that may observe, Core holding no `#observ(none)` |
+| a data type, its constructors | a data type with its parameters, and its constructors in the order of their tags |
+| an effect, its operations | an effect, each operation taking its one Core argument as its one argument |
+| an intrinsic type the signature holds under the module's name | an intrinsic type of the module, with its canonical class: `Stella.Syntax`'s `OriginRef` |
+| an attribute declaration | an attribute declaration |
+| an exported value carrying `Prim.macro` | a macro exported in the macro namespace, and no value exported; declared as any value is |
+| fixities, implicit handlers, entries published to the catalog alone, synonyms, foreign types | none |
+
+**What the module owns is what the checked signature holds under its name**, and nothing of an import or of `Prim` is. An intrinsic type the signature holds under the module's name is the module's as a declared type is; a data type there must have the module's Core declaration behind it. **A projection is refused** where a data type in the signature has no declaration of the module, where an export names nothing the module declares, and where an arity is of a value no module downstream reaches or is below one, as an assembled interface's arities are checked. **A module written in source is never projected so**: its interface is assembled from the three parts above, which hold what Core has lost.
 
 ## What reads it
 
