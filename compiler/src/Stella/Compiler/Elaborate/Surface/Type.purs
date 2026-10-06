@@ -9,6 +9,12 @@
 -- | asked once the elaboration they belong to is done, of each place that left
 -- | one unwritten: a binder, or a constructor instantiated at fresh kinds.
 -- |
+-- | **A type constructor the module declares is read at the kind its
+-- | declaration is being given** while the module's data declarations are
+-- | elaborated together: a kind variable written in the declaration is
+-- | instantiated afresh where the constructor is used, and a metavariable
+-- | standing for a kind left unwritten is the one kind every use shares.
+-- |
 -- | **This version reads a subset of types**: variables, constructors,
 -- | applications, pure arrows, `forall`, and kind annotations. Anything else is
 -- | reported as outside it, and stands meanwhile as a fresh metavariable, so
@@ -17,8 +23,16 @@ module Stella.Compiler.Elaborate.Surface.Type
   ( Unsupported(..)
   , Elaborated
   , Read
+  , Scope
+  , LocalHead
+  , ReadBinder
   , elaborateSignature
   , elaborateType
+  , readTypeAt
+  , readBinder
+  , readKind
+  , siteOf
+  , typeKindVars
   , xFunction
   , settledScheme
   ) where
@@ -50,7 +64,7 @@ import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), MetaConte
 import Stella.Compiler.Surface.Name (TypeVar(..))
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.Surface.Type (Kind(..), Signature, Type(..), TypeVarBinder, typeOrigin)
-import Stella.Compiler.TypedCore.Name (Ident, KindVar, Qualified, TyVar)
+import Stella.Compiler.TypedCore.Name (Ident, KindVar, Qualified, TyName, TyVar)
 import Stella.Compiler.TypedCore.Prim (functionTy)
 import Stella.Compiler.TypedCore.Type (TypeScheme)
 
@@ -73,8 +87,23 @@ type Elaborated =
   }
 
 -- | What a type is read under: the declaration it belongs to, the kind
--- | variables in scope, and the kind of each type variable bound.
-type Scope = { declaration :: Qualified Ident, kindVars :: Set KindVar, tyVars :: Map TyVar XKind }
+-- | variables in scope, the kind of each type variable bound, and the type
+-- | constructors the module declares whose kinds are being decided.
+type Scope =
+  { declaration :: Qualified Ident
+  , kindVars :: Set KindVar
+  , tyVars :: Map TyVar XKind
+  , localTypes :: Map (Qualified TyName) LocalHead
+  }
+
+-- | The kind a type constructor of the module is read at while its declaration
+-- | is elaborated: over the kind variables its declaration writes, and holding
+-- | a metavariable for each kind it leaves unwritten.
+type LocalHead = { kindVars :: Array KindVar, body :: XKind }
+
+-- | A binder read: its variable, its kind, where its kind was left unwritten,
+-- | and what was outside the subset.
+type ReadBinder = { var :: TypeVar, kind :: XKind, unwritten :: Array { origin :: Surface.Origin, kind :: XKind }, unsupported :: Array Unsupported }
 
 -- | What reading one type gave.
 type Read = { type :: XType, kind :: XKind, unwritten :: Array { origin :: Surface.Origin, kind :: XKind }, unsupported :: Array Unsupported }
@@ -90,6 +119,7 @@ elaborateSignature declaration signature = do
       { declaration
       , kindVars
       , tyVars: Map.fromFoldable (map (\i -> Tuple (nameOf i.var) i.kind) implicit)
+      , localTypes: Map.empty
       }
   body <- checkAt scope XKType signature.body
   pure
@@ -105,7 +135,15 @@ elaborateSignature declaration signature = do
 -- | the type variables the context binds: an annotation, whose variables are
 -- | those of the signature around it.
 elaborateType :: Qualified Ident -> XContext -> Type -> Elab Read
-elaborateType declaration context = checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars } XKType
+elaborateType declaration context = checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars, localTypes: Map.empty } XKType
+
+-- | A type at the kind given, under the scope given.
+readTypeAt :: Scope -> XKind -> Type -> Elab Read
+readTypeAt = checkAt
+
+-- | A binder, at the kind written or at a metavariable.
+readBinder :: Scope -> TypeVarBinder -> Elab ReadBinder
+readBinder = binder
 
 -- | `τ1 -{ρ}-> τ2`.
 xFunction :: XType -> XType -> XType -> XType
@@ -123,6 +161,15 @@ readType scope t = case t of
   TypeVariable o v -> case Map.lookup (nameOf v) scope.tyVars of
     Just kind -> pure (plain (XVar (nameOf v)) kind)
     Nothing -> unsupported (OutsideSubset o "a type variable bound outside the signature")
+  TypeConstructor o name | Just head <- Map.lookup name scope.localTypes -> do
+    args <- traverse (\_ -> freshKindMeta scope.kindVars quantifiable) head.kindVars
+    let instantiated = Map.fromFoldable (Array.zip head.kindVars args)
+    pure
+      { type: XCon name args
+      , kind: instantiateKindVars instantiated head.body
+      , unwritten: map (\kind -> { origin: o, kind }) args
+      , unsupported: []
+      }
   TypeConstructor o name -> do
     env <- askEnv
     case Map.lookup name env.session.kinding.types of
@@ -184,8 +231,15 @@ readType scope t = case t of
     meta <- freshTypeMeta (emptyXContext { kindVars = scope.kindVars }) kind
     pure { type: meta, kind, unwritten: [], unsupported: [ problem ] }
 
+-- | A kind with the kind variables given replaced.
+instantiateKindVars :: Map KindVar XKind -> XKind -> XKind
+instantiateKindVars by = case _ of
+  XKVar k | Just kind <- Map.lookup k by -> kind
+  XKFun a b -> XKFun (instantiateKindVars by a) (instantiateKindVars by b)
+  other -> other
+
 -- | A binder of a `forall`, at the kind written or at a metavariable.
-binder :: Scope -> TypeVarBinder -> Elab { var :: TypeVar, kind :: XKind, unwritten :: Array { origin :: Surface.Origin, kind :: XKind }, unsupported :: Array Unsupported }
+binder :: Scope -> TypeVarBinder -> Elab ReadBinder
 binder scope b = case b.kind of
   Just k -> readKind k >>= case _ of
     Right kind -> case Kinding.quantifiable kind of

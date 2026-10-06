@@ -1,5 +1,13 @@
--- | A module's value declarations elaborated into Core terms, against what its
--- | imports reach ([Elaboration](../../../../../docs/technical-references/02-Surface-Language/01-Elaboration.md)).
+-- | A module's data and value declarations elaborated into Core, against what
+-- | its imports reach ([Elaboration](../../../../../docs/technical-references/02-Surface-Language/01-Elaboration.md)).
+-- |
+-- | **The data declarations are elaborated before any value**
+-- | ([Data](Data.purs)), and what they declare is added to the signature and
+-- | the catalog the values are elaborated against. That signature is the
+-- | module's own: the build environment is not, and the Core checker is given
+-- | the signature of the imports alone, as for any module. A data declaration
+-- | that does not elaborate leaves the values unread, a value naming its type
+-- | having nothing to be read against.
 -- |
 -- | **Every signature is read before any body.** A declaration's scheme is
 -- | what every other declaration refers to it at, so the schemes are settled
@@ -17,7 +25,8 @@
 -- | loop stopped before deciding is reported, never returned.
 -- |
 -- | **A value declaration needs a signature in this version**, a fixity gives
--- | Core nothing, and every other declaration is outside what it elaborates.
+-- | Core nothing, and every declaration but a data declaration and a value
+-- | declaration is outside what it elaborates.
 module Stella.Compiler.Elaborate.Surface.Module
   ( ElaborationError(..)
   , ElaboratedValue
@@ -34,7 +43,7 @@ import Prim hiding (Type)
 import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
-import Data.Either (Either(..))
+import Data.Either (Either(..), either, hush)
 import Data.Foldable (foldl)
 import Data.Traversable (traverse)
 import Data.Map as Map
@@ -44,6 +53,7 @@ import Data.Tuple (Tuple(..), fst, snd)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
 import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), XExpr, toCoreExpr)
 import Stella.Compiler.Elaborate.CorePlus.Type (fromCore)
+import Stella.Compiler.Elaborate.Surface.Data (readData, settledData)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
 import Stella.Compiler.Elaborate.Driver.Loop (Attempter, runAttempting)
 import Stella.Compiler.Elaborate.Driver.Loop as Loop
@@ -56,19 +66,20 @@ import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..), elaborateSignatu
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect, Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Surface.Group (groups)
-import Stella.Compiler.Interface.Assemble (CoreInterface, coreAttribute, reachedFromOutside)
-import Stella.Compiler.Interface.Module (Exports)
+import Stella.Compiler.Interface.Assemble (CoreInterface, CoreTypeSort(..), coreAttribute, reachedFromOutside)
+import Stella.Compiler.Interface.Module (Exports, TypeEntity(..), Via(..))
 import Stella.Compiler.Interface.Scheme (plainScheme)
 import Stella.Compiler.Surface.Decl (Declaration(..), declarationOrigin)
 import Stella.Compiler.Surface.Decl (Module) as Surface
 import Stella.Compiler.Surface.Origin (Origin) as Surface
-import Stella.Compiler.TypedCore (Expr, Module) as Core
-import Stella.Compiler.TypedCore (Attribute, DeclError(..), DeclFailure, Decl(..), Declared, Export(..), declareAnnotated)
+import Stella.Compiler.TypedCore (Decl(DeclData), Expr, Module) as Core
+import Stella.Compiler.TypedCore (Attribute, DataDecl, DeclError(..), DeclFailure, Decl(DeclNonRec, DeclRec), Declared, Export(..), declareAnnotated)
+import Stella.Compiler.TypedCore.Declare (ctorInfo, dataEntry)
 import Stella.Compiler.TypedCore.AttributeCheck (AttributeError)
 import Stella.Compiler.TypedCore.Check (isFunVal)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
-import Stella.Compiler.TypedCore.Name (Ident, Qualified(..))
-import Stella.Compiler.TypedCore.Signature (Signature)
+import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName, Qualified(..), TyName(..))
+import Stella.Compiler.TypedCore.Signature (Signature, TyConInfo(..))
 import Stella.Compiler.TypedCore.Type (TypeScheme)
 
 data ElaborationError
@@ -122,19 +133,52 @@ type Elaborating =
   , body :: XExpr Surface.Origin
   }
 
--- | Elaborate the module's value declarations against the signature and the
--- | catalog its imports give.
+-- | A data declaration elaborated, and where it stands.
+type ElaboratedData = { origin :: Surface.Origin, decl :: DataDecl }
+
+-- | Elaborate the module's data and value declarations against the signature
+-- | and the catalog its imports give.
 elaborateValues
   :: Signature
   -> Array CatalogEntry
   -> Surface.Module
-  -> { values :: Array ElaboratedValue, errors :: Array ElaborationError }
-elaborateValues signature imported m =
-  { values: settled'.values
-  , errors: unsupported <> signatureErrors <> bodyErrors <> settled'.errors
-  }
+  -> { data :: Array ElaboratedData, values :: Array ElaboratedValue, errors :: Array ElaborationError }
+elaborateValues imports importedEntries m =
+  if Array.null dataErrors then
+    { data: elaboratedData
+    , values: settled'.values
+    , errors: unsupported <> signatureErrors <> bodyErrors <> settled'.errors
+    }
+  else { data: [], values: [], errors: dataErrors <> unsupported }
   where
-  initial = initialState (SessionId 0) 1_000_000
+  initial0 = initialState (SessionId 0) 1_000_000
+
+  -- the data declarations, each head before any field
+  declarations = Array.mapMaybe
+    ( case _ of
+        DeclData d -> Just d
+        _ -> Nothing
+    )
+    m.declarations
+  Tuple dataRead initial = case runAttempt (sessionEnvOf imports importedEntries) (readData declarations) initial0 of
+    Tuple (Done reads) s ->
+      let
+        settledOnes = map (\r -> { origin: r.declaration.origin, decl: settledData s.tentative.metas r }) reads
+      in
+        Tuple
+          { data: Array.mapMaybe (\d -> map { origin: d.origin, decl: _ } (hush d.decl)) settledOnes
+          , errors: Array.concatMap (\d -> either (map Unsupported) (const []) d.decl) settledOnes
+          }
+          s
+    Tuple outcome _ -> Tuple { data: [], errors: [ failure outcome ] } initial0
+  elaboratedData = dataRead.data
+  dataErrors = dataRead.errors
+
+  -- the signature and the catalog the values are elaborated against: the
+  -- imports', with the data types and constructors the module declares
+  signature = foldl (addData m.name) imports (map _.decl elaboratedData)
+  constructorEntries = Array.concatMap (constructorsOf m.name) (map _.decl elaboratedData)
+  imported = importedEntries <> constructorEntries
 
   -- the value declarations, and what else the module declares; a fixity
   -- gives Core nothing
@@ -147,6 +191,7 @@ elaborateValues signature imported m =
         { declared: { name: d.name, origin: d.origin, ordinal, attributes, params: d.params, body: d.body }
         , signature: signature'
         }
+    DeclData _ -> Nothing
     DeclFixity _ -> Nothing
     DeclTypeFixity _ -> Nothing
     other -> Just (Left (Unsupported (OutsideSubset (declarationOrigin other) "this declaration")))
@@ -205,6 +250,26 @@ elaborateValues signature imported m =
   bodyErrors = bodies.errors
 
   settled' = settleBodies (attemptPending session) bodies.state bodies.bodies
+
+-- | A signature with a data type the module declares, and its constructors.
+addData :: ModuleName -> Signature -> DataDecl -> Signature
+addData self sig decl =
+  sig
+    { types = Map.insert owner (dataEntry self decl) sig.types
+    , ctors = foldl (\acc c -> Map.insert (Qualified self c.name) (ctorInfo owner decl c) acc) sig.ctors decl.constructors
+    }
+  where
+  owner = Qualified self decl.name
+
+-- | The catalog entry of each constructor of a data type the module declares.
+constructorsOf :: ModuleName -> DataDecl -> Array CatalogEntry
+constructorsOf self decl = map entry decl.constructors
+  where
+  entry c =
+    let
+      scheme = (ctorInfo (Qualified self decl.name) decl c).scheme
+    in
+      { name: Qualified self c.name, sort: ConstructorEntry, scheme: { kindVars: scheme.kindVars, body: fromCore scheme.body }, attributes: [] }
 
 -- | Run the jobs the bodies left to quiescence, each attempted by the attempter
 -- | given, then make each body whose equations were all decided a Core term.
@@ -289,7 +354,7 @@ type ElaboratedModule =
   }
 
 -- | Elaborate a module, as `elaborateValues` does, into a Core module checked
--- | against the signature its imports give.
+-- | against the signature its imports give, its data declarations first.
 -- |
 -- | **Its values are grouped by what they refer to**, in a stable dependency
 -- | order: a recursive group becomes a `DeclRec`, any other value a
@@ -298,9 +363,11 @@ type ElaboratedModule =
 -- | version does not elaborate. **A Core module is made only of a module with
 -- | no error**: one missing a declaration would refer to what it does not bind. It imports what
 -- | the module imports, and exports each value it declares that is reached from
--- | outside — by its name, as a macro, or through an operator it exports.
--- | The Core part of its interface holds the scheme of every value it declares;
--- | a module this version elaborates declares no type, effect, or attribute.
+-- | outside — by its name, as a macro, or through an operator it exports —
+-- | and each data type it declares and exports, with the constructors it
+-- | exports of it. The Core part of its interface holds each data type it
+-- | declares and the scheme of every value and constructor; a module this
+-- | version elaborates declares no other type, and no effect or attribute.
 -- | **The Core checker refusing it is the elaborator's fault**, reported as
 -- | such, but for an attribute's arguments, which only the Core checker checks:
 -- | one that does not check is reported where its declaration stands.
@@ -330,7 +397,7 @@ elaborateModule signature imported m exports =
     grouped
   errors = elaborated.errors <> recursiveValues
 
-  decls = map
+  decls = map (\d -> Core.DeclData d.origin d.decl) elaborated.data <> map
     ( \g -> case members g of
         [ v ] | not g.recursive -> DeclNonRec v.origin (binding v)
         vs -> DeclRec (maybe m.origin _.origin (Array.head vs)) (map binding vs)
@@ -350,7 +417,8 @@ elaborateModule signature imported m exports =
     { annotation: m.origin
     , name: m.name
     , imports: Array.nub (map _.module m.imports)
-    , exports: map (ExportValue <<< nameOf <<< _.name) (Array.filter (reachedFromOutside m.name exports operators <<< nameOf <<< _.name) values)
+    , exports: Array.concatMap typeExports elaborated.data
+        <> map (ExportValue <<< nameOf <<< _.name) (Array.filter (reachedFromOutside m.name exports operators <<< nameOf <<< _.name) values)
     , decls
     }
   result = case NonEmptyArray.fromArray errors of
@@ -361,12 +429,32 @@ elaborateModule signature imported m exports =
       Left { at, error: AttributeIllTyped err } -> Left (NonEmptyArray.singleton (AttributeRejected at err))
       Left refusal -> Left (NonEmptyArray.singleton (CoreRefused refusal))
 
+  -- a data type exported, abstractly or with the constructors exported of it
+  typeExports d
+    | declaredHere (map (\e -> e.entity == TypeEntity (Qualified m.name d.decl.name) && e.via == Declared) (Map.lookup (tyNameText d.decl.name) exports.types)) =
+        [ ExportType d.decl.name ] <> map (ExportCtor <<< _.name) (Array.filter (\c -> exportedValue c.name) d.decl.constructors)
+    | otherwise = []
+  exportedValue c = declaredHere (map (\e -> e.entity == Qualified m.name c && e.via == Declared) (Map.lookup (identText c) exports.values))
+  declaredHere = case _ of
+    Just true -> true
+    _ -> false
+
   interface =
-    { schemes: Map.fromFoldable (map (\v -> Tuple (nameOf v.name) (plainScheme v.scheme)) values)
-    , types: Map.empty
+    { schemes: Map.fromFoldable
+        ( map (\v -> Tuple (nameOf v.name) (plainScheme v.scheme)) values
+            <> Array.concatMap (\d -> map (\c -> Tuple c.name (plainScheme (ctorInfo (Qualified m.name d.decl.name) d.decl c).scheme)) d.decl.constructors) elaborated.data
+        )
+    , types: Map.fromFoldable (map (\d -> Tuple d.decl.name { kind: dataKind d.decl, sort: CoreData { params: d.decl.params, fields: map _.fields d.decl.constructors } }) elaborated.data)
     , effects: Map.empty
     , attributes: Map.empty
     , implicitHandlers: Map.empty
     }
 
   nameOf (Qualified _ n) = n
+  identText (Ident n) = n
+  tyNameText (TyName n) = n
+
+  -- `T : forall k̄. κ̄ -> Type`
+  dataKind decl = case dataEntry m.name decl of
+    DataTyCon kind _ -> kind
+    IntrinsicTyCon kind _ -> kind

@@ -1,5 +1,5 @@
--- | Value declarations written in source, resolved, elaborated against what
--- | their imports reach, and handed to the Core checker.
+-- | Data and value declarations written in source, resolved, elaborated
+-- | against what their imports reach, and handed to the Core checker.
 module Test.Stella.Compiler.Elaborate.SurfaceModule (spec) where
 
 import Prelude
@@ -37,7 +37,7 @@ import Stella.Compiler.Interface.Scheme (plainScheme)
 import Stella.Compiler.Resolve.Module (resolveModule)
 import Stella.Compiler.Surface.Origin (rangeOf)
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.TypedCore (Attribute, Decl(..), Declared, Export(..), Module, primSignature)
+import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, Export(..), Module, primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy)
@@ -148,6 +148,20 @@ shapes m = Array.mapMaybe
   where
   nameOf (Ident n) = n
 
+-- | Each data declaration of a Core module.
+dataOf :: Module Surface.Origin -> Array DataDecl
+dataOf m = Array.mapMaybe
+  ( case _ of
+      DeclData _ d -> Just d
+      _ -> Nothing
+  )
+  m.decls
+
+-- | A data declaration as its name, its kind variables and parameters with
+-- | their kinds, and its constructors with their tags and fields.
+dataShape :: DataDecl -> { name :: TyName, kindVars :: Array KindVar, params :: Array { name :: TyVar, kind :: Kind }, constructors :: Array { name :: Ident, tag :: Int, fields :: Array Type } }
+dataShape d = { name: d.name, kindVars: d.kindVars, params: d.params, constructors: d.constructors }
+
 -- | The attributes the bindings of a declaration carry.
 attributesOf :: Decl Surface.Origin -> Array Attribute
 attributesOf = case _ of
@@ -212,14 +226,14 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         , "lam = (\\x -> x) 1"
         , "open :: Int"
         , "open = const 1 id"
-        , "data T = T"
+        , "newtype T = T Int"
         , "ok :: Int"
         , "ok = 1"
         ]
         \r -> do
           map at r.errors `shouldEqual`
             [ "3:1 without a signature"
-            , "10:6 outside: this declaration"
+            , "10:9 outside: this declaration"
             , "5:7 rejected"
             , "7:9 outside: a λ whose type is not known where it stands"
             , "9:8 type undetermined"
@@ -231,6 +245,72 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "p :: Phantom -> Int", "p x = 1", "ok :: Int", "ok = 1" ] \r -> do
         map at r.errors `shouldEqual` [ "3:6 kind undetermined" ]
         map _.name r.values `shouldEqual` [ Qualified (ModuleName "M") (Ident "ok") ]
+
+  describe "a data declaration" do
+    let
+      m = ModuleName "M"
+      own n = TCon (Qualified m (TyName n))
+      a = TyVar "a"
+
+    it "is a Core data declaration, its constructors tagged in the order written, before the values using it" do
+      elaborating [ "data List a = Nil | Cons a (List a)", "xs :: List Int", "xs = Cons 1 Nil" ] \r -> checked r \core -> do
+        map dataShape (dataOf core) `shouldEqual`
+          [ { name: TyName "List"
+            , kindVars: []
+            , params: [ { name: a, kind: KType } ]
+            , constructors:
+                [ { name: Ident "Nil", tag: 0, fields: [] }
+                , { name: Ident "Cons", tag: 1, fields: [ TVar a, TApp (own "List" []) (TVar a) ] }
+                ]
+            }
+          ]
+        shapes core `shouldEqual` [ "nonrec xs" ]
+        core.exports `shouldEqual` [ ExportType (TyName "List"), ExportCtor (Ident "Nil"), ExportCtor (Ident "Cons"), ExportValue (Ident "xs") ]
+
+    it "is read with every other of the module, declarations referring to one another among them" do
+      elaborating [ "data A = MkA B | NoA", "data B = MkB A" ] \r -> checked r \core ->
+        map _.name (dataOf core) `shouldEqual` [ TyName "A", TyName "B" ]
+
+    it "has the kinds of its parameters decided by its fields, where they decide them" do
+      elaborating [ "data App f (a :: Type) = App (f a)" ] \r -> checked r \core ->
+        map (map _.kind <<< _.params) (dataOf core) `shouldEqual` [ [ KFun KType KType, KType ] ]
+
+    it "is outside what this version elaborates where only generalizing would decide a parameter's kind" do
+      elaborating [ "data App f a = App (f a)", "ok :: Int", "ok = 1" ] \r -> do
+        map at r.errors `shouldEqual`
+          [ "3:10 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written"
+          , "3:12 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written"
+          ]
+        -- a data declaration that does not elaborate leaves the values unread
+        r.values `shouldEqual` []
+      elaborating [ "data Proxy a = Proxy" ] \r ->
+        map at r.errors `shouldEqual` [ "3:12 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written" ]
+
+    it "has the kind variables it writes, each use of the type instantiating them afresh" do
+      elaborating [ "data Proxy (a :: k) = Proxy", "data IntProxy = IntProxy (Proxy Int)", "data Both = Both (Proxy Int) (Proxy List)", "data List (a :: Type) = Nil" ] \r -> checked r \core ->
+        map dataShape (dataOf core) `shouldEqual`
+          [ { name: TyName "Proxy", kindVars: [ KindVar "k" ], params: [ { name: a, kind: KVar (KindVar "k") } ], constructors: [ { name: Ident "Proxy", tag: 0, fields: [] } ] }
+          , { name: TyName "IntProxy", kindVars: [], params: [], constructors: [ { name: Ident "IntProxy", tag: 0, fields: [ TApp (own "Proxy" [ KType ]) int ] } ] }
+          , { name: TyName "Both", kindVars: [], params: [], constructors: [ { name: Ident "Both", tag: 0, fields: [ TApp (own "Proxy" [ KType ]) int, TApp (own "Proxy" [ KFun KType KType ]) (own "List" []) ] } ] }
+          , { name: TyName "List", kindVars: [], params: [ { name: a, kind: KType } ], constructors: [ { name: Ident "Nil", tag: 0, fields: [] } ] }
+          ]
+
+    it "binds a kind variable written only in a field, as one written on a parameter is" do
+      elaborating [ "data Poly = Poly (forall (f :: k -> Type) (a :: k). f a -> f a)" ] \r -> checked r \core -> do
+        let
+          k = KindVar "k"
+          f = TyVar "f"
+        map dataShape (dataOf core) `shouldEqual`
+          [ { name: TyName "Poly"
+            , kindVars: [ k ]
+            , params: []
+            , constructors:
+                [ { name: Ident "Poly", tag: 0, fields: [ TForall f (KFun (KVar k) KType) (TForall a (KVar k) (pureFn (TApp (TVar f) (TVar a)) (TApp (TVar f) (TVar a)))) ] } ]
+            }
+          ]
+
+    it "rejects a field at a kind other than Type where it stands" do
+      elaborating [ "data Bad = Bad (Int Int)" ] \r -> map at r.errors `shouldEqual` [ "3:17 rejected" ]
 
   describe "the Core module" do
     it "binds each value after what it refers to, the one written first taken first, and a recursive group as one" do

@@ -41,7 +41,7 @@ import Stella.Compiler.Build (BackendProblem(..), BuildError(..), SourceRoot, de
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore (Decl(..))
 import Stella.Compiler.TypedCore.Kind (Kind(..), monoScheme)
-import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..))
+import Stella.Compiler.TypedCore.Name (Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..))
 import Stella.Compiler.TypedCore.Prim (intTy, pureFn)
 import Stella.Compiler.TypedCore.Type (RowKey(..), Type(..))
 import Test.Spec (Spec, describe, it)
@@ -218,8 +218,10 @@ spec = describe "Stella.Compiler.Build" do
 
   describe "a module's interface" do
     it "holds the schemes and attributes of what it declares, what it exports, and the arities of what is reached" do
-      compilingUnder [ "module M (macro mac, f) where", "import Stella.Syntax (Parser, Syntax, Term, fail)" ]
-        [ "f :: Int -> Int"
+      compilingUnder [ "module M (macro mac, f, Box(..)) where", "import Stella.Syntax (Parser, Syntax, Term, fail)" ]
+        [ "data Box a = Box a"
+        , "data Poly = Poly (forall (f :: k -> Type) (a :: k). f a -> f a)"
+        , "f :: Int -> Int"
         , "f x = x"
         , "@[macro]"
         , "mac :: Parser (Syntax Term)"
@@ -230,10 +232,15 @@ spec = describe "Stella.Compiler.Build" do
         case _ of
           Left errors -> fail (joinWith "; " (map printCompileError errors))
           Right r -> do
-            Map.keys r.interface.declarations.values `shouldEqual` Set.fromFoldable (map Ident [ "f", "hidden", "mac" ])
+            Map.keys r.interface.declarations.values `shouldEqual` Set.fromFoldable (map Ident [ "Box", "Poly", "f", "hidden", "mac" ])
+            map _.sort (Map.lookup (Ident "Box") r.interface.declarations.values) `shouldEqual` Just (SortConstructor (Qualified (ModuleName "M") (TyName "Box")))
+            map (\t -> t.kind.body) (Map.lookup (TyName "Box") r.interface.declarations.types) `shouldEqual` Just (KFun KType KType)
+            -- a kind variable written only in a field is the declaration's
+            map _.kind (Map.lookup (TyName "Poly") r.interface.declarations.types) `shouldEqual` Just { kindVars: [ KindVar "k" ], body: KType }
+            map _.members (Map.lookup "Box" r.interface.exports.types) `shouldEqual` Just [ Ident "Box" ]
             map _.scheme (Map.lookup (Ident "f") r.interface.declarations.values) `shouldEqual` Just (plainScheme (monoScheme (pureFn int int)))
             map _.attributes (Map.lookup (Ident "mac") r.interface.declarations.values) `shouldEqual` Just [ { name: primAttribute "macro", positional: [], keyword: [] } ]
-            Map.keys r.interface.exports.values `shouldEqual` Set.singleton "f"
+            Map.keys r.interface.exports.values `shouldEqual` Set.fromFoldable [ "Box", "f" ]
             Map.keys r.interface.exports.macros `shouldEqual` Set.singleton "mac"
             r.interface.arities `shouldEqual` Map.singleton (Ident "f") 1
 
@@ -374,6 +381,31 @@ buildSpec = describe "a build" do
         Right built -> built `shouldEqual` [ "C", "A", "B" ]
         Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
       Array.filter (String.contains (String.Pattern "start")) r.log `shouldEqual` [ "start 1/3 C", "start 2/3 A", "start 3/3 B" ]
+
+  describe "a data type of the build" do
+    let
+      lists exports = moduleOf "A" [] [ "data List a = Nil | Cons a (List a)", "xs :: List Int", "xs = Cons 1 Nil" ]
+        # String.replace (String.Pattern "module A where") (String.Replacement (fmt @"module A ({exports}) where" { exports }))
+      failedAt r = case r.result of
+        Left err -> map (\m -> { path: m.path, at: map at m.locations, message: m.message }) (NonEmptyArray.toArray (buildMessages err))
+        Right _ -> []
+
+    it "is used with its constructors by a module importing them" do
+      building [ Tuple "src/B.stel" (moduleOf "B" [ "A (List(..))" ] [ "ys :: List Int", "ys = Cons 2 Nil" ]), Tuple "src/A.stel" (lists "List(..), xs") ] \r ->
+        case r.result of
+          Right built -> built `shouldEqual` [ "A", "B" ]
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+
+    it "exported without its constructors is used as a type, and its constructors are not in reach" do
+      building [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "ys :: List Int", "ys = xs" ]), Tuple "src/A.stel" (lists "List, xs") ] \r ->
+        case r.result of
+          Right built -> built `shouldEqual` [ "A", "B" ]
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+      building [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "ys :: List Int", "ys = Cons 2 Nil" ]), Tuple "src/A.stel" (lists "List, xs") ] \r ->
+        failedAt r `shouldEqual`
+          [ { path: Just "src/B.stel", at: [ "4:6" ], message: "There is no constructor `Cons` in scope" }
+          , { path: Just "src/B.stel", at: [ "4:13" ], message: "There is no constructor `Nil` in scope" }
+          ]
 
   it "runs a parser with the modules of the build compiled so far, a macro of the build among them and the module compiled not" do
     let

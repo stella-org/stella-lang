@@ -140,13 +140,14 @@ spec = describe "stellac build" do
         written r `shouldEqual` [ "output/_build/Data.Util.dmi", "output/_build/Data.Util.dmo", "output/_build/Main.dmi", "output/_build/Main.dmo" ]
         Array.take 2 r.said `shouldEqual` [ "[1/2] Compiling Data.Util (src/Data/Util.stel)", "[2/2] Compiling Main (src/Main.stel)" ]
 
-  it "compiles a module against the modules of the package it imports" do
+  it "compiles a module against the modules of the package it imports, their data types among them" do
     building identity noFaults
-      [ source "src/Main.stel" [ "module Main where", "import Data.Util", "n :: Int", "n = k" ]
-      , source "src/Data/Util.stel" [ "module Data.Util where", "k :: Int", "k = 2" ]
+      [ source "src/Main.stel" [ "module Main where", "import Data.Util", "n :: Box Int", "n = Box k" ]
+      , source "src/Data/Util.stel" [ "module Data.Util where", "data Box a = Box a", "k :: Int", "k = 2" ]
       ]
       \r -> do
         r.result `shouldEqual` Right unit
+        written r `shouldEqual` [ "output/_build/Data.Util.dmi", "output/_build/Data.Util.dmo", "output/_build/Main.dmi", "output/_build/Main.dmo" ]
         Array.take 2 r.said `shouldEqual` [ "[1/2] Compiling Data.Util (src/Data/Util.stel)", "[2/2] Compiling Main (src/Main.stel)" ]
 
   it "writes the optimizer's trace of the module --trace-opt names" do
