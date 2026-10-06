@@ -250,6 +250,8 @@ The reason for not deciding is that **`do` should be a library syntax macro**, f
 
 There is a roadmap consequence: `do` with `bind` requires a `Monad` class and therefore **Phase C or later**, since desugaring produces a `{{ Monad m by Typeclass.resolve }}` synthesis goal. Direct style needs only Phase A and the effect part of Phase E, so it is available strictly earlier.
 
+**Tests beside what they test.** A package keeps its tests in a source directory of their own, `test` under `Test` where none are named ([Modules](../06-Modules/01-Modules.md)). Writing a test in the module it tests, marked by an attribute as Rust's `#[cfg(test)]` marks one, is wanted for a test reaching what the module does not export. Three things are open: how what a test declares is left out of a build that is no test's — out of the module's code, its interface, and its exports —; how a test reaches libraries the package depends on for its tests alone, which a package manager would declare; and how tests are found and run.
+
 **Strengthening the module system.** D22 forgoes functors and sealing by signature. Whether export lists alone suffice for abstraction in a large library needs validation in practice. Strengthening the system requires returning to the design of Core, so the decision has low reversibility and should be assessed once the shape of the standard library is visible, in Phase C or later.
 
 ## Implementation

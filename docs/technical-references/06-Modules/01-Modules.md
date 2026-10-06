@@ -321,6 +321,22 @@ Attributes exist so that a resolver can search for declarations carrying one. Th
 
 Which attributes there are is decided by the libraries declaring them, and what one means by whatever reads it. The compiler records them and answers for them, and is a reader of the few `Prim` declares for it.
 
+## A package's files
+
+**A file's path names the module it holds.** A package keeps its sources in **source directories**, each holding the modules named under a prefix, and a module's name is the prefix of the directory its file stands in, then the file's path from there. The source directories are given to a build, and where none are named a package has two:
+
+| Directory | Prefix | Path | Module |
+| --- | --- | --- | --- |
+| `src` | none | `src/A/B/C.stel` | `A.B.C` |
+| `test` | `Test` | `test/A/B/C.stel` | `Test.A.B.C` |
+
+- **Each directory under a source directory, and the file's name without `.stel`, is a segment of the name**: an upper case letter, then letters, digits, `_`, and `'`. A path with any other segment names no module, so `src/A.B.stel` is no name for `A.B`.
+- **A name belongs to the source directory with the longest prefix it falls under**, and a file whose name belongs to another directory than the one it stands in is an error: `src/Test/A.stel` would be `Test.A`, which `test` keeps.
+- **The source directories name their modules apart**: each prefix is made of segments a name may hold, no two directories share a prefix, and none stands in another.
+- **A header naming another module than its path does is an error**, reported where the name is written.
+
+The rule runs both ways, which is what it is for: a tool finds the file of a module it is given the name of — through the directory with the longest prefix the name falls under — without reading a header, and a build knows the name of every module it is given before reading any file. Tests standing beside what they test, in the module itself, are open ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
+
 ## A module's interface and the build environment
 
 **A module is compiled on its own, against a build environment the whole build shares.** The environment holds the interface of every module compiled so far; once a module is compiled, its interface is added, and what a module downstream reads of it — for name resolution, for elaboration, and for an optimizer — reaches it that way and no other. The interface is `Stella.Compiler.Interface.Module`, the environment `Stella.Compiler.Interface.Environment`; how an interface is kept in a file is [Interface](../05-Backend/03-Interface.md).
@@ -389,6 +405,41 @@ spine ::= τ                      a Core type, headed by no forall and no constr
 A name resolves through the first and the entity it stands for is read from the second, wherever it is declared: where `C` imports `B` and `B` re-exports the `x` of `A`, `C` writes `x`, resolves it to `A.x`, and reads `A.x` from `A`'s interface, `A` being reached through `B`. A module reached only through another publishes no name to this one. How names are written — an import list, an alias, `lazy` — selects among the names of the first row and changes none of the other three.
 
 **`Ξ` is taken from direct imports alone, where the catalog is taken from the closure.** An implicit handler is inserted where its plan is unique (D29), so a handler that entered `Ξ` by being reached transitively could make a plan ambiguous because a dependency added an import of its own, a change no header of this module records.
+
+### How a build proceeds
+
+**A build is given the files of a package, in no order it relies on**, its source directories, and the build environment the modules outside it are in. The driver is `Stella.Compiler.Build`.
+
+**Every header is read first.** A header is a module's name and its imports, and since the imports come before every declaration, a file is lexed up to the first item of its block that is no import and no further: what follows decides nothing of what the module imports, and nothing in it — a string left open in a declaration — keeps the header from being read. Each file's name is checked against its path as its header is read.
+
+**The modules are ordered by their imports.** Each stands after every module of the build it imports, and of modules neither of which imports the other, the one given first is taken first. **Modules importing one another are reported before any is compiled**, each of them named.
+
+**Then the modules are compiled one at a time**: a module is read again, compiled, and dropped, and what a build keeps from one module to the next is the build environment alone. **Within a module, what a phase made is held no longer than the next phase reads it**: it is handed to the host as the phase ends — to show, or to write as a file — and the next phase is given what it reads. A build of a large package therefore holds one module's text and the results of one or two of its phases at a time, and no step of it reads the whole program. This version compiles a module against the modules built before the build alone, and an import of another module of the build is an error where it is written.
+
+**A module's stages run in this order**: the text is lexed, laid out, and parsed; its syntax is checked for what no later stage reads; it is resolved, its macro calls expanded ([Name Resolution](../02-Surface-Language/06-Name-Resolution.md)); its imports are looked up in the environment, and the signature and the catalog they give are made, with the types the ABI manifest supplies to the module itself; it is elaborated and its Core checked ([Elaboration](../02-Surface-Language/01-Elaboration.md)); the interfaces translation reads are gathered; it is translated to Mid IR, optimized, and lowered to bytecode. **A stage that reports an error is the last that runs**, and every error it reports is reported: what a later stage would make of what an earlier one refused follows from an error already reported. A module that does not compile is the last the build compiles.
+
+**The driver is neutral about effects.** Reading a file, running a macro's parser ([Syntax Extensions and Parsers](../../proposals/09-Syntax-Extensions-and-Parsers.md)), and taking what each phase makes are the host's, handed to the driver as functions over a monad the host chooses; a build that cannot go on is a value the driver returns, and no effect it raises. What the host is handed:
+
+| When | What |
+| --- | --- |
+| a module's compiling begins | how far the build has gone, the file, and the module |
+| elaboration ends | the checked Core |
+| translation ends | the Mid IR |
+| the optimizer begins, after each round that changed the module, and when it stops | the Mid IR, and the round |
+| lowering ends | the bytecode, and the side table locating what it holds in the source |
+| a module is done | the file, the module, and the warnings compiling it gave |
+
+No pass rewrites a module yet, so the optimizer stops before a first round, and a trace of its rounds holds none. Which files a build is given, and what is done with the bytecode once written — code for a target — are the host's as well.
+
+### What a build reports
+
+**An error of a module is an error of the stage that reported it**: its syntax, text that does not lex or parse or syntax no later stage reads; its resolution, the expansion of its macro calls among it; the environment, interfaces that make no signature or that translation cannot read; its elaboration; and the backend. **An error of the build is about directories, files, and modules**: source directories that do not name their modules apart, a file in no source directory, a path naming no module, a name another source directory keeps, a file given twice, two files naming one module, a header naming another module than its path, a file that cannot be read, modules importing one another, and an import of a module of the build.
+
+**An error names every place it is about**, the one it is chiefly about first. A place is a range of the source: a range in what an expansion produced is taken back to the call written in the source, through every expansion it stands in ([Surface AST](../02-Surface-Language/08-Surface-AST.md)), and a parser that failed is reported where in its input it failed, then at the call. An assignment that broke a row constraint names the equation and the site the constraint came from. An error about the build environment names no place, and neither does a fault of the elaboration mechanism, of translation, or of lowering.
+
+**A fault of the compiler's is said to be one.** The Core checker refusing what was elaborated, the mechanism used against its contract, and translation or lowering refusing a checked module are reported as internal errors, so that an author tells a program to correct from a compiler to report.
+
+**A warning is resolution's**, each at the place it is about, and is reported with the module that compiled.
 
 ## Declaration typing and the entry point
 

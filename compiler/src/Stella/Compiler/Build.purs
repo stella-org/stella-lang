@@ -33,6 +33,7 @@
 -- | returned; a module that does not compile is the last the build compiles.
 module Stella.Compiler.Build
   ( PackageFile
+  , defaultSourceRoots
   , Progress
   , CompilerAction
   , CompilerHooks
@@ -62,7 +63,7 @@ import Data.String (Pattern(..), joinWith, stripSuffix)
 import Data.String.CodeUnits as SCU
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.Build.Report (BackendProblem(..), BuildError(..), BuildMessage, CompileError(..), CompileWarning, DiagnosticLocation, EnvironmentProblem(..), SyntaxProblem(..), buildMessages, locationsOf, primaryLocationOf, printCompileError, printCompileWarning, warningLocationOf)
+import Stella.Compiler.Build.Report (BackendProblem(..), BuildError(..), BuildMessage, SourceRoot, CompileError(..), CompileWarning, DiagnosticLocation, EnvironmentProblem(..), SyntaxProblem(..), buildMessages, locationsOf, primaryLocationOf, printCompileError, printCompileWarning, warningLocationOf)
 import Stella.Compiler.Bytecode.Lower (lower)
 import Stella.Compiler.Bytecode.Module (Debug, Dmo) as Bytecode
 import Stella.Compiler.CST (parseHeader, parseModule)
@@ -85,6 +86,11 @@ import Stella.Compiler.TypedCore.Name (ModuleName(..))
 -- | A file of the package: the path the host reads it by, and its path from
 -- | the package's root, one segment each.
 type PackageFile = { path :: String, within :: Array String }
+
+-- | The source directories of a package where it names none of its own: `src`,
+-- | holding modules under no prefix, and `test`, holding those under `Test`.
+defaultSourceRoots :: Array SourceRoot
+defaultSourceRoots = [ { prefix: [], dir: [ "src" ] }, { prefix: [ "Test" ], dir: [ "test" ] } ]
 
 -- | How far a build has gone: the module now compiled, counting from 1, of how
 -- | many.
@@ -146,20 +152,22 @@ build
   => CompilerAction m
   -> ExpansionSettings
   -> BuildEnvironment
+  -> Array SourceRoot
   -> Array PackageFile
   -> m (Either BuildError (Array { path :: String, name :: ModuleName }))
-build action settings env files = runExceptT do
-  named <- except (placed files)
+build action settings env roots files = runExceptT do
+  except (rootsApart roots)
+  named <- except (placed roots files)
   headers <- headersOf action named
   order <- except (ordered headers)
   compileAll action settings env (Set.fromFoldable (map _.name headers)) order
 
 -- | Every file given its module's name, read off its path; no file given twice,
 -- | and no module named twice.
-placed :: Array PackageFile -> Either BuildError (Array { path :: String, name :: ModuleName })
-placed files = do
+placed :: Array SourceRoot -> Array PackageFile -> Either BuildError (Array { path :: String, name :: ModuleName })
+placed roots files = do
   for_ (foldl seen { paths: Set.empty, twice: Nothing } files).twice (Left <<< ListedTwice)
-  named <- traverse (\f -> { path: f.path, name: _ } <$> moduleNameOf f) files
+  named <- traverse (\f -> { path: f.path, name: _ } <$> moduleNameOf roots f) files
   for_ (foldl once { names: Map.empty, twice: Nothing } named).twice (Left <<< NamedTwice)
   pure named
   where
@@ -172,20 +180,45 @@ placed files = do
     | Just first <- Map.lookup f.name acc.names = acc { twice = Just { name: f.name, paths: [ first, f.path ] } }
     | otherwise = acc { names = Map.insert f.name f.path acc.names }
 
--- | The module a file holds, read off its path from the package's root.
-moduleNameOf :: PackageFile -> Either BuildError ModuleName
-moduleNameOf f = case Array.uncons f.within of
-  Just { head: root, tail } | root == "src" || root == "test" -> case Array.unsnoc tail of
+-- | Source directories that name their modules apart: each prefix made of
+-- | segments a module's name may hold, no two under one prefix, and none
+-- | standing in another.
+rootsApart :: Array SourceRoot -> Either BuildError Unit
+rootsApart roots = do
+  for_ roots \root ->
+    when (Array.null root.dir || not (Array.all isProperName root.prefix)) do
+      Left (SourceRootInvalid root)
+  for_ (Array.mapWithIndex Tuple roots) \(Tuple i first) ->
+    for_ (Array.drop (i + 1) roots) \second ->
+      when (first.prefix == second.prefix || isPrefixOf first.dir second.dir || isPrefixOf second.dir first.dir) do
+        Left (SourceRootsConflict { first, second })
+
+-- | The module a file holds: the prefix of the source directory it stands in,
+-- | then its path from there. The directory whose prefix the name falls under
+-- | — the longest one it does — is the one it must stand in.
+moduleNameOf :: Array SourceRoot -> PackageFile -> Either BuildError ModuleName
+moduleNameOf roots f = case Array.find (\r -> isPrefixOf r.dir f.within) roots of
+  Nothing -> Left (OutsidePackage f.path)
+  Just root -> case Array.unsnoc (Array.drop (Array.length root.dir) f.within) of
     Just { init, last } | Just stem <- stripSuffix (Pattern ".stel") last ->
       let
         parts = Array.snoc init stem
+        segments = root.prefix <> parts
+        name = ModuleName (joinWith "." segments)
       in
         if not (Array.all isProperName parts) then Left (NotAModuleName f.path)
-        else if root == "test" then Right (ModuleName (joinWith "." (Array.cons "Test" parts)))
-        else if Array.head parts == Just "Test" then Left (NameReserved { path: f.path, name: ModuleName (joinWith "." parts) })
-        else Right (ModuleName (joinWith "." parts))
+        else case ownerOf segments of
+          Just owner | owner /= root -> Left (NameReserved { path: f.path, name, owner })
+          _ -> Right name
     _ -> Left (OutsidePackage f.path)
-  _ -> Left (OutsidePackage f.path)
+  where
+  ownerOf segments = Array.foldl longer Nothing (Array.filter (\r -> isPrefixOf r.prefix segments) roots)
+  longer best r = case best of
+    Just b | Array.length b.prefix >= Array.length r.prefix -> best
+    _ -> Just r
+
+isPrefixOf :: forall a. Eq a => Array a -> Array a -> Boolean
+isPrefixOf prefix whole = Array.take (Array.length prefix) whole == prefix
 
 -- | A name a segment of a module's name may be: an upper case letter, then
 -- | letters, digits, `_`, and `'`.

@@ -36,7 +36,7 @@ import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Macro.Run (ParseOutcome(..), RunParser, defaultSettings)
 import Stella.Compiler.Macro.Tree (Position(..), Range(..), SyntaxNode(..), Token(..), TokenTree(..))
 import Stella.Compiler.Macro.Tree as Tree
-import Stella.Compiler.Build (BackendProblem(..), BuildError(..), CompileError(..), CompileWarning, CompilerAction, DiagnosticLocation, EnvironmentProblem(..), PackageFile, SyntaxProblem(..), build, buildMessages, compileModule, defaultHooks, locationsOf, printCompileError, warningLocationOf)
+import Stella.Compiler.Build (BackendProblem(..), BuildError(..), SourceRoot, defaultSourceRoots, CompileError(..), CompileWarning, CompilerAction, DiagnosticLocation, EnvironmentProblem(..), PackageFile, SyntaxProblem(..), build, buildMessages, compileModule, defaultHooks, locationsOf, printCompileError, warningLocationOf)
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore (Decl(..))
 import Stella.Compiler.TypedCore.Kind (Kind(..), monoScheme)
@@ -271,7 +271,11 @@ spec = describe "Stella.Compiler.Build" do
 -- | text; built, with every read, every phase shown, and every module handed
 -- | over recorded in order.
 building :: Array (Tuple String String) -> ({ result :: Either BuildError (Array String), log :: Array String } -> Aff Unit) -> Aff Unit
-building sources k = do
+building = buildingUnder defaultSourceRoots
+
+-- | `building`, the package's source directories the ones given.
+buildingUnder :: Array SourceRoot -> Array (Tuple String String) -> ({ result :: Either BuildError (Array String), log :: Array String } -> Aff Unit) -> Aff Unit
+buildingUnder roots sources k = do
   log <- liftEffect (Ref.new [])
   let
     note s = liftEffect (Ref.modify_ (\l -> Array.snoc l s) log)
@@ -295,7 +299,7 @@ building sources k = do
           , onModuleDone = \m -> note ("done " <> moduleText m.name)
           }
       }
-  result <- build action defaultSettings environment (files :: Array PackageFile)
+  result <- build action defaultSettings environment roots (files :: Array PackageFile)
   logged <- liftEffect (Ref.read log)
   k { result: map (map (moduleText <<< _.name)) result, log: logged }
 
@@ -392,3 +396,30 @@ buildSpec = describe "a build" do
         Left (ModuleFailed m) -> map (map at <<< locationsOf) (NonEmptyArray.toArray m.errors) `shouldEqual` [ [ "3:7" ] ]
         _ -> fail "compiled"
       Array.filter (String.contains (String.Pattern "read")) r.log `shouldEqual` [ "read src/A.stel", "read src/A.stel" ]
+
+  it "names a module under the prefix of the source directory it stands in" do
+    let roots = defaultSourceRoots <> [ { prefix: [ "Bench", "Fast" ], dir: [ "bench" ] } ]
+    buildingUnder roots [ Tuple "bench/A.stel" (valueModule "Bench.Fast.A" []) ] \r -> case r.result of
+      Right built -> built `shouldEqual` [ "Bench.Fast.A" ]
+      Left _ -> fail "not built"
+    -- the name falls under `Bench.Fast`, whose modules `bench` keeps
+    buildingUnder roots [ Tuple "src/Bench/Fast/A.stel" (valueModule "Bench.Fast.A" []) ] \r -> case r.result of
+      Left (NameReserved e) -> e.owner.dir `shouldEqual` [ "bench" ]
+      _ -> fail "not reserved"
+    -- `Bench.A` falls under no prefix longer than `src`'s
+    buildingUnder roots [ Tuple "src/Bench/A.stel" (valueModule "Bench.A" []) ] \r -> case r.result of
+      Right built -> built `shouldEqual` [ "Bench.A" ]
+      Left _ -> fail "not built"
+
+  it "refuses source directories that do not name their modules apart" do
+    let
+      conflicting roots = buildingUnder roots [] \r -> case r.result of
+        Left (SourceRootsConflict _) -> pure unit
+        _ -> fail "no conflict"
+    -- one standing in the other
+    conflicting [ { prefix: [], dir: [ "src" ] }, { prefix: [ "Gen" ], dir: [ "src", "gen" ] } ]
+    -- two under one prefix
+    conflicting [ { prefix: [ "Test" ], dir: [ "test" ] }, { prefix: [ "Test" ], dir: [ "spec" ] } ]
+    buildingUnder [ { prefix: [ "bench" ], dir: [ "bench" ] } ] [] \r -> case r.result of
+      Left (SourceRootInvalid _) -> pure unit
+      _ -> fail "not refused"

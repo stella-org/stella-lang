@@ -22,6 +22,7 @@ module Stella.Compiler.Build.Report
   , printCompileError
   , printCompileWarning
   , BuildError(..)
+  , SourceRoot
   , BuildMessage
   , buildMessages
   ) where
@@ -150,12 +151,22 @@ printCompileWarning = case _ of
   ScopingWarning w -> printScopeWarning w
   ResolvingWarning w -> printResolveWarning w
 
--- | What keeps a build from going on: a file it cannot place or read, modules
--- | whose imports make no order, or a module that does not compile.
+-- | Where a package keeps the modules named under a prefix: the prefix, and the
+-- | directory from the package's root, one segment each.
+type SourceRoot = { prefix :: Array String, dir :: Array String }
+
+-- | What keeps a build from going on: source directories that do not name
+-- | modules apart, a file it cannot place or read, modules whose imports make
+-- | no order, or a module that does not compile.
 data BuildError
-  -- | A file standing in neither `src` nor `test` of the package, or with no
+  -- | A source directory whose prefix holds a segment no module's name may, or
+  -- | that names no directory.
+  = SourceRootInvalid SourceRoot
+  -- | Two source directories under one prefix, or one standing in the other.
+  | SourceRootsConflict { first :: SourceRoot, second :: SourceRoot }
+  -- | A file standing in no source directory of the package, or with no
   -- | `.stel` extension.
-  = OutsidePackage String
+  | OutsidePackage String
   -- | A file whose path holds a segment no module's name may: one that is no
   -- | name beginning with an upper case letter.
   | NotAModuleName String
@@ -165,9 +176,9 @@ data BuildError
   | Unreadable { path :: String, detail :: String }
   -- | A module whose header names another module than its path does.
   | NameMismatch { path :: String, written :: ModuleName, expected :: ModuleName, at :: DiagnosticLocation }
-  -- | A module of `src` whose path gives it a name beginning with `Test`, which
-  -- | the modules of `test` are named under.
-  | NameReserved { path :: String, name :: ModuleName }
+  -- | A file whose path gives it a name the prefix of another source directory
+  -- | claims, that directory being the one its longest prefix names.
+  | NameReserved { path :: String, name :: ModuleName, owner :: SourceRoot }
   -- | Modules importing one another, in the order the build was given them.
   | ImportCycle (NonEmptyArray { path :: String, name :: ModuleName })
   -- | An import of another module of the build, which this version does not
@@ -182,7 +193,9 @@ type BuildMessage = { path :: Maybe String, locations :: Array DiagnosticLocatio
 -- | What a build error says, one message for each error of a module.
 buildMessages :: BuildError -> NonEmptyArray BuildMessage
 buildMessages = case _ of
-  OutsidePackage path -> one path [] "This file is in neither `src` nor `test` of the package, or is no `.stel` file"
+  SourceRootInvalid root -> none (fmt @"The source directory `{dir}` for modules under `{prefix}` names no directory, or its prefix holds a segment no module's name may" { dir: dirText root, prefix: prefixText root })
+  SourceRootsConflict r -> none (fmt @"The source directories `{first}` and `{second}` do not name their modules apart: they share a prefix, or one stands in the other" { first: dirText r.first, second: dirText r.second })
+  OutsidePackage path -> one path [] "This file is in no source directory of the package, or is no `.stel` file"
   NotAModuleName path -> one path [] "This path names no module: each directory and the file's name must begin with an upper case letter, and hold letters, digits, `_`, and `'` alone"
   ListedTwice path -> one path [] "This file is given to the build twice"
   NamedTwice r -> NonEmptyArray.singleton
@@ -193,7 +206,7 @@ buildMessages = case _ of
   Unreadable r -> one r.path [] ("This file cannot be read: " <> r.detail)
   NameMismatch r -> one r.path [ r.at ]
     (fmt @"This module is named `{written}`, and its path names it `{expected}`" { written: moduleText r.written, expected: moduleText r.expected })
-  NameReserved r -> one r.path [] (fmt @"A module of `src` cannot be named `{name}`: the modules of `test` are named under `Test`" { name: moduleText r.name })
+  NameReserved r -> one r.path [] (fmt @"This file cannot hold `{name}`: modules under `{prefix}` are kept in `{dir}`" { name: moduleText r.name, prefix: prefixText r.owner, dir: dirText r.owner })
   ImportCycle members -> NonEmptyArray.singleton
     { path: Nothing
     , locations: []
@@ -204,4 +217,7 @@ buildMessages = case _ of
   ModuleFailed r -> map (\e -> { path: Just r.path, locations: locationsOf e, message: printCompileError e }) r.errors
   where
   one path locations message = NonEmptyArray.singleton { path: Just path, locations, message }
+  none message = NonEmptyArray.singleton { path: Nothing, locations: [], message }
+  dirText root = joinWith "/" root.dir
+  prefixText root = joinWith "." root.prefix
   moduleText (ModuleName m) = m
