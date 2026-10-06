@@ -3,6 +3,5 @@ workspace:
     registry: 80.7.0
   extraPackages:
     puppy-runtime:
-      git: https://github.com/katsujukou/puppy.git
-      ref: main
-      subdir: puppy-runtime
+      git: https://github.com/katsujukou/purescript-puppy-runtime.git
+      ref: v0.2.0

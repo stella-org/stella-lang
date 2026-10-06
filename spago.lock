@@ -883,9 +883,8 @@
     },
     "extra_packages": {
       "puppy-runtime": {
-        "git": "https://github.com/katsujukou/puppy.git",
-        "ref": "main",
-        "subdir": "puppy-runtime"
+        "git": "https://github.com/katsujukou/purescript-puppy-runtime.git",
+        "ref": "v0.2.0"
       }
     }
   },
@@ -1968,9 +1967,8 @@
     },
     "puppy-runtime": {
       "type": "git",
-      "url": "https://github.com/katsujukou/puppy.git",
-      "rev": "4b234181a7d693db12710ae9360767d1fb2971fd",
-      "subdir": "puppy-runtime",
+      "url": "https://github.com/katsujukou/purescript-puppy-runtime.git",
+      "rev": "8154db5c3982de2567e67214b9e6fe54d3056abb",
       "dependencies": [
         "arrays",
         "either",
