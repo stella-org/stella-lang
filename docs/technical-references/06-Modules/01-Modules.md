@@ -441,6 +441,23 @@ No pass rewrites a module yet, so the optimizer stops before a first round, and 
 
 **A warning is resolution's**, each at the place it is about, and is reported with the module that compiled.
 
+### `stellac build`
+
+**`stellac build` builds a package to its build directory**, with the driver above. What it is given:
+
+| Option | Is |
+| --- | --- |
+| `--workdir` | the root of the package; by default the directory the command runs in |
+| `--src` | a pattern, from the root, of the source files to build; given any number of times, and `src/**/*.stel` where none is |
+| `--output` | where the build directory goes, `output` by default; a relative path is under the root, and what is absolute is what the host says is |
+| `--trace-opt` | a module whose optimizer rounds are traced |
+| `--emit-core` | each module's Typed Core as `<M>.core.json`, which this version does not write and warns of |
+| `--steam-cmd` | the Steam executable a compile-time session is started with, `steam` by default |
+
+**It writes `<output>/_build/<M>.dmo` for each module**, as lowering ends for that module, and `<output>/_build/<M>.mir`, the optimizer's trace, for the module `--trace-opt` names. This version writes no `.dmi`. A compile-time session is started where the first macro is called, and none where no macro is; it is closed once the modules are built.
+
+**A build succeeds only where all it was to write was written.** A file a phase could not write fails the build once the modules are built, so that what an earlier build left in the build directory is never taken for what this one made; a session that did not close cleanly fails it too. A build that fails says why, each error at the file and the place it is about, and ends with a status other than zero.
+
 ## Declaration typing and the entry point
 
 Term typing checks the interior of declarations; this section gives the rules for declarations themselves.

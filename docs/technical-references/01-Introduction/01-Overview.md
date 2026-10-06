@@ -86,9 +86,22 @@ Wasm IR ──► WebAssembly modules      its input, Mid IR or a .dmo, is not y
 
 **Bytecode** is the lowering of Mid IR to a machine Stella owns, which can be directly interpreted and executed by its own abstract machine, STEAM, allowing a program to run without relying on the existence of any compiler backends. ([Bytecode](../05-Backend/01-Bytecode.md)). Its continuations are multi-shot, so like the JavaScript backend and unlike the v0.1 Wasm backend it conforms to the reference semantics. Against the Core evaluator it is a second evaluator to compare with, and it runs the programs a one-shot backend cannot; the properties stated over Typed Core stay with the Core evaluator ([Implementation Plan](04-Implementation-Plan.md)).
 
-Its output, a **`.dmo` module object**, is also what a backend outside this compiler reads. Mid IR is an in-memory representation, so the artefact a third party builds on is the lowered one — erased, in A-normal form, with closures and their captures explicit and decision trees already disjoint — rather than Typed Core.
+Its output, a **`.dmo` module object** with the **`.dmi` interface** beside it, is what a backend builds on (D47). Mid IR is an in-memory representation, so the code a backend builds on is the lowered one — erased, in A-normal form, with closures and their captures explicit and decision trees already disjoint — rather than Typed Core.
 
-**The JavaScript backend reads a `.dmo` too** (D45), so a first-class backend is what shows the file is enough to build on, and the machine and the backend run the same lowered program ([JavaScript](../05-Backend/05-JavaScript.md)).
+**The JavaScript backend is handed the pair too**, and its code generator reads the `.dmo` of it (D45), so a first-class backend is what shows the published form is enough to build on, and the machine and the backend run the same lowered program ([JavaScript](../05-Backend/05-JavaScript.md)).
+
+## The tools
+
+**Each tool stops where the next one's knowledge begins** (D47).
+
+| Tool | Does | Stops at |
+| --- | --- | --- |
+| `stellac`, the compiler command | compiles a package's modules — expanding their macros on a compile-time session it starts — and writes each module's `.dmo` and `.dmi` | the pairs it writes; it knows no backend, and no package of another |
+| a backend | is handed a program's pairs, optimizes as it alone can, and makes each module into what its target runs; finishing the program — linking it into one executable — is a capability a backend may have | each module made, or the program finished where it finishes one; a JavaScript or WebAssembly backend may stop at the modules and leave the rest to a bundler |
+| `steam`, the machine | runs `.dmo` files, given in dependency order with the entry point ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)) | one program, or one session |
+| the package manager | resolves and fetches a package's dependencies, chooses the backend and what is run, and starts the compiler and the backend, handing the backend the pairs | |
+
+**There is no package manager yet**, so a program is built with `stellac build` and run on the machine with `steam run`, which is also the reference a backend is checked against. The boundary is the pair; this version of `stellac` writes the `.dmo` alone, and the `.dmi` once a build writes interfaces ([Modules](../06-Modules/01-Modules.md)). **What `stellac` does is what needs the compiler's knowledge of the language** — the syntax, the names, the types: a command reading the dependency graph off the headers, or what a package's documentation is made from, belongs with it, and drawing a page, running a program, or managing dependencies does not ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
 
 ## Backend strategy
 
@@ -127,7 +140,7 @@ These serve as architecture tests as well as demonstrations.
 | --- | --- |
 | **§1. Introduction** | |
 | [§1.2 Notation](02-Notation.md) | Metavariables, sequences, symbols |
-| [§1.3 Design Decisions](03-Design-Decisions.md) | The numbered decisions D1–D45 |
+| [§1.3 Design Decisions](03-Design-Decisions.md) | The numbered decisions D1–D47 |
 | [§1.4 Implementation Plan](04-Implementation-Plan.md) | Order of implementation work |
 | **§2. Surface Language** | |
 | [§2.1 Elaboration](../02-Surface-Language/01-Elaboration.md) | Core⁺, metavariables, unification, synthesis |

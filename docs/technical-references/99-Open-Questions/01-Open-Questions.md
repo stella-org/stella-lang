@@ -217,6 +217,8 @@ What D40 settles is the part that would otherwise be hardest: the protocol holds
 
 **Runtime representations shared between the JavaScript and Wasm backends.** How far these can coincide.
 
+**How the package manager drives a backend.** The package manager chooses the backend, starts the compiler and the backend, and hands the backend the pairs of `.dmo` and `.dmi` a build wrote, with the program's foreign manifest for the backend's target and the settings of its toolchain (D47). Four things are open: whether it starts a backend as a command or loads it as a library; how it learns what a backend can do — whether it finishes a program, and into what; how finishing is chosen for a backend that may leave it to a bundler; and how it asks the compiler for a manifest, naming the target, which the compiler command of this version does not write.
+
 ## Modules and surface syntax
 
 **Attributes beyond declarations.** An attribute is attached to a declaration and nowhere else ([Attributes, Modifiers, and Directives](../02-Surface-Language/07-Attributes-Modifiers-and-Directives.md)). Two places are left out on purpose. A position inside a declaration — a record type's field, a constructor, an operation — is wanted by a serializer naming a field or a derivation treating one specially; the shape it would take is the declaration's metadata, addressed by the position, and not an attribute standing in the type, which type equality would have to decide. An expression is wanted mostly by what is a directive here — a warning silenced, a call inlined — and otherwise by a tool reading a mark, a formatter or a coverage tool. Both are to be settled with the syntax API macros read declarations through.
@@ -283,6 +285,10 @@ And a client using host foreigns through invocations and parsers in one session 
 need the parsers run against a store of their own.
 
 **Kind inference for mutually recursive data and effect declarations.** Core assumes every kind is explicit; the procedure by which elaboration supplies them must be settled.
+
+**The modules the compiler carries, as files.** `Base`, `Stella.Syntax`, and `Stella.Elab` are built into the compiler today, and are to be shipped beside it as `.dmo` and `.dmi` files that a build reads as it reads any library's ([Modules](../06-Modules/01-Modules.md)). Where the files stand, how a compiler under development finds those of its own checkout, and how a compiler and the files it is given are checked to belong together — by the ABI version and the build hash of a `.dmi` — are open.
+
+**What else the compiler command does.** `stellac` builds, and does what needs the compiler's knowledge of the language ([Overview](../01-Introduction/01-Overview.md)). Two commands are likely: one giving the dependency graph a package's headers make, which a package manager would plan a build by, and one giving what a package's documentation is made from — its exports, schemes, kinds, attributes, and documentation comments — for another tool to draw. Their outputs are not fixed.
 
 ## The runtime ABI
 

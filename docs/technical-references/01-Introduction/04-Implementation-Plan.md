@@ -53,7 +53,7 @@ Anything stronger — asserting preservation over machine states — would need 
 
 The set of FFI the backend must implement is `stella-base-0.1`, the first version of the `Base` ABI surface ([Open Questions](../99-Open-Questions/01-Open-Questions.md)). The longer it is deferred, the more the standard library settles into a shape that depends on FFI, so it should be fixed while writing this backend.
 
-**The backend reads a `.dmo`** (D45, [JavaScript](../05-Backend/05-JavaScript.md)), so its tests start from the bytecode fixtures on disk rather than from a lowered value, which is what keeps it from leaning on anything the file does not carry. It is built in this order, each step settling what the next depends on.
+**The backend is handed a module's `.dmo` and `.dmi`, and its code generator reads the `.dmo`** (D45, D47, [JavaScript](../05-Backend/05-JavaScript.md)), so its tests start from the bytecode fixtures on disk rather than from a lowered value, which is what keeps it from leaning on anything the file does not carry. It is built in this order, each step settling what the next depends on.
 
 1. **Calls, branches, join points, tail calls, and the operations.** The execution model is chosen here, before any handler exists, since a tail call is already a transfer the host does not provide; the operations come with it, branches needing them to be tested and none of them depending on the model
 2. **Handlers and continuations.** A `full` clause resuming twice, each resumption from the captured state, and a continuation captured outside a region carrying its cells: these are the cases that show the model represents a continuation, and D18's record of the backend changes once they pass

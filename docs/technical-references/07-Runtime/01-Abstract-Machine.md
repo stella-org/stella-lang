@@ -50,8 +50,9 @@ Two uses stand beside those, and neither reaches a user.
 
 ## Two modes
 
-Steam runs in one of two modes, and **the front end is what a user runs**: the
-Stella CLI compiles, decides what Steam is given, and prints what comes back.
+Steam runs in one of two modes, and **a front end decides what Steam is given**,
+and reads what comes back: the compiler for a session, and for a run what starts the
+program — the package manager, or a user at `steam run` until there is one.
 
 | | **Session** | **Run** |
 | --- | --- | --- |
@@ -64,15 +65,17 @@ Stella CLI compiles, decides what Steam is given, and prints what comes back.
 module at a time, and a request naming what to report. Running a synthesizer asks for
 more than that, and how it asks is open (above).
 
-**Session is what the REPL is built on.** The shell belongs to the Stella CLI: it
+**Session is what the REPL is built on.** The shell belongs to a tool built on the
+compiler: it
 parses, elaborates, type checks, and compiles an entry to a module of its own, hands
 that module to a Steam running beside it, and prints the value Steam answers with
 beside the type it checked. Steam holds the modules that accumulate and nothing of
 the source.
 
-**Run is one program, once.** The CLI builds the project to `.dmo` files, orders the
-modules by their dependencies, hands Steam the list and the entry point, and Steam
-loads them in the order it was given before executing that entry point.
+**Run is one program, once.** The compiler builds the package to `.dmo` files, and
+what starts the program orders the modules by their dependencies and hands Steam the
+list and the entry point; Steam loads them in the order it was given before executing
+that entry point.
 
 **The entry point is named, not found.** Several modules may declare a `main`, a
 `.dmo` carries no types and marks no entry point, and a list in dependency order says
@@ -106,15 +109,15 @@ and the thing it excludes is still excluded.
 
 ### The `steam` Command Line Interface
 
-**The `steam` command is how a program reaches the interpreter, and the Stella CLI
-starts it.** The two are not competing front ends and not two paths either: there is
-one path, and `stella run` compiles, writes what the command takes, and runs it.
+**The `steam` command is how a program reaches the interpreter.** There is one path:
+`stellac build` writes the files, `steam run` runs them, and the package manager
+strings the two together ([Overview](../01-Introduction/01-Overview.md)).
 
 ```text
 compiler                         the language: checking, lowering, the container
 cli      → compiler              a library of what a command line needs
 steam    → compiler, cli         this interpreter, which is a command
-stella   → compiler              the application a user runs, which starts that command
+stellac  → compiler, cli         the compiler command, which starts this one for a session
 ```
 
 **`cli` here is a shared library and not the application.** Both this interpreter's
@@ -123,8 +126,8 @@ edge: it says nothing about who integrates whom.
 
 **Nothing links the interpreter, and that is the point of D43.** `compiler → steam`
 would be a cycle, so the compiler could never have called the interpreter as a
-library; the application could have, and no longer needs to. What passes between
-`stella` and `steam` is a command line — paths, a name, and a manifest — so the
+library; a command built on it could have, and none needs to. What passes
+between a command and `steam` is a command line — paths, a name, and a manifest — so the
 boundary is a process for `run` exactly as it must be for `session`, and one design
 serves both.
 
@@ -138,7 +141,8 @@ program is a function of three things — the modules in order, the entry point,
 foreign table — and the third is **assembled by the interpreter** from a manifest
 naming where the implementations are
 ([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)). A path is a thing an
-argument vector carries, so `stella` starts this command rather than linking it.
+argument vector carries, so what starts a program starts this command rather than
+linking it.
 
 **The alternative was to hand the table over, and it does not survive the session.**
 A table holds host functions, which no argument vector and no framing built for names

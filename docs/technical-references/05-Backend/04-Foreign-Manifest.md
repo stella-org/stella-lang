@@ -333,8 +333,8 @@ no library can describe itself and the knowledge spreads to every program that
 depends on one.
 
 **What the compiler does with them is aggregate.** It collects the declarations of
-every package in the program, for the target being built, and writes one file. It
-resolves no path and interprets no payload.
+every package in the program, for the target the package manager names (D47), and
+writes one file. It resolves no path and interprets no payload.
 
 ## What the compiler checks
 

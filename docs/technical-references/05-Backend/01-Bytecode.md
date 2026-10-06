@@ -11,12 +11,11 @@ The machine that executes a `.dmo` is specified separately
 ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)). This document fixes
 the instruction set and the container, and states what a consumer owes them.
 
-## A `.dmo` is the artefact others build on
+## A `.dmo` and its `.dmi` are what others build on
 
-ANF is an in-memory representation, and a compiler that goes on to generate
-JavaScript or Wasm need not write anything to disk between the two. **A `.dmo`
-is what a consumer outside this compiler reads**, and the format is fixed here
-for that reason rather than for the machine's convenience.
+ANF is an in-memory representation. **A module's `.dmo`, with the `.dmi` beside
+it, is what a backend builds on** (D47), and the bytecode format is fixed here for
+that reason rather than for the machine's convenience.
 
 PureScript publishes `corefn.json`, and several backends outside its compiler
 consume it. Stella publishes the lowered form instead, and what that buys a
@@ -29,20 +28,18 @@ compiler.
 | Consumer | Reads |
 | --- | --- |
 | The virtual machine | A `.dmo` |
-| The JavaScript backend | A `.dmo` (D45) |
-| The Wasm backend | Mid IR or a `.dmo`; fixed when that backend is designed |
-| A backend outside this compiler | A `.dmo` |
+| The JavaScript backend | The pair, its code generator the `.dmo` of it (D45) |
+| The Wasm backend | The pair; what its code generator reads of it is fixed when that backend is designed |
+| A backend outside this compiler | The pair |
 
-**The JavaScript backend reads the file a third party would**, so a `.dmo` being
-enough on its own is something a backend of this compiler shows rather than a claim
-about one nobody has written ([JavaScript](05-JavaScript.md)). A single command
-generating JavaScript need not write the bytes to do it: a decoder returns the
-module an encoder was handed ([Encoding](02-Encoding.md)), so a build that has just
-lowered hands that module across, and the backend reaches nothing beside it.
+**The JavaScript backend is handed what a third party would**, so the published
+form being enough is something a backend of this compiler shows rather than a claim
+about one nobody has written ([JavaScript](05-JavaScript.md)): the compiler stops at
+the pair, and every backend starts from it (D47).
 
-**What that backend finds missing is added here**, not fetched from Mid IR, and
-before the first released version of Stella the format changes freely for that
-reason.
+**What that backend finds missing is added to the `.dmo` or to the `.dmi`**, not
+fetched from Mid IR, and before the first released version of Stella the formats
+change freely for that reason.
 
 ### The interface file
 

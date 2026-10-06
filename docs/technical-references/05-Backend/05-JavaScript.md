@@ -1,7 +1,8 @@
 # The JavaScript backend
 
-The JavaScript backend turns a `.dmo` into an ES module (D45). It reads the same
-file the machine executes ([Bytecode](01-Bytecode.md)), and it reaches foreign
+The JavaScript backend turns a module into an ES module: it is handed the module's
+`.dmo` and `.dmi`, and generates from the `.dmo` (D45). That is the same file the
+machine executes ([Bytecode](01-Bytecode.md)), and it reaches foreign
 implementations through the same manifest target the machine does
 ([Foreign Manifest](04-Foreign-Manifest.md)).
 
@@ -11,25 +12,27 @@ runs is the backend's own and is not a published ABI, exactly as it is not for t
 machine ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
 
 **The backend is a package of its own**, depending on the compiler and known to no
-part of it: the compiler's work ends at the `.dmo`, and a front end hands that file
-to whichever backend it builds for. What the package offers is a `.dmo` in, text
-out, and the file name the text is written to; the stages between are its own and
-change with the strategy (below).
+part of it: the compiler's work ends at a module's `.dmo` and `.dmi`, and the package
+manager hands the backend the pairs of a program together with the program's foreign
+manifest for `javascript` (D47). What the package offers is a module in — its pair,
+and what the manifest says of it — text out, and the file name the text is written
+to; the stages between are its own and change with the strategy (below).
 
 ## It reads a `.dmo`
 
-**The input is the module a decoder returns**, not Mid IR. A build that has just
-lowered a module may hand the lowered value across without writing and reading
-the bytes, since an encoding followed by a decoding gives back the module it was
-handed ([Encoding](02-Encoding.md)); what the backend may not do is reach past that
-value into Mid IR or Typed Core for something the file does not hold.
+**The backend is handed a module's `.dmo` and `.dmi`** (D47), and **its code
+generator's input is the module a decoder returns of the `.dmo`**, not Mid IR: it
+may not reach past that module into Mid IR or Typed Core for something the pair does
+not hold.
 
-**The direct path accepts exactly what the bytes would.** A decoder returns only a
+**A module handed over as a value is accepted exactly where its bytes would be.**
+An encoding followed by a decoding gives back the module it was handed
+([Encoding](02-Encoding.md)), and a decoder returns only a
 module that passes the walk an encoder also reads, at the format and ABI versions
 it implements, with text a sequence of scalar values ([Encoding](02-Encoding.md)),
-and lowering by itself establishes none of that. So a module handed across is held
-to what an encoder checks before the backend reads it; otherwise the two paths
-would accept different modules, and a defect of lowering would reach generated
+and lowering by itself establishes none of that. So a module handed over is held to
+what an encoder checks before the backend reads it; otherwise the value and the
+file would be accepted differently, and a defect of lowering would reach generated
 code by one of them and be refused by the other. **The module is run through the
 encoder itself**, the bytes it writes being dropped, so one walk decides both routes
 rather than two walks that could come to disagree.
@@ -50,11 +53,11 @@ generated code has no such moment for what one module decides alone, so the back
 checks them first and refuses the module otherwise. What another module declares is
 checked where the generated modules are linked and loaded (below).
 
-**That restriction is the point of the route.** A `.dmo` is what a backend outside
-this compiler builds on (D34), and a first-class backend reading the same file is
-what shows the claim holds. Whatever the JavaScript backend finds missing is
-missing for every other consumer too, and is added to the format rather than
-fetched from the side.
+**That restriction is the point of the route.** A module's pair is what a backend
+outside this compiler builds on (D34), and a first-class backend whose code generator
+reads the `.dmo` of it is what shows the claim holds. Whatever the JavaScript backend
+finds missing is missing for every other consumer too, and is added to the `.dmo` or
+the `.dmi` rather than fetched from the side.
 
 **The format is revised where it falls short.** A `.dmo` carries no Core type,
 row, or effect row, and `Rep` is what survives of them ([Bytecode](01-Bytecode.md)).
@@ -374,12 +377,13 @@ carries, and a refusal is recognised by the helper's brand
 consumers. The rules of that document apply unchanged: an adapter is uncurried,
 synchronous, and checked on the way out.
 
-**The build reads the manifest, and the backend reads no file.** The build hands the
-backend, for a module, the signature of each foreign it declares that a host
-implements and the specifier those implementations are imported by, resolved
-already: a specifier is resolved against the manifest's place
-([Foreign Manifest](04-Foreign-Manifest.md)), and an import written into the
-generated module would be resolved against the generated module's own. **Only the
+**The compiler writes the manifest, and the backend is handed it** with the pairs
+(D47). What the backend takes from it for a module is the signature of each foreign
+the module declares that a host implements and the specifier those implementations
+are imported by, which it resolves before writing the import: a specifier is
+resolved against the manifest's place ([Foreign Manifest](04-Foreign-Manifest.md)),
+and an import written into the generated module as it stands would be resolved
+against the generated module's own. **Only the
 declaring module imports the implementations**, and it alone makes the descriptor of
 each foreign it declares, holding the signature where a host implements it; a module
 calling the foreign imports that descriptor, and the arity a call supplies is checked
