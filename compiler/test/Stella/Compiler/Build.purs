@@ -66,7 +66,7 @@ syntaxInterfaces = case compiled of
   Right c -> c.moduleInterfaces
   Left _ -> []
 
--- | `A`: `inc : Int -> Int`, and the macros `unwrap` and `failing`.
+-- | `Macros`: `inc : Int -> Int`, and the macros `unwrap` and `failing`.
 interfaceA :: ModuleInterface
 interfaceA =
   { name: moduleA
@@ -89,13 +89,13 @@ interfaceA =
   macros = [ "unwrap", "failing" ]
   declared n = { entity: Qualified moduleA (Ident n), via: Declared }
 
--- | `C`, declaring a type `Bad` at `Effect`, a kind no type constructor
+-- | `Ill`, declaring a type `Bad` at `Effect`, a kind no type constructor
 -- | produces.
 interfaceC :: ModuleInterface
 interfaceC =
-  { name: ModuleName "C"
+  { name: ModuleName "Ill"
   , imports: []
-  , exports: emptyExports { types = Map.singleton "Bad" { entity: TypeEntity (Qualified (ModuleName "C") (TyName "Bad")), via: Declared, members: [] } }
+  , exports: emptyExports { types = Map.singleton "Bad" { entity: TypeEntity (Qualified (ModuleName "Ill") (TyName "Bad")), via: Declared, members: [] } }
   , declarations: emptyDeclarations
       { types = Map.singleton (TyName "Bad") { kind: monoScheme KEffect, sort: ForeignType, attributes: [] } }
   , implicitHandlers: []
@@ -104,18 +104,19 @@ interfaceC =
   }
 
 moduleA :: ModuleName
-moduleA = ModuleName "A"
+moduleA = ModuleName "Macros"
 
 environment :: BuildEnvironment
 environment = case foldM (flip addInterface) initialEnvironment (syntaxInterfaces <> [ interfaceA, interfaceC ]) of
   Right env -> env
   Left _ -> initialEnvironment
 
--- | What each macro of `A` does with its input: `unwrap` gives back what its
--- | brackets hold, and `failing` fails at the input's first token.
+-- | What each macro does with its input: `unwrap`, and `wrap` of the build,
+-- | give back what their brackets hold, and `failing` fails at the input's
+-- | first token.
 parsers :: RunParser Identity
 parsers (Qualified _ (Ident name)) { input } = Identity case name, input.trees of
-  "unwrap", [ Group _ _ inner _ ] -> ParsedAs (Tree.Syntax (map nodeOf inner))
+  n, [ Group _ _ inner _ ] | n == "unwrap" || n == "wrap" -> ParsedAs (Tree.Syntax (map nodeOf inner))
   "failing", [ Group _ _ inner _ ] | Just (Leaf (Token _ _ r _ _)) <- Array.head inner ->
     FailedAs { position: startOf r, expected: Set.singleton "`]`", labels: [] }
   _, _ -> FailedAs { position: Position 0 0, expected: Set.empty, labels: [] }
@@ -131,15 +132,19 @@ nodeOf = case _ of
 
 -- Compiling a module -----------------------------------------------------------------
 
--- | What compiling a module gave: its errors, or its warnings and what each
--- | phase handed over — the values the Core binds, the Mid IR's module, and the
--- | bytecode's.
-type Ran = Either (Array CompileError) { warnings :: Array CompileWarning, handed :: Array String }
+-- | What compiling a module gave: its errors, or its warnings, what each phase
+-- | handed over — the values the Core binds, and the Mid IR's module — and the
+-- | bytecode's module and interface it made.
+type Ran = Either (Array CompileError) { warnings :: Array CompileWarning, handed :: Array String, interface :: ModuleInterface }
 
 -- | The module `M`, its lines as given after its header; compiled with the
 -- | parsers the table runs, what each phase hands over recorded.
 compiling :: Array String -> (Ran -> Aff Unit) -> Aff Unit
-compiling lines k = do
+compiling = compilingUnder [ "module M where" ]
+
+-- | `compiling`, the module's header the lines given.
+compilingUnder :: Array String -> Array String -> (Ran -> Aff Unit) -> Aff Unit
+compilingUnder header lines k = do
   handed <- liftEffect (Ref.new [])
   let
     note s = liftEffect (Ref.modify_ (\l -> Array.snoc l s) handed)
@@ -147,18 +152,17 @@ compiling lines k = do
     action :: CompilerAction Aff
     action =
       { readSource: \_ -> pure (Left "no file")
-      , runParser: \q i -> pure (unwrapIdentity (parsers q i))
+      , runParser: \_ q i -> pure (unwrapIdentity (parsers q i))
       , hooks: defaultHooks
           { onElaborated = \core -> note ("core " <> joinWith " " (Array.mapMaybe bound core.decls))
           , onTranslated = \mid -> note ("mid " <> moduleText mid.name)
-          , onLowered = \bytecode -> note ("bytecode " <> moduleText bytecode.dmo.name)
           }
       }
-  r <- compileModule action defaultSettings environment (joinWith "\n" ([ "module M where" ] <> lines))
+  r <- compileModule action defaultSettings environment Map.empty (joinWith "\n" (header <> lines))
   recorded <- liftEffect (Ref.read handed)
   k case r of
     Left errors -> Left (NonEmptyArray.toArray errors)
-    Right warnings -> Right { warnings, handed: recorded }
+    Right made -> Right { warnings: made.warnings, handed: Array.snoc recorded ("bytecode " <> moduleText made.dmo.name), interface: made.interface }
 
 unwrapIdentity :: forall a. Identity a -> a
 unwrapIdentity (Identity a) = a
@@ -198,7 +202,7 @@ spec = describe "Stella.Compiler.Build" do
   describe "a module" do
     it "is compiled to bytecode, a macro call among it, its warnings kept" do
       compiling
-        [ "import A"
+        [ "import Macros"
         , "f :: Int -> Int"
         , "f x = inc x"
         , "n :: Int"
@@ -212,6 +216,27 @@ spec = describe "Stella.Compiler.Build" do
             r.handed `shouldEqual` [ "core f n g", "mid M", "bytecode M" ]
             map (at <<< warningLocationOf) r.warnings `shouldEqual` [ "8:3" ]
 
+  describe "a module's interface" do
+    it "holds the schemes and attributes of what it declares, what it exports, and the arities of what is reached" do
+      compilingUnder [ "module M (macro mac, f) where", "import Stella.Syntax (Parser, Syntax, Term, fail)" ]
+        [ "f :: Int -> Int"
+        , "f x = x"
+        , "@[macro]"
+        , "mac :: Parser (Syntax Term)"
+        , "mac = fail \"unused\""
+        , "hidden :: Int"
+        , "hidden = 1"
+        ]
+        case _ of
+          Left errors -> fail (joinWith "; " (map printCompileError errors))
+          Right r -> do
+            Map.keys r.interface.declarations.values `shouldEqual` Set.fromFoldable (map Ident [ "f", "hidden", "mac" ])
+            map _.scheme (Map.lookup (Ident "f") r.interface.declarations.values) `shouldEqual` Just (plainScheme (monoScheme (pureFn int int)))
+            map _.attributes (Map.lookup (Ident "mac") r.interface.declarations.values) `shouldEqual` Just [ { name: primAttribute "macro", positional: [], keyword: [] } ]
+            Map.keys r.interface.exports.values `shouldEqual` Set.singleton "f"
+            Map.keys r.interface.exports.macros `shouldEqual` Set.singleton "mac"
+            r.interface.arities `shouldEqual` Map.singleton (Ident "f") 1
+
   describe "a stage reporting an error" do
     it "is a syntax error where the parser stopped" do
       failing [ "f = = 1" ] \errors -> errors `shouldEqual` [ "syntax 2:5" ]
@@ -220,18 +245,18 @@ spec = describe "Stella.Compiler.Build" do
       failing [ "f :: Int ->* Int", "f x = x" ] \errors -> errors `shouldEqual` [ "ill-formed 2:10" ]
 
     it "is the last that runs: resolution stops what elaboration would report" do
-      failing [ "import A", "f :: Int", "f = nope", "g :: Int", "g = inc" ] \errors ->
+      failing [ "import Macros", "f :: Int", "f = nope", "g :: Int", "g = inc" ] \errors ->
         errors `shouldEqual` [ "resolution 4:5" ]
 
     it "reports a macro whose parser failed where in its input it failed, then at the call" do
-      failing [ "import A", "n :: Int", "n = failing%[1]" ] \errors ->
+      failing [ "import Macros", "n :: Int", "n = failing%[1]" ] \errors ->
         errors `shouldEqual` [ "resolution 4:14 4:5" ]
 
     it "reports imports whose interfaces make no signature, at no place" do
-      failing [ "import C", "n :: Int", "n = 1" ] \errors -> errors `shouldEqual` [ "imports" ]
+      failing [ "import Ill", "n :: Int", "n = 1" ] \errors -> errors `shouldEqual` [ "imports" ]
 
     it "reports what elaboration refused where it stands" do
-      failing [ "import A", "bad :: Int", "bad = inc" ] \errors -> errors `shouldEqual` [ "elaboration 4:7" ]
+      failing [ "import Macros", "bad :: Int", "bad = inc" ] \errors -> errors `shouldEqual` [ "elaboration 4:7" ]
 
   describe "an error" do
     it "keeps every place it is about" do
@@ -281,14 +306,16 @@ buildingUnder roots sources k = do
           pure case Array.find (\(Tuple q _) -> q == p) sources of
             Just (Tuple _ text) -> Right text
             Nothing -> Left "no such file"
-      , runParser: \q i -> pure (unwrapIdentity (parsers q i))
+      , runParser: \built q i -> do
+          note (fmt @"parse with {built}" { built: joinWith " " (map moduleText (Array.fromFoldable (Map.keys built))) })
+          pure (unwrapIdentity (parsers q i))
       , hooks: defaultHooks
           { onStartCompile = \p f -> note (fmt @"start {current}/{total} {name}" { current: p.current, total: p.total, name: moduleText f.name })
           , onElaborated = \_ -> note "elaborated"
           , onTranslated = \_ -> note "translated"
           , onEnterOptimizeIter = \_ -> note "optimize"
           , onLeaveOptimizeIter = \_ -> note "optimized"
-          , onLowered = \b -> note ("lowered " <> moduleText b.dmo.name)
+          , onLowered = \b -> note (fmt @"lowered {name}, exporting {values}" { name: moduleText b.dmo.name, values: joinWith " " (Array.fromFoldable (Map.keys b.interface.exports.values)) })
           , onModuleDone = \m -> note ("done " <> moduleText m.name)
           }
       }
@@ -316,8 +343,8 @@ buildSpec = describe "a build" do
         Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
       r.log `shouldEqual`
         ( [ "read src/A.stel", "read test/B.stel" ]
-            <> [ "read src/A.stel", "start 1/2 A", "elaborated", "translated", "optimize", "optimized", "lowered A", "done A" ]
-            <> [ "read test/B.stel", "start 2/2 Test.B", "elaborated", "translated", "optimize", "optimized", "lowered Test.B", "done Test.B" ]
+            <> [ "read src/A.stel", "start 1/2 A", "elaborated", "translated", "optimize", "optimized", "lowered A, exporting n", "done A" ]
+            <> [ "read test/B.stel", "start 2/2 Test.B", "elaborated", "translated", "optimize", "optimized", "lowered Test.B, exporting n", "done Test.B" ]
         )
 
   it "names a module by its path, and refuses a header naming another" do
@@ -341,13 +368,41 @@ buildSpec = describe "a build" do
       Left (ListedTwice _) -> pure unit
       _ -> fail "not listed twice"
 
-  it "compiles a module after those of the build it imports, the one given first taken first" do
-    building [ Tuple "src/B.stel" (valueModule "B" [ "A" ]), Tuple "src/C.stel" (valueModule "C" []), Tuple "src/A.stel" (valueModule "A" []) ] \r -> do
-      -- `B` is compiled only against modules built before this build
+  it "compiles a module after those of the build it imports, the one given first taken first, against them" do
+    building [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "m :: Int", "m = n" ]), Tuple "src/C.stel" (valueModule "C" []), Tuple "src/A.stel" (valueModule "A" []) ] \r -> do
       case r.result of
-        Left (ImportWithinBuild e) -> moduleText e.imported `shouldEqual` "A"
+        Right built -> built `shouldEqual` [ "C", "A", "B" ]
+        Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+      Array.filter (String.contains (String.Pattern "start")) r.log `shouldEqual` [ "start 1/3 C", "start 2/3 A", "start 3/3 B" ]
+
+  it "runs a parser with the modules of the build compiled so far, a macro of the build among them and the module compiled not" do
+    let
+      -- `A` calls a macro of `Macros` while it is compiled, and declares one
+      macros = moduleOf "A" [ "Stella.Syntax (Parser, Syntax, Term, fail)", "Macros (macro unwrap)" ]
+        [ "k :: Int", "k = unwrap%[1]", "@[macro]", "wrap :: Parser (Syntax Term)", "wrap = fail \"unused\"" ]
+    building [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "m :: Int", "m = wrap%[1]" ]), Tuple "src/A.stel" macros ] \r -> do
+      case r.result of
+        Right built -> built `shouldEqual` [ "A", "B" ]
+        Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+      Array.filter (String.contains (String.Pattern "parse")) r.log `shouldEqual` [ "parse with ", "parse with A" ]
+
+  it "hands over a module's bytecode and interface once the module is in the environment" do
+    building [ Tuple "src/A.stel" (valueModule "A" []) ] \r ->
+      Array.filter (String.contains (String.Pattern "lowered")) r.log `shouldEqual` [ "lowered A, exporting n" ]
+
+  it "refuses a module named as one the build is compiled against is, before compiling any" do
+    building [ Tuple "src/C.stel" (valueModule "C" []), Tuple "src/Macros.stel" (valueModule "Macros" []) ] \r -> do
+      case r.result of
+        Left (NameInEnvironment e) -> e.path `shouldEqual` "src/Macros.stel"
         _ -> fail "not refused"
-      Array.filter (String.contains (String.Pattern "start")) r.log `shouldEqual` [ "start 1/3 C", "start 2/3 A" ]
+      r.log `shouldEqual` []
+
+  it "reports a module importing itself before compiling any, a module being compiled against no interface of its own" do
+    building [ Tuple "src/A.stel" (valueModule "A" [ "A" ]) ] \r -> do
+      case r.result of
+        Left (ImportCycle members) -> map (moduleText <<< _.name) (NonEmptyArray.toArray members) `shouldEqual` [ "A" ]
+        _ -> fail "no cycle"
+      Array.filter (String.contains (String.Pattern "start")) r.log `shouldEqual` []
 
   it "reports modules importing one another before compiling any" do
     building [ Tuple "src/A.stel" (valueModule "A" [ "B" ]), Tuple "src/B.stel" (valueModule "B" [ "A" ]) ] \r -> do

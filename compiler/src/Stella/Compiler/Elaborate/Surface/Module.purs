@@ -56,8 +56,9 @@ import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..), elaborateSignatu
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect, Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Surface.Group (groups)
-import Stella.Compiler.Interface.Assemble (coreAttribute, reachedFromOutside)
+import Stella.Compiler.Interface.Assemble (CoreInterface, coreAttribute, reachedFromOutside)
 import Stella.Compiler.Interface.Module (Exports)
+import Stella.Compiler.Interface.Scheme (plainScheme)
 import Stella.Compiler.Surface.Decl (Declaration(..), declarationOrigin)
 import Stella.Compiler.Surface.Decl (Module) as Surface
 import Stella.Compiler.Surface.Origin (Origin) as Surface
@@ -278,11 +279,12 @@ failure = case _ of
   -- decide becomes a job
   _ -> AttemptPostponed
 
--- | A module elaborated into a Core module the Core checker accepts, and what
--- | checking it declared — the signature and the checked values — or what kept
--- | it from being one; and the values elaborated either way.
+-- | A module elaborated into a Core module the Core checker accepts, what
+-- | checking it declared — the signature and the checked values — and the Core
+-- | part of its interface, or what kept it from being one; and the values
+-- | elaborated either way.
 type ElaboratedModule =
-  { result :: Either (NonEmptyArray ElaborationError) { core :: Core.Module Surface.Origin, declared :: Declared Surface.Origin }
+  { result :: Either (NonEmptyArray ElaborationError) { core :: Core.Module Surface.Origin, declared :: Declared Surface.Origin, interface :: CoreInterface }
   , values :: Array ElaboratedValue
   }
 
@@ -297,6 +299,8 @@ type ElaboratedModule =
 -- | no error**: one missing a declaration would refer to what it does not bind. It imports what
 -- | the module imports, and exports each value it declares that is reached from
 -- | outside — by its name, as a macro, or through an operator it exports.
+-- | The Core part of its interface holds the scheme of every value it declares;
+-- | a module this version elaborates declares no type, effect, or attribute.
 -- | **The Core checker refusing it is the elaborator's fault**, reported as
 -- | such, but for an attribute's arguments, which only the Core checker checks:
 -- | one that does not check is reported where its declaration stands.
@@ -352,9 +356,17 @@ elaborateModule signature imported m exports =
   result = case NonEmptyArray.fromArray errors of
     Just es -> Left es
     Nothing -> case declareAnnotated signature core of
-      Right declared -> Right { core, declared }
+      Right declared -> Right { core, declared, interface }
       -- an attribute's arguments are checked by Core alone
       Left { at, error: AttributeIllTyped err } -> Left (NonEmptyArray.singleton (AttributeRejected at err))
       Left refusal -> Left (NonEmptyArray.singleton (CoreRefused refusal))
+
+  interface =
+    { schemes: Map.fromFoldable (map (\v -> Tuple (nameOf v.name) (plainScheme v.scheme)) values)
+    , types: Map.empty
+    , effects: Map.empty
+    , attributes: Map.empty
+    , implicitHandlers: Map.empty
+    }
 
   nameOf (Qualified _ n) = n

@@ -43,6 +43,7 @@ import Stella.Compiler.Elaborate.Environment.Imported (ImportError)
 import Stella.Compiler.Elaborate.Surface.Module (ElaborationError)
 import Stella.Compiler.Elaborate.Surface.Report (elaborationOrigins, printElaborationError)
 import Stella.Compiler.Interface (InterfaceError)
+import Stella.Compiler.Interface.Assemble (AssembleError)
 import Stella.Compiler.Interface.Environment (EnvironmentError(..))
 import Stella.Compiler.Macro.Expand (ExpansionError(..), ExpansionReason(..), printExpansionReason)
 import Stella.Compiler.MiddleEnd.Translate (TranslateError)
@@ -68,17 +69,23 @@ data SyntaxProblem
   | IllFormed CheckError
 
 -- | What the build environment cannot give the module: the view of its
--- | imports, the signature they make, or the interfaces translation reads.
+-- | imports, the signature they make, or the interfaces translation reads; or
+-- | the module's interface the environment does not take, which is the
+-- | compiler's fault.
 data EnvironmentProblem
   = ViewRefused EnvironmentError
   | ImportsRefused ImportError
   | InterfacesRefused InterfaceError
+  | InterfaceNotAdded EnvironmentError
 
--- | A checked Core module translation or lowering refused, which is the
--- | compiler's fault.
+-- | A checked Core module translation or lowering refused, or one whose
+-- | interface does not assemble, which is the compiler's fault.
 data BackendProblem
   = TranslateFailed TranslateError
   | LowerFailed LowerError
+  -- | A module resolved without error with no surface part of an interface.
+  | SurfaceInterfaceMissing
+  | InterfaceUnassembled AssembleError
 
 type CompileWarning = ResolutionWarning
 
@@ -138,10 +145,13 @@ printCompileError = case _ of
     ViewRefused e -> internal ("the build environment is inconsistent: " <> show e)
     ImportsRefused e -> "The interfaces of the imported modules do not agree: " <> show e
     InterfacesRefused e -> "The interfaces of the imported modules do not agree: " <> show e
+    InterfaceNotAdded e -> internal ("the build environment does not take the module's interface: " <> show e)
   Elaboration e -> printElaborationError e
   Backend problem -> case problem of
     TranslateFailed e -> internal ("translation refused the checked module: " <> show e)
     LowerFailed e -> internal ("lowering refused the translated module: " <> show e)
+    SurfaceInterfaceMissing -> internal "a module resolved without error has no interface"
+    InterfaceUnassembled e -> internal ("the module's interface does not assemble: " <> show e)
   where
   internal what = "Internal compiler error: " <> what
   moduleText (ModuleName m) = m
@@ -179,11 +189,10 @@ data BuildError
   -- | A file whose path gives it a name the prefix of another source directory
   -- | claims, that directory being the one its longest prefix names.
   | NameReserved { path :: String, name :: ModuleName, owner :: SourceRoot }
+  -- | A module of the build named as one the build is compiled against is.
+  | NameInEnvironment { path :: String, name :: ModuleName }
   -- | Modules importing one another, in the order the build was given them.
   | ImportCycle (NonEmptyArray { path :: String, name :: ModuleName })
-  -- | An import of another module of the build, which this version does not
-  -- | compile against.
-  | ImportWithinBuild { path :: String, imported :: ModuleName, at :: DiagnosticLocation }
   | ModuleFailed { path :: String, name :: ModuleName, errors :: NonEmptyArray CompileError }
 
 -- | One thing a build error says: the file it is about, the places in it, and
@@ -207,13 +216,12 @@ buildMessages = case _ of
   NameMismatch r -> one r.path [ r.at ]
     (fmt @"This module is named `{written}`, and its path names it `{expected}`" { written: moduleText r.written, expected: moduleText r.expected })
   NameReserved r -> one r.path [] (fmt @"This file cannot hold `{name}`: modules under `{prefix}` are kept in `{dir}`" { name: moduleText r.name, prefix: prefixText r.owner, dir: dirText r.owner })
+  NameInEnvironment r -> one r.path [] (fmt @"This file holds `{name}`, which names a module the build is compiled against" { name: moduleText r.name })
   ImportCycle members -> NonEmptyArray.singleton
     { path: Nothing
     , locations: []
     , message: "These modules import one another: " <> joinWith ", " (map (moduleText <<< _.name) (NonEmptyArray.toArray members))
     }
-  ImportWithinBuild r -> one r.path [ r.at ]
-    (fmt @"`{imported}` is a module of this build, and this version of the compiler compiles a module only against modules built before" { imported: moduleText r.imported })
   ModuleFailed r -> map (\e -> { path: Just r.path, locations: locationsOf e, message: printCompileError e }) r.errors
   where
   one path locations message = NonEmptyArray.singleton { path: Just path, locations, message }

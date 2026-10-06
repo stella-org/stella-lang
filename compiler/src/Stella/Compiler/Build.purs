@@ -18,9 +18,22 @@
 -- | modules neither of which imports the other; modules importing one another
 -- | are reported before anything is compiled. Then each module is read again
 -- | and compiled, and what a build keeps from one module to the next is the
--- | build environment alone. **Within a module, a phase's result is held no
--- | longer than the next phase reads it**: it is handed to the host as the
--- | phase ends, and what the next phase is given is what it reads.
+-- | build environment alone, so that a module of the build is compiled against
+-- | the modules of the build it imports.
+-- |
+-- | **Every stage of a module runs against one environment, which does not
+-- | hold the module.** Its interface is added once the module is lowered
+-- | and its interface assembled, for the modules after it alone; what a stage
+-- | knows of the module itself comes from the module, never from the
+-- | environment. An environment holding the module would let a stage take
+-- | what the module published for what it is compiling — an optimizer inlining
+-- | the module's own functions into themselves — so no module of the build may
+-- | be named as one the environment holds already.
+-- |
+-- | **Within a module, a phase's result is held no longer than the next phase
+-- | reads it**: it is handed to the host as the phase ends, and what the next
+-- | phase is given is what it reads, with what each stage decides of the
+-- | module's interface.
 -- |
 -- | **A module's stages run in this order**: the text is lexed, laid out, and
 -- | parsed; the syntax is checked for what no later stage reads; the module is
@@ -28,7 +41,8 @@
 -- | environment, and the signature and the catalog they give are made, with the
 -- | types the ABI manifest supplies to the module itself; it is elaborated and
 -- | its Core checked; the interfaces translation reads are gathered; it is
--- | translated to Mid IR, optimized, and lowered to bytecode. **A stage that
+-- | translated to Mid IR, optimized, and lowered to bytecode; and its interface
+-- | is assembled. **A stage that
 -- | reports an error is the last that runs**, and every error it reports is
 -- | returned; a module that does not compile is the last the build compiles.
 module Stella.Compiler.Build
@@ -36,6 +50,7 @@ module Stella.Compiler.Build
   , defaultSourceRoots
   , Progress
   , CompilerAction
+  , BuiltModules
   , CompilerHooks
   , defaultHooks
   , build
@@ -55,9 +70,9 @@ import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
 import Data.Foldable (foldl, for_)
+import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
-import Data.Set (Set)
+import Data.Maybe (Maybe(..), maybe)
 import Data.Set as Set
 import Data.String (Pattern(..), joinWith, stripSuffix)
 import Data.String.CodeUnits as SCU
@@ -72,8 +87,10 @@ import Stella.Compiler.CST.Types (Import(..), Item(..), Module(..), SourceRange)
 import Stella.Compiler.Elaborate.Environment.Imported (compilationSignature, importedCatalog)
 import Stella.Compiler.Elaborate.Surface.Group (groups)
 import Stella.Compiler.Elaborate.Surface.Module (elaborateModule)
-import Stella.Compiler.Interface (Imports, importsOf)
-import Stella.Compiler.Interface.Environment (BuildEnvironment, lookupInterface, reachable, viewFor)
+import Stella.Compiler.Interface (Imports, aritiesOf, importsOf)
+import Stella.Compiler.Interface.Assemble (CoreInterface, SurfaceInterface, assemble, surfaceInterface)
+import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, lookupInterface, reachable, viewFor)
+import Stella.Compiler.Interface.Module (ModuleInterface)
 import Stella.Compiler.Macro.Run (ExpansionSettings, RunParser)
 import Stella.Compiler.MiddleEnd.IR (Debug, Module) as MIR
 import Stella.Compiler.MiddleEnd.Translate (translate)
@@ -97,22 +114,26 @@ defaultSourceRoots = [ { prefix: [], dir: [ "src" ] }, { prefix: [ "Test" ], dir
 type Progress = { current :: Int, total :: Int }
 
 -- | What the host does for a build: read a file, run a macro's parser, and
--- | take what each phase of a module makes as the phase ends — to show it, to
--- | write it, and to make what a module declares available to the parsers run
--- | after it.
+-- | take what each phase of a module makes as the phase ends — to show it, or
+-- | to write it. A parser is run with the modules of the build compiled so far
+-- | in hand, which a macro of the build is declared by.
 type CompilerAction m =
   { readSource :: String -> m (Either String String)
-  , runParser :: RunParser m
+  , runParser :: BuiltModules -> RunParser m
   , hooks :: CompilerHooks m
   }
+
+-- | The modules of the build compiled so far, each by its interface.
+type BuiltModules = Map ModuleName ModuleInterface
 
 -- | What the host is handed as a build goes. `onStartCompile` comes as a
 -- | module's compiling begins; each phase hook as the phase ends, with what it
 -- | made, which the build keeps no longer than the next phase needs it; the
 -- | optimizer's three as its rounds go — once before the first, once after
--- | each round that changed the module, and once when it stops — and
--- | `onModuleDone`, with the warnings compiling the module gave, once its last
--- | phase has ended.
+-- | each round that changed the module, and once when it stops. `onLowered`
+-- | comes with the module's bytecode and interface once the module is added to
+-- | the build environment, and `onModuleDone`, with the warnings compiling the
+-- | module gave, after it.
 type CompilerHooks m =
   { onStartCompile :: Progress -> { path :: String, name :: ModuleName } -> m Unit
   , onElaborated :: Core.Module Surface.Origin -> m Unit
@@ -120,7 +141,7 @@ type CompilerHooks m =
   , onEnterOptimizeIter :: MIR.Module -> m Unit
   , onContinueOptimizeIter :: Int -> MIR.Module -> m Unit
   , onLeaveOptimizeIter :: MIR.Module -> m Unit
-  , onLowered :: { dmo :: Bytecode.Dmo, debug :: Bytecode.Debug Surface.Origin } -> m Unit
+  , onLowered :: { dmo :: Bytecode.Dmo, interface :: ModuleInterface, debug :: Bytecode.Debug Surface.Origin } -> m Unit
   , onModuleDone :: { path :: String, name :: ModuleName, warnings :: Array CompileWarning } -> m Unit
   }
 
@@ -158,9 +179,10 @@ build
 build action settings env roots files = runExceptT do
   except (rootsApart roots)
   named <- except (placed roots files)
+  for_ (Array.find (\f -> Map.member f.name env.interfaces) named) (throwError <<< NameInEnvironment)
   headers <- headersOf action named
   order <- except (ordered headers)
-  compileAll action settings env (Set.fromFoldable (map _.name headers)) order
+  compileAll action settings env order
 
 -- | Every file given its module's name, read off its path; no file given twice,
 -- | and no module named twice.
@@ -279,48 +301,75 @@ ordered headers = case Array.findMap cycleOf grouped of
     | g.recursive = NonEmptyArray.fromArray (Array.mapMaybe (\i -> map (\h -> { path: h.path, name: h.name }) (Array.index headers i)) g.members)
     | otherwise = Nothing
 
--- | Every module in the order given, one at a time.
+-- | Every module in the order given, one at a time, each against the build
+-- | environment with the modules before it committed.
 compileAll
   :: forall m
    . MonadRec m
   => CompilerAction m
   -> ExpansionSettings
   -> BuildEnvironment
-  -> Set ModuleName
   -> Array Header
   -> ExceptT BuildError m (Array { path :: String, name :: ModuleName })
-compileAll action settings env inBuild order = tailRecM step { built: [], i: 0 }
+compileAll action settings env0 order = tailRecM step { env: env0, built: Map.empty, done: [], i: 0 }
   where
   total = Array.length order
-  step { built, i } = case Array.index order i of
-    Nothing -> pure (Done built)
+  step { env, built, done, i } = case Array.index order i of
+    Nothing -> pure (Done done)
     Just header -> do
-      compileOne action settings env inBuild { current: i + 1, total } header
-      pure (Loop { built: Array.snoc built { path: header.path, name: header.name }, i: i + 1 })
+      made <- compileOne action settings env built { current: i + 1, total } header
+      committed <- commit action header env built made
+      pure (Loop { env: committed.env, built: committed.built, done: Array.snoc done { path: header.path, name: header.name }, i: i + 1 })
 
--- | A module of the build read and compiled, against modules built before the
--- | build alone.
+-- | A module of the build read and compiled against the environment and the
+-- | modules of the build given, neither of which it changes.
 compileOne
   :: forall m
    . Monad m
   => CompilerAction m
   -> ExpansionSettings
   -> BuildEnvironment
-  -> Set ModuleName
+  -> BuiltModules
   -> Progress
   -> Header
-  -> ExceptT BuildError m Unit
-compileOne action settings env inBuild progress header = do
-  for_ (Array.find (\i -> Set.member i.module inBuild) header.imports) \within ->
-    throwError (ImportWithinBuild { path: header.path, imported: within.module, at: within.at })
+  -> ExceptT BuildError m Compiled
+compileOne action settings env built progress header = do
   text <- action.readSource header.path # orFailWithM (\detail -> Unreadable { path: header.path, detail })
   lift (action.hooks.onStartCompile progress { path: header.path, name: header.name })
-  warnings <- compileModule action settings env text # orFailWithM (\errors -> ModuleFailed { path: header.path, name: header.name, errors })
-  lift (action.hooks.onModuleDone { path: header.path, name: header.name, warnings })
+  compileModule action settings env built text # orFailWithM (\errors -> ModuleFailed { path: header.path, name: header.name, errors })
+
+-- | A module compiled to the end made available to the modules after it: its
+-- | interface added to the environment and to the modules of the build. Only
+-- | then are its bytecode and interface handed over, so that nothing the host
+-- | is handed is in reach of what the module itself was compiled against.
+commit
+  :: forall m
+   . Monad m
+  => CompilerAction m
+  -> Header
+  -> BuildEnvironment
+  -> BuiltModules
+  -> Compiled
+  -> ExceptT BuildError m { env :: BuildEnvironment, built :: BuiltModules }
+commit action header env built made = do
+  env' <- addInterface made.interface env
+    # orFailWith (\e -> ModuleFailed { path: header.path, name: header.name, errors: pure (Environment (InterfaceNotAdded e)) })
+  lift (action.hooks.onLowered { dmo: made.dmo, interface: made.interface, debug: made.debug })
+  lift (action.hooks.onModuleDone { path: header.path, name: header.name, warnings: made.warnings })
+  pure { env: env', built: Map.insert header.name made.interface built }
+
+-- | What compiling a module makes: its bytecode and interface, and the
+-- | warnings compiling it gave.
+type Compiled =
+  { dmo :: Bytecode.Dmo
+  , debug :: Bytecode.Debug Surface.Origin
+  , interface :: ModuleInterface
+  , warnings :: Array CompileWarning
+  }
 
 -- | Compile a module's source against the build environment, its macros'
--- | parsers run and what each phase makes handed over through the action
--- | given. The warnings compiling it gave.
+-- | parsers run with the modules of the build compiled so far, and what each
+-- | phase but the last makes handed over through the action given.
 -- |
 -- | **Each phase is a function of what it reads alone**, so that what an
 -- | earlier phase made and no later one reads is no longer held.
@@ -330,16 +379,30 @@ compileModule
   => CompilerAction m
   -> ExpansionSettings
   -> BuildEnvironment
+  -> BuiltModules
   -> String
-  -> m (Either (NonEmptyArray CompileError) (Array CompileWarning))
-compileModule action settings env text = runExceptT do
+  -> m (Either (NonEmptyArray CompileError) Compiled)
+compileModule action settings env built text = runExceptT do
   cst <- parseModule text # orFailWith (pure <<< Syntax <<< Unparsed)
   checkModule cst # failingWith (Syntax <<< IllFormed)
-  resolved <- lift (resolveModuleExpanding action.runParser settings env cst)
+  resolved <- lift (resolveModuleExpanding (action.runParser built) settings env cst)
   elaborated action env resolved
 
 -- | What a phase of a module gives, or the errors it stops at.
 type Phase m = ExceptT (NonEmptyArray CompileError) m
+
+-- | What resolving and elaborating a module decide of its interface, carried to
+-- | where lowering decides the rest.
+type Decided = { surface :: SurfaceInterface, core :: CoreInterface }
+
+-- | The checked Core, what translation reads of the modules it imports, and
+-- | what is decided of the interface.
+type Checked =
+  { core :: Core.Module Surface.Origin
+  , declared :: Core.Declared Surface.Origin
+  , imports :: Imports
+  , decided :: Decided
+  }
 
 -- | The module resolved, elaborated, and checked, handed on with the warnings
 -- | alone of what resolving it gave.
@@ -349,7 +412,7 @@ elaborated
   => CompilerAction m
   -> BuildEnvironment
   -> Resolved
-  -> Phase m (Array CompileWarning)
+  -> Phase m Compiled
 elaborated action env resolved = checkedCore env resolved >>= checked action resolved.warnings
 
 checkedCore
@@ -357,16 +420,18 @@ checkedCore
    . Monad m
   => BuildEnvironment
   -> Resolved
-  -> Phase m { core :: Core.Module Surface.Origin, declared :: Core.Declared Surface.Origin, imports :: Imports }
+  -> Phase m Checked
 checkedCore env resolved = do
   resolved.errors # failingWith Resolution
   let m = resolved.module
+  -- a module resolved without error holds no invalid constant
+  surface <- except (maybe (Left (pure (Backend SurfaceInterfaceMissing))) Right (surfaceInterface m resolved.exports))
   view <- viewFor (map _.module m.imports) env # orFailWith (pure <<< Environment <<< ViewRefused)
   signature <- compilationSignature env view m.name # orFailWith (pure <<< Environment <<< ImportsRefused)
   made <- (elaborateModule signature (importedCatalog env view) m resolved.exports).result # orFailWith (map Elaboration)
   imports <- importsOf (Array.mapMaybe (\n -> lookupInterface n env) (Set.toUnfoldable (reachable view)))
     # orFailWith (pure <<< Environment <<< InterfacesRefused)
-  pure { core: made.core, declared: made.declared, imports }
+  pure { core: made.core, declared: made.declared, imports, decided: { surface, core: made.interface } }
 
 -- | The checked Core handed to the host. What the module was resolved into is
 -- | not in reach of what follows.
@@ -375,8 +440,8 @@ checked
    . Monad m
   => CompilerAction m
   -> Array CompileWarning
-  -> { core :: Core.Module Surface.Origin, declared :: Core.Declared Surface.Origin, imports :: Imports }
-  -> Phase m (Array CompileWarning)
+  -> Checked
+  -> Phase m Compiled
 checked action warnings made = do
   lift (action.hooks.onElaborated made.core)
   translated action warnings made
@@ -387,12 +452,12 @@ translated
    . Monad m
   => CompilerAction m
   -> Array CompileWarning
-  -> { core :: Core.Module Surface.Origin, declared :: Core.Declared Surface.Origin, imports :: Imports }
-  -> Phase m (Array CompileWarning)
+  -> Checked
+  -> Phase m Compiled
 translated action warnings made = do
   mid <- translate made.imports made.core made.declared # orFailWith (pure <<< Backend <<< TranslateFailed)
   lift (action.hooks.onTranslated mid.module)
-  optimized action warnings mid
+  optimized action warnings made.decided mid
 
 -- | The Mid IR optimized. No pass rewrites a module yet, so the optimizer stops
 -- | before a first round.
@@ -401,25 +466,27 @@ optimized
    . Monad m
   => CompilerAction m
   -> Array CompileWarning
+  -> Decided
   -> { module :: MIR.Module, debug :: MIR.Debug Surface.Origin }
-  -> Phase m (Array CompileWarning)
-optimized action warnings mid = do
+  -> Phase m Compiled
+optimized action warnings decided mid = do
   lift (action.hooks.onEnterOptimizeIter mid.module)
   lift (action.hooks.onLeaveOptimizeIter mid.module)
-  lowered action warnings mid
+  lowered warnings decided mid
 
--- | The Mid IR lowered to bytecode.
+-- | The Mid IR lowered to bytecode, and the interface assembled with the
+-- | arities of what was lowered.
 lowered
   :: forall m
    . Monad m
-  => CompilerAction m
-  -> Array CompileWarning
+  => Array CompileWarning
+  -> Decided
   -> { module :: MIR.Module, debug :: MIR.Debug Surface.Origin }
-  -> Phase m (Array CompileWarning)
-lowered action warnings mid = do
+  -> Phase m Compiled
+lowered warnings decided mid = do
   bytecode <- lower mid # orFailWith (pure <<< Backend <<< LowerFailed)
-  lift (action.hooks.onLowered bytecode)
-  pure warnings
+  interface <- assemble decided.surface decided.core (aritiesOf mid.module) # orFailWith (pure <<< Backend <<< InterfaceUnassembled)
+  pure { dmo: bytecode.dmo, debug: bytecode.debug, interface, warnings }
 
 -- | What may fail, or what it failed with taken for the error given.
 orFailWith :: forall m e e' a. Applicative m => (e -> e') -> Either e a -> ExceptT e' m a

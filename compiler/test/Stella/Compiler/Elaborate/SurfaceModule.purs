@@ -126,7 +126,7 @@ elaboratingUnder header body k = case environment of
             let elaborated = elaborateModule signature (importedCatalog env view) resolved.module resolved.exports
             k case elaborated.result of
               Left errors -> { values: elaborated.values, errors: NonEmptyArray.toArray errors, module: Nothing }
-              Right made -> { values: elaborated.values, errors: [], module: Just made }
+              Right made -> { values: elaborated.values, errors: [], module: Just { core: made.core, declared: made.declared } }
         errors, _ -> fail ("not resolved: " <> show errors)
 
 -- | The Core module made, which the Core checker accepted.
