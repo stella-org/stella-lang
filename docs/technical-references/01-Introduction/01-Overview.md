@@ -167,9 +167,9 @@ These serve as architecture tests as well as demonstrations.
 | **§5. Backend** | |
 | [§5.1 Bytecode](../05-Backend/01-Bytecode.md) | The instruction set, continuations, and the `.dmo` module object |
 | [§5.2 Encoding](../05-Backend/02-Encoding.md) | The bytes of a `.dmo`: sections, tags, and opcodes |
-| [§5.3 Interface](../05-Backend/03-Interface.md) | The `.dmi`: the definitional arities a downstream module reads |
+| [§5.3 Interface](../05-Backend/03-Interface.md) | The `.dmi`: a module's whole interface, which compiling a module downstream reads |
 | [§5.4 Foreign Manifest](../05-Backend/04-Foreign-Manifest.md) | The `foreign-manifest.json`: where a target reaches a module's implementations |
-| [§5.5 JavaScript](../05-Backend/05-JavaScript.md) | The JavaScript backend: a `.dmo` in, an ES module out, and what the host does not give |
+| [§5.5 JavaScript](../05-Backend/05-JavaScript.md) | The JavaScript backend: a module's pair and the program's manifest in, an ES module out, and what the host does not give |
 | **§6. Modules** | |
 | [§6.1 Modules](../06-Modules/01-Modules.md) | Modules, declarations, FFI, interfaces and the build environment, entry point |
 | [§6.2 Prim and Base](../06-Modules/02-Prim-and-Base.md) | The four layers: what `Prim` holds, and what the `Base` ABI surface does |

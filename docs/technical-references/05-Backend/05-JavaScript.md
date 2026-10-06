@@ -108,7 +108,8 @@ partial application waits on it — so nothing compares one while the program ru
 
 **One `.dmo` becomes one ES module**, written to a file named by the module, so
 `Main.Sub` is `Main.Sub.js`, and another generated module imports it as
-`./Main.Sub.js`. The runtime is imported by a specifier the build supplies.
+`./Main.Sub.js`. The runtime is imported by a specifier
+given in the settings the package manager hands the backend (D47).
 
 **What another module reads is exported under a name no binding can clash with.**
 
