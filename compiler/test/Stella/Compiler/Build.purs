@@ -10,7 +10,7 @@ import Fmt (fmt)
 import Data.Array as Array
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
-import Data.Foldable (for_)
+import Data.Foldable (foldM, for_)
 import Data.Identity (Identity(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
@@ -33,6 +33,7 @@ import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSo
 import Stella.Compiler.Interface.Prim (primAttribute)
 import Stella.Compiler.Interface.Scheme (plainScheme)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
+import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (ParseOutcome(..), RunParser, defaultSettings)
 import Stella.Compiler.Macro.Tree (Position(..), Range(..), SyntaxNode(..), Token(..), TokenTree(..))
 import Stella.Compiler.Macro.Tree as Tree
@@ -58,20 +59,12 @@ syntaxType n = TCon (Qualified syntaxModuleName (TyName n)) []
 termParser :: Type
 termParser = TApp (syntaxType "Parser") (TApp (syntaxType "Syntax") (syntaxType "Term"))
 
--- | The types of `Stella.Syntax` a macro's scheme names, standing as foreign
--- | types: `Parser` and `Syntax` of kind `Type -> Type`, and `Term`.
-syntaxInterface :: ModuleInterface
-syntaxInterface =
-  { name: syntaxModuleName
-  , imports: []
-  , exports: emptyExports { types = Map.fromFoldable (map (\(Tuple n _) -> Tuple n { entity: TypeEntity (Qualified syntaxModuleName (TyName n)), via: Declared, members: [] }) types) }
-  , declarations: emptyDeclarations { types = Map.fromFoldable (map (\(Tuple n k) -> Tuple (TyName n) { kind: monoScheme k, sort: ForeignType, attributes: [] }) types) }
-  , implicitHandlers: []
-  , catalogOnly: Set.empty
-  , arities: Map.empty
-  }
-  where
-  types = [ Tuple "Parser" (KFun KType KType), Tuple "Syntax" (KFun KType KType), Tuple "Term" KType ]
+-- | `Base.Int` and `Stella.Syntax`, which a macro's scheme names the types of,
+-- | as the compiler compiles them.
+syntaxInterfaces :: Array ModuleInterface
+syntaxInterfaces = case compiled of
+  Right c -> c.moduleInterfaces
+  Left _ -> []
 
 -- | `A`: `inc : Int -> Int`, and the macros `unwrap` and `failing`.
 interfaceA :: ModuleInterface
@@ -114,7 +107,7 @@ moduleA :: ModuleName
 moduleA = ModuleName "A"
 
 environment :: BuildEnvironment
-environment = case addInterface syntaxInterface initialEnvironment >>= addInterface interfaceA >>= addInterface interfaceC of
+environment = case foldM (flip addInterface) initialEnvironment (syntaxInterfaces <> [ interfaceA, interfaceC ]) of
   Right env -> env
   Left _ -> initialEnvironment
 
