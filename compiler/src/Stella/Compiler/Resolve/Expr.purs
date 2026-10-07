@@ -56,6 +56,9 @@ import Stella.Compiler.Resolve.Binder (Member(..), ResolvedMember(..), requireIr
 import Stella.Compiler.Resolve.Fixity (rebracket)
 import Stella.Compiler.Resolve.Group (GroupError(..), LocalBinding(..), groupBindings)
 import Stella.Compiler.Resolve.Label (reportLabelsTwice)
+import Stella.Compiler.Interface.Environment (reachable)
+import Stella.Compiler.Macro.Bundle (syntaxModuleName)
+import Stella.Compiler.Resolve.Quotation (quotation)
 import Stella.Compiler.Resolve.Monad (Cell(..), CellClosure(..), Found(..), HandledEffectProblem(..), Resolve, SynonymBody(..), ResolveReason(..), ResumeBlock(..), ResumeState(..), TypeReference(..), ValueKind(..), ValueReference(..), blockResume, context, lookupCell, lookupOperator, lookupType, lookupValue, lookupValueReference, openedBy, operationOf, operationsOf, report, resumeState, speculatively, synonymBody, valueKind, withCells, withCellsClosed, withOpened, withResume, withTypeVariables, withValues)
 import Stella.Compiler.Resolve.Type (handlerScope, resolveHandlerSignature, resolveSignature, resolveType, signatureScope)
 import Stella.Compiler.Surface.Decl (Associativity(..))
@@ -115,6 +118,11 @@ resolveExpr e = case e of
   CST.ExprLocalOpen alias inner -> open alias inner
   CST.ExprImportIn alias inner -> open alias inner
   CST.ExprMacro _ -> invalid (NotYetSupported "A macro call")
+  CST.ExprQuote q -> context >>= \ctx ->
+    if maybe false (Set.member syntaxModuleName <<< reachable) ctx.view then quotation ctx.module resolveExpr o q
+    else invalid QuotationWithoutSyntax
+  -- an antiquotation outside a quotation is reported where the syntax is checked
+  CST.ExprAntiquote _ -> pure (ExprInvalid o)
   CST.ExprExpanded expanded -> resolveExpr expanded.expr
   -- the expansion that failed was reported where it failed
   CST.ExprInvalid _ -> pure (ExprInvalid o)

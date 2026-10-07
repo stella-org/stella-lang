@@ -15,9 +15,11 @@ import Data.Maybe (Maybe(..))
 import Data.Symbol (class IsSymbol, reflectSymbol)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.Protocol.Guest.Shape (Descriptor, Shape(..))
+import Stella.Compiler.Elaborate.Surface.Internal (internalEntries)
 import Stella.Compiler.Macro.Bundle (bundle, syntaxModule, syntaxModuleName, withSyntax)
+import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Tree (Delimiter, Failure, IssuedOrigin, OriginRef, Position, Range, Result, Syntax, SyntaxItem, SyntaxNode, Token, TokenKind, TokenTree, Trivia)
-import Stella.Compiler.TypedCore (Ident(..), Qualified(..), TyName(..), declare, declareAnnotated, primSignature)
+import Stella.Compiler.TypedCore (Ident(..), Qualified(..), TyName(..), Type(..), declare, declareAnnotated, primSignature)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 import Test.Stella.Compiler.Fixtures.Programs (intModule)
@@ -163,3 +165,20 @@ spec = describe "Stella.Compiler.Macro.Bundle" do
         -- a parser is a function, and its types do not cross
         Map.member (Qualified syntaxModuleName (TyName "Parser")) b.descriptor `shouldEqual` false
 
+  it "holds what a quotation is written with at the schemes the compiler lists, and lacking either or holding another is its fault" do
+    case compiled of
+      Left e -> fail e
+      Right c -> do
+        map (Array.fromFoldable <<< Map.keys) (internalEntries c.signature)
+          `shouldEqual` Right (map (Qualified syntaxModuleName <<< Ident) [ "$QuotedOrigin", "$spliced" ])
+        let
+          spliced = Qualified syntaxModuleName (Ident "$spliced")
+          changed = c.signature { values = Map.update (\v -> Just v { scheme = { kindVars: [], body: TCon (Qualified syntaxModuleName (TyName "Term")) [] } }) spliced c.signature.values }
+        internalEntries changed `shouldEqual` Left spliced
+        -- reaching Stella.Syntax, a signature lacking either entry is as wrong
+        let
+          quotedOrigin = Qualified syntaxModuleName (Ident "$QuotedOrigin")
+        internalEntries c.signature { values = Map.delete spliced c.signature.values } `shouldEqual` Left spliced
+        internalEntries c.signature { ctors = Map.delete quotedOrigin c.signature.ctors } `shouldEqual` Left quotedOrigin
+        -- a signature that does not reach Stella.Syntax holds none
+        map Map.isEmpty (internalEntries primSignature) `shouldEqual` Right true

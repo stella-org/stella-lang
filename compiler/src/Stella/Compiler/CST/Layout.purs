@@ -40,6 +40,9 @@ data Delim
   | LytForall
   -- | A macro's bracket, whose tokens pass through untouched.
   | LytRaw
+  -- | A quotation's braces, inside which blocks open as they do in an
+  -- | expression.
+  | LytQuote
   | LytLet
   | LytWhere
   | LytGuard
@@ -161,6 +164,7 @@ insert src nextPos state = case state.stack of
     TokLeftSquare -> st # insertDefault # pushStack tokPos LytSquare
     TokLeftAttribute -> st # insertDefault # pushStack tokPos LytAttribute
     TokLeftBrace -> st # insertDefault # pushStack tokPos LytBrace # pushStack tokPos LytProperty
+    TokQuote _ -> st # insertDefault # pushStack tokPos LytQuote
     TokLeftBar -> st # insertDefault # pushStack tokPos LytBrace # pushStack tokPos LytProperty
     TokLeftSynth ->
       st # insertDefault # pushStack tokPos LytBrace # pushStack tokPos LytBrace # pushStack tokPos LytProperty
@@ -169,7 +173,7 @@ insert src nextPos state = case state.stack of
     TokRightSquare ->
       st # collapse indentedP # popStack (\d -> d == LytSquare || d == LytAttribute) # insertToken src
     TokRightBrace ->
-      st # collapse indentedP # popStack (_ == LytProperty) # popStack (_ == LytBrace) # insertToken src
+      st # collapse indentedP # popStack (_ == LytProperty) # popStack (\d -> d == LytBrace || d == LytQuote) # insertToken src
     TokRightBar ->
       st # collapse indentedP # popStack (_ == LytProperty) # popStack (_ == LytBrace) # insertToken src
 
@@ -250,6 +254,7 @@ opens = case _ of
   TokLeftSynth -> true
   TokLeftAttribute -> true
   TokLocalOpen _ -> true
+  TokQuote _ -> true
   _ -> false
 
 closes :: Token -> Boolean

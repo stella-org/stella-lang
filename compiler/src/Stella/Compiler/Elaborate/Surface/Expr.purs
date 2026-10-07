@@ -34,6 +34,7 @@ import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKin
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..))
 import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), fromCore)
+import Stella.Compiler.Elaborate.Surface.Internal (Internal)
 import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, equate, freshKindMeta, freshTypeMeta)
@@ -77,9 +78,10 @@ lift = Surf <<< map Right
 outside :: forall a. Unsupported -> Surf a
 outside = Surf <<< pure <<< Left
 
--- | What an expression is elaborated under: the declaration it belongs to, and
--- | the context its node stands in.
-type Scope = { declaration :: Qualified Ident, context :: XContext }
+-- | What an expression is elaborated under: the declaration it belongs to, the
+-- | context its node stands in, and the entries the compiler's desugarings
+-- | refer to that no catalog holds.
+type Scope = { declaration :: Qualified Ident, context :: XContext, internal :: Internal }
 
 siteAt :: Scope -> Surface.Origin -> Site
 siteAt scope origin = { context: scope.context, origin: AtSource { declaration: scope.declaration, origin } }
@@ -87,15 +89,16 @@ siteAt scope origin = { context: scope.context, origin: AtSource { declaration: 
 -- | A value declaration's definition, at its scheme: `Λ`s for its quantifiers,
 -- | `λ`s for its parameters, and its body checked against what is left.
 elaborateValue
-  :: Qualified Ident
+  :: Internal
+  -> Qualified Ident
   -> Surface.Origin
   -> TypeScheme
   -> Array Binder
   -> Expr
   -> Surf (XExpr Surface.Origin)
-elaborateValue declaration origin scheme params body = opened scope0 (fromCore scheme.body)
+elaborateValue internal declaration origin scheme params body = opened scope0 (fromCore scheme.body)
   where
-  scope0 = { declaration, context: bindKindVars emptyXContext scheme.kindVars }
+  scope0 = { declaration, context: bindKindVars emptyXContext scheme.kindVars, internal }
 
   opened scope = case _ of
     XForall a k rest -> ETyLam origin a k <$> opened (scope { context = bindTyVar scope.context a k }) rest
@@ -158,15 +161,20 @@ infer scope expr = case expr of
   _ -> outside (OutsideSubset (exprOrigin expr) "this form")
   where
   -- a global at a fresh metavariable for each kind variable and each
-  -- quantifier of its scheme, outermost first
+  -- quantifier of its scheme, outermost first: one the catalog holds, or one a
+  -- desugaring of the compiler's refers to
   global o name = do
     env <- lift askEnv
-    case lookupEntry env.session.catalog name of
+    case lookupScheme env.session.catalog name of
       Nothing -> outside (OutsideSubset o "a global the catalog does not hold")
-      Just entry -> do
-        kinds <- lift (traverse (\_ -> freshKindMeta scope.context.kindVars (Set.singleton Quantifiable)) entry.scheme.kindVars)
-        let ty = substituteKindVars (Map.fromFoldable (Array.zip entry.scheme.kindVars kinds)) entry.scheme.body
+      Just scheme -> do
+        kinds <- lift (traverse (\_ -> freshKindMeta scope.context.kindVars (Set.singleton Quantifiable)) scheme.kindVars)
+        let ty = substituteKindVars (Map.fromFoldable (Array.zip scheme.kindVars kinds)) scheme.body
         instantiated o (EGlobal o name kinds) ty
+
+  lookupScheme catalog name = case lookupEntry catalog name of
+    Just entry -> Just entry.scheme
+    Nothing -> Map.lookup name scope.internal
 
   instantiated o e = case _ of
     XForall a k rest -> do

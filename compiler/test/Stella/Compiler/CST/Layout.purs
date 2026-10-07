@@ -81,6 +81,12 @@ spec = describe "Stella.Compiler.CST.Layout" do
     "module M where\nclass%{\n  Show a where\n    show :: a -> String\n}\ny = 1" `laysOut`
       "module M where { class% { Show a where show :: a -> String } ; y = 1 }"
 
+  it "opens blocks inside a quotation as in an expression, and closes them at its `}`" do
+    "module M where\nq = %term{ let a = 1\n               b = a in b }\ny = 1" `laysOut`
+      "module M where { q = %term{ let { a = 1 ; b = a } in b } ; y = 1 }"
+    "module M where\nq = %term{ case x of\n  A -> 1 }\ny = 1" `laysOut`
+      "module M where { q = %term{ case x of { A -> 1 } } ; y = 1 }"
+
   it "closes every open block at the end" do
     "module M where\nf = case x of\n  A -> let y = 1" `laysOut`
       "module M where { f = case x of { A -> let { y = 1 } } }"

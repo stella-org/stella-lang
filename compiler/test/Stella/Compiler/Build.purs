@@ -244,6 +244,25 @@ spec = describe "Stella.Compiler.Build" do
             Map.keys r.interface.exports.macros `shouldEqual` Set.singleton "mac"
             r.interface.arities `shouldEqual` Map.singleton (Ident "f") 1
 
+  describe "a quotation" do
+    let
+      quoting = compilingUnder [ "module M where", "import Stella.Syntax (Syntax, Term)" ]
+      compiles lines = quoting lines case _ of
+        Left errors -> fail (joinWith "; " (map printCompileError errors))
+        Right _ -> pure unit
+
+    it "is the syntax it quotes, elaborated and checked as Core, through the entries no source names" do
+      compiles [ "q :: Syntax Term", "q = %term{ f 1 }" ]
+
+    it "splices in what an antiquotation holds" do
+      compiles [ "wrap :: Syntax Term -> Syntax Term", "wrap x = %term{ g $x (h $(x)) }" ]
+
+    it "holds the blocks the layout opened inside it" do
+      compiles [ "q :: Syntax Term", "q = %term{ let a = 1", "               b = a in b }" ]
+
+    it "is refused in a module that does not import Stella.Syntax, where it stands" do
+      failing [ "n :: Int", "n = %term{ 1 }" ] \errors -> errors `shouldEqual` [ "resolution 3:5" ]
+
   describe "a stage reporting an error" do
     it "is a syntax error where the parser stopped" do
       failing [ "f = = 1" ] \errors -> errors `shouldEqual` [ "syntax 2:5" ]

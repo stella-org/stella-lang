@@ -813,18 +813,18 @@ values =
         }
       ]
   -- syntax spliced into a quotation, in parentheses standing where the origin
-  -- given does
-  , value "$spliced" (quantified [ "c" ] (fns [ originRef, TApp (con "Syntax") (TVar (TyVar "c")) ] node))
+  -- given does, the trivia given before them
+  , value "$spliced" (quantified [ "c" ] (fns [ originRef, list (con "Trivia"), TApp (con "Syntax") (TVar (TyVar "c")) ] node))
       $ tylam [ "c" ]
-      $ lam [ Tuple "o" originRef, Tuple "s" (TApp (con "Syntax") (TVar (TyVar "c"))) ]
+      $ lam [ Tuple "o" originRef, Tuple "leading" (list (con "Trivia")), Tuple "s" (TApp (con "Syntax") (TVar (TyVar "c"))) ]
       $ match (v "s")
           [ branch "Syntax" [ "nodes" ] $
-              call "SyntaxGroup" [] [ v "o", g "Paren" [], bracket "(", v "nodes", cons token (bracket ")") (nil token) ]
+              call "SyntaxGroup" [] [ v "o", g "Paren" [], bracket "(" (v "leading"), v "nodes", cons token (bracket ")" (nil (con "Trivia"))) (nil token) ]
           ]
           Nothing
   ]
   where
-  bracket t = call "Token" [] [ g "GroupBracket" [], text t, nowhere, nil (con "Trivia"), v "o" ]
+  bracket t leading = call "Token" [] [ g "GroupBracket" [], text t, nowhere, leading, v "o" ]
   nowhere = call "Range" [] [ call "Position" [] [ zero, zero ], call "Position" [] [ zero, zero ] ]
 
   closingAt closes end = match closes [ branch "Cons" [ "close", "_" ] (call "startOf" [] [ v "close" ]) ] (Just end)

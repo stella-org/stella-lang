@@ -4,6 +4,7 @@ module Test.Stella.Compiler.CST.Check (spec) where
 import Prelude
 
 import Data.Either (Either(..))
+import Data.Maybe (Maybe(..))
 import Data.String (joinWith)
 import Effect.Aff (Aff)
 import Stella.Compiler.CST (parseModule, printSyntaxError)
@@ -163,3 +164,25 @@ spec = describe "Stella.Compiler.CST.Check" do
       , "infixr 6 type Tuple as /\\"
       ] `reports`
         [ { line: 2, column: 27, reason: TypeOperatorReserved } ]
+
+  describe "a quotation" do
+    it "admits a term holding antiquotations where terms stand, and checks what each splices in" do
+      [ "q = %term{ f $x (g $(h y)) }" ] `reports` []
+      [ "q = %term{ $(%term{ $x }) }" ] `reports` []
+
+    it "reports a category this version does not quote, or none, where it is named" do
+      [ "q = %type{ Int }" ] `reports` [ { line: 2, column: 5, reason: QuotationCategoryUnsupported "type" } ]
+      [ "q = %nope{ 1 }" ] `reports` [ { line: 2, column: 5, reason: QuotationCategoryUnknown "nope" } ]
+
+    it "reports what is no expression where the grammar stopped" do
+      [ "q = %term{ f = }" ] `reports` [ { line: 2, column: 14, reason: QuotationNotAnExpression (Just "=") [ "end of input" ] } ]
+
+    it "reports an antiquotation standing in no quotation, there and in a quotation's antiquotation" do
+      [ "q = f $x" ] `reports` [ { line: 2, column: 7, reason: AntiquoteOutsideQuotation } ]
+      [ "q = %term{ $(f $y) }" ] `reports` [ { line: 2, column: 16, reason: AntiquoteOutsideQuotation } ]
+
+    it "reports a quotation in the input of a macro call" do
+      [ "q = m%[ %term{ x } ]" ] `reports` [ { line: 2, column: 9, reason: QuotationInMacroInput } ]
+
+    it "reports a quotation in a quotation" do
+      [ "q = %term{ f %term{ x } }" ] `reports` [ { line: 2, column: 14, reason: QuotationNested } ]

@@ -133,6 +133,8 @@ exprRange = case _ of
   ExprLocalOpen n e -> covering n.range (exprRange e)
   ExprImportIn n e -> covering n.range (exprRange e)
   ExprMacro m -> cover m.name.range (map _.range m.body)
+  ExprQuote q -> q.range
+  ExprAntiquote a -> a.range
   ExprExpanded e -> e.call
   ExprInvalid r -> r
   ExprAt n e -> covering n.range (exprRange e)

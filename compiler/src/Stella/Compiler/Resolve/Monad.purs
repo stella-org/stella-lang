@@ -258,6 +258,9 @@ data ResolveReason
   | RefutablePattern
   -- | A form this version does not resolve yet, named.
   | NotYetSupported String
+  -- | A quotation in a module that reaches no `Stella.Syntax` through its
+  -- | imports, the syntax it builds being of that module's types.
+  | QuotationWithoutSyntax
   -- | An alias a local open names that no import declares.
   | UnknownAlias String
   -- | An operator nothing in scope stands for.
@@ -410,6 +413,7 @@ printResolveReason = case _ of
   LiteralNotScalar -> "This literal holds something that is no Unicode scalar value"
   RefutablePattern -> "This pattern can fail to match, which a binding cannot; match it with `case`"
   NotYetSupported what -> what <> " is not supported yet"
+  QuotationWithoutSyntax -> "A quotation builds syntax of `Stella.Syntax`, which this module must import"
   UnknownAlias a -> "There is no module imported as `" <> a <> "`"
   UnknownOperator n -> "There is no operator `" <> n <> "` in scope"
   AmbiguousOperator n -> "The operator `" <> n <> "` is ambiguous here; write it qualified"

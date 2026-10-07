@@ -40,7 +40,7 @@ import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.CST.Check (CheckError(..), checkExpr, printCheckReason)
 import Stella.Compiler.CST.Range (exprRange)
-import Stella.Compiler.CST.Types (CaseBody(..), Clause(..), Decl(..), Expr(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Import(..), LetBinding(..), Macro, Name, RecordField(..), SourceRange)
+import Stella.Compiler.CST.Types (CaseBody(..), Clause(..), Decl(..), Expr(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Import(..), LetBinding(..), Macro, Name, QuotePart(..), RecordField(..), SourceRange)
 import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Interface.Environment (BuildEnvironment, ModuleView, lookupInterface, reachable, viewFor)
 import Stella.Compiler.Macro.Check (MacroRefusal(..), checkMacro)
@@ -192,11 +192,16 @@ expr ctx e = case e of
   ExprLocalOpen alias inner -> opened alias inner (ExprLocalOpen alias)
   ExprImportIn alias inner -> opened alias inner (ExprImportIn alias)
   ExprMacro m -> call ctx m
+  ExprQuote q -> (\parts -> ExprQuote q { parts = parts }) <$> traverse part q.parts
   ExprAt n inner -> ExprAt n <$> go inner
   ExprCellWrite n inner -> ExprCellWrite n <$> go inner
   _ -> pure e
   where
   go = expr ctx
+
+  part = case _ of
+    QuotedAntiquote a -> (\inner -> QuotedAntiquote a { expr = inner }) <$> go a.expr
+    tokens -> pure tokens
 
   field = case _ of
     FieldValue n v -> FieldValue n <$> go v

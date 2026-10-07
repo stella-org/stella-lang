@@ -184,6 +184,7 @@ at = case _ of
   LeftUnchecked o _ -> located o <> " left unchecked"
   AttributeRejected o _ -> located o <> " attribute rejected"
   CoreRefused _ -> "the Core checker refused it"
+  InternalEntryMismatch _ -> "an internal entry mismatched"
   Broken _ -> "broken"
   AttemptPostponed -> "postponed"
   where

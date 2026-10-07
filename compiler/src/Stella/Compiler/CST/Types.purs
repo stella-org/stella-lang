@@ -30,6 +30,9 @@ module Stella.Compiler.CST.Types
   , Argument(..)
   , Directive
   , Macro
+  , Quotation
+  , QuotePart(..)
+  , Antiquote
   , DeclKeyword(..)
   , Fixity(..)
   , Decl(..)
@@ -201,6 +204,10 @@ data Token
   | TokDirective String Boolean
   -- | `format%`, the name of a macro called on the bracket or string after it.
   | TokMacro Qualifier String
+  -- | `%term{`, opening a quotation of the category named. It closes with `}`.
+  | TokQuote String
+  -- | `$` beginning an antiquotation, a name or `(` following it.
+  | TokAntiquote
   -- | The source text and the value.
   | TokInt String Int
   | TokNumber String Number
@@ -311,6 +318,8 @@ printToken = case _ of
   TokTag name -> "'" <> name
   TokDirective name _ -> "#" <> name
   TokMacro q name -> qualified q name <> "%"
+  TokQuote category -> "%" <> category <> "{"
+  TokAntiquote -> "$"
   TokInt raw _ -> raw
   TokNumber raw _ -> raw
   TokChar raw _ -> raw
@@ -401,6 +410,20 @@ type Directive = { name :: Name, args :: Maybe (Array Argument) }
 
 -- | A macro and the tokens it is called on, its brackets included.
 type Macro = { name :: Name, body :: Array SourceToken }
+
+-- | `%term{ … }`: the category named, the range from `%` to `}`, and what
+-- | the braces hold, as written: the tokens quoted, the layout's among them,
+-- | and the antiquotations between them.
+type Quotation = { category :: Name, range :: SourceRange, parts :: Array QuotePart }
+
+-- | A run of tokens a quotation holds, or an antiquotation standing in it.
+data QuotePart
+  = QuotedTokens (Array SourceToken)
+  | QuotedAntiquote Antiquote
+
+-- | `$x` or `$( e )`: where it stands, the trivia before its `$`, and the
+-- | expression it splices in.
+type Antiquote = { range :: SourceRange, leading :: Array Trivia, expr :: Expr }
 
 data DeclKeyword
   = KeywordData
@@ -530,6 +553,10 @@ data Expr
   | ExprLocalOpen Name Expr
   | ExprImportIn Name Expr
   | ExprMacro Macro
+  | ExprQuote Quotation
+  -- | An antiquotation, which stands in a quotation alone: one written
+  -- | anywhere else is read, and reported.
+  | ExprAntiquote Antiquote
   -- | What expanding the macro call standing at `call` produced. The range is
   -- | the call's, in the text the call stands in, and the expression is in the
   -- | text of the expansion.
@@ -640,6 +667,7 @@ derive instance Generic Type _
 derive instance Generic RowItem _
 derive instance Generic Operator _
 derive instance Generic Expr _
+derive instance Generic QuotePart _
 derive instance Generic RecordField _
 derive instance Generic LetBinding _
 derive instance Generic CaseBody _
@@ -702,6 +730,9 @@ instance Show Operator where
 instance Show Expr where
   show x = genericShow x
 
+instance Show QuotePart where
+  show x = genericShow x
+
 instance Show RecordField where
   show x = genericShow x
 
@@ -749,6 +780,7 @@ derive instance Eq Type
 derive instance Eq RowItem
 derive instance Eq Operator
 derive instance Eq Expr
+derive instance Eq QuotePart
 derive instance Eq RecordField
 derive instance Eq LetBinding
 derive instance Eq CaseBody

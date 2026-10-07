@@ -119,6 +119,26 @@ spec = describe "Stella.Compiler.CST.Lexer" do
     it "reads a field access" do
       "r.name" `lexesTo` [ lower "r", op ".", lower "name" ]
 
+  describe "quotations and antiquotations" do
+    it "opens a quotation at `%` apart from what stands before it, a category and `{` following" do
+      "%term{ x }" `lexesTo` [ TokQuote "term", lower "x", TokRightBrace ]
+      "f %term{x}" `lexesTo` [ lower "f", TokQuote "term", lower "x", TokRightBrace ]
+      "(%term{x})" `lexesTo` [ TokLeftParen, TokQuote "term", lower "x", TokRightBrace, TokRightParen ]
+      -- after a name, `%` stands with it: a macro call where an opener follows
+      "m%{x}" `lexesTo` [ TokMacro Nothing "m", TokLeftBrace, lower "x", TokRightBrace ]
+      "f%term{x}" `failsWith` LoneReserved "%"
+      "% term{x}" `failsWith` LoneReserved "%"
+    it "begins an antiquotation at `$` apart from what stands before it, a name or `(` following" do
+      "f $x" `lexesTo` [ lower "f", TokAntiquote, lower "x" ]
+      "f $(g x)" `lexesTo` [ lower "f", TokAntiquote, TokLeftParen, lower "g", lower "x", TokRightParen ]
+      "%term{$x}" `lexesTo` [ TokQuote "term", TokAntiquote, lower "x", TokRightBrace ]
+      "($x, $y)" `lexesTo` [ TokLeftParen, TokAntiquote, lower "x", TokComma, TokAntiquote, lower "y", TokRightParen ]
+    it "reads `$` as an operator otherwise" do
+      "f $ x" `lexesTo` [ lower "f", op "$", lower "x" ]
+      "f$x" `lexesTo` [ lower "f", op "$", lower "x" ]
+      "f $$x" `lexesTo` [ lower "f", op "$$", lower "x" ]
+      "f $X" `lexesTo` [ lower "f", op "$", upper "X" ]
+
   describe "operators" do
     it "reads a run of operator characters" do
       "a <$> b .? c .. d" `lexesTo` [ lower "a", op "<$>", lower "b", op ".?", lower "c", op "..", lower "d" ]

@@ -106,6 +106,8 @@ import Stella.Compiler.CST.Types as C
 %token DIRECTIVE_ARGS "a directive"             @ { { value: C.TokDirective _ true } }
 %token DIRECTIVE      "a directive"             @ { { value: C.TokDirective _ false } }
 %token MACRO          "a macro call"            @ { { value: C.TokMacro _ _ } }
+%token QUOTE          "a quotation"             @ { { value: C.TokQuote _ } }
+%token ANTIQUOTE      "an antiquotation"        @ { { value: C.TokAntiquote } }
 %token LIT_INT        "an integer"              @ { { value: C.TokInt _ _ } }
 %token LIT_NUMBER     "a number"                @ { { value: C.TokNumber _ _ } }
 %token LIT_CHAR       "a character"             @ { { value: C.TokChar _ _ } }
@@ -128,7 +130,10 @@ import Stella.Compiler.CST.Types as C
 %type { C.Directive } directive
 %type { C.Macro } macroCall
 %type { Array C.SourceToken } tokenTree tokenTrees tokenTreeItem
-%type { C.SourceToken } plainToken
+%type { C.SourceToken } plainToken quoteToken
+%type { C.Quotation } quotation
+%type { C.Antiquote } antiquote
+%type { Array C.QuotePart } quoteParts quoteItem
 %type { C.Decl } decl handlerDecl
 %type { C.AttributeParameter } attributeParameter
 %type { C.Type } attributeParameterType
@@ -390,6 +395,8 @@ tokenTree:
   | o = LBRACE ts = tokenTrees c = RBRACE       { [ o ] <> ts <> [ c ] }
   | o = LBAR ts = tokenTrees c = RBAR           { [ o ] <> ts <> [ c ] }
   | o = LSYNTH ts = tokenTrees c1 = RBRACE c2 = RBRACE { [ o ] <> ts <> [ c1, c2 ] }
+  -- read so that the check can report one, which no macro reads
+  | o = QUOTE ts = tokenTrees c = RBRACE        { [ o ] <> ts <> [ c ] }
   | t = LIT_STRING                              { [ t ] }
 
 tokenTrees:
@@ -398,6 +405,7 @@ tokenTrees:
 tokenTreeItem:
   | ts = tokenTree { ts }
   | t = plainToken { [ t ] }
+  | t = ANTIQUOTE  { [ t ] }
 
 plainToken:
   | t = COMMA { t }
@@ -698,6 +706,38 @@ expr3block:
   | n = ident COLONEQ e = expr
       { C.ExprCellWrite n e }
 
+-- A quotation holds tokens as written, the layout's among them, and the
+-- antiquotations between them; that they are an expression is checked later.
+quotation:
+  | o = QUOTE ps = quoteParts c = RBRACE { B.quotation o ps c }
+
+antiquote:
+  | d = ANTIQUOTE n = ident                  { B.antiquoted d n.range (C.ExprVar n) }
+  | d = ANTIQUOTE LPAREN e = expr c = RPAREN { B.antiquoted d c.range (C.ExprParens e) }
+
+quoteParts:
+  | pss = manyOrEmpty(quoteItem) { B.quoted pss }
+
+quoteItem:
+  | a = antiquote                                 { [ C.QuotedAntiquote a ] }
+  | t = quoteToken                                { [ C.QuotedTokens [ t ] ] }
+  | o = LPAREN ps = quoteParts c = RPAREN         { [ C.QuotedTokens [ o ] ] <> ps <> [ C.QuotedTokens [ c ] ] }
+  | o = LOCALOPEN ps = quoteParts c = RPAREN      { [ C.QuotedTokens [ o ] ] <> ps <> [ C.QuotedTokens [ c ] ] }
+  | o = LSQUARE ps = quoteParts c = RSQUARE       { [ C.QuotedTokens [ o ] ] <> ps <> [ C.QuotedTokens [ c ] ] }
+  | o = LATTR ps = quoteParts c = RSQUARE         { [ C.QuotedTokens [ o ] ] <> ps <> [ C.QuotedTokens [ c ] ] }
+  | o = LBRACE ps = quoteParts c = RBRACE         { [ C.QuotedTokens [ o ] ] <> ps <> [ C.QuotedTokens [ c ] ] }
+  | o = LBAR ps = quoteParts c = RBAR             { [ C.QuotedTokens [ o ] ] <> ps <> [ C.QuotedTokens [ c ] ] }
+  | o = LSYNTH ps = quoteParts c1 = RBRACE c2 = RBRACE { [ C.QuotedTokens [ o ] ] <> ps <> [ C.QuotedTokens [ c1, c2 ] ] }
+  -- read so that the check can report one
+  | o = QUOTE ps = quoteParts c = RBRACE          { [ C.QuotedTokens [ o ] ] <> ps <> [ C.QuotedTokens [ c ] ] }
+
+quoteToken:
+  | t = plainToken { t }
+  | t = LIT_STRING { t }
+  | t = VOPEN { t }
+  | t = VSEP { t }
+  | t = VCLOSE { t }
+
 expr4:
   | e = exprAtom %shift                        { e }
   | e = exprAtom DOT ls = manySep(label, DOT)  { C.ExprAccess e ls }
@@ -725,6 +765,8 @@ exprAtom:
   | o = LBRACE fs = recordFields c = RBRACE               { C.ExprRecord (B.between o c) fs }
   | t = LOCALOPEN e = expr RPAREN                 { C.ExprLocalOpen (B.name t) e }
   | m = macroCall                                 { C.ExprMacro m }
+  | q = quotation                                 { C.ExprQuote q }
+  | a = antiquote                                 { C.ExprAntiquote a }
   | n = ident AT e = exprAtom                     { C.ExprAt n e }
   | n = ident BANG                                { C.ExprCellRead n }
 

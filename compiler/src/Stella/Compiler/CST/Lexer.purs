@@ -288,8 +288,12 @@ lexWhile seed continue src = tailRec step initial
       | c == '"' -> stringLiteral cur
       | c == '\'' -> quote cur
       | c == '?' && test (i + 1) isIdentStart -> hole cur
+      -- `%term{` apart from what stands before it opens a quotation, and `$`
+      -- apart from it, a name or `(` following, begins an antiquotation
+      | c == '%' && apart && test (i + 1) isLower && is quoteOpen '{' -> ok (TokQuote (slice (i + 1) quoteOpen)) (quoteOpen + 1)
+      | c == '$' && apart && runOf i isOpChar == 1 && (test (i + 1) isLower || is (i + 1) '(') -> ok TokAntiquote (i + 1)
       | c == '#' && test (i + 1) isLower && not (is (i + 1) '_') -> directive cur
-      | c == '-' && test (i + 1) isDigit && negativeAllowed -> number cur true
+      | c == '-' && test (i + 1) isDigit && apart -> number cur true
       | isDigit c -> number cur false
       | isUpper c -> name cur i Nothing
       | isIdentStart c -> lowerName cur i Nothing
@@ -298,9 +302,13 @@ lexWhile seed continue src = tailRec step initial
     where
     i = cur.index
 
-    negativeAllowed = space || case previous of
+    -- apart from the token before: after trivia, at the start, or after what
+    -- opens or separates
+    apart = space || case previous of
       Nothing -> true
       Just tok -> opensOrSeparates tok
+
+    quoteOpen = i + 1 + runOf (i + 1) isIdentChar
 
   opensOrSeparates :: Token -> Boolean
   opensOrSeparates = case _ of
@@ -311,6 +319,7 @@ lexWhile seed continue src = tailRec step initial
     TokLeftSynth -> true
     TokLeftAttribute -> true
     TokLocalOpen _ -> true
+    TokQuote _ -> true
     TokComma -> true
     TokOperator _ _ -> true
     _ -> false

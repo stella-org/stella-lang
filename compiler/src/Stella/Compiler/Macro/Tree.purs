@@ -34,6 +34,11 @@ module Stella.Compiler.Macro.Tree
   , Result(..)
   , Origins
   , treeOf
+  , opening
+  , kindOf
+  , textOf
+  , rangeOf
+  , triviaOf
   ) where
 
 import Prelude
@@ -186,6 +191,7 @@ type Numbered = { number :: Int, token :: CST.SourceToken }
 tokenOf :: Numbered -> Token
 tokenOf n = Token (kindOf n.token.value) (textOf n.token.value) (rangeOf n.token.range) (map triviaOf n.token.leading) (InputOrigin (IssuedOrigin n.number))
 
+-- | The delimiter a token opens a group of, where it opens one.
 opening :: CST.Token -> Maybe Delimiter
 opening = case _ of
   CST.TokLeftParen -> Just Paren

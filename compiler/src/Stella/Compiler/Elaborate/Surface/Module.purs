@@ -54,6 +54,7 @@ import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
 import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), XExpr, toCoreExpr)
 import Stella.Compiler.Elaborate.CorePlus.Type (fromCore)
 import Stella.Compiler.Elaborate.Surface.Data (readData, settledData)
+import Stella.Compiler.Elaborate.Surface.Internal (internalEntries)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
 import Stella.Compiler.Elaborate.Driver.Loop (Attempter, runAttempting)
 import Stella.Compiler.Elaborate.Driver.Loop as Loop
@@ -106,6 +107,10 @@ data ElaborationError
   | AttributeRejected Surface.Origin AttributeError
   -- | A Core module the Core checker refused, which is the elaborator's fault.
   | CoreRefused (DeclFailure Surface.Origin)
+  -- | An entry a desugaring of the compiler's refers to, which a signature
+  -- | reaching its module lacks or holds at another scheme than the one listed:
+  -- | the compiler's fault.
+  | InternalEntryMismatch (Qualified Ident)
   -- | An attempt that postponed itself, which nothing the elaborator states
   -- | does: it is the elaborator's fault.
   | AttemptPostponed
@@ -147,7 +152,7 @@ elaborateValues imports importedEntries m =
   if Array.null dataErrors then
     { data: elaboratedData
     , values: settled'.values
-    , errors: unsupported <> signatureErrors <> bodyErrors <> settled'.errors
+    , errors: internalErrors <> unsupported <> signatureErrors <> bodyErrors <> settled'.errors
     }
   else { data: [], values: [], errors: dataErrors <> unsupported }
   where
@@ -177,6 +182,10 @@ elaborateValues imports importedEntries m =
   -- the signature and the catalog the values are elaborated against: the
   -- imports', with the data types and constructors the module declares
   signature = foldl (addData m.name) imports (map _.decl elaboratedData)
+  -- the entries the compiler's desugarings refer to, read off it
+  Tuple internal internalErrors = case internalEntries signature of
+    Right entries -> Tuple entries []
+    Left name -> Tuple Map.empty [ InternalEntryMismatch name ]
   constructorEntries = Array.concatMap (constructorsOf m.name) (map _.decl elaboratedData)
   imported = importedEntries <> constructorEntries
 
@@ -243,7 +252,7 @@ elaborateValues imports importedEntries m =
   -- nothing behind
   bodies = foldl bodyOne { state: read.state, bodies: [], errors: [] } schemes
   bodyOne acc v =
-    case runAttempt session (runSurf (elaborateValue v.declared.name v.declared.origin v.scheme v.declared.params v.declared.body)) acc.state of
+    case runAttempt session (runSurf (elaborateValue internal v.declared.name v.declared.origin v.scheme v.declared.params v.declared.body)) acc.state of
       Tuple (Done (Right body)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, body } }
       Tuple (Done (Left problem)) _ -> acc { errors = Array.snoc acc.errors (Unsupported problem) }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }

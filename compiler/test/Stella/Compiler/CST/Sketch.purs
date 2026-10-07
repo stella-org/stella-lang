@@ -14,7 +14,7 @@ import Prim hiding (Type)
 
 import Data.Maybe (Maybe(..))
 import Data.String (joinWith)
-import Stella.Compiler.CST.Types (Argument(..), AttributeParameter(..), Directive, Macro, Binder(..), CaseBody(..), Clause(..), Decl(..), DeclKeyword(..), Export(..), Expr(..), Fixity(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Import(..), ImportItem(..), Item(..), Kind(..), LetBinding(..), Marker(..), Members(..), Module(..), Name, Operator(..), RecordBinder(..), RecordField(..), RowItem(..), Type(..), TypeVarBinding(..), printToken)
+import Stella.Compiler.CST.Types (Argument(..), AttributeParameter(..), Directive, Macro, QuotePart(..), Token(..), Binder(..), CaseBody(..), Clause(..), Decl(..), DeclKeyword(..), Export(..), Expr(..), Fixity(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Import(..), ImportItem(..), Item(..), Kind(..), LetBinding(..), Marker(..), Members(..), Module(..), Name, Operator(..), RecordBinder(..), RecordField(..), RowItem(..), Type(..), TypeVarBinding(..), printToken)
 
 list :: Array String -> String
 list xs = "(" <> joinWith " " xs <> ")"
@@ -101,6 +101,19 @@ argument :: Argument -> String
 argument = case _ of
   ArgumentPositional e -> sketchExpr e
   ArgumentKeyed k e -> name k <> "=" <> sketchExpr e
+
+-- | A part of a quotation: its tokens as written, the layout's shown by name,
+-- | or an antiquotation.
+quotePart :: QuotePart -> String
+quotePart = case _ of
+  QuotedTokens ts -> joinWith " " (map (shown <<< _.value) ts)
+  QuotedAntiquote a -> list [ "$", sketchExpr a.expr ]
+  where
+  shown = case _ of
+    TokLayoutStart _ -> "{"
+    TokLayoutSep _ -> ";"
+    TokLayoutEnd _ -> "}"
+    t -> printToken t
 
 macro :: Macro -> String
 macro m = list [ name m.name <> "%", joinWith " " (map (printToken <<< _.value) m.body) ]
@@ -221,6 +234,8 @@ sketchExpr = case _ of
   ExprLocalOpen n e -> list [ "open", name n, sketchExpr e ]
   ExprImportIn n e -> list [ "import-in", name n, sketchExpr e ]
   ExprMacro m -> macro m
+  ExprQuote q -> list ([ "%" <> q.category.name ] <> map quotePart q.parts)
+  ExprAntiquote a -> list [ "$", sketchExpr a.expr ]
   ExprExpanded x -> "(expanded " <> sketchExpr x.expr <> ")"
   ExprInvalid _ -> "(invalid)"
   ExprAt n e -> name n <> "@" <> sketchExpr e

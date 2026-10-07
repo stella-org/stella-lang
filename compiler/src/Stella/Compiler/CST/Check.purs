@@ -10,9 +10,13 @@ module Stella.Compiler.CST.Check
 import Prelude
 import Prim hiding (Type)
 
+import Data.Array as Array
+import Data.Either (Either(..))
 import Data.Foldable (foldMap)
-import Data.Maybe (Maybe(..), isJust)
-import Stella.Compiler.CST.Types (Argument(..), AttributeParameter(..), Directive, Binder(..), CaseBody(..), Clause(..), Decl(..), Expr(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Import(..), Item(..), LetBinding(..), Module(..), Name, RecordBinder(..), RecordField(..), RowItem(..), SourceRange, Type(..), isSynthesized)
+import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.String (joinWith)
+import Stella.Compiler.CST.Parser as P
+import Stella.Compiler.CST.Types (Argument(..), AttributeParameter(..), Directive, Binder(..), CaseBody(..), Clause(..), Decl(..), Expr(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Import(..), Item(..), LetBinding(..), Module(..), Name, QuotePart(..), Quotation, RecordBinder(..), RecordField(..), RowItem(..), SourceRange, Token(..), Type(..), isSynthesized, printToken)
 
 data CheckError = CheckError SourceRange CheckReason
 
@@ -43,6 +47,20 @@ data CheckReason
   | HidingNotOnPlainImport
   -- | `/` named as a type operator, which belongs to the grammar of types.
   | TypeOperatorReserved
+  -- | An antiquotation standing in no quotation.
+  | AntiquoteOutsideQuotation
+  -- | A quotation of a category this version does not quote.
+  | QuotationCategoryUnsupported String
+  -- | A quotation of what is no category.
+  | QuotationCategoryUnknown String
+  -- | A quotation of a term whose tokens are no expression, each antiquotation
+  -- | standing as one: the token the grammar could not take, as written, where
+  -- | there was one, and what it expected.
+  | QuotationNotAnExpression (Maybe String) (Array String)
+  -- | A quotation or an antiquotation in the input of a macro call.
+  | QuotationInMacroInput
+  -- | A quotation in a quotation.
+  | QuotationNested
 
 derive instance Eq CheckReason
 
@@ -57,6 +75,12 @@ instance Show CheckReason where
     DirectiveInType -> "DirectiveInType"
     HidingNotOnPlainImport -> "HidingNotOnPlainImport"
     TypeOperatorReserved -> "TypeOperatorReserved"
+    AntiquoteOutsideQuotation -> "AntiquoteOutsideQuotation"
+    QuotationCategoryUnsupported c -> "QuotationCategoryUnsupported " <> show c
+    QuotationCategoryUnknown c -> "QuotationCategoryUnknown " <> show c
+    QuotationNotAnExpression found expected -> "QuotationNotAnExpression " <> show found <> " " <> show expected
+    QuotationInMacroInput -> "QuotationInMacroInput"
+    QuotationNested -> "QuotationNested"
 
 printCheckReason :: CheckReason -> String
 printCheckReason = case _ of
@@ -76,6 +100,14 @@ printCheckReason = case _ of
   HidingNotOnPlainImport ->
     "`hiding` can stand only on an import with no list, no alias, and no `lazy`"
   TypeOperatorReserved -> "`/` belongs to the grammar of types and cannot be a type operator"
+  AntiquoteOutsideQuotation -> "An antiquotation stands outside a quotation"
+  QuotationCategoryUnsupported c -> "A quotation of `" <> c <> "` is not supported yet; this version quotes `term` alone"
+  QuotationCategoryUnknown c -> "`" <> c <> "` is no category a quotation can be of"
+  QuotationNotAnExpression found expected ->
+    "What this quotation holds is no expression" <> foldMap (\f -> ": `" <> f <> "` was not expected") found
+      <> (if Array.null expected then "" else "; expected " <> joinWith ", " expected)
+  QuotationInMacroInput -> "A quotation in the input of a macro call is not supported yet"
+  QuotationNested -> "A quotation in a quotation is not supported yet"
 
 checkModule :: Module -> Array CheckError
 checkModule (Module m) = foldMap item m.items
@@ -255,8 +287,16 @@ expr = case _ of
   ExprImportIn _ e -> expr e
   ExprAt _ e -> expr e
   ExprCellWrite _ e -> expr e
+  ExprQuote q -> quotation q
+  ExprAntiquote a -> [ CheckError a.range AntiquoteOutsideQuotation ] <> expr a.expr
+  ExprMacro m -> Array.mapMaybe quoting m.body
   _ -> []
   where
+  quoting t = case t.value of
+    TokQuote _ -> Just (CheckError t.range QuotationInMacroInput)
+    TokAntiquote -> Just (CheckError t.range QuotationInMacroInput)
+    _ -> Nothing
+
   field = case _ of
     FieldValue _ e -> expr e
     FieldPun _ -> []
@@ -269,6 +309,37 @@ expr = case _ of
   guardLine = case _ of
     GuardBinding b e -> binder b <> expr e
     Guard g e -> expr g <> expr e
+
+-- | A quotation: of a category this version quotes, holding no quotation, its
+-- | tokens an expression where each antiquotation stands as a placeholder no
+-- | source writes, and what each antiquotation splices in.
+quotation :: Quotation -> Array CheckError
+quotation q = categoryOk <> (if Array.null nested then parsed else nested) <> foldMap antiquoted q.parts
+  where
+  nested = Array.concatMap quoted q.parts
+  quoted = case _ of
+    QuotedTokens ts -> Array.mapMaybe
+      ( \t -> case t.value of
+          TokQuote _ -> Just (CheckError t.range QuotationNested)
+          _ -> Nothing
+      )
+      ts
+    QuotedAntiquote _ -> []
+  categoryOk = case q.category.name of
+    "term" -> []
+    c | Array.elem c [ "type", "pattern", "decl", "items" ] -> [ CheckError q.category.range (QuotationCategoryUnsupported c) ]
+    c -> [ CheckError q.category.range (QuotationCategoryUnknown c) ]
+  parsed = case q.category.name of
+    "term" -> case P.parseExpr (Array.concatMap tokens q.parts) of
+      Right _ -> []
+      Left e -> [ CheckError (fromMaybe q.range (map _.range e.found)) (QuotationNotAnExpression (map (printToken <<< _.value) e.found) e.expected) ]
+    _ -> []
+  tokens = case _ of
+    QuotedTokens ts -> ts
+    QuotedAntiquote a -> [ { range: a.range, leading: a.leading, value: TokHole "$" } ]
+  antiquoted = case _ of
+    QuotedTokens _ -> []
+    QuotedAntiquote a -> expr a.expr
 
 letBinding :: LetBinding -> Array CheckError
 letBinding = case _ of

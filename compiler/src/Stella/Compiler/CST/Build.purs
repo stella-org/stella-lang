@@ -17,13 +17,16 @@ module Stella.Compiler.CST.Build
   , letBinding
   , toBinder
   , directive
+  , quotation
+  , antiquoted
+  , quoted
   ) where
 
-import Prelude
+import Prelude hiding (between)
 
 import Data.Array as Array
 import Data.Maybe (Maybe(..))
-import Stella.Compiler.CST.Types (Argument, Binder(..), Directive, Expr(..), LetBinding(..), Literal, Name, RecordBinder(..), RecordField(..), SourceRange, SourceToken, Token(..), inSource)
+import Stella.Compiler.CST.Types (Antiquote, Argument, Binder(..), Directive, Expr(..), LetBinding(..), Literal, Name, QuotePart(..), Quotation, RecordBinder(..), RecordField(..), SourceRange, SourceToken, Token(..), inSource)
 
 range :: SourceToken -> SourceRange
 range = _.range
@@ -132,3 +135,26 @@ toBinder = case _ of
   spine = case _, _ of
     ExprApp f a, args -> spine f (Array.cons a args)
     head, args -> { head, args }
+
+-- | A quotation: the category its opening token names, and what its braces
+-- | hold.
+quotation :: SourceToken -> Array QuotePart -> SourceToken -> Quotation
+quotation open parts close =
+  { category: case open.value of
+      TokQuote c -> { range: open.range, qualifier: Nothing, name: c }
+      _ -> { range: open.range, qualifier: Nothing, name: "" }
+  , range: between open close
+  , parts
+  }
+
+-- | An antiquotation, from its `$` to the end of what it splices in.
+antiquoted :: SourceToken -> SourceRange -> Expr -> Antiquote
+antiquoted dollar end expr = { range: { space: dollar.range.space, start: dollar.range.start, end: end.end }, leading: dollar.leading, expr }
+
+-- | The parts of a quotation, each run of tokens side by side made one.
+quoted :: Array (Array QuotePart) -> Array QuotePart
+quoted = Array.foldl merge [] <<< Array.concat
+  where
+  merge acc part = case Array.unsnoc acc, part of
+    Just { init, last: QuotedTokens ts }, QuotedTokens us -> Array.snoc init (QuotedTokens (ts <> us))
+    _, _ -> Array.snoc acc part
