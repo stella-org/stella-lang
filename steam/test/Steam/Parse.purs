@@ -189,7 +189,7 @@ parsersModule =
           mapTo trees
             ( lam "ts" trees $ asNodes $
                 ap (g "Cons" [ ty "SyntaxNode" ])
-                  [ ap (g "$spliced" [ ty "Term" ]) [ ap (g "$QuotedOrigin" []) [ text "Parsers", position 2 1, position 2 5 ], ap (g "Syntax" [ ty "Term" ]) [ ap (g "nodesOf" []) [ var "ts" ] ] ]
+                  [ ap (g "$spliced" [ ty "Term" ]) [ ap (g "$QuotedOrigin" []) [ text "Parsers", position 2 1, position 2 5 ], g "Nil" [ ty "Trivia" ], ap (g "Syntax" [ ty "Term" ]) [ ap (g "nodesOf" []) [ var "ts" ] ] ]
                   , noNodes
                   ]
             )

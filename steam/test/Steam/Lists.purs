@@ -388,3 +388,25 @@ spec = describe "Steam, the front end end to end" do
     it "is not run where its module's bytecode was not written" do
       building [ "Pass" ] [ main, pass ] [] \r ->
         r.result `shouldEqual` Left "unavailable Pass"
+
+  describe "a macro written with a quotation" do
+    let
+      quoting = Tuple "Quoting"
+        [ "import Stella.Syntax (List, Parser, Syntax(..), Term, TokenTree, brackets, many, map, nodesOf, tree)"
+        , "one :: List TokenTree -> Syntax Term"
+        , "one ts = %term{ 1 }"
+        , "@[macro]"
+        , "constant :: Parser (Syntax Term)"
+        , "constant = brackets (map one (many tree))"
+        , "inc :: List TokenTree -> Syntax Term"
+        , "inc ts = %term{ add $(Syntax (nodesOf ts)) 1 }"
+        , "@[macro]"
+        , "incremented :: Parser (Syntax Term)"
+        , "incremented = brackets (map inc (many tree))"
+        ]
+
+    it "expands to the syntax the quotation built, what an antiquotation holds spliced in parentheses" do
+      building [] [ Tuple "Main" [ "import Quoting", "import Base.Int (add)", "n :: Int", "n = constant%[]", "m :: Int", "m = incremented%[2]" ], quoting ] [ "n", "m" ] \r -> do
+        r.result `shouldEqual` Right [ "Quoting", "Main" ]
+        Map.lookup "n" r.values `shouldEqual` Just "1"
+        Map.lookup "m" r.values `shouldEqual` Just "3"
