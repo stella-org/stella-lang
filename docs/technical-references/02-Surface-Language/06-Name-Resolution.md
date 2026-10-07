@@ -52,6 +52,14 @@ A name standing for two macros is ambiguous where it is called. A name the modul
 
 **A call that is not expanded is reported once, where it stands, and stands as an invalid expression** that no later stage reports again: a name that resolves to no macro, to several, or to no parser of terms; a parser that fails, does not run to an answer, or runs out of steps; syntax that does not read back or does not read as a well-formed expression; and a call too deep.
 
+### A quotation
+
+**A quotation is resolved into the expression building the syntax it quotes**, `Stella.Syntax.Syntax Stella.Syntax.Term` written as an application of `Stella.Syntax`'s constructors ([Syntax](05-Syntax.md)): each token as it is written — its kind, its text, and the trivia before it — each bracket and what it holds a group, and each block the layout opened a layout group, its items as the layout separated them. The braces of the quotation are none of it. **Nothing quoted is resolved**: a name in a quotation is resolved where the syntax is read, by the module a macro's expansion stands in, as every name an expansion produces is.
+
+**An antiquotation is resolved where it stands**, as an expression of the module, and is syntax of a term; what it splices in stands in parentheses, so that it is one operand whatever it holds: `%term{ f $x }` with `x` holding `1 + 2` reads `f (1 + 2)`. A macro call inside an antiquotation is expanded as any other is.
+
+**Every token and node of a quotation carries an origin declaring where it was written**: the module and the range in its source, which a diagnostic of an expansion it stands in names beside the call ([Surface AST](08-Surface-AST.md)). The constructor of that origin and the splicing are `Stella.Syntax`'s elaboration-only entries, which the elaborator reads at the schemes the compiler lists and no source names ([Modules](../06-Modules/01-Modules.md)). **A module holding a quotation imports `Stella.Syntax`**, whose types the syntax is of; one that does not is reported where the quotation stands.
+
 ## Namespaces
 
 **A name is looked up in the namespace its position calls for**, and a name in one namespace never hides a name in another.

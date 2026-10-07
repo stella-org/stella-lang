@@ -8,7 +8,7 @@ This document settles how source text becomes tokens. The lexer is `Stella.Compi
 
 **A token is the longest match**, apart from the exceptions each rule below names: a negative literal, a comment, `|}`, and `@[`.
 
-**Some tokens depend on adjacency.** The whitespace and comments before a token are kept on it as written, its leading trivia — every run of spaces, every line break as spelt, and every comment — and what follows the last token is kept apart, so that no character of a text is lost but a byte order mark at its start, which marks the encoding and is no text. Whether a token stands apart from the one before it is read off its trivia, the first token of a text standing apart, and several rules read it: the `%` of a macro call, the argument list of a directive, a typed hole, the `@` of a label and of an as-pattern, the `!` of a cell read, an operator as a value, and the `-` of a negative literal.
+**Some tokens depend on adjacency.** The whitespace and comments before a token are kept on it as written, its leading trivia — every run of spaces, every line break as spelt, and every comment — and what follows the last token is kept apart, so that no character of a text is lost but a byte order mark at its start, which marks the encoding and is no text. Whether a token stands apart from the one before it is read off its trivia, the first token of a text standing apart, and several rules read it: the `%` of a macro call and of a quotation, the `$` of an antiquotation, the argument list of a directive, a typed hole, the `@` of a label and of an as-pattern, the `!` of a cell read, an operator as a value, and the `-` of a negative literal.
 
 **Positions** count lines from 1 and columns from 1, in UTF-16 code units, which is what an editor protocol counts.
 
@@ -88,7 +88,8 @@ operator ::= opChar+
 
 - **`?` and `-` alone are ordinary operators.**
 - **`\` alone is the backslash of a lambda**, `\x -> e`, and among other operator characters it is one of them: `/\` and `\/` are operators. The longest match decides, so `f $\x -> x` is `f`, `$\`, `x`, `->`, `x`, and a lambda after an operator is written with space between.
-- **`%` and `#` alone are lexical errors.** `%` marks a macro call and `#` a directive, and neither is an operator on its own.
+- **`%` and `#` alone are lexical errors.** `%` marks a macro call or a quotation and `#` a directive, and neither is an operator on its own.
+- **`$` alone is an operator**, `f $ x`, but where it begins an antiquotation (below).
 - **`@` stands with no space on either side**: `get@cache`, `mb@(Just _)`. With space beside it, it is a lexical error.
 - **`!` alone follows a lower case name with no space between**: `n!` reads a cell. Anywhere else it is a lexical error. `n!=m` is `n`, `!=`, `m`, the longest match.
 - **`/` is an ordinary operator in an expression.** In a type it belongs to the grammar, as the `/` of a computation type `τ / ρ`, and is no type operator; any other operator may be one ([Syntax](05-Syntax.md)).
@@ -118,10 +119,14 @@ operator ::= opChar+
 | a directive and `(` | a directive with arguments | `#observ(none)` |
 | `?` and a name or `_` | a typed hole | `?todo`, `?Foo`, `?_` |
 | `'` and an upper case letter | a variant tag | `'Ok`, `'A` |
+| `%` apart from the token before, a lower case name, and `{` | the opening of a quotation | `%term{`, `f %term{` |
+| `$` alone, apart from the token before, and a lower case name or `(` | an antiquotation | `$x`, `$(f x)` |
 
 - **A macro call** is the name and the `%`. The bracket or the string after it is an ordinary token.
 - **A directive** is the name. Whether an argument list follows with no space is recorded on it: `#observ(none)` has one, and in `(#unbox (Maybe Int))` the parenthesis is what the directive applies to.
 - **`?` followed by a name is a hole** wherever it stands, so `x?y` is `x` and the hole `?y`. A `?` followed by nothing that can begin a name is an operator character.
+- **A quotation opens with one token**, `%`, the category, and `{`; it closes with an ordinary `}`. After a lower case name the `%` stands with the name, so `f%term{` is no quotation, and `name%{` is a macro call.
+- **An antiquotation is the `$` alone**; the name or the parenthesis after it is an ordinary token. A token stands apart where trivia stands before it, where it is the first of a text, and after a token that opens a bracket or a quotation, a comma, or an operator, so `f $x`, `($x, $y)`, and `%term{$x}` hold antiquotations, while `f$x` and `f $ x` hold the operator `$`.
 - **A tag has no `'` and no `?` in it.** `'A'` is a character, `'A` a tag, and `'Ok'` a lexical error.
 
 ## Numeric literals

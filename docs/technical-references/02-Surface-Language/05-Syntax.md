@@ -132,6 +132,7 @@ handle work with { State full | get _ -> resume 0 | set _ -> resume () ; runToSt
 - **A keyword standing as a record label opens nothing**: after `{`, `{|`, `{{`, a comma inside one of them, and a `.` of field access. `{ type: 1, where: 2 }.where` holds no block.
 - **A keyword directly inside an attribute opens nothing**, being a label of its arguments: `@[foo where=1]`. Inside a bracket nested in the attribute the rule is the ordinary one.
 - **Inside a macro's bracket nothing is inserted at all.** The tokens after `name%` up to the matching bracket pass through as they were lexed, and the macro receives them with their positions.
+- **Inside a quotation's braces blocks open as they do in an expression**: `%term{ let a = 1 … in a }` holds a block, and its `}` closes every block opened inside it.
 
 ## Notation
 
@@ -216,7 +217,7 @@ tokenTree ::= "(" tokenTreeItem* ")" | "M.(" tokenTreeItem* ")"
 tokenTreeItem ::= tokenTree | any token but a bracket
 ```
 
-A macro call stands where an expression does, and where an item does: `format%"{n}"`, `class%{ … }`.
+A macro call stands where an expression does, and where an item does: `format%"{n}"`, `class%{ … }`. **A quotation or an antiquotation in a macro call's input is an error** in this version, where it stands.
 
 **What an expansion produces is read by this grammar** ([Name Resolution](06-Name-Resolution.md)). A call standing where an expression does is replaced by one expression, read from the tokens the macro returned with the trivia it gave each, and each block it returned as a layout group stands as the virtual tokens the layout inserts for a block — one opening it, one between two items, one closing it — so nothing is recomputed from indentation and no source `;` is involved. What is read is checked as an expression of source is.
 
@@ -325,6 +326,7 @@ exprAtom ::= "_" | HOLE | qualIdent | qualProperName | DISCRIMINATOR
            | "{" recordFields? "}"
            | "M.(" expr ")"
            | macroCall
+           | quotation
            | ident "@" exprAtom
            | ident "!"
 
@@ -340,6 +342,24 @@ letBinding  ::= ident "::" type | binder1 "=" expr
 - **A record literal's field is `name: e`, a pun `name`, or a replacement `name = e`, and one spread `...e` may stand last.**
 - **`op@label`** performs an operation of a labelled effect, and on the left of a guard block's binding `m@(Just x)` is an as-pattern; **`x!`** reads a cell and **`x := e`** writes one ([Effect Handlers](02-Effect-Handlers.md)).
 - **`M.( e )` opens `M` within `e`**, and **`import M in e`** does the same over the rest of the expression ([Name Resolution](06-Name-Resolution.md)).
+
+### Quotations
+
+**A quotation is the syntax it holds, as a value**: `%term{ … }` is the `Stella.Syntax.Syntax Stella.Syntax.Term` its tokens are ([Name Resolution](06-Name-Resolution.md)).
+
+```text
+quotation    ::= QUOTE quoteItem* "}"
+quoteItem    ::= antiquote | any token but a bracket or QUOTE, the layout's among them
+               | "(" quoteItem* ")" | "M.(" quoteItem* ")" | "[" quoteItem* "]"
+               | "@[" quoteItem* "]" | "{" quoteItem* "}" | "{|" quoteItem* "|}"
+               | "{{" quoteItem* "}" "}" | QUOTE quoteItem* "}"
+antiquote    ::= ANTIQUOTE ident | ANTIQUOTE "(" expr ")"
+```
+
+- **Its category is named after the `%`, and this version quotes `term` alone.** `%type`, `%pattern`, `%decl`, and `%items` are categories it does not quote yet, and any other name is no category; either is an error where the name stands.
+- **What a quotation of a term holds is an expression** once each antiquotation stands as one, which is checked as the module's syntax is: a quotation of what is no expression is an error where the grammar stopped. An antiquotation stands where a term does, and nowhere else.
+- **A quotation in a quotation is not supported yet**, and is an error where it stands; the grammar reads one so that the check can report it.
+- **An antiquotation stands in a quotation alone**, and one anywhere else is an error where it stands; one in an antiquotation's expression is such an error too, the expression being outside the quotation.
 - **A local function binding is written in a `let` as a name followed by patterns**, `let f x = x`; a name alone binds a value, and anything else is a pattern binding.
 
 ### Case

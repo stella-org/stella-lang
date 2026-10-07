@@ -133,17 +133,17 @@ Writing syntax is quoting it. A quotation is a surface form holding syntax of a 
 **antiquotations** splicing in values of type `Syntax c` computed around it:
 
 ```stella
-quoteTerm
-  let
-    x = $e1
-    y = $e2
-  in x
+%term{ let
+         x = $e1
+         y = $e2
+       in x }
 ```
 
 The quoted text is read by the host's grammar for the category, extended by antiquotation holes,
 so a quotation that is no expression is an error where it is written. Its layout becomes layout groups: the block above is
-one group of two items. The spelling of a quotation and of an antiquotation is fixed with their
-implementation.
+one group of two items. The spelling, `%term{ … }` and `$x` or `$( e )`, and how a quotation is
+resolved are fixed in the technical references ([Syntax](../technical-references/02-Surface-Language/05-Syntax.md),
+[Name Resolution](../technical-references/02-Surface-Language/06-Name-Resolution.md)).
 
 ### 6. Running a parser
 
@@ -233,7 +233,6 @@ The contract above is built so that each of these adds to it rather than replace
 
 ## Open Questions
 
-- The spelling of quotation and antiquotation.
 - **What a trigger hands its parser.** A parser selected by a trigger cannot run inside the host
   parser's states, so a `SyntaxSpec` says how far the host reads the call as a token tree — a
   delimited group, a layout block, until a set of tokens — and whether the trigger itself is part
