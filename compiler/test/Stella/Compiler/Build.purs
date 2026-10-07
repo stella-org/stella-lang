@@ -22,7 +22,7 @@ import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
 import Effect.Ref as Ref
 import Stella.Compiler.Bytecode.Lower (LowerError(..))
-import Stella.Compiler.CST.Types (inSource)
+import Stella.Compiler.CST.Types (ExpansionId(..), RangeSpace(..), SourcePos, inSource)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
 import Stella.Compiler.Elaborate.Environment.Imported (compilationSignature, importedSignature)
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..))
@@ -37,7 +37,9 @@ import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (ParseOutcome(..), RunParser, defaultSettings)
 import Stella.Compiler.Macro.Tree (Position(..), Range(..), SyntaxNode(..), Token(..), TokenTree(..))
 import Stella.Compiler.Macro.Tree as Tree
-import Stella.Compiler.Build (BackendProblem(..), BuildError(..), SourceRoot, defaultSourceRoots, CompileError(..), CompileWarning, CompilerAction, DiagnosticLocation, EnvironmentProblem(..), PackageFile, SyntaxProblem(..), build, buildMessages, compileModule, defaultHooks, locationsOf, printCompileError, warningLocationOf)
+import Stella.Compiler.Build (BackendProblem(..), BuildError(..), SourceRoot, defaultSourceRoots, CompileError(..), CompileWarning, CompilerAction, EnvironmentProblem(..), PackageFile, SyntaxProblem(..), build, buildMessages, compileModule, defaultHooks, locationsOf, printBuildMessage, printCompileError, warningLocationOf)
+import Stella.Compiler.Resolve.Module (ResolutionError(..))
+import Stella.Compiler.Resolve.Monad (ResolveError(..), ResolveReason(..)) as Resolve
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore (Decl(..))
 import Stella.Compiler.TypedCore.Kind (Kind(..), monoScheme)
@@ -193,7 +195,7 @@ stageOf = case _ of
   Elaboration _ -> "elaboration"
   Backend _ -> "backend"
 
-at :: DiagnosticLocation -> String
+at :: forall r. { start :: SourcePos | r } -> String
 at l = fmt @"{line}:{column}" { line: l.start.line, column: l.start.column }
 
 spec :: Spec Unit
@@ -296,6 +298,40 @@ spec = describe "Stella.Compiler.Build" do
       locationsOf refused `shouldEqual` []
       String.take 23 (printCompileError refused) `shouldEqual` "Internal compiler error"
       String.take 23 (printCompileError (Elaboration AttemptPostponed)) `shouldEqual` "Internal compiler error"
+
+    it "names beside the call where what an expansion produced was written, by the path of a module of the build or by its name" do
+      let
+        pos line column = { line, column }
+        call = inSource (pos 4 6) (pos 4 14)
+        -- the expansion's first token a quotation of Data.List wrote, its second the call's input
+        space = Expansion
+          { id: ExpansionId 0
+          , macro: Qualified (ModuleName "Data.List") (Ident "ls")
+          , call
+          , written: [ { space: Quotation (ModuleName "Data.List"), start: pos 7 30, end: pos 7 34 }, inSource (pos 4 10) (pos 4 13) ]
+          }
+        inExpansion n = { space, start: pos 1 n, end: pos 1 (n + 1) }
+        unknown r = Resolution (ResolvingError (Resolve.ResolveError r (Resolve.UnknownConstructor "Cons")))
+        printed paths = map printBuildMessage $ NonEmptyArray.toArray $ buildMessages $ ModuleFailed
+          { path: "src/Main.stel"
+          , name: ModuleName "Main"
+          -- the third covers no token of the expansion, and was written at the call
+          , errors: NonEmptyArray.cons' (unknown (inExpansion 1)) [ unknown (inExpansion 2), unknown (inExpansion 5), unknown call ]
+          , paths
+          }
+      printed (Map.singleton (ModuleName "Data.List") "src/Data/List.stel") `shouldEqual`
+        [ "src/Main.stel:4:6: There is no constructor `Cons` in scope (written at src/Data/List.stel:7:30)"
+        , "src/Main.stel:4:6: There is no constructor `Cons` in scope (written at src/Main.stel:4:10)"
+        , "src/Main.stel:4:6: There is no constructor `Cons` in scope"
+        , "src/Main.stel:4:6: There is no constructor `Cons` in scope"
+        ]
+      Array.take 1 (printed Map.empty) `shouldEqual` [ "src/Main.stel:4:6: There is no constructor `Cons` in scope (written at Data.List:7:30)" ]
+      let
+        -- a call a quotation of Data.List wrote, as the first token of the
+        -- expansion above
+        inner = Expansion { id: ExpansionId 1, macro: Qualified (ModuleName "Data.List") (Ident "ls"), call: inExpansion 1, written: [] }
+        uncovered = unknown { space: inner, start: pos 1 1, end: pos 1 2 }
+      map _.written (locationsOf uncovered) `shouldEqual` [ Nothing ]
 
   describe "the signature a module is compiled against" do
     it "holds the types the ABI manifest supplies to the module itself" do

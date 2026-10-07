@@ -78,12 +78,12 @@ import Data.String (Pattern(..), joinWith, stripSuffix)
 import Data.String.CodeUnits as SCU
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.Build.Report (BackendProblem(..), BuildError(..), BuildMessage, SourceRoot, CompileError(..), CompileWarning, DiagnosticLocation, EnvironmentProblem(..), SyntaxProblem(..), buildMessages, locationsOf, primaryLocationOf, printCompileError, printCompileWarning, warningLocationOf)
+import Stella.Compiler.Build.Report (BackendProblem(..), BuildError(..), BuildMessage, SourceRoot, CompileError(..), CompileWarning, DiagnosticLocation, EnvironmentProblem(..), MessageLocation, SyntaxProblem(..), WrittenFile(..), WrittenLocation, WrittenSource(..), buildMessages, locationOf, locationsOf, primaryLocationOf, printBuildMessage, printCompileError, printCompileWarning, warningLocationOf, warningMessage)
 import Stella.Compiler.Bytecode.Lower (lower)
 import Stella.Compiler.Bytecode.Module (Debug, Dmo) as Bytecode
 import Stella.Compiler.CST (parseHeader, parseModule)
 import Stella.Compiler.CST.Check (checkModule)
-import Stella.Compiler.CST.Types (Import(..), Item(..), Module(..), SourceRange)
+import Stella.Compiler.CST.Types (Import(..), Item(..), Module(..))
 import Stella.Compiler.Elaborate.Environment.Imported (compilationSignature, importedCatalog)
 import Stella.Compiler.Elaborate.Surface.Group (groups)
 import Stella.Compiler.Elaborate.Surface.Module (elaborateModule)
@@ -95,7 +95,6 @@ import Stella.Compiler.Macro.Run (ExpansionSettings, RunParser)
 import Stella.Compiler.MiddleEnd.IR (Debug, Module) as MIR
 import Stella.Compiler.MiddleEnd.Translate (translate)
 import Stella.Compiler.Resolve.Module (Resolved, resolveModuleExpanding)
-import Stella.Compiler.Surface.Origin (originOf, rangeOf)
 import Stella.Compiler.Surface.Origin (Origin) as Surface
 import Stella.Compiler.TypedCore (Declared, Module) as Core
 import Stella.Compiler.TypedCore.Name (ModuleName(..))
@@ -142,7 +141,7 @@ type CompilerHooks m =
   , onContinueOptimizeIter :: Int -> MIR.Module -> m Unit
   , onLeaveOptimizeIter :: MIR.Module -> m Unit
   , onLowered :: { dmo :: Bytecode.Dmo, interface :: ModuleInterface, debug :: Bytecode.Debug Surface.Origin } -> m Unit
-  , onModuleDone :: { path :: String, name :: ModuleName, warnings :: Array CompileWarning } -> m Unit
+  , onModuleDone :: { path :: String, name :: ModuleName, warnings :: Array CompileWarning, paths :: Map ModuleName String } -> m Unit
   }
 
 defaultHooks :: forall m. Applicative m => CompilerHooks m
@@ -180,9 +179,10 @@ build action settings env roots files = runExceptT do
   except (rootsApart roots)
   named <- except (placed roots files)
   for_ (Array.find (\f -> Map.member f.name env.interfaces) named) (throwError <<< NameInEnvironment)
-  headers <- headersOf action named
+  let paths = Map.fromFoldable (map (\f -> Tuple f.name f.path) named)
+  headers <- headersOf action paths named
   order <- except (ordered headers)
-  compileAll action settings env order
+  compileAll action settings env paths order
 
 -- | Every file given its module's name, read off its path; no file given twice,
 -- | and no module named twice.
@@ -257,14 +257,15 @@ headersOf
   :: forall m
    . MonadRec m
   => CompilerAction m
+  -> Map ModuleName String
   -> Array { path :: String, name :: ModuleName }
   -> ExceptT BuildError m (Array Header)
-headersOf action named = tailRecM step { headers: [], i: 0 }
+headersOf action paths named = tailRecM step { headers: [], i: 0 }
   where
   step { headers, i } = case Array.index named i of
     Nothing -> pure (Done headers)
     Just file -> do
-      header <- headerOf action file
+      header <- headerOf action paths file
       pure (Loop { headers: Array.snoc headers header, i: i + 1 })
 
 -- | A file's header, its declarations left unread; the header naming the module
@@ -273,18 +274,19 @@ headerOf
   :: forall m
    . Monad m
   => CompilerAction m
+  -> Map ModuleName String
   -> { path :: String, name :: ModuleName }
   -> ExceptT BuildError m Header
-headerOf action file = do
+headerOf action paths file = do
   text <- action.readSource file.path # orFailWithM (\detail -> Unreadable { path: file.path, detail })
-  Module m <- parseHeader text # orFailWith (\err -> ModuleFailed { path: file.path, name: file.name, errors: pure (Syntax (Unparsed err)) })
+  Module m <- parseHeader text # orFailWith (\err -> ModuleFailed { path: file.path, name: file.name, errors: pure (Syntax (Unparsed err)), paths })
   let written = ModuleName m.name.name
   when (written /= file.name) do
-    throwError (NameMismatch { path: file.path, written, expected: file.name, at: inSource m.name.range })
+    throwError (NameMismatch { path: file.path, written, expected: file.name, at: locationOf m.name.range })
   pure { path: file.path, name: file.name, imports: Array.mapMaybe importOf m.items }
   where
   importOf = case _ of
-    ItemImport (Import r) -> Just { module: ModuleName r.module.name, at: inSource r.module.range }
+    ItemImport (Import r) -> Just { module: ModuleName r.module.name, at: locationOf r.module.range }
     _ -> Nothing
 
 -- | The headers in an order their imports allow: each after every module of
@@ -309,16 +311,17 @@ compileAll
   => CompilerAction m
   -> ExpansionSettings
   -> BuildEnvironment
+  -> Map ModuleName String
   -> Array Header
   -> ExceptT BuildError m (Array { path :: String, name :: ModuleName })
-compileAll action settings env0 order = tailRecM step { env: env0, built: Map.empty, done: [], i: 0 }
+compileAll action settings env0 paths order = tailRecM step { env: env0, built: Map.empty, done: [], i: 0 }
   where
   total = Array.length order
   step { env, built, done, i } = case Array.index order i of
     Nothing -> pure (Done done)
     Just header -> do
-      made <- compileOne action settings env built { current: i + 1, total } header
-      committed <- commit action header env built made
+      made <- compileOne action settings env built paths { current: i + 1, total } header
+      committed <- commit action paths header env built made
       pure (Loop { env: committed.env, built: committed.built, done: Array.snoc done { path: header.path, name: header.name }, i: i + 1 })
 
 -- | A module of the build read and compiled against the environment and the
@@ -330,13 +333,14 @@ compileOne
   -> ExpansionSettings
   -> BuildEnvironment
   -> BuiltModules
+  -> Map ModuleName String
   -> Progress
   -> Header
   -> ExceptT BuildError m Compiled
-compileOne action settings env built progress header = do
+compileOne action settings env built paths progress header = do
   text <- action.readSource header.path # orFailWithM (\detail -> Unreadable { path: header.path, detail })
   lift (action.hooks.onStartCompile progress { path: header.path, name: header.name })
-  compileModule action settings env built text # orFailWithM (\errors -> ModuleFailed { path: header.path, name: header.name, errors })
+  compileModule action settings env built text # orFailWithM (\errors -> ModuleFailed { path: header.path, name: header.name, errors, paths })
 
 -- | A module compiled to the end made available to the modules after it: its
 -- | interface added to the environment and to the modules of the build. Only
@@ -346,16 +350,17 @@ commit
   :: forall m
    . Monad m
   => CompilerAction m
+  -> Map ModuleName String
   -> Header
   -> BuildEnvironment
   -> BuiltModules
   -> Compiled
   -> ExceptT BuildError m { env :: BuildEnvironment, built :: BuiltModules }
-commit action header env built made = do
+commit action paths header env built made = do
   env' <- addInterface made.interface env
-    # orFailWith (\e -> ModuleFailed { path: header.path, name: header.name, errors: pure (Environment (InterfaceNotAdded e)) })
+    # orFailWith (\e -> ModuleFailed { path: header.path, name: header.name, errors: pure (Environment (InterfaceNotAdded e)), paths })
   lift (action.hooks.onLowered { dmo: made.dmo, interface: made.interface, debug: made.debug })
-  lift (action.hooks.onModuleDone { path: header.path, name: header.name, warnings: made.warnings })
+  lift (action.hooks.onModuleDone { path: header.path, name: header.name, warnings: made.warnings, paths })
   pure { env: env', built: Map.insert header.name made.interface built }
 
 -- | What compiling a module makes: its bytecode and interface, and the
@@ -501,7 +506,3 @@ failingWith :: forall m e. Monad m => (e -> CompileError) -> Array e -> Phase m 
 failingWith wrap errors = case NonEmptyArray.fromArray errors of
   Just es -> except (Left (map wrap es))
   Nothing -> pure unit
-
--- | A range of the source, as a diagnostic names it.
-inSource :: SourceRange -> DiagnosticLocation
-inSource r = let s = rangeOf (originOf r) in { start: s.start, end: s.end }

@@ -4,8 +4,10 @@
 -- |
 -- | **A place is a range of the source.** A range in what an expansion
 -- | produced is taken back to the call written in the source, through every
--- | expansion it stands in. An error about the build rather than about a
--- | place — an interface, or a fault of the compiler's own — names none.
+-- | expansion it stands in, and the place says beside it where what it covers
+-- | was written: in the input of a call, or in a quotation of the module given.
+-- | An error about the build rather than about a place — an interface, or a
+-- | fault of the compiler's own — names none.
 -- |
 -- | **A fault of the compiler's is said to be one**, so that an author tells a
 -- | program to correct from a compiler to report.
@@ -16,6 +18,9 @@ module Stella.Compiler.Build.Report
   , BackendProblem(..)
   , CompileWarning
   , DiagnosticLocation
+  , WrittenLocation
+  , WrittenSource(..)
+  , locationOf
   , locationsOf
   , primaryLocationOf
   , warningLocationOf
@@ -24,7 +29,11 @@ module Stella.Compiler.Build.Report
   , BuildError(..)
   , SourceRoot
   , BuildMessage
+  , MessageLocation
+  , WrittenFile(..)
   , buildMessages
+  , warningMessage
+  , printBuildMessage
   ) where
 
 import Prelude
@@ -33,11 +42,14 @@ import Fmt (fmt)
 import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
-import Data.Maybe (Maybe(..))
+import Data.Foldable (foldMap)
+import Data.Map (Map)
+import Data.Map as Map
+import Data.Maybe (Maybe(..), maybe)
 import Data.String (joinWith)
 import Stella.Compiler.CST (SyntaxError, syntaxErrorMessage, syntaxErrorPosition)
 import Stella.Compiler.CST.Check (CheckError(..), printCheckReason)
-import Stella.Compiler.CST.Types (SourcePos, SourceRange)
+import Stella.Compiler.CST.Types (RangeSpace(..), SourcePos, SourceRange)
 import Stella.Compiler.Bytecode.Lower (LowerError)
 import Stella.Compiler.Elaborate.Environment.Imported (ImportError)
 import Stella.Compiler.Elaborate.Surface.Module (ElaborationError)
@@ -51,7 +63,7 @@ import Stella.Compiler.Resolve.Group (GroupError(..), printGroupReason)
 import Stella.Compiler.Resolve.Module (ResolutionError(..), ResolutionWarning(..))
 import Stella.Compiler.Resolve.Monad (ResolveError(..), ResolveWarning(..), printResolveReason, printResolveWarning)
 import Stella.Compiler.Resolve.Scope (ScopeError(..), ScopeWarning(..), printScopeReason, printScopeWarning)
-import Stella.Compiler.Surface.Origin (originOf, rangeOf)
+import Stella.Compiler.Surface.Origin (Origin(..), originOf, rangeOf)
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Name (ModuleName(..))
 
@@ -90,20 +102,37 @@ data BackendProblem
 type CompileWarning = ResolutionWarning
 
 -- | A range of the source: the first position it covers and the one just
--- | after it; a point where the two are one.
-type DiagnosticLocation = { start :: SourcePos, end :: SourcePos }
+-- | after it, a point where the two are one; and where what it covers was
+-- | written, where an expansion produced it and it was written elsewhere.
+type DiagnosticLocation = { start :: SourcePos, end :: SourcePos, written :: Maybe WrittenLocation }
+
+-- | Where what an expansion produced was written: a range of a source.
+type WrittenLocation = { source :: WrittenSource, start :: SourcePos, end :: SourcePos }
+
+-- | The source a range is of: that of the file a diagnostic is about, or that
+-- | of the module given, a quotation of which it is in.
+data WrittenSource
+  = ThisFile
+  | ModuleAt ModuleName
+
+derive instance Eq WrittenSource
+
+instance Show WrittenSource where
+  show = case _ of
+    ThisFile -> "ThisFile"
+    ModuleAt m -> "(ModuleAt " <> show m <> ")"
 
 -- | The places an error is about, the one it is chiefly about first.
 locationsOf :: CompileError -> Array DiagnosticLocation
 locationsOf = case _ of
   Syntax (Unparsed e) -> [ point (syntaxErrorPosition e) ]
-  Syntax (IllFormed (CheckError r _)) -> [ inSource r ]
-  Resolution e -> map inSource (resolutionRanges e)
+  Syntax (IllFormed (CheckError r _)) -> [ locationOf r ]
+  Resolution e -> map locationOf (resolutionRanges e)
   Environment _ -> []
   Elaboration e -> map fromOrigin (elaborationOrigins e)
   Backend _ -> []
   where
-  point pos = { start: pos, end: pos }
+  point pos = { start: pos, end: pos, written: Nothing }
 
 primaryLocationOf :: CompileError -> Maybe DiagnosticLocation
 primaryLocationOf = Array.head <<< locationsOf
@@ -118,18 +147,38 @@ resolutionRanges = case _ of
   ExpandingError (ExpansionError r _) -> [ r ]
 
 warningLocationOf :: CompileWarning -> DiagnosticLocation
-warningLocationOf = inSource <<< case _ of
+warningLocationOf = locationOf <<< case _ of
   ScopingWarning (HidesImport r _ _) -> r
   ResolvingWarning (HidesTypeVariable r _) -> r
   ResolvingWarning (HidesValue r _) -> r
   ResolvingWarning (OpenHidesLocal r _) -> r
 
 -- | A range of any text, as the range of the source it stands for.
-inSource :: SourceRange -> DiagnosticLocation
-inSource = fromOrigin <<< originOf
+locationOf :: SourceRange -> DiagnosticLocation
+locationOf = fromOrigin <<< originOf
 
+-- | The range of the source an origin is located by, and where what it covers
+-- | was written: the source range the origins it was written as lead to,
+-- | through every expansion, where it covers a token of its expansion and that
+-- | range is another.
 fromOrigin :: Surface.Origin -> DiagnosticLocation
-fromOrigin o = let r = rangeOf o in { start: r.start, end: r.end }
+fromOrigin o = { start: at.start, end: at.end, written: writtenOf o }
+  where
+  at = rangeOf o
+  writtenOf = case _ of
+    FromSource _ -> Nothing
+    FromExpansion e | e.written == e.call -> Nothing
+    FromExpansion e ->
+      let
+        w = sourceOf e.written
+      in
+        if w.source == ThisFile && w.start == at.start && w.end == at.end then Nothing else Just w
+  sourceOf = case _ of
+    FromSource r -> { source: sourceIn r.space, start: r.start, end: r.end }
+    FromExpansion e -> sourceOf e.written
+  sourceIn = case _ of
+    Quotation m -> ModuleAt m
+    _ -> ThisFile
 
 printCompileError :: CompileError -> String
 printCompileError = case _ of
@@ -193,11 +242,34 @@ data BuildError
   | NameInEnvironment { path :: String, name :: ModuleName }
   -- | Modules importing one another, in the order the build was given them.
   | ImportCycle (NonEmptyArray { path :: String, name :: ModuleName })
-  | ModuleFailed { path :: String, name :: ModuleName, errors :: NonEmptyArray CompileError }
+  -- | A module that does not compile, with the path of each module of the
+  -- | build, which a place its errors name may be written in.
+  | ModuleFailed { path :: String, name :: ModuleName, errors :: NonEmptyArray CompileError, paths :: Map ModuleName String }
 
--- | One thing a build error says: the file it is about, the places in it, and
--- | what it says.
-type BuildMessage = { path :: Maybe String, locations :: Array DiagnosticLocation, message :: String }
+-- | One thing a build error or a warning says: the file it is about, the
+-- | places in it, and what it says.
+type BuildMessage = { path :: Maybe String, locations :: Array MessageLocation, message :: String }
+
+-- | A place in the file a message is about, and where what it covers was
+-- | written.
+type MessageLocation =
+  { start :: SourcePos
+  , end :: SourcePos
+  , written :: Maybe { file :: WrittenFile, start :: SourcePos, end :: SourcePos }
+  }
+
+-- | A file a range is of: by its path, or, for a module the build is compiled
+-- | against, by the module's name.
+data WrittenFile
+  = FileAt String
+  | InModule ModuleName
+
+derive instance Eq WrittenFile
+
+instance Show WrittenFile where
+  show = case _ of
+    FileAt p -> "(FileAt " <> show p <> ")"
+    InModule m -> "(InModule " <> show m <> ")"
 
 -- | What a build error says, one message for each error of a module.
 buildMessages :: BuildError -> NonEmptyArray BuildMessage
@@ -213,7 +285,7 @@ buildMessages = case _ of
     , message: fmt @"These files name one module, `{name}`: {paths}" { name: moduleText r.name, paths: joinWith ", " r.paths }
     }
   Unreadable r -> one r.path [] ("This file cannot be read: " <> r.detail)
-  NameMismatch r -> one r.path [ r.at ]
+  NameMismatch r -> one r.path [ located Map.empty r.path r.at ]
     (fmt @"This module is named `{written}`, and its path names it `{expected}`" { written: moduleText r.written, expected: moduleText r.expected })
   NameReserved r -> one r.path [] (fmt @"This file cannot hold `{name}`: modules under `{prefix}` are kept in `{dir}`" { name: moduleText r.name, prefix: prefixText r.owner, dir: dirText r.owner })
   NameInEnvironment r -> one r.path [] (fmt @"This file holds `{name}`, which names a module the build is compiled against" { name: moduleText r.name })
@@ -222,10 +294,44 @@ buildMessages = case _ of
     , locations: []
     , message: "These modules import one another: " <> joinWith ", " (map (moduleText <<< _.name) (NonEmptyArray.toArray members))
     }
-  ModuleFailed r -> map (\e -> { path: Just r.path, locations: locationsOf e, message: printCompileError e }) r.errors
+  ModuleFailed r -> map (\e -> { path: Just r.path, locations: map (located r.paths r.path) (locationsOf e), message: printCompileError e }) r.errors
   where
   one path locations message = NonEmptyArray.singleton { path: Just path, locations, message }
   none message = NonEmptyArray.singleton { path: Nothing, locations: [], message }
   dirText root = joinWith "/" root.dir
   prefixText root = joinWith "." root.prefix
   moduleText (ModuleName m) = m
+
+-- | What a warning about the file given says, the path of each module of the
+-- | build given.
+warningMessage :: Map ModuleName String -> String -> CompileWarning -> BuildMessage
+warningMessage paths path w = { path: Just path, locations: [ located paths path (warningLocationOf w) ], message: printCompileWarning w }
+
+-- | A place in the file given, where it was written named by the path of a
+-- | module of the build, or by the module's name.
+located :: Map ModuleName String -> String -> DiagnosticLocation -> MessageLocation
+located paths path l = l { written = map (\w -> { file: fileOf w.source, start: w.start, end: w.end }) l.written }
+  where
+  fileOf = case _ of
+    ThisFile -> FileAt path
+    ModuleAt m -> maybe (InModule m) FileAt (Map.lookup m paths)
+
+-- | A message as an author reads it: the file and the first place, what it
+-- | says, and the other places; each place followed by where what it covers
+-- | was written, where that is elsewhere.
+printBuildMessage :: BuildMessage -> String
+printBuildMessage m = case m.path, Array.uncons m.locations of
+  Just path, Just { head, tail } ->
+    fmt @"{path}:{place}: {message}{written}{also}" { path, place: place head, message: m.message, written: writtenAt head, also: seeAlso tail }
+  Just path, Nothing -> fmt @"{path}: {message}" { path, message: m.message }
+  Nothing, _ -> m.message
+  where
+  place :: forall r. { start :: SourcePos | r } -> String
+  place l = fmt @"{line}:{column}" { line: l.start.line, column: l.start.column }
+  writtenAt l = foldMap (\w -> fmt @" (written at {file}:{place})" { file: fileText w.file, place: place w }) l.written
+  seeAlso locations
+    | Array.null locations = ""
+    | otherwise = fmt @" (see also {places})" { places: joinWith ", " (map (\l -> place l <> writtenAt l) locations) }
+  fileText = case _ of
+    FileAt p -> p
+    InModule (ModuleName n) -> n
