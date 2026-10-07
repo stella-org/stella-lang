@@ -10,6 +10,11 @@
 -- | what the macro makes up — `Cons`, `Nil`, and the parentheses — stands where
 -- | the call's bracket does. The names it writes are not qualified: they are
 -- | resolved where the call stands, so a module calling `ls` imports `Lists`.
+-- |
+-- | `Data.List` declares `List` and `ls` in source, `ls` written with
+-- | quotations: a module calling it imports `List(..)`, whose constructors the
+-- | quotations name. An error in what a call produced is reported at the call,
+-- | and beside it where what it is about was written.
 module Test.Steam.Lists (spec) where
 
 import Prelude hiding (ap)
@@ -41,7 +46,7 @@ import Steam.Value (CtorId, Value(..))
 import Stella.CLI.Session.Client as Client
 import Stella.CLI.Effect.Process (PROCESS)
 import Stella.CLI.Session.RunParser (ParserRunnerError(..), loadingParser)
-import Stella.Compiler.Build (CompilerAction, build, buildMessages, defaultHooks, defaultSourceRoots)
+import Stella.Compiler.Build (CompilerAction, build, buildMessages, defaultHooks, defaultSourceRoots, printBuildMessage)
 import Stella.Compiler.Bytecode (Dmo, encode, lower)
 import Stella.Compiler.Interface (aritiesOf, importsOf)
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment)
@@ -273,7 +278,7 @@ building unwritten modules globals k = case compiled of
             written <- liftEffect (Ref.new Set.empty)
             inSession <- liftEffect (Ref.new Set.empty)
             let
-              sources = map (\(Tuple name lines) -> Tuple (fmt @"src/{name}.stel" { name }) (joinWith "\n" ([ fmt @"module {name} where" { name } ] <> lines))) modules
+              sources = map (\(Tuple name lines) -> Tuple (fmt @"src/{path}.stel" { path: String.replaceAll (String.Pattern ".") (String.Replacement "/") name }) (joinWith "\n" ([ fmt @"module {name} where" { name } ] <> lines))) modules
               loading =
                 { loaded: inSession
                 , locate: \name -> liftEffect (Ref.read written) <#> \names ->
@@ -309,7 +314,7 @@ building unwritten modules globals k = case compiled of
     Right bytes -> do
       buffer <- liftEffect (Buffer.fromArray bytes)
       FS.writeFile (pathOf name) buffer
-  describe err = joinWith "; " (map (\m -> fmt @"{at} {message}" { at: joinWith " " (map (\l -> fmt @"{line}:{column}" { line: l.start.line, column: l.start.column }) m.locations), message: m.message }) (NonEmptyArray.toArray (buildMessages err)))
+  describe err = joinWith "\n" (map printBuildMessage (NonEmptyArray.toArray (buildMessages err)))
   runnerFailure = case _ of
     ModuleUnavailable m -> "unavailable " <> moduleText m
     failure -> show failure
@@ -365,7 +370,9 @@ spec = describe "Steam, the front end end to end" do
   it "reports a call the parser refuses where in its input it stopped, then at the call" do
     buildingMain [ "xs :: List Int", "xs = ls%(1)" ] [] \r ->
       case r.result of
-        Left message -> String.take 8 message `shouldEqual` "4:9 4:6 "
+        Left message -> do
+          String.take 19 message `shouldEqual` "src/Main.stel:4:9: "
+          String.contains (String.Pattern "(see also 4:6)") message `shouldEqual` true
         Right _ -> fail "built"
 
   describe "a macro of the build" do
@@ -410,3 +417,58 @@ spec = describe "Steam, the front end end to end" do
         r.result `shouldEqual` Right [ "Quoting", "Main" ]
         Map.lookup "n" r.values `shouldEqual` Just "1"
         Map.lookup "m" r.values `shouldEqual` Just "3"
+
+  describe "a list and its macro written in source, used by another module" do
+    let
+      list = Tuple "Data.List"
+        [ "import Stella.Syntax as S"
+        , "data List a = Nil | Cons a (List a)"
+        , "element :: S.Parser (S.List S.TokenTree)"
+        , "element = S.bind (S.satisfy \"an element\" S.notComma) \\first -> S.map (\\rest -> S.Cons first rest) (S.many (S.satisfy \"the rest of an element\" S.notComma))"
+        , "cons :: S.List S.TokenTree -> S.Syntax S.Term -> S.Syntax S.Term"
+        , "cons es rest = %term{ Cons $(S.Syntax (S.nodesOf es)) $rest }"
+        , "build :: S.List (S.List S.TokenTree) -> S.Syntax S.Term"
+        , "build xss = S.foldr cons %term{ Nil } xss"
+        , "@[macro]"
+        , "ls :: S.Parser (S.Syntax S.Term)"
+        , "ls = S.orElse (S.brackets (S.map build (S.sepBy element S.comma))) (S.braces (S.map build (S.layout (S.many S.tree))))"
+        ]
+      main lines = Tuple "Main" lines
+
+    it "builds a list of what the brackets hold, a call among them, and of what the block holds" do
+      building []
+        [ main
+            [ "import Data.List (List(..), macro ls)"
+            , "xs :: List Int"
+            , "xs = ls%[1, 2]"
+            , "none :: List Int"
+            , "none = ls%[]"
+            , "nested :: List (List Int)"
+            , "nested = ls%[ls%[1, 2], ls%[3, 4], ls%[5, 6]]"
+            , "block :: List Int"
+            , "block = ls%{"
+            , "  1"
+            , "  2"
+            , "}"
+            ]
+        , list
+        ]
+        [ "xs", "none", "nested", "block" ]
+        \r -> do
+          r.result `shouldEqual` Right [ "Data.List", "Main" ]
+          Map.lookup "xs" r.values `shouldEqual` Just "Cons(1, Cons(2, Nil))"
+          Map.lookup "none" r.values `shouldEqual` Just "Nil"
+          Map.lookup "nested" r.values `shouldEqual` Just "Cons(Cons(1, Cons(2, Nil)), Cons(Cons(3, Cons(4, Nil)), Cons(Cons(5, Cons(6, Nil)), Nil)))"
+          Map.lookup "block" r.values `shouldEqual` Just "Cons(1, Cons(2, Nil))"
+
+    it "reports a constructor the call's module does not import at the call, written in the quotation" do
+      building [] [ main [ "import Data.List (List, macro ls)", "xs :: List Int", "xs = ls%[1]" ], list ] [] \r ->
+        r.result `shouldEqual` Left
+          """src/Main.stel:4:6: There is no constructor `Cons` in scope (written at src/Data/List.stel:7:23)
+src/Main.stel:4:6: There is no constructor `Nil` in scope (written at src/Data/List.stel:9:33)"""
+
+    it "reports what an element names at the call, written in the call's input, through every call it stands in" do
+      building [] [ main [ "import Data.List (List(..), macro ls)", "xs :: List Int", "xs = ls%[1, y]", "ys :: List (List Int)", "ys = ls%[ls%[z]]" ], list ] [] \r ->
+        r.result `shouldEqual` Left
+          """src/Main.stel:4:6: There is no value `y` in scope (written at src/Main.stel:4:13)
+src/Main.stel:6:6: There is no value `z` in scope (written at src/Main.stel:6:14)"""
