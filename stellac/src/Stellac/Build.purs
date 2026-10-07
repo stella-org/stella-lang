@@ -42,7 +42,7 @@ import Stella.CLI.Effect.Log as Log
 import Stella.CLI.Effect.Process (Output(..), PROCESS)
 import Stella.CLI.Session.Client as Client
 import Stella.CLI.Session.RunParser (ParserRunnerError, openingParser)
-import Stella.Compiler.Build (BuildError, CompileWarning, CompilerAction, DiagnosticLocation, build, buildMessages, defaultHooks, defaultSourceRoots, printCompileWarning, warningLocationOf)
+import Stella.Compiler.Build (BuildError, CompilerAction, build, buildMessages, defaultHooks, defaultSourceRoots, printBuildMessage, warningMessage)
 import Stella.Compiler.Bytecode (encode)
 import Stella.Compiler.Bytecode.Bytes (Bytes)
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment)
@@ -134,7 +134,7 @@ cmd opts = do
                 dmi <- lmap (\err -> fmt @"the interface of {name} could not be encoded: {err}" { name, err: show err }) (Interface.encode { interface: made.interface, buildHash: Nothing })
                 pure { dmo, dmi }
           , onModuleDone = \done -> do
-              for_ done.warnings (warning done.path)
+              for_ done.warnings (Log.warn <<< printBuildMessage <<< warningMessage done.paths done.path)
               when (Just done.name == opts.traceOpt) do
                 chunks <- liftEffect (Ref.read trace)
                 let path = builtPath output done.name "mir"
@@ -184,24 +184,7 @@ cmd opts = do
 
 -- | A build's errors, each where it stands.
 reported :: forall r. BuildError -> Run (LOG + r) Unit
-reported err = for_ (NonEmptyArray.toArray (buildMessages err)) \m ->
-  Log.error case m.path, Array.uncons m.locations of
-    Just path, Just { head, tail } -> fmt @"{at}: {message}{also}" { at: at path head, message: m.message, also: seeAlso tail }
-    Just path, Nothing -> fmt @"{path}: {message}" { path, message: m.message }
-    Nothing, _ -> m.message
-  where
-  seeAlso locations
-    | Array.null locations = ""
-    | otherwise = fmt @" (see also {places})" { places: joinWith ", " (map place locations) }
-
-warning :: forall r. String -> CompileWarning -> Run (LOG + r) Unit
-warning path w = Log.warn (fmt @"{at}: {message}" { at: at path (warningLocationOf w), message: printCompileWarning w })
-
-at :: String -> DiagnosticLocation -> String
-at path l = fmt @"{path}:{place}" { path, place: place l }
-
-place :: DiagnosticLocation -> String
-place l = fmt @"{line}:{column}" { line: l.start.line, column: l.start.column }
+reported err = for_ (NonEmptyArray.toArray (buildMessages err)) (Log.error <<< printBuildMessage)
 
 internal :: String -> String
 internal what = "Internal compiler error: " <> what
