@@ -1063,3 +1063,78 @@ The rows on where a cell is reached are the resolver's. The rows on what a cell 
 | A clause body standing in a region reaching a global | Widened through the region, the clauses standing at `( region ℓ \| e )` where an expression without cells leaves them at `e`. A curried function is widened **once for each argument it is passed**, every stage being an arrow at the empty row standing where the region is ambient (D8) |
 | A clause handing out a local function over a cell — as the answer, or part of it | Rejected by the escape condition, the function's type carrying `region ℓ`. Calling it inside the clause is accepted |
 | `implicit` on a handler one of whose initial values does not elaborate to a value form | Rejected where it is declared. An initial value runs whenever the handler is applied, and an inserted application stands where nothing is written |
+
+### Effect-aware expressions (step 7)
+
+The judgement, fits, and computation references of [Elaboration](../02-Surface-Language/01-Elaboration.md#inference).
+
+| Input | Required outcome |
+| --- | --- |
+| A pure function applied where `( State Int \| e )` is ambient | `openEff` around the function, once per argument the curried function consumes |
+| `k : Unit -{( Console \| e )}-> Unit` applied where `( Console, Clock \| e )` is ambient | Widened by `( Clock )`. An equation of the two rows refuses it |
+| An inferred λ whose body calls a function at `( Console )` and another at `( Clock )` | The λ's row is `( Console, Clock )`, each call widened by the other's effect. Equating the first fit fixes the row at `( Console )` and refuses the second |
+| `applyTo x k = k x` | `∀a b e. a -> (a -{e}-> b) -{e}-> b`: the bare row of `k` is identified with the λ's row |
+| An instantiated effect-polymorphic function applied under a rigid ambient row | Its row's tail takes the ambient row's remainder. An inference tail is not maximized |
+| A function performing a key the ambient row lacks, with no flexible tail to absorb it | A row mismatch, reported at the application. Not an ambiguity |
+| Two flexible tails whose union must equal a closed row, nothing else deciding them | An ambiguous effect row, an annotation asked for. Not a row mismatch |
+| A computation referenced under a wider ambient row | Instantiated, applied to `Prim.Unit`, and widened on its function side |
+| A computation with a non-empty row referenced at a top-level value without a signature | A row mismatch. A computation at `()` is forced as it stands |
+| `f :: forall a. a -> a; f = id` | η-expanded to `Λ a. λ x. id [a] x`, which Core accepts. Without the expansion Core refuses `Λ a. id [a]` |
+| `f :: forall a. a -> a; f = f` | Judged as an immediate self-reference before any expansion, and refused. Expanding first turns it into a recursive function |
+| A local function in a clause reading a cell | Its row is the region's element alone; applied in the clause, it is widened by the rest of the clause's row |
+| `x!` with no enclosing handling expression declaring `x`, under an open ambient row | Refused by name resolution. An open row is no evidence a cell exists |
+
+### Binding groups and generalization (step 7)
+
+[Elaboration](../02-Surface-Language/01-Elaboration.md#generalization) and the state of [Elaborator API](../02-Surface-Language/03-Elaborator-API.md#inference-state).
+
+| Input | Required outcome |
+| --- | --- |
+| `id = \x -> x` | `∀a. a -> a`: the λ's row, occurring once, is closed |
+| A row metavariable two members of a group share, occurring once in each | Not closed: occurrences are counted over the group |
+| A local `let` whose right-hand side is a value and whose type is polymorphic | Monomorphic (D48). Using it at two types is a mismatch |
+| A top-level declaration whose right-hand side is an application leaving its type undetermined | A signature asked for. Not left monomorphic for a later declaration to fix |
+| A non-value right-hand side whose metavariables a later goal of the same group solves | Accepted. A restricted metavariable is reported only if it is unsolved at the end |
+| Two mutually recursive declarations without signatures, used at two types afterwards | Each generalized over what its own type reaches; the recursive references carry the type arguments of the callee's final scheme |
+| A member whose body uses another member at a type its own type does not reach | Ambiguous, an annotation asked for. Not quantified |
+| A constraint relating a quantified variable to one the type does not reach | Ambiguous. Constraints do not extend the quantifiers |
+| A recursive reference standing under an assumption that proves the callee's constraint | The caller carries no copy of that constraint |
+| `?e # ( region ℓ, Console )` with `?e` created outside the region | The atom `Console ∉ ?e` alone is kept; no scheme mentions `ℓ` |
+| `data App f a = App (f a)` | `App : ∀k. (k -> Type) -> k -> Type` |
+| A skolem of a written signature assigned to a metavariable created outside its binder | An escape, reported where the assignment is stated |
+| An undecided fit, a pending synthesis goal, a term metavariable, or a boundary job still seeking a plan when a group is generalized | Never crosses it. Each is reported by its cause, and a declaration with a pending boundary is not committed |
+
+### Synthesis goals and generalization (step 7)
+
+[Elaboration](../02-Surface-Language/01-Elaboration.md#what-does-not-cross-a-generalization) and the catalog of [Elaborator API](../02-Surface-Language/03-Elaborator-API.md#the-module-environment-is-built-once-before-any-job-exists).
+
+| Input | Required outcome |
+| --- | --- |
+| A declaration without a signature whose goal's type touches a variable it would quantify | A signature asked for, the goal named. No synthesized parameter is inferred |
+| A goal with a concrete type for which no instance exists | A synthesis failure. Not "undetermined" |
+| A goal waiting on a metavariable no type reaches, still waiting after a retry | Undecided synthesis, reported once |
+| A value without a signature carrying the attribute a resolver searches for | Elaborated and usable from source; absent from what `declsWithAttr` lists, at every point of the module |
+| A guest naming such a value in `globalRef` | A defect of the synthesizer, as for any name its catalog does not hold |
+| A goal attempted before and after an earlier group is generalized | The same candidates both times |
+
+### Implicit handlers at checking boundaries (step 7)
+
+[Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md#scheduling) and the boundaries of [Elaboration](../02-Surface-Language/01-Elaboration.md#explicit-checking-boundaries).
+
+| Input | Required outcome |
+| --- | --- |
+| A body whose source row the written row contains | No handler and no thunk: the fits inside widen as each needs |
+| A body at `( Console )` under a written `( LiftIO )`, one implicit handler `Console ~> ( LiftIO )` | The handler applied to `openEff [( LiftIO )]` of the body's thunk, inside the λ the boundary checks |
+| A body using `Console` and `File` under `LiftIO`, each with its own implicit handler into `LiftIO` | An ambiguity naming both handlers. Deciding at the first fit that fails commits to one |
+| `( Console \| ?e )` against `( LiftIO \| ?e )` | The shared tail cancels and the plan is read; nothing waits |
+| `( Console \| ?t )`, instantiated, under a signature at `( LiftIO \| e )` whose constraints give `Console ∉ e`, one implicit handler `Console ~> ( LiftIO )` | A mismatch, not a wait: the handler is inserted and the plan's final equality assigns `?t := e` |
+| The same where `Console ∉ e` is not proved | The Lacks obligation `Console ∉ e` is reported, not an ambiguous effect row |
+| A body calling an instantiated `( Console \| ?t )` under a signature at `( Console \| e )` | The boundary's fit waits on `?t`; at quiescence rule 2 takes it, `?t := e`, and the boundary is solved with no handler |
+| A body calling instantiated `( Console \| ?t1 )` and `( Clock \| ?t2 )` under a signature at `( Console, Clock \| e )` | Rule 2 against the signature's row solves each tail, `?t1 := ( Clock \| e )` and `?t2 := ( Console \| e )`; no handler and no annotation |
+| Two sources sharing an instantiated tail, `( Console \| ?t )` and `( Clock \| ?t )`, under `( Console, Clock \| e )` | The union is formed and `?t := e` once; not taken source by source |
+| Distinct flexible tails rule 2 against the expected row does not decide at the fixpoint — the rows of two λs passed as arguments | An ambiguous effect row, an annotation asked for |
+| A boundary whose source row keeps a flexible tail no assignment reaches by the time its declaration is generalized | The declaration is not committed |
+| A top-level value with a signature whose right-hand side forces a computation at `( Console )`, one implicit handler `Console ~> ()` | The right-hand side is a boundary at `()`: the handler is inserted and the computation forced |
+| The same value without a signature | A row mismatch: the right-hand side is an inference position, and nothing is inserted |
+| A boundary rolled back with the attempt that built its body | Its job is gone with it; nothing of the boundary survives the rollback |
+| A position whose expected row nothing fixes — a λ with no expected type, a top-level value without a signature | No insertion |

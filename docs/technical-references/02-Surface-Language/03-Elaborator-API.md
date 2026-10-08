@@ -44,7 +44,7 @@ Pending =
   { id        PendingId, which the blocked table registers
   , site      the envelope below
   , awaiting  the metavariables it last postponed on
-  , job       one of the three below
+  , job       one of the four below
   }
 
 Site =
@@ -55,11 +55,12 @@ Site =
   }
 
 job = JobUnify           EqualityGoal    { kind, τ1, τ2 }
+    | JobEffectFit       FitId           the fit, whose record Ψ holds
     | JobSynthesis       GoalRecord      { target, expectedType, synthesizer }
-    | JobImplicitHandler HandlerGoal     { sourceRow, targetRow, thunk, Ξ }
+    | JobImplicitHandler HandlerGoal     { boundary ?σ, targetRow, thunk, Ξ }
 ```
 
-**The envelope is shared because every one of the three is decided against its site**, though what each takes from one differs. A synthesis goal reaches the bindings and the assumptions through `localContext` and `localConstraints`. An **equality** takes two things: the kind variables in scope where it was written, which a kind metavariable created while solving it may mention, and where a failure is reported. One woken far from where it was written and creating a kind metavariable under whatever elaboration has since reached would admit a kind variable that is out of scope at the equation, or refuse one that is in it.
+**The envelope is shared because every one of the four is decided against its site**, though what each takes from one differs. A synthesis goal reaches the bindings and the assumptions through `localContext` and `localConstraints`. An **equality** takes two things: the kind variables in scope where it was written, which a kind metavariable created while solving it may mention, and where a failure is reported. One woken far from where it was written and creating a kind metavariable under whatever elaboration has since reached would admit a kind variable that is out of scope at the equation, or refuse one that is in it.
 
 **What decides a substitution is not the site of the equation that made it.** Deciding `?s := D ⊎ R` requires the row constraints naming `?s` to survive it, and each of those is an obligation holding on the assumptions of the site **it** came from — several different sites, in general, and not necessarily this equation's ([Elaboration](01-Elaboration.md), [Rows](../03-Typed-Core/02-Rows.md)). The facts a substitution is judged by therefore travel with the obligations rather than with the equality, and an obligation decided against the facts at hand would be proved from assumptions that do not hold where it arose, or refused where the ones that do hold prove it.
 
@@ -96,7 +97,9 @@ What the **guest** sees of a synthesis job is the expected type, with its site r
 
 ### The module environment is built once, before any job exists
 
-**What `lookupGlobal` and `declsWithAttr` read is assembled before the first job is created, and its domain does not grow.** It holds two things: the entries the interfaces of the modules the header reaches publish to the catalog, immutable throughout ([below](#what-the-catalog-reaches)), and every top-level name this module declares, with that declaration's attributes and its scheme — the written one where a signature is given, and one carrying metavariables where the scheme is to be inferred. `Ξ`, the implicit handlers the imports make visible, is assembled at the same point ([Effect Handlers](02-Effect-Handlers.md)).
+**What `lookupGlobal` and `declsWithAttr` read is assembled before the first job is created, and neither its domain nor its schemes change.** It holds two things: the entries the interfaces of the modules the header reaches publish to the catalog, immutable throughout ([below](#what-the-catalog-reaches)), and every top-level value this module declares **with a signature**, with that declaration's attributes and its written scheme. `Ξ`, the implicit handlers the imports make visible, is assembled at the same point ([Effect Handlers](02-Effect-Handlers.md)).
+
+**A value the module declares without a signature is in no catalog a synthesizer reads, before or after it is generalized.** The surface elaborator reads a layer of its own: the same entries, and every value the module declares, each at a scheme that is `Final` — imported, written, or generalized by an earlier group — or `Provisional` until its group is generalized ([Elaboration](01-Elaboration.md#generalization)). A reference inside a group reads the group's monomorphic environment and never a `Provisional` scheme. Going from `?a -> ?a` to `∀a. a -> a` is no zonk — it adds a quantifier and a `Λ` — so a scheme that changed that way could not be a scheme a synthesizer had already read; and a value that appeared in its catalog once generalized would make what a goal could find depend on when it was attempted. **Compile-time discovery therefore needs a written signature**: a declaration a synthesizer is to find by `declsWithAttr` carries one, and a macro generating such a declaration writes one. An attribute decides nothing about whether a declaration can be inferred (D46). A guest naming a value outside its catalog in `globalRef` has made a defect, as for any name the catalog does not hold.
 
 **The imported part of what Core checks against is read from the same interfaces, and holds more.** It holds every declaration of every module the header reaches, a private one among them, since an exported scheme may mention a type its module does not export and an attribute's default a value it does not: each value and foreign at its Core scheme, each data type with its constructors as Core declares one, each effect, each attribute declaration, and each foreign type as an intrinsic of the class opaque under its module's name ([Foreign Types](../../proposals/06-Foreign-Types.md)); the types the ABI manifest supplies to those modules are added from the manifest, which no interface holds. **The signature the module is checked against is that part and more**: the types the manifest supplies to the module itself, and its own declarations. A type synonym is no entry, being expanded where it is used. An operation written with other than one argument takes the one argument Core has as one value: none is `Prim.Unit`, and several are a record of them, each under its position ([Effects](../03-Typed-Core/03-Effects.md)). **What elaboration reads of types — the kinds of type constructors, the constructors, and the effects — is derived from the signature**, so no interface is read by two rules.
 
@@ -104,9 +107,7 @@ What the **guest** sees of a synthesis job is the expected type, with its site r
 
 **Were it to grow, a synthesizer's candidates would depend on when its goal was attempted.** A goal created while one binding group is being elaborated and woken while a later one is would see declarations the first attempt could not. This is not a corner: an instance is an ordinary declaration carrying an attribute ([Modules](../06-Modules/01-Modules.md)), so a growing environment is one in which coherence turns on the schedule — the thing the restart contract exists to rule out.
 
-**Neither half needs anything elaborated, and that is what lets the catalog precede everything.** This module's top-level names and the attributes written on them are read off its text, and a scheme is the one written at the declaration or a provisional one carrying metavariables where none is; the imported entries are read off interfaces compiled already. No right-hand side of this module has to have been elaborated, and the dependency graph does not have to exist.
-
-**The domain is fixed and the schemes sharpen.** A provisional scheme carries metavariables, and those are read against `Ψ` as it stands — zonked at each attempt, exactly as a site's context is. What is frozen is which names exist and what each is called, never what has been solved about them.
+**Neither half needs anything elaborated, and that is what lets the catalog precede everything.** This module's top-level names, the attributes written on them, and their written schemes are read off its text, once the signatures are read; the imported entries are read off interfaces compiled already. No right-hand side of this module has to have been elaborated, and the dependency graph does not have to exist.
 
 **The catalog is not in the envelope**, having nothing to do with a site. Only what varies from one site to another is snapshotted per job.
 
@@ -290,7 +291,7 @@ The blocked table therefore holds **descriptions of work rather than machine sta
 
 ### What is queued
 
-The three jobs arrive here for the same reason. Row unification's case (d) waits on two flexible tails ([Elaboration](01-Elaboration.md)), a synthesis goal waits on what its type mentions, and the search for an implicit handler waits on a flexible tail that survives cancellation ([Effect Handlers](02-Effect-Handlers.md)). One queue serves all three, and the resumption mechanism is written once.
+The four jobs arrive here for the same reason. Row unification's case (d) waits on two flexible tails ([Elaboration](01-Elaboration.md)), a fit waits on the flexible tails that can still decide whether its containment holds ([Elaboration](01-Elaboration.md#fitting-an-effect-row)), a synthesis goal waits on what its type mentions, and a checking boundary waits on a flexible tail that survives cancellation ([Effect Handlers](02-Effect-Handlers.md)). One queue serves all four, and the resumption mechanism is written once.
 
 **What is shared is the envelope, and what differs is the job.** Scheduling, the site, the dependency set, the transaction, and fuel are the same machinery whichever job is inside; the payloads are not, and pressing them into one record buys nothing. Which fields each holds is above.
 
@@ -374,7 +375,7 @@ on quiescence:
                                 job and the metavariables it awaits
 ```
 
-The three-way outcome is what separates "unsolvable" from "not enough information yet", and it is the same split at each of the three job kinds.
+The three-way outcome is what separates "unsolvable" from "not enough information yet", and it is the same split at each of the four job kinds.
 
 **The loop stops at the first failure.** A failed attempt is rolled back, so the jobs retried after it would be retried without what the failed equation would have told them, and nothing yet tells a failure of their own from one that follows from it. What the mechanism reports keeps the jobs still waiting beside the diagnostic, and recovery is the driver's: the surface elaborator reads them to tell the declarations the failure is about from those it left unchecked ([Elaboration](01-Elaboration.md#a-modules-values)). Which diagnostics an author is shown is the presentation's to decide.
 
@@ -420,6 +421,77 @@ What is checked directly is `awaiting` and the ready queue. That the blocked tab
 **Termination rests on fuel rather than on a measure.** The number of unsolved metavariables is not decreasing: refining two flexible tails introduces a fresh one ([Elaboration](01-Elaboration.md)), so a loop of assignments can create as much work as it discharges. Fuel is what bounds it, which is why it is the one thing a rollback leaves alone.
 
 **What fuel bounds is the scheduler's retries, and not a guest computation.** A synthesizer that loops inside one attempt returns no outcome for fuel to count, so stopping it is Steam's — an instruction budget, or a cancellation the host raises. The two answer separate questions and neither stands in for the other.
+
+## Inference state
+
+[Elaboration](01-Elaboration.md#inference) fixes how the surface elaborator infers; this section fixes what of it lives in the mechanism's state, and so what an attempt owns and a rollback restores.
+
+### What a metavariable records
+
+**A metavariable records the level of the binding group it was created in**, beside its kind and its scope. Assigning `?α := τ` lowers every unsolved metavariable of `τ` to `?α`'s level, in the same act that narrows their scopes, so that a metavariable reachable from outside a group never stands at the group's level. The level is part of `Ψ`, and a rollback restores it.
+
+**A `Row Effect` metavariable also records its provenance**: an instantiation row, created for a scheme's row quantifier where the scheme is instantiated, or an inference row, created any other way. Where an assignment identifies two, the one left records an instantiation row only if both did. Merging is part of the same assignment, so the direction of a unification decides nothing.
+
+### Fits
+
+```text
+Core⁺:  EFit a FitId (XExpr a)             the expression a wrapping fit wraps
+Ψ:      fits : FitId ⇀ { use : Wrapping | Demanding, state }
+        state ::= Undecided { source, target, site }
+                | Equal
+                | Widen w
+job:    JobEffectFit FitId
+```
+
+- **The table of fits is part of `Ψ`'s tentative state.** An attempt that rolls back takes back the fits it created and every decision it made about one.
+- **A fit is decided where it is created when it can be**, and is otherwise a `JobEffectFit`, registered under the flexible tails its decision waits on. Attempting one decides it again against `Ψ` as it stands; the host's runner carries it out, as it does an equation.
+- **A wrapping fit's `Widen w` becomes `openEff [w]`** around the expression its `EFit` holds when the term is made Core, and `Equal` leaves the expression alone. **A demanding fit**, which a cell read or write places, has no `EFit` and produces no term.
+- **An `EFit` still `Undecided` when the term is made Core is a defect of the host**, not a residue: every fit is decided or reported before a declaration is zonked.
+
+**Resolving the undecided fits by direction is a step of the driver**, taken where the loop reaches quiescence, and is not an attempt of any job. It divides the undecided fits, jobs, and obligations into connected components by the unsolved metavariables they share, and resolves each component under a checkpoint of its own: rounds of simultaneous assignments, each through the single entry an assignment goes through ([`assign`](#assign-enqueues-and-runs-nothing)), the jobs they wake run by the loop between rounds. A component that ends undecided, or in a failure, is rolled back to its checkpoint and reported by its cause.
+
+### Obligations are atoms
+
+**A required Lacks or Disjoint enters the store as the atoms its normal form decomposes into** ([Elaboration](01-Elaboration.md#obligations-in-atoms)), and a part proved where it arises enters nothing.
+
+- **Each atom has an identity of its own** and the basis, context, and origin of the obligation it came from.
+- **An assignment to an atom's tail decomposes it again at its own site**, in the act that installs the assignment: the atom is replaced by what the decomposition leaves, which may be several atoms, none, or a refusal.
+- **The atoms and their identities are part of the attempt's state**, and a rollback restores them.
+- **What generalization reads is the set of atoms left at quiescence**, each by its identity; the constraints of a group are found over those identities.
+
+### Generalizing a group
+
+**Generalizing a group is a state transition of the driver, made outside every attempt**, between the quiescence of one group and the elaboration of the next. It assigns each quantified metavariable a fresh rigid variable, all at once, **without the scope check an assignment makes**: the variables are bound at the root of each declaration, outside every region, and nothing that mentions one survives elsewhere. It removes the atoms that became the group's constraints, and makes each member's scheme `Final` in the surface elaborator's layer of the catalog. No `JobUnify`, `JobSynthesis`, `JobEffectFit`, `JobImplicitHandler`, or term metavariable of the group is pending when it is made ([Elaboration](01-Elaboration.md#what-does-not-cross-a-generalization)).
+
+### Checking boundaries and implicit handlers
+
+**A checking boundary is a job from the moment its body is built**, and its life runs in this order, all inside the attempt that elaborates the boundary's enclosing body ([Elaboration](01-Elaboration.md#explicit-checking-boundaries)):
+
+1. **Opening.** The surface elaborator creates the boundary's ambient row `?σ`, an inference row the resolution of fits does not take as a target to solve.
+2. **The body.** The body is built under `?σ`, its fits taking `?σ` as their target.
+3. **Closing.** Once the body is built, a `JobImplicitHandler` is created and queued holding the boundary: `?σ`, the expected row `ρ`, the thunk of the body, and `Ξ`.
+
+**The job is owned by that attempt**, as every job created inside an attempt is: it lives in the scheduler's tentative state, an attempt that rolls back takes it back with the body, and nothing about the boundary is held anywhere else. It is attempted once the attempt that created it commits.
+
+**Attempting the boundary's job decides the boundary against `Ψ` as it stands**, in this order.
+
+1. **The source row.** The fits whose target's remainder is `?σ` alone are the boundary's, and their sources' compatible union is the body's complete source row `U`. It is formed with the tails the sources share kept as one: `( Console | ?e )` and `( File | ?e )` form `( Console, File | ?e )`. **Only where the union cannot be formed uniquely** — two distinct flexible tails, say — does the job postpone, on those tails.
+2. **The decision**, `fit(U, ρ)`, cancelling the keys and tails `U` and `ρ` share first:
+   - **`Equal` or `Widen`**: `?σ := ρ` through `assign`, which decides the fits inside again against `ρ` and wakes what they wake. The job is solved with no plan; nothing is placed at the boundary.
+   - **A definite mismatch**: `?σ := U` through `assign`, fixing the body at `U`. The plan is sought over the complete difference ([Effect Handlers](02-Effect-Handlers.md#the-plan)): a unique plan solves the job and is recorded with its result, and the lowering is built from it when the term is made Core; no plan, several, or an undetermined order fails the job as that section reports. `( Console | ?e )` against `( LiftIO | ?e )` is such a mismatch once `?e` cancels.
+   - **Undecided once the shared tails cancel**: the job postpones on the flexible tails that remain and can still decide the fit, and `?σ` stays unassigned. A known key of `U` that `ρ` cannot absorb is a mismatch even where `U` keeps a tail of its own, and the plan then fixes that tail: `( Console | ?t )` against `( LiftIO | e )` takes `Console ~> ( LiftIO )`, and the plan's final equality `( LiftIO | ?t ) ≡ ( LiftIO | e )` assigns `?t := e`.
+
+**At quiescence, a waiting boundary takes part in the resolution by direction through fits against `ρ`** ([Elaboration](01-Elaboration.md#resolving-fits-by-direction)): `fit(U, ρ)` where the union `U` is formed, and otherwise `fit(Sᵢ, ρ)` for the source `Sᵢ` of each of its fits. They are resolved with every other fit of their component, in the same transaction and to the same fixpoint, the choice between the two made afresh each round. **Only the assignments they make are kept**: their outcomes decide nothing, and no fit of a single source chooses a handler. The tail of an instantiated function takes `ρ`'s remainder by rule 2, which wakes the job; the job forms `U` from the sources as they then stand and decides `fit(U, ρ)` once.
+
+| Sources | `ρ` | Resolution |
+| --- | --- | --- |
+| `( Console \| ?t )` | `( Console \| e )` | `?t := e`; `fit(U, ρ)` is `Equal` |
+| `( Console \| ?t1 )`, `( Clock \| ?t2 )` | `( Console, Clock \| e )` | the union is not formed; `?t1 := ( Clock \| e )` and `?t2 := ( Console \| e )`, then `U = ( Console, Clock \| e )` and `fit(U, ρ)` is `Equal` |
+| `( Console \| ?t )`, `( Clock \| ?t )` | `( Console, Clock \| e )` | `U = ( Console, Clock \| ?t )`, so `?t := e` once; taken source by source, the two fits would give `?t` two rows |
+
+Distinct flexible tails left at the fixpoint — tails rule 2 does not reach, such as the inference rows of λs passed as arguments — leave the boundary undecided, reported as an ambiguous effect row. **The fits inside the body are taken by neither rule**, and neither rule solves `?σ`: a bare instantiated source tail would otherwise take `?σ` itself. They are decided when the boundary assigns `?σ`. Every attempt of the boundary's job is a transaction, so a postponement leaves `?σ` and the fits as they were.
+
+**A boundary job pending when its declaration is generalized keeps the declaration from being committed** ([Elaboration](01-Elaboration.md#what-does-not-cross-a-generalization)).
 
 ## The kernel API
 
@@ -806,7 +878,7 @@ CatalogEntry = { name : QIdent , sort : value | foreign | constructor
                , scheme : forall k̄. τ⁺ , attributes : [Attribute] }
 ```
 
-It holds the entries the interfaces of the modules the header reaches publish to it ([above](#what-the-catalog-reaches)) and every top-level value name this module declares, and it holds value names: what `lookupGlobal` resolves is a name a term can refer to, whether or not source can name it. **An elaboration-only entry is not among them** ([Modules](../06-Modules/01-Modules.md)): no lookup finds it, and `globalRef` refuses its name as it refuses one the catalog does not hold, so a synthesizer cannot build a term that refers to it. **The domain is fixed and a provisional scheme sharpens**: a scheme still being inferred carries metavariables, which are zonked against the current `Ψ` at each read, and which names exist never changes. **`declsWithAttr` takes an attribute by its qualified name**, which is an attribute's identity ([Attributes, Modifiers, and Directives](07-Attributes-Modifiers-and-Directives.md)), and lists the entries carrying one, whatever its arguments. `declsWithAttr` lists the names in ascending order of their qualified names, so that a search over them has one order whatever order the interfaces were read in.
+It holds the entries the interfaces of the modules the header reaches publish to it ([above](#what-the-catalog-reaches)) and every top-level value this module declares with a signature ([above](#the-module-environment-is-built-once-before-any-job-exists)), and it holds value names: what `lookupGlobal` resolves is a name a term can refer to, whether or not source can name it. **An elaboration-only entry is not among them** ([Modules](../06-Modules/01-Modules.md)): no lookup finds it, and `globalRef` refuses its name as it refuses one the catalog does not hold, so a synthesizer cannot build a term that refers to it. **Its domain and its schemes are fixed**: a value without a signature is never in it, so no scheme it holds is still being inferred. **`declsWithAttr` takes an attribute by its qualified name**, which is an attribute's identity ([Attributes, Modifiers, and Directives](07-Attributes-Modifiers-and-Directives.md)), and lists the entries carrying one, whatever its arguments. `declsWithAttr` lists the names in ascending order of their qualified names, so that a search over them has one order whatever order the interfaces were read in.
 
 ### An attempt held open across requests
 

@@ -140,7 +140,7 @@ These serve as architecture tests as well as demonstrations.
 | --- | --- |
 | **§1. Introduction** | |
 | [§1.2 Notation](02-Notation.md) | Metavariables, sequences, symbols |
-| [§1.3 Design Decisions](03-Design-Decisions.md) | The numbered decisions D1–D47 |
+| [§1.3 Design Decisions](03-Design-Decisions.md) | The numbered decisions D1–D48 |
 | [§1.4 Implementation Plan](04-Implementation-Plan.md) | Order of implementation work |
 | **§2. Surface Language** | |
 | [§2.1 Elaboration](../02-Surface-Language/01-Elaboration.md) | Core⁺, metavariables, unification, synthesis |

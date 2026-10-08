@@ -362,7 +362,7 @@ warn            : Message -> Elab Unit
 
 `declsWithAttr` supports finding declarations that carry an attribute. It must work across modules, which is why attributes are persisted in a compiled interface ([Modules](../06-Modules/01-Modules.md)).
 
-**What these two read is fixed before any goal exists.** The module's own declarations — their names, their attributes, and their schemes, provisional where one is still being inferred — are assembled once, before the first right-hand side is elaborated, and the set does not grow as the binding groups are folded. Otherwise the candidates a synthesizer finds would depend on when its goal was attempted ([Elaborator API](03-Elaborator-API.md)).
+**What these two read is fixed before any goal exists.** The module's own declarations with a signature — their names, their attributes, and their written schemes — are assembled once, before the first right-hand side is elaborated, and the set does not grow as the binding groups are folded. Otherwise the candidates a synthesizer finds would depend on when its goal was attempted ([Elaborator API](03-Elaborator-API.md)).
 
 `localConstraints` exposes row constraints to elaborators, so that a derive mechanism working over rows can consult which Lacks constraints are already assumed.
 
@@ -380,6 +380,312 @@ Residual computation over an unknown tail takes this shape: `normalizeRow` extra
 **Outside `Base.Continuation`, that desugaring is the one place the constructor is written**, the module's own source writing it under its ordinary name. Name resolution does not resolve it, a macro cannot spell it, and the catalog a synthesizer reads omits it ([Elaborator API](03-Elaborator-API.md)). The module the clause stands in imports `Base.Continuation`, which the desugaring makes a dependency; a clause in a module without the import is reported where it stands.
 
 **The Core type checker checks the reference as it checks any other**, as the application of a newtype constructor, and does not ask who wrote it. That no other term builds a `Continuation` is a guarantee of surface elaboration, and of nothing beneath it.
+
+## Inference
+
+The surface elaborator infers what a signature does not write. This section fixes the judgement it uses, how an effect row is fitted where it is used, when and over what a declaration is generalized, and how a written signature is checked. The mechanism it runs on — jobs, attempts, the transaction — is the subject of [Elaborator API](03-Elaborator-API.md).
+
+### The judgement and the ambient row
+
+```text
+Γ ; ρ ⊢ e ⇐ τ ⇝ e'        check e against τ
+Γ ; ρ ⊢ e ⇒ τ ⇝ e'        infer the type of e
+```
+
+**`ρ` is the ambient row**, the row the evaluation of `e` may perform, which every application in `e` is fitted into. It is a `Row Effect` of Core⁺ and may be a metavariable.
+
+| Where | Ambient row |
+| --- | --- |
+| a top-level value's right-hand side | `()` |
+| a computation declaration's body | the row its signature writes |
+| the body of a `Λ` | `()`, as Core requires of a value form |
+| the body of a λ with no expected type | a fresh row metavariable |
+| the body of a λ checked against `A -{r}-> B` | decided at the checking boundary ([below](#explicit-checking-boundaries)) |
+| an operation clause | the row its handler gives the clause |
+
+**An application `e1 e2` under `ρ`** infers `e1`, reads an arrow `A -{r}-> B` off its type — equating the type with an arrow of fresh metavariables where its shape is not yet known — checks `e2` against `A`, and places a fit of `r` into `ρ` on the function side.
+
+### Fitting an effect row
+
+**A fit is the containment `source ⊆ target`** between the row a function performs and the row ambient where it is applied (D8). It is decided on the difference of the two rows after normalization, not on their equality.
+
+```text
+fit(source, target):
+  normalize both; cancel the keys they share, equating their payloads, and the tails they share
+  what remains: (Ds, Rs, Ms) of the source, (Dt, Rt, Mt) of the target
+                 — known keys, rigid tails, flexible tails
+
+  the source's remainder is empty:
+      the target's is empty too             Equal
+      otherwise                             Widen w, where w = Dt ⊎ Rt ⊎ Mt, requiring source # w
+  Ds or Rs not empty, and Mt empty          a row mismatch
+  otherwise                                 undecided; it waits on Ms ∪ Mt
+```
+
+**A known key or a rigid tail of the source that the target cannot absorb is a mismatch whatever the source's own tail is.** Assigning a source tail only adds to the source, so with no flexible tail left in the target nothing can contain what the source has left. `( Console | ?t )` against `( LiftIO | e )` is a mismatch, not a wait; at a checking boundary it is where a plan is sought ([Explicit checking boundaries](#explicit-checking-boundaries)). The fit waits only where the source's remainder is flexible tails alone, or the target keeps a flexible tail that can still absorb it.
+
+**Widening is the target's remainder entire**: with the source's remainder empty, whatever `Mt` is later solved to belongs to the difference. The requirement `source # w` is what Core's `openEff` rule asks of the term the widening becomes.
+
+```stella
+use :: forall e. (Unit -> Unit / {| Console, ...e |}) -> Unit / {| Console, Clock, ...e |}
+use k = k ()
+```
+
+```text
+fit(( Console | e ), ( Console, Clock | e ))   Console and e cancel, the source's remainder is empty
+                                              → Widen ( Clock )
+Core:  ( openEff [( Clock )] k ) Prim.Unit
+```
+
+**A fit wraps a term or demands containment alone.** A fit placed on the function side of an application, or at the outermost arrow of a checking position, wraps that expression, and its `Widen` becomes `openEff [w]` around it. A cell read or write places a fit that wraps nothing ([Cells](#cells)): its outcome records that the containment holds and produces no term. The two share the decision and the resolution below.
+
+#### Resolving fits by direction
+
+A fit still undecided when the loop reaches quiescence is resolved by the direction of the containment it states. Fits are taken in connected components — fits, jobs, and obligations sharing an unsolved metavariable — and each component is resolved inside a transaction, to a fixpoint.
+
+1. **A target whose remainder is one flexible tail `?m`** is solved to the compatible union of the source remainders of every undecided fit whose target's remainder is `?m`. The ambient row takes the least row its sources need.
+2. **A source whose remainder is one flexible tail `?t` created by instantiation** is solved to the target's remainder. The tail of an instantiated effect-polymorphic function takes the ambient row.
+
+**Each round computes its assignments from the state as it stands and installs them simultaneously**, rule 1 before rule 2. Assignments that depend on one another — a metavariable rule 1 and rule 2 both reach, or one standing in another's union — are not made, and the component is ambiguous. The outcome therefore depends on no order of the fits. Every assignment goes through the ordinary assignment of [Elaborator API](03-Elaborator-API.md): occurs check, scope, level, the obligations it is watched by, and the jobs it wakes. **A checking boundary's fits are not taken**; the boundary's own fits against its expected row stand in for them, and only their assignments are kept ([below](#explicit-checking-boundaries)).
+
+**The compatible union** of rows is the least one formed without a new decision:
+
+| Rows hold | Union |
+| --- | --- |
+| one key in several | one element, the payloads equated |
+| distinct known keys | joined |
+| a key and a tail | joined, `k ∉ tail` required |
+| the same tail in several | one tail |
+| two distinct flexible tails | not formed: their disjointness would be a new decision, so the fit waits |
+
+**A row metavariable records whether instantiation made it.** One created for a scheme's row quantifier where the scheme is instantiated is an **instantiation row**; every other — the row of a λ with no expected type, the row of an arrow whose shape was not known — is an **inference row**. Where two are identified, the result is an instantiation row only if both were, so the direction of a unification decides nothing. Rule 2 maximizes an instantiation tail only: an inference tail is a function's own least row, and filling it with the ambient one would lose that.
+
+**What is left undecided is reported by its cause.** The transaction is rolled back either way, and the diagnostic says which.
+
+| Cause | Reported as |
+| --- | --- |
+| no unique compatible union; two distinct flexible tails | an ambiguous effect row, an annotation asked for |
+| assignments depending on one another | the same |
+| a fit undecided at the fixpoint | the same |
+| a key's payloads differ | a type mismatch |
+| a rigid tail or a known key of the source not contained by the target | a row mismatch |
+| an occurs or a scope check failing | that failure |
+| the least solution breaking a Lacks or a Disjoint | the obligation broken |
+
+```stella
+greet = \_ -> let _ = say "a" in tock ()     -- say : String -> Unit / {| Console |}, tock : Unit -> Unit / {| Clock |}
+```
+
+```text
+fit(( Console ), ?e) and fit(( Clock ), ?e) wait; ?e is the λ's row
+rule 1: ?e := ( Console, Clock ); the fits become Widen ( Clock ) and Widen ( Console )
+greet : ∀u. u -{( Console, Clock )}-> Unit
+```
+
+Taking the first fit as an equation would have fixed `?e := ( Console )` and refused the second.
+
+### Cells
+
+Cells are prompt-local (D36): a cell belongs to the handling expression that declares it, and every group of that expression reaches it ([Effect Handlers](02-Effect-Handlers.md)).
+
+- **A cell is found by lexical scope, never by inference.** Name resolution binds `x!` and `x := e` to the region binder of the handling expression declaring `x` and to the cell's position; a reference no enclosing expression declares is an error there, whatever the ambient row.
+- **An open row is no evidence that a cell exists.** Reading or writing a cell needs its resolved binding and the element `region ℓ` in the ambient row. The elaborator places `fit(( region ℓ ), ρ)`, wrapping nothing: the containment is what Core's rule for `readCell` and `writeCell` asks, and an equation `ρ ≡ ( region ℓ | ?rest )` would leave the tail of a local function's row with nothing to decide it.
+- **A region enters the ambient row only by the region binder**, which a handling expression with cells produces, and inside it by the `openEff [( region ℓ )]` its desugaring places around each thunk. A fit adapts a function to a region already ambient; it creates no region and no cell binding, and neither a fit nor closing removes a region element.
+- **A region name is never generalized.** A type or term carrying `region ℓ` out of its region is an escape: the metavariable it would be assigned to was created outside the region and has no `ℓ` in its scope, so the assignment fails. The failure is reported where the cell is referenced, with the escaping function or the answer boundary as a secondary location.
+- **A term metavariable and a synthesis goal keep the region scope of the place they were created**, so no solution reading a cell is assigned to one created outside that cell's region.
+
+```stella
+handler h :: E ~> e where
+  var n := 0
+  fast | op x -> let f = \_ -> n! in f ()
+```
+
+```text
+the clause's ambient row is ( region ℓ | e )
+f's row ?e; n! gives fit(( region ℓ ), ?e); f () gives fit(?e, ( region ℓ | e ))
+rule 1: ?e := ( region ℓ ); the second fit is Widen e
+Core:  let f : Unit -{( region ℓ )}-> Int = λ _. readCell ℓ.n in ( openEff [e] f ) Prim.Unit
+```
+
+### Closing
+
+**A row a function needs nothing of is closed to `()` before it is generalized**, once, after every fit of its group is decided and immediately before the quantifiers are chosen. A `Row Effect` candidate is closed where it occurs once across the zonked types of the group's members and its residual atoms, and nothing but a Lacks requires it; the Lacks are then dropped, `()` satisfying every one. Occurrences are counted over the whole group, so a metavariable two members share is never closed by the order they are visited in. The jobs are run again after closing, and where they fail the closing is undone and the failure reported by its cause.
+
+A closed row costs nothing: a fit adapts a pure function to any ambient row. `id = \x -> x` is `∀a. a -> a` rather than `∀a e. a -{e}-> a`, and the scheme agrees with the signature an author would write. Closing never removes a known element, a region included.
+
+### Generalization
+
+**Only top-level value declarations are generalized implicitly** (D48). A local `let` or `where` binding is monomorphic unless it carries a signature; a binding with a signature is checked against it and never generalized; the kinds of data declarations are generalized by [their own rule](#kinds).
+
+**Declarations are inferred in the strongly connected components of the references their bodies write**, read off the Surface AST before elaboration; a reference to a declaration with a signature is no edge, its scheme being known. Inside a group, a member without a signature is referenced at a monomorphic type of its own, from an environment local to the group rather than from the catalog. The order the Core module is emitted in is computed afterwards, from the committed terms.
+
+**A metavariable records the level of the binding group it was created in**, and an assignment lowers every metavariable of its solution to the level of the one assigned. The candidates of a group are the unsolved metavariables of its level.
+
+#### The value restriction
+
+A member whose right-hand side, zonked and after any η-expansion, is no value form — by the predicate the Core checker uses for the body of a `Λ` — is not generalized. The metavariables reachable from its type and its body are lowered at once and recorded as **restricted**. They may still be solved by what the rest of the group's elaboration decides; **one still unsolved when the group is generalized asks for a signature.** A variable is never left monomorphic for a later declaration to fix.
+
+A restricted metavariable is unsolved where its zonked representative still holds an unsolved metavariable, whatever its own entry in `Ψ` says.
+
+#### Quantifiers
+
+**The quantifiers of a member, `Qᵢ`, are the generalizable type metavariables its inferred type holds, with what their kinds depend on**, in one deterministic order: members in the order they are declared, each type read left to right, a metavariable placed where it first appears. Constraints do not extend `Qᵢ`. A candidate reached only through the body, or only through a constraint, is one no caller could determine, and asks for an annotation:
+
+```stella
+f _ = let _ = g Nil in 0
+g xs = f ()
+```
+
+```text
+g : ∀a. List a -> Int, since ?a is in g's type
+f's body uses g at ?a, which f's type Unit -> Int does not reach
+→ an ambiguous type in f, an annotation asked for
+```
+
+#### Obligations in atoms
+
+**A required Lacks or Disjoint is kept as the atomic requirements its normal form decomposes into**, and a part proved where it arises is not kept. A site's facts are its context's assumptions decomposed into `Γ*`, together with the scope of the metavariables.
+
+```text
+Lacks k ρ, ρ = ⟨F;T⟩:
+  k ∈ dom(F)                     refused
+  a rigid tail t                 k ∉ t proved from Γ*, or refused
+  a flexible tail ?t             proved by scope (k = RegionKey ℓ, ℓ ∉ scope(?t)), or the atom Lacks k ?t
+
+Disjoint ρ1 ρ2:
+  a key shared by the known parts             refused
+  a known key of one against a tail of the other   as Lacks above
+  two rigid tails t1, t2                      t1 # t2 proved from Γ*, or refused
+  a flexible tail and a rigid one             the atom Disjoint ?t r
+  two flexible tails                          the atom Disjoint ?t1 ?t2
+```
+
+An atom carries the basis, context, and origin of the obligation it came from. An assignment to an atom's tail decomposes it again at its site, which may add atoms, remove it, or refuse. Every atom holds a flexible tail, so an atom is proved at a site only by scope or by an atomic fact of that site's `Γ*`; otherwise it stays as it is. Core rederives the original Disjoint an `openEff` asks for from the atoms.
+
+`?e # ( region ℓ, Console )`, with `?e` created outside the region, keeps the atom `Console ∉ ?e` alone: `RegionKey ℓ ∉ ?e` holds by scope.
+
+#### Constraints
+
+**The constraints of a member are found before its quantifiers are bound, over the group's shared metavariables, call site by call site:**
+
+```text
+Cᵢ = Ownᵢ ∪ ⋃ { residualizeAt(s, Cⱼ) | s a reference in i's body to a member j of the group }
+```
+
+- `Ownᵢ` are the required atoms left at quiescence whose origin is `i`'s body. Assumptions are no part of it.
+- `residualizeAt(s, Cⱼ)` is the requirement a recursive reference raises at `s`, decomposed at `s`'s site: an atom an assumption around the reference proves is gone there, and `i` is not constrained by it.
+- A propagated atom is identified by its call site in `i` and the atom of `Own` it began as, so the identifiers are finitely many, and the union is a monotone least fixpoint: finite and unique. Adding `[•]` to a recursive reference raises no new requirement.
+- **Every atom of `Cᵢ` must mention no metavariable outside `Qᵢ`**; one that does is ambiguous, reported at the reference it came from.
+- At the fixpoint, each `Cᵢ` is rewritten in the member's rigid variables, normalized, deduplicated, and ordered deterministically.
+
+**A recursive reference** to a member `g` gains the type arguments of `g`'s final scheme and a `[•]` for each of its constraints, in their final order. A type argument outside the referring member's `Qᵢ` is a candidate of its body alone, and is ambiguous as above.
+
+#### Kinds
+
+**Kind metavariables are generalized into the kind variables of the declaration's scheme, before its type quantifiers are made** (D3), so that no type quantifier is left at an unsolved kind. A kind candidate is an unsolved kind metavariable of the group's level reached from the kind of a type quantifier or from a constructor's kind argument in the type. One carrying `ProducesType` cannot become a kind variable and is reported. A local binding generalizes no kind.
+
+**A data declaration group** generalizes the kind metavariables its heads leave unsolved into each declaration's kind variables, and a reference inside the group to a member gains its kind arguments, `[[k̄]]`.
+
+```text
+data App f a = App (f a)
+  f : ?k1, a : ?k2; the field gives ?k1 := ?k2 -> Type; ?k2 is unsolved at the end of the group
+  → App : ∀k. (k -> Type) -> k -> Type
+```
+
+#### What does not cross a generalization
+
+A generalization introduces rigid variables and `Λ`s, so nothing that would need its scope rebound beneath them crosses it.
+
+- A synthesis goal whose type touches `Qᵢ` asks for a signature. One that does not is attempted again first, and one still waiting after that is reported as undecided synthesis; a goal that fails is a failure.
+- A metavariable an equality job still touches is restricted (above).
+- No term metavariable, no undecided fit, and no pending boundary job crosses — a boundary whose plan is still being sought among them.
+
+#### The procedure
+
+For each top-level group, in the dependency order above:
+
+1. Elaborate every member's body, each as an attempt.
+2. Run the loop to quiescence and resolve the fits.
+3. η-expand where [Signatures](#signatures) allows, rebuilding the wrapping fits of the expanded body against its new ambient row.
+4. Run the loop and resolve the fits again.
+5. Apply the value restriction: lower and record the restricted metavariables.
+6. Compute a provisional `Qᵢ` for every member.
+7. Ask for a signature where a synthesis goal touches a provisional `Qᵢ`; attempt every other goal again.
+8. Run the loop to quiescence; report a goal still waiting as undecided synthesis.
+9. Snapshot the candidates for closing.
+10. Close.
+11. Run the loop to quiescence; undo the closing and report where it fails.
+12. Confirm that no synthesis goal, term metavariable, undecided fit, or pending boundary job remains; restrict what an equality job still touches; ask for a signature where a restricted metavariable is unsolved.
+13. Compute the final `Qᵢ`; report candidates of a body alone as ambiguous.
+14. Compute `Cᵢ` and check it against `Qᵢ`.
+15. Generalize the kinds.
+16. Assign the members' `Qᵢ` to fresh rigid variables, all at once, and build `TForall` and `ETyLam`.
+17. Rewrite `Cᵢ` in those variables and wrap each body in `EConstraintLam`, removing the atoms from the store.
+18. Complete the recursive references.
+19. Make each member's scheme final in the catalog.
+
+**The assignment of step 16 is the mechanism's own**, made outside every attempt, and takes no scope check: the rigid variables are bound at the root of each declaration and nowhere else, so nothing escapes. Each is bound outside every region a scope check has used to discharge `RegionKey ℓ ∉ ?m`, which is why no such discharge is undone by it; generalizing only the metavariables of a group's own level keeps that true.
+
+### Signatures
+
+| Operation | Rule |
+| --- | --- |
+| instantiate | at each occurrence of a variable or a global: a `∀` becomes an `ETyApp` at a fresh metavariable, a kind variable a fresh kind metavariable carrying `Quantifiable`, a `C =>` an `EConstraintApp` and a requirement |
+| skolemize | checking against a `∀` adds a rigid variable to `Γ` and an `ETyLam`; a constraint is assumed and wrapped in `EConstraintLam`; the body must be a value form, or be η-expanded as below |
+| subsumption | the fit of the outermost arrow's row alone; no deep skolemization, no contravariant position, no containment between polymorphic types, which are compared by correspondence |
+| escape | the scope check of an assignment: a metavariable created outside a skolem's binder cannot be assigned a type mentioning it |
+
+Higher-rank types follow from these rules where they are written; inference itself introduces a `∀` only by generalizing.
+
+**A local binding with a signature inside a prompt** is skolemized where it stands: its `Λ` is inside the region, and what its body creates has both the skolem and `ℓ` in scope. A signature has no spelling for a region, so a local function reading a cell is left without one and inferred.
+
+#### η-expansion
+
+The body of a `Λ` must be a value form, and a reference to a global that is no constructor is none: `f :: forall a. a -> a; f = id` is `Λ a. id [a]`, which Core refuses. **A body whose evaluation can move under a λ without any observable difference, and whose type is a function, is η-expanded once**:
+
+```text
+Λ ā. e   ⟹   Λ ā. λ (x : A). e x
+```
+
+- The forms that may move are value forms, variables, globals, their type and constraint applications, constructor spines whose arguments all may move, and such a form under a wrapping fit. None performs, faults, diverges, or reads a cell.
+- Only the wrapping fits of `e` are rebuilt, against the ambient row of the new λ. A cell reference is no form that may move, so no demanding fit is moved.
+- **The initialization dependencies of `e` are judged before it is expanded and kept after it.** A reference that `e` makes immediately to a member of the group being initialized stays immediate after the expansion, and is judged by the rule for recursive bindings: `f :: forall a. a -> a; f = f` is not made a recursive function by being expanded.
+- A body that is no such form is not expanded; a parameter is asked for, since moving an application under a λ would change when it faults or diverges.
+- A top-level declaration without a signature is expanded by the same rule, so that `g = id` is generalized.
+
+### Computation declarations
+
+| | Value declaration | Computation declaration `x :: ∀ā. C => τ / ρ` |
+| --- | --- | --- |
+| Signature | optional | required |
+| Core scheme | the written or inferred type | `∀ā. C => Unit -{ρ}-> τ` |
+| Body | checked at `()` | wrapped in `λ (_ : Unit)` and checked at `ρ` |
+| Generalized | as above | never |
+| A reference | instantiated | instantiated, applied to `Prim.Unit`, and fitted on its function side |
+
+**Forcing a computation at a top-level value's right-hand side**, where `()` is ambient, succeeds where its row is `()`. A computation with a row that is not empty is a row mismatch where the value has no signature, the right-hand side then being an inference position; where it has one, the right-hand side is a [checking boundary](#explicit-checking-boundaries) at `()`, and a unique plan of implicit handlers taking the row to `()` forces it.
+
+### Explicit checking boundaries
+
+**A position whose expected row an annotation or a signature fixes is a boundary**:
+
+| Boundary | Expected row `ρ` |
+| --- | --- |
+| a λ checked against an arrow an annotation or a signature writes | the arrow's row |
+| a computation declaration's body | the row its signature writes |
+| the right-hand side of a top-level value declaration with a signature | `()`, the ambient row of every top-level value |
+
+**Opening the boundary creates a fresh ambient row `?σ`**, which every fit inside the body takes as its target. The body is built under it, and **closing the boundary, once the body is built, makes it a job** ([Elaborator API](03-Elaborator-API.md#checking-boundaries-and-implicit-handlers)), owned by the attempt that built the body. The compatible union of what the fits inside need, shared tails kept as one, is the body's complete source row `U`; the job waits before deciding only where that union cannot be formed uniquely. It then decides `fit(U, ρ)`, which cancels the keys and tails `U` and `ρ` share first: `( Console | ?e )` against `( LiftIO | ?e )` is decided at once.
+
+| `fit(U, ρ)` | The boundary's job |
+| --- | --- |
+| Equal or Widen | solved with no handler: `?σ := ρ`, and every fit inside is decided again against `ρ`; nothing is placed at the boundary |
+| a definite row mismatch | `?σ := U`, and the body is fixed at `U`; a plan is sought over the complete difference, and the job is solved recording it, applied as [Effect Handlers](02-Effect-Handlers.md) lowers it, or fails where there is none or several |
+| undecided after the shared tails cancel | postponed on the flexible tails left, `?σ` unassigned |
+
+**The resolution of fits takes the boundary's fits against `ρ` in place of the fits inside.** Neither rule solves `?σ` or takes a fit targeting it. A waiting boundary contributes `fit(U, ρ)` where `U` is formed and `fit(Sᵢ, ρ)` for each source `Sᵢ` where it is not; only the assignments they make are kept, and `U` is then decided against `ρ` once. A body calling instantiated `( Console | ?t1 )` and `( Clock | ?t2 )` under a signature at `( Console, Clock | e )` is decided by rule 2, `?t1 := ( Clock | e )` and `?t2 := ( Console | e )`, and then by the first branch. Distinct flexible tails rule 2 does not reach are left an ambiguous effect row.
+
+A boundary job still pending when its declaration is generalized keeps the declaration from being committed. A position whose row nothing fixes — a λ with no expected type, the right-hand side of a top-level value without a signature — is no boundary, and inserts nothing.
 
 ## The surface elaborator
 

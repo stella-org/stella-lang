@@ -330,7 +330,9 @@ The last two are the ones a reader is most likely to want relaxed, and they are 
 
 ### Where it fires
 
-**Inference never inserts.** An expression is first given its own least effect row, so principal rows and the diagnostics D8 provides are preserved. Insertion is attempted only at a checking position, where an expected row is supplied by an annotation or by an enclosing signature.
+**Inference never inserts.** An expression is first given its own least effect row, so principal rows and the diagnostics D8 provides are preserved. Insertion is attempted only at a checking boundary, where an annotation or a signature fixes the expected row: a λ checked against a written arrow, a computation declaration's body, and the right-hand side of a top-level value with a signature, whose expected row is `()` ([Elaboration](01-Elaboration.md#explicit-checking-boundaries)).
+
+**The boundary's body is checked to its complete source row first.** Every fit inside the body takes the boundary's own ambient row as its target, and the least row they need together is the body's source row `ρ1`; the expected row is `ρ2`. Insertion is decided against that row once, after the whole body is checked, and never at the first fit inside it that would not hold — a body using `Console` and `File` under `LiftIO` would otherwise commit to one handler before the other effect was seen.
 
 ### The judgement
 
@@ -424,9 +426,15 @@ A row element is keyed, and `handles Console` fixes the key `EffectKey Console` 
 
 The search shares the machinery of [Elaboration](01-Elaboration.md) and adds none.
 
-**Ordinary unification is attempted first.** `ρ1 ≡ ρ2` is solved under `transact`, so that an attempt which fails leaves `Ψ`, the constraint set, and the queues as it found them. Insertion is attempted only where that attempt **definitely fails** — a leftover known key or rigid tail in case (a) or (b) of row unification — and never where it merely succeeds by instantiating a metavariable. A row solvable by unification needs no handler.
+**The ordinary fit is attempted first.** The boundary is a `JobImplicitHandler` from the moment its body is built ([Elaborator API](03-Elaborator-API.md#checking-boundaries-and-implicit-handlers)). Once the sources of the fits inside form one compatible union `ρ1`, shared tails kept, it decides `fit(ρ1, ρ2)` ([Elaboration](01-Elaboration.md#fitting-an-effect-row)), and the outcome takes one of three branches.
 
-**Shared tails cancel before anything waits.** Row unification removes the tails the two sides have in common before its case analysis, and the plan is read after the same cancellation. A goal is `Stuck` only where a **flexible tail survives that cancellation**, since assigning one adds keys and can still change `dom(F1)` or `dom(F2)`. It then joins the queue every other goal joins and is resumed when one of the metavariables it awaits is assigned.
+| `fit(ρ1, ρ2)` | Branch |
+| --- | --- |
+| Equal or Widen | **No handler.** The boundary's row is assigned `ρ2`, and every fit inside the body is decided again against it, widening as each needs; nothing is placed at the boundary. Insertion is not attempted, and a row a fit can reach needs no handler |
+| a definite mismatch — a known key or a rigid tail of `ρ1` that `ρ2` does not contain, with no flexible tail left to absorb it | **Insertion.** The boundary's row is assigned `ρ1`, the body is fixed at it, and the plan is read off the complete difference ([The plan](#the-plan)); its lowering is [below](#what-reaches-core) |
+| undecided once the shared tails cancel | **Waiting.** The boundary's job postpones on the flexible tails left, and the boundary's row stays unassigned |
+
+**Shared tails cancel before anything waits.** The fit removes the tails the two sides have in common before it decides, and the plan is read after the same cancellation. A boundary waits only where a **flexible tail survives that cancellation** and can still decide the fit: a tail of `ρ2` that can still absorb what `ρ1` has left, or a tail of `ρ1` with nothing else left beside it. A known key or a rigid tail of `ρ1` that `ρ2` cannot absorb is a mismatch whatever tail `ρ1` keeps, since assigning that tail only adds to `ρ1`. It then joins the queue every other job joins and is resumed when one of the metavariables it awaits is assigned. A source whose remainder is empty is a `Widen` whatever flexible tail the target holds, and waits for nothing.
 
 The distinction is not a fine point: the ordinary case has a flexible tail on both sides.
 
@@ -435,6 +443,14 @@ a ! ( Console | ?e )   checked against   a ! ( LiftIO | ?e )
 ```
 
 Cancelling `?e` leaves `{ Console }` against `{ LiftIO }` with no tail on either side, so the key difference is settled and the plan is read off it. Treating an unsolved metavariable as a reason to wait would stall the very shape the mechanism exists for.
+
+**A tail only `ρ1` holds is fixed by the plan's final equality.** The tail of an instantiated effect-polymorphic function stands in `ρ1` alone:
+
+```text
+a ! ( Console | ?t )   checked against   a ! ( LiftIO | e )
+```
+
+`Console` is left with no flexible tail in `ρ2` to absorb it, so the fit is a mismatch and the plan `Console ~> ( LiftIO )` is read. Applying it yields `( LiftIO | ?t )`, and step 5 equates that with `ρ2`, assigning `?t := e`. The sharpness of `ρ1`, `Console ∉ ?t`, becomes `Console ∉ e` through that assignment; where the signature's constraints do not prove it, the Lacks obligation is what is reported, not an ambiguous effect row.
 
 **A rigid tail is never a reason to wait.** A row variable bound by a `forall` contributes no key to the normal form, and nothing in the goal being solved can assign it one; a residual row open in that sense is as determined as a closed one.
 
@@ -465,13 +481,14 @@ q0      = openEff [ W' ] ( λ (_ : Unit). e )      a thunk
 di      = Hi ⟨ instantiation ⟩ q(i-1)             a computation
 qi      = λ (_ : Unit). di                        a thunk again
 
-e'      = q0 Prim.Unit        when n = 0
-e'      = dn                  when n > 0
+e'      = dn
 ```
 
-**The plan may be empty.** Where `ρ2` differs from `ρ1` only by keys no handler removes — a capability the expected row carries and the computation does not — step 4 widens and there is nothing to apply, so the thunk is forced at once. Writing `e'` as a nest of applications leaves that case with no term; writing it as `q0 Prim.Unit` gives it one.
+**`e'` stands where the body stood**: inside the λ the boundary checks, which stays a value form, `openEff` wrapping the thunk built inside it and not the λ.
 
-Only `q0` is widened. Each later thunk stands at the row the handler below it produced, which already carries every target, so nothing further is owed.
+**The plan is never empty.** Insertion is entered only where the fit fails definitely, so `ρ1` holds a key `ρ2` lacks and some handler must remove it. Where `ρ2` differs from `ρ1` only by keys it adds, the fit succeeds and the fits inside the body widen as each needs, with no thunk and no handler.
+
+Only `q0` is widened, and only in the insertion branch. Each later thunk stands at the row the handler below it produced, which already carries every target, so nothing further is owed.
 
 ```text
 -- program : a ! ( Console | e ),  checked against a ! ( LiftIO | e )
