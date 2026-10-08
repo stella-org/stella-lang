@@ -22,7 +22,7 @@ package:
     - strings
     - typelevel-prelude
   run:
-    main: Stella
+    main: Stellac.JS
   test:
     main: Test.Stella
     dependencies:
