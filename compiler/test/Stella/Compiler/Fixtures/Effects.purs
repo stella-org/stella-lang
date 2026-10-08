@@ -564,14 +564,16 @@ forkedTwice =
 
 -- The refusal fixtures' source -------------------------------------------------------------------
 
--- | A module the handler refusals are made from by changing what it lowers to.
+-- | A module the handler and region refusals are made from by changing what it
+-- | lowers to.
 -- |
--- | `Meter` has two operations and a region of two cells around its handler, `reading` and
--- | `spare`, so a handler entry has a second clause and a second cell to turn into a
--- | repeat of the first, and one of each to leave out. `installed` installs it where
--- | something waits for the answer, a `HNDL`; `inBranch` installs it in tail
--- | position inside a branch, a `TAILHNDL` in a node the function's body holds
--- | inline.
+-- | `Meter` has two operations, and a region of two cells, `reading` and `spare`,
+-- | stands around its handler, so a handler entry has a second clause and a region
+-- | entry a second cell to turn into a repeat of the first, and one of each to
+-- | leave out. `installed` consumes the values of both, a `RGN` and a `HNDL`;
+-- | `inBranch` opens the region in tail position inside a branch and installs the
+-- | handler in tail position inside a branch of the region's body, a `TAILRGN` and
+-- | a `TAILHNDL` each in a node a function's body holds inline.
 meterModule :: Module P.Int
 meterModule =
   { annotation: 0
@@ -580,11 +582,11 @@ meterModule =
   , exports: [ ExportValue (Ident "installed"), ExportValue (Ident "inBranch") ]
   , decls:
       [ effectDecl 1 "Meter" [ operation "bump" int, operation "peek" int ]
-      , nonrec 2 "installed" int (intOp "add" metered (lit 1))
+      , nonrec 2 "installed" int
+          (intOp "add" (opened (intOpAt meterRow "add" metered (lit 1))) (lit 1))
       , nonrec 3 "inBranch" (fn bool TRowEmpty int)
           ( lam "b" bool
-              $ Case 0 [ var "b" ]
-                  (SwitchLit (OccScrutinee 0) [ { lit: LitBoolean true, tree: Leaf metered } ] (Leaf (lit 0)))
+              $ onTrue (opened (onTrue metered))
           )
       ]
   }
@@ -595,18 +597,20 @@ meterModule =
   cells = [ { key: reading, ty: int }, { key: spare, ty: int } ]
   region = RegionName "m"
   meterRow = TRowExtend (RowRegionEntry region) TRowEmpty
+  opened = Region 0 region cells [ lit 0, lit 0 ]
+  onTrue body =
+    Case 0 [ var "b" ]
+      (SwitchLit (OccScrutinee 0) [ { lit: LitBoolean true, tree: Leaf body } ] (Leaf (lit 0)))
   metered =
-    Region 0 region cells [ lit 0, lit 0 ]
-      ( Handle 0 (perform meter "bump")
-          { element: RowEffectEntry meter []
-          , returnClause: identityReturn
-          , opClauses:
-              [ fast "bump"
-                  ( let' "v" int (intOpAt meterRow "add" (ReadCell 0 region reading) (lit 1))
-                      $ let' "w" unit' (WriteCell 0 region reading (var "v"))
-                      $ var "v"
-                  )
-              , fast "peek" (ReadCell 0 region spare)
-              ]
-          }
-      )
+    Handle 0 (perform meter "bump")
+      { element: RowEffectEntry meter []
+      , returnClause: identityReturn
+      , opClauses:
+          [ fast "bump"
+              ( let' "v" int (intOpAt meterRow "add" (ReadCell 0 region reading) (lit 1))
+                  $ let' "w" unit' (WriteCell 0 region reading (var "v"))
+                  $ var "v"
+              )
+          , fast "peek" (ReadCell 0 region spare)
+          ]
+      }

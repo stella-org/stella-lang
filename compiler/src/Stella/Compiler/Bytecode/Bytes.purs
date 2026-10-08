@@ -221,6 +221,7 @@ data TableKind
   | CalleeTable
   | PrimTable
   | HandlerTable
+  | RegionTable
   | FunctionTable
 
 data DecodeError

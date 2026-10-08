@@ -17,6 +17,7 @@ module Stella.Compiler.Bytecode.Module
   , CalleeEntry(..)
   , HandlerEntry
   , ClauseEntry
+  , RegionEntry
   , GlobalEntry
   , GlobalInit(..)
   , Dmo
@@ -104,23 +105,26 @@ data CalleeEntry
   | CalleeCtor (Qualified Ident)
   | CalleePrim PrimOp
 
--- | A handler's key, the keys of the cells its region declares, and per clause
--- | the operation and its form. The clauses' closures and the cells' initial
--- | values are supplied in registers at the instruction, so nothing here carries
--- | a capture list or a value.
--- |
--- | `cells` is empty for a handler declaring no region, and then no frame is
--- | installed. **No region key appears in it**: what it holds are the keys of
--- | the cells themselves, and a region's own key is not one a term carries.
+-- | A handler's key, and per clause the operation and its form. The clauses'
+-- | closures are supplied in registers at the instruction, so nothing here
+-- | carries a capture list.
 type HandlerEntry =
   { key :: KeyIx
-  , cells :: P.Array KeyIx
   , opClauses :: P.Array ClauseEntry
   }
 
 type ClauseEntry =
   { op :: OpIx
   , form :: ClauseForm
+  }
+
+-- | A region's cells, by their keys in the order the layout writes them. A cell
+-- | is reached by its position, so the keys say how many cells there are and,
+-- | to a reader showing the module, which is which; nothing a machine does
+-- | compares them. **No region key appears here**: a region's own key is not one
+-- | a term carries.
+type RegionEntry =
+  { cells :: P.Array KeyIx
   }
 
 -- | How initialization installs a top-level value.
@@ -181,6 +185,7 @@ type Dmo =
   -- | validation and a machine read one thing.
   , prims :: P.Array PrimOp
   , handlers :: P.Array HandlerEntry
+  , regions :: P.Array RegionEntry
   , functions :: P.Array Function
   , globals :: P.Array GlobalEntry
   , exports :: P.Array (Qualified Ident)

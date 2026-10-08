@@ -22,7 +22,7 @@ import Stella.Compiler.Bytecode.Bytes (Bytes, EncodeError(..), f64, svar, u8, ut
 import Stella.Compiler.Bytecode.Container (E, qname, runE, section, str, strings, throwE, vec, vecOf)
 import Stella.Compiler.Bytecode.Format as F
 import Stella.Compiler.Bytecode.Validate (validate)
-import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg(..), Tail(..))
+import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg(..), RegionIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Instr as B
 import Stella.Compiler.Bytecode.Module (CalleeEntry(..), Constant(..), Dmo, GlobalInit(..), Key(..), abiVersion, formatVersion)
 import Stella.Compiler.Bytecode.Module as BM
@@ -101,6 +101,7 @@ body dmo = do
         <> section F.sectionPrims (vecOf (uvar <<< codeOfOp) dmo.prims)
         <> section F.sectionCallees callees
         <> section F.sectionHandlers (vecOf handler dmo.handlers)
+        <> section F.sectionRegions (vecOf region dmo.regions)
         <> section F.sectionFunctions functions
         <> section F.sectionGlobals globals
         <> section F.sectionExports exports
@@ -174,10 +175,12 @@ callee prims = case _ of
     w <- written
     pure (u8 tag <> w)
 
+region :: BM.RegionEntry -> Bytes
+region entry = vecOf keyIx entry.cells
+
 handler :: BM.HandlerEntry -> Bytes
 handler entry =
   keyIx entry.key
-    <> vecOf keyIx entry.cells
     <> vecOf clause entry.opClauses
   where
   clause c = opIx c.op <> u8 (form c.form)
@@ -258,10 +261,11 @@ instr = case _ of
   VPAY d k s -> u8 F.opVPay <> reg d <> keyIx k <> reg s
   VABS d s -> u8 F.opVAbs <> reg d <> reg s
   PERF d k o s -> u8 F.opPerf <> reg d <> keyIx k <> opIx o <> reg s
-  HNDL d h b r cs vs ->
-    u8 F.opHndl <> reg d <> handlerIx h <> reg b <> reg r <> vecOf reg cs <> vecOf reg vs
-  CGET d k -> u8 F.opCGet <> reg d <> keyIx k
-  CSET d k s -> u8 F.opCSet <> reg d <> keyIx k <> reg s
+  HNDL d h b r cs ->
+    u8 F.opHndl <> reg d <> handlerIx h <> reg b <> reg r <> vecOf reg cs
+  RGN d g b vs -> u8 F.opRgn <> reg d <> regionIx g <> reg b <> vecOf reg vs
+  CGET d g i -> u8 F.opCGet <> reg d <> reg g <> uvar i
+  CSET d g i s -> u8 F.opCSet <> reg d <> reg g <> uvar i <> reg s
 
 tail :: Tail -> Bytes
 tail = case _ of
@@ -283,8 +287,9 @@ tail = case _ of
     u8 F.tailBrK <> reg s
       <> vecOf (\c -> keyIx c.key <> node c.body) cases
       <> optional def
-  TAILHNDL h b r cs vs ->
-    u8 F.tailTailHndl <> handlerIx h <> reg b <> reg r <> vecOf reg cs <> vecOf reg vs
+  TAILHNDL h b r cs ->
+    u8 F.tailTailHndl <> handlerIx h <> reg b <> reg r <> vecOf reg cs
+  TAILRGN g b vs -> u8 F.tailTailRgn <> regionIx g <> reg b <> vecOf reg vs
 
 -- | A default where there is one, which `BRL` never needs: literals cannot be
 -- | exhausted, so its default is not optional.
@@ -325,6 +330,9 @@ funcIx (FuncIx n) = uvar n
 
 handlerIx :: HandlerIx -> Bytes
 handlerIx (HandlerIx n) = uvar n
+
+regionIx :: RegionIx -> Bytes
+regionIx (RegionIx n) = uvar n
 
 joinName :: JoinName -> Bytes
 joinName (JoinName n) = uvar n

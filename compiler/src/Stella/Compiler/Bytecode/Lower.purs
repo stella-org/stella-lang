@@ -18,9 +18,9 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Primitive (PrimOp)
-import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg(..), Tail(..))
+import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg(..), RegionIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Instr as B
-import Stella.Compiler.Bytecode.Module (CalleeEntry(..), Constant(..), Debug, Dmo, GlobalInit(..), HandlerEntry, Key(..), abiVersion, formatVersion)
+import Stella.Compiler.Bytecode.Module (CalleeEntry(..), Constant(..), Debug, Dmo, GlobalInit(..), HandlerEntry, Key(..), RegionEntry, abiVersion, formatVersion)
 import Stella.Compiler.Bytecode.Module as BM
 import Stella.Compiler.MiddleEnd.Rep (Rep(..))
 import Stella.Compiler.MiddleEnd.IR as M
@@ -44,9 +44,6 @@ data LowerError
   = Unverified VerifyError
   -- | A region key in a term. No erased term carries one.
   | RegionKeyInCode RowKey
-  -- | A `region`, `readCell`, or `writeCell`, which this lowering does not
-  -- | lower.
-  | RegionNotLowered
 
 derive instance Eq LowerError
 derive instance Generic LowerError _
@@ -68,6 +65,7 @@ type LState =
   , callees :: P.Array CalleeEntry
   , prims :: P.Array PrimOp
   , handlers :: P.Array HandlerEntry
+  , regions :: P.Array RegionEntry
   , nextReg :: P.Int
   , regs :: Map P.Int Rep
   , joins :: P.Array Join
@@ -150,12 +148,16 @@ internCallee callee = CalleeIx <$> intern _.callees (\t s -> s { callees = t }) 
 internOp :: OpName -> L OpIx
 internOp op = OpIx <$> intern _.ops (\t s -> s { ops = t }) op
 
--- | A handler's entry. Two handlers of one key, one region, and one set of
--- | clauses are one entry: the closures and the cells' initial values are
--- | supplied in registers at the instruction, so an entry holds nothing that
--- | tells two sites apart.
+-- | A handler's entry. Two handlers of one key and one set of clauses are one
+-- | entry: the closures are supplied in registers at the instruction, so an
+-- | entry holds nothing that tells two sites apart.
 internHandler :: HandlerEntry -> L HandlerIx
 internHandler entry = HandlerIx <$> intern _.handlers (\t s -> s { handlers = t }) entry
+
+-- | A region's entry. Two regions of one layout are one entry, the initial
+-- | values being supplied in registers at the instruction.
+internRegion :: RegionEntry -> L RegionIx
+internRegion entry = RegionIx <$> intern _.regions (\t s -> s { regions = t }) entry
 
 -- | Every operation the module carries out is recorded, **including one waiting
 -- | in a partial application**: target validation reads this table as the use
@@ -176,7 +178,7 @@ constantOf = case _ of
 -- |
 -- | **A region key is not.** It identifies an element within a row, and erasure
 -- | keeps no such element: a handler keeps the key of the element it removes,
--- | its cells keep their own keys, and `readCell` and `writeCell` name those
+-- | a region the keys of its cells, and `readCell` and `writeCell` a position
 -- | ([Semantics](../../../../docs/technical-references/03-Typed-Core/06-Semantics.md)).
 -- | Nothing reaching here produces one, and the container carries no case for
 -- | it rather than a case nothing can be in.
@@ -338,13 +340,20 @@ comp d = case _ of
 
   M.CHandle handler func captures -> do
     o <- handlerOperands handler func captures
-    pure (o.code <> [ HNDL d o.handler o.body o.returnClause o.opClauses [] ])
+    pure (o.code <> [ HNDL d o.handler o.body o.returnClause o.opClauses ])
 
-  M.CRegion _ _ _ _ -> throw RegionNotLowered
+  M.CRegion keys func captures initial -> do
+    o <- regionOperands keys func captures initial
+    pure (o.code <> [ RGN d o.region o.body o.initial ])
 
-  M.CReadCell _ _ -> throw RegionNotLowered
+  M.CReadCell region index -> do
+    a <- atomReg region
+    pure (a.code <> [ CGET d a.reg index ])
 
-  M.CWriteCell _ _ _ -> throw RegionNotLowered
+  M.CWriteCell region index atom -> do
+    a <- atomReg region
+    b <- atomReg atom
+    pure (a.code <> b.code <> [ CSET d a.reg index b.reg ])
 
 -- | What a `HNDL` names: the handler's entry in the module's table, and the
 -- | registers its functions arrive in.
@@ -367,7 +376,6 @@ handlerOperands handler func captures = do
   ops <- traverse (internOp <<< _.op) handler.opClauses
   ix <- internHandler
     { key
-    , cells: []
     , opClauses: Array.zipWith (\op oc -> { op, form: oc.form }) ops handler.opClauses
     }
   body <- closureReg func captures
@@ -384,8 +392,23 @@ handlerOperands handler func captures = do
     , opClauses: map _.reg clauses
     }
 
+-- | What a `RGN` names: the region's entry in the module's table, the register
+-- | its body arrives in, and those its cells' initial values arrive in.
+regionOperands
+  :: P.Array RowKey
+  -> M.FuncId
+  -> P.Array M.Atom
+  -> P.Array M.Atom
+  -> L { code :: P.Array Instr, region :: RegionIx, body :: Reg, initial :: P.Array Reg }
+regionOperands keys func captures initial = do
+  cells <- traverse internKey keys
+  ix <- internRegion { cells }
+  body <- closureReg func captures
+  values <- atomRegs initial
+  pure { code: body.code <> values.code, region: ix, body: body.reg, initial: values.regs }
+
 -- | A closure into a register of its own, which is how a handler's functions
--- | reach the instruction that installs it.
+-- | and a region's body reach the instruction that installs or opens it.
 closureReg :: M.FuncId -> P.Array M.Atom -> L { code :: P.Array Instr, reg :: Reg }
 closureReg func captures = do
   loaded <- atomRegs captures
@@ -398,8 +421,8 @@ funcIxOf (M.FuncId n) = FuncIx n
 -- | A computation in tail position.
 -- |
 -- | **Only a transfer of control has a `Tail` of its own**, a consumer having to
--- | be told not to push a frame for one: a call, and a `handle`, which calls its
--- | body. Everything else is the instruction followed by a `RET`.
+-- | be told not to push a frame for one: a call, and a `handle` and a `region`,
+-- | which call their bodies. Everything else is the instruction followed by a `RET`.
 -- |
 -- | `rep` is the class of the register that holds the value on its way to being
 -- | returned, which only the second case needs.
@@ -424,8 +447,12 @@ tailComp rep = case _ of
     o <- handlerOperands handler func captures
     pure
       { code: o.code
-      , tail: TAILHNDL o.handler o.body o.returnClause o.opClauses []
+      , tail: TAILHNDL o.handler o.body o.returnClause o.opClauses
       }
+
+  M.CRegion keys func captures initial -> do
+    o <- regionOperands keys func captures initial
+    pure { code: o.code, tail: TAILRGN o.region o.body o.initial }
 
   other -> do
     d <- freshReg rep
@@ -631,6 +658,7 @@ lower input = case verify m of
           , callees: final.callees
           , prims: final.prims
           , handlers: final.handlers
+          , regions: final.regions
           , functions
           , globals: map globalEntry m.globals
           , exports: m.exports
@@ -650,6 +678,7 @@ lower input = case verify m of
     , callees: []
     , prims: []
     , handlers: []
+    , regions: []
     , nextReg: 0
     , regs: Map.empty
     , joins: []

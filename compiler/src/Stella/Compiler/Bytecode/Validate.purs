@@ -25,7 +25,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Bytecode.Bytes (Fault(..), TableKind(..))
-import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg(..), Tail(..))
+import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg(..), RegionIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Instr as B
 import Stella.Compiler.Bytecode.Module (Dmo, GlobalInit(..), Key(..))
 import Data.Array as Array
@@ -38,6 +38,7 @@ validate dmo = do
   traverse_ ctorEntry dmo.ctors
   traverse_ foreignEntry dmo.foreigns
   traverse_ handlerEntry dmo.handlers
+  traverse_ regionEntry dmo.regions
   traverse_ globalEntry dmo.globals
   traverse_ functionEntry dmo.functions
   where
@@ -57,6 +58,7 @@ validate dmo = do
   calleeIx (CalleeIx i) = index CalleeTable (Array.length dmo.callees) i
   primIx (PrimIx i) = index PrimTable (Array.length dmo.prims) i
   handlerIx (HandlerIx i) = index HandlerTable (Array.length dmo.handlers) i
+  regionIx (RegionIx i) = index RegionTable (Array.length dmo.regions) i
   funcIx (FuncIx i) = index FunctionTable (Array.length dmo.functions) i
 
   -- Tables ---------------------------------------------------------------------
@@ -71,8 +73,9 @@ validate dmo = do
 
   handlerEntry entry = do
     keyIx entry.key
-    traverse_ keyIx entry.cells
     traverse_ (\c -> opIx c.op) entry.opClauses
+
+  regionEntry entry = traverse_ keyIx entry.cells
 
   globalEntry entry = case entry.init of
     GRun f -> funcIx f
@@ -142,12 +145,13 @@ validate dmo = do
     VPAY d k s -> register scope d *> keyIx k *> register scope s
     VABS d s -> register scope d *> register scope s
     PERF d k o s -> register scope d *> keyIx k *> opIx o *> register scope s
-    HNDL d h b r cs vs ->
+    HNDL d h b r cs ->
       register scope d *> handlerIx h *> register scope b *> register scope r
         *> traverse_ (register scope) cs
-        *> traverse_ (register scope) vs
-    CGET d k -> register scope d *> keyIx k
-    CSET d k s -> register scope d *> keyIx k *> register scope s
+    RGN d g b vs ->
+      register scope d *> regionIx g *> register scope b *> traverse_ (register scope) vs
+    CGET d g i -> register scope d *> register scope g *> nonNegative i
+    CSET d g i s -> register scope d *> register scope g *> nonNegative i *> register scope s
 
   tail scope = case _ of
     RET s -> register scope s
@@ -168,10 +172,10 @@ validate dmo = do
       register scope s
         *> traverse_ (keyCase scope) cases
         *> traverse_ (node scope) def
-    TAILHNDL h b r cs vs ->
+    TAILHNDL h b r cs ->
       handlerIx h *> register scope b *> register scope r
         *> traverse_ (register scope) cs
-        *> traverse_ (register scope) vs
+    TAILRGN g b vs -> regionIx g *> register scope b *> traverse_ (register scope) vs
 
   ctorCase :: _ -> B.CtorCase -> Either Fault Unit
   ctorCase scope c = ctorIx c.ctor *> node scope c.body

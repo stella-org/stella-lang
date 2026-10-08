@@ -24,7 +24,7 @@ import Stella.Compiler.Bytecode.Container (Strings, qnameR, strR, text)
 import Stella.Compiler.Bytecode.Container as C
 import Stella.Compiler.Bytecode.Format as F
 import Stella.Compiler.Bytecode.Validate (validate)
-import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg(..), Tail(..))
+import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg(..), RegionIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Instr as B
 import Stella.Compiler.Bytecode.Module (CalleeEntry(..), Constant(..), Dmo, GlobalInit(..), Key(..), abiVersion, formatVersion)
 import Stella.Compiler.Bytecode.Module as BM
@@ -66,7 +66,8 @@ dmoR = do
   prims <- sectionR globalRefs.previous F.sectionPrims (vecR primR)
   callees <- sectionR prims.previous F.sectionCallees (vecR (calleeR ss prims.value))
   handlers <- sectionR callees.previous F.sectionHandlers (vecR handlerR)
-  functions <- sectionR handlers.previous F.sectionFunctions (vecR (functionR ss))
+  regions <- sectionR handlers.previous F.sectionRegions (vecR regionR)
+  functions <- sectionR regions.previous F.sectionFunctions (vecR (functionR ss))
   globals <- sectionR functions.previous F.sectionGlobals (vecR (globalR ss))
   exports <- sectionR globals.previous F.sectionExports (vecR (qnameR ss Ident))
   trailingR exports.previous
@@ -87,6 +88,7 @@ dmoR = do
     , callees: callees.value
     , prims: prims.value
     , handlers: handlers.value
+    , regions: regions.value
     , functions: functions.value
     , globals: globals.value
     , exports: exports.value
@@ -202,9 +204,13 @@ calleeR strings prims = do
 handlerR :: R BM.HandlerEntry
 handlerR = do
   key <- map KeyIx structuralR
-  cells <- vecR (map KeyIx structuralR)
   opClauses <- vecR clauseR
-  pure { key, cells, opClauses }
+  pure { key, opClauses }
+
+regionR :: R BM.RegionEntry
+regionR = do
+  cells <- vecR (map KeyIx structuralR)
+  pure { cells }
 
 clauseR :: R BM.ClauseEntry
 clauseR = do
@@ -300,9 +306,10 @@ instrR opcode
   | opcode == F.opVAbs = VABS <$> regR <*> regR
   | opcode == F.opPerf = PERF <$> regR <*> keyIxR <*> opIxR <*> regR
   | opcode == F.opHndl =
-      HNDL <$> regR <*> handlerIxR <*> regR <*> regR <*> vecR regR <*> vecR regR
-  | opcode == F.opCGet = CGET <$> regR <*> keyIxR
-  | opcode == F.opCSet = CSET <$> regR <*> keyIxR <*> regR
+      HNDL <$> regR <*> handlerIxR <*> regR <*> regR <*> vecR regR
+  | opcode == F.opRgn = RGN <$> regR <*> regionIxR <*> regR <*> vecR regR
+  | opcode == F.opCGet = CGET <$> regR <*> regR <*> structuralR
+  | opcode == F.opCSet = CSET <$> regR <*> regR <*> structuralR <*> regR
   | otherwise = throwR (UnknownTag InstrOpcode opcode)
 
 tailR :: P.Int -> R Tail
@@ -317,7 +324,8 @@ tailR opcode
   | opcode == F.tailBrL = BRL <$> regR <*> vecR litCaseR <*> nodeR
   | opcode == F.tailBrK = BRK <$> regR <*> vecR keyCaseR <*> optionalR
   | opcode == F.tailTailHndl =
-      TAILHNDL <$> handlerIxR <*> regR <*> regR <*> vecR regR <*> vecR regR
+      TAILHNDL <$> handlerIxR <*> regR <*> regR <*> vecR regR
+  | opcode == F.tailTailRgn = TAILRGN <$> regionIxR <*> regR <*> vecR regR
   | otherwise = throwR (UnknownTag TailOpcode opcode)
 
 ctorCaseR :: R B.CtorCase
@@ -377,4 +385,7 @@ funcIxR = map FuncIx structuralR
 
 handlerIxR :: R HandlerIx
 handlerIxR = map HandlerIx structuralR
+
+regionIxR :: R RegionIx
+regionIxR = map RegionIx structuralR
 

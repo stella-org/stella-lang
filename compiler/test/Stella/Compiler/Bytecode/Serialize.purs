@@ -2,8 +2,8 @@
 -- |
 -- | **The round trip is the assertion.** A module written and read again is the
 -- | module it was, which is what an encoder and a decoder that each carry their
--- | own operand order would fail; the two slices carry every form a lowering
--- | produces between them, the effectful one included.
+-- | own operand order would fail; the two slices and the effect fixtures carry
+-- | every form a lowering produces between them.
 -- |
 -- | The cases after it are the ones the format fixes in its own right: the bytes
 -- | of the header, that one module has one encoding, that a section above the
@@ -24,6 +24,8 @@ import Data.Char as Char
 import Data.Either (Either(..), isLeft)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String.CodeUnits as CodeUnits
+import Test.Stella.Compiler.Fixtures.Effects (effectsModule)
+import Test.Stella.Compiler.Fixtures.Programs as Programs
 import Test.Stella.Compiler.TypedCore.HandlerSlice (handlerSlice)
 import Test.Stella.Compiler.TypedCore.VerticalSlice (intModule, verticalSlice)
 import Test.Spec (Spec, describe, it)
@@ -36,7 +38,11 @@ notANumber = 0.0 / 0.0
 -- | A slice, carried through checking, translation, and lowering to the module
 -- | object these cases encode.
 loweredOf :: Module P.Int -> Either P.String Dmo
-loweredOf m = case declare primSignature intModule of
+loweredOf = loweredAgainst intModule
+
+-- | The same, against the `Base.Int` given.
+loweredAgainst :: Module P.Int -> Module P.Int -> Either P.String Dmo
+loweredAgainst base m = case declare primSignature base of
   Left _ -> Left "Base.Int did not declare"
   Right s1 -> case declareAnnotated s1 m of
     Left _ -> Left "the slice did not declare"
@@ -66,6 +72,7 @@ bare =
   , callees: []
   , prims: []
   , handlers: []
+  , regions: []
   , functions: []
   , globals: []
   , exports: []
@@ -128,10 +135,15 @@ spec = describe "Stella.Compiler.Bytecode.Serialize" do
         Left err -> fail err
         Right dmo -> roundTrip dmo `shouldEqual` Right dmo
 
-    it "carries the handler slice, performs and cells and all" do
-      -- `PERF`, `HNDL`, `TAILHNDL`, `CGET`, and `CSET` are here and nowhere in
-      -- the vertical slice
+    it "carries the handler slice, performs and regions and cells and all" do
+      -- `PERF`, `HNDL`, `TAILHNDL`, `RGN`, `TAILRGN`, `CGET`, and `CSET` are
+      -- here and nowhere in the vertical slice
       case loweredOf handlerSlice of
+        Left err -> fail err
+        Right dmo -> roundTrip dmo `shouldEqual` Right dmo
+
+    it "carries the effect fixtures, a HNDL whose value is consumed among them" do
+      case loweredAgainst Programs.intModule effectsModule of
         Left err -> fail err
         Right dmo -> roundTrip dmo `shouldEqual` Right dmo
 
@@ -189,10 +201,10 @@ spec = describe "Stella.Compiler.Bytecode.Serialize" do
         `shouldEqual` Left (UnknownAbiVersion "Xtella-base-0.1")
 
     it "an unknown section below the boundary" do
-      decode (appended 0x13 bare) `shouldEqual` Left (UnknownSection 0x13)
+      decode (appended 0x14 bare) `shouldEqual` Left (UnknownSection 0x14)
 
     it "a section twice, the ids ascending strictly" do
-      decode (appended 0x12 bare) `shouldEqual` Left (SectionOutOfOrder 0x12 0x12)
+      decode (appended 0x13 bare) `shouldEqual` Left (SectionOutOfOrder 0x13 0x13)
 
     it "a file that ends inside a form" do
       isLeft (decode (Array.take 9 (bytesOf bare))) `shouldEqual` true

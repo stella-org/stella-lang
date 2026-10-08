@@ -42,7 +42,7 @@ import Stella.Compiler.TypedCore (Ident(..), Module, ModuleName(..), Qualified(.
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ForeignIx(..), Instr(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg, Tail(..))
-import Stella.Compiler.Bytecode.Module (CalleeEntry(..), HandlerEntry)
+import Stella.Compiler.Bytecode.Module (CalleeEntry(..), HandlerEntry, RegionEntry)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
 import Test.Stella.Compiler.Fixtures.Effects (effectsExpected, effectsModule, meterModule)
 import Test.Stella.Compiler.Fixtures.Foreigns (ManifestModule, Result(..), RunCase, RunFault(..), addCallMain, addHostModule, addInnerCallMain, opCallMain, addHostShrunk, addPartialMain, addShrunkManifest, addShrunkSource, greetHostModule, greetMainModule, greetManifest, greetSource, ioEffects, ioHostModule, ioHostSource, ioMainModule, ioManifest, ioModule, ioName, hostName, ioModuleBindArity, ioModulePureArity, ioResult, pureMainModule, runCases, runEffects, runHostModule, runHostSource, runMainModule, runManifest, startMainModule)
@@ -195,12 +195,12 @@ fixtures =
       , outcome: Loads
       , observe: effectsExpected
       }
-  , meterRefusal "handler-cell-twice"
-      "the second cell of Main's handler entry changed to the first, at the same KEYS index"
-      (onHandlers secondCellRepeats)
+  , meterRefusal "region-cell-twice"
+      "the second cell of Main's region entry changed to the first, at the same KEYS index"
+      (onRegions secondCellRepeats)
       "reading"
-  , meterRefusal "handler-cell-aliased"
-      "the second cell of Main's handler entry changed to the first, at a KEYS index of its own holding the same key"
+  , meterRefusal "region-cell-aliased"
+      "the second cell of Main's region entry changed to the first, at a KEYS index of its own holding the same key"
       secondCellAliased
       "reading"
   , meterRefusal "handler-clause-twice"
@@ -215,18 +215,18 @@ fixtures =
       "a HNDL of Main given one clause fewer than its handler entry holds"
       (everyNode (onInstrs (onHndl dropClause)))
       "Meter"
-  , meterRefusal "handler-hndl-cells"
-      "a HNDL of Main given one initial cell value fewer than its handler entry's cells"
-      (everyNode (onInstrs (onHndl dropCell)))
-      "Meter"
+  , meterRefusal "region-rgn-cells"
+      "a RGN of Main given one initial cell value fewer than its region entry's cells"
+      (everyNode (onInstrs (onRgn dropCell)))
+      "reading"
   , meterRefusal "handler-tailhndl-clauses"
       "a TAILHNDL inside a branch of Main given one clause fewer than its handler entry holds"
       (everyNode (onTail (onTailHndl dropClause)))
       "Meter"
-  , meterRefusal "handler-tailhndl-cells"
-      "a TAILHNDL inside a branch of Main given one initial cell value fewer than its handler entry's cells"
-      (everyNode (onTail (onTailHndl dropCell)))
-      "Meter"
+  , meterRefusal "region-tailrgn-cells"
+      "a TAILRGN inside a branch of Main given one initial cell value fewer than its region entry's cells"
+      (everyNode (onTail (onTailRgn dropCell)))
+      "reading"
   ]
     <> map faultFixture faultCases
     <> foreignFixtures
@@ -491,16 +491,19 @@ meterRefusal name description change mentions = plain
 onHandlers :: (HandlerEntry -> HandlerEntry) -> Dmo -> Dmo
 onHandlers f dmo = dmo { handlers = map f dmo.handlers }
 
+onRegions :: (RegionEntry -> RegionEntry) -> Dmo -> Dmo
+onRegions f dmo = dmo { regions = map f dmo.regions }
+
 -- | The first cell standing for the second, at its own index.
-secondCellRepeats :: HandlerEntry -> HandlerEntry
-secondCellRepeats h = h { cells = Array.take 1 h.cells <> Array.take 1 h.cells }
+secondCellRepeats :: RegionEntry -> RegionEntry
+secondCellRepeats r = r { cells = Array.take 1 r.cells <> Array.take 1 r.cells }
 
 -- | The first cell standing for the second, at a new index of `KEYS` holding the
 -- | same key. Two indices of one key are one identity.
 secondCellAliased :: Dmo -> Dmo
-secondCellAliased dmo = case Array.head dmo.handlers >>= \h -> Array.head h.cells of
+secondCellAliased dmo = case Array.head dmo.regions >>= \r -> Array.head r.cells of
   Just (KeyIx i) | Just key <- Array.index dmo.keys i ->
-    onHandlers (\h -> h { cells = Array.take 1 h.cells <> [ KeyIx (Array.length dmo.keys) ] })
+    onRegions (\r -> r { cells = Array.take 1 r.cells <> [ KeyIx (Array.length dmo.keys) ] })
       (dmo { keys = Array.snoc dmo.keys key })
   _ -> dmo
 
@@ -539,25 +542,32 @@ onInstrs f n = n { code = map f n.code }
 onTail :: (Tail -> Tail) -> Node -> Node
 onTail f n = n { tail = f n.tail }
 
-type HandleOperands = { clauses :: P.Array Reg, cells :: P.Array Reg }
-
-onHndl :: (HandleOperands -> HandleOperands) -> Instr -> Instr
+onHndl :: (P.Array Reg -> P.Array Reg) -> Instr -> Instr
 onHndl f = case _ of
-  HNDL d ix body ret clauses cells ->
-    let o = f { clauses, cells } in HNDL d ix body ret o.clauses o.cells
+  HNDL d ix body ret clauses -> HNDL d ix body ret (f clauses)
   other -> other
 
-onTailHndl :: (HandleOperands -> HandleOperands) -> Tail -> Tail
+onTailHndl :: (P.Array Reg -> P.Array Reg) -> Tail -> Tail
 onTailHndl f = case _ of
-  TAILHNDL ix body ret clauses cells ->
-    let o = f { clauses, cells } in TAILHNDL ix body ret o.clauses o.cells
+  TAILHNDL ix body ret clauses -> TAILHNDL ix body ret (f clauses)
   other -> other
 
-dropClause :: HandleOperands -> HandleOperands
-dropClause o = o { clauses = Array.dropEnd 1 o.clauses }
+onRgn :: (P.Array Reg -> P.Array Reg) -> Instr -> Instr
+onRgn f = case _ of
+  RGN d ix body initial -> RGN d ix body (f initial)
+  other -> other
 
-dropCell :: HandleOperands -> HandleOperands
-dropCell o = o { cells = Array.dropEnd 1 o.cells }
+onTailRgn :: (P.Array Reg -> P.Array Reg) -> Tail -> Tail
+onTailRgn f = case _ of
+  TAILRGN ix body initial -> TAILRGN ix body (f initial)
+  other -> other
+
+-- | The last clause, or the last initial value, left out.
+dropClause :: P.Array Reg -> P.Array Reg
+dropClause = Array.dropEnd 1
+
+dropCell :: P.Array Reg -> P.Array Reg
+dropCell = Array.dropEnd 1
 
 -- | The foreign and the count of each partial application over a foreign that a
 -- | module makes.

@@ -23,6 +23,7 @@ module Stella.Compiler.Bytecode.Format
   , sectionPrims
   , sectionCallees
   , sectionHandlers
+  , sectionRegions
   , sectionFunctions
   , sectionGlobals
   , sectionExports
@@ -85,6 +86,7 @@ module Stella.Compiler.Bytecode.Format
   , opHndl
   , opCGet
   , opCSet
+  , opRgn
   , tailFrom
   , tailRet
   , tailTailK
@@ -96,6 +98,7 @@ module Stella.Compiler.Bytecode.Format
   , tailBrL
   , tailBrK
   , tailTailHndl
+  , tailTailRgn
   , noDefault
   , someDefault
   ) where
@@ -157,14 +160,17 @@ sectionCallees = 0x0E
 sectionHandlers :: P.Int
 sectionHandlers = 0x0F
 
+sectionRegions :: P.Int
+sectionRegions = 0x10
+
 sectionFunctions :: P.Int
-sectionFunctions = 0x10
+sectionFunctions = 0x11
 
 sectionGlobals :: P.Int
-sectionGlobals = 0x11
+sectionGlobals = 0x12
 
 sectionExports :: P.Int
-sectionExports = 0x12
+sectionExports = 0x13
 
 sectionDebug :: P.Int
 sectionDebug = 0x7F
@@ -194,6 +200,7 @@ requiredSections =
   , sectionPrims
   , sectionCallees
   , sectionHandlers
+  , sectionRegions
   , sectionFunctions
   , sectionGlobals
   , sectionExports
@@ -386,6 +393,9 @@ opCGet = 0x22
 opCSet :: P.Int
 opCSet = 0x23
 
+opRgn :: P.Int
+opRgn = 0x24
+
 tailRet :: P.Int
 tailRet = 0x80
 
@@ -415,3 +425,6 @@ tailBrK = 0x8B
 
 tailTailHndl :: P.Int
 tailTailHndl = 0x8C
+
+tailTailRgn :: P.Int
+tailTailRgn = 0x8D
