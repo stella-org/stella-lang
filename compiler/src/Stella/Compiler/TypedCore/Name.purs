@@ -13,6 +13,7 @@ module Stella.Compiler.TypedCore.Name
   , EffName(..)
   , OpName(..)
   , JoinName(..)
+  , RegionName(..)
   , Qualified(..)
   , qualifier
   , unqualified
@@ -69,6 +70,12 @@ newtype OpName = OpName P.String
 -- | function boundary.
 newtype JoinName = JoinName P.String
 
+-- | A region name, written `ℓ`. It is not a type and has no kind: it is bound by
+-- | the `region` binder of a term, and names the region whose cells a `readCell`
+-- | or `writeCell` reaches. No type or term abstracts over one, so a region name
+-- | is never the target of an instantiation.
+newtype RegionName = RegionName P.String
+
 -- | A name owned by a module. Every Core name that refers to a declaration is
 -- | qualified; local names introduced by binders are not.
 data Qualified a = Qualified ModuleName a
@@ -118,6 +125,10 @@ derive newtype instance Show OpName
 derive instance Eq JoinName
 derive instance Ord JoinName
 derive newtype instance Show JoinName
+
+derive instance Eq RegionName
+derive instance Ord RegionName
+derive newtype instance Show RegionName
 
 derive instance Eq a => Eq (Qualified a)
 derive instance Ord a => Ord (Qualified a)

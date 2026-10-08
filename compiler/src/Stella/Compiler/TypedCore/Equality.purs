@@ -147,11 +147,10 @@ payloadEquiv sc p1 p2 = case p1, p2 of
     | e1 == e2 && Array.length as == Array.length bs ->
         map (Array.all identity) (traverse (\(Tuple a b) -> equiv sc a b) (Array.zip as bs))
 
-  -- A region carries its variable and the row of its cells, and two are equal
-  -- exactly when both are. Nothing here is special to regions: the payload of
-  -- one is compared as any other payload is (D36).
-  RegionPayload r1 c1, RegionPayload r2 c2 ->
-    both (equiv sc r1 r2) (equiv sc c1 c2)
+  -- A region's payload is its name. No type binds a region name, so two are
+  -- equal exactly when the names are (D36).
+  RegionPayload r1, RegionPayload r2 ->
+    Right (r1 == r2)
 
   _, _ ->
     Right false

@@ -503,11 +503,8 @@ entryImpureArrow = case _ of
   RowTypeEntry _ ty -> impureArrow ty
   RowEffectEntry _ args -> Array.findMap impureArrow args
   RowLabelledEffectEntry _ _ args -> Array.findMap impureArrow args
-  -- A region carries a type and a row of cell types; D23 looks through both, a
-  -- cell holding a value as a payload does.
-  RowRegionEntry var cells -> case impureArrow var of
-    Just ty -> Just ty
-    Nothing -> impureArrow cells
+  -- A region carries only its name, through which nothing crosses.
+  RowRegionEntry _ -> Nothing
 
 isEmptyRow :: Type -> P.Boolean
 isEmptyRow row = case nf row of

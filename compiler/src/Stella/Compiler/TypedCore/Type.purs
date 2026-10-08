@@ -17,6 +17,7 @@ module Stella.Compiler.TypedCore.Type
   , substituteConstraint
   , substituteKindsInType
   , freeTypeVars
+  , freeRegionNames
   ) where
 
 import Prelude
@@ -27,7 +28,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.TypedCore.Kind (Kind, Scheme, substituteKind)
-import Stella.Compiler.TypedCore.Name (EffName, KindVar, Qualified, Symbol, Tag, TyName, TyVar(..))
+import Stella.Compiler.TypedCore.Name (EffName, KindVar, Qualified, RegionName, Symbol, Tag, TyName, TyVar(..))
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
 import Data.Map as Map
@@ -75,18 +76,20 @@ data RowEntry
   -- | `SymbolKey s : E τ̄` — the same, with a key written for it. This is what
   -- | lets one effect appear twice in a row.
   | RowLabelledEffectEntry Symbol (Qualified EffName) (P.Array Type)
-  -- | `region r ι` — the region a handler owns, its variable and the row of its
-  -- | cells. It names no declaration, which is why nothing can declare one and
-  -- | why the rules that read a payload for an effect find nothing to read.
-  | RowRegionEntry Type Type
+  -- | `region ℓ` — the region named `ℓ` is open, so its cells may be reached.
+  -- | It names no declaration, which is why nothing can declare one and why the
+  -- | rules that read a payload for an effect find nothing to read.
+  | RowRegionEntry RegionName
 
 -- | The key of a row element. Keys are rigid — independent of metavariable
 -- | solving — which is what makes row equality decidable (D13, D16).
--- | Three of these are **structural**, decided by the syntax that writes them,
--- | and one is **nominal**, decided by a declaration in `Σ`. The row theory
--- | tells them apart nowhere: to normalization, equality, and entailment all
--- | four are rigid keys that compare for equality. Only well-formedness looks,
--- | since only an `EffectKey` sends the checker to `Σ`.
+-- | Three of these are **structural**, decided by the syntax that writes them;
+-- | one is **nominal**, decided by a declaration in `Σ`; and a `RegionKey` is
+-- | the region name of a `region` binder in scope. The row theory tells them
+-- | apart nowhere: to normalization, equality, and entailment all five are rigid
+-- | keys that compare for equality. Only well-formedness looks, since only an
+-- | `EffectKey` sends the checker to `Σ` and only a `RegionKey` to the regions
+-- | in scope.
 data RowKey
   = SymbolKey Symbol
   | TagKey Tag
@@ -94,11 +97,11 @@ data RowKey
   -- | the component stands (D13).
   | PositionKey P.Int
   | EffectKey (Qualified EffName)
-  -- | A handler's region of cells (D36). No source syntax writes it: only a
-  -- | handler's `cells` produces one, which is what keeps a region from being
-  -- | discharged by anything but the `handle` that owns it. There is one such
-  -- | key, so a sharp row holds at most one region.
-  | RegionKey
+  -- | The key of `region ℓ` (D36). Each region has a key of its own, so the
+  -- | regions open at one point stand side by side in one sharp row. No source
+  -- | syntax writes it: only elaborating a handling expression with cells
+  -- | introduces a region.
+  | RegionKey RegionName
 
 -- | What an element carries once its key is taken away.
 -- |
@@ -110,22 +113,23 @@ data RowPayload
   = TypePayload Type
   | EffectPayload (Qualified EffName) (P.Array Type)
   -- | A region carries no effect application, so no operation is looked up
-  -- | through it and no handler may write one (D36).
-  | RegionPayload Type Type
+  -- | through it and no handler may write one (D36). Its payload is its name,
+  -- | the cell types being read from the binder in scope.
+  | RegionPayload RegionName
 
 rowEntryKey :: RowEntry -> RowKey
 rowEntryKey = case _ of
   RowTypeEntry k _ -> k
   RowEffectEntry e _ -> EffectKey e
   RowLabelledEffectEntry s _ _ -> SymbolKey s
-  RowRegionEntry _ _ -> RegionKey
+  RowRegionEntry name -> RegionKey name
 
 rowEntryPayload :: RowEntry -> RowPayload
 rowEntryPayload = case _ of
   RowTypeEntry _ ty -> TypePayload ty
   RowEffectEntry e args -> EffectPayload e args
   RowLabelledEffectEntry _ e args -> EffectPayload e args
-  RowRegionEntry var cells -> RegionPayload var cells
+  RowRegionEntry name -> RegionPayload name
 
 -- | Instantiate type variables, all at once: what a variable is replaced by is
 -- | not substituted into again, so `{a := b, b := a}` swaps the two.
@@ -176,7 +180,7 @@ goEntryIn sub = case _ of
   RowTypeEntry key ty -> RowTypeEntry key (goType sub ty)
   RowEffectEntry name args -> RowEffectEntry name (map (goType sub) args)
   RowLabelledEffectEntry s name args -> RowLabelledEffectEntry s name (map (goType sub) args)
-  RowRegionEntry var cells -> RowRegionEntry (goType sub var) (goType sub cells)
+  RowRegionEntry name -> RowRegionEntry name
 
 -- | The variable's name followed by the least number that names nothing given.
 freshVar :: Set TyVar -> TyVar -> TyVar
@@ -212,7 +216,7 @@ substituteKindsInType sub = go
     RowTypeEntry key ty -> RowTypeEntry key (go ty)
     RowEffectEntry name args -> RowEffectEntry name (map go args)
     RowLabelledEffectEntry s name args -> RowLabelledEffectEntry s name (map go args)
-    RowRegionEntry var cells -> RowRegionEntry (go var) (go cells)
+    RowRegionEntry name -> RowRegionEntry name
 
 -- | A row constraint. Core has exactly two, and neither carries run-time
 -- | content: the checker re-derives entailment rather than accepting a proof
@@ -271,11 +275,6 @@ instance Show Constraint where
   show x = genericShow x
 
 -- | The type variables a type mentions free, payloads and constraints included.
--- |
--- | `r ∉ ftv(β) ∪ ftv(ρ)` is what keeps a region from outliving the `handle`
--- | that owns it (D36): every way to reach a cell mentions the region, so a
--- | closure over a `readCell` carries it in its own arrow and this rejects it
--- | where it would become the answer or join the residual row.
 freeTypeVars :: Type -> Set TyVar
 freeTypeVars = go Set.empty
   where
@@ -297,4 +296,37 @@ freeTypeVars = go Set.empty
     RowTypeEntry _ ty -> go bound ty
     RowEffectEntry _ args -> foldMap (go bound) args
     RowLabelledEffectEntry _ _ args -> foldMap (go bound) args
-    RowRegionEntry var cells -> go bound var <> go bound cells
+    RowRegionEntry _ -> Set.empty
+
+-- | The region names a type mentions, written `frn(τ)`: those of its region
+-- | elements and of the keys of its rows and constraints. A type binds no region
+-- | name, so every one is free.
+-- |
+-- | `ℓ ∉ frn(β) ∪ frn(ρ)` is what keeps a region from outliving the `region`
+-- | binder that opens it (D36): every way to reach a cell mentions the region,
+-- | so a closure over a `readCell ℓ.k` carries `region ℓ` in its own arrow and
+-- | this rejects it where it would become the answer or join the residual row.
+freeRegionNames :: Type -> Set RegionName
+freeRegionNames = case _ of
+  TVar _ -> Set.empty
+  TCon _ _ -> Set.empty
+  TApp f x -> freeRegionNames f <> freeRegionNames x
+  TForall _ _ body -> freeRegionNames body
+  TConstrained constraint body -> constraintRegions constraint <> freeRegionNames body
+  TRowEmpty -> Set.empty
+  TRowExtend entry rest -> entryRegions entry <> freeRegionNames rest
+  TRowUnion left right -> freeRegionNames left <> freeRegionNames right
+  where
+  constraintRegions = case _ of
+    Lacks key row -> keyRegions key <> freeRegionNames row
+    Disjoint left right -> freeRegionNames left <> freeRegionNames right
+
+  entryRegions = case _ of
+    RowTypeEntry key ty -> keyRegions key <> freeRegionNames ty
+    RowEffectEntry _ args -> foldMap freeRegionNames args
+    RowLabelledEffectEntry _ _ args -> foldMap freeRegionNames args
+    RowRegionEntry name -> Set.singleton name
+
+  keyRegions = case _ of
+    RegionKey name -> Set.singleton name
+    _ -> Set.empty

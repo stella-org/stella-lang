@@ -23,10 +23,10 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore.Context (Context, assume, bindTyVar, kindVarInScope, lookupTyVar)
+import Stella.Compiler.TypedCore.Context (Context, assume, bindTyVar, kindVarInScope, lookupRegion, lookupTyVar)
 import Stella.Compiler.TypedCore.Entailment (DecomposeError, entails)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), resultKind, substituteKind)
-import Stella.Compiler.TypedCore.Name (EffName, KindVar, Qualified, TyName, TyVar)
+import Stella.Compiler.TypedCore.Name (EffName, KindVar, Qualified, RegionName, TyName, TyVar)
 import Stella.Compiler.TypedCore.Signature (Signature, effectParamKinds, lookupEffect, lookupTyCon, tyConKind)
 import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), Type(..), rowEntryKey)
 import Data.Array as Array
@@ -51,6 +51,8 @@ data KindError
   -- | A kind variable outside the declaration whose scheme binds it. Neither
   -- | grammar has a kind quantifier, so this is the only way one is bound (D3).
   | UnboundKindVar KindVar
+  -- | A region name outside the `region` binder that binds it.
+  | UnboundRegion RegionName
   | UndeclaredTyCon (Qualified TyName)
   | UndeclaredEffect (Qualified EffName)
   -- | `T [[κ̄']]` supplying a number of kinds the scheme does not bind, as
@@ -121,10 +123,10 @@ quantifiableKind ctx = case _ of
 -- | `Γ ⊢ k key ε`.
 -- |
 -- | A structural key is well formed wherever it may occur, needing nothing from
--- | `Σ`; an `EffectKey` is well formed only where the declaration exists. That
--- | is the whole of the difference between the two.
-wellFormedKey :: Signature -> RowKey -> RowElemKind -> Either KindError Unit
-wellFormedKey sig key elemKind = case key of
+-- | `Σ`; an `EffectKey` is well formed only where the declaration exists, and a
+-- | `RegionKey` only where its region name is in scope.
+wellFormedKey :: Signature -> Context -> RowKey -> RowElemKind -> Either KindError Unit
+wellFormedKey sig ctx key elemKind = case key of
   PositionKey n | n < 0 -> Left (NegativePosition n)
   _ -> case key, elemKind of
     SymbolKey _, _ -> Right unit
@@ -133,10 +135,7 @@ wellFormedKey sig key elemKind = case key of
     EffectKey name, RowEffect -> case lookupEffect sig name of
       Just _ -> Right unit
       Nothing -> Left (UndeclaredEffect name)
-    -- Well formed unconditionally and at `Row Effect` alone, so `RegionKey ∉ ρ`
-    -- can be written and assumed — which is what an effect-polymorphic handler
-    -- owning a region needs of its residual row (D36).
-    RegionKey, RowEffect -> Right unit
+    RegionKey name, RowEffect -> regionInScope ctx name
     _, _ -> Left (KeyNotAtKind key elemKind)
 
 -- | `Γ ⊢ C ok`.
@@ -148,10 +147,10 @@ wellFormedConstraint sig ctx = case _ of
   Lacks key row -> do
     elemKind <- rowElemKindOf sig ctx row
     case elemKind of
-      Just e -> wellFormedKey sig key e
-      Nothing -> case wellFormedKey sig key RowType of
+      Just e -> wellFormedKey sig ctx key e
+      Nothing -> case wellFormedKey sig ctx key RowType of
         Right _ -> Right unit
-        Left _ -> wellFormedKey sig key RowEffect
+        Left _ -> wellFormedKey sig ctx key RowEffect
 
   Disjoint left right -> do
     l <- rowElemKindOf sig ctx left
@@ -250,7 +249,7 @@ rowElemKindOf sig ctx ty = do
 entryElemKind :: Signature -> Context -> RowEntry -> Either KindError RowElemKind
 entryElemKind sig ctx = case _ of
   RowTypeEntry key ty -> do
-    wellFormedKey sig key RowType
+    wellFormedKey sig ctx key RowType
     checkKind sig ctx ty KType
     Right RowType
 
@@ -259,12 +258,9 @@ entryElemKind sig ctx = case _ of
   RowLabelledEffectEntry _ name args -> effectPayload sig ctx name args
 
   -- A region consults the signature nowhere: it names no declaration, which is
-  -- why nothing can declare one (D36). `r` is the region variable the owning
-  -- handler binds and `ι` the row of its cells, at `Row Type` because a cell
-  -- holds a value.
-  RowRegionEntry var cells -> do
-    checkKind sig ctx var KType
-    checkKind sig ctx cells (KRow RowType)
+  -- why nothing can declare one (D36). Its name must be in scope.
+  RowRegionEntry name -> do
+    regionInScope ctx name
     Right RowEffect
 
 -- | `( E : κ̄ -> Effect ) ∈ Σ` and `Γ ⊢ τ̄ : κ̄`.
@@ -330,3 +326,8 @@ derive instance Generic KindError _
 
 instance Show KindError where
   show x = genericShow x
+
+regionInScope :: Context -> RegionName -> Either KindError Unit
+regionInScope ctx name = case lookupRegion ctx name of
+  Just _ -> Right unit
+  Nothing -> Left (UnboundRegion name)

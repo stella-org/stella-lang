@@ -37,7 +37,7 @@ module Stella.Compiler.TypedCore
 import Prim as P
 
 import Stella.Compiler.TypedCore.Check (CheckError(..), CheckFailure, Env, JoinInfo, Typed, check, envOf, infer, isFunVal, isValueForm, typeOf)
-import Stella.Compiler.TypedCore.Context (Context, assume, bindKindVars, bindTyVar, emptyContext, kindVarInScope, lookupTyVar)
+import Stella.Compiler.TypedCore.Context (Context, assume, bindKindVars, bindRegion, bindTyVar, emptyContext, kindVarInScope, lookupRegion, lookupTyVar)
 import Stella.Compiler.TypedCore.Declare (CheckedGroup, DeclError(..), DeclFailure, Declared, checkAttributeEntries, checkEffectEntries, checkTyConEntries, collectTypes, declare, declareAnnotated, initialSignature)
 import Stella.Compiler.TypedCore.Domain (ScalarString, ScalarValue, codePointOf, compareNumber, sameNumber, scalarString, scalarStringOf, scalarValue, textOf)
 import Stella.Compiler.TypedCore.Decl (Attribute, AttributeDecl, Constant(..), CtorDecl, DataDecl, Decl(..), declAnnotation, EffectDecl, Export(..), ForeignDecl, KeywordArgument, KeywordParameter, Module, OpDecl, ValueBinding)
@@ -45,10 +45,10 @@ import Stella.Compiler.TypedCore.Entailment (AtomicFacts, DecomposeError(..), ad
 import Stella.Compiler.TypedCore.Equality (constraintEquiv, rowEquiv, typeEquiv)
 import Stella.Compiler.TypedCore.Kind (Kind(..), KindScheme, RowElemKind(..), Scheme, kindVarsOf, monoScheme, substituteKind)
 import Stella.Compiler.TypedCore.Kinding (KindError(..), Synthesized(..), checkKind, kindOf, producesType, quantifiableKind, rowElemKindOf, wellFormedConstraint, wellFormedKey, wellFormedKind)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), JoinName(..), KindVar(..), ModuleName(..), OpName(..), Qualified(..), Symbol(..), Tag(..), TyName(..), TyVar(..), qualifier, unqualified)
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), JoinName(..), KindVar(..), ModuleName(..), OpName(..), Qualified(..), RegionName(..), Symbol(..), Tag(..), TyName(..), TyVar(..), qualifier, unqualified)
 import Stella.Compiler.TypedCore.Prim (asFunction, booleanTy, charTy, fn, functionTy, intTy, ioTy, litType, numberTy, primModule, primSignature, pureFn, recordTy, stringTy, unitCtor, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
 import Stella.Compiler.TypedCore.Row (RowError(..), RowNormalForm, emptyNormalForm, nf)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), CtorInfo, EffectInfo, Signature, TyConInfo(..), ValueInfo, effectParamKinds, emptySignature, lookupCtor, lookupEffect, lookupOperation, lookupTyCon, lookupValue, tyConKind)
-import Stella.Compiler.TypedCore.Term (Binding, CtorBranch, DecisionTree(..), Expr(..), Handler, Layout, Cell, KeyBranch, LitBranch, Literal(..), OpClause(..), Occurrence(..), Param, ReturnClause, exprAnnotation, opClauseBody, opClauseOp, withAnnotation)
-import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), RowPayload(..), TyBinder, Type(..), TypeScheme, rowEntryKey, rowEntryPayload)
+import Stella.Compiler.TypedCore.Term (Binding, CtorBranch, DecisionTree(..), Expr(..), Handler, Cell, KeyBranch, LitBranch, Literal(..), OpClause(..), Occurrence(..), Param, ReturnClause, exprAnnotation, opClauseBody, opClauseOp, withAnnotation)
+import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), RowPayload(..), TyBinder, Type(..), TypeScheme, freeRegionNames, rowEntryKey, rowEntryPayload)

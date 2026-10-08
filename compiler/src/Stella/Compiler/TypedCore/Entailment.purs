@@ -16,6 +16,7 @@ module Stella.Compiler.TypedCore.Entailment
   , addAssumption
   , addLacks
   , addDisjoint
+  , forget
   , knownToLack
   , knownDisjoint
   , entails
@@ -139,6 +140,13 @@ addLacks key t facts =
 addDisjoint :: TyVar -> TyVar -> AtomicFacts -> AtomicFacts
 addDisjoint t1 t2 facts =
   facts { disjoint = Set.insert (Tuple t1 t2) (Set.insert (Tuple t2 t1) facts.disjoint) }
+
+-- | Drop every fact about a variable, which a binder of its name hides.
+forget :: TyVar -> AtomicFacts -> AtomicFacts
+forget t facts =
+  { lacks: Map.delete t facts.lacks
+  , disjoint: Set.filter (\(Tuple t1 t2) -> t1 /= t && t2 /= t) facts.disjoint
+  }
 
 sharedKey :: RowNormalForm -> RowNormalForm -> Maybe RowKey
 sharedKey l r = Array.head (Array.filter (\key -> Map.member key r.known) (domainArray l))

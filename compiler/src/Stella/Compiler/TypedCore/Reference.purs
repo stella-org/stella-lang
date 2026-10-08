@@ -49,9 +49,10 @@ globalsOf = case _ of
   VariantWeaken _ _ _ e -> globalsOf e
   VariantAbsurd _ _ e -> globalsOf e
   Perform _ _ _ _ e -> globalsOf e
-  Handle _ e handler initial -> globalsOf e <> handlerGlobals handler <> foldMap globalsOf initial
-  ReadCell _ _ -> Set.empty
-  WriteCell _ _ value -> globalsOf value
+  Handle _ e handler -> globalsOf e <> handlerGlobals handler
+  Region _ _ _ initial body -> foldMap globalsOf initial <> globalsOf body
+  ReadCell _ _ _ -> Set.empty
+  WriteCell _ _ _ value -> globalsOf value
   OpenEff _ _ e -> globalsOf e
 
 treeGlobals :: forall a. DecisionTree a -> Set (Qualified Ident)
