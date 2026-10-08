@@ -552,9 +552,11 @@ handle program with
 
 **Steam and the JavaScript runtime.**
 
-- `RGN` allocates a fresh identity from a counter the machine keeps, pushes a region frame
-  holding the identity and the cell slots, and enters the body with the identity as its
-  argument.
+- `RGN` allocates a fresh identity, pushes a region frame holding the identity and the cell
+  slots, and enters the body with the identity as its argument. An identity is fresh across
+  every run of the host, not within one machine: a continuation stored by one run may be
+  applied by another, and its frames keep the identities they were opened with. Steam
+  allocates a host object per opening and compares by reference.
 - `CGET` and `CSET` walk to the innermost **visible** region frame of that identity — the walk
   that skips a `fast` clause's boundary, as today.
 - A value reaching a region frame pops it.
