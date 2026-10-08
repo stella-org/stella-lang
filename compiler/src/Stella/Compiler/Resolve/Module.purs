@@ -184,6 +184,7 @@ other p d = do
         , params: h.params
         , signature: h.signature
         , effect
+        , cells: h.cells
         , body: h.body
         }
     CST.DeclForeign n t -> do

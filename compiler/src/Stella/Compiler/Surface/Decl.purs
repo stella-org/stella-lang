@@ -44,7 +44,7 @@ import Prim hiding (Type, Symbol)
 import Data.Generic.Rep (class Generic)
 import Data.Maybe (Maybe)
 import Data.Show.Generic (genericShow)
-import Stella.Compiler.Surface.Expr (Binder, Expr, HandlerBody)
+import Stella.Compiler.Surface.Expr (Binder, CellDeclaration, Expr, HandlerBody)
 import Stella.Compiler.Surface.Name (OperatorName)
 import Stella.Compiler.Surface.Origin (Origin)
 import Stella.Compiler.Surface.Type (ComputationType, HandlerSignature, Kind, OperationSignature, Signature, Type, TypeOperatorTarget, TypeVarBinder)
@@ -171,6 +171,9 @@ type HandlerDeclaration =
   , params :: Array Binder
   , signature :: Signature HandlerSignature
   , effect :: Qualified EffName
+  -- | The cells of the handling expression an application of the handler is,
+  -- | which its operation clauses reach.
+  , cells :: Array CellDeclaration
   , body :: HandlerBody
   }
 

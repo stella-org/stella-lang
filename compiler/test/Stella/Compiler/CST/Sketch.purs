@@ -286,12 +286,8 @@ handlerItem = case _ of
 
 listItem :: HandlerListItem -> String
 listItem = case _ of
-  ListGroup g ->
-    list
-      ( [ "group", name g.head ] <> marker g.marker
-          <> map (\c -> list [ "var", name c.name, sketchExpr c.value ]) g.cells
-          <> map clause g.clauses
-      )
+  ListCell n e -> list [ "var", name n, sketchExpr e ]
+  ListGroup g -> list ([ "group", name g.head ] <> marker g.marker <> map clause g.clauses)
   ListHandler e -> sketchExpr e
 
 sketchBinder :: Binder -> String

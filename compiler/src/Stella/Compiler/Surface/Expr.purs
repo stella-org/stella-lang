@@ -79,9 +79,10 @@ data Expr
   -- | A `let` block, and also what a declaration's `where` is.
   | ExprLet Origin (Array LetBinding) Expr
   | ExprCase Origin (Array Expr) (Array Alternative)
-  -- | A handling expression: the handlers installed from the first, outermost,
-  -- | to the last, and the computation they handle.
-  | ExprHandle Origin (Array HandlerItem) Expr
+  -- | A handling expression: its cells, the handlers installed from the first,
+  -- | outermost, to the last, and the computation they handle. **The cells belong
+  -- | to the expression**, and every group of it reaches them.
+  | ExprHandle Origin (Array CellDeclaration) (Array HandlerItem) Expr
   | ExprCellRead Origin CellVar
   | ExprCellWrite Origin CellVar Expr
   -- | `resume`, which reaches the continuation of the `full` clause it stands in.
@@ -109,7 +110,7 @@ exprOrigin = case _ of
   ExprLambda o _ _ -> o
   ExprLet o _ _ -> o
   ExprCase o _ _ -> o
-  ExprHandle o _ _ -> o
+  ExprHandle o _ _ _ -> o
   ExprCellRead o _ -> o
   ExprCellWrite o _ _ -> o
   ExprResume o -> o
@@ -222,14 +223,13 @@ type Group =
   }
 
 -- | What a handler holds, whether it is declared or written in place: its
--- | cells, its operation clauses, and its return clause where it has one.
+-- | operation clauses, and its return clause where it has one.
 type HandlerBody =
-  { cells :: Array CellDeclaration
-  , operations :: Array OperationClause
+  { operations :: Array OperationClause
   , return :: Maybe ReturnClause
   }
 
--- | `var x := e`.
+-- | `var x := e`, a cell of a handling expression or of a handler declaration.
 type CellDeclaration =
   { origin :: Origin
   , cell :: CellVar

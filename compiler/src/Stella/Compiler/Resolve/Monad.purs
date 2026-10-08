@@ -130,8 +130,9 @@ type Env =
   , resume :: ResumeState
   }
 
--- | A cell in scope. One of the handler a return clause or an initial value
--- | belongs to is closed there, its region not being open.
+-- | A cell in scope. A cell of a handling expression is open in the operation
+-- | clauses of its groups, and closed everywhere else in the expression, its
+-- | region not being reached from there.
 data Cell
   = CellOpen CellVar
   | CellClosed CellVar CellClosure
@@ -139,6 +140,8 @@ data Cell
 data CellClosure
   = InInitialValue
   | InReturnClause
+  | InHandledComputation
+  | InHandlerApplied
 
 -- | Whether `resume` may stand where resolution stands: in the immediate body
 -- | of a `full` clause it may, and anywhere else it may not, for the reason
@@ -276,10 +279,13 @@ data ResolveReason
   | LetGrouping GroupReason
   -- | `x!` or `x := e` where no cell of the name is in scope.
   | UnknownCell String
-  -- | A cell reached from its handler's return clause or an initial value.
+  -- | A cell reached from a part of its handling expression other than the
+  -- | operation clauses of its groups.
   | CellClosedHere String CellClosure
   -- | A `var` of a handler declaration standing after a clause.
   | CellAfterClause String
+  -- | A `var` of a handling expression standing after a group or a handler.
+  | CellAfterItem String
   -- | `resume` where it may not stand.
   | ResumeMisplaced ResumeBlock
   -- | `resume` other than applied to an argument.
@@ -378,6 +384,14 @@ instance Show ResolveReason where
 instance Show ResolveWarning where
   show = printResolveWarning
 
+-- | The part of a handling expression a cell is closed in.
+closedPart :: CellClosure -> String
+closedPart = case _ of
+  InInitialValue -> "an initial value"
+  InReturnClause -> "a return clause"
+  InHandledComputation -> "the computation handled"
+  InHandlerApplied -> "a handler applied as an item"
+
 printResolveReason :: ResolveReason -> String
 printResolveReason = case _ of
   UnknownType n -> "There is no type `" <> n <> "` in scope"
@@ -421,12 +435,12 @@ printResolveReason = case _ of
   LabelExpected -> "A label, the name of an instance, follows `@` here"
   LabelTwice l -> "The label `" <> l <> "` is written twice here"
   LetGrouping reason -> printGroupReason reason
-  UnknownCell n -> "There is no cell `" <> n <> "` here; a cell is reached from the operation clauses of the handler declaring it"
-  CellClosedHere n InInitialValue ->
-    "The cell `" <> n <> "` cannot be reached from an initial value; a cell is reached from the operation clauses of its handler alone"
-  CellClosedHere n InReturnClause ->
-    "The cell `" <> n <> "` cannot be reached from the return clause; a cell is reached from the operation clauses of its handler alone"
+  UnknownCell n -> "There is no cell `" <> n <> "` here; a cell is reached from the operation clauses of the handling expression or handler declaring it"
+  CellClosedHere n where_ ->
+    "The cell `" <> n <> "` cannot be reached from " <> closedPart where_
+      <> "; a cell is reached from the operation clauses of the handling expression or handler declaring it alone"
   CellAfterClause n -> "The cell `" <> n <> "` is declared after a clause; every `var` of a handler stands ahead of its clauses"
+  CellAfterItem n -> "The cell `" <> n <> "` is declared after a group or a handler; every `var` of a handling expression stands ahead of them"
   ResumeMisplaced block -> case block of
     OutsideFullClause -> "`resume` stands only in the body of a `full` clause"
     InFastClause -> "A `fast` clause does not capture its continuation, so `resume` cannot stand in it; the body's value is what the operation resumes with"

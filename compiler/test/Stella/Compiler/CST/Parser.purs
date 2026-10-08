@@ -168,9 +168,13 @@ spec = describe "Stella.Compiler.CST.Parser" do
         "(handle w (group Console (| full log s (resume ())) (| reifiable full terminal act k ((Base.IO.bind act) (parens (Continuation.continue k))))))"
     it "refuses `reifiable` before `fast`" do
       exprRejected "handle w with\n  E | reifiable fast op _ -> 0"
-    it "reads a group with a cell" do
-      "handle w with\n  Counter\n    var n := 0\n    | fast next _ -> n!" `exprIs`
-        "(handle w (group Counter (var n 0) (| fast next _ n!)))"
+    it "reads a cell of the expression, ahead of its groups and handlers" do
+      "handle w with\n  var n := 0\n  Counter\n    | fast next _ -> n!\n  runEmit" `exprIs`
+        "(handle w (var n 0) (group Counter (| fast next _ n!)) runEmit)"
+      "using\n  var n := 0\n  Counter fast | next _ -> n!\nhandle\n  w" `exprIs`
+        "(using (var n 0) (group Counter fast (| next _ n!)) w)"
+    it "refuses a cell written after a group's head" do
+      exprRejected "handle w with\n  Counter\n    var n := 0\n    | fast next _ -> n!"
 
   describe "declarations" do
     it "reads signatures and single-equation definitions" do

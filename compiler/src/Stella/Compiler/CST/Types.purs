@@ -640,12 +640,13 @@ data Clause
   = ClauseOperation (Maybe Marker) Name (Array Binder) Expr
   | ClauseReturn Binder Expr
 
--- | An item of `handle … with` or `using … handle`.
+-- | An item of `handle … with` or `using … handle`: a cell of the expression, a
+-- | group written in place, or a handler.
 data HandlerListItem
-  = ListGroup
+  = ListCell Name Expr
+  | ListGroup
       { head :: Name
       , marker :: Maybe Marker
-      , cells :: Array { name :: Name, value :: Expr }
       , clauses :: Array Clause
       }
   | ListHandler Expr

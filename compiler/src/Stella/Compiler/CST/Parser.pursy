@@ -894,12 +894,14 @@ handlerItem:
   | cs = clauses                   { C.HandlerClauses Nothing cs }
   | m = marker cs = clauses        { C.HandlerClauses (Just m) cs }
 
--- An item of `handle … with` or `using … handle`: a group written in place, or
--- a handler.
+-- An item of `handle … with` or `using … handle`: a cell of the expression, a
+-- group written in place, or a handler.
 handlerListItem:
-  | h = qualProperName m = markerOpt cs = manyOrEmpty(cellDecl) cls = clauses
-      { C.ListGroup { head: h, marker: m, cells: cs, clauses: cls } }
-  | h = ident m = markerOpt cs = manyOrEmpty(cellDecl) cls = clauses
-      { C.ListGroup { head: h, marker: m, cells: cs, clauses: cls } }
+  | c = cellDecl
+      { C.ListCell c.name c.value }
+  | h = qualProperName m = markerOpt cls = clauses
+      { C.ListGroup { head: h, marker: m, clauses: cls } }
+  | h = ident m = markerOpt cls = clauses
+      { C.ListGroup { head: h, marker: m, clauses: cls } }
   | e = expr
       { C.ListHandler e }

@@ -158,9 +158,8 @@ letBindingRange = case _ of
 
 listItemRange :: HandlerListItem -> SourceRange
 listItemRange = case _ of
-  ListGroup g ->
-    cover g.head.range
-      (map (\c -> covering c.name.range (exprRange c.value)) g.cells <> map clauseRange g.clauses)
+  ListCell n e -> covering n.range (exprRange e)
+  ListGroup g -> cover g.head.range (map clauseRange g.clauses)
   ListHandler e -> exprRange e
 
 clauseRange :: Clause -> SourceRange

@@ -24,7 +24,7 @@ import Stella.Compiler.Resolve.Monad (CellClosure(..), HandledEffectProblem(..),
 import Stella.Compiler.Resolve.Scope (resolveScope)
 import Stella.Compiler.Surface.Decl (Associativity(..), FixityTarget(..))
 import Stella.Compiler.Surface.Origin (Origin(..))
-import Stella.Compiler.Surface.Expr (exprOrigin, AlternativeBody(..), Binder(..), ClauseForm(..), Expr(..), GuardLine(..), HandlerBody, HandlerItem(..), LetBinding(..), RecordField(..))
+import Stella.Compiler.Surface.Expr (exprOrigin, AlternativeBody(..), Binder(..), CellDeclaration, ClauseForm(..), Expr(..), GuardLine(..), HandlerBody, HandlerItem(..), LetBinding(..), RecordField(..))
 import Stella.Compiler.Surface.Name (BindingId(..), CellVar(..), LocalVar(..), OperatorName(..))
 import Stella.Compiler.TypedCore.Domain (codePointOf, textOf)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
@@ -164,7 +164,7 @@ definitionIn imports body = inModule imports body definitionOfF \d ->
 handlerDeclaration :: Array String -> (Ran -> Aff Unit) -> Aff Unit
 handlerDeclaration body = inModule [] body handlerOfH \d ->
   resolveHandler d.params d.signature d.items <#> \r ->
-    maybe "?" effectWord r.effect <> renderBody r.body
+    maybe "?" effectWord r.effect <> renderBody r.cells r.body
   where
   handlerOfH = case _ of
     CST.ItemDecl (CST.DeclHandler n params signature items) | n.name == "h" -> Just { params, signature, items }
@@ -367,29 +367,52 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
 
   describe "cells" do
     it "are one group, open in the operation clauses, beside a value of their name" do
-      shows [ "f n = handle x with", "  E", "    var n := n", "    var n := 1", "    | fast get _ -> n := n! + n" ]
-        "(handle A.x with A.E{var n#1 := n#0; var n#2 := 1; fast A.get _ -> (n#1 := <A.plus n#1! n#0>)})"
+      shows [ "f n = handle x with", "  var n := n", "  var n := 1", "  E", "    | fast get _ -> n := n! + n" ]
+        "(handle A.x with var n#1 := n#0, var n#2 := 1, A.E{fast A.get _ -> (n#1 := <A.plus n#1! n#0>)})"
         [ BoundTwice "n" ]
 
-    it "are closed in their handler's initial values and return clause, and unknown elsewhere" do
-      shows [ "f = handle n! with", "  E", "    var a := 0", "    var b := a!", "    | get _ -> a!", "    | return r -> a!" ]
-        "(handle ! with A.E{var a#0 := 0; var b#1 := !; full A.get _ -> a#0!; return r#2 -> !})"
-        [ CellClosedHere "a" InInitialValue, CellClosedHere "a" InReturnClause, UnknownCell "n" ]
+    it "are reached from the operation clauses of every group of their expression" do
+      shows [ "f = handle x with", "  var n := 0", "  E", "    | fast get _ -> n!", "  Own", "    | fast tick _ -> n := 1" ]
+        "(handle A.x with var n#0 := 0, A.E{fast A.get _ -> n#0!}, M.Own{fast M.tick _ -> (n#0 := 1)})"
+        []
 
-    it "of a group hide an outer cell of their name in the whole group, and others stay in scope" do
+    it "are closed in the rest of their expression, and unknown outside it" do
+      shows
+        [ "f = handle a! with"
+        , "  var a := 0"
+        , "  var b := a!"
+        , "  \\_ -> a!"
+        , "  E"
+        , "    | get _ -> a!"
+        , "    | return r -> a!"
+        ]
+        "(handle ! with var a#0 := 0, var b#1 := !, (\\_ -> !), A.E{full A.get _ -> a#0!; return r#2 -> !})"
+        [ CellClosedHere "a" InInitialValue
+        , CellClosedHere "a" InHandlerApplied
+        , CellClosedHere "a" InReturnClause
+        , CellClosedHere "a" InHandledComputation
+        ]
+      shows [ "f = n!" ] "!" [ UnknownCell "n" ]
+
+    it "of an expression in a clause hide an outer cell of their name in the whole expression, and others stay in scope" do
       shows
         [ "f = handle x with"
+        , "  var n := 0"
+        , "  var m := 0"
         , "  E"
-        , "    var n := 0"
-        , "    var m := 0"
-        , "    | fast get _ -> handle x with"
+        , "    | fast get _ -> handle n! with"
+        , "      var n := m!"
+        , "      var k := n!"
         , "      Own"
-        , "        var n := m!"
-        , "        var k := n!"
         , "        | fast tick _ -> n! + m!"
         ]
-        "(handle A.x with A.E{var n#0 := 0; var m#1 := 0; fast A.get _ -> (handle A.x with M.Own{var n#2 := m#1!; var k#3 := !; fast M.tick _ -> <A.plus n#2! m#1!>})})"
-        [ CellClosedHere "n" InInitialValue ]
+        "(handle A.x with var n#0 := 0, var m#1 := 0, A.E{fast A.get _ -> (handle ! with var n#2 := m#1!, var k#3 := !, M.Own{fast M.tick _ -> <A.plus n#2! m#1!>})})"
+        [ CellClosedHere "n" InInitialValue, CellClosedHere "n" InHandledComputation ]
+
+    it "stand ahead of the groups and handlers, and one after them is reported" do
+      shows [ "f = handle x with", "  E", "    | fast get _ -> 0", "  var n := 0" ]
+        "(handle A.x with A.E{fast A.get _ -> 0})"
+        [ CellAfterItem "n" ]
 
   describe "`resume`" do
     it "stands applied in the immediate body of a `full` clause" do
@@ -497,7 +520,7 @@ renderExpr = case _ of
   ExprLambda _ ps body -> "(\\" <> joinWith " " (map renderBinder ps) <> " -> " <> renderExpr body <> ")"
   ExprLet _ bs body -> "(let " <> joinWith "; " (map binding bs) <> " in " <> renderExpr body <> ")"
   ExprCase _ ss alts -> "(case " <> joinWith ", " (map renderExpr ss) <> " of " <> joinWith " ; " (map alternative alts) <> ")"
-  ExprHandle _ items e -> "(handle " <> renderExpr e <> " with " <> joinWith ", " (map item items) <> ")"
+  ExprHandle _ cells items e -> "(handle " <> renderExpr e <> " with " <> joinWith ", " (map renderCellDeclaration cells <> map item items) <> ")"
   ExprCellRead _ c -> renderCell c <> "!"
   ExprCellWrite _ c e -> "(" <> renderCell c <> " := " <> renderExpr e <> ")"
   ExprResume _ -> "resume"
@@ -520,18 +543,20 @@ renderExpr = case _ of
     GuardOtherwise _ e -> "otherwise -> " <> renderExpr e
   item = case _ of
     HandlerApplied e -> renderExpr e
-    HandlerGroup g -> maybe "" (\(Symbol l) -> l <> ":") g.label <> effectWord g.effect <> renderBody g.body
+    HandlerGroup g -> maybe "" (\(Symbol l) -> l <> ":") g.label <> effectWord g.effect <> renderBody [] g.body
 
 renderCell :: CellVar -> String
 renderCell (CellVar v) = case v.name, v.id of
   Ident n, BindingId i -> n <> "#" <> show i
 
--- | A handler's body: its cells, its operation clauses, and its return
--- | clause, in braces.
-renderBody :: HandlerBody -> String
-renderBody b = "{" <> joinWith "; " (map cell b.cells <> map operation b.operations <> Array.fromFoldable (map return b.return)) <> "}"
+renderCellDeclaration :: CellDeclaration -> String
+renderCellDeclaration c = "var " <> renderCell c.cell <> " := " <> renderExpr c.initial
+
+-- | A handler's cells where it declares them, its operation clauses, and its
+-- | return clause, in braces.
+renderBody :: Array CellDeclaration -> HandlerBody -> String
+renderBody cells b = "{" <> joinWith "; " (map renderCellDeclaration cells <> map operation b.operations <> Array.fromFoldable (map return b.return)) <> "}"
   where
-  cell c = "var " <> renderCell c.cell <> " := " <> renderExpr c.initial
   operation o = joinWith " " ([ form o.form, qualified o.operation ] <> map renderBinder o.arguments <> continuation o.form) <> " -> " <> renderExpr o.body
   form = case _ of
     ClauseFast -> "fast"

@@ -223,10 +223,10 @@ expr ctx e = case e of
     Guard condition v -> Guard <$> go condition <*> go v
 
   listItem = case _ of
+    ListCell n v -> ListCell n <$> go v
     ListGroup g -> do
-      cells <- traverse (\c -> c { value = _ } <$> go c.value) g.cells
       clauses <- traverse (clause ctx) g.clauses
-      pure (ListGroup g { cells = cells, clauses = clauses })
+      pure (ListGroup g { clauses = clauses })
     ListHandler h -> ListHandler <$> go h
 
   -- an open whose alias no import declares is invalid as a whole, and what it

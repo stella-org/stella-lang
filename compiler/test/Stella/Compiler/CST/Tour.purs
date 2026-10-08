@@ -192,11 +192,12 @@ handler runWithLimit (limit :: Int) :: Fuel ~> () where
 program :: Unit / {| Logger |}
 program =
   handle work with
+    var saved := 0
     runToStdout
     runWithLimit 1_000
     State full
-      | get _ -> resume 0
-      | set _ -> resume ()
+      | get _ -> resume saved!
+      | set n -> let _ = saved := n in resume ()
 
 main' :: Unit / {| Console |}
 main' =

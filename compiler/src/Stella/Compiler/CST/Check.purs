@@ -377,5 +377,6 @@ handlerItem = case _ of
 
 listItem :: HandlerListItem -> Array CheckError
 listItem = case _ of
-  ListGroup g -> foldMap (expr <<< _.value) g.cells <> foldMap clause g.clauses
+  ListCell _ e -> expr e
+  ListGroup g -> foldMap clause g.clauses
   ListHandler e -> expr e
