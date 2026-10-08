@@ -1,0 +1,6 @@
+{
+  "description": "Main compiled from Core and then a RGN of Main given one initial cell value fewer than its region entry's cells",
+  "modules": ["Base.Int", "Main"],
+  "outcome": {"refusedAtLoad": {"mentions": "reading"}},
+  "observe": []
+}

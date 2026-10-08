@@ -85,7 +85,7 @@ themselves are listed in `compiler/test/Stella/Compiler/Fixtures.purs`. A foreig
 manifest is checked against the modules it describes as it is written, except in a
 fixture made to disagree with them, whose description says so.
 
-A module no Core compiles to, such as a handler entry naming one cell twice, is made
+A module no Core compiles to, such as a region entry naming one cell twice, is made
 by compiling Core and then changing the lowered module. Its manifest's description
 says what was changed.
 

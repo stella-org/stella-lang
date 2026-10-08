@@ -1,6 +1,0 @@
-{
-  "description": "Main compiled from Core and then a TAILHNDL inside a branch of Main given one initial cell value fewer than its handler entry's cells",
-  "modules": ["Base.Int", "Main"],
-  "outcome": {"refusedAtLoad": {"mentions": "Meter"}},
-  "observe": []
-}
