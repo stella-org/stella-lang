@@ -10,8 +10,8 @@
 -- | the runtime carries out, supplies a count its callee admits. What another module
 -- | declares is checked where the generated modules are loaded together.
 -- |
--- | **Segmentation** cuts each function at its non-tail calls, its performs, and
--- | its handler installations: the run loop carries each out and then continues the
+-- | **Segmentation** cuts each function at its non-tail calls, its performs, its
+-- | handler installations, and its region openings: the run loop carries each out and then continues the
 -- | frame at the segment after it ([Frame](Frame.purs)). A `JMP` targets a join
 -- | point's own segment, so a loop written with join points runs through the run
 -- | loop rather than the host's call stack.
@@ -34,12 +34,12 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), maybe)
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Tail(..))
+import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), JoinName(..), KeyIx(..), Node, OpIx(..), PrimIx(..), RegionIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Instr as B
 import Stella.Compiler.Bytecode.Module (Constant(..), Dmo, GlobalInit(..), Key(..))
 import Stella.Compiler.Bytecode.Module as M
 import Stella.Backend.JavaScript.Error (JsError(..))
-import Stella.Backend.JavaScript.Frame (Block, Callee(..), CtorRef(..), Exit(..), Expr(..), ForeignRef(..), FrameFunction, GlobalRef(..), HandleOperands, Handler, IOEntry(..), Literal(..), Segment, SegmentId(..), Stmt(..), Target(..))
+import Stella.Backend.JavaScript.Frame (Block, Callee(..), CtorRef(..), Exit(..), Expr(..), ForeignRef(..), FrameFunction, GlobalRef(..), HandleOperands, Handler, IOEntry(..), Literal(..), OpenOperands, Region, Segment, SegmentId(..), Stmt(..), Target(..))
 import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp, lookupPrim)
 import Stella.Compiler.TypedCore.Domain (codePointOf)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
@@ -57,6 +57,7 @@ type Resolved =
   , callees :: P.Array Callee
   , prims :: P.Array PrimOp
   , handlers :: P.Array Handler
+  , regions :: P.Array Region
   }
 
 type FrameModule =
@@ -92,11 +93,12 @@ resolve dmo = do
   let
     prims = dmo.prims
     keys = map keyString dmo.keys
-    resolvedSoFar = { keys, ctors, globals, foreigns, foreignImports, callees: [], prims, handlers: [] }
+    resolvedSoFar = { keys, ctors, globals, foreigns, foreignImports, callees: [], prims, handlers: [], regions: [] }
     foreignImports = Array.nub (Array.filter (not <<< own) (dmo.foreignRefs <> Array.mapMaybe calleeForeign dmo.callees))
   callees <- traverse (callee resolvedSoFar) dmo.callees
   handlers <- traverse (handler keys) dmo.handlers
-  pure resolvedSoFar { callees = callees, handlers = handlers }
+  regions <- traverse (region keys) dmo.regions
+  pure resolvedSoFar { callees = callees, handlers = handlers, regions = regions }
   where
   own (Qualified m _) = m == dmo.name
 
@@ -149,6 +151,11 @@ resolve dmo = do
       let OpIx i = c.op
       OpName op <- at "OPS" dmo.ops i
       pure { op, fast: c.form == ClauseFast }
+
+  -- a cell is reached by its position, and the keys say which is which to a reader
+  region keys entry = do
+    cells <- traverse (\(KeyIx i) -> at "KEYS" keys i) entry.cells
+    pure { cells }
 
 -- | The entry the runtime carries out that a foreign of this name is, with the arity
 -- | the ABI gives it: an operation, or one of the two `Base.IO` entries.
@@ -344,6 +351,9 @@ cutNode scope next0 node = go [] 0
       HNDL (B.Reg d) h body ret clauses -> do
         handler <- handlerAt scope h
         cutAt acc i \resume -> Handle { handler, operands: handleOperands body ret clauses, dest: d, resume }
+      RGN (B.Reg d) g body initial -> do
+        region <- regionAt scope g
+        cutAt acc i \resume -> Open { region, operands: openOperands body initial, dest: d, resume }
       _ -> do
         stmt <- instrStmt scope instr
         go (Array.snoc acc stmt) (i + 1)
@@ -376,7 +386,9 @@ cutTail scope next0 = case _ of
   TAILHNDL h body ret clauses -> do
     handler <- handlerAt scope h
     leaf (TailHandle { handler, operands: handleOperands body ret clauses })
-  TAILRGN _ _ _ -> Left (Unsupported "a region")
+  TAILRGN g body initial -> do
+    region <- regionAt scope g
+    leaf (TailOpen { region, operands: openOperands body initial })
   JMP (JoinName name) args -> case Map.lookup name scope.joins of
     Nothing -> Left (NoSuchJoin scope.func name)
     Just j ->
@@ -476,17 +488,20 @@ instrStmt scope = case _ of
     ref <- foreignAt scope f
     checkForeignCall scope.dmo ref (Array.length args)
     pure (Set d (CallForeign ref (regs args)))
-  CGET _ _ _ -> Left (Unsupported "a cell of a region")
-  CSET _ _ _ _ -> Left (Unsupported "a cell of a region")
-  RGN _ _ _ _ -> Left (Unsupported "a region")
+  CGET (B.Reg d) (B.Reg g) i -> pure (Set d (CellGet g i))
+  CSET (B.Reg d) (B.Reg g) i (B.Reg s) -> pure (Set d (CellSet g i s))
   CALLK _ _ _ -> Left (Unsupported "a call standing where no segment can be cut")
   CALLU _ _ _ -> Left (Unsupported "a call standing where no segment can be cut")
   PERF _ _ _ _ -> Left (Unsupported "a perform standing where no segment can be cut")
   HNDL _ _ _ _ _ -> Left (Unsupported "a handler standing where no segment can be cut")
+  RGN _ _ _ _ -> Left (Unsupported "a region standing where no segment can be cut")
 
 handleOperands :: B.Reg -> B.Reg -> P.Array B.Reg -> HandleOperands
 handleOperands body ret clauses =
   { body: regIndex body, ret: regIndex ret, clauses: regs clauses }
+
+openOperands :: B.Reg -> P.Array B.Reg -> OpenOperands
+openOperands body initial = { body: regIndex body, initial: regs initial }
 
 -- Table lookups ----------------------------------------------------------------------------
 
@@ -525,6 +540,9 @@ opAt scope (OpIx i) = do
 
 handlerAt :: Scope -> HandlerIx -> Either JsError P.Int
 handlerAt scope (HandlerIx i) = at "HANDLERS" scope.resolved.handlers i $> i
+
+regionAt :: Scope -> RegionIx -> Either JsError P.Int
+regionAt scope (RegionIx i) = at "REGIONS" scope.resolved.regions i $> i
 
 primAt :: Scope -> PrimIx -> Either JsError PrimOp
 primAt scope (PrimIx i) = at "PRIMS" scope.resolved.prims i

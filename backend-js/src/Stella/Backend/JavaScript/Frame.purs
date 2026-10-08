@@ -2,7 +2,7 @@
 -- |
 -- | Under this strategy an activation is a frame on a stack of the runtime's own,
 -- | and a Stella function is a set of **segments**: its entry, and one for what
--- | follows each non-tail call, perform, and handler installation. A segment runs
+-- | follows each non-tail call, perform, handler installation, and region opening. A segment runs
 -- | straight to the next transfer and says what the run loop does next, so the
 -- | host's call stack never holds more than one of them, which is how a tail call
 -- | pushes nothing and a deep recursion runs in bounded host stack
@@ -26,6 +26,8 @@ module Stella.Backend.JavaScript.Frame
   , Exit(..)
   , HandleOperands
   , Handler
+  , OpenOperands
+  , Region
   , Segment
   , FrameFunction
   ) where
@@ -122,6 +124,12 @@ data Expr
   -- | A foreign called with all its arguments. Its body is synchronous and applies no
   -- | Stella function, so the call cuts no segment.
   | CallForeign ForeignRef (P.Array P.Int)
+  -- | What the cell at that position holds, of the region whose identity the
+  -- | register holds.
+  | CellGet P.Int P.Int
+  -- | Replace what that cell holds with the last register's value, giving
+  -- | `Prim.Unit`.
+  | CellSet P.Int P.Int P.Int
 
 data Stmt
   = Set P.Int Expr
@@ -161,6 +169,12 @@ data Exit
   | Handle { handler :: P.Int, operands :: HandleOperands, dest :: P.Int, resume :: SegmentId }
   -- | The same in tail position, replacing the frame.
   | TailHandle { handler :: P.Int, operands :: HandleOperands }
+  -- | Open the `region`-th region of the table over the initial values in those
+  -- | registers, and call the body with its identity. The body's value reaches
+  -- | `dest` and what follows is segment `resume`, as after a call.
+  | Open { region :: P.Int, operands :: OpenOperands, dest :: P.Int, resume :: SegmentId }
+  -- | The same in tail position, replacing the frame.
+  | TailOpen { region :: P.Int, operands :: OpenOperands }
 
 -- | What installing a handler takes: the body, the return clause, and a clause per
 -- | operation in the order the handler table lists them.
@@ -175,6 +189,17 @@ type HandleOperands =
 type Handler =
   { key :: P.String
   , clauses :: P.Array { op :: P.String, fast :: P.Boolean }
+  }
+
+-- | What opening a region takes: the body, and a value per cell.
+type OpenOperands =
+  { body :: P.Int
+  , initial :: P.Array P.Int
+  }
+
+-- | A region of the table: the key of each cell, in the order of their positions.
+type Region =
+  { cells :: P.Array P.String
   }
 
 type Segment =

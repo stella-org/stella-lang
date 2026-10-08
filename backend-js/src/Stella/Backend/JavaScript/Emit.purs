@@ -13,6 +13,7 @@
 -- | | `fgI` | the descriptor of the `I`-th foreign this module declares |
 -- | | `implI` | its host implementation, where a host implements it |
 -- | | `hI` | the `I`-th handler of `HANDLERS` |
+-- | | `rI` | the `I`-th region of `REGIONS` |
 -- | | `fnI` | the descriptor of the `I`-th function |
 -- | | `fI_sJ` | segment `J` of that function |
 -- | | `gI` | the `I`-th global |
@@ -103,6 +104,7 @@ emit options fm = do
       <> Array.mapWithIndex primTop dmo.prims
       <> foreigns.descriptors
       <> Array.mapWithIndex handlerTop fm.resolved.handlers
+      <> Array.mapWithIndex regionTop fm.resolved.regions
       <> Array.concat functionsOut
       <> Array.mapWithIndex (\i _ -> S.Statement (S.Let (globalName i) Nothing)) dmo.globals
       <> Array.mapWithIndex initTop dmo.globals
@@ -121,12 +123,13 @@ emit options fm = do
       ( S.Const (handlerName i)
           ( rtCall "handler"
               [ S.String h.key
-              -- a handler entry declares no cells
-              , S.Array []
               , S.Array (map (\c -> S.Array [ S.String c.op, S.Boolean c.fast ]) h.clauses)
               ]
           )
       )
+
+  regionTop i r =
+    S.Statement (S.Const (regionName i) (rtCall "region" [ S.Array (map S.String r.cells) ]))
 
   initTop i g = S.Statement case g.init of
     GFunc (FuncIx f) -> S.Assign (S.Ident (globalName i)) (S.New (rtMember "Closure") [ S.Ident (fnName f), S.Array [] ])
@@ -416,6 +419,15 @@ exit fm = case _ of
         ]
   TailHandle h ->
     pure $ installing h.handler h.operands <> [ S.Return (rtMember "TAILHNDL") ]
+  Open o ->
+    pure $ opening o.region o.operands
+      <>
+        [ S.Assign (mField "dest") (S.Number (show o.dest))
+        , S.Assign (mField "resume") (S.Ident (segmentName o.resume))
+        , S.Return (rtMember "RGN")
+        ]
+  TailOpen o ->
+    pure $ opening o.region o.operands <> [ S.Return (rtMember "TAILRGN") ]
   -- the arguments are read before any parameter is written, since an argument
   -- register may be a parameter of the join point too
   Jump j ->
@@ -449,8 +461,12 @@ exit fm = case _ of
     , S.Assign (mField "callee") (reg o.body)
     , S.Assign (mField "ret") (reg o.ret)
     , S.Assign (mField "args") (S.Array (map reg o.clauses))
-    -- a handler is installed over no cells
-    , S.Assign (mField "cells") (S.Array [])
+    ]
+
+  opening r o =
+    [ S.Assign (mField "region") (S.Ident (regionName r))
+    , S.Assign (mField "callee") (reg o.body)
+    , S.Assign (mField "cells") (S.Array (map reg o.initial))
     ]
 
   defaultBlock default what = case default of
@@ -492,6 +508,8 @@ expr fm = case _ of
   Payload k s -> rtCall "payload" [ reg s, S.String k ]
   Prim op args -> operation op (map reg args)
   CallForeign ref args -> foreignCall fm ref (map reg args)
+  CellGet g i -> rtCall "cget" [ S.Ident "m", reg g, S.Number (show i) ]
+  CellSet g i s -> rtCall "cset" [ S.Ident "m", reg g, S.Number (show i), reg s ]
 
 operation :: PrimOp -> P.Array S.Expr -> S.Expr
 operation op args = inline op args
@@ -642,6 +660,9 @@ implName i = "impl" <> show i
 
 handlerName :: P.Int -> P.String
 handlerName i = "h" <> show i
+
+regionName :: P.Int -> P.String
+regionName i = "r" <> show i
 
 segmentName :: SegmentId -> P.String
 segmentName (SegmentId s) = "f" <> show s.func <> "_s" <> show s.index
