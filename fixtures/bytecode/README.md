@@ -78,7 +78,8 @@ and a specifier in it is resolved against the fixture's directory.
 
 The Core each fixture is compiled from, and its expected values, are in
 `compiler/test/Stella/Compiler/Fixtures/Programs.purs`,
-`compiler/test/Stella/Compiler/Fixtures/Effects.purs`, and
+`compiler/test/Stella/Compiler/Fixtures/Effects.purs`,
+`compiler/test/Stella/Compiler/Fixtures/Regions.purs`, and
 `compiler/test/Stella/Compiler/Fixtures/Foreigns.purs`, which also holds each
 `host.mjs` and the signatures each foreign manifest is written from; the fixtures
 themselves are listed in `compiler/test/Stella/Compiler/Fixtures.purs`. A foreign

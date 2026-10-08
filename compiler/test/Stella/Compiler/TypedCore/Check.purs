@@ -725,6 +725,27 @@ spec = describe "TypedCore.Check" do
         (Region unit regionName oneCell [ oneLit ] (lam "u" unitT (ReadCell unit regionName nKey)))
         `shouldEqual` Left (RegionEscapes regionName)
 
+    it "refuses a handler's answer closing over a cell of the region around it" do
+      -- the return clause hands back a function over the cell, which the region's
+      -- answer type then mentions
+      inferAt TRowEmpty
+        ( Region unit regionName oneCell [ oneLit ]
+            ( Handle unit oneLit
+                { element: RowEffectEntry counterEff []
+                , returnClause: { binder: Ident "x", ty: int, body: lam "u" unitT (ReadCell unit regionName nKey) }
+                , opClauses: [ fastNext oneLit ]
+                }
+            )
+        )
+        `shouldEqual` Left (RegionEscapes regionName)
+
+    it "refuses a region whose residual row mentions it" do
+      -- the row the region stands at holds `State (Unit -{ region r }-> Int)`,
+      -- which is what `r ∉ frn(ρ)` rejects
+      inferAt (TRowExtend (RowEffectEntry stateEff [ fn unitT (regionRow TRowEmpty) int ]) TRowEmpty)
+        (Region unit regionName oneCell [ oneLit ] oneLit)
+        `shouldEqual` Left (RegionEscapes regionName)
+
     it "accepts regions nested, an inner one reaching the outer's cells beside its own" do
       inferAt TRowEmpty
         ( Region unit regionName oneCell [ oneLit ]

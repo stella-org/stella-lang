@@ -45,6 +45,7 @@ import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ForeignIx(..), Instr(..), K
 import Stella.Compiler.Bytecode.Module (CalleeEntry(..), HandlerEntry, RegionEntry)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
 import Test.Stella.Compiler.Fixtures.Effects (effectsExpected, effectsModule, meterModule)
+import Test.Stella.Compiler.Fixtures.Regions (regionsExpected, regionsModule)
 import Test.Stella.Compiler.Fixtures.Foreigns (ManifestModule, Result(..), RunCase, RunFault(..), addCallMain, addHostModule, addInnerCallMain, opCallMain, addHostShrunk, addPartialMain, addShrunkManifest, addShrunkSource, greetHostModule, greetMainModule, greetManifest, greetSource, ioEffects, ioHostModule, ioHostSource, ioMainModule, ioManifest, ioModule, ioName, hostName, ioModuleBindArity, ioModulePureArity, ioResult, pureMainModule, runCases, runEffects, runHostModule, runHostSource, runMainModule, runManifest, startMainModule)
 import Test.Stella.Compiler.Fixtures.Programs (abiSignature, baseModules, expected, faultCases, faultModule, inInt, intModule, libModule, libRenamed, libShrunk, libUnexported, mainModule, mainName, opsExpected, opsModule, refsOnly, without)
 import Test.Stella.Compiler.Fixtures.Value (Expected(..), jsonString, toJson)
@@ -194,6 +195,13 @@ fixtures =
       , modules: map (map _.dmo) (compileAll [ intModule, effectsModule ])
       , outcome: Loads
       , observe: effectsExpected
+      }
+  , plain
+      { name: "regions"
+      , description: "Which frame a cell reaches and which cells a resumption shares or copies: handlers in one region, a region inside and outside a handler resuming twice, a function opening a region applied inside its own clause, a continuation resumed while a copy runs, and a closure made before a capture or carried through an operation"
+      , modules: map (map _.dmo) (compileAll [ intModule, regionsModule ])
+      , outcome: Loads
+      , observe: regionsExpected
       }
   , meterRefusal "region-cell-twice"
       "the second cell of Main's region entry changed to the first, at the same KEYS index"
