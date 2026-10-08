@@ -88,7 +88,7 @@ job = case runElabIn env (initialState (SessionId 1) 10) created of
   Tuple other _ -> Left ("the job was not created: " <> show other)
   where
   created = do
-    Tuple id _ <- createSynthesis site (XCon intTy []) (Qualified (ModuleName "Typeclass") (Ident "resolve")) Nothing
+    Tuple id _ <- createSynthesis site (XCon intTy []) (Qualified (ModuleName "Typeclass") (Ident "resolve"))
     pure id
   site = { context: emptyXContext, origin: InDeclaration (Qualified (ModuleName "User") (Ident "answer")) }
 

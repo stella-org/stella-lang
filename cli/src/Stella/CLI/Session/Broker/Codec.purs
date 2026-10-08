@@ -64,7 +64,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle(..), HandleClass(..),
 import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart)
 import Stella.Compiler.Elaborate.Vocabulary.Request (BuildRequest, Command(..), CommandAnswer(..), HandlerRequest, KernelAnswer, KernelRequest, ObserveRequest, RecordRequest, ReportRequest, SolveRequest, TermRequest, TreeRequest)
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView, KindView, PayloadView, TypeView)
-import Stella.Compiler.TypedCore (Constant, EffName(..), Ident(..), KindVar(..), Literal, ModuleName(..), OpName(..), Qualified(..), RowElemKind, RowKey, Symbol(..), Tag(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore (Constant, EffName(..), Ident(..), KindVar(..), Literal, ModuleName(..), OpName(..), Qualified(..), RegionName(..), RowElemKind, RowKey, Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Domain (ScalarString, ScalarValue, scalarString, textOf)
 import Type.Proxy (Proxy(..))
 
@@ -154,6 +154,10 @@ instance Guest Symbol where
 instance Guest Tag where
   toGuest (Tag s) = toGuest s
   fromGuest path w = Tag <$> fromGuest path w
+
+instance Guest RegionName where
+  toGuest (RegionName s) = toGuest s
+  fromGuest path w = RegionName <$> fromGuest path w
 
 -- | What a qualified name qualifies.
 class Named a where

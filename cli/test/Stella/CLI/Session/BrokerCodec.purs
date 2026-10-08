@@ -26,7 +26,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle(..), HandleClass(..),
 import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Vocabulary.Request (BuildRequest(..), Command(..), CommandAnswer(..), HandlerRequest(..), KernelAnswer(..), KernelRequest(..), ObserveRequest(..), ReportRequest(..), TermRequest(..))
 import Stella.Compiler.Elaborate.Vocabulary.View (KindView(..), PayloadView(..), TypeView(..))
-import Stella.Compiler.TypedCore (Constant(..), EffName(..), Ident(..), Literal(..), ModuleName(..), OpName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore (Constant(..), EffName(..), Ident(..), Literal(..), ModuleName(..), OpName(..), Qualified(..), RegionName(..), RowElemKind(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore as Core
 import Stella.Compiler.TypedCore.Domain (scalarString, scalarValue)
 import Test.Spec (Spec, describe, it)
@@ -78,8 +78,9 @@ requests =
   , TermRequest (LiteralTerm (h 0) (LitString (unsafePartial (fromJust (scalarString "é")))))
   , TermRequest (LiteralTerm (h 0) (LitChar (unsafePartial (fromJust (scalarValue 0x1F600)))))
   , TermRequest (LocalVariable (h 0) (Ident "x"))
-  , HandlerRequest (OpenHandle (h 0) (h 1) (TagKey (Tag "t")) (TypePayload (h 2)) (Just [ { key: SymbolKey (Symbol "k"), type: h 3 } ]) (h 4) (h 5) [ { op: OpName "op", full: true } ])
-  , HandlerRequest (ReadCell (h 0) RegionKey)
+  , HandlerRequest (OpenHandle (h 0) (h 1) (TagKey (Tag "t")) (TypePayload (h 2)) (h 4) (h 5) [ { op: OpName "op", full: true } ])
+  , HandlerRequest (OpenRegion (h 0) [ { key: SymbolKey (Symbol "k"), type: h 3 } ])
+  , HandlerRequest (ReadCell (h 0) (h 1) (RegionKey (RegionName "r")))
   , ObserveRequest (LookupGlobal (qualified "M" "f"))
   , ObserveRequest LocalContext
   , ReportRequest (Throw [ TextPart "no", TypePart (h 0), NamePart (qualified "M" "g") ])
@@ -99,6 +100,7 @@ answers =
   , BinderAnswer { binder: h 0, variable: h 1, bodyScope: h 2 }
   , SwitchKeyAnswer { binder: h 0, branches: [ { scope: h 1, payload: h 2 } ], fallback: Just { scope: h 3, residual: h 4 } }
   , HandlerAnswer { binder: h 0, returnClause: { variable: h 1, scope: h 2 }, clauses: [ { typeVariables: [ h 3 ], argument: h 4, continuation: Nothing, scope: h 5 } ] }
+  , RegionAnswer { binder: h 0, name: RegionName "r#0", bodyScope: h 1 }
   ]
 
 -- | A kind nested that deep in its first argument.

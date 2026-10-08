@@ -44,7 +44,7 @@ import Run (AFF, EFFECT, Run, liftEffect)
 import Stella.CLI.Session.Broker (Cancellation, SessionHealth(..), cancelRequested, runGuest)
 import Stella.CLI.Session.Broker.Settle (Settled(..), settle)
 import Stella.CLI.Session.Client (Session)
-import Stella.Compiler.Elaborate.CorePlus.Term (Region, TermMetaVar)
+import Stella.Compiler.Elaborate.CorePlus.Term (TermMetaVar)
 import Stella.Compiler.Elaborate.CorePlus.Type (XType)
 import Stella.Compiler.Elaborate.Driver.Attempt (Attempt, OpenResult(..), attemptPending)
 import Stella.Compiler.Elaborate.Driver.Conversation (abandoned, openConversation)
@@ -140,8 +140,7 @@ submitGuestSynthesis
   -> Site
   -> XType
   -> SynthRef
-  -> Maybe Region
   -> SolverState
   -> Run (AFF + EFFECT + r) (Either Interrupted (Tuple { target :: TermMetaVar, submission :: Submission } SolverState))
-submitGuestSynthesis guests site expectedType synthesizer region s =
-  runExceptT (submitSynthesisM (guestAttempter guests) site expectedType synthesizer region s)
+submitGuestSynthesis guests site expectedType synthesizer s =
+  runExceptT (submitSynthesisM (guestAttempter guests) site expectedType synthesizer s)

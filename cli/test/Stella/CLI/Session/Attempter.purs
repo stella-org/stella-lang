@@ -108,7 +108,7 @@ spec = describe "Stella.CLI.Session.Broker.Attempter" do
       Left err -> fail err
       Right { a, state } -> do
         guests <- guestsOn session
-        node (submitGuestSynthesis guests site a synth Nothing state) >>= case _ of
+        node (submitGuestSynthesis guests site a synth state) >>= case _ of
           Right (Tuple { submission: Continue _ } s1) -> node (submitGuest guests site (equating a) s1) >>= case _ of
             Right (Tuple (Continue _) s2) -> node (runGuests guests s2) >>= case _ of
               Right (Tuple report s3) -> liftEffect do
@@ -131,7 +131,7 @@ spec = describe "Stella.CLI.Session.Broker.Attempter" do
       Right { a, state } -> do
         guests <- guestsOn session
         liftEffect (cancel guests.cancellation)
-        node (submitGuestSynthesis guests site a synth Nothing state) >>= case _ of
+        node (submitGuestSynthesis guests site a synth state) >>= case _ of
           Left (CalledOff s health) -> do
             liftEffect (Ref.write ("CalledOff " <> show health) result)
             -- the guest's attempt opened, and was rolled back as cancelled
@@ -182,7 +182,7 @@ spec = describe "Stella.CLI.Session.Broker.Attempter" do
       Left err -> fail err
       Right { a, state } -> do
         guests <- guestsOn session
-        node (submitGuestSynthesis guests site a synth Nothing state) >>= case _ of
+        node (submitGuestSynthesis guests site a synth state) >>= case _ of
           Right (Tuple { submission: Stop report } _) -> do
             health <- liftEffect (Ref.read guests.health)
             liftEffect (Ref.write (Just (Tuple report.result health)) result)
@@ -198,7 +198,7 @@ spec = describe "Stella.CLI.Session.Broker.Attempter" do
       Right { a, state } -> do
         guests <- guestsOn session
         liftEffect (Ref.write lastAttempt guests.attempts)
-        node (submitGuestSynthesis guests site a synth Nothing state) >>= case _ of
+        node (submitGuestSynthesis guests site a synth state) >>= case _ of
           Right (Tuple { submission: Stop report } s) -> do
             health <- liftEffect (Ref.read guests.health)
             let
