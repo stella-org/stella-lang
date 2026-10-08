@@ -116,8 +116,8 @@ fixtures =
               ]
           , attributes: []
           }
-      -- an effect whose one operation resumes with a value, so that a handler
-      -- owning a region has something to answer a `readCell` with
+      -- an effect whose one operation resumes with a value, so that a clause
+      -- standing in a region has something to answer a `readCell` with
       , DeclEffect unit
           { name: EffName "Counter"
           , params: []

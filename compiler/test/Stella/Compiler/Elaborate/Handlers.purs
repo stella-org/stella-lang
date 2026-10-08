@@ -27,12 +27,13 @@ import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle, SessionId(..))
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Mechanism.Kinding (KindingFault(..), kindingOf)
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
-import Stella.Compiler.Elaborate.Kernel.Solve (require, subgoal)
+import Stella.Compiler.Elaborate.Kernel.Solve (entails, freshMetaType, require, subgoal)
+import Stella.Compiler.Elaborate.Kernel.Builder.Record (openEff)
 import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..), XOpClause(..), toCoreExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..))
 import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), toCore)
 import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError(..))
-import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView(..), PayloadView(..))
+import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView(..), KindView(..), PayloadView(..))
 import Stella.Compiler.TypedCore (Decl(..), EffName(..), Ident(..), Literal(..), Module, ModuleName(..), OpName(..), Qualified(..), RegionName(..), RowElemKind(..), RowKey(..), Symbol(..), TyVar(..), Type(..), monoScheme)
 import Stella.Compiler.TypedCore as Core
 import Stella.Compiler.TypedCore.Declare (declare)
@@ -40,7 +41,8 @@ import Stella.Compiler.TypedCore.Prim (booleanTy, functionTy, intTy, primSignatu
 import Stella.Compiler.TypedCore.Signature (Signature)
 import Data.Either (Either(..), either, isRight)
 import Data.Maybe (Maybe(..))
-import Data.Tuple (Tuple, fst)
+import Data.Map as Map
+import Data.Tuple (Tuple(..), fst)
 import Effect.Aff (Aff)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -208,6 +210,29 @@ counted residual body = do
       initial <- literal root (LitInt 0)
       closeRegion root region.binder handled [ initial ]
     _ -> raiseDiagnostic failure
+
+-- | Where a row metavariable is made: before the region is opened, or in its
+-- | body.
+data Made = Outside | Inside
+
+-- | `region [ℓ] ( n : Int )` opened at the root, and a row of effects `?m` made
+-- | where given, handed to the action.
+withRowMeta :: forall a. Made -> (Opened -> Handle -> Elab a) -> Elab a
+withRowMeta made k = do
+  root <- rootScope
+  outer <- freshMetaType root (KindRow RowEffect)
+  i <- int root
+  region <- openRegion root [ { key: cellN, type: i } ]
+  m <- case made of
+    Outside -> pure outer
+    Inside -> freshMetaType region.bodyScope (KindRow RowEffect)
+  k region m
+
+-- | How many obligations an action leaves watched, where it completes.
+watched :: forall a. Elab a -> Maybe P.Int
+watched action = case runIn session action of
+  Tuple (Done _) solver -> Just (Map.size solver.tentative.obligations.entries)
+  _ -> Nothing
 
 -- | `( region ℓ )`, the region given alone.
 regionRow :: Opened -> Handle -> Elab Handle
@@ -424,6 +449,34 @@ spec = describe "Elaborate.BuildHandler" do
       refuses (rootScope >>= \root -> int root >>= \i -> openRegion root [ { key: cellN, type: i }, { key: cellN, type: i } ]) case _ of
         DuplicateCell _ -> true
         _ -> false
+
+  describe "a row metavariable" do
+    it "lacks the key of a region it was made outside, by its scope, and not one it was made inside" do
+      let
+        lacking made = withRowMeta made \r m -> entails r.bodyScope (LacksView (RegionKey r.name) m)
+      outcomeOf (lacking Outside) `shouldEqual` Done true
+      outcomeOf (lacking Inside) `shouldEqual` Done false
+
+    it "is extended by a region it was made outside with nothing left to watch, and by one it was made inside watched" do
+      let
+        baseline made = watched (withRowMeta made \_ _ -> pure unit)
+        extended made = watched (withRowMeta made \r m -> extendRow r.bodyScope (RegionKey r.name) (RegionPayload r.name) m)
+      extended Outside `shouldEqual` baseline Outside
+      extended Inside `shouldEqual` map (_ + 1) (baseline Inside)
+
+    it "is widened by a region it was made outside with nothing left to watch, and by one it was made inside watched" do
+      let
+        baseline made = watched (withRowMeta made \_ _ -> pure unit)
+        -- `openEff [( region ℓ )] f` for a function `f` standing at `?m`
+        widened made = watched $ withRowMeta made \r m -> do
+          i <- int r.bodyScope
+          lam <- openLambda r.bodyScope "x" i
+          body <- literal lam.bodyScope (LitInt 0)
+          f <- closeLambda r.bodyScope lam.binder body m
+          row <- regionRow r r.bodyScope
+          openEff r.bodyScope row f
+      widened Outside `shouldEqual` baseline Outside
+      widened Inside `shouldEqual` map (_ + 1) (baseline Inside)
 
   describe "a cell" do
     it "is read and written wherever its region stands around, a clause and a lambda there included" do

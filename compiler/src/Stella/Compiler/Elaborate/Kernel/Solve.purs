@@ -36,7 +36,7 @@ import Stella.Compiler.Elaborate.Mechanism.Kinding (KindEvidence(..), quantifiab
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..), Standing(..), standing)
 import Stella.Compiler.Elaborate.Mechanism.Pending (SynthRef)
 import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..))
-import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), lookupMeta, substitute)
+import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), lookupMeta, regionScopeOf, substitute)
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView, KindView)
 import Stella.Compiler.TypedCore (RowElemKind(..))
 import Data.Either (Either(..))
@@ -120,7 +120,7 @@ entails scopeHandle view = do
     Left (FactsRowError err) -> break (ObligationSubjectNotARow site.origin err)
     Left (LacksContradiction _) -> pure false
     Left (DisjointContradiction _) -> pure false
-    Right sitefacts -> case standing Required sitefacts zonk constraint of
+    Right sitefacts -> case standing Required sitefacts zonk (regionScopeOf metas) constraint of
       Right Discharged -> pure true
       Right (Watching _) -> pure false
       Left breach -> case breach of

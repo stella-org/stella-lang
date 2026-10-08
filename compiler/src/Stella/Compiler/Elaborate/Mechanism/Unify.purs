@@ -47,6 +47,7 @@ module Stella.Compiler.Elaborate.Mechanism.Unify
   , freshMeta
   , freshKindMeta
   , lookupMeta
+  , regionScopeOf
   , lookupKindMeta
   , lookupTermMeta
   , narrowMetas
@@ -325,6 +326,13 @@ freshKindMeta info ctx =
 
 lookupMeta :: MetaContext -> MetaVar -> Maybe MetaBinding
 lookupMeta ctx m = Map.lookup m ctx.bindings
+
+-- | The region names an unsolved metavariable's solution may mention, which are
+-- | those in scope where it was created. A solved one has none of its own.
+regionScopeOf :: MetaContext -> MetaVar -> Maybe (Set RegionName)
+regionScopeOf ctx m = case lookupMeta ctx m of
+  Just (Unsolved info) -> Just info.scope.regions
+  _ -> Nothing
 
 lookupKindMeta :: MetaContext -> KindMetaVar -> Maybe KindMetaBinding
 lookupKindMeta ctx k = Map.lookup k ctx.kindBindings

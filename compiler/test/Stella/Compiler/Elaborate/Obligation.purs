@@ -16,7 +16,7 @@ import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, assume,
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Breach(..), Basis(..), Obligation, ObligationId(..), ObligationStore, Standing(..), emptyStore, introduce, obligationOf, recheck, standing, touching, watchedBy)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..))
-import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, MetaInfo, emptyContext, freshMeta, substitute)
+import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, MetaInfo, emptyContext, freshMeta, regionScopeOf, substitute)
 import Stella.Compiler.TypedCore (ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..), Ident(..))
 import Stella.Compiler.TypedCore.Entailment (AtomicFacts, noFacts)
 import Data.Array as Array
@@ -93,7 +93,7 @@ holding :: Obligation -> Tuple ObligationId ObligationStore
 holding ob = holdingIn ob emptyStore
 
 holdingIn :: Obligation -> ObligationStore -> Tuple ObligationId ObligationStore
-holdingIn ob store = case introduce (substitute metas.ctx) ob store of
+holdingIn ob store = case introduce (substitute metas.ctx) (regionScopeOf metas.ctx) ob store of
   Right (Tuple (Just id) store') -> Tuple id store'
   _ -> Tuple (ObligationId 0) store
 
@@ -103,7 +103,7 @@ factsOf ctx context = case facts (substitute ctx) context of
   Right derived -> derived
 
 standingOf :: Basis -> AtomicFacts -> MetaContext -> XConstraint -> Either Breach Standing
-standingOf basis sitefacts ctx = standing basis sitefacts (substitute ctx)
+standingOf basis sitefacts ctx = standing basis sitefacts (substitute ctx) (regionScopeOf ctx)
 
 spec :: Spec Unit
 spec = describe "Elaborate.Obligation" do
@@ -203,7 +203,7 @@ spec = describe "Elaborate.Obligation" do
         Tuple _ store = holding (obligation Required outer (XLacks keyK (XMeta metas.r)))
         assigned = solving [ Tuple metas.r (XVar rigidT) ]
       map (\s -> Map.isEmpty s.entries)
-        (recheck (substitute assigned) (Set.singleton metas.r) store)
+        (recheck (substitute assigned) (regionScopeOf assigned) (Set.singleton metas.r) store)
         `shouldEqual` Right true
 
     it "refuses the same assignment where that site does not prove it" do
@@ -212,25 +212,25 @@ spec = describe "Elaborate.Obligation" do
         broken = obligation Required elsewhere (XLacks keyK (XMeta metas.r))
         Tuple _ store = holding broken
         assigned = solving [ Tuple metas.r (XVar rigidT) ]
-      recheck (substitute assigned) (Set.singleton metas.r) store
+      recheck (substitute assigned) (regionScopeOf assigned) (Set.singleton metas.r) store
         `shouldEqual` Left (Tuple broken (LacksUnprovenAtSite keyK rigidT))
 
   describe "nothing enters the store undecided" do
     it "refuses a closed requirement its site does not prove" do
-      introduce (substitute metas.ctx)
+      introduce (substitute metas.ctx) (regionScopeOf metas.ctx)
         (obligation Required emptyXContext (XLacks keyK (XVar rigidT)))
         emptyStore
         `shouldEqual` Left (LacksUnprovenAtSite keyK rigidT)
 
     it "refuses an assumption that is already unsatisfiable" do
-      introduce (substitute metas.ctx)
+      introduce (substitute metas.ctx) (regionScopeOf metas.ctx)
         (obligation Assumed emptyXContext (XLacks keyK (field keyK tA XRowEmpty)))
         emptyStore
         `shouldEqual` Left (SolutionCarriesKey keyK)
 
     it "keeps no entry for one that is settled where it is introduced" do
       map (\(Tuple id store) -> Tuple id (Map.isEmpty store.entries))
-        ( introduce (substitute metas.ctx)
+        ( introduce (substitute metas.ctx) (regionScopeOf metas.ctx)
             ( obligation Required (assuming [ XLacks keyK (XVar rigidT) ])
                 (XLacks keyK (field keyA tA (XVar rigidT)))
             )
@@ -254,7 +254,7 @@ spec = describe "Elaborate.Obligation" do
         Tuple fresh ctx = freshMeta rowTypeInfo metas.ctx
         assigned = ctx
           { bindings = Map.insert metas.r (Assigned (field keyA tA (XMeta fresh))) ctx.bindings }
-      case recheck (substitute assigned) (Set.singleton metas.r) store of
+      case recheck (substitute assigned) (regionScopeOf assigned) (Set.singleton metas.r) store of
         Left breach ->
           Left breach `shouldEqual` (Right unit :: Either (Tuple Obligation Breach) Unit)
         Right store' -> do
@@ -267,7 +267,7 @@ spec = describe "Elaborate.Obligation" do
         Tuple id store = holding
           (obligation Required emptyXContext (XLacks keyK (XMeta metas.r)))
         assigned = solving [ Tuple metas.r XRowEmpty ]
-      case recheck (substitute assigned) (Set.singleton metas.r) store of
+      case recheck (substitute assigned) (regionScopeOf assigned) (Set.singleton metas.r) store of
         Left breach ->
           Left breach `shouldEqual` (Right unit :: Either (Tuple Obligation Breach) Unit)
         Right store' -> do
@@ -279,7 +279,7 @@ spec = describe "Elaborate.Obligation" do
         Tuple id store = holding
           (obligation Required emptyXContext (XDisjoint (XMeta metas.r) (XMeta metas.s)))
         assigned = solving [ Tuple metas.r XRowEmpty ]
-      case recheck (substitute assigned) (Set.singleton metas.r) store of
+      case recheck (substitute assigned) (regionScopeOf assigned) (Set.singleton metas.r) store of
         Left breach ->
           Left breach `shouldEqual` (Right unit :: Either (Tuple Obligation Breach) Unit)
         Right store' -> do
@@ -291,7 +291,7 @@ spec = describe "Elaborate.Obligation" do
         Tuple id store = holding
           (obligation Required emptyXContext (XLacks keyK (XMeta metas.s)))
         assigned = solving [ Tuple metas.r XRowEmpty ]
-      map (\s -> watchedBy s id) (recheck (substitute assigned) (Set.singleton metas.r) store)
+      map (\s -> watchedBy s id) (recheck (substitute assigned) (regionScopeOf assigned) (Set.singleton metas.r) store)
         `shouldEqual` Right (Set.singleton metas.s)
 
   describe "a store holding several" do
@@ -302,7 +302,7 @@ spec = describe "Elaborate.Obligation" do
         broken = obligation Required emptyXContext (XLacks keyK (XMeta metas.r))
         Tuple _ store2 = holdingIn broken store1
         assigned = solving [ Tuple metas.r (field keyK tA XRowEmpty) ]
-      recheck (substitute assigned) (Set.fromFoldable [ metas.r, metas.s ]) store2
+      recheck (substitute assigned) (regionScopeOf assigned) (Set.fromFoldable [ metas.r, metas.s ]) store2
         `shouldEqual` Left (Tuple broken (SolutionCarriesKey keyK))
 
     it "counts what remains after one is discharged" do
@@ -313,5 +313,5 @@ spec = describe "Elaborate.Obligation" do
           store1
         assigned = solving [ Tuple metas.r XRowEmpty ]
       map (\s -> Array.length (Map.toUnfoldable s.entries :: P.Array _))
-        (recheck (substitute assigned) (Set.singleton metas.r) store2)
+        (recheck (substitute assigned) (regionScopeOf assigned) (Set.singleton metas.r) store2)
         `shouldEqual` Right 1

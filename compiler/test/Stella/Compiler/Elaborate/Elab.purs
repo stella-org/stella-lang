@@ -28,7 +28,7 @@ import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..), Ob
 import Stella.Compiler.Elaborate.Mechanism.Pending (EqualityGoal, Job(..), PendingId, Site)
 import Stella.Compiler.Elaborate.Mechanism.Scheduler (Scheduler, blockedOn, create, emptyScheduler, lookupPending, reblock, readyIds)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XConstraint(..), XRowEntry(..), XType(..))
-import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, MetaInfo, UnifyError(..), emptyContext, freshMeta, lookupMeta, substitute)
+import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, MetaInfo, UnifyError(..), emptyContext, freshMeta, lookupMeta, regionScopeOf, substitute)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError(..), xnf)
 import Stella.Compiler.TypedCore (Ident(..), KindVar(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
 import Data.Either (Either(..))
@@ -146,7 +146,7 @@ assumed constraint =
   { constraint, basis: Assumed, context: emptyXContext, origin: elsewhere }
 
 holding :: Obligation -> ObligationStore
-holding ob = case introduce (substitute metas.ctx) ob emptyStore of
+holding ob = case introduce (substitute metas.ctx) (regionScopeOf metas.ctx) ob emptyStore of
   Right (Tuple _ store) -> store
   Left _ -> emptyStore
 

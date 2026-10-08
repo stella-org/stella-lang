@@ -65,7 +65,7 @@ j :: JoinName
 j = JoinName "j"
 
 -- | A Core term reaching most forms: a type abstraction, a `letrec`, a
--- | `letjoin` jumped to from a decision tree, and a handler owning a region
+-- | `letjoin` jumped to from a decision tree, and a region around a handler
 -- | whose clause reads its cell.
 coreTerm :: Expr P.Int
 coreTerm =

@@ -99,7 +99,7 @@ import Stella.Compiler.Elaborate.Mechanism.TermMeta as TermMeta
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint, XType(..))
 import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar, RegionName(..), TyVar(..))
 import Stella.Compiler.Elaborate.Vocabulary.Trace (TraceEvent, Tracing(..))
-import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement, MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupTermMeta, substitute, unifyKind, unifyType)
+import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement, MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupTermMeta, regionScopeOf, substitute, unifyKind, unifyType)
 import Stella.Compiler.Elaborate.Mechanism.Unify as Unify
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
@@ -655,7 +655,7 @@ settle site progress = Elab \_ s ->
   let
     installed = s.tentative { metas = progress.metas }
   in
-    case recheck (substitute progress.metas) progress.assigned installed.obligations of
+    case recheck (substitute progress.metas) (regionScopeOf progress.metas) progress.assigned installed.obligations of
       Left (Tuple obligation breach) ->
         Tuple (broken site obligation breach) s
       Right obligations ->
@@ -867,7 +867,7 @@ require site constraint =
 -- | the constraint came from.
 take :: Obligation -> Elab Unit
 take obligation = Elab \_ s ->
-  case introduce (substitute s.tentative.metas) obligation s.tentative.obligations of
+  case introduce (substitute s.tentative.metas) (regionScopeOf s.tentative.metas) obligation s.tentative.obligations of
     Left breach -> case invariantBreach breach of
       Just err ->
         Tuple (Broke (ObligationSubjectNotARow obligation.origin err)) s

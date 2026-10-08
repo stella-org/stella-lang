@@ -24,6 +24,14 @@
 -- |
 -- | Which facts decide it is one half; the other is **what it takes to hold at
 -- | all**, which is what `Basis` below distinguishes.
+-- |
+-- | **A metavariable's scope decides some constraints on it for good.** Its
+-- | solution mentions only the region names in scope where it was created, and
+-- | a rigid row variable in that scope is bound outside every region not in it,
+-- | which lacks the region's key. So `RegionKey ℓ ∉ ?m`, for `ℓ` out of `?m`'s
+-- | scope, holds whatever `?m` is solved to. A scope only narrows as solving
+-- | goes on — an assignment and a refinement to another metavariable keep the
+-- | solution within it — so nothing decided this way is broken later.
 module Stella.Compiler.Elaborate.Mechanism.Obligation
   ( ObligationId(..)
   , Basis(..)
@@ -32,6 +40,7 @@ module Stella.Compiler.Elaborate.Mechanism.Obligation
   , ObligationStore
   , Standing(..)
   , Breach(..)
+  , RegionScopes
   , emptyStore
   , introduce
   , touching
@@ -48,7 +57,7 @@ import Prim as P
 import Stella.Compiler.Elaborate.CorePlus.Context (FactsError, Origin, XContext, Zonk, facts)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, knownKeys, rigidTails, sharedKey, xnf)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..))
-import Stella.Compiler.TypedCore (RowKey, TyVar)
+import Stella.Compiler.TypedCore (RegionName, RowKey(..), TyVar)
 import Stella.Compiler.TypedCore.Entailment (AtomicFacts, knownDisjoint, knownToLack, noFacts)
 import Data.Array as Array
 import Data.Either (Either(..))
@@ -63,6 +72,10 @@ import Data.Show.Generic (genericShow)
 import Data.Tuple (Tuple(..))
 
 newtype ObligationId = ObligationId P.Int
+
+-- | The region names an unsolved metavariable's solution may mention, read off
+-- | `Ψ`; nothing for a metavariable `Ψ` holds solved or does not hold.
+type RegionScopes = MetaVar -> Maybe (Set RegionName)
 
 -- | Why a constraint has to hold, which is what decides what it takes to hold.
 -- |
@@ -161,10 +174,11 @@ emptyStore =
 -- | ```
 introduce
   :: Zonk
+  -> RegionScopes
   -> Obligation
   -> ObligationStore
   -> Either Breach (Tuple (Maybe ObligationId) ObligationStore)
-introduce zonk obligation store = case decide zonk obligation of
+introduce zonk regions obligation store = case decide zonk regions obligation of
   Left breach ->
     Left breach
   Right Discharged ->
@@ -182,13 +196,13 @@ introduce zonk obligation store = case decide zonk obligation of
 -- | where the requirement arose and not what happens to be assumed where the
 -- | assignment was made. An `Assumed` one needs no facts at all: what would prove
 -- | it is itself.
-decide :: Zonk -> Obligation -> Either Breach Standing
-decide zonk obligation = case obligation.basis of
+decide :: Zonk -> RegionScopes -> Obligation -> Either Breach Standing
+decide zonk regions obligation = case obligation.basis of
   Assumed ->
-    standing Assumed noFacts zonk obligation.constraint
+    standing Assumed noFacts zonk regions obligation.constraint
   Required -> case facts zonk obligation.context of
     Left err -> Left (SiteFactsFailed err)
-    Right sitefacts -> standing Required sitefacts zonk obligation.constraint
+    Right sitefacts -> standing Required sitefacts zonk regions obligation.constraint
 
 -- | Record an obligation under the metavariables it watches.
 -- |
@@ -228,8 +242,13 @@ watchedBy store id = case Map.lookup id store.entries of
 -- | The satisfiability of the zonked constraint is read whatever its basis. The
 -- | entailment of its rigid tails is read only where the basis is `Required`,
 -- | and the facts are then the ones the site it arose at gives.
-standing :: Basis -> AtomicFacts -> Zonk -> XConstraint -> Either Breach Standing
-standing basis sitefacts zonk = case _ of
+-- |
+-- | **A flexible tail whose scope settles the constraint is not watched**: one
+-- | lacking a region's key by its scope, and, in `ρ1 # ρ2`, one the other side
+-- | can meet only through such keys — that side having no tail, and keys each of
+-- | a region out of the tail's scope.
+standing :: Basis -> AtomicFacts -> Zonk -> RegionScopes -> XConstraint -> Either Breach Standing
+standing basis sitefacts zonk regions = case _ of
   XLacks key row -> do
     n <- normalize row
     if Map.member key n.known then
@@ -240,7 +259,7 @@ standing basis sitefacts zonk = case _ of
         Required -> case Array.find (\t -> not (knownToLack sitefacts key t)) (rigidTails n) of
           Just t -> Left (LacksUnprovenAtSite key t)
           Nothing -> Right unit
-      Right (watchingOf n.flexible)
+      Right (watchingOf (Set.filter (not <<< lacksByScope key) n.flexible))
 
   XDisjoint left right -> do
     l <- normalize left
@@ -255,12 +274,29 @@ standing basis sitefacts zonk = case _ of
             _ <- keysAgainstTails l r
             _ <- keysAgainstTails r l
             tailsApart l r
-        Right (watchingOf (Set.union l.flexible r.flexible))
+        Right (watchingOf (Set.union (meeting l r) (meeting r l)))
 
   where
   normalize row = case xnf (zonk row) of
     Left err -> Left (ObligationNotARow err)
     Right n -> Right n
+
+  -- Whether a tail's scope keeps the key out of whatever solves it.
+  lacksByScope key m = case key of
+    RegionKey name -> case regions m of
+      Just scope -> not (Set.member name scope)
+      Nothing -> false
+    _ -> false
+
+  -- The flexible tails of one side the other can still meet: all of them, but
+  -- for those the other side reaches only through keys, each of a region their
+  -- scopes keep out.
+  meeting a b = Set.filter (not <<< apartByScope b) a.flexible
+  apartByScope other m =
+    Array.null (rigidTails other)
+      && Set.isEmpty other.flexible
+      && not (Array.null (knownKeys other))
+      && Array.all (\key -> lacksByScope key m) (knownKeys other)
 
   -- Each key of one side must be absent from every rigid tail of the other.
   keysAgainstTails a b =
@@ -298,10 +334,11 @@ standing basis sitefacts zonk = case _ of
 -- | back, and resolving one afterwards is no longer possible.
 recheck
   :: Zonk
+  -> RegionScopes
   -> Set MetaVar
   -> ObligationStore
   -> Either (Tuple Obligation Breach) ObligationStore
-recheck zonk assigned store =
+recheck zonk regions assigned store =
   foldM one store affected
   where
   affected :: P.Array ObligationId
@@ -314,7 +351,7 @@ recheck zonk assigned store =
   one acc id = case Map.lookup id acc.entries of
     Nothing ->
       Right acc
-    Just entry -> case decide zonk entry.obligation of
+    Just entry -> case decide zonk regions entry.obligation of
       Left breach -> Left (Tuple entry.obligation breach)
       Right Discharged -> Right (forget id entry acc)
       Right (Watching ms) -> Right (rewatch id entry ms acc)
