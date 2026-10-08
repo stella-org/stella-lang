@@ -47,7 +47,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (SynthRef)
 import Stella.Compiler.Elaborate.Vocabulary.Envelope (TransactionToken)
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView(..), ContextEntry, DeclView, KindView, PayloadView(..), RowView, TypeView)
-import Stella.Compiler.TypedCore (Ident, Literal, OpName, Qualified, RowKey, TyName, TyVar)
+import Stella.Compiler.TypedCore (Ident, Literal, OpName, Qualified, RegionName, RowKey, TyName, TyVar)
 import Data.Generic.Rep (class Generic)
 import Data.Maybe (Maybe(..))
 import Data.Show.Generic (genericShow)
@@ -131,10 +131,12 @@ data RecordRequest
 -- | Effect operations, handlers, and cells.
 data HandlerRequest
   = Perform Handle RowKey PayloadView OpName (P.Array Handle) Handle
-  | OpenHandle Handle Handle RowKey PayloadView (Maybe (P.Array { key :: RowKey, type :: Handle })) Handle Handle (P.Array { op :: OpName, full :: P.Boolean })
-  | CloseHandle Handle Handle Handle (P.Array Handle) (P.Array Handle)
-  | ReadCell Handle RowKey
-  | WriteCell Handle RowKey Handle
+  | OpenHandle Handle Handle RowKey PayloadView Handle Handle (P.Array { op :: OpName, full :: P.Boolean })
+  | CloseHandle Handle Handle Handle (P.Array Handle)
+  | OpenRegion Handle (P.Array { key :: RowKey, type :: Handle })
+  | CloseRegion Handle Handle Handle (P.Array Handle)
+  | ReadCell Handle Handle RowKey
+  | WriteCell Handle Handle RowKey Handle
 
 -- | Metavariables, equations, constraints, and subgoals.
 data SolveRequest
@@ -213,6 +215,9 @@ data KernelAnswer
             , scope :: Handle
             }
       }
+  -- | A `region` opened: its binder, the name it binds, and the scope its body is
+  -- | built in.
+  | RegionAnswer { binder :: Handle, name :: RegionName, bodyScope :: Handle }
 
 -- | What drives a conversation.
 data Command
@@ -324,6 +329,7 @@ data AnswerShape
   | SwitchLitShape
   | SwitchKeyShape
   | HandlerShape
+  | RegionShape
 
 answerShape :: KernelAnswer -> AnswerShape
 answerShape = case _ of
@@ -347,6 +353,7 @@ answerShape = case _ of
   SwitchLitAnswer _ -> SwitchLitShape
   SwitchKeyAnswer _ -> SwitchKeyShape
   HandlerAnswer _ -> HandlerShape
+  RegionAnswer _ -> RegionShape
 
 -- | The shape a request is answered in where it answers: the one table both
 -- | the host's answers and a script's operations are held to. `throw` and
@@ -412,10 +419,12 @@ expectedAnswerShape = case _ of
     OpenEff _ _ _ -> HandleShape
   HandlerRequest r -> Just case r of
     Perform _ _ _ _ _ _ -> HandleShape
-    OpenHandle _ _ _ _ _ _ _ _ -> HandlerShape
-    CloseHandle _ _ _ _ _ -> HandleShape
-    ReadCell _ _ -> HandleShape
-    WriteCell _ _ _ -> HandleShape
+    OpenHandle _ _ _ _ _ _ _ -> HandlerShape
+    CloseHandle _ _ _ _ -> HandleShape
+    OpenRegion _ _ -> RegionShape
+    CloseRegion _ _ _ _ -> HandleShape
+    ReadCell _ _ _ -> HandleShape
+    WriteCell _ _ _ _ -> HandleShape
   SolveRequest r -> Just case r of
     FreshMetaType _ _ -> HandleShape
     IsAssigned _ -> BooleanShape
@@ -521,16 +530,19 @@ traverseRequestHandles v = case _ of
   HandlerRequest r -> HandlerRequest <$> case r of
     Perform s key payload op typeArgs argument ->
       Perform <$> v s <*> pure key <*> payloadHandles payload <*> pure op <*> traverse v typeArgs <*> v argument
-    OpenHandle s computation key payload layout answer residual clauses ->
+    OpenHandle s computation key payload answer residual clauses ->
       OpenHandle <$> v s <*> v computation <*> pure key <*> payloadHandles payload
-        <*> traverse (traverse (\cell -> { key: cell.key, type: _ } <$> v cell.type)) layout
         <*> v answer
         <*> v residual
         <*> pure clauses
-    CloseHandle s binder returnBody clauseBodies initials ->
-      CloseHandle <$> v s <*> v binder <*> v returnBody <*> traverse v clauseBodies <*> traverse v initials
-    ReadCell s key -> ReadCell <$> v s <*> pure key
-    WriteCell s key value -> WriteCell <$> v s <*> pure key <*> v value
+    CloseHandle s binder returnBody clauseBodies ->
+      CloseHandle <$> v s <*> v binder <*> v returnBody <*> traverse v clauseBodies
+    OpenRegion s layout ->
+      OpenRegion <$> v s <*> traverse (\cell -> { key: cell.key, type: _ } <$> v cell.type) layout
+    CloseRegion s binder body initials ->
+      CloseRegion <$> v s <*> v binder <*> v body <*> traverse v initials
+    ReadCell s region key -> ReadCell <$> v s <*> v region <*> pure key
+    WriteCell s region key value -> WriteCell <$> v s <*> v region <*> pure key <*> v value
   SolveRequest r -> SolveRequest <$> case r of
     FreshMetaType s kind -> FreshMetaType <$> v s <*> pure kind
     IsAssigned meta -> IsAssigned <$> v meta
@@ -559,7 +571,7 @@ traverseRequestHandles v = case _ of
   payloadHandles = case _ of
     TypePayload ty -> TypePayload <$> v ty
     EffectPayload effect args -> EffectPayload effect <$> traverse v args
-    RegionPayload a b -> RegionPayload <$> v a <*> v b
+    RegionPayload name -> pure (RegionPayload name)
 
   constraintHandles = case _ of
     LacksView key row -> LacksView key <$> v row

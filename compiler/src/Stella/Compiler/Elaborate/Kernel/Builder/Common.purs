@@ -9,7 +9,6 @@
 module Stella.Compiler.Elaborate.Kernel.Builder.Common
   ( usableIn
   , usableTermIn
-  , regionFits
   , issueTerm
   , built
   , kinded
@@ -67,10 +66,9 @@ import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Mechanism.Kinding (KindEvidence(..), KindingScope, checkConstraint, checkKind, quantifiable, settledIn, synthKind, wellFormedKey)
 import Stella.Compiler.Elaborate.CorePlus.Row (rebuild, xnf)
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
-import Stella.Compiler.Elaborate.CorePlus.Term (Region, XDecisionTree, XExpr, freeVarsOf, termMetasUnderRegions)
-import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
+import Stella.Compiler.Elaborate.CorePlus.Term (XDecisionTree, XExpr, freeVarsOf)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..), freeRigids, metasOf)
-import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, TermBinding(..), lookupMeta, lookupTermMeta, substitute, substituteKind)
+import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, lookupMeta, substitute, substituteKind)
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView(..), KindView(..))
 import Stella.Compiler.TypedCore (Ident, JoinName, KindVar, Qualified, RowElemKind(..), RowKey, TyName, TyVar(..))
 import Stella.Compiler.TypedCore.Prim (functionTy, recordTy, variantTy)
@@ -100,9 +98,6 @@ usableIn scope handle = do
 -- | **Every join point the term jumps to must be one the scope may jump to.** A
 -- | term built outside an abstraction is visible inside it, and one that jumps
 -- | to a join point outside would carry the jump under the abstraction.
--- |
--- | **A term that depends on its region must stand in the one it was built
--- | in**, by `regionFits`.
 usableTermIn :: ScopeObject -> Handle -> Elab ExprObject
 usableTermIn scope handle = do
   object <- resolveExpr handle
@@ -110,38 +105,7 @@ usableTermIn scope handle = do
     Just id | id == scope.id || Set.member id scope.ancestors ->
       unless (joinsWithin scope object.term) (rejected (JoinOutOfScope handle))
     _ -> rejected (ScopeViolation handle)
-  regionFits scope.region handle object
   pure object
-
--- | Refuse a term that depends on the region it was built in where another
--- | region stands.
--- |
--- | **A cell is named by its key alone and means the innermost region's**, so a
--- | `readCell n` built in one handler's clause and placed in a clause of another
--- | handler holding an `n` would read the other's cell. A term depends on its
--- | region where it reads or writes a cell outside every handler owning cells
--- | it binds, or holds, outside those handlers' clauses, an unsolved term
--- | metavariable created in a region — a goal asked for there, which may be
--- | solved by one that does. A goal asked for in a clause of a handler inside
--- | the term is filled in that handler's region, which the term binds itself. Such a term stands only in the
--- | region it was built in. A term depending on none — pure, or one whose cells
--- | are all a handler's own inside it — stands anywhere its scope allows.
-regionFits :: Maybe Region -> Handle -> ExprObject -> Elab Unit
-regionFits region handle object = do
-  metas <- currentMetas
-  let
-    term = zonkExpr metas object.term
-    -- A metavariable is filled in the region it was created in, which the term
-    -- binds itself where that is a handler's inside it.
-    freeIn occurrence = case lookupTermMeta metas occurrence.meta of
-      Just (TermUnsolved info) -> case info.scope.region of
-        Just r -> not (Set.member r.var occurrence.bound)
-        Nothing -> false
-      _ -> false
-    depends =
-      not (Set.isEmpty (freeVarsOf term).cells)
-        || Array.any freeIn (termMetasUnderRegions term)
-  when (depends && map _.var object.region /= map _.var region) (rejected (RegionMismatch handle))
 
 -- | Whether every join point a term jumps to free is one the scope may jump to.
 joinsWithin :: ScopeObject -> XExpr Unit -> P.Boolean
@@ -164,7 +128,7 @@ issueTerm scope term claimed = do
   case checkKind env.session.kinding (kindingScopeOf scope) metas XKType zonked of
     Left fault -> break (KindingFailed fault)
     Right _ ->
-      issue (ExprObject { term, claimed: zonked, scope: kindingScopeOf scope, builtIn: Just scope.id, region: scope.region })
+      issue (ExprObject { term, claimed: zonked, scope: kindingScopeOf scope, builtIn: Just scope.id })
 
 -- | Issue a type built in the scope, once the kinding judgement admits it.
 built :: ScopeObject -> XType -> Elab Handle
@@ -213,7 +177,7 @@ constraintIn scope view = do
     Right _ -> pure constraint
 
 kindingScopeOf :: ScopeObject -> KindingScope
-kindingScopeOf scope = { kindVars: scope.context.kindVars, tyVars: scope.context.tyVars }
+kindingScopeOf scope = { kindVars: scope.context.kindVars, tyVars: scope.context.tyVars, regions: Map.keys scope.context.regions }
 
 -- | A kind view as a kind the scope can write.
 kindIn :: ScopeObject -> KindView -> Elab XKind
@@ -257,7 +221,7 @@ schemeAt scope name kinds = do
       | otherwise -> do
           metas <- currentMetas
           let
-            declared = { kindVars: Set.fromFoldable entry.scheme.kindVars, tyVars: Map.empty }
+            declared = { kindVars: Set.fromFoldable entry.scheme.kindVars, tyVars: Map.empty, regions: Set.empty }
           case checkKind env.session.kinding declared metas XKType (substitute metas entry.scheme.body) of
             Left fault -> break (KindingFailed fault)
             Right _ -> pure unit
@@ -304,7 +268,7 @@ mapChildren f = case _ of
     XRowTypeEntry key ty -> XRowTypeEntry key (f ty)
     XRowEffectEntry e args -> XRowEffectEntry e (map f args)
     XRowLabelledEffectEntry s e args -> XRowLabelledEffectEntry s e (map f args)
-    XRowRegionEntry var cells -> XRowRegionEntry (f var) (f cells)
+    XRowRegionEntry name -> XRowRegionEntry name
 
 -- | The immediate type children of a type, folded.
 foldChildren :: forall m. Monoid m => (XType -> m) -> XType -> m
@@ -324,7 +288,7 @@ foldChildren f = case _ of
     XRowTypeEntry _ ty -> f ty
     XRowEffectEntry _ args -> foldMap f args
     XRowLabelledEffectEntry _ _ args -> foldMap f args
-    XRowRegionEntry var cells -> f var <> f cells
+    XRowRegionEntry _ -> mempty
 
 -- | A child of the scope for a binder's body, with the context given, whose
 -- | terms may jump to the join points the scope's may, and which stands in no
@@ -351,15 +315,14 @@ treeChild scope context = childWith scope context scope.joins scope.tree
 caseRoot :: ScopeObject -> Elab ScopeObject
 caseRoot scope = do
   id <- freshScopeId
-  pure { id, ancestors: Set.insert scope.id scope.ancestors, context: scope.context, joins: scope.joins, tree: Just id, region: scope.region }
+  pure { id, ancestors: Set.insert scope.id scope.ancestors, context: scope.context, joins: scope.joins, tree: Just id }
 
 -- | A child of the scope with the context, the join points, and the decision tree
--- | given, standing in the scope's region of cells: a region is lexical, and
--- | only an operation clause of a handler owning one opens another.
+-- | given.
 childWith :: ScopeObject -> XContext -> Map JoinName JoinSignature -> Maybe ScopeId -> Elab ScopeObject
 childWith scope context joins tree = do
   id <- freshScopeId
-  pure { id, ancestors: Set.insert scope.id scope.ancestors, context, joins, tree, region: scope.region }
+  pure { id, ancestors: Set.insert scope.id scope.ancestors, context, joins, tree }
 
 -- | Whether what was built in the scope named is visible under a binder closed
 -- | in the scope given: built in the binder's own body scope, in the scope, or
@@ -683,7 +646,7 @@ issueTree scope caseId tree inferred = do
 rowAt :: BuildError -> Handle -> XType -> RowKey -> Elab { payload :: XType, rest :: XType }
 rowAt notARow handle row key = do
   env <- askEnv
-  case wellFormedKey env.session.kinding key (Just RowType) of
+  case wellFormedKey env.session.kinding Set.empty key (Just RowType) of
     Left fault -> rejected (IllKinded fault)
     Right _ -> pure unit
   metas <- currentMetas

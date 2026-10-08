@@ -37,7 +37,7 @@ import Stella.Compiler.Elaborate.CorePlus.Term (TermMetaVar)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError)
 import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError)
-import Stella.Compiler.TypedCore (EffName, Ident, JoinName, OpName, Qualified, RowKey, TyName, TyVar)
+import Stella.Compiler.TypedCore (EffName, Ident, JoinName, OpName, Qualified, RegionName, RowKey, TyName, TyVar)
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Generic.Rep (class Generic)
 import Data.Maybe (Maybe)
@@ -173,10 +173,6 @@ data Defect
   -- | An effect the kinding environment declares and the effect table does not
   -- | hold. The two are assembled from one signature.
   | EffectTableMismatch (Qualified EffName)
-  -- | A handler's answer type or residual row mentioning the region variable it
-  -- | binds. Both are given where the handler is opened, outside the region, so
-  -- | this is an invariant of the host broken.
-  | RegionEscapes TyVar
   -- | A kernel operation that reads where it stands, run with no frame: outside
   -- | any attempt. The host called it where it had no site to give.
   | NoFrame
@@ -299,9 +295,6 @@ data BuildError
   | OccurrenceOfAnotherCase Handle
   -- | A tree used in the tree of another `case`.
   | TreeOfAnotherCase Handle
-  -- | A term that reads or writes a cell of the region it was built in, or waits
-  -- | on a goal asked for there, placed where another region stands.
-  | RegionMismatch Handle
   -- | A name the constructor table does not hold, and the catalog does not call a
   -- | constructor.
   | UnknownConstructor (Qualified Ident)
@@ -337,15 +330,19 @@ data BuildError
   | DuplicateClause OpName
   | MissingClause OpName
   -- | A handler closed with another number of clause bodies than it was opened
-  -- | with, or of initial values than it has cells.
+  -- | with, or a `region` with another number of initial values than it has
+  -- | cells.
   | ClauseCount Handle P.Int P.Int
   | InitialValueCount Handle P.Int P.Int
   -- | A layout giving one key twice.
   | DuplicateCell RowKey
-  -- | A cell read or written in a scope standing in no region, or one the
-  -- | region does not hold.
+  -- | A cell read or written in a scope the region does not stand around, or one
+  -- | the region does not hold.
   | NoRegion Handle
   | CellAbsent RowKey
+  -- | A `region` whose body is claimed at a type mentioning the region, which
+  -- | would let a reference into the region outlive it.
+  | RegionEscapes RegionName
   -- | A binder closed in a scope other than the one it was opened in, or by the
   -- | operation that closes another sort of binder.
   | BinderMisuse Handle
@@ -355,8 +352,8 @@ data BuildError
   | EnclosesOpenBinder Handle
   -- | A row element whose payload is not of the sort its key admits.
   | EntryMismatch RowKey
-  -- | A region element. Only the handler owning a region introduces or removes
-  -- | one.
+  -- | A region element where an effect's is wanted: a `perform` and a handler
+  -- | name an effect, and a region is none.
   | RegionEntryForbidden
   -- | `KindAnyRow` given where a kind is asked for. It is evidence a row may
   -- | carry, and no kind.

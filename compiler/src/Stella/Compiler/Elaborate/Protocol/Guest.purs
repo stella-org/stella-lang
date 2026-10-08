@@ -267,7 +267,7 @@ types =
       , ctor "TagKey" [ string ]
       , ctor "PositionKey" [ int ]
       , ctor "EffectKey" [ name ]
-      , ctor "RegionKey" []
+      , ctor "RegionKey" [ string ]
       ]
   , simple "Literal"
       [ ctor "LitInt" [ int ]
@@ -279,7 +279,7 @@ types =
   , simple "PayloadView"
       [ ctor "TypePayload" [ handle ]
       , ctor "EffectPayload" [ name, list handle ]
-      , ctor "RegionPayload" [ handle, handle ]
+      , ctor "RegionPayload" [ string ]
       ]
   , simple "ConstraintView"
       [ ctor "LacksView" [ con "RowKey", handle ]
@@ -385,14 +385,15 @@ types =
           , handle
           , con "RowKey"
           , con "PayloadView"
-          , maybe (list (record [ Tuple "key" (con "RowKey"), Tuple "type" handle ]))
           , handle
           , handle
           , list (record [ Tuple "op" string, Tuple "full" boolean ])
           ]
-      , ctor "CloseHandle" [ handle, handle, handle, list handle, list handle ]
-      , ctor "ReadCell" [ handle, con "RowKey" ]
-      , ctor "WriteCell" [ handle, con "RowKey", handle ]
+      , ctor "CloseHandle" [ handle, handle, handle, list handle ]
+      , ctor "OpenRegion" [ handle, list (record [ Tuple "key" (con "RowKey"), Tuple "type" handle ]) ]
+      , ctor "CloseRegion" [ handle, handle, handle, list handle ]
+      , ctor "ReadCell" [ handle, handle, con "RowKey" ]
+      , ctor "WriteCell" [ handle, handle, con "RowKey", handle ]
       ]
   , simple "SolveRequest"
       [ ctor "FreshMetaType" [ handle, con "KindView" ]
@@ -479,6 +480,7 @@ types =
                   )
               ]
           ]
+      , ctor "RegionAnswer" [ record [ Tuple "binder" handle, Tuple "name" string, Tuple "bodyScope" handle ] ]
       ]
   , simple "GuestCommand"
       [ ctor "Kernel" [ con "KernelRequest" ]
@@ -589,6 +591,8 @@ operations =
   , op "perform" "HandlerRequest" "Perform" handleAnswer
   , op "openHandle" "HandlerRequest" "OpenHandle" (Just "HandlerAnswer")
   , op "closeHandle" "HandlerRequest" "CloseHandle" handleAnswer
+  , op "openRegion" "HandlerRequest" "OpenRegion" (Just "RegionAnswer")
+  , op "closeRegion" "HandlerRequest" "CloseRegion" handleAnswer
   , op "readCell" "HandlerRequest" "ReadCell" handleAnswer
   , op "writeCell" "HandlerRequest" "WriteCell" handleAnswer
   , op "freshMetaType" "SolveRequest" "FreshMetaType" handleAnswer
@@ -751,11 +755,9 @@ transactDecl = DeclNonRec unit
 
   handled = Handle unit (App unit (Var unit candidate) unitValue)
     { element: RowEffectEntry abortEffect []
-    , cells: Nothing
     , returnClause: { binder: result, ty: TVar a, body: committing }
     , opClauses: [ abandoning failedOp outside (maybeOf (TVar a)) (TyApp unit (Global unit (elab "Nothing") []) (TVar a)) ]
     }
-    []
 
   -- the candidate returned: the transaction committed, or failed as it closed
   committing = Let unit committed (con "GuestAnswer") (command (Global unit (elab "CommitTransaction") []))
@@ -783,10 +785,8 @@ synthesizerDecl = DeclNonRec unit
           ( Handle unit
               ( Handle unit (App unit (Var unit policy) (Var unit goal))
                   (endingWithGoal abortEffect failedOp (effectRow [ breachEffect, kernelEffect ]))
-                  []
               )
               (endingWithGoal breachEffect breachedOp kernelOnly)
-              []
           )
       )
   , attributes: []
@@ -799,7 +799,6 @@ synthesizerDecl = DeclNonRec unit
 
   endingWithGoal effect escapeOp outside =
     { element: RowEffectEntry effect []
-    , cells: Nothing
     , returnClause: { binder: Ident "result", ty: handle, body: Var unit (Ident "result") }
     , opClauses: [ abandoning escapeOp outside handle (Var unit goal) ]
     }

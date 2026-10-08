@@ -95,7 +95,7 @@ failure = EquationFailed site.origin (TypeNotEqual xInt xInt)
 
 -- | A goal at `Int`, created and queued, and the state holding it.
 asked :: Either P.String (Tuple TermMetaVar SolverState)
-asked = case runElabIn session (initialState (SessionId 0) 10) (createSynthesis site xInt (qualified "resolve") Nothing) of
+asked = case runElabIn session (initialState (SessionId 0) 10) (createSynthesis site xInt (qualified "resolve")) of
   Tuple (Done (Tuple _ target)) s -> Right (Tuple target s)
   Tuple other _ -> Left (show other)
 

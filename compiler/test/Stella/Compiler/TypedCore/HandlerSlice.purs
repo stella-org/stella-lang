@@ -7,9 +7,9 @@
 -- | | Value | What it holds |
 -- | | --- | --- |
 -- | | `twice` | two `perform`s of one operation, under a Lacks constraint |
--- | | `counter` | a handler owning a region of cells, whose `fast` clause reads and writes one (D36) |
+-- | | `counter` | a handler inside a region of cells, whose `fast` clause reads and writes one (D36) |
 -- | | `always0` | a handler whose clause is `full`, so it binds the continuation (D28) |
--- | | `twiceCounted` | the two brought together, and the one `handle` whose value a binding takes |
+-- | | `twiceCounted` | the two brought together, and the one `region` whose value a binding takes |
 -- |
 -- | The slice is carried through checking, translation, and lowering, and what
 -- | each stage makes of it is written out where that stage is tested.
@@ -31,7 +31,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore (Constraint(..), Decl(..), EffName(..), Expr(..), Handler, Ident(..), Kind(..), Layout, Literal(..), Module, ModuleName(..), OpClause(..), OpName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyVar(..), Type(..), TypeScheme, monoScheme)
+import Stella.Compiler.TypedCore (Cell, Constraint(..), DecisionTree(..), Decl(..), EffName(..), Expr(..), Handler, Ident(..), Kind(..), KindError(..), Literal(..), Module, ModuleName(..), OpClause(..), OpName(..), Qualified(..), RegionName(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyVar(..), Type(..), TypeScheme, monoScheme)
 import Stella.Compiler.TypedCore.Check (CheckError(..))
 import Stella.Compiler.TypedCore.Declare (DeclError(..), DeclFailure, declare)
 import Stella.Compiler.TypedCore.Prim (fn, intTy, primSignature, unitCtor, unitTy)
@@ -40,7 +40,7 @@ import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
 import Test.Stella.Compiler.TypedCore.VerticalSlice (intModule)
 import Test.Spec (Spec, describe, it)
-import Test.Spec.Assertions (shouldEqual)
+import Test.Spec.Assertions (fail, shouldEqual)
 
 -- Names -----------------------------------------------------------------------
 
@@ -96,29 +96,25 @@ rowVar = TVar (TyVar "e")
 tyVarA :: Type
 tyVarA = TVar (TyVar "a")
 
--- | `r`, the region variable the `cells` of `counter` binds.
-regionVar :: TyVar
-regionVar = TyVar "r"
+-- | `r`, the name of the region `counter` opens.
+regionName :: RegionName
+regionName = RegionName "r"
 
 -- | `( Counter | e )`
 counterRow :: Type
 counterRow = TRowExtend (RowEffectEntry counterEff []) rowVar
 
--- | `( n : Int )`, the layout of the region as a row.
-layoutRow :: Type
-layoutRow = TRowExtend (RowTypeEntry cellKey int) TRowEmpty
-
--- | `( region r ( n : Int ) | e )`, the row the operation clauses of a handler
--- | owning a region stand at. The handled computation and the return clause
--- | stand at `e`, which is what keeps a cell out of the answer (D36).
+-- | `( region r | e )`, the row everything inside the region stands at: the
+-- | handled computation, and the clauses and the return clause of the handler.
 clauseRow :: Type
-clauseRow = TRowExtend (RowRegionEntry (TVar regionVar) layoutRow) rowVar
+clauseRow = TRowExtend (RowRegionEntry regionName) rowVar
+
+-- | `( region r )`, what the thunk is widened by.
+regionAlone :: Type
+regionAlone = TRowExtend (RowRegionEntry regionName) TRowEmpty
 
 counterLacks :: Constraint
 counterLacks = Lacks counterKey rowVar
-
-regionLacks :: Constraint
-regionLacks = Lacks RegionKey rowVar
 
 -- The module ------------------------------------------------------------------
 
@@ -189,19 +185,17 @@ added row x y =
 
 -- counter ---------------------------------------------------------------------
 
--- | `forall (e : Row Effect). forall (a : Type). Counter ∉ e => RegionKey ∉ e =>`
+-- | `forall (e : Row Effect). forall (a : Type). Counter ∉ e =>`
 -- | `( Unit -{ ( Counter | e ) }-> a ) -{ e }-> a`
 -- |
--- | `RegionKey ∉ e` is what makes `( region r ι | e )` sharp. A handler
--- | polymorphic in its residual row cannot derive it, so it assumes it, and the
--- | constraint is what rejects a region opened inside another's clause (D36).
+-- | The scheme says nothing of regions. The region `counter` opens is bound in
+-- | its own body, so no row of the caller's can hold it, and `counter` applies
+-- | wherever its residual row allows, inside another region included (D36).
 counterScheme :: TypeScheme
 counterScheme = monoScheme
   ( TForall (TyVar "e") (KRow RowEffect)
       ( TForall (TyVar "a") KType
-          ( TConstrained counterLacks
-              (TConstrained regionLacks (fn (fn unit' counterRow tyVarA) rowVar tyVarA))
-          )
+          (TConstrained counterLacks (fn (fn unit' counterRow tyVarA) rowVar tyVarA))
       )
   )
 
@@ -217,35 +211,37 @@ counterDeclOf initial = DeclNonRec 3
   }
 
 -- | The initial value as an application, which is what puts a binding ahead of
--- | the `handle` it belongs to.
+-- | the `region` it belongs to.
 seededInitial :: Expr P.Int
 seededInitial = added rowVar (Lit 0 (LitInt 1)) (Lit 0 (LitInt 2))
 
+-- | `region [r] ( n : Int ) @ ( initial ) in handle (openEff [( region r )] thunk)
+-- | () with …`. The thunk's row does not hold the region, which is opened inside
+-- | `counter`, so it is widened to the row the handled computation stands at.
 counterValue :: Expr P.Int -> Expr P.Int
 counterValue initial =
   TyLam 0 (TyVar "e") (KRow RowEffect)
     $ TyLam 0 (TyVar "a") KType
     $ ConstraintLam 0 counterLacks
-    $ ConstraintLam 0 regionLacks
     $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
-    $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
-        (counterHandler (Just cellLayout))
-        [ initial ]
+    $ Region 0 regionName cellLayout [ initial ]
+    $ Handle 0
+        (App 0 (OpenEff 0 regionAlone (Var 0 (Ident "thunk"))) (Global 0 unitCtor []))
+        counterHandler
 
--- | `cells [r] ( n : Int )`. The layout is a written sequence and therefore
--- | closed, which is what lets one initial value be given per key.
-cellLayout :: Layout
-cellLayout = { var: regionVar, cells: [ { key: cellKey, ty: int } ] }
+-- | `( n : Int )`. The layout is a written sequence and therefore closed, which
+-- | is what lets one initial value be given per key.
+cellLayout :: P.Array Cell
+cellLayout = [ { key: cellKey, ty: int } ]
 
 -- | The handler of `counter`: a `fast` clause that hands back the count and
 -- | leaves the cell one higher.
 -- |
 -- | A `fast` clause binds no continuation and its body has the type the
 -- | operation resumes with, so handling an operation captures nothing (D28).
-counterHandler :: Maybe Layout -> Handler P.Int
-counterHandler cells =
+counterHandler :: Handler P.Int
+counterHandler =
   { element: RowEffectEntry counterEff []
-  , cells
   , returnClause: { binder: Ident "x", ty: tyVarA, body: Var 0 (Ident "x") }
   , opClauses:
       [ FastClause
@@ -253,9 +249,9 @@ counterHandler cells =
           , tyBinders: []
           , argBinder: { name: Ident "u", ty: unit' }
           , body:
-              Let 0 (Ident "v") int (ReadCell 0 cellKey)
+              Let 0 (Ident "v") int (ReadCell 0 regionName cellKey)
                 $ Let 0 (Ident "w") unit'
-                    (WriteCell 0 cellKey (added clauseRow (Var 0 (Ident "v")) (Lit 0 (LitInt 1))))
+                    (WriteCell 0 regionName cellKey (added clauseRow (Var 0 (Ident "v")) (Lit 0 (LitInt 1))))
                 $ Var 0 (Ident "v")
           }
       ]
@@ -287,7 +283,6 @@ always0Decl = DeclNonRec 4
         $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
         $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
             { element: RowEffectEntry counterEff []
-            , cells: Nothing
             , returnClause: { binder: Ident "x", ty: tyVarA, body: Var 0 (Ident "x") }
             , opClauses:
                 [ FullClause
@@ -299,23 +294,22 @@ always0Decl = DeclNonRec 4
                     }
                 ]
             }
-            []
   , attributes: []
   }
 
 -- twiceCounted ----------------------------------------------------------------
 
--- | `forall (e : Row Effect). Counter ∉ e => RegionKey ∉ e => Unit -{ e }-> Int`
+-- | `forall (e : Row Effect). Counter ∉ e => Unit -{ e }-> Int`
 twiceCountedScheme :: TypeScheme
 twiceCountedScheme = monoScheme
   ( TForall (TyVar "e") (KRow RowEffect)
-      ( TConstrained counterLacks
-          (TConstrained regionLacks (fn unit' rowVar int))
-      )
+      (TConstrained counterLacks (fn unit' rowVar int))
   )
 
--- | The one value that binds a `handle` rather than standing at one: the count
--- | `twice` produces is what the rest of the body reads.
+-- | The one value that binds a `region` rather than standing at one: the count
+-- | `twice` produces is what the rest of the body reads. `twice` is instantiated
+-- | at a row holding the region, which its own row variable admits: a row
+-- | variable bound outside the region is known to lack its key.
 twiceCountedDecl :: Decl P.Int
 twiceCountedDecl = DeclNonRec 5
   { name: Ident "twiceCounted"
@@ -323,27 +317,25 @@ twiceCountedDecl = DeclNonRec 5
   , value:
       TyLam 0 (TyVar "e") (KRow RowEffect)
         $ ConstraintLam 0 counterLacks
-        $ ConstraintLam 0 regionLacks
         $ Lam 0 (Ident "u") unit'
         $ Let 0 (Ident "n") int
-            ( Handle 0
-                ( App 0
-                    (ConstraintApp 0 (TyApp 0 (Global 0 twiceName []) rowVar))
-                    (Global 0 unitCtor [])
+            ( Region 0 regionName cellLayout [ Lit 0 (LitInt 0) ]
+                ( Handle 0
+                    ( App 0
+                        (ConstraintApp 0 (TyApp 0 (Global 0 twiceName []) clauseRow))
+                        (Global 0 unitCtor [])
+                    )
+                    (countingHandler int)
                 )
-                (countingHandler int)
-                [ Lit 0 (LitInt 0) ]
             )
         $ Var 0 (Ident "n")
   , attributes: []
   }
 
--- | The handler of `counter` at an answer type of its own. A handler owning a
--- | region is written the same way wherever it stands.
+-- | The handler of `counter` at an answer type of its own.
 countingHandler :: Type -> Handler P.Int
 countingHandler answer =
-  (counterHandler (Just cellLayout))
-    { returnClause = { binder: Ident "x", ty: answer, body: Var 0 (Ident "x") } }
+  counterHandler { returnClause = { binder: Ident "x", ty: answer, body: Var 0 (Ident "x") } }
 
 -- Running the checker ---------------------------------------------------------
 
@@ -364,36 +356,10 @@ valueScheme name = case checkedSignature handlerSlice of
 
 -- Mutations -------------------------------------------------------------------
 
--- | `counter` with `RegionKey ∉ e` dropped from its scheme and its value. The
--- | premise is not derivable of a row variable, so the region it opens is not
--- | known to be the only one.
-withoutRegionLacks :: Module P.Int
-withoutRegionLacks = sliceWith
-  ( DeclNonRec 3
-      { name: Ident "counter"
-      , scheme: monoScheme
-          ( TForall (TyVar "e") (KRow RowEffect)
-              ( TForall (TyVar "a") KType
-                  (TConstrained counterLacks (fn (fn unit' counterRow tyVarA) rowVar tyVarA))
-              )
-          )
-      , value:
-          TyLam 0 (TyVar "e") (KRow RowEffect)
-            $ TyLam 0 (TyVar "a") KType
-            $ ConstraintLam 0 counterLacks
-            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
-            $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
-                (counterHandler (Just cellLayout))
-                [ Lit 0 (LitInt 0) ]
-      , attributes: []
-      }
-  )
-
--- | `counter` with its region dropped and its clause left as it was. A cell
--- | stands in the row the operation clauses are typed at, and without a region
--- | there is none to name.
-withoutCells :: Module P.Int
-withoutCells = sliceWith
+-- | `counter` with its `region` dropped and its clause left as it was. The
+-- | clause names a region no binder in scope opens.
+withoutRegion :: Module P.Int
+withoutRegion = sliceWith
   ( DeclNonRec 3
       { name: Ident "counter"
       , scheme: counterScheme
@@ -401,21 +367,113 @@ withoutCells = sliceWith
           TyLam 0 (TyVar "e") (KRow RowEffect)
             $ TyLam 0 (TyVar "a") KType
             $ ConstraintLam 0 counterLacks
-            $ ConstraintLam 0 regionLacks
             $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
             $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
-                (counterHandler Nothing)
-                []
+                counterHandler
       , attributes: []
       }
   )
+
+-- | `counter` with the thunk not widened by the region: the handled computation
+-- | stands at a row the thunk's arrow does not equal.
+withoutWidening :: Module P.Int
+withoutWidening = sliceWith
+  ( DeclNonRec 3
+      { name: Ident "counter"
+      , scheme: counterScheme
+      , value:
+          TyLam 0 (TyVar "e") (KRow RowEffect)
+            $ TyLam 0 (TyVar "a") KType
+            $ ConstraintLam 0 counterLacks
+            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
+            $ Region 0 regionName cellLayout [ Lit 0 (LitInt 0) ]
+            $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
+                counterHandler
+      , attributes: []
+      }
+  )
+
+-- | A value whose own declaration opens a region and hands out a function over
+-- | its cell: the function's arrow carries the region, which may not outlive it.
+withEscape :: Module P.Int
+withEscape = sliceWith
+  ( DeclNonRec 3
+      { name: Ident "counter"
+      , scheme: counterScheme
+      , value:
+          TyLam 0 (TyVar "e") (KRow RowEffect)
+            $ TyLam 0 (TyVar "a") KType
+            $ ConstraintLam 0 counterLacks
+            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
+            $ Case 0
+                [ Region 0 regionName cellLayout [ Lit 0 (LitInt 0) ]
+                    (Lam 0 (Ident "y") unit' (ReadCell 0 regionName cellKey))
+                ]
+            $ Leaf (Var 0 (Ident "thunk"))
+      , attributes: []
+      }
+  )
+
+-- | `counter` with a second region of the same name opened inside the first.
+withShadowingRegion :: Module P.Int
+withShadowingRegion = sliceWith
+  ( DeclNonRec 3
+      { name: Ident "counter"
+      , scheme: counterScheme
+      , value:
+          TyLam 0 (TyVar "e") (KRow RowEffect)
+            $ TyLam 0 (TyVar "a") KType
+            $ ConstraintLam 0 counterLacks
+            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
+            $ Region 0 regionName cellLayout [ Lit 0 (LitInt 0) ]
+            $ Region 0 regionName cellLayout [ Lit 0 (LitInt 0) ]
+            $ Handle 0
+                (App 0 (OpenEff 0 regionAlone (Var 0 (Ident "thunk"))) (Global 0 unitCtor []))
+                counterHandler
+      , attributes: []
+      }
+  )
+
+-- | A function bound inside the region, polymorphic in a row it extends with the
+-- | region. Its row variable is bound inside the region, so the region's key is
+-- | not known to be absent from it: the function must assume it, and is refused
+-- | where it does not.
+withInnerRowVariable :: P.Boolean -> Module P.Int
+withInnerRowVariable assumes = sliceWith
+  ( DeclNonRec 3
+      { name: Ident "counter"
+      , scheme: counterScheme
+      , value:
+          TyLam 0 (TyVar "e") (KRow RowEffect)
+            $ TyLam 0 (TyVar "a") KType
+            $ ConstraintLam 0 counterLacks
+            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
+            $ Region 0 regionName cellLayout [ Lit 0 (LitInt 0) ]
+            $ Let 0 (Ident "peek") peekType peek
+            $ Handle 0
+                (App 0 (OpenEff 0 regionAlone (Var 0 (Ident "thunk"))) (Global 0 unitCtor []))
+                counterHandler
+      , attributes: []
+      }
+  )
+  where
+  innerRow = TRowExtend (RowRegionEntry regionName) (TVar (TyVar "t"))
+  innerLacks = Lacks (RegionKey regionName) (TVar (TyVar "t"))
+  peekArrow = fn unit' innerRow int
+  peekType =
+    TForall (TyVar "t") (KRow RowEffect)
+      (if assumes then TConstrained innerLacks peekArrow else peekArrow)
+  peekBody = Lam 0 (Ident "q") unit' (ReadCell 0 regionName cellKey)
+  peek =
+    TyLam 0 (TyVar "t") (KRow RowEffect)
+      (if assumes then ConstraintLam 0 innerLacks peekBody else peekBody)
 
 -- The specification -----------------------------------------------------------
 
 spec :: Spec Unit
 spec = describe "Stella.Compiler.TypedCore.HandlerSlice" do
   describe "the slice" do
-    it "passes declaration checking, handlers and cells together" do
+    it "passes declaration checking, handlers and regions together" do
       verdict handlerSlice `shouldEqual` Right unit
 
     it "passes it with the cell seeded by an application" do
@@ -424,13 +482,27 @@ spec = describe "Stella.Compiler.TypedCore.HandlerSlice" do
     it "records the performing function at the row its operation stands in" do
       valueScheme twiceName `shouldEqual` Just twiceScheme
 
-    it "records each handler as a function of a thunk, its effect removed" do
+    it "records each handler as a function of a thunk, its effect removed and no region in its type" do
       valueScheme counterName `shouldEqual` Just counterScheme
       valueScheme always0Name `shouldEqual` Just always0Scheme
 
   describe "mutations of it" do
-    it "refuses a handler owning a region whose residual row may hold one" do
-      verdict withoutRegionLacks `shouldEqual` Left (IllTyped (NotEntailed regionLacks))
+    it "refuses a readCell naming a region no binder in scope opens" do
+      verdict withoutRegion `shouldEqual` Left (IllTyped (IllKindedType (UnboundRegion regionName)))
 
-    it "refuses a readCell where the handler declares no region" do
-      verdict withoutCells `shouldEqual` Left (IllTyped (NoCellAt cellKey rowVar))
+    it "refuses a handled computation whose row lacks the region it stands in" do
+      case verdict withoutWidening of
+        Left (IllTyped (RowMismatch _ _)) -> pure unit
+        other -> fail ("expected a row mismatch: " <> show other)
+
+    it "refuses a function over a cell outliving its region" do
+      verdict withEscape `shouldEqual` Left (IllTyped (RegionEscapes regionName))
+
+    it "refuses a region binder of a name already bound" do
+      verdict withShadowingRegion `shouldEqual` Left (IllTyped (RegionBinderShadows regionName))
+
+    it "refuses a row variable bound inside the region extended by it, and accepts one assumed to lack it" do
+      case verdict (withInnerRowVariable false) of
+        Left (IllTyped (IllKindedType (NotSharp (RegionKey name) _))) -> name `shouldEqual` regionName
+        other -> fail ("expected the row to be refused: " <> show other)
+      verdict (withInnerRowVariable true) `shouldEqual` Right unit

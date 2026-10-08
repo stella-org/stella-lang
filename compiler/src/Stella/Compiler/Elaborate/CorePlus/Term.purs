@@ -19,7 +19,6 @@ module Stella.Compiler.Elaborate.CorePlus.Term
   , XBinding
   , XTyBinder
   , XHandler
-  , XLayout
   , XCell
   , XReturnClause
   , XOpClause(..)
@@ -29,7 +28,6 @@ module Stella.Compiler.Elaborate.CorePlus.Term
   , XKeyBranch
   , Residue(..)
   , FreeVars
-  , Region
   , MetasOfTerm
   , xExprAnnotation
   , fromCoreExpr
@@ -44,15 +42,14 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind(..), fromCoreKind, kindMetasOf, kindVarsOf)
-import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..), fromCore, fromCoreConstraint, fromCoreEntry, freeKindVars, freeRigids, kindMetasOfType, metasOf)
-import Stella.Compiler.TypedCore (Constraint(..), DecisionTree(..), Expr(..), Ident, JoinName, Kind(..), KindVar, Literal, OpClause(..), OpName, Occurrence, Qualified, RowEntry(..), RowKey, TyVar, Type(..))
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..), fromCore, fromCoreConstraint, fromCoreEntry, freeKindVars, freeRegions, freeRigids, kindMetasOfType, metasOf)
+import Stella.Compiler.TypedCore (Constraint(..), DecisionTree(..), Expr(..), Ident, JoinName, Kind(..), KindVar, Literal, OpClause(..), OpName, Occurrence, Qualified, RegionName, RowEntry(..), RowKey, TyVar, Type(..))
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
 import Data.Foldable (foldMap)
 import Data.Generic.Rep (class Generic)
-import Data.Map (Map)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
@@ -89,9 +86,10 @@ data XExpr a
   | EVariantWeaken a RowKey XType (XExpr a)
   | EVariantAbsurd a XType (XExpr a)
   | EPerform a RowKey OpName (P.Array XType) (XExpr a)
-  | EHandle a (XExpr a) (XHandler a) (P.Array (XExpr a))
-  | EReadCell a RowKey
-  | EWriteCell a RowKey (XExpr a)
+  | EHandle a (XExpr a) (XHandler a)
+  | ERegion a RegionName (P.Array XCell) (P.Array (XExpr a)) (XExpr a)
+  | EReadCell a RegionName RowKey
+  | EWriteCell a RegionName RowKey (XExpr a)
   | EOpenEff a XType (XExpr a)
   -- | `?m`, a term to be supplied later.
   | ETermMeta a TermMetaVar
@@ -116,14 +114,8 @@ type XTyBinder =
 
 type XHandler a =
   { element :: XRowEntry
-  , cells :: Maybe XLayout
   , returnClause :: XReturnClause a
   , opClauses :: P.Array (XOpClause a)
-  }
-
-type XLayout =
-  { var :: TyVar
-  , cells :: P.Array XCell
   }
 
 type XCell =
@@ -190,24 +182,14 @@ data Residue a
 -- |
 -- | `joins` are the join points a `jump` names that no `letjoin` inside the term
 -- | binds. Kind variables have no binder in a term (D3), so every one is free.
--- | `cells` are the keys a `readCell` or `writeCell` names outside every
--- | operation clause of a handler owning a region: the cells of the region the
--- | term stands in.
+-- | `regions` are the region names a `readCell`, a `writeCell`, or a type names
+-- | that no `region` inside the term binds.
 type FreeVars =
   { values :: Set Ident
   , types :: Set TyVar
   , kinds :: Set KindVar
   , joins :: Set JoinName
-  , cells :: Set RowKey
-  }
-
--- | The region of cells a handler opens, as the place a term stands in has it:
--- | the region variable, and the layout, each cell's key with the type it
--- | holds. `readCell` and `writeCell` name a cell by its key alone, reaching the
--- | innermost region, so where a term stands decides what its cells are.
-type Region =
-  { var :: TyVar
-  , cells :: Map RowKey XType
+  , regions :: Set RegionName
   }
 
 -- | The metavariables a term mentions, one set per class.
@@ -243,9 +225,10 @@ xExprAnnotation = case _ of
   EVariantWeaken a _ _ _ -> a
   EVariantAbsurd a _ _ -> a
   EPerform a _ _ _ _ -> a
-  EHandle a _ _ _ -> a
-  EReadCell a _ -> a
-  EWriteCell a _ _ -> a
+  EHandle a _ _ -> a
+  ERegion a _ _ _ _ -> a
+  EReadCell a _ _ -> a
+  EWriteCell a _ _ _ -> a
   EOpenEff a _ _ -> a
   ETermMeta a _ -> a
   EHole a _ -> a
@@ -278,10 +261,11 @@ fromCoreExpr = case _ of
   VariantWeaken a key ty e -> EVariantWeaken a key (fromCore ty) (fromCoreExpr e)
   VariantAbsurd a ty e -> EVariantAbsurd a (fromCore ty) (fromCoreExpr e)
   Perform a key op tyArgs arg -> EPerform a key op (map fromCore tyArgs) (fromCoreExpr arg)
-  Handle a body handler initial ->
-    EHandle a (fromCoreExpr body) (fromCoreHandler handler) (map fromCoreExpr initial)
-  ReadCell a key -> EReadCell a key
-  WriteCell a key value -> EWriteCell a key (fromCoreExpr value)
+  Handle a body handler -> EHandle a (fromCoreExpr body) (fromCoreHandler handler)
+  Region a name cells initial body ->
+    ERegion a name (map (\c -> { key: c.key, ty: fromCore c.ty }) cells) (map fromCoreExpr initial) (fromCoreExpr body)
+  ReadCell a name key -> EReadCell a name key
+  WriteCell a name key value -> EWriteCell a name key (fromCoreExpr value)
   OpenEff a row e -> EOpenEff a (fromCore row) (fromCoreExpr e)
   where
   param p = { name: p.name, ty: fromCore p.ty }
@@ -289,7 +273,6 @@ fromCoreExpr = case _ of
 
   fromCoreHandler h =
     { element: fromCoreEntry h.element
-    , cells: map (\l -> { var: l.var, cells: map (\c -> { key: c.key, ty: fromCore c.ty }) l.cells }) h.cells
     , returnClause: { binder: h.returnClause.binder, ty: fromCore h.returnClause.ty, body: fromCoreExpr h.returnClause.body }
     , opClauses: map clause h.opClauses
     }
@@ -381,9 +364,14 @@ convExpr = case _ of
   EVariantWeaken a key ty e -> VariantWeaken a key <$> convType a ty <*> convExpr e
   EVariantAbsurd a ty e -> VariantAbsurd a <$> convType a ty <*> convExpr e
   EPerform a key op tyArgs arg -> Perform a key op <$> traverse (convType a) tyArgs <*> convExpr arg
-  EHandle a body handler initial -> convHandle a body handler initial
-  EReadCell a key -> pure (ReadCell a key)
-  EWriteCell a key value -> WriteCell a key <$> convExpr value
+  EHandle a body handler -> convHandle a body handler
+  ERegion a name cells initial body ->
+    Region a name
+      <$> traverse (\c -> { key: c.key, ty: _ } <$> convType a c.ty) cells
+      <*> traverse convExpr initial
+      <*> convExpr body
+  EReadCell a name key -> pure (ReadCell a name key)
+  EWriteCell a name key value -> WriteCell a name key <$> convExpr value
   EOpenEff a row e -> OpenEff a <$> convType a row <*> convExpr e
   ETermMeta a m -> residue (ResidualTermMeta a m)
   EHole a ty -> convType a ty *> residue (ResidualHole a ty)
@@ -394,22 +382,18 @@ convParam at p = { name: p.name, ty: _ } <$> convType at p.ty
 convBinding :: forall a. a -> XBinding a -> Conv (Residue a) { name :: Ident, ty :: Type, value :: Expr a }
 convBinding at b = { name: b.name, ty: _, value: _ } <$> convType at b.ty <*> convExpr b.value
 
--- | The element and the layout are the node's own types, so they come before the
--- | handled computation; the clauses are subterms of the handler and come after
--- | it, and the initial values last, as the constructor writes them.
-convHandle :: forall a. a -> XExpr a -> XHandler a -> P.Array (XExpr a) -> Conv (Residue a) (Expr a)
-convHandle at handled h initial =
-  ( \element cells computation ret opClauses initialValues ->
-      Handle at computation { element, cells, returnClause: ret, opClauses } initialValues
+-- | The element is the node's own type, so it comes before the handled
+-- | computation; the clauses are subterms of the handler and come after it.
+convHandle :: forall a. a -> XExpr a -> XHandler a -> Conv (Residue a) (Expr a)
+convHandle at handled h =
+  ( \element computation ret opClauses ->
+      Handle at computation { element, returnClause: ret, opClauses }
   )
     <$> convEntry at h.element
-    <*> traverse layout h.cells
     <*> convExpr handled
     <*> returnClause h.returnClause
     <*> traverse clause h.opClauses
-    <*> traverse convExpr initial
   where
-  layout l = { var: l.var, cells: _ } <$> traverse (\c -> { key: c.key, ty: _ } <$> convType at c.ty) l.cells
 
   returnClause r = { binder: r.binder, ty: _, body: _ } <$> convType at r.ty <*> convExpr r.body
 
@@ -457,7 +441,7 @@ convEntry at = case _ of
   XRowTypeEntry k ty -> RowTypeEntry k <$> convType at ty
   XRowEffectEntry e args -> RowEffectEntry e <$> traverse (convType at) args
   XRowLabelledEffectEntry s e args -> RowLabelledEffectEntry s e <$> traverse (convType at) args
-  XRowRegionEntry var cells -> RowRegionEntry <$> convType at var <*> convType at cells
+  XRowRegionEntry name -> pure (RowRegionEntry name)
 
 convConstraint :: forall a. a -> XConstraint -> Conv (Residue a) Constraint
 convConstraint at = case _ of
@@ -479,10 +463,10 @@ convKind at = case _ of
 -- | Value binders are `λ`, `let` (over its body), `letrec` (over every
 -- | right-hand side and the body), a decision tree's `bind` (over the tree
 -- | beneath it), and a handler clause's argument and continuation, and its
--- | return binder. Type binders are `Λ`, a `forall` inside a type, a handler's
--- | region variable (over its operation clauses, annotations included), and a
--- | clause's own type parameters. A `letjoin` binds its join point over both its
--- | definition and its body, and its parameters over the definition alone.
+-- | return binder. Type binders are `Λ`, a `forall` inside a type, and a clause's
+-- | own type parameters. A `region` binds its name over its body, and not over
+-- | its layout or its initial values. A `letjoin` binds its join point over both
+-- | its definition and its body, and its parameters over the definition alone.
 freeVarsOf :: forall a. XExpr a -> FreeVars
 freeVarsOf = case _ of
   EVar _ x -> valueVar x
@@ -517,9 +501,13 @@ freeVarsOf = case _ of
   EVariantWeaken _ _ ty e -> typeVars ty <> freeVarsOf e
   EVariantAbsurd _ ty e -> typeVars ty <> freeVarsOf e
   EPerform _ _ _ tyArgs arg -> foldMap typeVars tyArgs <> freeVarsOf arg
-  EHandle _ body h initial -> freeVarsOf body <> handlerVars h <> foldMap freeVarsOf initial
-  EReadCell _ k -> none { cells = Set.singleton k }
-  EWriteCell _ k v -> none { cells = Set.singleton k } <> freeVarsOf v
+  EHandle _ body h -> freeVarsOf body <> handlerVars h
+  ERegion _ name cells initial body ->
+    foldMap (typeVars <<< _.ty) cells
+      <> foldMap freeVarsOf initial
+      <> withoutRegion name (freeVarsOf body)
+  EReadCell _ name _ -> regionVar name
+  EWriteCell _ name _ v -> regionVar name <> freeVarsOf v
   EOpenEff _ row e -> typeVars row <> freeVarsOf e
   ETermMeta _ _ -> none
   EHole _ ty -> typeVars ty
@@ -534,16 +522,9 @@ freeVarsOf = case _ of
 
   handlerVars h =
     entryVars h.element
-      <> foldMap (\l -> foldMap (typeVars <<< _.ty) l.cells) h.cells
       <> typeVars h.returnClause.ty
       <> withoutValue h.returnClause.binder (freeVarsOf h.returnClause.body)
-      <> regionScoped (foldMap clauseVars h.opClauses)
-    where
-    -- A handler owning a region binds its variable in the operation clauses,
-    -- and every cell they read or write is one of its own.
-    regionScoped = case h.cells of
-      Just l -> withoutType l.var >>> _ { cells = Set.empty }
-      Nothing -> identity
+      <> foldMap clauseVars h.opClauses
 
   clauseVars = case _ of
     XFullClause c ->
@@ -562,7 +543,13 @@ freeVarsOf = case _ of
   constraintVars c = typeVars (XConstrained c XRowEmpty)
 
 none :: FreeVars
-none = { values: Set.empty, types: Set.empty, kinds: Set.empty, joins: Set.empty, cells: Set.empty }
+none = { values: Set.empty, types: Set.empty, kinds: Set.empty, joins: Set.empty, regions: Set.empty }
+
+regionVar :: RegionName -> FreeVars
+regionVar name = none { regions = Set.singleton name }
+
+withoutRegion :: RegionName -> FreeVars -> FreeVars
+withoutRegion name fv = fv { regions = Set.delete name fv.regions }
 
 valueVar :: Ident -> FreeVars
 valueVar x = none { values = Set.singleton x }
@@ -574,7 +561,7 @@ kindsOf :: XKind -> FreeVars
 kindsOf k = none { kinds = kindVarsOf k }
 
 typeVars :: XType -> FreeVars
-typeVars ty = none { types = freeRigids ty, kinds = freeKindVars ty }
+typeVars ty = none { types = freeRigids ty, kinds = freeKindVars ty, regions = freeRegions ty }
 
 withoutValue :: Ident -> FreeVars -> FreeVars
 withoutValue x fv = fv { values = Set.delete x fv.values }
@@ -619,9 +606,11 @@ metasOfTerm = case _ of
   EVariantWeaken _ _ ty e -> typeMetas ty <> metasOfTerm e
   EVariantAbsurd _ ty e -> typeMetas ty <> metasOfTerm e
   EPerform _ _ _ tyArgs arg -> foldMap typeMetas tyArgs <> metasOfTerm arg
-  EHandle _ body h initial -> metasOfTerm body <> handlerMetas h <> foldMap metasOfTerm initial
-  EReadCell _ _ -> noMetas
-  EWriteCell _ _ v -> metasOfTerm v
+  EHandle _ body h -> metasOfTerm body <> handlerMetas h
+  ERegion _ _ cells initial body ->
+    foldMap (typeMetas <<< _.ty) cells <> foldMap metasOfTerm initial <> metasOfTerm body
+  EReadCell _ _ _ -> noMetas
+  EWriteCell _ _ _ v -> metasOfTerm v
   EOpenEff _ row e -> typeMetas row <> metasOfTerm e
   ETermMeta _ m -> noMetas { terms = Set.singleton m }
   EHole _ ty -> typeMetas ty
@@ -636,7 +625,6 @@ metasOfTerm = case _ of
 
   handlerMetas h =
     typeMetas (XRowExtend h.element XRowEmpty)
-      <> foldMap (\l -> foldMap (typeMetas <<< _.ty) l.cells) h.cells
       <> typeMetas h.returnClause.ty
       <> metasOfTerm h.returnClause.body
       <> foldMap clauseMetas h.opClauses
@@ -650,14 +638,13 @@ metasOfTerm = case _ of
     XFastClause c ->
       foldMap (kindMetas <<< _.kind) c.tyBinders <> typeMetas c.argBinder.ty <> metasOfTerm c.body
 
--- | The term metavariables a term holds, each with the regions bound around it:
--- | the region variables of the handlers owning cells whose operation clauses
--- | it stands in, inside the term.
+-- | The term metavariables a term holds, each with the region names bound around
+-- | it inside the term.
 -- |
--- | A metavariable standing in such a clause is filled in that handler's region,
--- | which the term binds itself; one standing in no such clause is filled in the
--- | region around the term.
-termMetasUnderRegions :: forall a. XExpr a -> P.Array { meta :: TermMetaVar, bound :: Set TyVar }
+-- | A metavariable may be filled with a term reading the cells of any region in
+-- | scope where it was created. Those of the regions the term binds around it
+-- | travel with the term; the rest must be in scope wherever the term stands.
+termMetasUnderRegions :: forall a. XExpr a -> P.Array { meta :: TermMetaVar, bound :: Set RegionName }
 termMetasUnderRegions = go Set.empty
   where
   go bound = case _ of
@@ -685,17 +672,14 @@ termMetasUnderRegions = go Set.empty
     EVariantWeaken _ _ _ e -> go bound e
     EVariantAbsurd _ _ e -> go bound e
     EPerform _ _ _ _ arg -> go bound arg
-    EHandle _ body h initial ->
+    EHandle _ body h ->
       go bound body
         <> go bound h.returnClause.body
-        <> foldMap (go (clauses h) <<< clauseBody) h.opClauses
-        <> foldMap (go bound) initial
-      where
-      clauses handler = case handler.cells of
-        Just l -> Set.insert l.var bound
-        Nothing -> bound
-    EReadCell _ _ -> []
-    EWriteCell _ _ v -> go bound v
+        <> foldMap (go bound <<< clauseBody) h.opClauses
+    ERegion _ name _ initial body ->
+      foldMap (go bound) initial <> go (Set.insert name bound) body
+    EReadCell _ _ _ -> []
+    EWriteCell _ _ _ v -> go bound v
     EOpenEff _ _ e -> go bound e
     ETermMeta _ m -> [ { meta: m, bound } ]
     EHole _ _ -> []

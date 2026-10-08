@@ -12,9 +12,9 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar(..), XKind(..))
-import Stella.Compiler.Elaborate.CorePlus.Term (FreeVars, Residue(..), TermMetaVar(..), XDecisionTree(..), XExpr(..), XOpClause(..), fromCoreExpr, freeVarsOf, metasOfTerm, toCoreExpr)
+import Stella.Compiler.Elaborate.CorePlus.Term (FreeVars, Residue(..), TermMetaVar(..), XDecisionTree(..), XExpr(..), fromCoreExpr, freeVarsOf, metasOfTerm, toCoreExpr)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XRowEntry(..), XType(..))
-import Stella.Compiler.TypedCore (Constraint(..), DecisionTree(..), EffName(..), Expr(..), Ident(..), JoinName(..), Kind(..), KindVar(..), Literal(..), ModuleName(..), OpClause(..), OpName(..), Occurrence(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyName(..), TyVar(..), Type(..))
+import Stella.Compiler.TypedCore (Constraint(..), DecisionTree(..), EffName(..), Expr(..), Ident(..), JoinName(..), Kind(..), KindVar(..), Literal(..), ModuleName(..), OpClause(..), OpName(..), Occurrence(..), Qualified(..), RegionName(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyName(..), TyVar(..), Type(..))
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
@@ -52,6 +52,9 @@ f = Ident "f"
 a :: TyVar
 a = TyVar "a"
 
+region :: RegionName
+region = RegionName "r"
+
 r :: TyVar
 r = TyVar "r"
 
@@ -73,7 +76,7 @@ coreTerm =
             ( Case 7 [ Lit 8 (LitInt 0) ]
                 ( SwitchLit (OccScrutinee 0)
                     [ { lit: LitInt 0, tree: Leaf (Jump 9 j [ Lit 10 (LitInt 1) ]) } ]
-                    (Bind x (OccScrutinee 0) (Leaf (Handle 11 (Var 12 x) handler [ Lit 13 (LitInt 0) ])))
+                    (Bind x (OccScrutinee 0) (Leaf (Region 11 region [ { key: keyN, ty: intTy } ] [ Lit 13 (LitInt 0) ] (Handle 16 (Var 12 x) handler))))
                 )
             )
         )
@@ -81,14 +84,13 @@ coreTerm =
   where
   handler =
     { element: RowEffectEntry counter []
-    , cells: Just { var: r, cells: [ { key: keyN, ty: intTy } ] }
     , returnClause: { binder: y, ty: intTy, body: Var 14 y }
     , opClauses:
         [ FastClause
             { op: OpName "next"
             , tyBinders: []
             , argBinder: { name: x, ty: TCon (Qualified prim (TyName "Unit")) [] }
-            , body: ReadCell 15 keyN
+            , body: ReadCell 15 region keyN
             }
         ]
     }
@@ -118,12 +120,11 @@ otherForms =
     )
 
 fullClause :: Expr P.Int
-fullClause = Handle 1 (Var 2 x) handler []
+fullClause = Handle 1 (Var 2 x) handler
   where
   handler =
     { element: RowLabelledEffectEntry (Symbol "cache") counter [ intTy ]
-    , cells: Nothing
-    , returnClause: { binder: y, ty: intTy, body: WriteCell 3 keyN (Var 4 y) }
+    , returnClause: { binder: y, ty: intTy, body: WriteCell 3 region keyN (Var 4 y) }
     , opClauses:
         [ FullClause
             { op: OpName "next"
@@ -136,7 +137,7 @@ fullClause = Handle 1 (Var 2 x) handler []
     }
 
 free :: FreeVars
-free = { values: Set.empty, types: Set.empty, kinds: Set.empty, joins: Set.empty, cells: Set.empty }
+free = { values: Set.empty, types: Set.empty, kinds: Set.empty, joins: Set.empty, regions: Set.empty }
 
 spec :: Spec Unit
 spec = describe "Elaborate.Term" do
@@ -165,11 +166,10 @@ spec = describe "Elaborate.Term" do
         tree = XBind x (OccScrutinee 0) (XLeaf (ETermMeta 3 (TermMetaVar 1)))
         handler =
           { element: XRowEffectEntry counter [ XMeta (MetaVar 1) ]
-          , cells: Nothing
           , returnClause: { binder: y, ty: xInt, body: EVar 4 y }
           , opClauses: []
           }
-        term = ECase 1 [ EHandle 2 (EVar 5 x) handler [] ] tree
+        term = ECase 1 [ EHandle 2 (EVar 5 x) handler ] tree
       toCoreExpr term `shouldEqual` Left
         (NonEmptyArray.cons' (ResidualTypeMeta 2 (MetaVar 1)) [ ResidualTermMeta 3 (TermMetaVar 1) ])
 
@@ -185,22 +185,29 @@ spec = describe "Elaborate.Term" do
       toCoreExpr (ETyApp 1 (ETermMeta 2 (TermMetaVar 0)) (XMeta (MetaVar 0))) `shouldEqual` Left
         (NonEmptyArray.cons' (ResidualTypeMeta 1 (MetaVar 0)) [ ResidualTermMeta 2 (TermMetaVar 0) ])
 
-    it "reports a handler's element before the computation, its clauses after it, and the initial values last" do
+    it "reports a handler's element before the computation, and its clauses after it" do
       let
         handler =
           { element: XRowEffectEntry counter [ XMeta (MetaVar 0) ]
-          , cells: Just { var: r, cells: [ { key: keyN, ty: XMeta (MetaVar 1) } ] }
           , returnClause: { binder: y, ty: XMeta (MetaVar 2), body: ETermMeta 3 (TermMetaVar 1) }
           , opClauses: []
           }
-        term = EHandle 1 (ETermMeta 2 (TermMetaVar 0)) handler [ ETermMeta 4 (TermMetaVar 2) ]
+        term = EHandle 1 (ETermMeta 2 (TermMetaVar 0)) handler
       toCoreExpr term `shouldEqual` Left
         ( NonEmptyArray.cons' (ResidualTypeMeta 1 (MetaVar 0))
-            [ ResidualTypeMeta 1 (MetaVar 1)
-            , ResidualTermMeta 2 (TermMetaVar 0)
+            [ ResidualTermMeta 2 (TermMetaVar 0)
             , ResidualTypeMeta 1 (MetaVar 2)
             , ResidualTermMeta 3 (TermMetaVar 1)
-            , ResidualTermMeta 4 (TermMetaVar 2)
+            ]
+        )
+
+    it "reports a region's layout first, its initial values next, and its body last" do
+      let
+        term = ERegion 1 region [ { key: keyN, ty: XMeta (MetaVar 1) } ] [ ETermMeta 4 (TermMetaVar 2) ] (ETermMeta 2 (TermMetaVar 0))
+      toCoreExpr term `shouldEqual` Left
+        ( NonEmptyArray.cons' (ResidualTypeMeta 1 (MetaVar 1))
+            [ ResidualTermMeta 4 (TermMetaVar 2)
+            , ResidualTermMeta 2 (TermMetaVar 0)
             ]
         )
 
@@ -231,27 +238,17 @@ spec = describe "Elaborate.Term" do
         term = ECase 1 [ EVar 2 y ] (XBind x (OccScrutinee 0) (XLeaf (EVar 3 x)))
       freeVarsOf term `shouldEqual` free { values = Set.singleton y }
 
-    it "takes a region variable over the operation clauses and not over the layout" do
+    it "takes a region name over the body and not over the layout or the initial values" do
       let
-        regionRow = XRowExtend (XRowRegionEntry (XVar r) XRowEmpty) XRowEmpty
-        handler cellTy =
-          { element: XRowEffectEntry counter []
-          , cells: Just { var: r, cells: [ { key: keyN, ty: cellTy } ] }
-          , returnClause: { binder: y, ty: xInt, body: EVar 4 y }
-          , opClauses:
-              [ XFullClause
-                  { op: OpName "next"
-                  , tyBinders: []
-                  , argBinder: { name: x, ty: xInt }
-                  , contBinder: { name: f, ty: regionRow }
-                  , body: EApp 5 (EVar 6 f) (EVar 7 x)
-                  }
-              ]
-          }
-      freeVarsOf (EHandle 1 (ELit 2 (LitInt 0)) (handler xInt) [])
+        inner = RegionName "inner"
+        outer = RegionName "outer"
+        opened cellTy initial = ERegion 1 inner [ { key: keyN, ty: cellTy } ] [ initial ] (EReadCell 2 inner keyN)
+      freeVarsOf (opened xInt (ELit 3 (LitInt 0)))
         `shouldEqual` free
-      freeVarsOf (EHandle 1 (ELit 2 (LitInt 0)) (handler (XVar r)) [])
-        `shouldEqual` free { types = Set.singleton r }
+      freeVarsOf (opened (XVar r) (EReadCell 3 outer keyN))
+        `shouldEqual` free { types = Set.singleton r, regions = Set.singleton outer }
+      freeVarsOf (opened xInt (EReadCell 3 inner keyN))
+        `shouldEqual` free { regions = Set.singleton inner }
 
     it "takes a type abstraction's binder over its body, and leaves every kind variable free" do
       let

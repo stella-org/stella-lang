@@ -388,7 +388,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       let
         -- `f` asks a synthesizer that fails; `g` states an equation the loop
         -- does not reach once it stops at `f`'s job; `h` states none
-        afterF = runAttempt primSession (createSynthesis (siteIn "f" 1) (XCon intTy []) refusingRef Nothing) (initialState (SessionId 0) 10)
+        afterF = runAttempt primSession (createSynthesis (siteIn "f" 1) (XCon intTy []) refusingRef) (initialState (SessionId 0) 10)
         afterG = stated "g" 2 "a" (snd afterF)
         registry = Map.singleton refusingRef (\_ -> F.throw [ TextPart "no" ])
         r = settleBodies (attemptJob primSession registry) (snd afterG) (map body [ Tuple "f" 1, Tuple "g" 2, Tuple "h" 3 ])

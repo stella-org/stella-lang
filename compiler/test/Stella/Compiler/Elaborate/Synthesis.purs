@@ -120,7 +120,7 @@ queued names = case runElabIn session start (Array.foldM ask [] names) of
   Tuple (Done goals) s -> Right (Tuple goals s)
   Tuple other _ -> Left (show other)
   where
-  ask acc name = createSynthesis site xInt (named name) Nothing <#> \(Tuple id target) -> Array.snoc acc { id, target }
+  ask acc name = createSynthesis site xInt (named name) <#> \(Tuple id target) -> Array.snoc acc { id, target }
 
 givenQueued :: P.Array P.String -> (P.Array { id :: PendingId, target :: TermMetaVar } -> SolverState -> Aff Unit) -> Aff Unit
 givenQueued names check = case queued names of
@@ -144,7 +144,7 @@ noJobs s = Map.isEmpty s.tentative.scheduler.pending
 
 -- | A synthesis submitted at `Int` from outside every attempt.
 submitted :: P.String -> Tuple { target :: TermMetaVar, submission :: Submission } SolverState
-submitted name = submitSynthesis session registry site xInt (named name) Nothing start
+submitted name = submitSynthesis session registry site xInt (named name) start
 
 spec :: Spec Unit
 spec = describe "Elaborate.Driver.Synthesis" do
@@ -196,7 +196,7 @@ spec = describe "Elaborate.Driver.Synthesis" do
         -- A goal at `?a`, which waits until an equation solves `?a`.
         created = do
           a <- freshTypeMeta emptyXContext XKType
-          Tuple id target <- createSynthesis site a (named "patient") Nothing
+          Tuple id target <- createSynthesis site a (named "patient")
           pure { a, id, target }
       case runElabIn session start created of
         Tuple (Done made) s0 -> do
@@ -238,7 +238,7 @@ spec = describe "Elaborate.Driver.Synthesis" do
 
   describe "a synthesizer the registry does not hold" do
     it "is a defect of the session, the attempt opened and abandoned without a command" do
-      case submitSynthesis session registry site xInt (named "missing") Nothing start of
+      case submitSynthesis session registry site xInt (named "missing") start of
         Tuple { submission: Stop report } s -> do
           report.result `shouldEqual` Halted (SynthesizerUnavailable (named "missing"))
           map kind s.retained.trace `shouldEqual` [ "opened", "abandoned" ]

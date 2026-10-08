@@ -67,11 +67,10 @@ payloadEquations e1 e2 = case xRowEntryPayload e1, xRowEntryPayload e2 of
     | n1 == n2 && Array.length as == Array.length bs ->
         Just (Array.zip as bs)
 
-  -- A region carries its variable and the row of its cells. Both are types, so
-  -- both are equations, and a region whose layout is still a metavariable is
-  -- solved by the one it meets (D36).
-  XRegionPayload r1 i1, XRegionPayload r2 i2 ->
-    Just [ Tuple r1 r2, Tuple i1 i2 ]
+  -- A region's payload is its name, which no metavariable stands for: two
+  -- agree with no equation when the names are equal, and never otherwise (D36).
+  XRegionPayload r1, XRegionPayload r2
+    | r1 == r2 -> Just []
 
   _, _ ->
     Nothing

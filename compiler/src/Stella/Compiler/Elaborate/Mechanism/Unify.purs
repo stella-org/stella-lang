@@ -65,9 +65,9 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar(..), XKind(..), kindMetasOf, kindVarsOf, occursInKind)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm, payloadEquations, rebuild, xnf)
-import Stella.Compiler.Elaborate.CorePlus.Term (Region, TermMetaVar, XExpr)
+import Stella.Compiler.Elaborate.CorePlus.Term (TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), Scope, XConstraint(..), XRowEntry(..), XType(..), freeRigids, kindMetasOfType, metasOf, occursIn, outOfScope)
-import Stella.Compiler.TypedCore (Ident, KindVar, RowElemKind(..), RowKey(..), TyVar)
+import Stella.Compiler.TypedCore (Ident, KindVar, RegionName, RowElemKind(..), RowKey(..), TyVar)
 import Data.Array as Array
 
 import Data.Either (Either(..))
@@ -135,14 +135,13 @@ data KindMetaBinding
 -- | Join points are not among them. A solution may jump only to a join point it
 -- | binds itself, so no join point of the place it stands in is in scope.
 -- |
--- | `region` is the region of cells where it was created, if one is there: a
--- | solution reads and writes only cells of that region, a cell being named by
--- | its key alone and meaning the innermost region's.
+-- | `regions` are the region names in scope there: a solution reads and writes
+-- | only the cells of those regions.
 type TermScope =
   { values :: Set Ident
   , types :: Set TyVar
   , kinds :: Set KindVar
-  , region :: Maybe Region
+  , regions :: Set RegionName
   }
 
 -- | What `Ψ` records of an unsolved term metavariable, that is, `?m : τ [Γ]`.
@@ -217,6 +216,8 @@ data UnifyError
   | EscapingVariable MetaVar TyVar
   -- | The same, for a kind variable.
   | EscapingKindVariable MetaVar KindVar
+  -- | The same, for a region name.
+  | EscapingRegion MetaVar RegionName
   -- | The kind of a solution does not match the kind of the metavariable. The
   -- | whole of each kind is reported, the metavariable being what names the
   -- | failure, rather than the sub-kinds at which the two first differed.
@@ -353,7 +354,7 @@ substitute ctx = go
     XRowTypeEntry k ty -> XRowTypeEntry k (go ty)
     XRowEffectEntry e args -> XRowEffectEntry e (map go args)
     XRowLabelledEffectEntry s e args -> XRowLabelledEffectEntry s e (map go args)
-    XRowRegionEntry var cells -> XRowRegionEntry (go var) (go cells)
+    XRowRegionEntry name -> XRowRegionEntry name
 
   -- A constraint carries rows of its own, and a hole left in one of them would
   -- survive zonking and fail `toCore`.
@@ -670,7 +671,7 @@ unifyType env ctx kind left right
         TagKey _ -> Tuple (XKRow RowType) c
         PositionKey _ -> Tuple (XKRow RowType) c
         EffectKey _ -> Tuple (XKRow RowEffect) c
-        RegionKey -> Tuple (XKRow RowEffect) c
+        RegionKey _ -> Tuple (XKRow RowEffect) c
         SymbolKey _ ->
           let
             Tuple ka c' = freshKindMeta { scope: kindVars, requirements: Set.empty } c
@@ -908,6 +909,7 @@ refine bound ctx r s d1 d2 r1 r2 =
             sharedScope =
               { types: Set.intersection infoR.scope.types infoS.scope.types
               , kinds: Set.intersection infoR.scope.kinds infoS.scope.kinds
+              , regions: Set.intersection infoR.scope.regions infoS.scope.regions
               }
 
             -- **The fresh tail carries no constraint of its own.** What it is
@@ -1021,6 +1023,7 @@ narrowMetas ctx scope typeMetas kindMetas = do
         within =
           { types: Set.intersection tInfo.scope.types scope.types
           , kinds: Set.intersection tInfo.scope.kinds scope.kinds
+          , regions: Set.intersection tInfo.scope.regions scope.regions
           }
 
         -- A kind the metavariable stands at may itself be solved, and a rigid
@@ -1082,7 +1085,9 @@ escapes :: Scope -> XType -> Maybe (MetaVar -> UnifyError)
 escapes scope solution =
   case Set.findMin escaped.types of
     Just a -> Just (\m -> EscapingVariable m a)
-    Nothing -> map (\k m -> EscapingKindVariable m k) (Set.findMin escaped.kinds)
+    Nothing -> case Set.findMin escaped.kinds of
+      Just k -> Just (\m -> EscapingKindVariable m k)
+      Nothing -> map (\r m -> EscapingRegion m r) (Set.findMin escaped.regions)
   where
   escaped = outOfScope scope solution
 
@@ -1099,7 +1104,7 @@ entryKind = case _ of
   XRowTypeEntry _ _ -> XKRow RowType
   XRowEffectEntry _ _ -> XKRow RowEffect
   XRowLabelledEffectEntry _ _ _ -> XKRow RowEffect
-  XRowRegionEntry _ _ -> XKRow RowEffect
+  XRowRegionEntry _ -> XKRow RowEffect
 
 domain :: XRowNormalForm -> Set RowKey
 domain n = Set.fromFoldable (Map.keys n.known)

@@ -63,7 +63,7 @@ wide =
   { values: Set.fromFoldable [ x, y ]
   , types: Set.singleton a
   , kinds: Set.singleton k
-  , region: Nothing
+  , regions: Set.empty
   }
 
 -- | The context `wide` is the scope of.
@@ -72,7 +72,7 @@ wideContext = bindKindVars (bindTyVar (bindVar (bindVar emptyXContext x xInt) y 
 
 -- | Nothing in scope.
 narrow :: TermScope
-narrow = { values: Set.empty, types: Set.empty, kinds: Set.empty, region: Nothing }
+narrow = { values: Set.empty, types: Set.empty, kinds: Set.empty, regions: Set.empty }
 
 -- | `Ψ` holding the term metavariables given, in order, each at `Int`.
 holding :: P.Array TermScope -> Tuple (P.Array TermMetaVar) MetaContext
@@ -96,7 +96,7 @@ spec :: Spec Unit
 spec = describe "Elaborate.TermMeta" do
   describe "a scope" do
     it "is what a context binds, in each class" do
-      termScopeOf wideContext Nothing `shouldEqual` wide
+      termScopeOf wideContext `shouldEqual` wide
 
   describe "an assignment" do
     it "admits a solution naming what is in scope" do
@@ -172,12 +172,12 @@ spec = describe "Elaborate.TermMeta" do
 
     it "narrows a type metavariable in the solution to the scope of the one assigned" do
       let
-        Tuple tm ctx0 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty } } emptyContext
+        Tuple tm ctx0 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty, regions: Set.empty } } emptyContext
         Tuple m ctx1 = TermMeta.freshTermMeta { ty: xInt, scope: narrow } ctx0
         narrowed = case assignTermMeta ctx1 m (ELam 1 y (XMeta tm) (EVar 2 y)) of
           Right ctx2 -> lookupMeta ctx2 tm
           Left _ -> Nothing
-      narrowed `shouldEqual` Just (Unsolved { kind: XKType, scope: { types: Set.empty, kinds: Set.empty } })
+      narrowed `shouldEqual` Just (Unsolved { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } })
 
   describe "zonking" do
     it "puts a solution where the metavariable stood, under its annotation" do
@@ -201,7 +201,7 @@ spec = describe "Elaborate.TermMeta" do
 
     it "applies solved type metavariables inside a term metavariable's solution" do
       let
-        Tuple tm ctx0 = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty } } emptyContext
+        Tuple tm ctx0 = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } } emptyContext
         Tuple m ctx1 = TermMeta.freshTermMeta { ty: xInt, scope: wide } ctx0
         solvedType = ctx1 { bindings = Map.insert tm (Assigned xInt) ctx1.bindings }
         zonked = map (\c -> zonkExpr c (ETermMeta 4 m)) (hush (assignTermMeta solvedType m (ELam 1 y (XMeta tm) (EVar 2 y))))
@@ -215,14 +215,14 @@ spec = describe "Elaborate.TermMeta" do
   describe "through Elab" do
     it "creates a metavariable whose scope is what the context binds" do
       let
-        Tuple outcome s = runElab (initialState (SessionId 0) 0) (freshTermMeta wideContext Nothing xInt)
+        Tuple outcome s = runElab (initialState (SessionId 0) 0) (freshTermMeta wideContext xInt)
       outcome `shouldEqual` Done (TermMetaVar 0)
       lookupTermMeta s.tentative.metas (TermMetaVar 0) `shouldEqual` Just (TermUnsolved { ty: xInt, scope: wide })
 
     it "reports an escaping solution as a failure at the site" do
       let
         Tuple outcome _ = runElab (initialState (SessionId 0) 0) do
-          m <- freshTermMeta emptyXContext Nothing xInt
+          m <- freshTermMeta emptyXContext xInt
           assignTerm site m (EVar 1 x)
       outcome `shouldEqual` Failed (TermAssignmentFailed here (TermEscapingValue (TermMetaVar 0) x))
 
@@ -235,7 +235,7 @@ spec = describe "Elaborate.TermMeta" do
       let
         attempt :: Elab Unit
         attempt = do
-          m <- freshTermMeta wideContext Nothing xInt
+          m <- freshTermMeta wideContext xInt
           assignTerm site m (EVar 1 x)
           raiseDiagnostic (TermAssignmentFailed here (TermMetaUnbound m))
 

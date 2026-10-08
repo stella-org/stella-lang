@@ -111,11 +111,13 @@ record = case _ of
 handler :: HandlerRequest -> Elab KernelAnswer
 handler = case _ of
   Perform scope key payload op typeArgs argument -> HandleAnswer <$> BuildHandler.perform scope key payload op typeArgs argument
-  OpenHandle scope computation key payload layout answer residual clauses ->
-    HandlerAnswer <$> BuildHandler.openHandle scope computation key payload layout answer residual clauses
-  CloseHandle scope binder returnBody clauseBodies initials -> HandleAnswer <$> BuildHandler.closeHandle scope binder returnBody clauseBodies initials
-  ReadCell scope key -> HandleAnswer <$> BuildHandler.readCell scope key
-  WriteCell scope key value -> HandleAnswer <$> BuildHandler.writeCell scope key value
+  OpenHandle scope computation key payload answer residual clauses ->
+    HandlerAnswer <$> BuildHandler.openHandle scope computation key payload answer residual clauses
+  CloseHandle scope binder returnBody clauseBodies -> HandleAnswer <$> BuildHandler.closeHandle scope binder returnBody clauseBodies
+  OpenRegion scope layout -> RegionAnswer <$> BuildHandler.openRegion scope layout
+  CloseRegion scope binder body initials -> HandleAnswer <$> BuildHandler.closeRegion scope binder body initials
+  ReadCell scope region key -> HandleAnswer <$> BuildHandler.readCell scope region key
+  WriteCell scope region key value -> HandleAnswer <$> BuildHandler.writeCell scope region key value
 
 solve :: SolveRequest -> Elab KernelAnswer
 solve = case _ of

@@ -81,7 +81,7 @@ field key ty rest = XRowExtend (XRowTypeEntry key ty) rest
 tailed :: Tuple MetaVar SolverState
 tailed =
   let
-    Tuple t metas = freshMeta { kind: XKRow RowType, scope: { types: Set.singleton r, kinds: Set.empty } } emptyContext
+    Tuple t metas = freshMeta { kind: XKRow RowType, scope: { types: Set.singleton r, kinds: Set.empty, regions: Set.empty } } emptyContext
     initial = initialState (SessionId 0) 10
   in
     Tuple t (initial { tentative = initial.tentative { metas = metas } })

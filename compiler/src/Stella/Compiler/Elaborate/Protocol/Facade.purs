@@ -69,6 +69,8 @@ module Stella.Compiler.Elaborate.Protocol.Facade
   , perform
   , openHandle
   , closeHandle
+  , openRegion
+  , closeRegion
   , readCell
   , writeCell
   , freshMetaType
@@ -101,7 +103,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart)
 import Stella.Compiler.Elaborate.Mechanism.Pending (SynthRef)
 import Stella.Compiler.Elaborate.Vocabulary.Request (BuildRequest(..), HandlerRequest(..), KernelAnswer(..), KernelRequest(..), ObserveRequest(..), RecordRequest(..), ReportRequest(..), SolveRequest(..), TermRequest(..), TreeRequest(..))
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView, ContextEntry, DeclView, KindView, PayloadView, RowView, TypeView)
-import Stella.Compiler.TypedCore (Ident, Literal, OpName, Qualified, RowKey, TyName, TyVar)
+import Stella.Compiler.TypedCore (Ident, Literal, OpName, Qualified, RegionName, RowKey, TyName, TyVar)
 import Stella.Compiler.Elaborate.Protocol.Facade.Internal (Facade, kernel)
 import Stella.Compiler.Elaborate.Protocol.Facade.Internal (Facade, transact) as Exports
 import Data.Maybe (Maybe(..))
@@ -347,7 +349,6 @@ openHandle
   -> Handle
   -> RowKey
   -> PayloadView
-  -> Maybe (P.Array { key :: RowKey, type :: Handle })
   -> Handle
   -> Handle
   -> P.Array { op :: OpName, full :: P.Boolean }
@@ -362,19 +363,28 @@ openHandle
              , scope :: Handle
              }
        }
-openHandle scope computation key payload layout answer residual clauses =
-  kernel (HandlerRequest (OpenHandle scope computation key payload layout answer residual clauses)) case _ of
+openHandle scope computation key payload answer residual clauses =
+  kernel (HandlerRequest (OpenHandle scope computation key payload answer residual clauses)) case _ of
     HandlerAnswer r -> Just r
     _ -> Nothing
 
-closeHandle :: Handle -> Handle -> Handle -> P.Array Handle -> P.Array Handle -> Facade Handle
-closeHandle scope binder returnBody clauseBodies initials = handlerHandle (CloseHandle scope binder returnBody clauseBodies initials)
+closeHandle :: Handle -> Handle -> Handle -> P.Array Handle -> Facade Handle
+closeHandle scope binder returnBody clauseBodies = handlerHandle (CloseHandle scope binder returnBody clauseBodies)
 
-readCell :: Handle -> RowKey -> Facade Handle
-readCell scope key = handlerHandle (ReadCell scope key)
+openRegion :: Handle -> P.Array { key :: RowKey, type :: Handle } -> Facade { binder :: Handle, name :: RegionName, bodyScope :: Handle }
+openRegion scope layout =
+  kernel (HandlerRequest (OpenRegion scope layout)) case _ of
+    RegionAnswer r -> Just r
+    _ -> Nothing
 
-writeCell :: Handle -> RowKey -> Handle -> Facade Handle
-writeCell scope key value = handlerHandle (WriteCell scope key value)
+closeRegion :: Handle -> Handle -> Handle -> P.Array Handle -> Facade Handle
+closeRegion scope binder body initials = handlerHandle (CloseRegion scope binder body initials)
+
+readCell :: Handle -> Handle -> RowKey -> Facade Handle
+readCell scope region key = handlerHandle (ReadCell scope region key)
+
+writeCell :: Handle -> Handle -> RowKey -> Handle -> Facade Handle
+writeCell scope region key value = handlerHandle (WriteCell scope region key value)
 
 freshMetaType :: Handle -> KindView -> Facade Handle
 freshMetaType scope kind = kernel (SolveRequest (FreshMetaType scope kind)) handleOf

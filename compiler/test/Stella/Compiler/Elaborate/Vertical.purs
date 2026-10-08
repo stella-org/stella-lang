@@ -130,8 +130,8 @@ opened = do
   nilAt <- freshTypeMeta emptyXContext XKType
   let
     branch = bindVar (bindVar (bindVar emptyXContext xs param) x xInt) ys (listOf xInt)
-  recursion <- freshTermMeta branch Nothing xInt
-  callee <- freshTermMeta emptyXContext Nothing (fromCore (pureFn listInt int))
+  recursion <- freshTermMeta branch xInt
+  callee <- freshTermMeta emptyXContext (fromCore (pureFn listInt int))
   pure { param, nilAt, recursion, callee }
 
 -- | Open the holes, submit the two equations that decide the types, and run emptySessionEnv the

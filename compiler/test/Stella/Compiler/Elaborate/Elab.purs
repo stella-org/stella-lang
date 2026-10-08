@@ -89,7 +89,7 @@ pairOf x y = XApp (XApp (XCon (Qualified prim (TyName "Pair")) []) x) y
 rowTypeInfo :: MetaInfo
 rowTypeInfo =
   { kind: XKRow RowType
-  , scope: { types: Set.singleton rigidR, kinds: Set.empty }
+  , scope: { types: Set.singleton rigidR, kinds: Set.empty, regions: Set.empty }
   }
 
 -- | Five metavariables at `Row Type`, and `Ψ` holding all of them unsolved.
@@ -218,7 +218,7 @@ spec = describe "Elaborate.Elab" do
       lookupMeta s.tentative.metas fresh `shouldEqual` Just
         ( Unsolved
             { kind: XKRow RowEffect
-            , scope: { types: Set.singleton rigidR, kinds: Set.singleton (KindVar "k") }
+            , scope: { types: Set.singleton rigidR, kinds: Set.singleton (KindVar "k"), regions: Set.empty }
             }
         )
 

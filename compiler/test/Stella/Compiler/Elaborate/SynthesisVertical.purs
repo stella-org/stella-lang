@@ -255,7 +255,7 @@ answered asks = case runElabIn session (initialState (SessionId 0) 10) (traverse
     Tuple report s -> Right (Tuple targets (Tuple report.result s))
   Tuple other _ -> Left (show other)
   where
-  ask (Tuple site ty) = createSynthesis site ty resolver Nothing <#> \(Tuple _ target) -> target
+  ask (Tuple site ty) = createSynthesis site ty resolver <#> \(Tuple _ target) -> target
 
 givenAnswered :: P.Array (Tuple Site XType) -> (P.Array TermMetaVar -> RunResult -> SolverState -> Aff Unit) -> Aff Unit
 givenAnswered asks check = case answered asks of
@@ -434,7 +434,7 @@ spec = describe "Elaborate, a synthesis hole filled by the reference synthesizer
           t <- freshTypeMeta emptyXContext XKType
           let
             goalType = XApp (XCon recordTy []) (XRowExtend (XRowTypeEntry keyA t) (XRowExtend (XRowTypeEntry keyZ xInt) XRowEmpty))
-          Tuple _ target <- createSynthesis (siteBinding []) goalType searching Nothing
+          Tuple _ target <- createSynthesis (siteBinding []) goalType searching
           pure { t, target }
       case runElabIn session (initialState (SessionId 0) 10) created of
         Tuple (Done made@{ t: XMeta t }) queued -> do
@@ -484,7 +484,7 @@ spec = describe "Elaborate, a synthesis hole filled by the reference synthesizer
           t <- freshTypeMeta emptyXContext XKType
           let
             goalType = XApp (XCon recordTy []) (XRowExtend (XRowTypeEntry keyA t) (XRowExtend (XRowTypeEntry keyZ xInt) XRowEmpty))
-          createSynthesis (siteBinding []) goalType keeping Nothing
+          createSynthesis (siteBinding []) goalType keeping
       case runElabIn session (initialState (SessionId 0) 10) created of
         Tuple (Done _) queued -> do
           let
@@ -501,7 +501,7 @@ spec = describe "Elaborate, a synthesis hole filled by the reference synthesizer
         created = do
           r <- freshTypeMeta emptyXContext (XKRow RowType)
           r' <- freshTypeMeta emptyXContext (XKRow RowType)
-          Tuple id _ <- createSynthesis (siteBinding []) (XApp (XCon recordTy []) (XRowUnion r r')) postponing Nothing
+          Tuple id _ <- createSynthesis (siteBinding []) (XApp (XCon recordTy []) (XRowUnion r r')) postponing
           pure { id, r, r' }
       case runElabIn session (initialState (SessionId 0) 10) created of
         Tuple (Done made@{ r: XMeta r, r': XMeta r' }) queued -> case runSynthesis session registry queued of
@@ -516,7 +516,7 @@ spec = describe "Elaborate, a synthesis hole filled by the reference synthesizer
       let
         -- Two goals at `Int`, the first asked of a policy whose `cand1` misuses
         -- the kernel.
-        created = traverse (\by -> createSynthesis (siteBinding []) xInt by Nothing) [ breaking, resolver ]
+        created = traverse (\by -> createSynthesis (siteBinding []) xInt by) [ breaking, resolver ]
       case runElabIn session (initialState (SessionId 0) 10) created of
         Tuple (Done goals) queued -> case runSynthesis session registry queued of
           Tuple report s -> do
@@ -567,14 +567,14 @@ spec = describe "Elaborate, a synthesis hole filled by the reference synthesizer
             Left residues -> fail ("the declaration did not cross the boundary: " <> show residues)
 
     it "commits an application whose argument is not at the function's parameter type, and the Core checker refuses it" do
-      case submitSynthesis session registry (siteBinding []) xInt badly Nothing (initialState (SessionId 0) 10) of
+      case submitSynthesis session registry (siteBinding []) xInt badly (initialState (SessionId 0) 10) of
         Tuple { target, submission: Continue { attempt: Committed } } s -> case toCoreExpr (zonkExpr s.tentative.metas (ETermMeta 7 target)) of
           Right core -> isLeft (declare primSignature (completedWith "answer" coreInt core)) `shouldEqual` true
           Left residues -> fail ("the term did not cross the boundary: " <> show residues)
         Tuple { submission } _ -> fail ("the term was not committed: " <> show submission)
 
     it "does not let an unsolved term metavariable cross the boundary" do
-      case runElabIn session (initialState (SessionId 0) 10) (createSynthesis (siteBinding []) xInt resolver Nothing) of
+      case runElabIn session (initialState (SessionId 0) 10) (createSynthesis (siteBinding []) xInt resolver) of
         Tuple (Done (Tuple _ m)) s ->
           case toCoreExpr (zonkExpr s.tentative.metas (ETermMeta 7 m)) of
             Left residues -> NonEmptyArray.toArray residues `shouldEqual` [ ResidualTermMeta 7 m ]
@@ -656,7 +656,7 @@ waiting name = case runElabIn session (initialState (SessionId 0) 10) created of
   site = siteBinding [ Tuple x xInt ]
   created = do
     a <- freshTypeMeta emptyXContext XKType
-    goal <- createSynthesis site a name Nothing
+    goal <- createSynthesis site a name
     pure (Tuple a goal)
 
 -- | A goal at `Record (a : ?t, z : Int)` asked of the synthesizer named where
@@ -670,7 +670,7 @@ recordGoal name = case runElabIn session (initialState (SessionId 0) 10) created
     t <- freshTypeMeta emptyXContext XKType
     let
       goalType = XApp (XCon recordTy []) (XRowExtend (XRowTypeEntry keyA t) (XRowExtend (XRowTypeEntry keyZ xInt) XRowEmpty))
-    Tuple _ target <- createSynthesis (siteBinding []) goalType name Nothing
+    Tuple _ target <- createSynthesis (siteBinding []) goalType name
     pure (Tuple t target)
 
 -- | `Record (a : Boolean, z : Int)`, the type `cand2` answers.
@@ -704,7 +704,7 @@ scenario :: SessionEnv -> Either P.String Scenario
 scenario env = case runElabIn env (initialState (SessionId 0) 10) (freshTypeMeta emptyXContext XKType) of
   Tuple (Done (XMeta g)) s0 ->
     let
-      Tuple submitted s1 = submitSynthesis env registry (siteBinding []) (XMeta g) resolver Nothing s0
+      Tuple submitted s1 = submitSynthesis env registry (siteBinding []) (XMeta g) resolver s0
       Tuple equation s2 = submitAttempting (attemptJob env registry) (siteBinding []) (JobUnify { kind: XKType, left: XMeta g, right: answerType }) s1
       Tuple report s3 = runSynthesis env registry s2
       zonked = zonkExpr s3.tentative.metas (ELet 0 y (XMeta g) (ETermMeta 7 submitted.target) (EVar 0 y))

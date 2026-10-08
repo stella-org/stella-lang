@@ -153,13 +153,12 @@ subgoal scopeHandle typeHandle synthesizer = do
     ExactKind XKType -> pure unit
     _ -> rejected (NotAType typeHandle)
   site <- siteOf scope
-  Tuple _ target <- createSynthesis site expected.type synthesizer scope.region
+  Tuple _ target <- createSynthesis site expected.type synthesizer
   issue
     ( ExprObject
         { term: ETermMeta unit target
         , claimed: expected.type
         , scope: kindingScopeOf scope
         , builtIn: Just scope.id
-        , region: scope.region
         }
     )

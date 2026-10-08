@@ -40,6 +40,7 @@ import Stella.Compiler.TypedCore (RowElemKind(..), RowKey)
 import Stella.Compiler.TypedCore.Prim (functionTy, recordTy, variantTy)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
+import Data.Set as Set
 
 -- | `{}`, at `Record ()`.
 recordEmpty :: Handle -> Elab Handle
@@ -173,7 +174,7 @@ variantRowOf term handle = do
 typeKey :: RowKey -> Elab Unit
 typeKey key = do
   env <- askEnv
-  case wellFormedKey env.session.kinding key (Just RowType) of
+  case wellFormedKey env.session.kinding Set.empty key (Just RowType) of
     Left fault -> rejected (IllKinded fault)
     Right _ -> pure unit
 

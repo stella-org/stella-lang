@@ -36,7 +36,7 @@ import Stella.Compiler.Interface (noImports)
 import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.TypedCore.Check (CheckError(..))
 import Stella.Compiler.TypedCore.Declare (DeclError(..))
-import Stella.Compiler.TypedCore (Constant, Decl(..), DecisionTree(..), Expr(..), Ident(..), KindVar, Literal, Module, ModuleName(..), OpName, Occurrence(..), Qualified(..), RowEntry(..), RowElemKind, RowKey(..), ScalarString, ScalarValue, Symbol, Tag, TyName(..), TyVar(..), Type(..), Kind(..), declareAnnotated, monoScheme, primSignature)
+import Stella.Compiler.TypedCore (Constant, Decl(..), DecisionTree(..), Expr(..), Ident(..), KindVar, Literal, Module, ModuleName(..), OpName, Occurrence(..), Qualified(..), RegionName, RowEntry(..), RowElemKind, RowKey(..), ScalarString, ScalarValue, Symbol, Tag, TyName(..), TyVar(..), Type(..), Kind(..), declareAnnotated, monoScheme, primSignature)
 import Stella.Compiler.TypedCore.Prim (asFunction, fn, intTy, pureFn, unitTy)
 import Test.Stella.Compiler.Elaborate.Facade (probes)
 import Test.Spec (Spec, describe, it)
@@ -94,6 +94,9 @@ instance HostShape Symbol where
   hostShape _ = ShapeString
 
 instance HostShape Tag where
+  hostShape _ = ShapeString
+
+instance HostShape RegionName where
   hostShape _ = ShapeString
 
 instance HostShape (Qualified a) where

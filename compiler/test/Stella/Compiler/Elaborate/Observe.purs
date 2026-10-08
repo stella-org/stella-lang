@@ -135,12 +135,12 @@ outcomeOf s action = fst (runElabIn session s (withFrame frame action))
 -- | The site's kind and type variables, which a type observed there is kinded
 -- | under.
 siteVariables :: KindingScope
-siteVariables = { kindVars: context.kindVars, tyVars: context.tyVars }
+siteVariables = { kindVars: context.kindVars, tyVars: context.tyVars, regions: Set.empty }
 
 -- | A handle to a type standing at the kind evidence given, under the site's
 -- | variables.
 typeHandle :: XType -> KindEvidence -> Elab Handle
-typeHandle ty kind = issue (TypeObject { type: ty, kind, scope: { kindVars: context.kindVars, tyVars: context.tyVars }, builtIn: Just (ScopeId 0) })
+typeHandle ty kind = issue (TypeObject { type: ty, kind, scope: { kindVars: context.kindVars, tyVars: context.tyVars, regions: Set.empty }, builtIn: Just (ScopeId 0) })
 
 -- | The type of `y`, from the local context.
 typeOfY :: Elab Handle
@@ -253,7 +253,7 @@ spec = describe "Elaborate.Observe" do
   describe "a metavariable" do
     it "is shown as a Meta handle, and as its solution once it is solved" do
       let
-        Tuple m metas = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty } } emptyContext
+        Tuple m metas = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } } emptyContext
         s0 = start { tentative { metas = metas } }
       observing s0 (typeHandle (XMeta m) (ExactKind XKType)) \h s1 -> do
         observing s1 (viewType h) \view _ -> case view of
@@ -266,7 +266,7 @@ spec = describe "Elaborate.Observe" do
     it "whose kind is not settled is not shown" do
       let
         Tuple k metas0 = freshKindMeta { scope: Set.empty, requirements: Set.empty } emptyContext
-        Tuple m metas = freshMeta { kind: XKMeta k, scope: { types: Set.empty, kinds: Set.empty } } metas0
+        Tuple m metas = freshMeta { kind: XKMeta k, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } } metas0
         s0 = start { tentative { metas = metas } }
         unsettled = frame { site { context = bindVar context (Ident "z") (XMeta m) } }
         action = withFrame unsettled (map (map _.name) localContext)
@@ -275,12 +275,12 @@ spec = describe "Elaborate.Observe" do
   describe "a goal and a term" do
     it "gives the running goal's type at Type, and a term's claimed type" do
       let
-        Tuple goal metas = newGoal site xInt showInt Nothing start.tentative.metas
+        Tuple goal metas = newGoal site xInt showInt start.tentative.metas
         s0 = start { tentative { metas = metas } }
         running = frame { goal = Just { id: PendingId 0, goal } }
         action = do
           g <- issue (GoalObject { id: PendingId 0, goal })
-          e <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt, scope: siteVariables, builtIn: Just (ScopeId 0), region: Nothing })
+          e <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt, scope: siteVariables, builtIn: Just (ScopeId 0) })
           gv <- goalType g >>= viewType
           ev <- typeOf e >>= viewType
           pure (Tuple gv ev)
@@ -292,7 +292,7 @@ spec = describe "Elaborate.Observe" do
 
     it "refuses a goal observed where no goal runs, or one not running" do
       let
-        Tuple goal metas = newGoal site xInt showInt Nothing start.tentative.metas
+        Tuple goal metas = newGoal site xInt showInt start.tentative.metas
         s0 = start { tentative { metas = metas } }
         observed = issue (GoalObject { id: PendingId 0, goal }) >>= goalType
         elsewhere = frame { goal = Just { id: PendingId 1, goal } }
@@ -304,7 +304,7 @@ spec = describe "Elaborate.Observe" do
     it "refuses a handle of the wrong class rather than answering nothing" do
       let
         action = do
-          e <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt, scope: siteVariables, builtIn: Just (ScopeId 0), region: Nothing })
+          e <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt, scope: siteVariables, builtIn: Just (ScopeId 0) })
           Tuple e <$> viewType e
       case outcomeOf start action of
         Broke (InvalidHandle _ (HandleClassMismatch TypeClass)) -> pure unit

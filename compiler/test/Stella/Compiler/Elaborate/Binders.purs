@@ -97,7 +97,7 @@ start = initialState (SessionId 0) 10
 withMetas :: { state :: SolverState, f :: MetaVar, m :: MetaVar, g :: MetaVar, h :: MetaVar }
 withMetas =
   let
-    fresh kind = freshMeta { kind, scope: { types: Set.empty, kinds: Set.empty } }
+    fresh kind = freshMeta { kind, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } }
     Tuple f metas1 = fresh (XKFun XKType XKType) emptyContext
     Tuple m metas2 = fresh XKType metas1
     Tuple g metas3 = fresh (XKFun (XKRow RowType) XKType) metas2
@@ -215,7 +215,7 @@ spec = describe "Elaborate.BuildTerm, binders and applications" do
       let
         claimedAt ty = do
           root <- rootScope
-          f <- issue (ExprObject { term: EVar unit (Ident "f"), claimed: ty, scope: { kindVars: Set.empty, tyVars: context.tyVars }, builtIn: Just (ScopeId 0), region: Nothing })
+          f <- issue (ExprObject { term: EVar unit (Ident "f"), claimed: ty, scope: { kindVars: Set.empty, tyVars: context.tyVars, regions: Set.empty }, builtIn: Just (ScopeId 0) })
           litOne root >>= termApply root f
       case outcomeIn withMetas.state (claimedAt (XApp (XMeta withMetas.f) xInt)) of
         Postponed (ExplicitPostponement ms) -> ms `shouldEqual` Set.singleton withMetas.f
@@ -231,7 +231,7 @@ spec = describe "Elaborate.BuildTerm, binders and applications" do
       let
         claimedAt ty = do
           root <- rootScope
-          f <- issue (ExprObject { term: EVar unit (Ident "f"), claimed: ty, scope: { kindVars: Set.empty, tyVars: context.tyVars }, builtIn: Just (ScopeId 0), region: Nothing })
+          f <- issue (ExprObject { term: EVar unit (Ident "f"), claimed: ty, scope: { kindVars: Set.empty, tyVars: context.tyVars, regions: Set.empty }, builtIn: Just (ScopeId 0) })
           litOne root >>= termApply root f
         notAFunction = case _ of
           Broke (BuildRejected (NotAFunction _)) -> pure unit

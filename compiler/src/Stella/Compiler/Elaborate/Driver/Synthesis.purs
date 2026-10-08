@@ -16,7 +16,7 @@ module Stella.Compiler.Elaborate.Driver.Synthesis
 
 import Prelude
 
-import Stella.Compiler.Elaborate.CorePlus.Term (Region, TermMetaVar)
+import Stella.Compiler.Elaborate.CorePlus.Term (TermMetaVar)
 import Stella.Compiler.Elaborate.CorePlus.Type (XType)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending)
 import Stella.Compiler.Elaborate.Driver.Conversation (runSynthesizerWith)
@@ -47,7 +47,7 @@ attemptJob session registry id s = case lookupPending s.tentative.scheduler id o
   Just { job: JobSynthesis _ } -> runSynthesizerWith session (resolveSynthesizer registry) id s
   _ -> attemptPending session id s
 
--- | `⟨ τ by f ⟩` at a site and in a region of cells, from outside every
+-- | `⟨ τ by f ⟩` at a site, from outside every
 -- | attempt: the goal and the target its result is assigned to installed in one
 -- | state transition with the job, and the job attempted at once. The target is
 -- | returned for the caller to place as `ETermMeta`.
@@ -57,11 +57,10 @@ submitSynthesis
   -> Site
   -> XType
   -> SynthRef
-  -> Maybe Region
   -> SolverState
   -> Tuple { target :: TermMetaVar, submission :: Submission } SolverState
-submitSynthesis session registry site expectedType synthesizer region s0 =
-  case submitSynthesisM (\id s -> Identity (attemptJob session registry id s)) site expectedType synthesizer region s0 of
+submitSynthesis session registry site expectedType synthesizer s0 =
+  case submitSynthesisM (\id s -> Identity (attemptJob session registry id s)) site expectedType synthesizer s0 of
     Identity submitted -> submitted
 
 -- | `submitSynthesis`, the job attempted by the attempter given in its monad.
@@ -72,14 +71,13 @@ submitSynthesisM
   -> Site
   -> XType
   -> SynthRef
-  -> Maybe Region
   -> SolverState
   -> m (Tuple { target :: TermMetaVar, submission :: Submission } SolverState)
-submitSynthesisM attempter site expectedType synthesizer region s0 =
+submitSynthesisM attempter site expectedType synthesizer s0 =
   submitAttemptingM attempter site (JobSynthesis goal) (s0 { tentative { metas = metas } }) <#> case _ of
     Tuple submission s -> Tuple { target: (goalOf goal).target, submission } s
   where
-  Tuple goal metas = newGoal site expectedType synthesizer region s0.tentative.metas
+  Tuple goal metas = newGoal site expectedType synthesizer s0.tentative.metas
 
 -- | Retry the jobs on the ready queue, each attempted by `attemptJob`.
 runSynthesis :: SessionEnv -> Registry -> SolverState -> Tuple RunReport SolverState

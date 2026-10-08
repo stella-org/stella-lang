@@ -150,7 +150,7 @@ lookupGlobal name = do
   case lookupEntry env.session.catalog name of
     Nothing -> pure Nothing
     Just entry -> do
-      scheme <- issueTypeAt Nothing { kindVars: Set.fromFoldable entry.scheme.kindVars, tyVars: Map.empty } (Just XKType) entry.scheme.body
+      scheme <- issueTypeAt Nothing { kindVars: Set.fromFoldable entry.scheme.kindVars, tyVars: Map.empty, regions: Set.empty } (Just XKType) entry.scheme.body
       pure
         ( Just
             { name: entry.name
@@ -181,7 +181,7 @@ root :: Maybe ScopeId
 root = Just rootScopeId
 
 siteScope :: Frame -> KindingScope
-siteScope frame = { kindVars: frame.site.context.kindVars, tyVars: frame.site.context.tyVars }
+siteScope frame = { kindVars: frame.site.context.kindVars, tyVars: frame.site.context.tyVars, regions: Map.keys frame.site.context.regions }
 
 -- | Issue a handle to a type, kinded under the type variables given.
 -- |
@@ -228,10 +228,7 @@ payloadView builtIn vars = case _ of
   XRowTypeEntry _ ty -> TypePayload <$> issueTypeAt builtIn vars (Just XKType) ty
   XRowEffectEntry e args -> EffectPayload e <$> effectArgs e args
   XRowLabelledEffectEntry _ e args -> EffectPayload e <$> effectArgs e args
-  XRowRegionEntry var cells ->
-    RegionPayload
-      <$> issueTypeAt builtIn vars (Just XKType) var
-      <*> issueTypeAt builtIn vars (Just (XKRow RowType)) cells
+  XRowRegionEntry name -> pure (RegionPayload name)
   where
   effectArgs e args = do
     env <- askEnv
@@ -258,7 +255,7 @@ keyRowKind = case _ of
   TagKey _ -> Just (XKRow RowType)
   PositionKey _ -> Just (XKRow RowType)
   EffectKey _ -> Just (XKRow RowEffect)
-  RegionKey -> Just (XKRow RowEffect)
+  RegionKey _ -> Just (XKRow RowEffect)
   SymbolKey _ -> Nothing
 
 -- | A settled kind, well-formed in the scope given, as a view.

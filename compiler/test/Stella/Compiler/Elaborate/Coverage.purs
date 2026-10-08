@@ -16,7 +16,7 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Vocabulary.Trace (Tracing(..))
 import Stella.Compiler.Elaborate.Kernel.Builder.Type (emptyRow, rootScope, typeConstructor)
-import Stella.Compiler.Elaborate.Kernel.Builder.Handler (closeHandle, openHandle, perform, readCell, writeCell)
+import Stella.Compiler.Elaborate.Kernel.Builder.Handler (closeHandle, closeRegion, openHandle, openRegion, perform, readCell, writeCell)
 import Stella.Compiler.Elaborate.Kernel.Builder.Record (openEff, recordEmpty, recordExtend, recordMerge, recordRestrict, recordSelect, recordUpdate, variantAbsurd, variantInject, variantWeaken)
 import Stella.Compiler.Elaborate.Kernel.Builder.Term (closeConstraintAbs, closeJoin, closeLambda, closeLet, closeLetRec, closeTypeAbs, constraintApply, globalRef, jump, literal, localVariable, openConstraintAbs, openJoin, openLambda, openLet, openLetRec, openTypeAbs, termApply, typeApply)
 import Stella.Compiler.Elaborate.Kernel.Builder.DecisionTree (closeBind, closeCase, closeSwitch, guard, leaf, openBind, openCase, openSwitchCtor, openSwitchKey, openSwitchLit, recordField)
@@ -219,24 +219,27 @@ everyForm = do
   weakened <- variantWeaken root keyM boolean injected
   absurd <- var root "none" >>= variantAbsurd root i
   opened <- emptyRow root >>= \row -> openEff root row f
-  -- perform, and handlers with a fast clause over cells and a full one
+  -- perform, a region around a handler with a fast clause over its cells, and a
+  -- handler with a full clause
   performed <- var root "u" >>= perform root (EffectKey counter) (EffectPayload counter []) next []
   withCells <- do
-    rho <- emptyRow root
-    h <- openHandle root one (EffectKey counter) (EffectPayload counter []) (Just [ { key: keyN, type: i } ]) i rho [ { op: next, full: false } ]
+    region <- openRegion root [ { key: keyN, type: i } ]
+    rho <- emptyRow region.bodyScope
+    h <- openHandle region.bodyScope one (EffectKey counter) (EffectPayload counter []) i rho [ { op: next, full: false } ]
     clause <- only h.clauses
-    written <- lit clause.scope 1 >>= writeCell clause.scope keyN
+    written <- lit clause.scope 1 >>= writeCell clause.scope region.binder keyN
     w <- openLet clause.scope "w" written
-    body <- readCell w.bodyScope keyN >>= closeLet clause.scope w.binder
+    body <- readCell w.bodyScope region.binder keyN >>= closeLet clause.scope w.binder
+    handled <- closeHandle region.bodyScope h.binder h.returnClause.variable [ body ]
     initial <- lit root 0
-    closeHandle root h.binder h.returnClause.variable [ body ] [ initial ]
+    closeRegion root region.binder handled [ initial ]
   withContinuation <- do
     rho <- emptyRow root
-    h <- openHandle root one (EffectKey counter) (EffectPayload counter []) Nothing i rho [ { op: next, full: true } ]
+    h <- openHandle root one (EffectKey counter) (EffectPayload counter []) i rho [ { op: next, full: true } ]
     clause <- only h.clauses
     k <- clause.continuation # maybe (raiseDiagnostic failure) pure
     body <- lit clause.scope 0 >>= termApply clause.scope k
-    closeHandle root h.binder h.returnClause.variable [ body ] []
+    closeHandle root h.binder h.returnClause.variable [ body ]
   -- a goal
   goal <- subgoal root i (qualified "resolve")
   pure
@@ -293,10 +296,11 @@ forms = case _ of
   EVariantWeaken _ _ _ e -> [ "EVariantWeaken" ] <> forms e
   EVariantAbsurd _ _ e -> [ "EVariantAbsurd" ] <> forms e
   EPerform _ _ _ _ arg -> [ "EPerform" ] <> forms arg
-  EHandle _ body h initial ->
-    [ "EHandle" ] <> forms body <> forms h.returnClause.body <> foldMap clauseForms h.opClauses <> foldMap forms initial
-  EReadCell _ _ -> [ "EReadCell" ]
-  EWriteCell _ _ v -> [ "EWriteCell" ] <> forms v
+  EHandle _ body h ->
+    [ "EHandle" ] <> forms body <> forms h.returnClause.body <> foldMap clauseForms h.opClauses
+  ERegion _ _ _ initial body -> [ "ERegion" ] <> foldMap forms initial <> forms body
+  EReadCell _ _ _ -> [ "EReadCell" ]
+  EWriteCell _ _ _ v -> [ "EWriteCell" ] <> forms v
   EOpenEff _ _ e -> [ "EOpenEff" ] <> forms e
   ETermMeta _ _ -> [ "ETermMeta" ]
   EHole _ _ -> [ "EHole" ]
@@ -347,6 +351,7 @@ reachable =
   , "EVariantAbsurd"
   , "EPerform"
   , "EHandle"
+  , "ERegion"
   , "EReadCell"
   , "EWriteCell"
   , "EOpenEff"

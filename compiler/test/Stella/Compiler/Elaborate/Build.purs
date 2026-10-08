@@ -34,7 +34,7 @@ import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XRowEn
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, UnifyError(..), emptyContext, freshMeta)
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView(..), KindView(..), PayloadView(..), TypeView(..))
 import Stella.Compiler.TypedCore as Core
-import Stella.Compiler.TypedCore (EffName(..), Ident(..), Kind(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore (EffName(..), Ident(..), Kind(..), ModuleName(..), Qualified(..), RegionName(..), RowElemKind(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
@@ -153,7 +153,7 @@ scopeViolation = case _ of
 
 -- | A handle to a type observed at the site, carrying the root's scope.
 observed :: XType -> KindEvidence -> Elab Handle
-observed ty kind = issue (TypeObject { type: ty, kind, scope: { kindVars: context.kindVars, tyVars: context.tyVars }, builtIn: Just (ScopeId 0) })
+observed ty kind = issue (TypeObject { type: ty, kind, scope: { kindVars: context.kindVars, tyVars: context.tyVars, regions: Set.empty }, builtIn: Just (ScopeId 0) })
 
 int :: Handle -> Elab Handle
 int scope = typeConstructor scope (tyName "Int") []
@@ -377,8 +377,8 @@ spec = describe "Elaborate.Build" do
     it "waits on a metavariable of the body that may mention the binder" do
       let
         b = TyVar "b"
-        Tuple mentioning metas1 = freshMeta { kind: XKType, scope: { types: Set.fromFoldable [ a, b ], kinds: Set.empty } } emptyContext
-        Tuple outside metas2 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty } } metas1
+        Tuple mentioning metas1 = freshMeta { kind: XKType, scope: { types: Set.fromFoldable [ a, b ], kinds: Set.empty, regions: Set.empty } } emptyContext
+        Tuple outside metas2 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty, regions: Set.empty } } metas1
         s = start { tentative = start.tentative { metas = metas2 } }
         applyTo m = do
           root <- rootScope
@@ -391,7 +391,7 @@ spec = describe "Elaborate.Build" do
 
     it "renames a binder that a solved metavariable of the argument names, the argument being zonked first" do
       let
-        Tuple m metas1 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty } } emptyContext
+        Tuple m metas1 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty, regions: Set.empty } } emptyContext
         s = start { tentative = start.tentative { metas = metas1 { bindings = Map.insert m (Assigned (XVar a)) metas1.bindings } } }
         applied = do
           root <- rootScope
@@ -403,8 +403,8 @@ spec = describe "Elaborate.Build" do
 
     it "waits on an unsolved metavariable of the argument that may mention a binder of the body" do
       let
-        Tuple mentioning metas1 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty } } emptyContext
-        Tuple outside metas2 = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty } } metas1
+        Tuple mentioning metas1 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty, regions: Set.empty } } emptyContext
+        Tuple outside metas2 = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } } metas1
         s = start { tentative = start.tentative { metas = metas2 } }
         applyTo m = do
           root <- rootScope
@@ -475,7 +475,7 @@ spec = describe "Elaborate.Build" do
       builds start (effect (SymbolKey (Symbol "cache"))) \object ->
         object.type `shouldEqual` XRowExtend (XRowLabelledEffectEntry (Symbol "cache") state [ xInt ]) XRowEmpty
 
-    it "refuses a payload its key does not admit, and any region" do
+    it "refuses a payload its key does not admit, and a region no binder in scope opens" do
       let
         extended key payload = do
           root <- rootScope
@@ -487,7 +487,8 @@ spec = describe "Elaborate.Build" do
         IllKinded _ -> pure unit
         other -> fail ("not ill-kinded: " <> show other)
       refuses (extended (TagKey (Tag "Ok")) \i _ -> EffectPayload state [ i ]) (_ `shouldEqual` EntryMismatch (TagKey (Tag "Ok")))
-      refuses (extended RegionKey RegionPayload) (_ `shouldEqual` RegionEntryForbidden)
+      refuses (extended (RegionKey (RegionName "r")) \_ _ -> RegionPayload (RegionName "r")) (_ `shouldEqual` IllKinded (UnboundRegion (RegionName "r")))
+      refuses (extended (RegionKey (RegionName "r")) \_ _ -> RegionPayload (RegionName "s")) (_ `shouldEqual` EntryMismatch (RegionKey (RegionName "r")))
 
     it "fails on a key the row already has" do
       rejectsObligation start (rootScope >>= \root -> emptyRow root >>= withN root >>= withN root) Required (SolutionCarriesKey keyN)
@@ -748,7 +749,7 @@ withN scope rest = int scope >>= \i -> extendRow scope keyN (TypePayload i) rest
 
 -- | A flexible row tail `?t : Row Type`, created under the site's variables.
 tailed :: Tuple MetaVar MetaContext
-tailed = freshMeta { kind: XKRow RowType, scope: { types: Set.fromFoldable [ a, r ], kinds: Set.empty } } emptyContext
+tailed = freshMeta { kind: XKRow RowType, scope: { types: Set.fromFoldable [ a, r ], kinds: Set.empty, regions: Set.empty } } emptyContext
 
 tail :: MetaVar
 tail = fst tailed

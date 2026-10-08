@@ -71,7 +71,7 @@ asked = case runElabIn session (initialState (SessionId 0) 10) created of
   Tuple other _ -> Left (show other)
   where
   created = do
-    Tuple id _ <- createSynthesis site xInt resolver Nothing
+    Tuple id _ <- createSynthesis site xInt resolver
     a <- freshTypeMeta emptyXContext XKType
     pure (Tuple id a)
 
@@ -194,7 +194,7 @@ spec = describe "Elaborate.Report" do
     it "committed before a submission that stops is drained into the report it stops with" do
       let
         initial = initialState (SessionId 0) 10
-        Tuple record metas = newGoal site xInt resolver Nothing initial.tentative.metas
+        Tuple record metas = newGoal site xInt resolver initial.tentative.metas
         start = initial { tentative { metas = metas } }
         warning = [ FrozenText "from A" ]
         -- A warns and commits; B fails, or breaks.

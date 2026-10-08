@@ -1,4 +1,4 @@
--- | The kernel's builders of `perform`, `handle`, and cells.
+-- | The kernel's builders of `perform`, `handle`, `region`, and cells.
 -- |
 -- | **The kernel does not follow the ambient row.** A `perform` is given the
 -- | element it performs on — its key and its payload, `E τ̄` — as a protocol
@@ -15,16 +15,17 @@
 -- | them jump to no join point outside, as an abstraction's body does not; and
 -- | the handled computation, which runs inside the handler, jumps to none either.
 -- |
--- | **A region of cells is lexical.** A scope stands in the region its parent
--- | stands in, and only the operation clauses of a handler owning cells stand in
--- | that handler's own; the return clause, the handled computation, and the
--- | initial values stand outside it. `readCell` and `writeCell` read a cell's
--- | type from the region the scope stands in; that the region is in the row the
--- | term stands at is the Core type checker's.
+-- | **A region is a binder** (D36). Its body scope binds a fresh region name with
+-- | the layout given, and `readCell` and `writeCell` name the region by its
+-- | binder, so a cell is reached in any scope the region stands around and in no
+-- | other. That the region is in the row the term stands at is the Core type
+-- | checker's.
 module Stella.Compiler.Elaborate.Kernel.Builder.Handler
   ( perform
   , openHandle
   , closeHandle
+  , openRegion
+  , closeRegion
   , readCell
   , writeCell
   ) where
@@ -33,19 +34,19 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Elaborate.Kernel.Builder.Common (built, childWith, closedOverParts, inheritingChild, issueTerm, kinded, rejected, regionFits, requiredIn, substitutedAt, usableIn, usableTermIn, valueType)
-import Stella.Compiler.Elaborate.CorePlus.Context (XContext, bindTyVar, bindVar)
+import Stella.Compiler.Elaborate.Kernel.Builder.Common (abstractedChild, built, childWith, closedOver, closedOverParts, inheritingChild, issueTerm, kinded, rejected, substitutedAt, usableIn, usableTermIn, valueType)
+import Stella.Compiler.Elaborate.CorePlus.Context (XContext, bindRegion, bindTyVar, bindVar)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (BuildError(..), Defect(..))
 import Stella.Compiler.Elaborate.Environment.Effects (EffectShape, OperationShape, lookupEffect)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, break, currentMetas, freshBinderName, freshIdent, holdOpen, issue, resolveBinder, resolveExpr, resolveScope)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, break, currentMetas, freshBinderName, freshIdent, freshRegionName, holdOpen, issue, resolveBinder, resolveExpr, resolveScope)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (BinderObject(..), Handle, HandleObject(..), ScopeId, ScopeObject)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Mechanism.Kinding (KindEvidence(..), checkKind, wellFormedKey)
-import Stella.Compiler.Elaborate.CorePlus.Term (Region, XExpr(..), XOpClause(..), freeVarsOf)
-import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..), freeRigids)
+import Stella.Compiler.Elaborate.CorePlus.Term (XCell, XExpr(..), XOpClause(..), freeVarsOf)
+import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), freeRegions)
 import Stella.Compiler.Elaborate.Mechanism.Unify (substitute)
 import Stella.Compiler.Elaborate.Vocabulary.View (PayloadView(..))
-import Stella.Compiler.TypedCore (EffName, Ident, OpName, Qualified, RowElemKind(..), RowKey(..), TyVar(..))
+import Stella.Compiler.TypedCore (EffName, Ident, OpName, Qualified, RegionName, RowElemKind(..), RowKey(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (functionTy, unitTy)
 import Data.Array as Array
 import Data.Either (Either(..))
@@ -76,7 +77,7 @@ perform scopeHandle key payload op typeArgHandles argumentHandle = do
   env <- askEnv
   metas <- currentMetas
   for_ (Array.zip operation.tyBinders typeArgs) \(Tuple b arg) ->
-    case checkKind env.session.kinding { kindVars: scope.context.kindVars, tyVars: scope.context.tyVars } metas b.kind arg.type of
+    case checkKind env.session.kinding { kindVars: scope.context.kindVars, tyVars: scope.context.tyVars, regions: Map.keys scope.context.regions } metas b.kind arg.type of
       Left fault -> rejected (IllKinded fault)
       Right _ -> pure unit
   argument <- usableTermIn scope argumentHandle
@@ -89,24 +90,20 @@ perform scopeHandle key payload op typeArgHandles argumentHandle = do
     operation.resumesWith
   issueTerm scope (EPerform unit key op typeArgTypes argument.term) resumes
 
--- | Open `handle e with h`, with the cells given or without: a binder, the return
--- | clause's scope and the variable it binds, and for each operation, in the
--- | order given, its clause's scope and what it binds.
+-- | Open `handle e with h`: a binder, the return clause's scope and the variable
+-- | it binds, and for each operation, in the order given, its clause's scope and
+-- | what it binds.
 -- |
 -- | `e` is a term the scope may use, jumping to no join point. The element is
 -- | judged as `perform` judges one; the clauses name every operation its effect
 -- | declares, once each, and `full` ones bind a continuation. `β` is a type the
--- | scope may use at `Type`, and `ρ` one at `Row Effect`. A layout's keys are
--- | distinct and well-formed for a `Row Type`, and its types ones the scope may
--- | use at `Type`; a handler with one binds a fresh region variable `r`, its
--- | clauses stand at `( region r ι | ρ )` in its region, and the return clause,
--- | outside it, at `ρ`. The names are the host's, fresh where they are bound.
+-- | scope may use at `Type`, and `ρ` one at `Row Effect`, which every clause
+-- | stands at. The names are the host's, fresh where they are bound.
 openHandle
   :: Handle
   -> Handle
   -> RowKey
   -> PayloadView
-  -> Maybe (P.Array { key :: RowKey, type :: Handle })
   -> Handle
   -> Handle
   -> P.Array { op :: OpName, full :: P.Boolean }
@@ -121,7 +118,7 @@ openHandle
              , scope :: Handle
              }
        }
-openHandle scopeHandle computationHandle key payload layoutGiven answerHandle residualHandle clausesGiven = do
+openHandle scopeHandle computationHandle key payload answerHandle residualHandle clausesGiven = do
   scope <- resolveScope scopeHandle
   computation <- usableTermIn scope computationHandle
   unless (Set.isEmpty (freeVarsOf computation.term).joins) (rejected (JoinOutOfScope computationHandle))
@@ -141,30 +138,17 @@ openHandle scopeHandle computationHandle key payload layoutGiven answerHandle re
   operations <- traverse (\c -> operationOf element.effect effect c.op) clausesGiven
   for_ (Map.keys effect.operations) \op ->
     unless (Array.elem op ops) (rejected (MissingClause op))
-  layout <- traverse (layoutIn scope) layoutGiven
-  region <- traverse (\cells -> freshBinderName (Map.keys scope.context.tyVars) "r" <#> \var -> { var, cells }) layout
-  let
-    clauseRow = case region of
-      Just r -> XRowExtend (XRowRegionEntry (XVar r.var) (layoutRow r.cells)) residual
-      Nothing -> residual
-    clauseContext = case region of
-      Just r -> bindTyVar scope.context r.var XKType
-      Nothing -> scope.context
-    clauseRegion = case region of
-      Just r -> Just { var: r.var, cells: Map.fromFoldable (map (\c -> Tuple c.key c.ty) r.cells) }
-      Nothing -> scope.region
   hub <- inheritingChild scope scope.context
   returnName <- freshIdent (Map.keys scope.context.vars) "x"
   returnScope <- childWith hub (bindVar scope.context returnName computation.claimed) Map.empty Nothing
   clauses <- traverse
-    (\(Tuple given operation) -> openClause scope hub clauseContext clauseRegion clauseRow answer element.args effect given operation)
+    (\(Tuple given operation) -> openClause scope hub scope.context residual answer element.args effect given operation)
     (Array.zip clausesGiven operations)
   binder <- issue
     ( BinderObject
         ( HandleBinder
             { computation: computation.term
             , element: element.entry
-            , layout: map (\r -> { var: r.var, cells: map (\c -> { key: c.key, ty: c.ty }) r.cells }) region
             , answer
             , residual
             , returnClause: { name: returnName, type: computation.claimed, scope: returnScope.id }
@@ -180,28 +164,18 @@ openHandle scopeHandle computationHandle key payload layoutGiven answerHandle re
   handles <- traverse issueClause clauses
   pure { binder, returnClause: { variable: returnVariable, scope: returnScopeHandle }, clauses: handles }
 
--- | Close a handler opened in this scope with the return clause's body, one body
--- | for each operation clause in the order opened, and one initial value for each
--- | cell, claimed at the answer type.
+-- | Close a handler opened in this scope with the return clause's body and one
+-- | body for each operation clause in the order opened, claimed at the answer
+-- | type.
 -- |
--- | Each body is visible under its own clause and jumps to no join point; the
--- | initial values are terms this scope may use, outside the region. Neither the
--- | answer type nor the residual row may mention the region variable, and a
--- | handler owning cells requires the residual row to hold no region, together
--- | with the term.
-closeHandle :: Handle -> Handle -> Handle -> P.Array Handle -> P.Array Handle -> Elab Handle
-closeHandle scopeHandle binderHandle returnHandle clauseHandles initialHandles = do
+-- | Each body is visible under its own clause and jumps to no join point.
+closeHandle :: Handle -> Handle -> Handle -> P.Array Handle -> Elab Handle
+closeHandle scopeHandle binderHandle returnHandle clauseHandles = do
   scope <- resolveScope scopeHandle
   resolveBinder binderHandle >>= case _ of
     HandleBinder b -> do
       when (Array.length clauseHandles /= Array.length b.clauses)
         (rejected (ClauseCount binderHandle (Array.length b.clauses) (Array.length clauseHandles)))
-      let
-        cells = case b.layout of
-          Just l -> Array.length l.cells
-          Nothing -> 0
-      when (Array.length initialHandles /= cells)
-        (rejected (InitialValueCount binderHandle cells (Array.length initialHandles)))
       returnBody <- resolveExpr returnHandle
       clauseBodies <- traverse resolveExpr clauseHandles
       closedOverParts scope binderHandle b
@@ -211,69 +185,116 @@ closeHandle scopeHandle binderHandle returnHandle clauseHandles initialHandles =
       for_ (Array.zip ([ returnHandle ] <> clauseHandles) ([ returnBody ] <> clauseBodies)) \(Tuple h body) ->
         unless (Set.isEmpty (freeVarsOf body.term).joins) (rejected (JoinOutOfScope h))
       let
-        -- The operation clauses of a handler owning cells stand in its region,
-        -- and everything else in the region the handler stands in.
-        clauseRegion = case b.layout of
-          Just l -> Just { var: l.var, cells: Map.fromFoldable (map (\c -> Tuple c.key c.ty) l.cells) }
-          Nothing -> scope.region
-      regionFits scope.region returnHandle returnBody
-      for_ (Array.zip clauseHandles clauseBodies) \(Tuple h body) -> regionFits clauseRegion h body
-      initials <- traverse (usableTermIn scope) initialHandles
-      metas <- currentMetas
-      for_ b.layout \l ->
-        when (Set.member l.var (freeRigids (substitute metas b.answer) <> freeRigids (substitute metas b.residual)))
-          (break (RegionEscapes l.var))
-      for_ b.layout \_ -> requiredIn scope (XLacks RegionKey b.residual)
-      let
         handler =
           { element: b.element
-          , cells: b.layout
           , returnClause: { binder: b.returnClause.name, ty: b.returnClause.type, body: returnBody.term }
           , opClauses: Array.zipWith clauseOf b.clauses clauseBodies
           }
-      issueTerm scope (EHandle unit b.computation handler (map _.term initials)) b.answer
-    ForallBinder _ -> misuse
-    AssumedConstraint _ -> misuse
-    LambdaBinder _ -> misuse
-    TypeAbsBinder _ -> misuse
-    ConstraintAbsBinder _ -> misuse
-    LetBinder _ -> misuse
-    LetRecGroup _ -> misuse
-    JoinBinder _ -> misuse
-    CaseBinder _ -> misuse
-    BindBinder _ -> misuse
-    SwitchBinder _ -> misuse
+      issueTerm scope (EHandle unit b.computation handler) b.answer
+    RegionBinder _ -> misuse binderHandle
+    ForallBinder _ -> misuse binderHandle
+    AssumedConstraint _ -> misuse binderHandle
+    LambdaBinder _ -> misuse binderHandle
+    TypeAbsBinder _ -> misuse binderHandle
+    ConstraintAbsBinder _ -> misuse binderHandle
+    LetBinder _ -> misuse binderHandle
+    LetRecGroup _ -> misuse binderHandle
+    JoinBinder _ -> misuse binderHandle
+    CaseBinder _ -> misuse binderHandle
+    BindBinder _ -> misuse binderHandle
+    SwitchBinder _ -> misuse binderHandle
   where
-  misuse :: forall a. Elab a
-  misuse = rejected (BinderMisuse binderHandle)
-
   clauseOf c body = case c.continuation of
     Just k -> XFullClause { op: c.op, tyBinders: c.tyBinders, argBinder: c.argument, contBinder: k, body: body.term }
     Nothing -> XFastClause { op: c.op, tyBinders: c.tyBinders, argBinder: c.argument, body: body.term }
 
--- | `readCell k`, claimed at the type the scope's region gives `k`.
-readCell :: Handle -> RowKey -> Elab Handle
-readCell scopeHandle key = do
+-- | Open `region [ℓ] ( k̄ : σ̄ ) @ ( … ) in …`: a binder, the fresh region name it
+-- | binds, and the scope its body is built in, which binds that name with the
+-- | layout given and jumps to no join point outside, as Core discards the join
+-- | points at a region's body. The name is what a row element and a key of the
+-- | region are written with.
+-- |
+-- | A layout's keys are distinct and well-formed for a `Row Type`, and its types
+-- | ones the scope may use at `Type`.
+openRegion :: Handle -> P.Array { key :: RowKey, type :: Handle } -> Elab { binder :: Handle, name :: RegionName, bodyScope :: Handle }
+openRegion scopeHandle layoutGiven = do
   scope <- resolveScope scopeHandle
-  ty <- cellIn scopeHandle scope key
-  issueTerm scope (EReadCell unit key) ty
+  cells <- layoutIn scope layoutGiven
+  name <- freshRegionName (Map.keys scope.context.regions) "r"
+  body <- abstractedChild scope
+    (bindRegion scope.context name (Map.fromFoldable (map (\c -> Tuple c.key c.ty) cells)))
+  binder <- issue (BinderObject (RegionBinder { name, cells, parent: scope.id, body: body.id }))
+  holdOpen body.id body.ancestors
+  bodyHandle <- issue (ScopeObject body)
+  pure { binder, name, bodyScope: bodyHandle }
 
--- | `writeCell k e`, claimed at `Unit`. What `e` is claimed at is the Core type
+-- | Close a region opened in this scope with its body and one initial value for
+-- | each cell, claimed at the type the body is claimed at.
+-- |
+-- | The body is visible under the binder and jumps to no join point; the initial
+-- | values are terms this scope may use, outside the region. What the initial values are claimed at is
+-- | the Core type checker's. A body claimed at a type mentioning the region would
+-- | let a reference into it outlive it, and is refused.
+closeRegion :: Handle -> Handle -> Handle -> P.Array Handle -> Elab Handle
+closeRegion scopeHandle binderHandle bodyHandle initialHandles = do
+  scope <- resolveScope scopeHandle
+  resolveBinder binderHandle >>= case _ of
+    RegionBinder b -> do
+      when (Array.length initialHandles /= Array.length b.cells)
+        (rejected (InitialValueCount binderHandle (Array.length b.cells) (Array.length initialHandles)))
+      body <- resolveExpr bodyHandle
+      closedOver scope binderHandle b body.builtIn bodyHandle
+      unless (Set.isEmpty (freeVarsOf body.term).joins) (rejected (JoinOutOfScope bodyHandle))
+      initials <- traverse (usableTermIn scope) initialHandles
+      metas <- currentMetas
+      let
+        claimed = substitute metas body.claimed
+      when (Set.member b.name (freeRegions claimed)) (rejected (RegionEscapes b.name))
+      issueTerm scope (ERegion unit b.name b.cells (map _.term initials) body.term) claimed
+    HandleBinder _ -> misuse binderHandle
+    ForallBinder _ -> misuse binderHandle
+    AssumedConstraint _ -> misuse binderHandle
+    LambdaBinder _ -> misuse binderHandle
+    TypeAbsBinder _ -> misuse binderHandle
+    ConstraintAbsBinder _ -> misuse binderHandle
+    LetBinder _ -> misuse binderHandle
+    LetRecGroup _ -> misuse binderHandle
+    JoinBinder _ -> misuse binderHandle
+    CaseBinder _ -> misuse binderHandle
+    BindBinder _ -> misuse binderHandle
+    SwitchBinder _ -> misuse binderHandle
+
+-- | `readCell ℓ.k`, claimed at the type the region's layout gives `k`. The
+-- | region is named by its binder, and the scope must stand inside it.
+readCell :: Handle -> Handle -> RowKey -> Elab Handle
+readCell scopeHandle binderHandle key = do
+  scope <- resolveScope scopeHandle
+  cell <- cellIn scopeHandle scope binderHandle key
+  issueTerm scope (EReadCell unit cell.region key) cell.ty
+
+-- | `writeCell ℓ.k e`, claimed at `Unit`. What `e` is claimed at is the Core type
 -- | checker's.
-writeCell :: Handle -> RowKey -> Handle -> Elab Handle
-writeCell scopeHandle key valueHandle = do
+writeCell :: Handle -> Handle -> RowKey -> Handle -> Elab Handle
+writeCell scopeHandle binderHandle key valueHandle = do
   scope <- resolveScope scopeHandle
-  _ <- cellIn scopeHandle scope key
+  cell <- cellIn scopeHandle scope binderHandle key
   value <- usableTermIn scope valueHandle
-  issueTerm scope (EWriteCell unit key value.term) (XCon unitTy [])
+  issueTerm scope (EWriteCell unit cell.region key value.term) (XCon unitTy [])
 
--- The type the scope's region gives a cell.
-cellIn :: Handle -> ScopeObject -> RowKey -> Elab XType
-cellIn scopeHandle scope key = case scope.region of
-  Nothing -> rejected (NoRegion scopeHandle)
-  Just region -> case Map.lookup key region.cells of
-    Just ty -> pure ty
-    Nothing -> rejected (CellAbsent key)
+-- The region a binder opens and the type its layout gives a cell, where the
+-- scope stands inside that region.
+cellIn :: Handle -> ScopeObject -> Handle -> RowKey -> Elab { region :: RegionName, ty :: XType }
+cellIn scopeHandle scope binderHandle key =
+  resolveBinder binderHandle >>= case _ of
+    RegionBinder b -> case Map.lookup b.name scope.context.regions of
+      Nothing -> rejected (NoRegion scopeHandle)
+      Just region -> case Map.lookup key region.layout of
+        Just ty -> pure { region: b.name, ty }
+        Nothing -> rejected (CellAbsent key)
+    _ -> misuse binderHandle
+
+misuse :: forall a. Handle -> Elab a
+misuse binderHandle = rejected (BinderMisuse binderHandle)
 
 -- The effect element a key and a payload make, kinded: a region is refused, and
 -- a type payload is not an effect.
@@ -283,7 +304,7 @@ elementIn
   -> PayloadView
   -> Elab { entry :: XRowEntry, effect :: Qualified EffName, args :: P.Array XType }
 elementIn scope key = case _ of
-  RegionPayload _ _ -> rejected RegionEntryForbidden
+  RegionPayload _ -> rejected RegionEntryForbidden
   TypePayload _ -> rejected (EntryMismatch key)
   EffectPayload e argHandles -> do
     args <- traverse (map _.type <<< usableIn scope) argHandles
@@ -311,21 +332,17 @@ operationOf name effect op = case Map.lookup op effect.operations of
 
 -- A layout's cells: distinct keys, well-formed for a `Row Type`, at types the
 -- scope may use.
-layoutIn :: ScopeObject -> P.Array { key :: RowKey, type :: Handle } -> Elab (P.Array { key :: RowKey, ty :: XType })
+layoutIn :: ScopeObject -> P.Array { key :: RowKey, type :: Handle } -> Elab (P.Array XCell)
 layoutIn scope given = do
   env <- askEnv
   let
     keys = map _.key given
   for_ (Array.findIndex (\k -> Array.length (Array.filter (_ == k) keys) > 1) keys) \i ->
     for_ (Array.index keys i) \k -> rejected (DuplicateCell k)
-  for_ keys \k -> case wellFormedKey env.session.kinding k (Just RowType) of
+  for_ keys \k -> case wellFormedKey env.session.kinding (Map.keys scope.context.regions) k (Just RowType) of
     Left fault -> rejected (IllKinded fault)
     Right _ -> pure unit
   traverse (\c -> valueType scope c.type <#> \ty -> { key: c.key, ty }) given
-
--- `( k̄ : σ̄ )`, a layout as a closed row.
-layoutRow :: P.Array { key :: RowKey, ty :: XType } -> XType
-layoutRow = Array.foldr (\c rest -> XRowExtend (XRowTypeEntry c.key c.ty) rest) XRowEmpty
 
 -- What the binder records of an operation clause.
 type ClauseRecord =
@@ -343,7 +360,6 @@ openClause
   :: ScopeObject
   -> ScopeObject
   -> XContext
-  -> Maybe Region
   -> XType
   -> XType
   -> P.Array XType
@@ -351,7 +367,7 @@ openClause
   -> { op :: OpName, full :: P.Boolean }
   -> OperationShape
   -> Elab { record :: ClauseRecord, scope :: ScopeObject }
-openClause scope hub clauseContext clauseRegion clauseRow answer args effect given operation = do
+openClause scope hub clauseContext clauseRow answer args effect given operation = do
   names <- traverse (\b -> freshBinderName (Map.keys clauseContext.tyVars) (hintOf b.name)) operation.tyBinders
   let
     tyBinders = Array.zipWith (\b name -> { name, kind: b.kind }) operation.tyBinders names
@@ -376,7 +392,7 @@ openClause scope hub clauseContext clauseRegion clauseRow answer args effect giv
     context = Array.foldl (\ctx p -> bindVar ctx p.name p.ty)
       (bindVar bound argumentName argumentType)
       (Array.fromFoldable continuation)
-    clauseScope = inner { context = context, region = clauseRegion }
+    clauseScope = inner { context = context }
   pure
     { record:
         { op: given.op

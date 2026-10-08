@@ -63,6 +63,7 @@ module Stella.Compiler.Elaborate.Kernel.Elab
   , resolveOccurrence
   , freshScopeId
   , freshBinderName
+  , freshRegionName
   , freshIdent
   , freshJoin
   , holdOpen
@@ -92,11 +93,11 @@ import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..), Ob
 import Stella.Compiler.Elaborate.Mechanism.Pending (EqualityGoal, GoalRecord, Job(..), PendingId, Site, SynthRef, goalOf, newGoal)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError)
 import Stella.Compiler.Elaborate.Mechanism.Scheduler (Scheduler, create, emptyScheduler, enqueueInitial, wake)
-import Stella.Compiler.Elaborate.CorePlus.Term (Region, TermMetaVar, XExpr)
-import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..), assignTermMeta, regionWithin, termScopeOf, zonkExpr)
+import Stella.Compiler.Elaborate.CorePlus.Term (TermMetaVar, XExpr)
+import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta as TermMeta
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint, XType(..))
-import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar, TyVar(..))
+import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar, RegionName(..), TyVar(..))
 import Stella.Compiler.Elaborate.Vocabulary.Trace (TraceEvent, Tracing(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement, MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupTermMeta, substitute, unifyKind, unifyType)
 import Stella.Compiler.Elaborate.Mechanism.Unify as Unify
@@ -452,6 +453,13 @@ freshBinderName taken hint = Elab \_ s ->
   in
     Tuple (Done name) (s { tentative { names { nextBinder = k + 1 } } })
 
+-- | A region name a builder binds, by the rule `freshBinderName` follows and
+-- | from the same supply: the region names in scope where it is bound are the
+-- | set given.
+freshRegionName :: Set RegionName -> P.String -> Elab RegionName
+freshRegionName taken hint =
+  (\(TyVar name) -> RegionName name) <$> freshBinderName (Set.map (\(RegionName name) -> TyVar name) taken) hint
+
 -- | A value variable a builder binds, by the rule `freshBinderName` follows, from
 -- | a supply of its own: the value variables in scope where it is bound are the
 -- | set given.
@@ -623,6 +631,7 @@ misuse = case _ of
   PayloadMismatch _ _ _ -> false
   EscapingVariable _ _ -> false
   EscapingKindVariable _ _ -> false
+  EscapingRegion _ _ -> false
   KindMismatch _ _ _ -> false
   KindNotEqual _ _ -> false
   KindOccursCheck _ _ -> false
@@ -695,8 +704,8 @@ invariantBreach = case _ of
 
 -- | A type metavariable at the kind given, created under the context given.
 -- |
--- | Its scope is the type and kind variables that context binds, which is what a
--- | solution may mention. The name it takes comes from the supply in `Ψ`, which
+-- | Its scope is the type and kind variables and the region names that context
+-- | binds, which is what a solution may mention. The name it takes comes from the supply in `Ψ`, which
 -- | a rollback restores.
 freshTypeMeta :: XContext -> XKind -> Elab XType
 freshTypeMeta context kind = Elab \_ s ->
@@ -704,6 +713,7 @@ freshTypeMeta context kind = Elab \_ s ->
     scope =
       { types: Map.keys context.tyVars
       , kinds: context.kindVars
+      , regions: Map.keys context.regions
       }
     Tuple m metas = freshMeta { kind, scope } s.tentative.metas
   in
@@ -732,33 +742,31 @@ equateKinds site k1 k2 = do
       | otherwise -> raiseDiagnostic (EquationFailed site.origin err)
     Right solved -> Elab \_ s -> Tuple (Done unit) (s { tentative { metas = solved } })
 
--- | A term metavariable at the type given, created under the context given and in
--- | the region of cells given, where it stands in one.
+-- | A term metavariable at the type given, created under the context given.
 -- |
--- | Its scope is what that context binds and the cells that region holds, read
+-- | Its scope is what that context binds, read
 -- | by `termScopeOf` rather than stated by the caller, so no caller can admit a
 -- | solution the context does not have in scope. The caller places it in a term
 -- | as `ETermMeta`, with the annotation of the place it stands.
-freshTermMeta :: XContext -> Maybe Region -> XType -> Elab TermMetaVar
-freshTermMeta context region ty = Elab \_ s ->
+freshTermMeta :: XContext -> XType -> Elab TermMetaVar
+freshTermMeta context ty = Elab \_ s ->
   let
-    Tuple m metas = TermMeta.freshTermMeta { ty, scope: termScopeOf context region } s.tentative.metas
+    Tuple m metas = TermMeta.freshTermMeta { ty, scope: termScopeOf context } s.tentative.metas
   in
     Tuple (Done m) (s { tentative { metas = metas } })
 
--- | `⟨ τ by f ⟩` at a site and in a region of cells: a term metavariable at `τ`
--- | under the site's context and in the region, and the synthesis job that fills
--- | it, created together and queued for a first attempt. The goal carries the
--- | region, so the attempt that runs it stands in the same one.
+-- | `⟨ τ by f ⟩` at a site: a term metavariable at `τ` under the site's context,
+-- | and the synthesis job that fills it, created together and queued for a first
+-- | attempt.
 -- |
 -- | The job is queued rather than attempted, since it may be created inside an
 -- | attempt, and attempting it there would open one inside another. Both belong
 -- | to what the current attempt owns, so a rollback removes the two together.
 -- | The metavariable is returned for the caller to place as `ETermMeta`.
-createSynthesis :: Site -> XType -> SynthRef -> Maybe Region -> Elab (Tuple PendingId TermMetaVar)
-createSynthesis site expectedType synthesizer region = Elab \_ s ->
+createSynthesis :: Site -> XType -> SynthRef -> Elab (Tuple PendingId TermMetaVar)
+createSynthesis site expectedType synthesizer = Elab \_ s ->
   let
-    Tuple goal metas = newGoal site expectedType synthesizer region s.tentative.metas
+    Tuple goal metas = newGoal site expectedType synthesizer s.tentative.metas
     Tuple id created = create site (JobSynthesis goal) s.tentative.scheduler
   in
     Tuple (Done (Tuple id (goalOf goal).target))
@@ -770,8 +778,7 @@ createSynthesis site expectedType synthesizer region = Elab \_ s ->
 -- | `createSynthesis` and `submitSynthesis` install a job and its target
 -- | together; this is the independent check of what they guarantee. The target must be held
 -- | unsolved, stand at the goal's type once both are zonked against the current
--- | `Ψ`, and have a scope within what the site binds and the goal's region
--- | holds — within and not equal,
+-- | `Ψ`, and have a scope within what the site binds — within and not equal,
 -- | since a target standing in another solution is narrowed with it. A violation
 -- | is a defect of the host and not of the program.
 checkSynthesisTarget :: PendingId -> Site -> GoalRecord -> Elab Unit
@@ -785,7 +792,7 @@ checkSynthesisTarget id site record = Elab \_ s ->
       Just (TermUnsolved info)
         | substitute metas info.ty /= substitute metas goal.expectedType ->
             Just (TargetTypeDiffers (substitute metas info.ty) (substitute metas goal.expectedType))
-        | not (within info.scope (termScopeOf site.context goal.region)) ->
+        | not (within info.scope (termScopeOf site.context)) ->
             Just (TargetScopeWider goal.target)
         | otherwise -> Nothing
   in
@@ -797,7 +804,7 @@ checkSynthesisTarget id site record = Elab \_ s ->
     Set.subset inner.values outer.values
       && Set.subset inner.types outer.types
       && Set.subset inner.kinds outer.kinds
-      && regionWithin inner.region outer.region
+      && Set.subset inner.regions outer.regions
 
 -- | `?m := e`, reported at the site given.
 -- |
@@ -828,7 +835,7 @@ termMisuse = case _ of
   TermEscapingType _ _ -> false
   TermEscapingKind _ _ -> false
   TermCapturesJoin _ _ -> false
-  TermEscapingCell _ _ -> false
+  TermEscapingRegion _ _ -> false
 
 -- | Assume a row constraint at a site, returning the context that carries it.
 -- |

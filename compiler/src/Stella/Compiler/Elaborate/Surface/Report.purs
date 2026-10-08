@@ -101,6 +101,7 @@ printUnifyError = case _ of
   ConstraintNotEqual _ _ -> "Two constraints do not match"
   EscapingVariable _ (TyVar v) -> fmt @"The type variable `{v}` would be used outside its scope" { v }
   EscapingKindVariable _ (KindVar k) -> fmt @"The kind variable `{k}` would be used outside its scope" { k }
+  EscapingRegion _ _ -> "A cell would be reached outside the handling expression declaring it"
   KindEscapingVariable _ (KindVar k) -> fmt @"The kind variable `{k}` would be used outside its scope" { k }
   KindNotQuantifiable k -> fmt @"A type variable cannot stand at the kind `{k}`" { k: printKind k }
   KindDoesNotProduceType k -> fmt @"`{k}` does not produce `Type`" { k: printKind k }

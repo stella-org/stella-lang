@@ -15,7 +15,7 @@ import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Mechanism.Kinding (KindEvidence(..), KindingEnv, KindingFault(..), KindingScope, synthKind)
 import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindMetaBinding(..), MetaBinding(..), emptyContext, freshKindMeta, freshMeta)
-import Stella.Compiler.TypedCore (EffName(..), Kind(..), KindVar(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore (EffName(..), Kind(..), KindVar(..), ModuleName(..), Qualified(..), RegionName(..), RowElemKind(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Data.Either (Either(..))
 import Data.Map (Map)
 import Data.Map as Map
@@ -68,7 +68,7 @@ vars :: Map TyVar XKind
 vars = Map.fromFoldable [ Tuple a XKType, Tuple r (XKRow RowType) ]
 
 scope :: KindingScope
-scope = { kindVars: Set.empty, tyVars: vars }
+scope = { kindVars: Set.empty, tyVars: vars, regions: Set.empty }
 
 kindOf :: XType -> Either KindingFault KindEvidence
 kindOf = synthKind env scope emptyContext
@@ -155,12 +155,14 @@ spec = describe "Elaborate.Kinding" do
       kindOf (XConstrained (XLacks negative (XVar r)) xInt) `shouldEqual` Left (NegativePosition (-1))
       kindOf (field negative xInt XRowEmpty) `shouldEqual` Left (NegativePosition (-1))
       kindOf (XConstrained (XLacks absent XRowEmpty) xInt) `shouldEqual` Left (UnknownEffect (Qualified main' (EffName "Absent")))
-      kindOf (field RegionKey xInt XRowEmpty) `shouldEqual` Left (KeyNotOfRowKind RegionKey RowType)
+      kindOf (field (RegionKey (RegionName "r")) xInt XRowEmpty) `shouldEqual` Left (KeyNotOfRowKind (RegionKey (RegionName "r")) RowType)
+      kindOf (XConstrained (XLacks (RegionKey (RegionName "r")) XRowEmpty) xInt) `shouldEqual` Left (UnboundRegion (RegionName "r"))
+      kindOf (XRowExtend (XRowRegionEntry (RegionName "r")) XRowEmpty) `shouldEqual` Left (UnboundRegion (RegionName "r"))
 
   describe "what it reads of Ψ" do
     it "reads an unsolved metavariable's kind, and applies a solved one" do
       let
-        Tuple m ctx = freshMeta { kind: XKRow RowType, scope: { types: Set.empty, kinds: Set.empty } } emptyContext
+        Tuple m ctx = freshMeta { kind: XKRow RowType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } } emptyContext
         solved = ctx { bindings = Map.insert m (Assigned xInt) ctx.bindings }
       synthKind env scope ctx (XMeta m) `shouldEqual` Right (ExactKind (XKRow RowType))
       synthKind env scope solved (listOf (XMeta m)) `shouldEqual` Right (ExactKind XKType)
@@ -168,7 +170,7 @@ spec = describe "Elaborate.Kinding" do
     it "refuses a kind metavariable wherever it reads one" do
       let
         Tuple k ctx0 = freshKindMeta { scope: Set.empty, requirements: Set.empty } emptyContext
-        Tuple m ctx = freshMeta { kind: XKMeta k, scope: { types: Set.empty, kinds: Set.empty } } ctx0
+        Tuple m ctx = freshMeta { kind: XKMeta k, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } } ctx0
         settledK = ctx { kindBindings = Map.insert k (KindAssigned XKType) ctx.kindBindings }
       synthKind env scope ctx (XMeta m) `shouldEqual` Left KindNotSettled
       synthKind env scope ctx (con "Proxy" [ XKMeta k ]) `shouldEqual` Left KindNotSettled

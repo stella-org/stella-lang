@@ -9,7 +9,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore (DecisionTree(..), EffName(..), Expr(..), Ident(..), Literal(..), ModuleName(..), OpClause(..), OpName(..), Occurrence(..), Qualified(..), RowEntry(..), TyName(..), Type(..), globalsOf)
+import Stella.Compiler.TypedCore (DecisionTree(..), EffName(..), Expr(..), Ident(..), Literal(..), ModuleName(..), OpClause(..), OpName(..), Occurrence(..), Qualified(..), RegionName(..), RowEntry(..), RowKey(..), Symbol(..), TyName(..), Type(..), globalsOf)
 import Data.Maybe (Maybe(..))
 import Data.Set as Set
 import Test.Spec (Spec, describe, it)
@@ -42,7 +42,6 @@ spec = describe "Stella.Compiler.TypedCore.Reference" do
     let
       handler =
         { element: RowEffectEntry (Qualified main' (EffName "Counter")) []
-        , cells: Nothing
         , returnClause: { binder: Ident "x", ty: unitTy, body: Global 0 (global "g") [] }
         , opClauses:
             [ FastClause
@@ -53,5 +52,9 @@ spec = describe "Stella.Compiler.TypedCore.Reference" do
                 }
             ]
         }
-    globalsOf (Handle 0 (Var 0 (Ident "e")) handler [])
+    globalsOf (Handle 0 (Var 0 (Ident "e")) handler)
       `shouldEqual` Set.fromFoldable [ global "g", global "h" ]
+
+  it "names the globals of a region's initial values and its body" do
+    globalsOf (Region 0 (RegionName "r") [ { key: SymbolKey (Symbol "n"), ty: unitTy } ] [ Global 0 (global "i") [] ] (WriteCell 0 (RegionName "r") (SymbolKey (Symbol "n")) (Global 0 (global "b") [])))
+      `shouldEqual` Set.fromFoldable [ global "i", global "b" ]

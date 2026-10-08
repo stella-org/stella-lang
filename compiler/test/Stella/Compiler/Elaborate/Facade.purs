@@ -42,7 +42,7 @@ import Stella.Compiler.Elaborate.CorePlus.Term (TermMetaVar, XExpr(..))
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), TermBinding(..), lookupMeta, lookupTermMeta)
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView(..), KindView(..), PayloadView(..), TypeView(..))
-import Stella.Compiler.TypedCore (Ident(..), Literal(..), ModuleName(..), OpName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyVar(..))
+import Stella.Compiler.TypedCore (Ident(..), Literal(..), ModuleName(..), OpName(..), Qualified(..), RegionName(..), RowElemKind(..), RowKey(..), Symbol(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy, primSignature, recordTy)
 import Data.Array as Array
 import Data.Either (Either(..), either)
@@ -119,10 +119,12 @@ operationOf = case _ of
     OpenEff _ _ _ -> "openEff"
   HandlerRequest r -> case r of
     Perform _ _ _ _ _ _ -> "perform"
-    OpenHandle _ _ _ _ _ _ _ _ -> "openHandle"
-    CloseHandle _ _ _ _ _ -> "closeHandle"
-    ReadCell _ _ -> "readCell"
-    WriteCell _ _ _ -> "writeCell"
+    OpenHandle _ _ _ _ _ _ _ -> "openHandle"
+    CloseHandle _ _ _ _ -> "closeHandle"
+    OpenRegion _ _ -> "openRegion"
+    CloseRegion _ _ _ _ -> "closeRegion"
+    ReadCell _ _ _ -> "readCell"
+    WriteCell _ _ _ _ -> "writeCell"
   SolveRequest r -> case r of
     FreshMetaType _ _ -> "freshMetaType"
     IsAssigned _ -> "isAssigned"
@@ -210,6 +212,8 @@ publicOperations =
   , "perform"
   , "openHandle"
   , "closeHandle"
+  , "openRegion"
+  , "closeRegion"
   , "readCell"
   , "writeCell"
   -- Solve
@@ -259,6 +263,7 @@ allShapes =
   , SwitchLitShape
   , SwitchKeyShape
   , HandlerShape
+  , RegionShape
   ]
 
 -- | A handle standing for whatever an operation is given; nothing here resolves
@@ -289,6 +294,7 @@ answers =
   , SwitchLitAnswer { binder: h 0, branches: [], fallback: h 1 }
   , SwitchKeyAnswer { binder: h 0, branches: [], fallback: Nothing }
   , HandlerAnswer { binder: h 0, returnClause: { variable: h 1, scope: h 2 }, clauses: [] }
+  , RegionAnswer { binder: h 0, name: RegionName "r", bodyScope: h 1 }
   ]
 
 -- | What an operation, called once, makes and takes back.
@@ -356,10 +362,12 @@ probes =
   , p "variantAbsurd" (F.variantAbsurd s s s)
   , p "openEff" (F.openEff s s s)
   , p "perform" (F.perform s key (TypePayload s) (OpName "op") [] s)
-  , p "openHandle" (F.openHandle s s key (TypePayload s) Nothing s s [])
-  , p "closeHandle" (F.closeHandle s s s [] [])
-  , p "readCell" (F.readCell s key)
-  , p "writeCell" (F.writeCell s key s)
+  , p "openHandle" (F.openHandle s s key (TypePayload s) s s [])
+  , p "closeHandle" (F.closeHandle s s s [])
+  , p "openRegion" (F.openRegion s [])
+  , p "closeRegion" (F.closeRegion s s s [])
+  , p "readCell" (F.readCell s s key)
+  , p "writeCell" (F.writeCell s s key s)
   , p "freshMetaType" (F.freshMetaType s KindType)
   , p "isAssigned" (F.isAssigned s)
   , p "unify" (F.unify s s s)
@@ -415,7 +423,7 @@ asking goalAt = case runElabIn session (initialState (SessionId 0) 10) created o
   where
   created = do
     a <- freshTypeMeta emptyXContext XKType
-    goal <- createSynthesis site (goalAt a) resolver Nothing
+    goal <- createSynthesis site (goalAt a) resolver
     pure (Tuple goal a)
 
 given :: (Asked -> Aff Unit) -> Aff Unit
@@ -438,8 +446,8 @@ spec :: Spec Unit
 spec = describe "Elaborate.Facade" do
   describe "the vocabulary" do
     it "has a request for every public kernel operation, each made by the operation of its name" do
-      Array.length publicOperations `shouldEqual` 77
-      Set.size (Set.fromFoldable publicOperations) `shouldEqual` 77
+      Array.length publicOperations `shouldEqual` 79
+      Set.size (Set.fromFoldable publicOperations) `shouldEqual` 79
       map _.operation probes `shouldEqual` publicOperations
       map (\e -> map operationOf e.request) probes `shouldEqual` map Just publicOperations
 
@@ -501,7 +509,7 @@ spec = describe "Elaborate.Facade" do
         created = do
           r <- freshTypeMeta emptyXContext (XKRow RowType)
           s <- freshTypeMeta emptyXContext (XKRow RowType)
-          Tuple id t <- createSynthesis site (XApp (XCon recordTy []) (XRowUnion r s)) resolver Nothing
+          Tuple id t <- createSynthesis site (XApp (XCon recordTy []) (XRowUnion r s)) resolver
           pure { id, target: t, r, s }
         record _ = do
           root <- F.rootScope
@@ -531,7 +539,7 @@ spec = describe "Elaborate.Facade" do
       case runElabIn session (initialState (SessionId 0) 10) created of
         Tuple (Done (XMeta a)) s0 ->
           let
-            Tuple goal metas = newGoal site (XMeta a) resolver Nothing s0.tentative.metas
+            Tuple goal metas = newGoal site (XMeta a) resolver s0.tentative.metas
             Tuple id scheduler = create wide (JobSynthesis goal) s0.tentative.scheduler
             start = s0 { tentative { metas = metas, scheduler = scheduler } }
             mentioning _ = F.rootScope >>= \root -> F.localVariable root x

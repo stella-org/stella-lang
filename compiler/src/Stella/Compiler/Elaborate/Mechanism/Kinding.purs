@@ -37,7 +37,7 @@ import Prim as P
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..), fromCoreKind, kindMetasOf, kindVarsOf)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, lookupMeta, substitute, substituteKind)
-import Stella.Compiler.TypedCore (EffName, Kind, KindScheme, KindVar, Qualified, RowElemKind(..), RowKey(..), Signature, TyName, TyVar, tyConKind)
+import Stella.Compiler.TypedCore (EffName, Kind, KindScheme, KindVar, Qualified, RegionName, RowElemKind(..), RowKey(..), Signature, TyName, TyVar, tyConKind)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (traverse_)
@@ -61,14 +61,15 @@ type KindingEnv =
   }
 
 -- | The variables a type may mention free: the rigid kind variables in scope,
--- | and the type variables with their kinds.
+-- | the type variables with their kinds, and the region names.
 type KindingScope =
   { kindVars :: Set KindVar
   , tyVars :: Map TyVar XKind
+  , regions :: Set RegionName
   }
 
 emptyScope :: KindingScope
-emptyScope = { kindVars: Set.empty, tyVars: Map.empty }
+emptyScope = { kindVars: Set.empty, tyVars: Map.empty, regions: Set.empty }
 
 -- | What a type stands at.
 data KindEvidence
@@ -81,6 +82,8 @@ data KindEvidence
 data KindingFault
   = UnboundTyVar TyVar
   | UnboundKindVar KindVar
+  -- | A region name the scope does not bind.
+  | UnboundRegion RegionName
   | NegativePosition P.Int
   | UnknownTyCon (Qualified TyName)
   | UnknownEffect (Qualified EffName)
@@ -214,7 +217,7 @@ judgement env scope metas = { synth, constraint }
 
   entryKind vars = case _ of
     XRowTypeEntry key payload -> do
-      wellFormedKey env key (Just RowType)
+      wellFormedKey env scope.regions key (Just RowType)
       check vars XKType payload
       pure RowType
     XRowEffectEntry e args -> do
@@ -223,10 +226,9 @@ judgement env scope metas = { synth, constraint }
     XRowLabelledEffectEntry _ e args -> do
       effectArgs vars e args
       pure RowEffect
-    XRowRegionEntry var cells -> do
-      check vars XKType var
-      check vars (XKRow RowType) cells
-      pure RowEffect
+    XRowRegionEntry name
+      | Set.member name scope.regions -> pure RowEffect
+      | otherwise -> Left (UnboundRegion name)
 
   effectArgs vars e args = case Map.lookup e env.effects of
     Nothing -> Left (UnknownEffect e)
@@ -240,8 +242,8 @@ judgement env scope metas = { synth, constraint }
     XLacks key row -> do
       ev <- synth vars row
       case ev of
-        ExactKind (XKRow e) -> wellFormedKey env key (Just e)
-        AnyRow -> wellFormedKey env key Nothing
+        ExactKind (XKRow e) -> wellFormedKey env scope.regions key (Just e)
+        AnyRow -> wellFormedKey env scope.regions key Nothing
         ExactKind other -> Left (KindMismatch (ExactKind other) (XKRow RowType))
     XDisjoint l r -> do
       left <- synth vars l
@@ -272,15 +274,18 @@ checkKind env scope metas expected ty = do
 -- |
 -- | Every key is judged by this one rule, whether it is an element's or a
 -- | constraint's. A position is non-negative; a structural key keys a `Row Type`,
--- | a `SymbolKey` either row kind, and an `EffectKey` or the `RegionKey` a
--- | `Row Effect`; an `EffectKey` names a declared effect.
-wellFormedKey :: KindingEnv -> RowKey -> Maybe RowElemKind -> Either KindingFault Unit
-wellFormedKey env key element = case key of
+-- | a `SymbolKey` either row kind, and an `EffectKey` or a `RegionKey` a
+-- | `Row Effect`; an `EffectKey` names a declared effect, and a `RegionKey` one of
+-- | the region names given, which are those in scope.
+wellFormedKey :: KindingEnv -> Set RegionName -> RowKey -> Maybe RowElemKind -> Either KindingFault Unit
+wellFormedKey env regions key element = case key of
   PositionKey n | n < 0 -> Left (NegativePosition n)
   EffectKey e | not (Map.member e env.effects) -> Left (UnknownEffect e)
   _ -> case element, keyKind key of
     Just e, Just k | e /= k -> Left (KeyNotOfRowKind key e)
-    _, _ -> Right unit
+    _, _ -> case key of
+      RegionKey name | not (Set.member name regions) -> Left (UnboundRegion name)
+      _ -> Right unit
 
 isRow :: XKind -> P.Boolean
 isRow = case _ of
@@ -311,7 +316,7 @@ keyKind = case _ of
   TagKey _ -> Just RowType
   PositionKey _ -> Just RowType
   EffectKey _ -> Just RowEffect
-  RegionKey -> Just RowEffect
+  RegionKey _ -> Just RowEffect
   SymbolKey _ -> Nothing
 
 instantiate :: KindScheme -> P.Array XKind -> XKind

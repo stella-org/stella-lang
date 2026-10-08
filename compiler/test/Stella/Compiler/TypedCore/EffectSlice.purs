@@ -378,11 +378,9 @@ lowerConsoleOf source clause =
     $ Lam 0 (Ident "thunk") (fn unit' source tyVarA)
     $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
         { element: RowEffectEntry consoleEff []
-        , cells: Nothing
         , returnClause: { binder: Ident "x", ty: tyVarA, body: Var 0 (Ident "x") }
         , opClauses: [ clause ]
         }
-        []
 
 -- | The clause translates `log` into a `LiftIO` and gives control back, which
 -- | is what a `fast` clause expresses: it binds no continuation, and its body
@@ -532,7 +530,6 @@ toMaybeOf clauses =
     $ Lam 0 (Ident "thunk") (fn unit' partialRow tyVarA)
     $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
         { element: RowEffectEntry partialEff []
-        , cells: Nothing
         , returnClause:
             { binder: Ident "x"
             , ty: tyVarA
@@ -542,7 +539,6 @@ toMaybeOf clauses =
             }
         , opClauses: clauses
         }
-        []
 
 -- | Abandoning the continuation is what realizes the abortion. `contRow` is the
 -- | row the continuation carries: `ρ`, outside the handle, is what D15 calls for.
@@ -567,14 +563,13 @@ runConsoleIOValue :: Expr P.Int
 runConsoleIOValue =
   TyLam 0 (TyVar "a") KType
     $ Lam 0 (Ident "thunk") (fn unit' consoleRow tyVarA)
-    $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor [])) consoleHandler []
+    $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor [])) consoleHandler
 
 -- | Every arrow here is pure, the row outside the handle being `()`, so nothing
 -- | is widened and `Base.IO.bind` composes directly.
 consoleHandler :: Handler P.Int
 consoleHandler =
   { element: RowEffectEntry consoleEff []
-  , cells: Nothing
   , returnClause:
       { binder: Ident "x"
       , ty: tyVarA
@@ -691,7 +686,6 @@ openConsoleValue =
     $ Lam 0 (Ident "thunk") (fn unit' openConsoleRow tyVarA)
     $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
         { element: RowEffectEntry consoleEff []
-        , cells: Nothing
         , returnClause:
             { binder: Ident "x"
             , ty: tyVarA
@@ -715,7 +709,6 @@ openConsoleValue =
                 }
             ]
         }
-        []
 
 -- | `toMaybe` whose return clause applies `Just` without widening it. A data
 -- | constructor has pure arrows by declaration, so calling one where the
@@ -731,7 +724,6 @@ bareJustToMaybe =
     $ Lam 0 (Ident "thunk") (fn unit' partialRow tyVarA)
     $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
         { element: RowEffectEntry partialEff []
-        , cells: Nothing
         , returnClause:
             { binder: Ident "x"
             , ty: tyVarA
@@ -739,7 +731,6 @@ bareJustToMaybe =
             }
         , opClauses: [ abortClause rowVar ]
         }
-        []
 
 -- The specification ---------------------------------------------------------------
 

@@ -105,6 +105,7 @@ closeCase scopeHandle binderHandle resultHandle treeHandle = do
     BindBinder _ -> misuse
     SwitchBinder _ -> misuse
     HandleBinder _ -> misuse
+    RegionBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -159,6 +160,7 @@ closeBind scopeHandle binderHandle treeHandle = do
     CaseBinder _ -> misuse
     SwitchBinder _ -> misuse
     HandleBinder _ -> misuse
+    RegionBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -378,6 +380,7 @@ closeSwitch scopeHandle binderHandle treeHandles fallbackHandle = do
     CaseBinder _ -> misuse
     BindBinder _ -> misuse
     HandleBinder _ -> misuse
+    RegionBinder _ -> misuse
   where
   misuse :: forall a. Elab a
   misuse = rejected (BinderMisuse binderHandle)

@@ -58,7 +58,7 @@ field key ty rest = XRowExtend (XRowTypeEntry key ty) rest
 rowTypeInfo :: MetaInfo
 rowTypeInfo =
   { kind: XKRow RowType
-  , scope: { types: Set.fromFoldable [ rigidT, rigidU ], kinds: Set.empty }
+  , scope: { types: Set.fromFoldable [ rigidT, rigidU ], kinds: Set.empty, regions: Set.empty }
   }
 
 -- | `?r`, `?s`, and the context they are unsolved in.

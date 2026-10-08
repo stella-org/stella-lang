@@ -24,7 +24,7 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Environment.Catalog (EntrySort)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle)
-import Stella.Compiler.TypedCore (Attribute, EffName, Ident, KindVar, Qualified, RowElemKind, RowKey, TyName, TyVar)
+import Stella.Compiler.TypedCore (Attribute, EffName, Ident, KindVar, Qualified, RegionName, RowElemKind, RowKey, TyName, TyVar)
 import Data.Generic.Rep (class Generic)
 import Data.Maybe (Maybe)
 import Data.Show.Generic (genericShow)
@@ -63,11 +63,11 @@ type RowView =
   }
 
 -- | What an element carries. At `Row Type` it is a type; at `Row Effect` an
--- | effect applied to its arguments, or a region.
+-- | effect applied to its arguments, or a region, which carries its name alone.
 data PayloadView
   = TypePayload Handle
   | EffectPayload (Qualified EffName) (P.Array Handle)
-  | RegionPayload Handle Handle
+  | RegionPayload RegionName
 
 -- | A settled kind. `KindAnyRow` is what a row with no element and no tail
 -- | stands at, and no kind metavariable is shown.

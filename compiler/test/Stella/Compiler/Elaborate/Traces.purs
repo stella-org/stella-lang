@@ -115,7 +115,7 @@ asking goalAt = case runElabIn session (initialState (SessionId 0) 10) created o
   where
   created = do
     a <- freshTypeMeta emptyXContext XKType
-    goal <- createSynthesis site (goalAt a) resolver Nothing
+    goal <- createSynthesis site (goalAt a) resolver
     pure (Tuple goal a)
 
 given :: (Asked -> Aff Unit) -> Aff Unit

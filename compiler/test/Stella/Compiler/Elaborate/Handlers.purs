@@ -4,10 +4,9 @@
 -- | its operation resumes with**, read off the effect's declaration at the
 -- | element it is given. **A handler's clauses bind what the Core rule binds**,
 -- | fresh, at the types the declaration gives, and are closed together. **A
--- | region of cells is lexical**: only the operation clauses of the handler
--- | owning it, and what they open, stand in it — and so does a goal asked for
--- | there, wherever it is attempted. And **what is built passes the Core type
--- | checker**.
+-- | region is a binder**: a cell is named by the region's binder, reached in any
+-- | scope the region stands around, and a goal asked for there may read it. And
+-- | **what is built passes the Core type checker**.
 module Test.Stella.Compiler.Elaborate.Handlers (spec) where
 
 import Prelude
@@ -15,9 +14,9 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Vocabulary.Trace (Tracing(..))
-import Stella.Compiler.Elaborate.Kernel.Builder.Type (emptyRow, rootScope, typeConstructor, typeVariable)
-import Stella.Compiler.Elaborate.Kernel.Builder.Handler (closeHandle, openHandle, perform, readCell, writeCell)
-import Stella.Compiler.Elaborate.Kernel.Builder.Term (closeLambda, closeLet, jump, literal, localVariable, openJoin, openLambda, openLet)
+import Stella.Compiler.Elaborate.Kernel.Builder.Type (emptyRow, extendRow, openConstraint, rootScope, typeConstructor, typeVariable)
+import Stella.Compiler.Elaborate.Kernel.Builder.Handler (closeHandle, closeRegion, openHandle, openRegion, perform, readCell, writeCell)
+import Stella.Compiler.Elaborate.Kernel.Builder.Term (closeLambda, jump, literal, localVariable, openJoin, openLambda)
 import Stella.Compiler.Elaborate.Environment.Catalog (catalogOf)
 import Stella.Compiler.Elaborate.Environment.Constructors (constructorsOf)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindTyVar, bindVar, emptyXContext)
@@ -26,26 +25,22 @@ import Stella.Compiler.Elaborate.Environment.Effects (effectsOf, emptyEffectEnv)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Frame, Outcome(..), SessionEnv, SolverState, assignTerm, freshTermMeta, initialState, resolveExpr, runElabIn, raiseDiagnostic, withFrame)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle, SessionId(..))
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Mechanism.Kinding (kindingOf)
-import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..))
-import Stella.Compiler.Elaborate.Mechanism.Pending (Pending, Site)
-import Stella.Compiler.Elaborate.Driver.Attempt (Attempt(..), attemptPendingWith)
-import Stella.Compiler.Elaborate.Mechanism.Scheduler (readyIds, takeReady)
-import Stella.Compiler.Elaborate.Kernel.Solve (subgoal)
-import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..), toCoreExpr)
+import Stella.Compiler.Elaborate.Mechanism.Kinding (KindingFault(..), kindingOf)
+import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
+import Stella.Compiler.Elaborate.Kernel.Solve (require, subgoal)
+import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..), XOpClause(..), toCoreExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..))
 import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), toCore)
 import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError(..))
-import Stella.Compiler.Elaborate.Vocabulary.View (PayloadView(..))
-import Stella.Compiler.TypedCore (Decl(..), EffName(..), Ident(..), Literal(..), Module, ModuleName(..), OpName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyVar(..), Type(..), monoScheme)
+import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView(..), PayloadView(..))
+import Stella.Compiler.TypedCore (Decl(..), EffName(..), Ident(..), Literal(..), Module, ModuleName(..), OpName(..), Qualified(..), RegionName(..), RowElemKind(..), RowKey(..), Symbol(..), TyVar(..), Type(..), monoScheme)
 import Stella.Compiler.TypedCore as Core
 import Stella.Compiler.TypedCore.Declare (declare)
 import Stella.Compiler.TypedCore.Prim (booleanTy, functionTy, intTy, primSignature, unitTy)
 import Stella.Compiler.TypedCore.Signature (Signature)
-import Data.Array as Array
 import Data.Either (Either(..), either, isRight)
 import Data.Maybe (Maybe(..))
-import Data.Tuple (Tuple(..), fst)
+import Data.Tuple (Tuple, fst)
 import Effect.Aff (Aff)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -189,25 +184,34 @@ int scope = typeConstructor scope intTy []
 statePayload :: Handle -> Elab PayloadView
 statePayload scope = int scope <#> \i -> EffectPayload state [ i ]
 
--- | `handle c with { Counter; cells [r] ( n : Int ); return x -> x; next u -> body }
--- | @ ( 0 )`, answering `Int` with the residual row given, the clause's body
--- | built in its scope.
+-- | A region opened with its binder, the name it binds, and its body scope.
+type Opened = { binder :: Handle, name :: RegionName, bodyScope :: Handle }
+
+-- | `region [ℓ] ( n : Int ) @ ( 0 ) in handle 0 with { Counter; return x -> x;
+-- | next u -> body }`, answering `Int` with the residual row given, the row and
+-- | the clause's body built given the region.
 counted
-  :: (Handle -> Elab Handle)
-  -> (Handle -> Elab Handle)
+  :: (Opened -> Handle -> Elab Handle)
+  -> (Opened -> Handle -> Elab Handle)
   -> Elab Handle
 counted residual body = do
   root <- rootScope
-  c <- var root "c"
   i <- int root
-  rho <- residual root
-  opened <- openHandle root c (EffectKey counter) (EffectPayload counter []) (Just [ { key: cellN, type: i } ]) i rho [ { op: next, full: false } ]
+  region <- openRegion root [ { key: cellN, type: i } ]
+  zero <- literal region.bodyScope (LitInt 0)
+  rho <- residual region region.bodyScope
+  opened <- openHandle region.bodyScope zero (EffectKey counter) (EffectPayload counter []) i rho [ { op: next, full: false } ]
   case opened.clauses of
     [ clause ] -> do
-      b <- body clause.scope
-      zero <- literal root (LitInt 0)
-      closeHandle root opened.binder opened.returnClause.variable [ b ] [ zero ]
+      b <- body region clause.scope
+      handled <- closeHandle region.bodyScope opened.binder opened.returnClause.variable [ b ]
+      initial <- literal root (LitInt 0)
+      closeRegion root region.binder handled [ initial ]
     _ -> raiseDiagnostic failure
+
+-- | `( region ℓ )`, the region given alone.
+regionRow :: Opened -> Handle -> Elab Handle
+regionRow region scope = emptyRow scope >>= extendRow scope (RegionKey region.name) (RegionPayload region.name)
 
 spec :: Spec Unit
 spec = describe "Elaborate.BuildHandler" do
@@ -244,6 +248,9 @@ spec = describe "Elaborate.BuildHandler" do
       refuses (performing (EffectKey state) (\_ -> pure (EffectPayload state [])) get) case _ of
         IllKinded _ -> true
         _ -> false
+      refuses (performing (RegionKey (RegionName "r")) (\_ -> pure (RegionPayload (RegionName "r"))) get) case _ of
+        RegionEntryForbidden -> true
+        _ -> false
 
     it "halts where the kinding environment declares an effect the table lacks" do
       case fst (runIn (session { effects = emptyEffectEnv }) (rootScope >>= \root -> statePayload root >>= \p -> var root "u" >>= perform root (EffectKey state) p get [])) of
@@ -253,13 +260,22 @@ spec = describe "Elaborate.BuildHandler" do
   describe "a handler" do
     it "binds the return clause's variable at the computation's claim, and is claimed at its answer" do
       let
-        handled = counted emptyRow (\scope -> readCell scope cellN)
+        handled = do
+          root <- rootScope
+          c <- var root "c"
+          i <- int root
+          rho <- emptyRow root
+          opened <- openHandle root c (EffectKey counter) (EffectPayload counter []) i rho [ { op: next, full: false } ]
+          case opened.clauses of
+            [ clause ] -> do
+              b <- literal clause.scope (LitInt 1)
+              closeHandle root opened.binder opened.returnClause.variable [ b ]
+            _ -> raiseDiagnostic failure
       case outcomeOf (handled >>= resolveExpr) of
         Done o -> do
           o.claimed `shouldEqual` xInt
           case o.term of
-            EHandle _ (EVar _ (Ident "c")) h [ ELit _ (LitInt 0) ] -> do
-              map _.var h.cells `shouldEqual` Just (TyVar "r#0")
+            EHandle _ (EVar _ (Ident "c")) h ->
               h.returnClause.body `shouldEqual` EVar unit h.returnClause.binder
             other -> fail ("not the handle expected: " <> show other)
         other -> fail (show other)
@@ -271,7 +287,7 @@ spec = describe "Elaborate.BuildHandler" do
           c <- var root "c"
           i <- int root
           rho <- emptyRow root
-          opened <- openHandle root c (EffectKey counter) (EffectPayload counter []) Nothing i rho [ { op: next, full: true } ]
+          opened <- openHandle root c (EffectKey counter) (EffectPayload counter []) i rho [ { op: next, full: true } ]
           case opened.clauses of
             [ { continuation: Just k } ] -> resolveExpr k <#> _.claimed
             _ -> raiseDiagnostic failure
@@ -286,7 +302,7 @@ spec = describe "Elaborate.BuildHandler" do
           i <- int root
           rho <- emptyRow root
           p <- statePayload root
-          openHandle root c (EffectKey state) p Nothing i rho clauses
+          openHandle root c (EffectKey state) p i rho clauses
       refuses (withClauses [ { op: get, full: false } ]) case _ of
         MissingClause op -> op == put
         _ -> false
@@ -300,182 +316,195 @@ spec = describe "Elaborate.BuildHandler" do
           j <- openJoin root "j" [] i
           jumped <- jump j.bodyScope j.join []
           rho <- emptyRow j.bodyScope
-          openHandle j.bodyScope jumped (EffectKey counter) (EffectPayload counter []) Nothing i rho [ { op: next, full: false } ]
+          openHandle j.bodyScope jumped (EffectKey counter) (EffectPayload counter []) i rho [ { op: next, full: false } ]
       refuses jumping case _ of
         JoinOutOfScope _ -> true
         _ -> false
 
-    it "requires its residual row to hold no region, where it owns cells" do
-      case outcomeOf (counted (\root -> typeVariable root e) (\scope -> readCell scope cellN)) of
-        Failed (ObligationRejected rejected) -> do
-          rejected.basis `shouldEqual` Required
-          rejected.breach `shouldEqual` LacksUnprovenAtSite RegionKey e
-        other -> fail ("expected the requirement to fail: " <> show other)
-
-    it "is closed with one body per clause, each under its own, and one initial value per cell" do
+    it "is closed with one body per clause, each under its own" do
       let
-        closedWith bodies initials = do
+        closedWith bodies = do
           root <- rootScope
           c <- var root "c"
           i <- int root
           rho <- emptyRow root
-          opened <- openHandle root c (EffectKey counter) (EffectPayload counter []) (Just [ { key: cellN, type: i } ]) i rho [ { op: next, full: false } ]
+          opened <- openHandle root c (EffectKey counter) (EffectPayload counter []) i rho [ { op: next, full: false } ]
           bs <- bodies opened
-          is <- initials root
-          closeHandle root opened.binder opened.returnClause.variable bs is
-      refuses (closedWith (\_ -> pure []) (\root -> Array.singleton <$> literal root (LitInt 0))) case _ of
+          closeHandle root opened.binder opened.returnClause.variable bs
+      refuses (closedWith (\_ -> pure [])) case _ of
         ClauseCount _ 1 0 -> true
         _ -> false
-      refuses (closedWith (\o -> pure (map _.argument o.clauses)) (\_ -> pure [])) case _ of
-        InitialValueCount _ 1 0 -> true
-        _ -> false
-      refuses (closedWith (\o -> pure [ o.returnClause.variable ]) (\root -> Array.singleton <$> literal root (LitInt 0))) case _ of
+      refuses (closedWith (\o -> pure [ o.returnClause.variable ])) case _ of
         ScopeViolation _ -> true
         _ -> false
 
+  describe "a region" do
+    it "binds a fresh name over its body, and is claimed at what its body is" do
+      case outcomeOf (counted regionRow (\r scope -> readCell scope r.binder cellN) >>= resolveExpr) of
+        Done o -> do
+          o.claimed `shouldEqual` xInt
+          case o.term of
+            ERegion _ name [ cell ] [ ELit _ (LitInt 0) ] (EHandle _ _ _) -> do
+              cell.key `shouldEqual` cellN
+              name `shouldEqual` RegionName "r#0"
+            other -> fail ("not the region expected: " <> show other)
+        other -> fail (show other)
+
+    it "stands where a residual row has a tail bound outside it, needing nothing of that tail" do
+      case outcomeOf (counted (\r scope -> typeVariable scope e >>= extendRow scope (RegionKey r.name) (RegionPayload r.name)) (\r scope -> readCell scope r.binder cellN)) of
+        Done _ -> pure unit
+        other -> fail (show other)
+
+    it "is closed with one initial value per cell" do
+      let
+        closedWith initials = do
+          root <- rootScope
+          i <- int root
+          region <- openRegion root [ { key: cellN, type: i } ]
+          body <- literal region.bodyScope (LitInt 1)
+          is <- initials root
+          closeRegion root region.binder body is
+      refuses (closedWith (\_ -> pure [])) case _ of
+        InitialValueCount _ 1 0 -> true
+        _ -> false
+
+    it "refuses a body claimed at a type mentioning the region" do
+      let
+        escaping = do
+          root <- rootScope
+          i <- int root
+          region <- openRegion root [ { key: cellN, type: i } ]
+          lam <- openLambda region.bodyScope "y" i
+          read <- readCell lam.bodyScope region.binder cellN
+          row <- regionRow region region.bodyScope
+          f <- closeLambda region.bodyScope lam.binder read row
+          initial <- literal root (LitInt 0)
+          closeRegion root region.binder f [ initial ]
+      refuses escaping case _ of
+        RegionEscapes _ -> true
+        _ -> false
+
+    it "refuses its region's key in a constraint where the region is not in scope, by either path" do
+      let
+        ghost = RegionKey (RegionName "ghost")
+        unbound = case _ of
+          IllKinded (UnboundRegion (RegionName "ghost")) -> true
+          _ -> false
+      refuses (rootScope >>= \root -> emptyRow root >>= \row -> openConstraint root (LacksView ghost row)) unbound
+      refuses (rootScope >>= \root -> emptyRow root >>= \row -> require root (LacksView ghost row)) unbound
+      let
+        inScope = do
+          root <- rootScope
+          i <- int root
+          region <- openRegion root [ { key: cellN, type: i } ]
+          row <- emptyRow region.bodyScope
+          _ <- openConstraint region.bodyScope (LacksView (RegionKey region.name) row)
+          require region.bodyScope (LacksView (RegionKey region.name) row)
+      case outcomeOf inScope of
+        Done _ -> pure unit
+        other -> fail ("a key of a region in scope was refused: " <> show other)
+
+    it "jumps to no join point outside, whether built inside its body or handed in as one" do
+      let
+        outer bodyOf = do
+          root <- rootScope
+          i <- int root
+          j <- openJoin root "j" [] i
+          region <- openRegion j.bodyScope [ { key: cellN, type: i } ]
+          body <- bodyOf j region
+          initial <- literal j.bodyScope (LitInt 0)
+          closeRegion j.bodyScope region.binder body [ initial ]
+        outOfScope = case _ of
+          JoinOutOfScope _ -> true
+          _ -> false
+      refuses (outer \j region -> jump region.bodyScope j.join []) outOfScope
+      refuses (outer \j _ -> jump j.bodyScope j.join []) outOfScope
+
+    it "refuses a layout giving one key twice" do
+      refuses (rootScope >>= \root -> int root >>= \i -> openRegion root [ { key: cellN, type: i }, { key: cellN, type: i } ]) case _ of
+        DuplicateCell _ -> true
+        _ -> false
+
   describe "a cell" do
-    it "is read and written in the operation clauses of the handler owning it, a lambda there included" do
+    it "is read and written wherever its region stands around, a clause and a lambda there included" do
       let
-        inClause f = counted emptyRow f
-      case outcomeOf (inClause (\scope -> readCell scope cellN)) of
+        inClause f = counted regionRow f
+      case outcomeOf (inClause (\r scope -> readCell scope r.binder cellN)) of
         Done _ -> pure unit
         other -> fail (show other)
-      case outcomeOf (inClause \scope -> readCell scope cellN >>= \v -> writeCell scope cellN v >>= resolveExpr >>= \w -> if w.claimed == xUnit then readCell scope cellN else raiseDiagnostic failure) of
+      case outcomeOf (inClause \r scope -> readCell scope r.binder cellN >>= \v -> writeCell scope r.binder cellN v >>= resolveExpr >>= \w -> if w.claimed == xUnit then readCell scope r.binder cellN else raiseDiagnostic failure) of
         Done _ -> pure unit
         other -> fail (show other)
       let
-        underLambda scope = do
+        underLambda r scope = do
           i <- int scope
           lam <- openLambda scope "y" i
-          read <- readCell lam.bodyScope cellN
-          _ <- emptyRow scope >>= closeLambda scope lam.binder read
-          readCell scope cellN
+          read <- readCell lam.bodyScope r.binder cellN
+          _ <- regionRow r scope >>= closeLambda scope lam.binder read
+          readCell scope r.binder cellN
       case outcomeOf (inClause underLambda) of
         Done _ -> pure unit
         other -> fail (show other)
 
-    it "is refused outside a region, in the return clause, and where the layout lacks its key" do
+    it "is refused outside its region, and where the layout lacks its key" do
       let
-        noRegion = case _ of
-          NoRegion _ -> true
-          _ -> false
-      refuses (rootScope >>= \root -> readCell root cellN) noRegion
-      refuses
-        ( do
-            root <- rootScope
-            c <- var root "c"
-            i <- int root
-            rho <- emptyRow root
-            opened <- openHandle root c (EffectKey counter) (EffectPayload counter []) (Just [ { key: cellN, type: i } ]) i rho [ { op: next, full: false } ]
-            readCell opened.returnClause.scope cellN
-        )
-        noRegion
-      refuses (counted emptyRow (\scope -> readCell scope (SymbolKey (Symbol "absent")))) case _ of
+        outside = do
+          root <- rootScope
+          i <- int root
+          region <- openRegion root [ { key: cellN, type: i } ]
+          readCell root region.binder cellN
+      refuses outside case _ of
+        NoRegion _ -> true
+        _ -> false
+      refuses (counted regionRow (\r scope -> readCell scope r.binder (SymbolKey (Symbol "absent")))) case _ of
         CellAbsent _ -> true
         _ -> false
 
-  describe "a goal asked for in a region" do
-    it "is attempted in the same region, and its target takes no cell from outside one" do
+    it "names its own region, an inner region holding a cell of the same key notwithstanding" do
       let
-        asked = counted emptyRow \scope -> int scope >>= \i -> subgoal scope i (Qualified main (Ident "resolve"))
-
-        reading :: Pending -> Elab Unit
-        reading _ = void (rootScope >>= \root -> readCell root cellN)
-      case runIn session asked of
-        Tuple (Done _) s -> case takeReady s.tentative.scheduler of
-          Just (Tuple id taken) -> fst (attemptPendingWith session reading id (s { tentative { scheduler = taken } })) `shouldEqual` Committed
-          Nothing -> fail ("no job was queued: " <> show (readyIds s.tentative.scheduler))
-        Tuple other _ -> fail (show other)
-      let
-        outside = do
-          m <- freshTermMeta context Nothing xInt
-          assignTerm site m (EReadCell unit cellN)
-      case outcomeOf outside of
-        Failed (TermAssignmentFailed _ (TermEscapingCell _ key)) -> key `shouldEqual` cellN
-        other -> fail ("expected the assignment to fail: " <> show other)
-
-  describe "a term built in a region" do
-    let
-      mismatch = case _ of
-        RegionMismatch _ -> true
-        _ -> false
-      -- A handler of `Counter` owning `n`, opened in the scope given over `0`,
-      -- its clause's body built by the function given.
-      within scope body = do
-        zero <- literal scope (LitInt 0)
-        i <- int scope
-        rho <- emptyRow scope
-        opened <- openHandle scope zero (EffectKey counter) (EffectPayload counter []) (Just [ { key: cellN, type: i } ]) i rho [ { op: next, full: false } ]
-        case opened.clauses of
-          [ clause ] -> do
-            b <- body clause.scope
-            initial <- literal scope (LitInt 0)
-            closeHandle scope opened.binder opened.returnClause.variable [ b ] [ initial ]
-          _ -> raiseDiagnostic failure
-
-      -- An outer handler whose clause builds something, and an inner handler in
-      -- that clause whose clause's body is what the function makes of it.
-      nested :: (Handle -> Elab Handle) -> (Handle -> Handle -> Elab Handle) -> Elab Handle
-      nested outer inner = rootScope >>= \root -> within root \outerClause -> do
-        built <- outer outerClause
-        within outerClause \innerClause -> inner innerClause built
-
-    it "stands in the region it was built in" do
-      case outcomeOf (rootScope >>= \root -> within root \clause -> readCell clause cellN >>= openLet clause "v" >>= \l -> closeLet clause l.binder l.variable) of
-        Done _ -> pure unit
+        nested = counted regionRow \outer outerClause -> do
+          i <- int outerClause
+          inner <- openRegion outerClause [ { key: cellN, type: i } ]
+          read <- readCell inner.bodyScope outer.binder cellN
+          initial <- literal outerClause (LitInt 0)
+          closeRegion outerClause inner.binder read [ initial ]
+      case outcomeOf (nested >>= resolveExpr) of
+        Done o -> case o.term of
+          ERegion _ outerName _ _ (EHandle _ _ h) -> case h.opClauses of
+            [ XFastClause c ] -> case c.body of
+              ERegion _ innerName _ _ (EReadCell _ read _) -> do
+                (innerName /= outerName) `shouldEqual` true
+                read `shouldEqual` outerName
+              other -> fail ("not the inner region expected: " <> show other)
+            other -> fail ("not the clause expected: " <> show other)
+          other -> fail ("not the region expected: " <> show other)
         other -> fail (show other)
 
-    it "is not captured by an inner region holding a cell of the same key" do
-      refuses (nested (\outerClause -> readCell outerClause cellN) (\_ t -> pure t)) mismatch
-      refuses (nested (\outerClause -> readCell outerClause cellN) (\innerClause t -> openLet innerClause "v" t >>= \l -> closeLet innerClause l.binder l.variable)) mismatch
-
-    it "is not captured when it waits on a goal asked for in its region" do
-      refuses (nested (\outerClause -> int outerClause >>= \i -> subgoal outerClause i (Qualified main (Ident "resolve"))) (\_ t -> pure t)) mismatch
-
-    it "stands anywhere where it depends on no region" do
-      case outcomeOf (nested (\outerClause -> literal outerClause (LitInt 1)) (\_ t -> pure t)) of
-        Done _ -> pure unit
-        other -> fail ("a pure term was refused: " <> show other)
-      case outcomeOf (nested (\outerClause -> within outerClause \clause -> readCell clause cellN) (\_ t -> pure t)) of
-        Done _ -> pure unit
-        other -> fail ("a handler binding its own cells was refused: " <> show other)
-
-    it "stands anywhere where a goal it waits on was asked for in a handler of its own, solved or not" do
+  describe "a goal asked for in a region" do
+    it "has the region in its target's scope, and an assignment reading a cell outside one is refused" do
       let
-        -- A handler whose clause is a goal asked for there, solved to read the
-        -- handler's own cell where `solve` says so.
-        ownGoal solve outerClause = within outerClause \clause -> do
-          i <- int clause
-          goal <- subgoal clause i (Qualified main (Ident "resolve"))
-          when solve do
-            o <- resolveExpr goal
-            case o.term of
-              ETermMeta _ target -> assignTerm site target (EReadCell unit cellN)
-              _ -> raiseDiagnostic failure
+        asked = counted regionRow \r scope -> do
+          i <- int scope
+          goal <- subgoal scope i (Qualified main (Ident "resolve"))
+          o <- resolveExpr goal
+          case o.term of
+            ETermMeta _ target -> assignTerm site target (EReadCell unit r.name cellN)
+            _ -> raiseDiagnostic failure
           pure goal
-      case outcomeOf (nested (ownGoal false) (\_ t -> pure t)) of
+      case outcomeOf asked of
         Done _ -> pure unit
-        other -> fail ("a handler waiting on its own goal was refused: " <> show other)
-      case outcomeOf (nested (ownGoal true) (\_ t -> pure t)) of
-        Done _ -> pure unit
-        other -> fail ("a handler whose own goal reads its cell was refused: " <> show other)
+        other -> fail ("an assignment reading the region's cell was refused: " <> show other)
+      let
+        outside = do
+          m <- freshTermMeta context xInt
+          assignTerm site m (EReadCell unit (RegionName "r") cellN)
+      case outcomeOf outside of
+        Failed (TermAssignmentFailed _ (TermEscapingRegion _ name)) -> name `shouldEqual` RegionName "r"
+        other -> fail ("expected the assignment to fail: " <> show other)
 
   describe "the Core type checker" do
-    it "accepts a handler owning cells, built by the kernel" do
-      let
-        literalCounter = do
-          root <- rootScope
-          zero <- literal root (LitInt 0)
-          i <- int root
-          rho <- emptyRow root
-          opened <- openHandle root zero (EffectKey counter) (EffectPayload counter []) (Just [ { key: cellN, type: i } ]) i rho [ { op: next, full: false } ]
-          case opened.clauses of
-            [ clause ] -> do
-              body <- readCell clause.scope cellN
-              initial <- literal root (LitInt 0)
-              closeHandle root opened.binder opened.returnClause.variable [ body ] [ initial ] >>= resolveExpr
-            _ -> raiseDiagnostic failure
-      case outcomeOf literalCounter of
+    it "accepts a region around a handler whose clause reads its cell, built by the kernel" do
+      case outcomeOf (counted regionRow (\r scope -> readCell scope r.binder cellN) >>= resolveExpr) of
         Done o -> case toCore o.claimed, toCoreExpr o.term of
           Just scheme, Right value ->
             isRight
@@ -487,5 +516,5 @@ spec = describe "Elaborate.BuildHandler" do
                   , decls: [ DeclNonRec unit { name: Ident "counted", scheme: monoScheme scheme, value, attributes: [] } ]
                   }
               ) `shouldEqual` true
-          _, _ -> fail "the handler did not cross the boundary"
+          _, _ -> fail "the region did not cross the boundary"
         other -> fail (show other)

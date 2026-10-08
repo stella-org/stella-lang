@@ -24,6 +24,7 @@ module Stella.Compiler.Elaborate.CorePlus.Type
   , kindMetasOfType
   , freeRigids
   , freeKindVars
+  , freeRegions
   , Scope
   , emptyScope
   , scopeOf
@@ -36,7 +37,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind, fromCoreKind, kindMetasOf, kindVarsOf, toCoreKind)
-import Stella.Compiler.TypedCore (Constraint(..), EffName, KindVar, Qualified, RowEntry(..), RowKey(..), Symbol, TyName, TyVar, Type(..))
+import Stella.Compiler.TypedCore (Constraint(..), EffName, KindVar, Qualified, RegionName, RowEntry(..), RowKey(..), Symbol, TyName, TyVar, Type(..))
 import Data.Foldable (foldMap)
 import Data.Generic.Rep (class Generic)
 import Data.Maybe (Maybe(..))
@@ -67,17 +68,15 @@ data XRowEntry
   = XRowTypeEntry RowKey XType
   | XRowEffectEntry (Qualified EffName) (P.Array XType)
   | XRowLabelledEffectEntry Symbol (Qualified EffName) (P.Array XType)
-  -- | `region r ι`, the region a handler owns (D36). Core has it, so Core⁺ must
-  -- | represent it to round-trip; nothing in elaboration produces one, a region
-  -- | arising only from a handler's `cells`.
-  | XRowRegionEntry XType XType
+  -- | `region ℓ`, the region named `ℓ` being open (D36).
+  | XRowRegionEntry RegionName
 
 -- | What an element carries once its key is taken away. Two elements sharing a
 -- | key are equal exactly when these are, which is what unification decides.
 data XRowPayload
   = XTypePayload XType
   | XEffectPayload (Qualified EffName) (P.Array XType)
-  | XRegionPayload XType XType
+  | XRegionPayload RegionName
 
 data XConstraint
   = XLacks RowKey XType
@@ -92,14 +91,14 @@ xRowEntryKey = case _ of
   XRowTypeEntry k _ -> k
   XRowEffectEntry e _ -> EffectKey e
   XRowLabelledEffectEntry s _ _ -> SymbolKey s
-  XRowRegionEntry _ _ -> RegionKey
+  XRowRegionEntry name -> RegionKey name
 
 xRowEntryPayload :: XRowEntry -> XRowPayload
 xRowEntryPayload = case _ of
   XRowTypeEntry _ ty -> XTypePayload ty
   XRowEffectEntry e args -> XEffectPayload e args
   XRowLabelledEffectEntry _ e args -> XEffectPayload e args
-  XRowRegionEntry var cells -> XRegionPayload var cells
+  XRowRegionEntry name -> XRegionPayload name
 
 fromCore :: Type -> XType
 fromCore = case _ of
@@ -117,7 +116,7 @@ fromCoreEntry = case _ of
   RowTypeEntry k ty -> XRowTypeEntry k (fromCore ty)
   RowEffectEntry e args -> XRowEffectEntry e (map fromCore args)
   RowLabelledEffectEntry s e args -> XRowLabelledEffectEntry s e (map fromCore args)
-  RowRegionEntry var cells -> XRowRegionEntry (fromCore var) (fromCore cells)
+  RowRegionEntry name -> XRowRegionEntry name
 
 fromCoreConstraint :: Constraint -> XConstraint
 fromCoreConstraint = case _ of
@@ -144,7 +143,7 @@ toCoreEntry = case _ of
   XRowTypeEntry k ty -> RowTypeEntry k <$> toCore ty
   XRowEffectEntry e args -> RowEffectEntry e <$> traverse toCore args
   XRowLabelledEffectEntry s e args -> RowLabelledEffectEntry s e <$> traverse toCore args
-  XRowRegionEntry var cells -> RowRegionEntry <$> toCore var <*> toCore cells
+  XRowRegionEntry name -> pure (RowRegionEntry name)
 
 toCoreConstraint :: XConstraint -> Maybe Constraint
 toCoreConstraint = case _ of
@@ -170,7 +169,7 @@ entryMetas = case _ of
   XRowTypeEntry _ ty -> metasOf ty
   XRowEffectEntry _ args -> foldMap metasOf args
   XRowLabelledEffectEntry _ _ args -> foldMap metasOf args
-  XRowRegionEntry var cells -> metasOf var <> metasOf cells
+  XRowRegionEntry _ -> Set.empty
 
 constraintMetas :: XConstraint -> Set MetaVar
 constraintMetas = case _ of
@@ -203,7 +202,7 @@ entryKindMetas = case _ of
   XRowTypeEntry _ ty -> kindMetasOfType ty
   XRowEffectEntry _ args -> foldMap kindMetasOfType args
   XRowLabelledEffectEntry _ _ args -> foldMap kindMetasOfType args
-  XRowRegionEntry var cells -> kindMetasOfType var <> kindMetasOfType cells
+  XRowRegionEntry _ -> Set.empty
 
 constraintKindMetas :: XConstraint -> Set KindMetaVar
 constraintKindMetas = case _ of
@@ -235,7 +234,7 @@ freeRigids = go Set.empty
     XRowTypeEntry _ ty -> go bound ty
     XRowEffectEntry _ args -> foldMap (go bound) args
     XRowLabelledEffectEntry _ _ args -> foldMap (go bound) args
-    XRowRegionEntry var cells -> go bound var <> go bound cells
+    XRowRegionEntry _ -> Set.empty
 
   goConstraint bound = case _ of
     XLacks _ row -> go bound row
@@ -263,7 +262,7 @@ entryKindVars = case _ of
   XRowTypeEntry _ ty -> freeKindVars ty
   XRowEffectEntry _ args -> foldMap freeKindVars args
   XRowLabelledEffectEntry _ _ args -> foldMap freeKindVars args
-  XRowRegionEntry var cells -> freeKindVars var <> freeKindVars cells
+  XRowRegionEntry _ -> Set.empty
 
 constraintKindVars :: XConstraint -> Set KindVar
 constraintKindVars = case _ of
@@ -272,24 +271,26 @@ constraintKindVars = case _ of
 
 -- | `[Γ]`: what a metavariable was created under.
 -- |
--- | Both classes are tracked, since a kind variable of an inner declaration
--- | escapes as readily as a type variable does.
+-- | Every class is tracked: a kind variable of an inner declaration escapes as
+-- | readily as a type variable does, and a region name as readily as either.
 type Scope =
   { types :: Set TyVar
   , kinds :: Set KindVar
+  , regions :: Set RegionName
   }
 
 emptyScope :: Scope
-emptyScope = { types: Set.empty, kinds: Set.empty }
+emptyScope = { types: Set.empty, kinds: Set.empty, regions: Set.empty }
 
 scopeOf :: XType -> Scope
-scopeOf ty = { types: freeRigids ty, kinds: freeKindVars ty }
+scopeOf ty = { types: freeRigids ty, kinds: freeKindVars ty, regions: freeRegions ty }
 
 -- | What a solution mentions but its metavariable was not created under.
 outOfScope :: Scope -> XType -> Scope
 outOfScope scope solution =
   { types: Set.difference (freeRigids solution) scope.types
   , kinds: Set.difference (freeKindVars solution) scope.kinds
+  , regions: Set.difference (freeRegions solution) scope.regions
   }
 
 derive instance Eq MetaVar
@@ -319,3 +320,31 @@ derive instance Generic XConstraint _
 
 instance Show XConstraint where
   show x = genericShow x
+
+-- | The region names a type mentions, `frn(τ)`: those of its region elements
+-- | and of the keys of its rows and constraints. A type binds no region name.
+freeRegions :: XType -> Set RegionName
+freeRegions = case _ of
+  XVar _ -> Set.empty
+  XMeta _ -> Set.empty
+  XCon _ _ -> Set.empty
+  XApp f x -> freeRegions f <> freeRegions x
+  XForall _ _ body -> freeRegions body
+  XConstrained constraint body -> constraintRegions constraint <> freeRegions body
+  XRowEmpty -> Set.empty
+  XRowExtend entry rest -> entryRegions entry <> freeRegions rest
+  XRowUnion left right -> freeRegions left <> freeRegions right
+  where
+  constraintRegions = case _ of
+    XLacks key row -> keyRegions key <> freeRegions row
+    XDisjoint left right -> freeRegions left <> freeRegions right
+
+  entryRegions = case _ of
+    XRowTypeEntry key ty -> keyRegions key <> freeRegions ty
+    XRowEffectEntry _ args -> foldMap freeRegions args
+    XRowLabelledEffectEntry _ _ args -> foldMap freeRegions args
+    XRowRegionEntry name -> Set.singleton name
+
+  keyRegions = case _ of
+    RegionKey name -> Set.singleton name
+    _ -> Set.empty

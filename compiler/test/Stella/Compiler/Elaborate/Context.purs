@@ -53,7 +53,7 @@ field key ty rest = XRowExtend (XRowTypeEntry key ty) rest
 rowTypeInfo :: MetaInfo
 rowTypeInfo =
   { kind: XKRow RowType
-  , scope: { types: Set.fromFoldable [ rigidR, rigidS ], kinds: Set.empty }
+  , scope: { types: Set.fromFoldable [ rigidR, rigidS ], kinds: Set.empty, regions: Set.empty }
   }
 
 -- | A context assuming what it is given, over no bindings: what `Γ*` is derived

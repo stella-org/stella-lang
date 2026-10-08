@@ -70,7 +70,7 @@ asked = case runElabIn session (initialState (SessionId 0) 10) created of
   Tuple other _ -> Left (show other)
   where
   created = do
-    goal <- createSynthesis site xInt resolver Nothing
+    goal <- createSynthesis site xInt resolver
     a <- freshTypeMeta emptyXContext XKType
     pure (Tuple goal a)
 

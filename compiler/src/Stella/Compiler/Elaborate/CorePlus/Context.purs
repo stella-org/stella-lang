@@ -13,6 +13,7 @@
 -- | attempt rather than once where they were written.
 module Stella.Compiler.Elaborate.CorePlus.Context
   ( XContext
+  , XRegion
   , Origin(..)
   , Zonk
   , FactsError(..)
@@ -22,6 +23,8 @@ module Stella.Compiler.Elaborate.CorePlus.Context
   , lookupTyVar
   , bindVar
   , lookupVar
+  , bindRegion
+  , lookupRegion
   , kindVarInScope
   , assume
   , facts
@@ -34,7 +37,7 @@ import Prim as P
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, knownKeys, rigidTails, sharedKey, xnf)
 import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XType)
-import Stella.Compiler.TypedCore (Ident, KindVar, Qualified, RowKey, TyVar)
+import Stella.Compiler.TypedCore (Ident, KindVar, Qualified, RegionName, RowKey(..), TyVar)
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Entailment (AtomicFacts, addDisjoint, addLacks, noFacts)
 import Data.Array as Array
@@ -47,6 +50,7 @@ import Data.Maybe (Maybe(..))
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
+import Data.Tuple (Tuple(..))
 
 -- | `Γ` of Core⁺.
 -- |
@@ -57,11 +61,23 @@ import Data.Show.Generic (genericShow)
 -- |
 -- | The two are one field read two ways: what a synthesizer is shown of the
 -- | constraints assumed at its site, and what entailment decides from.
+-- |
+-- | `regions` holds the region names in scope, each with its layout and the
+-- | type variables bound outside it.
 type XContext =
   { kindVars :: Set KindVar
   , tyVars :: Map TyVar XKind
   , vars :: Map Ident XType
+  , regions :: Map RegionName XRegion
   , assumed :: P.Array XConstraint
+  }
+
+-- | A region in scope: the type of every cell, by key, and the type variables
+-- | bound where the region was opened. Those are bound outside it, so none can
+-- | be instantiated with a row mentioning it.
+type XRegion =
+  { layout :: Map RowKey XType
+  , outside :: Set TyVar
   }
 
 -- | Where a context came from, for diagnostics: the declaration whose
@@ -92,6 +108,7 @@ emptyXContext =
   { kindVars: Set.empty
   , tyVars: Map.empty
   , vars: Map.empty
+  , regions: Map.empty
   , assumed: []
   }
 
@@ -114,6 +131,14 @@ bindVar ctx name ty =
 
 lookupVar :: XContext -> Ident -> Maybe XType
 lookupVar ctx name = Map.lookup name ctx.vars
+
+-- | Bind a region name with its layout.
+bindRegion :: XContext -> RegionName -> Map RowKey XType -> XContext
+bindRegion ctx name layout =
+  ctx { regions = Map.insert name { layout, outside: Map.keys ctx.tyVars } ctx.regions }
+
+lookupRegion :: XContext -> RegionName -> Maybe XRegion
+lookupRegion ctx name = Map.lookup name ctx.regions
 
 kindVarInScope :: XContext -> KindVar -> P.Boolean
 kindVarInScope ctx name = Set.member name ctx.kindVars
@@ -151,8 +176,16 @@ assume ctx constraint =
 -- | contributes once that tail is solved to a row with a rigid one, which is
 -- | what deriving this at each attempt is for.
 facts :: Zonk -> XContext -> Either FactsError AtomicFacts
-facts zonk ctx = foldM add noFacts ctx.assumed
+facts zonk ctx = foldM add regionFacts ctx.assumed
   where
+  -- A type variable bound outside a region cannot be instantiated with a row
+  -- mentioning it, whatever its kind; only a row variable is ever asked.
+  regionFacts =
+    foldr
+      (\(Tuple name region) acc -> foldr (addLacks (RegionKey name)) acc region.outside)
+      noFacts
+      (Map.toUnfoldable ctx.regions :: P.Array (Tuple RegionName XRegion))
+
   add acc = case _ of
     XLacks key row -> do
       n <- normalize row

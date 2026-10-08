@@ -87,7 +87,7 @@ pairOf x y = XApp (XApp (XCon (Qualified prim (TyName "Pair")) []) x) y
 rowTypeInfo :: MetaInfo
 rowTypeInfo =
   { kind: XKRow RowType
-  , scope: { types: Set.singleton rigidR, kinds: Set.empty }
+  , scope: { types: Set.singleton rigidR, kinds: Set.empty, regions: Set.empty }
   }
 
 -- | Five metavariables at `Row Type`, and `Ψ` holding all of them unsolved.
@@ -280,7 +280,7 @@ spec = describe "Elaborate.Loop" do
 
     it "runs a job created inside an attempt without spending fuel on its first attempt" do
       let
-        creating p = void (createSynthesis p.site tA resolver Nothing)
+        creating p = void (createSynthesis p.site tA resolver)
         Tuple created s1 = went (submitWith emptySessionEnv creating waitingSite waitsOnV (sessionWith 0))
         Tuple result s = resultOf (runWith emptySessionEnv (\_ -> pure unit) s1)
       created.attempt `shouldEqual` Run.Committed
@@ -289,7 +289,7 @@ spec = describe "Elaborate.Loop" do
 
     describe "in a monad" do
       let
-        creating p = void (createSynthesis p.site tA resolver Nothing)
+        creating p = void (createSynthesis p.site tA resolver)
         Tuple waiting s1 = went (submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) waitingSite waitsOnV (sessionWith 1))
         Tuple created s2 = went (submitWith emptySessionEnv creating waitingSite waitsOnV s1)
         Tuple _ s3 = went (submitEquality emptySessionEnv site (solvable metas.v) s2)
@@ -325,7 +325,7 @@ spec = describe "Elaborate.Loop" do
 
     it "spends fuel on a retry and not on a first attempt queued beside it" do
       let
-        creating p = void (createSynthesis p.site tA resolver Nothing)
+        creating p = void (createSynthesis p.site tA resolver)
         Tuple waiting s1 = went (submitWith emptySessionEnv (\_ -> postpone (Set.singleton metas.v)) waitingSite waitsOnV (sessionWith 0))
         Tuple _ s2 = went (submitWith emptySessionEnv creating waitingSite waitsOnV s1)
         Tuple _ s3 = went (submitEquality emptySessionEnv site (solvable metas.v) s2)

@@ -206,7 +206,7 @@ spec = describe "Elaborate.BuildTerm" do
       let
         unscoped = do
           root <- rootScope >>= resolveScope
-          term <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt, scope: { kindVars: Set.empty, tyVars: Map.empty }, builtIn: Nothing, region: Nothing })
+          term <- issue (ExprObject { term: ELit unit (LitInt 0), claimed: xInt, scope: { kindVars: Set.empty, tyVars: Map.empty, regions: Set.empty }, builtIn: Nothing })
           void (usableTermIn root term)
       refuses unscoped scopeViolation
 

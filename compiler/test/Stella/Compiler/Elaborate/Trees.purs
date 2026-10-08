@@ -168,7 +168,7 @@ frame = { site, goal: Nothing }
 withMetas :: { state :: SolverState, f :: MetaVar, g :: MetaVar, t :: MetaVar, same :: MetaVar, differ :: MetaVar }
 withMetas =
   let
-    fresh kind = freshMeta { kind, scope: { types: Set.empty, kinds: Set.empty } }
+    fresh kind = freshMeta { kind, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } }
     Tuple f m1 = fresh (XKFun XKType XKType) emptyContext
     Tuple g m2 = fresh (XKFun (XKRow RowType) XKType) m1
     Tuple t m3 = fresh (XKRow RowType) m2
@@ -217,7 +217,7 @@ caseOn name = do
 caseClaimed :: XType -> Elab { root :: Handle, binder :: Handle, occurrence :: Handle, treeScope :: Handle }
 caseClaimed ty = do
   root <- rootScope
-  e <- issue (ExprObject { term: EVar unit (Ident "e"), claimed: ty, scope: { kindVars: Set.empty, tyVars: context.tyVars }, builtIn: Just (ScopeId 0), region: Nothing })
+  e <- issue (ExprObject { term: EVar unit (Ident "e"), claimed: ty, scope: { kindVars: Set.empty, tyVars: context.tyVars, regions: Set.empty }, builtIn: Just (ScopeId 0) })
   opened <- openCase root [ e ]
   case opened.scrutinees of
     [ occurrence ] -> pure { root, binder: opened.binder, occurrence, treeScope: opened.treeScope }

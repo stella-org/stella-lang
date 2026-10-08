@@ -44,7 +44,6 @@ toMaybe =
     $
       Handle 5 (App 6 (Var 7 (Ident "thunk")) (Global 8 primUnit []))
         { element: RowEffectEntry partialEff []
-        , cells: Nothing
         , returnClause:
             { binder: Ident "x"
             , ty: TVar (TyVar "a")
@@ -63,7 +62,6 @@ toMaybe =
                 }
             ]
         }
-        []
   where
   thunkTy =
     fn tUnit (TRowExtend (RowEffectEntry partialEff []) (TVar (TyVar "e"))) (TVar (TyVar "a"))
@@ -103,7 +101,7 @@ stateEffect =
 -- | record rather than through a constructor field.
 clauseBodyAnnotation :: forall a. Expr a -> Maybe a
 clauseBodyAnnotation = case _ of
-  Handle _ _ h _ -> map (exprAnnotation <<< opClauseBody) (index h.opClauses 0)
+  Handle _ _ h -> map (exprAnnotation <<< opClauseBody) (index h.opClauses 0)
   _ -> Nothing
 
 handlerOf :: forall a. Expr a -> Maybe (Expr a)
@@ -111,7 +109,7 @@ handlerOf = case _ of
   TyLam _ _ _ e -> handlerOf e
   ConstraintLam _ _ e -> handlerOf e
   Lam _ _ _ e -> handlerOf e
-  e@(Handle _ _ _ _) -> Just e
+  e@(Handle _ _ _) -> Just e
   _ -> Nothing
 
 spec :: Spec Unit

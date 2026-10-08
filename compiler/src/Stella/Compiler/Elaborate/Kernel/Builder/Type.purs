@@ -60,7 +60,6 @@ import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (BuildError(..), Defect(.
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, break, currentMetas, freshBinderName, holdOpen, issue, resolveBinder, resolveScope, resolveType)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (BinderObject(..), Handle, HandleObject(..), ScopeObject, rootScopeId)
 import Stella.Compiler.Elaborate.Mechanism.Kinding (quantifiable)
-import Stella.Compiler.Elaborate.Mechanism.Pending (goalOf)
 import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..), xRowEntryKey)
 import Stella.Compiler.Elaborate.Mechanism.Unify (substitute)
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView, KindView, PayloadView(..))
@@ -71,8 +70,7 @@ import Data.Maybe (Maybe(..))
 import Data.Set as Set
 import Data.Traversable (traverse)
 
--- | The root build scope, opened on the site of the running job, in the region of
--- | cells its goal was asked for in, where it was asked for in one.
+-- | The root build scope, opened on the site of the running job.
 rootScope :: Elab Handle
 rootScope = do
   env <- askEnv
@@ -86,7 +84,6 @@ rootScope = do
             , context: frame.site.context
             , joins: Map.empty
             , tree: Nothing
-            , region: frame.goal >>= \g -> (goalOf g.goal).region
             }
         )
 
@@ -122,8 +119,8 @@ emptyRow scopeHandle = do
 -- |
 -- | The key says which element the payload makes: a structural key a field of a
 -- | type, `EffectKey E` an unlabelled `E`, and a `SymbolKey` over an effect a
--- | labelled one. A region element is refused: only the handler owning a region
--- | introduces or removes one.
+-- | labelled one, and `RegionKey ℓ` over `region ℓ` the region named, which must
+-- | be one the scope stands inside.
 extendRow :: Handle -> RowKey -> PayloadView -> Handle -> Elab Handle
 extendRow scopeHandle key payload restHandle = do
   scope <- resolveScope scopeHandle
@@ -188,6 +185,7 @@ closeForall scopeHandle binderHandle bodyHandle = do
     BindBinder _ -> misuse
     SwitchBinder _ -> misuse
     HandleBinder _ -> misuse
+    RegionBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -237,6 +235,7 @@ closeConstraint scopeHandle binderHandle bodyHandle = do
     BindBinder _ -> misuse
     SwitchBinder _ -> misuse
     HandleBinder _ -> misuse
+    RegionBinder _ -> misuse
   where
   misuse = rejected (BinderMisuse binderHandle)
 
@@ -274,7 +273,9 @@ instantiateScheme scopeHandle name kinds = do
 -- The element a key and a payload make, from types the scope may use.
 entryIn :: ScopeObject -> RowKey -> PayloadView -> Elab XRowEntry
 entryIn scope key = case _ of
-  RegionPayload _ _ -> rejected RegionEntryForbidden
+  RegionPayload name -> case key of
+    RegionKey name' | name' == name -> pure (XRowRegionEntry name)
+    _ -> rejected (EntryMismatch key)
   TypePayload h -> case key of
     SymbolKey _ -> XRowTypeEntry key <$> typeIn h
     TagKey _ -> XRowTypeEntry key <$> typeIn h

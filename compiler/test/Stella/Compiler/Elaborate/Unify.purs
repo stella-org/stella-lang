@@ -14,7 +14,7 @@ import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar(..), XKind(..))
 import Stella.Compiler.Elaborate.CorePlus.Row (xnf)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), Scope, XConstraint(..), XRowEntry(..), XType(..), emptyScope)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindMetaBinding(..), KindMetaInfo, KindRequirement(..), MetaBinding(..), MetaContext, MetaInfo, UnifyEnv, UnifyError(..), UnifyResult(..), emptyContext, freshKindMeta, freshMeta, lookupKindMeta, lookupMeta, requireProducesType, requireQuantifiable, substitute, substituteKind, unifyKind, unifyRow, unifyType)
-import Stella.Compiler.TypedCore (EffName(..), KindVar(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore (EffName(..), KindVar(..), ModuleName(..), Qualified(..), RegionName(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
@@ -56,9 +56,15 @@ rigidR = TyVar "r"
 field :: Symbol -> XType -> XType -> XType
 field l ty rest = XRowExtend (XRowTypeEntry (SymbolKey l) ty) rest
 
--- | `( region r ι | ρ )`
-regionOf :: XType -> XType -> XType -> XType
-regionOf var cells rest = XRowExtend (XRowRegionEntry var cells) rest
+-- | `( region ℓ | ρ )`
+regionL :: RegionName
+regionL = RegionName "l"
+
+regionM :: RegionName
+regionM = RegionName "m"
+
+regionOf :: RegionName -> XType -> XType
+regionOf name rest = XRowExtend (XRowRegionEntry name) rest
 
 -- | `( s : E τ̄ | ρ )`
 labelledEffect :: Symbol -> Qualified EffName -> P.Array XType -> XType -> XType
@@ -69,7 +75,7 @@ labelledEffect s eff args rest = XRowExtend (XRowLabelledEffectEntry s eff args)
 rowTypeInfo :: MetaInfo
 rowTypeInfo =
   { kind: XKRow RowType
-  , scope: { types: Set.singleton rigidR, kinds: Set.empty }
+  , scope: { types: Set.singleton rigidR, kinds: Set.empty, regions: Set.empty }
   }
 
 effectRowInfo :: MetaInfo
@@ -330,7 +336,7 @@ spec = describe "Stella.Compiler.Elaborate.Mechanism.Unify" do
       -- a free `a` on the right shares its spelling with the left's binder, and
       -- the two are told apart by the correspondence rather than by the name
       let
-        m = freshMeta (typeInfo { scope = { types: Set.singleton tvA, kinds: Set.empty } }) emptyContext
+        m = freshMeta (typeInfo { scope = { types: Set.singleton tvA, kinds: Set.empty, regions: Set.empty } }) emptyContext
         left = XForall tvA XKType (XMeta (fst m))
         right = XForall tvB XKType (XVar tvA)
       case unifyType env (snd m) XKType left right of
@@ -561,7 +567,7 @@ spec = describe "Stella.Compiler.Elaborate.Mechanism.Unify" do
       -- what `?r` may mention and no more
       let
         outer = rowTypeInfo { scope = emptyScope }
-        payload = rowTypeInfo { scope = { types: Set.singleton rigidR, kinds: Set.singleton (KindVar "k") } }
+        payload = rowTypeInfo { scope = { types: Set.singleton rigidR, kinds: Set.singleton (KindVar "k"), regions: Set.empty } }
         first = freshMeta outer emptyContext
         second = freshMeta payload (snd first)
         ctx = snd second
@@ -594,7 +600,7 @@ spec = describe "Stella.Compiler.Elaborate.Mechanism.Unify" do
         outer = rowTypeInfo { scope = emptyScope }
         payload = rowTypeInfo
           { kind = XKVar k
-          , scope = { types: Set.empty, kinds: Set.singleton k }
+          , scope = { types: Set.empty, kinds: Set.singleton k, regions: Set.empty }
           }
         first = freshMeta outer emptyContext
         second = freshMeta payload (snd first)
@@ -627,7 +633,7 @@ spec = describe "Stella.Compiler.Elaborate.Mechanism.Unify" do
         outer = rowTypeInfo { scope = emptyScope }
         payload = rowTypeInfo
           { kind = XKMeta (fst kindMeta)
-          , scope = { types: Set.empty, kinds: Set.singleton k }
+          , scope = { types: Set.empty, kinds: Set.singleton k, regions: Set.empty }
           }
       case unifyKind (snd kindMeta) (XKMeta (fst kindMeta)) (XKVar k) of
         Right solvedKind ->
@@ -788,7 +794,7 @@ spec = describe "Stella.Compiler.Elaborate.Mechanism.Unify" do
     it "accepts that kind variable when the metavariable was created under it" do
       let
         k = KindVar "k"
-        info = rowTypeInfo { scope = { types: Set.singleton rigidR, kinds: Set.singleton k } }
+        info = rowTypeInfo { scope = { types: Set.singleton rigidR, kinds: Set.singleton k, regions: Set.empty } }
         m = twoMetas rowTypeInfo info
         proxied = XCon (Qualified prim (TyName "Proxy")) [ XKVar k ]
         result = unifyRow m.ctx (XMeta m.s) (field a proxied XRowEmpty)
@@ -856,29 +862,35 @@ spec = describe "Stella.Compiler.Elaborate.Mechanism.Unify" do
         Mismatch (PayloadMismatch key _ _) -> key `shouldEqual` SymbolKey cache
         other -> show other `shouldEqual` "Mismatch (PayloadMismatch …)"
 
-    it "equates both the variable and the layout of two regions sharing the key" do
+    it "agrees on two regions of one name with no equation" do
       let
         m = twoMetas effectRowInfo effectRowInfo
         result = unifyRow m.ctx
-          (regionOf tA (field a tA XRowEmpty) (XMeta m.r))
-          (regionOf tB (field a tB XRowEmpty) (XMeta m.s))
-      snd result `shouldEqual`
-        [ Tuple tA tB, Tuple (field a tA XRowEmpty) (field a tB XRowEmpty) ]
+          (regionOf regionL (XMeta m.r))
+          (regionOf regionL (XMeta m.s))
+      snd result `shouldEqual` []
 
-    it "leaves two regions whose layouts differ to the layout equation" do
-      -- The key does not decide the layout, so the two are handed back as an
-      -- equation and fail where that equation is solved, not here
+    it "keeps two regions of different names apart, as two keys" do
+      let
+        inRegions = effectRowInfo { scope = effectRowInfo.scope { regions = Set.fromFoldable [ regionL, regionM ] } }
+        m = twoMetas inRegions inRegions
+        result = unifyRow m.ctx
+          (regionOf regionL (XMeta m.r))
+          (regionOf regionM (XMeta m.s))
+      case fst result of
+        Solved { metas: ctx } -> do
+          knownKeysOf ctx m.r `shouldEqual` Just [ RegionKey regionM ]
+          knownKeysOf ctx m.s `shouldEqual` Just [ RegionKey regionL ]
+        other -> show other `shouldEqual` "Solved"
+
+    it "refuses a solution naming a region the metavariable was not created in" do
       let
         m = twoMetas effectRowInfo effectRowInfo
-        left = field a tA XRowEmpty
-        right = field b tA XRowEmpty
-        result = unifyRow m.ctx
-          (regionOf tA left (XMeta m.r))
-          (regionOf tA right (XMeta m.s))
-      snd result `shouldEqual` [ Tuple tA tA, Tuple left right ]
-      case fst (unifyRow m.ctx left right) of
-        Mismatch (RowMismatch _ _) -> pure unit
-        other -> show other `shouldEqual` "Mismatch (RowMismatch …)"
+      case fst (unifyRow m.ctx (XMeta m.r) (regionOf regionL XRowEmpty)) of
+        Mismatch (EscapingRegion meta name) -> do
+          meta `shouldEqual` m.r
+          name `shouldEqual` regionL
+        other -> show other `shouldEqual` "Mismatch (EscapingRegion …)"
 
   describe "what a unification reports" do
     it "names the metavariables it assigned" do

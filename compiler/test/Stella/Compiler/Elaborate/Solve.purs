@@ -243,7 +243,7 @@ spec = describe "Elaborate.Solve" do
       let
         underBinder = do
           root <- rootScope
-          whole <- issue (TypeObject { type: XForall (TyVar "b") XKType (XVar (TyVar "b")), kind: ExactKind XKType, scope: { kindVars: Set.empty, tyVars: context.tyVars }, builtIn: Just (ScopeId 0) })
+          whole <- issue (TypeObject { type: XForall (TyVar "b") XKType (XVar (TyVar "b")), kind: ExactKind XKType, scope: { kindVars: Set.empty, tyVars: context.tyVars, regions: Set.empty }, builtIn: Just (ScopeId 0) })
           viewType whole >>= case _ of
             ForallType _ _ body -> int root >>= unify root body
             _ -> raiseDiagnostic failure
