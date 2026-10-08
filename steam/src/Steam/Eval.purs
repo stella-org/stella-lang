@@ -63,10 +63,11 @@ import Run (EFFECT, Run, liftEffect)
 import Run.Except (EXCEPT)
 import Run.Except as Except
 import Steam.Fault (Fault(..))
-import Steam.Module (CalleeTarget(..), CtorRef, ForeignRef, GlobalSlot, HandlerRef, Loaded, Prepared, Registry)
+import Steam.Module (CalleeTarget(..), CtorRef, ForeignRef, GlobalSlot, HandlerRef, Loaded, Prepared, RegionRef, Registry)
 import Steam.Op as Op
-import Steam.Value (Activation, Callee(..), Cell, Clause, Closure, Continuation(..), CtorId, Foreign(..), ForeignOutcome(..), IOEntry(..), IOValue(..), KeyId, Marker, MarkerKind(..), ModuleId, OpId, Root, StackEntry(..), Value(..), matchesConstant, reinstate, valueOfConstant)
-import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName, KeyIx(..), OpIx(..), PrimIx(..), Reg(..), Tail(..))
+import Steam.Region as Region
+import Steam.Value (Activation, Callee(..), Clause, Closure, Continuation(..), CtorId, Foreign(..), ForeignOutcome(..), IOEntry(..), IOValue(..), KeyId, Marker, ModuleId, OpId, Root, StackEntry(..), Value(..), matchesConstant, reinstate, valueOfConstant)
+import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName, KeyIx(..), OpIx(..), PrimIx(..), Reg(..), RegionIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Constant)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
 import Stella.Compiler.Primitive (InClosedRun(..), PrimOp, arityOfOp, inClosedRunOf)
@@ -137,14 +138,20 @@ data Bug
   -- | boundary of the key answering another operation, which an invocation whose
   -- | root names the one operation of its effect cannot reach.
   | NoClauseForOperation OpIx
-  -- | A cell no region frame in the stack declares.
-  | NoCellDeclared KeyId
-  -- | An owner marker with no region frame below it.
-  | RegionNotBelowMarker
-  -- | A handler installed with a number of clauses or of initial values its table
-  -- | does not state. Loading refuses such an instruction, so a loaded module never
-  -- | reaches this.
+  | NoSuchRegion RegionIx
+  -- | A `CGET` or `CSET` through a value that is no region's identity.
+  | NotARegion
+  -- | A `CGET` or `CSET` of a region no visible frame of the stack holds, which
+  -- | typing rules out: a function reaching a region's cells runs where the region
+  -- | is open.
+  | RegionNotOpen
+  -- | A cell position the region does not have.
+  | NoSuchCell P.Int
+  -- | A handler installed with a number of clauses its table does not state, or a
+  -- | region opened with a number of initial values. Loading refuses such an
+  -- | instruction, so a loaded module never reaches this.
   | WrongHandlerShape HandlerIx
+  | WrongRegionShape RegionIx
   -- | A `Base.IO` entry applied to a count it does not take, as the entry and the
   -- | count. Its arity is the ABI's and a loader checked it, so this is what a
   -- | `.dmo` that got past that would produce.
@@ -250,10 +257,11 @@ data Next
   -- | A call to a value: the callee and its arguments, with the register the value
   -- | belongs in. This is where under- and over-application are resolved.
   | Unknown Reg Value (P.Array Value)
-  -- | Installing a handler: the entries to push under the body, and the body to
-  -- | enter. The calling activation's `Resume` goes below them, so the marker stands
-  -- | between it and the body.
-  | Install Reg (P.Array StackEntry) Value
+  -- | Installing a handler or opening a region: the entries to push under the body,
+  -- | the body to enter, and what it is applied to. The calling activation's
+  -- | `Resume` goes below them, so the marker or the frame stands between it and
+  -- | the body.
+  | Install Reg (P.Array StackEntry) Value (P.Array Value)
   -- | A `fast` clause answering a `PERF`: the clause, its argument, and where the
   -- | answering handler's marker stands, with the register the clause's value
   -- | belongs in. The calling activation's `Resume` goes below a `ClauseBoundary`,
@@ -358,6 +366,11 @@ handlerAt loaded ix@(HandlerIx i) = case Array.index loaded.handlers i of
   Just entry -> pure entry
   Nothing -> bug (NoSuchHandler ix)
 
+regionAt :: forall r. Loaded -> RegionIx -> Run (EVAL r) RegionRef
+regionAt loaded ix@(RegionIx i) = case Array.index loaded.regions i of
+  Just entry -> pure entry
+  Nothing -> bug (NoSuchRegion ix)
+
 foreignAt :: forall r. Loaded -> ForeignIx -> Run (EVAL r) ForeignRef
 foreignAt loaded ix@(ForeignIx i) = case Array.index loaded.foreigns i of
   Just entry -> pure entry
@@ -389,23 +402,15 @@ pop machine = do
       pure (Just last)
     Nothing -> pure Nothing
 
--- | Close the region an owner marker opened, which stands directly below it.
-popRegion :: forall r. Machine -> Run (EVAL r) Unit
-popRegion machine = do
-  entry <- pop machine
-  case entry of
-    Just (RegionFrame _) -> pure unit
-    _ -> bug RegionNotBelowMarker
-
 -- | The first entry, from the top down, at which `found` answers, with where it
 -- | stands.
 -- |
 -- | **A `ClauseBoundary` is jumped over, together with everything below it down to
 -- | and including the marker of the handler whose `fast` clause is running**: the
 -- | walk continues directly below that marker, so what stood between the handler
--- | and the `perform` is not seen, while the handler's own region, standing below
--- | its marker, is. A marker search and a cell search read the stack by this one
--- | walk, which is what keeps `PERF`, `CGET`, and `CSET` reaching the same context.
+-- | and the `perform` is not seen, while what stands below the marker is. A marker
+-- | search and a region search read the stack by this one walk, which is what keeps
+-- | `PERF`, `CGET`, and `CSET` reaching the same context.
 visible :: forall a. P.Array StackEntry -> (StackEntry -> Maybe a) -> Maybe { at :: P.Int, found :: a }
 visible stack found = go (Array.length stack - 1)
   where
@@ -450,17 +455,23 @@ data Answerer
   | AtRoot Root
   | AtClosed
 
--- | The cell keyed thus of the innermost visible region declaring it, found by the
--- | walk `PERF` finds a marker by.
-cellOf :: forall r. Machine -> KeyId -> Run (EVAL r) Cell
-cellOf machine key = do
-  stack <- liftEffect (Ref.read machine.stack)
-  case visible stack declaring of
-    Just { found } -> pure found
-    Nothing -> bug (NoCellDeclared key)
+-- | The cell at that position of the region whose identity the value is: the
+-- | innermost visible frame of the identity, found by the walk `PERF` finds a
+-- | marker by. **Copies of one opening share its identity**, and the innermost is
+-- | the one the running code belongs to.
+cellOf :: forall r. Machine -> Value -> P.Int -> Run (EVAL r) (Ref Value)
+cellOf machine value index = case value of
+  VOpaque o | Just identity <- Region.fromOpaque o -> do
+    stack <- liftEffect (Ref.read machine.stack)
+    case visible stack (frameOf identity) of
+      Nothing -> bug RegionNotOpen
+      Just { found } -> case Array.index found.cells index of
+        Just cell -> pure cell
+        Nothing -> bug (NoSuchCell index)
+  _ -> bug NotARegion
   where
-  declaring = case _ of
-    RegionFrame region -> Array.find (\cell -> cell.key == key) region.cells
+  frameOf identity = case _ of
+    RegionFrame region | Region.same region.identity identity -> Just region
     _ -> Nothing
 
 -- | Take everything from that entry upwards off the stack, which is what a `full`
@@ -680,12 +691,8 @@ step machine = case _ of
         writeReg activation dest value
         pure (Running activation)
       Just (ApplyRemaining args) -> applyTo machine value args
-      -- an owner closes the region it opened before its return clause runs, a
-      -- reinstatement leaves that region to whoever opened it, and a frame no marker
-      -- owns closes with no return clause at all
-      Just (HandlerMarker marker) -> do
-        when marker.ownsRegion (popRegion machine)
-        applyTo machine marker.returnClause [ value ]
+      Just (HandlerMarker marker) -> applyTo machine marker.returnClause [ value ]
+      -- a region closes as the value passes it
       Just (RegionFrame _) -> pure (Returning value)
       -- a `fast` clause has finished, and its value goes on to the `PERF` below
       Just (ClauseBoundary _) -> pure (Returning value)
@@ -710,10 +717,10 @@ step machine = case _ of
           Unknown dest callee args -> do
             push machine (Resume (resuming activation) dest)
             applyTo machine callee args
-          Install dest entries body -> do
+          Install dest entries body args -> do
             push machine (Resume (resuming activation) dest)
             pushAll machine entries
-            applyTo machine body []
+            applyTo machine body args
           -- the boundary is measured from where it will stand, the `Resume` below it
           -- being pushed first
           Fast dest clause argument markerAt -> do
@@ -838,9 +845,6 @@ activationIn closure function args = do
   parameter i value = Tuple (Reg i) value
 
 -- | What installing a handler pushes, and the body it then enters.
--- |
--- | The region frame stands **below** the marker, which is the whole of what places
--- | the cells where the clauses reach them and the handled computation does not.
 install
   :: forall r
    . Loaded
@@ -849,37 +853,46 @@ install
   -> Reg
   -> Reg
   -> P.Array Reg
-  -> P.Array Reg
   -> Run (EVAL r) { entries :: P.Array StackEntry, body :: Value }
-install loaded activation ix body ret clauses cells = do
+install loaded activation ix body ret clauses = do
   entry <- handlerAt loaded ix
   bodyValue <- readReg activation body
   returnClause <- readReg activation ret
   clauseValues <- traverse (readReg activation) clauses
-  initial <- traverse (readReg activation) cells
   when (Array.length clauseValues /= Array.length entry.opClauses)
     (bug (WrongHandlerShape ix))
-  when (Array.length initial /= Array.length entry.cells) (bug (WrongHandlerShape ix))
-  region <-
-    if Array.null entry.cells then pure []
-    else do
-      opened <- traverse cell (Array.zip entry.cells initial)
-      pure [ RegionFrame { cells: opened } ]
   let
     marker = HandlerMarker
-      { kind: Owner
-      , ownsRegion: not (Array.null entry.cells)
-      , key: entry.key
+      { key: entry.key
       , clauses: Array.zipWith clauseOf entry.opClauses clauseValues
       , returnClause
       }
-  pure { entries: region <> [ marker ], body: bodyValue }
+  pure { entries: [ marker ], body: bodyValue }
   where
-  cell (Tuple key value) = do
-    held <- liftEffect (Ref.new value)
-    pure { key, value: held }
-
   clauseOf stated value = { op: stated.op, form: stated.form, clause: value }
+
+-- | What opening a region pushes, the body it then enters, and the identity the
+-- | body is applied to: one no other opening has had.
+openRegion
+  :: forall r
+   . Loaded
+  -> Activation
+  -> RegionIx
+  -> Reg
+  -> P.Array Reg
+  -> Run (EVAL r) { entries :: P.Array StackEntry, body :: Value, identity :: Value }
+openRegion loaded activation ix body initial = do
+  entry <- regionAt loaded ix
+  bodyValue <- readReg activation body
+  values <- traverse (readReg activation) initial
+  when (Array.length values /= Array.length entry.cells) (bug (WrongRegionShape ix))
+  identity <- liftEffect Region.fresh
+  cells <- liftEffect (traverse Ref.new values)
+  pure
+    { entries: [ RegionFrame { identity, cells } ]
+    , body: bodyValue
+    , identity: VOpaque (Region.toOpaque identity)
+    }
 
 -- | The operation an index of the module's `OPS` names.
 opAt :: forall r. Loaded -> OpIx -> Run (EVAL r) OpId
@@ -969,10 +982,15 @@ transfer machine loaded activation = do
       carryOutForeign machine entry.carriedOutBy values
     -- in tail position nothing waits for the return clause's value, so no `Resume`
     -- stands below the marker
-    TAILHNDL ix body ret clauses cells -> do
-      installed <- install loaded activation ix body ret clauses cells
+    TAILHNDL ix body ret clauses -> do
+      installed <- install loaded activation ix body ret clauses
       pushAll machine installed.entries
       applyTo machine installed.body []
+
+    TAILRGN ix body initial -> do
+      opened <- openRegion loaded activation ix body initial
+      pushAll machine opened.entries
+      applyTo machine opened.body [ opened.identity ]
   where
   enters node = Running (activation { node = node, ip = 0 })
 
@@ -1171,22 +1189,26 @@ exec machine loaded activation = case _ of
             map Moved
               (applyTo machine clause.clause [ argument, VCont (Continuation segment) ])
 
-  HNDL d ix body ret clauses cells -> do
-    installed <- install loaded activation ix body ret clauses cells
-    pure (Install d installed.entries installed.body)
+  HNDL d ix body ret clauses -> do
+    installed <- install loaded activation ix body ret clauses
+    pure (Install d installed.entries installed.body [])
 
-  CGET d keyIx -> do
-    key <- keyAt loaded keyIx
-    cell <- cellOf machine key
-    value <- liftEffect (Ref.read cell.value)
+  RGN d ix body initial -> do
+    opened <- openRegion loaded activation ix body initial
+    pure (Install d opened.entries opened.body [ opened.identity ])
+
+  CGET d region index -> do
+    identity <- readReg activation region
+    cell <- cellOf machine identity index
+    value <- liftEffect (Ref.read cell)
     advance (writeReg activation d value)
 
   -- a write has no result of its own, so the destination takes `Prim.Unit`
-  CSET d keyIx s -> do
-    key <- keyAt loaded keyIx
-    cell <- cellOf machine key
+  CSET d region index s -> do
+    identity <- readReg activation region
+    cell <- cellOf machine identity index
     value <- readReg activation s
-    liftEffect (Ref.write value cell.value)
+    liftEffect (Ref.write value cell)
     advance (writeReg activation d loaded.unit)
   where
   advance = map (const Advance)

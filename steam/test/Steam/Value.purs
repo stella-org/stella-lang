@@ -5,9 +5,9 @@
 -- | neither way.
 -- |
 -- | `reinstate` is what one application of a continuation pushes: it keeps two
--- | applications from sharing the state that was captured, and it makes the marker
--- | at the bottom a reinstatement. Applying one is the machine's, and what is fixed
--- | here are the invariants every application rests on.
+-- | applications from sharing the state that was captured, and it keeps the
+-- | identity of every region frame it copies. Applying one is the machine's, and
+-- | what is fixed here are the invariants every application rests on.
 module Test.Steam.Value (spec) where
 
 import Prelude
@@ -22,7 +22,8 @@ import Data.Traversable (traverse)
 import Effect (Effect)
 import Effect.Class (liftEffect)
 import Effect.Ref as Ref
-import Steam.Value (Continuation(..), KeyId(..), MarkerKind(..), ModuleId(..), StackEntry(..), Value(..), matchesConstant, reinstate, valueOfConstant)
+import Steam.Region as Region
+import Steam.Value (Continuation(..), ModuleId(..), RegionId, StackEntry(..), Value(..), matchesConstant, reinstate, valueOfConstant)
 import Stella.Compiler.Bytecode.Instr (FuncIx(..), Reg(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Constant(..))
 import Stella.Compiler.TypedCore.Domain (ScalarString, ScalarValue, scalarString, scalarValue)
@@ -54,9 +55,10 @@ carries c = matchesConstant (valueOfConstant c) c
 -- A segment, and what it holds ---------------------------------------------------
 
 -- | A segment holding one activation's register and one region cell, which is
--- | everything an application of a continuation can change.
-segmentOf :: P.Int -> P.Int -> Effect (P.Array StackEntry)
-segmentOf inRegister inCell = do
+-- | everything an application of a continuation can change, the region under the
+-- | identity given.
+segmentOf :: RegionId -> P.Int -> P.Int -> Effect (P.Array StackEntry)
+segmentOf identity inRegister inCell = do
   captures <- Ref.new Map.empty
   regs <- Ref.new (Map.singleton (Reg 0) (VInt inRegister))
   cell <- Ref.new (VInt inCell)
@@ -71,36 +73,20 @@ segmentOf inRegister inCell = do
       }
   pure
     [ Resume activation (Reg 1)
-    , RegionFrame { cells: [ { key: KeyId 0, value: cell } ] }
+    , RegionFrame { identity, cells: [ cell ] }
     ]
 
--- | A segment whose bottom is the marker that answered the operation, with a
--- | marker of its own nested above it. **The last entry is the top**, so index zero
--- | is the bottom.
-markedSegment :: Effect (P.Array StackEntry)
-markedSegment = do
-  captures <- Ref.new Map.empty
-  regs <- Ref.new Map.empty
-  let
-    func = { module: ModuleId 0, func: FuncIx 0 }
-    closure = { func, captures }
-    marker =
-      { kind: Owner
-      , ownsRegion: false
-      , key: KeyId 0
-      , clauses: []
-      , returnClause: VClos closure
-      }
-  pure
-    [ HandlerMarker marker
-    , HandlerMarker (marker { key = KeyId 1 })
-    , Resume { func, closure, regs, node: { code: [], tail: RET (Reg 0) }, ip: 0 } (Reg 0)
-    ]
+-- | A fresh segment, under an identity of its own.
+freshSegment :: P.Int -> P.Int -> Effect (P.Array StackEntry)
+freshSegment inRegister inCell = do
+  identity <- Region.fresh
+  segmentOf identity inRegister inCell
 
--- | The kind of each marker a segment holds, in the order its entries stand.
-kinds :: P.Array StackEntry -> P.Array (Maybe MarkerKind)
-kinds = map case _ of
-  HandlerMarker marker -> Just marker.kind
+-- | Whether each region frame a segment holds stands under that identity, in the
+-- | order its entries stand.
+under :: RegionId -> P.Array StackEntry -> P.Array (Maybe P.Boolean)
+under identity = map case _ of
+  RegionFrame region -> Just (Region.same region.identity identity)
   _ -> Nothing
 
 -- | The integers a segment holds, in the order its entries stand.
@@ -110,7 +96,7 @@ holds = traverse entry
   entry = case _ of
     Resume activation _ -> map (register <=< Map.lookup (Reg 0)) (Ref.read activation.regs)
     RegionFrame region -> case Array.head region.cells of
-      Just cell -> map register (Ref.read cell.value)
+      Just cell -> map register (Ref.read cell)
       Nothing -> pure Nothing
     _ -> pure Nothing
 
@@ -124,7 +110,7 @@ writeInto segment inRegister inCell = traverse_ entry segment
   where
   entry = case _ of
     Resume activation _ -> Ref.modify_ (Map.insert (Reg 0) (VInt inRegister)) activation.regs
-    RegionFrame region -> traverse_ (\cell -> Ref.write (VInt inCell) cell.value) region.cells
+    RegionFrame region -> traverse_ (Ref.write (VInt inCell)) region.cells
     _ -> pure unit
 
 spec :: Spec Unit
@@ -182,7 +168,7 @@ spec = describe "Steam.Value" do
       -- what the first application wrote is its own, and the second begins where
       -- the capture left off (D33)
       values <- liftEffect do
-        segment <- segmentOf 1 10
+        segment <- freshSegment 1 10
         first <- reinstate (Continuation segment)
         writeInto first 2 20
         second <- reinstate (Continuation segment)
@@ -191,7 +177,7 @@ spec = describe "Steam.Value" do
 
     it "leaves the captured segment as it was" do
       values <- liftEffect do
-        segment <- segmentOf 1 10
+        segment <- freshSegment 1 10
         clone <- reinstate (Continuation segment)
         writeInto clone 2 20
         holds segment
@@ -199,21 +185,26 @@ spec = describe "Steam.Value" do
 
     it "gives each application a state of its own" do
       values <- liftEffect do
-        segment <- segmentOf 1 10
+        segment <- freshSegment 1 10
         first <- reinstate (Continuation segment)
         second <- reinstate (Continuation segment)
         writeInto first 2 20
         holds second
       values `shouldEqual` [ Just 1, Just 10 ]
 
-    it "makes the bottom marker a reinstatement and leaves the rest as they were" do
-      -- a reinstatement owns no frame: the frame its `handle` opened stayed behind
-      -- when the segment was split, and an owner's completion path would close a
-      -- region this marker does not own
-      pushed <- liftEffect (markedSegment >>= Continuation >>> reinstate)
-      kinds pushed `shouldEqual` [ Just Reinstatement, Just Owner, Nothing ]
+    it "keeps the identity of every region frame it copies" do
+      -- the code the segment holds, and every closure made before the capture,
+      -- name the region by its identity, and a copy is what they must reach
+      sameness <- liftEffect do
+        identity <- Region.fresh
+        segment <- segmentOf identity 1 10
+        copy <- reinstate (Continuation segment)
+        pure (under identity copy)
+      sameness `shouldEqual` [ Nothing, Just true ]
 
-    it "leaves the captured marker as the owner it was" do
-      captured <- liftEffect markedSegment
-      _ <- liftEffect (reinstate (Continuation captured))
-      kinds captured `shouldEqual` [ Just Owner, Just Owner, Nothing ]
+    it "gives no two openings one identity" do
+      sameness <- liftEffect do
+        identity <- Region.fresh
+        other <- freshSegment 1 10
+        pure (under identity other)
+      sameness `shouldEqual` [ Nothing, Just false ]

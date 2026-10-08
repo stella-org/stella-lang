@@ -35,7 +35,7 @@ import Steam.Drive (execute)
 import Steam.Eval (Bug(..), Failure(..), enter)
 import Steam.Fault (Fault(..))
 import Steam.Module (Loaded, Registry, prepare)
-import Steam.Value (ActionOutcome(..), Callee(..), Continuation(..), CtorId(..), Foreign(..), ForeignOutcome(..), IOEntry(..), IOValue(..), KeyId(..), MarkerKind(..), ModuleId(..), NativeAction, Opaque, StackEntry(..), Value(..))
+import Steam.Value (ActionOutcome(..), Callee(..), Continuation(..), CtorId(..), Foreign(..), ForeignOutcome(..), IOEntry(..), IOValue(..), KeyId(..), ModuleId(..), NativeAction, Opaque, StackEntry(..), Value(..))
 import Stella.Compiler.Bytecode.Instr (ConstIx(..), ForeignIx(..), FuncIx(..), Function, Instr(..), Node, PrimIx(..), Reg(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Constant(..))
 import Stella.Compiler.MiddleEnd.Rep (Rep(..))
@@ -113,6 +113,7 @@ loaded =
   , callees: []
   , prims: [ IntAdd, ArrayUnsafeNew ]
   , handlers: []
+  , regions: []
   , unit: VData (CtorId 999) []
   , functions: Array.mapMaybe prepared functions
   }
@@ -282,9 +283,7 @@ spec = describe "Steam.Drive" do
         answering = VCont
           ( Continuation
               [ HandlerMarker
-                  { kind: Owner
-                  , ownsRegion: false
-                  , key: KeyId 0
+                  { key: KeyId 0
                   , clauses: []
                   , returnClause: papOverPure
                   }

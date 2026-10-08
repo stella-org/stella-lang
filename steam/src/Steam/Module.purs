@@ -17,6 +17,7 @@ module Steam.Module
   , ForeignRef
   , HandlerRef
   , ClauseRef
+  , RegionRef
   , GlobalSlot
   , CalleeTarget(..)
   , Prepared
@@ -69,18 +70,25 @@ type Loaded =
   , prims :: P.Array PrimOp
   -- | One entry per `HANDLERS` index, with every key and operation resolved.
   , handlers :: P.Array HandlerRef
+  -- | One entry per `REGIONS` index, with every key resolved.
+  , regions :: P.Array RegionRef
   -- | `Prim.Unit`, which a write to a cell produces. Core names the constructor and
   -- | no module declares it, so the identity is the registry's like any other.
   , unit :: Value
   , functions :: P.Array Prepared
   }
 
--- | A handler as a file states it: the key it answers, the keys of the cells its
--- | region opens, and a clause per operation.
+-- | A handler as a file states it: the key it answers, and a clause per
+-- | operation.
 type HandlerRef =
   { key :: KeyId
-  , cells :: P.Array KeyId
   , opClauses :: P.Array ClauseRef
+  }
+
+-- | A region as a file states it: the keys of its cells, in the order of their
+-- | positions.
+type RegionRef =
+  { cells :: P.Array KeyId
   }
 
 type ClauseRef =

@@ -89,7 +89,7 @@ installing handler clause body = plain 4
       [ CLOS (Reg 0) (FuncIx body) []
       , CLOS (Reg 1) (FuncIx 1) []
       , CLOS (Reg 2) (FuncIx clause) []
-      , HNDL (Reg 3) (HandlerIx handler) (Reg 0) (Reg 1) [ Reg 2 ] []
+      , HNDL (Reg 3) (HandlerIx handler) (Reg 0) (Reg 1) [ Reg 2 ]
       ]
       (Reg 3)
   )
@@ -152,9 +152,10 @@ loaded =
   , callees: []
   , prims: [ IntAdd ]
   , handlers:
-      [ { key: rootKey, cells: [], opClauses: [ { op: rootOp, form: ClauseFast } ] }
-      , { key: otherKey, cells: [], opClauses: [ { op: otherOp, form: ClauseFull } ] }
+      [ { key: rootKey, opClauses: [ { op: rootOp, form: ClauseFast } ] }
+      , { key: otherKey, opClauses: [ { op: otherOp, form: ClauseFull } ] }
       ]
+  , regions: []
   , unit: VData (CtorId 999) []
   , functions: Array.mapMaybe prepared functions
   }

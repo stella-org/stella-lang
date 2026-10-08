@@ -255,6 +255,7 @@ bugModule =
   , callees: []
   , prims: []
   , handlers: []
+  , regions: []
   , functions:
       [ { nparams: 0
         , regs: Array.replicate 4 RepVal

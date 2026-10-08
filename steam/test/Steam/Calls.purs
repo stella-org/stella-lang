@@ -379,6 +379,7 @@ libModule = pure
   , callees: []
   , prims: []
   , handlers: []
+  , regions: []
   , unit: VData (CtorId 999) []
   , functions: Array.mapMaybe prepared libFunctions
   }
@@ -410,6 +411,7 @@ loadedModule lib = do
         ]
     , prims: [ IntAdd ]
     , handlers: []
+    , regions: []
     , unit: VData (CtorId 999) []
     , functions: Array.mapMaybe prepared functions
     }

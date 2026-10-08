@@ -47,7 +47,7 @@ import Data.Foldable (foldM, for_, traverse_)
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), isJust)
+import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
@@ -63,12 +63,12 @@ import Steam.Array as Arr
 import Steam.Eval (Failure, Halt, enter, enterClosed)
 import Steam.Foreign (ForeignTable)
 import Steam.Foreign as Foreign
-import Steam.Module (CalleeTarget(..), CtorRef, ForeignRef, GlobalSlot, HandlerRef, Loaded, Prepared, Registry, prepare)
+import Steam.Module (CalleeTarget(..), CtorRef, ForeignRef, GlobalSlot, HandlerRef, Loaded, Prepared, RegionRef, Registry, prepare)
 import Steam.Op as Op
 import Steam.Structural (RuntimeNames)
 import Steam.Value (Closure, CtorId(..), Foreign(..), KeyId(..), ModuleId(..), OpId(..), Value(..), arityOfIO, entryOfIO, ioEntries)
-import Stella.Compiler.Bytecode.Instr (CalleeIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), Function, GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName, KeyIx(..), Node, OpIx(..), PrimIx(..), Tail(..))
-import Stella.Compiler.Bytecode.Module (CalleeEntry(..), Dmo, GlobalInit(..), HandlerEntry, Key)
+import Stella.Compiler.Bytecode.Instr (CalleeIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), Function, GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName, KeyIx(..), Node, OpIx(..), PrimIx(..), RegionIx(..), Tail(..))
+import Stella.Compiler.Bytecode.Module (CalleeEntry(..), Dmo, GlobalInit(..), HandlerEntry, Key, RegionEntry)
 import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, ModuleName, OpName, Qualified(..))
 import Stella.Compiler.TypedCore.Prim (primModule, unitCtor)
@@ -223,19 +223,22 @@ data LoadError
   | RunGlobalWithParameters (Qualified Ident) P.Int
   -- | An index naming nothing in a table of this module.
   | IndexOutOfRange P.String P.Int
-  -- | A handler naming a key or an operation its module's tables do not hold.
+  -- | A handler or a region naming a key or an operation its module's tables do
+  -- | not hold.
   | NoSuchKeyIndex P.Int
   | NoSuchOpIndex P.Int
-  -- | A handler declaring one cell twice, or holding two clauses for one operation,
-  -- | as the key or the operation's name. Two indices may intern to one identity, so
-  -- | what is compared is the identity.
+  -- | A region declaring one cell twice, or a handler holding two clauses for one
+  -- | operation, as the key or the operation's name. Two indices may intern to one
+  -- | identity, so what is compared is the identity.
   | CellKeyTwice Key
   | ClauseTwice OpName
-  -- | A `HNDL` or `TAILHNDL` supplying another count of clauses, or of initial cell
-  -- | values, than its handler entry holds: the key of the handler's effect, the
-  -- | entry's count, and the instruction's.
+  -- | A `HNDL` or `TAILHNDL` supplying another count of clauses than its handler
+  -- | entry holds: the key of the handler's effect, the entry's count, and the
+  -- | instruction's.
   | HandlerClausesDisagree Key P.Int P.Int
-  | HandlerCellsDisagree Key P.Int P.Int
+  -- | A `RGN` or `TAILRGN` supplying another count of initial values than its
+  -- | region entry has cells: the keys of the cells, and the instruction's count.
+  | RegionCellsDisagree (P.Array Key) P.Int
   -- | Two join points of one function under one name.
   | JoinNameTwice JoinName
   -- | A foreign nothing carries out: neither an entry this interpreter claims nor
@@ -340,7 +343,9 @@ loadWith initialization store dmo = do
   globalRefs <- traverse (resolveGlobal withDeclarations scope) dmo.globalRefs
   callees <- traverse (resolveCallee withDeclarations scope) dmo.callees
   handlers <- traverse (resolveHandler dmo keys ops) dmo.handlers
+  regions <- traverse (resolveRegion dmo keys) dmo.regions
   checkHandlers dmo
+  checkRegions dmo
   checkGlobals functions dmo
   checkArities withDeclarations dmo
 
@@ -356,6 +361,7 @@ loadWith initialization store dmo = do
       , callees
       , prims: dmo.prims
       , handlers
+      , regions
       , unit: VData unitCtorId []
       , functions
       }
@@ -642,9 +648,12 @@ checkGlobals functions dmo = traverse_ one dmo.globals
     Just function -> pure function
     Nothing -> refuse (IndexOutOfRange "FUNCTIONS" i)
 
--- | A handler with the key it answers, its cells' keys, and its clauses resolved. A
--- | `HANDLERS` entry indexes this module's own `KEYS` and `OPS`, so nothing is
--- | looked up where the handler is installed.
+-- | A handler with the key it answers and its clauses resolved. A `HANDLERS` entry
+-- | indexes this module's own `KEYS` and `OPS`, so nothing is looked up where the
+-- | handler is installed.
+-- |
+-- | A clause is found by its operation, so two clauses for one would leave which
+-- | one a `PERF` means to the order of a table.
 resolveHandler
   :: forall r
    . Dmo
@@ -653,38 +662,52 @@ resolveHandler
   -> HandlerEntry
   -> Run (LOAD r) HandlerRef
 resolveHandler dmo keys ops entry = do
-  key <- map _.id (keyAt entry.key)
-  cells <- traverse keyAt entry.cells
+  key <- map _.id (keyIn dmo keys entry.key)
   opClauses <- traverse clause entry.opClauses
-  unique CellKeyTwice cells
-  unique ClauseTwice opClauses
-  pure { key, cells: map _.id cells, opClauses: map (\c -> { op: c.id, form: c.form }) opClauses }
+  noneTwice ClauseTwice opClauses
+  pure { key, opClauses: map (\c -> { op: c.id, form: c.form }) opClauses }
   where
-  keyAt (KeyIx i) = case Array.index keys i, Array.index dmo.keys i of
-    Just id, Just name -> pure { id, name }
-    _, _ -> refuse (NoSuchKeyIndex i)
-
   clause c = case c.op of
     OpIx i -> case Array.index ops i, Array.index dmo.ops i of
       Just id, Just name -> pure { id, name, form: c.form }
       _, _ -> refuse (NoSuchOpIndex i)
 
-  -- a cell is found by its key and a clause by its operation, so either standing
-  -- twice would leave which one a `CGET` or a `PERF` means to the order of a table
-  unique
-    :: forall r2 id name more
-     . Ord id
-    => (name -> LoadError)
-    -> P.Array { id :: id, name :: name | more }
-    -> Run (LOAD r2) Unit
-  unique twice named = void (foldM one Set.empty named)
-    where
-    one seen resolved
-      | Set.member resolved.id seen = refuse (twice resolved.name)
-      | otherwise = pure (Set.insert resolved.id seen)
+-- | A region with its cells' keys resolved. A cell is reached by its position,
+-- | and the keys are what the layout declares, which Core makes distinct: a key
+-- | standing twice is a region no Core opens.
+resolveRegion
+  :: forall r
+   . Dmo
+  -> P.Array KeyId
+  -> RegionEntry
+  -> Run (LOAD r) RegionRef
+resolveRegion dmo keys entry = do
+  cells <- traverse (keyIn dmo keys) entry.cells
+  noneTwice CellKeyTwice cells
+  pure { cells: map _.id cells }
+
+-- | A key of this module's `KEYS`, as the identity it interned to and as written.
+keyIn :: forall r. Dmo -> P.Array KeyId -> KeyIx -> Run (LOAD r) { id :: KeyId, name :: Key }
+keyIn dmo keys (KeyIx i) = case Array.index keys i, Array.index dmo.keys i of
+  Just id, Just name -> pure { id, name }
+  _, _ -> refuse (NoSuchKeyIndex i)
+
+-- | That no identity stands twice. Two indices may intern to one identity, so what
+-- | is compared is the identity, and what is reported its name.
+noneTwice
+  :: forall r id name more
+   . Ord id
+  => (name -> LoadError)
+  -> P.Array { id :: id, name :: name | more }
+  -> Run (LOAD r) Unit
+noneTwice twice named = void (foldM one Set.empty named)
+  where
+  one seen resolved
+    | Set.member resolved.id seen = refuse (twice resolved.name)
+    | otherwise = pure (Set.insert resolved.id seen)
 
 -- | That every `HNDL` and `TAILHNDL` supplies one clause per clause of its handler
--- | entry and one initial value per cell, wherever in a function it stands.
+-- | entry, wherever in a function it stands.
 checkHandlers :: forall r. Dmo -> Run (LOAD r) Unit
 checkHandlers dmo = traverse_ perFunction dmo.functions
   where
@@ -693,15 +716,15 @@ checkHandlers dmo = traverse_ perFunction dmo.functions
     traverse_ perTail (tailsOf function)
 
   perInstr = case _ of
-    HNDL _ ix _ _ clauses cells -> operands ix clauses cells
+    HNDL _ ix _ _ clauses -> operands ix clauses
     _ -> pure unit
 
   perTail = case _ of
-    TAILHNDL ix _ _ clauses cells -> operands ix clauses cells
+    TAILHNDL ix _ _ clauses -> operands ix clauses
     _ -> pure unit
 
-  operands :: forall r2 a b. HandlerIx -> P.Array a -> P.Array b -> Run (LOAD r2) Unit
-  operands (HandlerIx i) clauses cells = case Array.index dmo.handlers i of
+  operands :: forall r2 a. HandlerIx -> P.Array a -> Run (LOAD r2) Unit
+  operands (HandlerIx i) clauses = case Array.index dmo.handlers i of
     Nothing -> refuse (IndexOutOfRange "HANDLERS" i)
     Just entry -> do
       key <- case entry.key of
@@ -710,8 +733,30 @@ checkHandlers dmo = traverse_ perFunction dmo.functions
           Nothing -> refuse (NoSuchKeyIndex k)
       when (Array.length clauses /= Array.length entry.opClauses)
         (refuse (HandlerClausesDisagree key (Array.length entry.opClauses) (Array.length clauses)))
-      when (Array.length cells /= Array.length entry.cells)
-        (refuse (HandlerCellsDisagree key (Array.length entry.cells) (Array.length cells)))
+
+-- | That every `RGN` and `TAILRGN` supplies one initial value per cell of its
+-- | region entry, wherever in a function it stands.
+checkRegions :: forall r. Dmo -> Run (LOAD r) Unit
+checkRegions dmo = traverse_ perFunction dmo.functions
+  where
+  perFunction function = do
+    traverse_ perInstr (instructionsOf function)
+    traverse_ perTail (tailsOf function)
+
+  perInstr = case _ of
+    RGN _ ix _ initial -> operands ix initial
+    _ -> pure unit
+
+  perTail = case _ of
+    TAILRGN ix _ initial -> operands ix initial
+    _ -> pure unit
+
+  operands :: forall r2 a. RegionIx -> P.Array a -> Run (LOAD r2) Unit
+  operands (RegionIx i) initial = case Array.index dmo.regions i of
+    Nothing -> refuse (IndexOutOfRange "REGIONS" i)
+    Just entry -> when (Array.length initial /= Array.length entry.cells) do
+      keys <- traverse (\(KeyIx k) -> maybe (refuse (NoSuchKeyIndex k)) pure (Array.index dmo.keys k)) entry.cells
+      refuse (RegionCellsDisagree keys (Array.length initial))
 
 -- | That every call in the code supplies a count the declaration it reaches admits.
 -- |

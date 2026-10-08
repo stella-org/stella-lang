@@ -360,19 +360,20 @@ spec names = describe "Steam, over the bytecode fixtures" do
     Array.filter (\n -> not (Array.elem n names)) (map _.name loadRefusals) `shouldEqual` []
 
 -- | The refusal each of these fixtures must be refused with, which a manifest's
--- | `mentions` does not pin down: every shape refusal names the same effect, and
--- | a report naming the key, the operation, or the foreign says nothing of the
--- | counts or of what was wrong with it.
+-- | `mentions` does not pin down: every shape refusal of a handler names the same
+-- | effect and every one of a region the same cells, and a report naming the key,
+-- | the operation, or the foreign says nothing of the counts or of what was wrong
+-- | with it.
 loadRefusals :: P.Array { name :: P.String, refusal :: Refusal -> P.Boolean }
 loadRefusals =
-  [ { name: "handler-cell-twice", refusal: loading cellTwice }
-  , { name: "handler-cell-aliased", refusal: loading cellTwice }
+  [ { name: "region-cell-twice", refusal: loading cellTwice }
+  , { name: "region-cell-aliased", refusal: loading cellTwice }
   , { name: "handler-clause-twice", refusal: loading clauseTwice }
   , { name: "handler-clause-aliased", refusal: loading clauseTwice }
   , { name: "handler-hndl-clauses", refusal: loading clausesDisagree }
   , { name: "handler-tailhndl-clauses", refusal: loading clausesDisagree }
-  , { name: "handler-hndl-cells", refusal: loading cellsDisagree }
-  , { name: "handler-tailhndl-cells", refusal: loading cellsDisagree }
+  , { name: "region-rgn-cells", refusal: loading cellsDisagree }
+  , { name: "region-tailrgn-cells", refusal: loading cellsDisagree }
   , { name: "foreign-unreachable"
     , refusal: assembling case _ of
         ModuleUnreachable m _ -> m == host
@@ -463,8 +464,9 @@ loadRefusals =
     HandlerClausesDisagree key 2 1 -> key == meter
     _ -> false
 
+  -- the region entry has two cells and the instruction supplies one value
   cellsDisagree = case _ of
-    HandlerCellsDisagree key 2 1 -> key == meter
+    RegionCellsDisagree keys 1 -> keys == [ M.KSymbol (Symbol "reading"), M.KSymbol (Symbol "spare") ]
     _ -> false
 
   meter = M.KEffect (Qualified (ModuleName "Main") (EffName "Meter"))

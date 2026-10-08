@@ -41,10 +41,9 @@ module Steam.Value
   , StackEntry(..)
   , Root
   , Marker
-  , MarkerKind(..)
   , Clause
   , Region
-  , Cell
+  , RegionId
   , valueOfConstant
   , matchesConstant
   , reinstate
@@ -54,12 +53,9 @@ import Prelude
 
 import Prim as P
 
-import Data.Array as Array
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
-import Data.Maybe (Maybe(..))
 import Data.Show.Generic (genericShow)
-import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Uncurried (EffectFn1)
 import Effect.Ref (Ref)
@@ -81,8 +77,8 @@ newtype ModuleId = ModuleId P.Int
 -- | a dispatch in one module reaches values another module built.
 newtype CtorId = CtorId P.Int
 
--- | A row key: a record's field, a variant's tag, a handler's effect, or a cell
--- | of a region. Equality is the whole of what a key is for.
+-- | A row key: a record's field, a variant's tag, or a handler's effect. Equality
+-- | is the whole of what a key is for.
 newtype KeyId = KeyId P.Int
 
 -- | An operation name, which is what a clause of a handler is found by.
@@ -327,7 +323,7 @@ data StackEntry
   | RegionFrame Region
   -- | Where a `fast` clause's body begins. Core binds that body outside the
   -- | handler that answered and outside everything between that handler and the
-  -- | `perform` (D28), so a search for a marker or a cell that reaches this entry
+  -- | `perform` (D28), so a search for a marker or a region that reaches this entry
   -- | continues directly below that handler's marker, which stands this many
   -- | entries further down. What the body itself installs stands above and is
   -- | found as usual.
@@ -343,7 +339,7 @@ data StackEntry
   -- | The bottom of an invocation a host answers the operations of one key for. A
   -- | `perform` whose search reaches it asks the host rather than running a clause,
   -- | and the run stops there until the host answers ([Eval](Eval.purs)). **It is
-  -- | no handler**: it has no return clause, opens no region, and a continuation
+  -- | no handler**: it has no return clause, and a continuation
   -- | never holds it, a `full` clause capturing only what stands above its own
   -- | marker. A value reaching it passes down unchanged and is what the run
   -- | produces.
@@ -363,25 +359,10 @@ type Root =
 -- | An installed handler: the key it answers, a clause per operation, and the
 -- | return clause every value passes through.
 type Marker =
-  { kind :: MarkerKind
-  -- | Whether the frame directly below it is the region this marker opened. An
-  -- | owner closes that frame before its return clause runs; a reinstatement owns
-  -- | nothing, the frame it stands in belonging to whoever opened it.
-  , ownsRegion :: P.Boolean
-  , key :: KeyId
+  { key :: KeyId
   , clauses :: P.Array Clause
   , returnClause :: Value
   }
-
--- | Which reduction a marker takes when a value reaches it.
--- |
--- | Nothing in a `.dmo` carries this: installing a handler produces an owner, and
--- | applying a continuation produces a reinstatement at the bottom of the segment
--- | it re-pushes. An owner closes the region below it before its return clause
--- | runs; a reinstatement leaves that region to whoever opened it.
-data MarkerKind
-  = Owner
-  | Reinstatement
 
 -- | A clause and the form it was declared in. A `fast` clause is called with the
 -- | operation's argument and captures nothing; a `full` clause is called with the
@@ -392,17 +373,17 @@ type Clause =
   , clause :: Value
   }
 
--- | A region of cells, which stands below the marker of the handler owning it.
--- | It is part of the stack and not a store, so a captured segment carries the
--- | values its cells held at the capture (D36).
+-- | An open region: its identity, and its cells by position. It is part of the
+-- | stack and not a store, so a captured segment carries the values its cells held
+-- | at the capture, and each application of the continuation starts from those.
 type Region =
-  { cells :: P.Array Cell
+  { identity :: RegionId
+  , cells :: P.Array (Ref Value)
   }
 
-type Cell =
-  { key :: KeyId
-  , value :: Ref Value
-  }
+-- | What tells one opening of a region from every other, the copies a continuation
+-- | makes of its frame aside ([Region](Region.purs)).
+foreign import data RegionId :: P.Type
 
 -- Applying a continuation ------------------------------------------------------
 
@@ -426,41 +407,24 @@ type Cell =
 -- | slots are shared too — they are filled once, where the closure is built, and a
 -- | segment carries closures rather than building them.
 -- |
--- | **The marker at the bottom is a reinstatement, whichever kind was captured
--- | there.** It owns no frame: the frame its `handle` opened stayed behind when the
--- | segment was split, and closing it belongs to whoever holds it now. Every other
--- | marker returns as what it was, an owner among them carrying the frame it owns
--- | along with it. This is why one operation both copies and marks: an application
--- | that skipped the marking would take the owner's completion path and close a
--- | region it does not own.
--- |
--- | The bottom of a captured segment is the marker that answered the operation. One
--- | whose bottom is something else is a segment no capture produces, and nothing
--- | here invents an answer for it.
+-- | **A region frame's copy keeps the identity of the frame it copies.** The code
+-- | the segment holds names its regions by identity, and so does every closure made
+-- | before the capture, so each copy is what they reach while it runs: a read
+-- | reaches the innermost frame of the identity, which in a running copy is the
+-- | copy's own. A region standing below the marker the segment ends at is not in
+-- | the segment: the capture leaves it where it is, and every application shares
+-- | its cells.
 reinstate :: Continuation -> Effect (P.Array StackEntry)
-reinstate (Continuation entries) = traverse entry (reinstated entries)
+reinstate (Continuation entries) = traverse entry entries
   where
   entry = case _ of
     Resume activation dest -> do
       regs <- Ref.read activation.regs >>= Ref.new
       pure (Resume (activation { regs = regs }) dest)
     RegionFrame region -> do
-      cells <- traverse cell region.cells
-      pure (RegionFrame { cells })
+      cells <- traverse (\cell -> Ref.read cell >>= Ref.new) region.cells
+      pure (RegionFrame (region { cells = cells }))
     other -> pure other
-
-  cell c = do
-    value <- Ref.read c.value >>= Ref.new
-    pure { key: c.key, value }
-
--- | The segment with its bottom marker standing as a reinstatement.
-reinstated :: P.Array StackEntry -> P.Array StackEntry
-reinstated entries = case Array.head entries of
-  Just (HandlerMarker marker) ->
-    Array.updateAtIndices
-      [ Tuple 0 (HandlerMarker (marker { kind = Reinstatement, ownsRegion = false })) ]
-      entries
-  _ -> entries
 
 -- Constants ---------------------------------------------------------------------
 
@@ -524,9 +488,3 @@ instance Eq Foreign where
   eq (ForeignIO a) (ForeignIO b) = a == b
   eq (ForeignHosted a _) (ForeignHosted b _) = a == b
   eq _ _ = false
-
-derive instance Eq MarkerKind
-derive instance Generic MarkerKind _
-
-instance Show MarkerKind where
-  show = genericShow

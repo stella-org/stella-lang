@@ -81,7 +81,7 @@ render = case _ of
 -- | | a variant's tag | `@Tag` |
 -- | | a tuple's component | `_0` |
 -- | | an effect | `!Module.Effect` |
--- | | a handler's region | `%region`, which no value carries (D36) |
+-- | | a region | `%region`, which no value carries (D36) |
 renderKey :: RowKey -> P.String
 renderKey = case _ of
   SymbolKey (Symbol name) -> name

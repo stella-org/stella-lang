@@ -144,6 +144,7 @@ bare name =
   , callees: []
   , prims: []
   , handlers: []
+  , regions: []
   , functions: []
   , globals: []
   , exports: []
@@ -301,7 +302,7 @@ machineFunctions =
       ( returning
           [ CLOS (Reg 0) (FuncIx 3) []
           , CLOS (Reg 1) (FuncIx 8) []
-          , HNDL (Reg 2) (HandlerIx 0) (Reg 0) (Reg 1) [] []
+          , HNDL (Reg 2) (HandlerIx 0) (Reg 0) (Reg 1) []
           ]
           (Reg 2)
       )
@@ -428,7 +429,8 @@ machine = do
           , TargetPrim ArrayUnsafeSet
           ]
       , prims: [ ArrayUnsafeNew, ArrayUnsafeSet, ArrayUnsafeIndex, ArrayLength ]
-      , handlers: [ { key: KeyId 1, cells: [], opClauses: [] } ]
+      , handlers: [ { key: KeyId 1, opClauses: [] } ]
+      , regions: []
       , unit: VData (CtorId 999) []
       , functions: Array.mapMaybe prepared machineFunctions
       }

@@ -43,7 +43,7 @@ import Steam.Eval (Bug(..), Class(..), Failure(..), enter)
 import Data.Tuple (Tuple(..))
 import Steam.Module (Loaded, Registry, prepare)
 import Steam.Value (Closure, CtorId(..), KeyId(..), ModuleId(..), Value(..))
-import Stella.Compiler.Bytecode.Instr (ConstIx(..), CtorIx(..), FuncIx(..), Function, Instr(..), Join, JoinName(..), KeyIx(..), Node, PrimIx(..), Reg(..), Tail(..))
+import Stella.Compiler.Bytecode.Instr (ConstIx(..), CtorIx(..), FuncIx(..), Function, Instr(..), Join, JoinName(..), KeyIx(..), Node, PrimIx(..), Reg(..), RegionIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Constant(..))
 import Stella.Compiler.MiddleEnd.Rep (Rep(..))
 import Test.Spec (Spec, describe, it)
@@ -248,11 +248,11 @@ functions =
   -- 17: `VABS`, which nothing reaches
   , plain 2 (returning [ LOADK (Reg 0) (ConstIx 0), VABS (Reg 1) (Reg 0) ] (Reg 1))
 
-  -- 18: a cell read where no region declares it
-  , plain 3
+  -- 18: a cell read through a value that is no region's identity
+  , plain 2
       ( returning
           [ LOADK (Reg 0) (ConstIx 0)
-          , CGET (Reg 1) (KeyIx 0)
+          , CGET (Reg 1) (Reg 0) 0
           ]
           (Reg 1)
       )
@@ -277,6 +277,21 @@ functions =
       { code: [ LOADC (Reg 0) (CtorIx 1) ]
       , tail: BRC (Reg 0) [ { ctor: CtorIx 0, body: returning [] (Reg 0) } ] Nothing
       }
+
+  -- 23: the body of a region, handing back the region's identity
+  , fn { nparams: 1, nregs: 1, ncaptures: 0 } [] (returning [] (Reg 0))
+
+  -- 24: a cell of a region read after the region has closed, through the identity
+  -- its body handed back
+  , plain 4
+      ( returning
+          [ CLOS (Reg 0) (FuncIx 23) []
+          , LOADK (Reg 1) (ConstIx 0)
+          , RGN (Reg 2) (RegionIx 0) (Reg 0) [ Reg 1 ]
+          , CGET (Reg 3) (Reg 2) 0
+          ]
+          (Reg 3)
+      )
   ]
 
 -- | One function under two join points of one name, which loading refuses.
@@ -304,6 +319,7 @@ loaded =
   , callees: []
   , prims: []
   , handlers: []
+  , regions: [ { cells: [ keyA ] } ]
   , unit: VData (CtorId 999) []
   , functions: Array.mapMaybe prepared functions
   }
@@ -472,11 +488,15 @@ spec = describe "Steam.Eval" do
         runBaseEffect (Except.runExcept (enter registry elsewhere []))
       held result `shouldEqual` Left (Bug (NoSuchModule (ModuleId 1)))
 
-    it "a cell no region declares" do
-      -- effect safety rules this out: a handler owning the region encloses every
-      -- read of one of its cells
+    it "a cell read through a value that is no region's identity" do
       result <- runs 18 []
-      held result `shouldEqual` Left (Bug (NoCellDeclared keyA))
+      held result `shouldEqual` Left (Bug NotARegion)
+
+    it "a cell of a region no longer open" do
+      -- typing rules this out: an identity reaches no code running where its region
+      -- has closed
+      result <- runs 24 []
+      held result `shouldEqual` Left (Bug RegionNotOpen)
 
 derive instance Eq Held
 derive instance Generic Held _
