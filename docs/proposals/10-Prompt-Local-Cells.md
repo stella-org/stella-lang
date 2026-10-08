@@ -1,6 +1,6 @@
 # Prompt-Local Cells
 
-Status: Proposed
+Status: Approved
 
 ## What is This?
 
@@ -88,7 +88,8 @@ today; the inner groups' clauses reach the region by identity rather than by adj
 
 Composition order is therefore observable, as in Hoop and Koka: `state(choice(...))` threads one
 counter through both branches, `choice(state(...))` gives each branch its own. A copy is a copy
-of the cell slots; the values the slots hold are shared, being immutable.
+of the cell slots; the values the slots hold are shared rather than recursively copied, so a
+value updated in place, such as an array, is one value in every copy.
 
 **`return` clauses and initial values.** Initial values are evaluated in declaration order before
 any item of the expression is installed, outside the region; they reach no cell of the

@@ -2,14 +2,6 @@
 
 Questions that v0.1 leaves open, with what is already known about each.
 
-## Required for v1.0
-
-**Close the soundness gap for multi-shot continuations.** The v0.1 Wasm backend does not satisfy the reference semantics; a second resumption raises a run-time error ([Semantics](../03-Typed-Core/06-Semantics.md)). This is a soundness gap that v0.1 accepts deliberately and that v1.0 must close. The JavaScript backend does not have it, representing a continuation itself with frames and a run loop of its own ([JavaScript](../05-Backend/05-JavaScript.md)).
-
-Two routes are available for Wasm. Wait for a cloning primitive to enter the stack-switching proposal. Or make the reference semantics target-parameterized, which conflicts with the backend independence of Mid IR.
-
-Until then, multiple resumptions that are **syntactically evident** — a clause mentioning `k` more than once, or passing `k` elsewhere — should warn at compile time.
-
 ## The type system
 
 **Type-level functions and their termination, which is to say whether to move to Fω.** Adding a lambda over `Row ε` makes `Map f ρ` expressible, but conditions preserving the confluence and termination of row normalization must be settled first (D6).
@@ -101,13 +93,9 @@ Nothing needs settling before Phase C: that is where dictionaries arrive, and th
 
 ## Effects
 
-**Declaring non-conformance.** Under D18 the v0.1 Wasm backend remains non-conforming and provisionally tolerated.
+**How a Wasm backend realizes multi-shot continuations.** A Wasm backend conforms to D18 as the virtual machine and the JavaScript backend do, and how it does so is undecided. Only `full` clauses ask it for a continuation, a `fast` clause constructing none (D28) ([Semantics](../03-Typed-Core/06-Semantics.md)).
 
-D28 settles part of this. A clause is `full` or `fast`, and a `fast` clause constructs no continuation, so implementing one demands no multi-shot continuation and the construct that can demand one is `full` alone ([Semantics](../03-Typed-Core/06-Semantics.md)). A program containing `fast` clauses is not thereby one-shot: duplication arises wherever a `full` handler on the residual row applies its continuation more than once.
-
-What remains is **how to declare and check the extent of non-conformance among `full` clauses**. Detecting a second resumption at run time suffices for now, but a program able to state that a handler requires multi-shot could fail at build time on a backend that does not conform. Answering it means a third level beside `full` and `fast`, separating a `full` clause that resumes at most once from one that genuinely branches the computation. Whatever shape it takes stays backward compatible, a `full` clause reading as unrestricted.
-
-The other is **confirming the Wasm stack-switching proposal**. The tables in [Semantics](../03-Typed-Core/06-Semantics.md) assume that its continuations are one-shot and linear and that no cloning primitive is in the MVP. This is secondhand and should be verified against primary sources before Phase E.
+What is open is **whether Wasm stack switching suffices, and what copying of a captured stack it needs** to apply one continuation more than once, each application starting from the captured state. That is to be settled against the proposal's primary sources before Phase E. The route the JavaScript backend takes — a continuation represented by frames and a run loop of the backend's own ([JavaScript](../05-Backend/05-JavaScript.md)) — is available to a Wasm backend whatever the answer.
 
 **Effect-polymorphism of handlers that sequence native actions.** By D23 and the purity of `Base.IO.bind`, a handler that sequences a native action **before the continuation** must take a closed row ([Effects](../03-Typed-Core/03-Effects.md)). This is not true of `IO`-returning handlers in general: one that merely resumes synchronously, or merely abandons the continuation, may remain effect-polymorphic.
 
@@ -121,13 +109,11 @@ Making it uniform requires either indexing `IO` by an effect row, or giving `Bas
 
 Two routes would lift it, and neither is available yet. One is a **proof that handlers meeting the conditions commute**, which needs an account of what a `fast` clause's performances do under a residual handler that resumes other than once (D28); the conditions as they stand do not supply one. The other is a **declared order**, which must come from the declarations rather than from the spelling of identifiers or the order of imports, or the meaning of a program would turn on either. Evidence about how often the case arises should come before the choice.
 
-**How a helper could be written against a handler's cells.** A handler's cells are reached from its operation clauses, and a local function in a clause body reaches them where its type is inferred. A helper that must be written down does not: its row would have to mention `region r ι`, and no source syntax writes a `RegionKey` (D16, [Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md)).
+**How a helper could be written against an expression's cells.** The cells of a handling expression are reached from the operation clauses of its groups, and a local function in a clause body reaches them where its type is inferred. A helper written outside the expression does not: its row would have to mention `region ℓ`, and a region name is bound by `region` alone, never by `forall` or `Λ`, and no metavariable stands for one (D16, D36). No signature written outside the expression can therefore name the region a clause stands in, whatever the surface admits ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md)).
 
-**What is missing is a spelling, not strength.** A written region element would discharge nothing on its own: `handle` reads an effect application out of the element it names, and a region carries none, so a `handle` naming a region is rejected whatever the surface admits ([Typing Rules](../03-Typed-Core/05-Typing-Rules.md)). Nor is rank-2 quantification called for. Such a helper is rank-1 — `forall (e : Row Effect). RegionKey ∉ e => forall (r : Type). Unit -{( region r ι | e )}-> τ` — and a clause calling it instantiates `r` from the ambient row, which is the row its own handler's region stands in. The `Lacks` is what `( region r ι | e )` needs to be sharp, and carrying it changes nothing about the rank. Rank-2 is what a `runST`-shaped function needs, one taking a region-polymorphic computation as its argument, and a helper of this kind is not one.
+**What is missing is quantification over region names, and not only a spelling.** A spelling of `region ℓ` would name nothing outside the expression whose `ℓ` it is. A helper over the cells of whichever region it is called in is polymorphic in a region name — `forall ℓ. RegionKey ℓ ∉ e => Unit -{( region ℓ | e )}-> τ`, rank-1, a clause calling it instantiating `ℓ` from the ambient row — and its binder would carry the layout the cells are read at, which a region element does not. Admitting one gives up what unquantifiable region names buy: a `RegionKey` no instantiation replaces, which keeps keys rigid and row equality decidable (D16), and a reference resolved statically to one region binder.
 
-The question comes down to a surface spelling for the region element, which is the one thing D16 withholds. What a spelling would buy is factoring a clause body into named helpers, which is convenience rather than expressiveness, and evidence that clause bodies grow large enough to want it should come before the choice.
-
-**Whose cells are they: one handler's, or one handling expression's.** Cells today belong to one handler, and the operation clauses of that handler alone reach them ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md)). The intended model is wider: **a cell is local to the prompt a handling expression installs, and every group that prompt holds reaches it**, so that the groups written in one `handle … with` share their state. That changes where a `var` is written, what a region belongs to in Typed Core, and brings back rules for one cell hiding another, which the present model rules out by rejecting two cell regions nested ([Name Resolution](../02-Surface-Language/06-Name-Resolution.md)). **The syntax and the semantics are revised together once the surface-language implementation is complete**; until then the present model is the one implemented.
+What it would buy is factoring a clause body into named helpers, which is convenience rather than expressiveness, and evidence that clause bodies grow large enough to want it should come before the choice.
 
 **Whether an implicit handler may take parameters.** The mechanism exists — a value parameter could be a synthesis goal, resolved by the hook type classes use — so this is a question of whether it is wanted rather than of whether it can be built, and it waits on Phase C in any case ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md)). The argument against is that a parameter worth writing is one the caller means to choose.
 

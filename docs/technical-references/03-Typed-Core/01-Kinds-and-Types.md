@@ -6,7 +6,8 @@ By the time a term reaches Core, name resolution and hygiene are complete.
 
 - A **qualified name** `M.x` refers to a top-level name of module `M`, where `M` is a fully qualified module name.
 - A **local name** `x` is introduced by `λ`, `Λ`, `let`, `letrec`, or a decision tree's `bind`.
-- Core terms are unique up to α-equivalence; every bound variable is renamed to be unique within its context.
+- A **region name** `ℓ` is introduced by the `region` binder and by nothing else ([Region names](#region-names)).
+- Core terms are identified up to α-equivalence. What the checker receives is a representation, and for the binders of terms that bind a type-level name — a `Λ`, the type binders of an operation clause, and a `region` — that representation follows the **unique-binder convention**: none binds a name already bound where it stands. A representation that breaks it is rejected as malformed, not renamed ([Typing Rules](05-Typing-Rules.md)). A `forall` within a type is not held to the convention, and neither is a value binder; both are scoped lexically.
 - Names introduced by macro expansion are already made unique. **Core carries no hygiene information.** Scopes and expansion traces belong to the Surface AST and to diagnostics.
 
 ```text
@@ -19,6 +20,7 @@ Tag        ::= a structural constructor of a variant
 EffName    ::= effect name
 OpName     ::= effect operation name
 JoinName   ::= join point name
+RegionName ::= region name, written ℓ
 
 QIdent   ::= ModuleName "." Ident | Ident
 QEffName ::= ModuleName "." EffName
@@ -33,16 +35,16 @@ RowKey ::= SymbolKey Symbol        a written field or instance name
          | TagKey Tag              a structural variant constructor
          | PositionKey Nat         a component of a tuple, 0-origin
          | EffectKey QEffName      a declared effect, fully qualified
-         | RegionKey               a handler's region of cells (D36)
+         | RegionKey RegionName    the region of cells named ℓ (D36)
 ```
 
 `Nat` is a non-negative integer, written in the key and nowhere else; it is not a type, and the kind grammar gains nothing from it.
 
-**The first three are structural, the fourth is nominal, and the last is neither.** A `SymbolKey` and a `TagKey` are what they are by virtue of being written, a `PositionKey` by where the component it keys stands; nothing declares any of them, and two occurrences of `#Ok` in unrelated modules are the same key. An `EffectKey` is the identity of a declaration in `Σ`, so `Console.Log` and `Audit.Log` are different keys however alike they read ([Rows](02-Rows.md)). A `RegionKey` carries no name at all: it is the one key, and there is nothing to tell two of them apart.
+**The first three are structural, the fourth is nominal, and the last is neither.** A `SymbolKey` and a `TagKey` are what they are by virtue of being written, a `PositionKey` by where the component it keys stands; nothing declares any of them, and two occurrences of `#Ok` in unrelated modules are the same key. An `EffectKey` is the identity of a declaration in `Σ`, so `Console.Log` and `Audit.Log` are different keys however alike they read ([Rows](02-Rows.md)). A `RegionKey ℓ` is the identity of a `region` binder in scope: two are the same key exactly when they carry the same region name, so every region has a key of its own.
 
-**Two of the five have no source syntax.** Elaborating a tuple derives a `PositionKey`, and only a handler's `cells` produces a `RegionKey`. That the second cannot be written is what it is for: no declaration names a region, so no `handles` can name one and no `perform` can reach one, and the only thing that removes a region from a row is the `handle` that owns it ([Effects](03-Effects.md)).
+**Two of the five have no source syntax.** Elaborating a tuple derives a `PositionKey`, and only a `region` binder produces a `RegionKey ℓ`. That the second cannot be written is what it is for: no declaration names a region, so no `handles` can name one and no `perform` can reach one, and the only thing that removes `region ℓ` from a row is the `region` that opens it ([Effects](03-Effects.md)).
 
-Neither the row theory nor the solver distinguishes any of them: to those, all five are rigid keys that compare for equality. What distinguishes them is well-formedness, since only an `EffectKey` sends the checker to `Σ`.
+Neither the row theory nor the solver distinguishes any of them: to those, all five are rigid keys that compare for equality. What distinguishes them is well-formedness, since only an `EffectKey` sends the checker to `Σ` and only a `RegionKey` to the regions in scope.
 
 Every expression, declaration, and module carries a source span. Types, kinds, the structure of a decision tree, and the structure of a handler carry none; an error in one of those is reported at the nearest enclosing node that has a span. Spans have no influence on type checking or semantics; they exist for diagnostics alone, and the grammars below omit them.
 
@@ -218,10 +220,11 @@ Surface syntax never contains `[[κ]]`; the elaborator emits it.
 ent ::= k : τ                        a `Row Type` element; the key is written
       | E τ̄                          a `Row Effect` element; the key is derived
       | SymbolKey s : E τ̄            a labelled `Row Effect` element
-      | region r ι                   a handler's region of cells (D36)
+      | region ℓ                     the region named ℓ is open (D36)
 
 k   ::= a RowKey                     one of the five constructors above
 s   ::= a Symbol                     the written name of a labelled element
+ℓ   ::= a RegionName                 bound by a `region` of the term
 
 C ::= k ∉ ρ                          Lacks
     | ρ1 # ρ2                        Disjoint
@@ -239,6 +242,17 @@ A function type is an application of the type constructor `Function`; Core has n
 **The arrow is notation used in these documents and in surface syntax, not a Core name.** Core names are fully qualified, so the constructor is `Prim.Function`. All infix operators are surface aliases resolved to qualified names during name resolution; Core has no counterpart to PureScript's `TypeOp`. These documents write `Int`, `Unit`, `Record`, and `Function` without the `Prim.` prefix for readability.
 
 `Record ρ` and `Variant ρ` are likewise ordinary type constructor applications.
+
+### Region names
+
+**A region name `ℓ` is a syntactic class of its own.** It is not a type and has no kind. The `region` binder of a term binds it ([Effects](03-Effects.md)), and no `forall`, `Λ`, or metavariable stands for one: no type or term abstracts over a region name, so **a region name is never the target of an instantiation**. The only operations that replace one are binder-aware α-renaming and the replacement of a binder by a fresh run-time name when a region opens ([Semantics](06-Semantics.md)). Region names are what make a region's identity static.
+
+A type mentions a region name in three places: in a `region ℓ` element, in a `RegionKey ℓ` key of a row, and in the key of a `Lacks` constraint. `frn(τ)` is the set of region names occurring in `τ`. A type binds no region name, so `frn` of a type is plain occurrence.
+
+- **α-equivalence** renames a region binder together with every occurrence it binds, in the term and in the types the term annotates.
+- **Key equality.** `RegionKey ℓ1 = RegionKey ℓ2` exactly when `ℓ1 = ℓ2` after α-renaming. No instantiation replaces a region name, and α-renaming and opening replace a binder together with all its occurrences, so the key is rigid and row equality stays decidable (D13, D16).
+
+In a term, `region [ℓ] … in e` binds `ℓ` in `e` and in nothing else — not in the layout's types and not in the initial values ([Typing Rules](05-Typing-Rules.md)).
 
 ## Kinding
 
@@ -271,6 +285,8 @@ The judgement is `Γ ⊢ τ : κ`. Contexts are defined in [Typing Rules](05-Typ
 
 **A constraint is assumed while its body is kinded.** A row that is sharp only under `k ∉ r` — `(k ∉ r) => Record ( k : τ | r )`, the shape every row-polymorphic function has — is well-kinded for that reason and for no other. Writing `Γ, C` also requires `C` to be satisfiable ([Typing Rules](05-Typing-Rules.md)).
 
+**A `forall` is scoped lexically.** `Γ, a : κ` hides an outer variable of the name `a`, together with every assumption made of it: what was assumed of the outer variable says nothing of the inner one. Types are not held to the unique-binder convention, since a type reaches the checker from `Σ` and from substitution as well as from the term, and types are compared up to α-equivalence.
+
 That row extension and row union require **entailment from the context** is the centre of the design. PureScript admits `RCons` unconditionally and performs no elimination of duplicate labels; in Stella a well-kinded row is sharp by construction.
 
 ### Row elements
@@ -290,12 +306,12 @@ An element pairs a key with a payload. What may stand on each side is fixed by t
   ────────────────────────────────────────
   Γ ⊢ ( SymbolKey s : E τ̄ ) : Effect entry          key( SymbolKey s : E τ̄ ) = SymbolKey s
 
-  Γ ⊢ r : Type      Γ ⊢ ι : Row Type
-  ──────────────────────────────────────
-  Γ ⊢ ( region r ι ) : Effect entry                 key( region r ι ) = RegionKey
+  ( region ℓ : ι ) ∈ Γ
+  ────────────────────────────
+  Γ ⊢ region ℓ : Effect entry                       key( region ℓ ) = RegionKey ℓ
 ```
 
-**A region consults `Σ` nowhere.** It names no declaration, which is why nothing can declare one; `r` is the region variable the owning `handle` binds and `ι` is the row of its cells, at `Row Type` because a cell holds a value (D36).
+**A region consults `Σ` nowhere.** It names no declaration, which is why nothing can declare one. What it needs is its name in scope: `Γ` holds `region ℓ : ι` for every `region` binder standing around the type, `ι` being that region's layout, and a region name out of scope makes the type ill-kinded (`UnboundRegion`), as an unbound type variable does. This is the scope check for region names. The element carries no layout; the type of a cell is read from `Γ` (D36).
 
 Two functions read an element apart, and both are total on well-formed ones.
 
@@ -303,12 +319,12 @@ Two functions read an element apart, and both are total on well-formed ones.
 key( k : τ )                = k             payload( k : τ )                = τ
 key( E τ̄ )                  = EffectKey E   payload( E τ̄ )                  = E τ̄
 key( SymbolKey s : E τ̄ )    = SymbolKey s   payload( SymbolKey s : E τ̄ )    = E τ̄
-key( region r ι )           = RegionKey     payload( region r ι )           = region r ι
+key( region ℓ )             = RegionKey ℓ   payload( region ℓ )             = region ℓ
 ```
 
 Normalization pairs them — `nf` maps `ent` to `key(ent) ↦ payload(ent)` ([Rows](02-Rows.md)) — and the rule for `handle` uses both, one to find the element and the other to find its operations ([Typing Rules](05-Typing-Rules.md)).
 
-At `Row Type` the key is written and the payload is the type. At `Row Effect` there are three forms. Two of them differ only in where the key comes from — **the unlabelled form derives it from the effect at the head, and the labelled form writes one** — and in both the payload is an application of a declared effect constructor, which is what the operations of a `perform` are looked up through. The third is a region, whose payload is no effect application at all, so the rules that read one find nothing to read: a `perform` cannot name a region and a `handles` cannot write one ([Typing Rules](05-Typing-Rules.md)).
+At `Row Type` the key is written and the payload is the type. At `Row Effect` there are three forms. Two of them differ only in where the key comes from — **the unlabelled form derives it from the effect at the head, and the labelled form writes one** — and in both the payload is an application of a declared effect constructor, which is what the operations of a `perform` are looked up through. The third is a region, whose payload is its own name and no effect application at all, so the rules that read one find nothing to read: a `perform` cannot name a region and a `handles` cannot write one ([Typing Rules](05-Typing-Rules.md)).
 
 **A `Row Type` element admits any structural key, and the type constructor wrapping the row does not narrow that.** `Record ( #Ok : Int )` and `Variant ( 0 : Int )` are well-kinded, oddly as they read. Core keeps one row theory rather than three, and which keys a structure conventionally uses is a matter for surface syntax and the elaborator, not for kinding.
 
@@ -323,9 +339,9 @@ The labelled form is what lets one effect appear twice.
 
 Without it the row would be ill-kinded, both elements having the key `EffectKey State`.
 
-An element of a `Row Effect` that carries a payload **must have a declared effect constructor at the head of it**; a payload headed by a type variable is not admitted. A region is the one element that carries no such payload, and it needs none: it names no declaration, and its key is fixed rather than read off anything (D36).
+An element of a `Row Effect` that carries a payload **must have a declared effect constructor at the head of it**; a payload headed by a type variable is not admitted. A region is the one element that carries no such payload, and it needs none: it names no declaration, and its key is the region name it carries (D36).
 
-Keys are therefore rigid whatever their kind — a `SymbolKey`, a `TagKey`, and a `PositionKey` are structural constants, independent of how metavariables are solved; an `EffectKey` is a declaration identity; and a `RegionKey` is one key and nothing else — which is what makes row equality decidable ([Rows](02-Rows.md)). The `qkind` condition of D24 reinforces this: since `Effect` is not quantifiable, `forall (e : Effect). …` cannot be written, so a type variable can never reach the head of a payload.
+Keys are therefore rigid whatever their kind — a `SymbolKey`, a `TagKey`, and a `PositionKey` are structural constants, independent of how metavariables are solved; an `EffectKey` is a declaration identity; and a `RegionKey ℓ` carries a region name, which no instantiation replaces — which is what makes row equality decidable ([Rows](02-Rows.md)). The `qkind` condition of D24 reinforces this: since `Effect` is not quantifiable, `forall (e : Effect). …` cannot be written, so a type variable can never reach the head of a payload.
 
 ### Constraint well-formedness
 
@@ -342,11 +358,12 @@ Key well-formedness is determined by `ε`.
   ────────────────────────────────────────────      ────────────────────────────
   Γ ⊢ k key Type                                    Γ ⊢ EffectKey E key Effect
 
-  ──────────────────────────────       ──────────────────────────
-  Γ ⊢ SymbolKey s key Effect           Γ ⊢ RegionKey key Effect
+                                       ( region ℓ : ι ) ∈ Γ
+  ──────────────────────────────       ────────────────────────────
+  Γ ⊢ SymbolKey s key Effect           Γ ⊢ RegionKey ℓ key Effect
 ```
 
-A structural key is well formed wherever it may occur, needing nothing from `Σ`. An `EffectKey` is well formed only where the declaration exists, which is the whole of the difference between the two. A `RegionKey` is well formed unconditionally and at `Row Effect` alone, so **`RegionKey ∉ ρ` is a constraint that can be written and assumed** — which is what an effect-polymorphic handler owning a region needs of its residual row ([Typing Rules](05-Typing-Rules.md)).
+A structural key is well formed wherever it may occur, needing nothing from `Σ`. An `EffectKey` is well formed only where the declaration exists, which is the whole of the difference between the two. A `RegionKey ℓ` is well formed at `Row Effect` alone and only where `ℓ` is in scope, so **`RegionKey ℓ ∉ ρ` is a constraint that can be written and assumed inside the region** — which is what a function that abstracts over a row there and needs the key absent from it writes in its type ([Typing Rules](05-Typing-Rules.md)). A row variable bound outside the region needs no such constraint, the `region` binder recording the fact for it ([Rows](02-Rows.md)).
 
 `SymbolKey` occurs at both kinds, since it is the key of a record field and of a labelled effect instance alike. A `TagKey` and a `PositionKey` are confined to `Row Type`: an effect row's payload is an effect application, and neither a tag nor a position says which effect.
 

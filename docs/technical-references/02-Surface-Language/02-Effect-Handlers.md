@@ -1,8 +1,8 @@
 # Effect Handlers
 
-Core fixes `handle`, the two clause forms, and a handler's region of cells, and leaves the spelling to the surface ([Effects](../03-Typed-Core/03-Effects.md)). This document settles that spelling, and settles when the elaborator supplies a handler the author did not write.
+Core fixes `handle`, the two clause forms, and the region binder of cells, and leaves the spelling to the surface ([Effects](../03-Typed-Core/03-Effects.md)). This document settles that spelling, and settles when the elaborator supplies a handler the author did not write.
 
-Nothing here reaches Core. A handler declaration desugars to an ordinary function, and an inserted handler is an ordinary application; what elaboration produces is application, `openEff`, `handle`, and the cell terms of D36, each of which the Core type checker validates as it validates any other term (D29).
+Nothing here reaches Core. A handler declaration desugars to an ordinary function, and an inserted handler is an ordinary application; what elaboration produces is application, `openEff`, `handle`, and the region and cell terms of D36, each of which the Core type checker validates as it validates any other term (D29).
 
 ## Handler declarations
 
@@ -13,7 +13,7 @@ handler runConsole :: Console ~> ( LiftIO ) where
   fast | log msg -> liftIO (Js.Console.log msg)
 ```
 
-It desugars to a value declaration whose right-hand side is a `handle` under a thunk.
+It desugars to a value declaration whose right-hand side is a `handle` under a thunk, and where it declares cells, the region around that `handle` ([Cells](#cells)).
 
 ```text
 Js.Effect.Console.runConsole
@@ -148,7 +148,30 @@ They become arguments of the generated function, ahead of the thunk, and require
 
 ## Cells
 
-A handler may own **cells**. A cell is a mutable binding whose lifetime is the handler's region and which the handler's operation clauses reach; nothing else does. This is what `ST` gives and a state monad does not — a `fast` clause reads and writes one without building a continuation, so handling an operation captures nothing (D36).
+A handling expression may own **cells**. A cell is a mutable binding local to the prompt the expression installs: its lifetime is the expression's region, and the operation clauses of every group of the expression reach it; nothing else does. This is what `ST` gives and a state monad does not — a `fast` clause reads and writes one without building a continuation, so handling an operation captures nothing (D36).
+
+```stella
+-- effect Counter where next :: Unit ->* Int
+-- effect Emit where emit :: String ->* Unit
+handle program with
+  var n := 0
+  Counter
+    fast | next _ -> n!
+  Emit
+    fast | emit _ -> n := n! + 1
+```
+
+`var x := e` declares a cell together with its initial value, `x!` reads it, and `x := e` writes it. A write evaluates to `Prim.Unit`. Both groups above reach the one `n`: what an `emit` writes is what the next `next` reads.
+
+### Declarations come before the items
+
+Every `var` of a handling expression is an item of it and stands ahead of its first group or handler. One after a group or a handler is rejected. The cells are the expression's and not any one group's, and fixing their place is what makes that readable at a glance: they are declared before anything is installed, and every group below them reaches them.
+
+Each declaration becomes one cell of one region, keyed by the name written. **Two declarations of one name are rejected**, a region's keys being distinct. A handling expression declaring no cell opens no region.
+
+### Cells of a handler declaration
+
+A handler declaration writes its cells in its block, ahead of its clauses. One after a clause is rejected.
 
 ```stella
 -- effect Counter where next :: Unit ->* Int
@@ -157,99 +180,105 @@ handler counter :: Counter ~> () where
   fast | next _ -> let v = n! in let _ = n := v + 1 in v
 ```
 
-`var x := e` declares a cell together with its initial value, `x!` reads it, and `x := e` writes it. A write evaluates to `Prim.Unit`.
+**The cells belong to the prompt an application of the handler installs, not to the effect it handles.** A handler declaration is a handling expression holding one group, whose effect is the one its signature handles, and its cells are that expression's. Each application opens a region of its own: a handler is an ordinary function value and carries no state between applications, so two computations run under `counter` count separately, a recursive application included.
 
-### Declarations come before the clauses
-
-Every `var` of a handler stands ahead of its clauses. One after a clause is rejected. The cells belong to the handler, as the clauses do, and fixing their place is what makes the two paragraphs below readable at a glance: nothing above a clause is inside the region, and nothing below it is outside.
+**Applying a declared handler inside another handling expression joins no layouts.**
 
 ```stella
 -- effect Emit where emit :: String ->* Unit
-handler collect :: Emit ~> () where
-  var count := 0
-  var last := ""
-  fast | emit msg -> let _ = count := count! + 1 in last := msg
+handle program with
+  var c := 0
+  counter
+  Emit
+    fast | emit _ -> c := c! + 1
 ```
 
-Each declaration becomes one cell of one region, keyed by the name written. **Two declarations of one name are rejected**, a region's keys being distinct.
+`counter`'s clause reaches `counter`'s own `n` and nothing else, and the `Emit` group reaches the expression's `c`. `counter` cannot take up the `c` of the expression it is applied in, and the `Emit` group cannot reach `n`. Effects that are to share one cell are written as groups of one handling expression, as in the first example above.
 
 ### What an initial value may do
 
-An initial value is evaluated **at each application of the handler**, in declaration order, before the handler is installed. It stands at the row the handler leaves behind, so it may perform the handler's residual effects — reading a clock or a configuration to seed a cell — and it may reach no cell, no region being open yet, nor perform the effect the handler handles. An **implicit** handler is narrower: its initial values must be value forms, an inserted application standing where the author wrote nothing.
-
-Each application opens a region of its own. A handler is an ordinary function value and carries no state between applications: two computations run under `counter` count separately.
+An initial value is evaluated **each time its expression is evaluated** — a handler declaration's at each application — in declaration order, before any item of the expression is installed. It stands outside the region, at the row the expression stands at, so it may perform the effects of that row — reading a clock or a configuration to seed a cell — and an operation it performs is handled outside the expression. It reaches no cell of its own expression, none being open yet; written in an operation clause of another expression, it reaches the outer expression's cells, except those its own expression's cells hide. An **implicit** handler is narrower: its initial values must be value forms, an inserted application standing where the author wrote nothing.
 
 ### Reading and writing
 
-**A bare `x` never denotes the cell.** The only ways to mention a cell are `x!` and `x := e`, so no value stands for one and none can be stored in one, returned, or passed to a function. A cell's identity never leaves the handler that declares it. This is what makes the escape discipline of D36 a property of the surface syntax rather than a rule an author must keep in mind; nothing an author can write reaches a cell from outside.
+**A bare `x` never denotes the cell.** The only ways to mention a cell are `x!` and `x := e`, so no value stands for one and none can be stored in one, returned, or passed to a function. A function written in a clause may read and write a cell, and is called there; one handed out of the region — returned as the answer, or as part of it — carries the region in its type and is rejected by the escape condition of D36. Between the two, nothing an author can write reaches a cell from outside the expression declaring it.
 
 Because the two spellings mention no ordinary variable, a cell name occupies no ordinary scope. A `var x` and a local `x` may stand together, the first reached by `x!` and `x :=` and the second by `x`, and neither shadows the other.
 
-Cells are visible **in the operation clauses alone** — not in the `return` clause, not in the computation the handler handles, and not in another cell's initial value. That the `return` clause cannot read one is what keeps a handler with cells from being a state monad in disguise: an ordinary return hands back the computation's value and no state of its own. A handler that wants its final state returned writes the parameter-passing interpreter instead and pays for the continuation.
+### Where a cell is reached
 
-**The cells of a group written inside a clause stand beside those of the clause's handler.** The inner group's operation clauses see both, and its initial values and `return` clause see the outer ones alone, its own not being open there. A cell of the group hides the outer cell of its name throughout the group: its own clauses reach it, and in its initial values and `return` clause the name is closed rather than reaching the outer cell, so `x!` names one cell wherever it stands in the group. A group with cells inside a clause of a handler with cells is still rejected (below); the scope decides only which cell each name reaches.
+Cells are visible **in the operation clauses of the expression's groups**, every group alike, and in the functions written there — not in the expression's `return` clauses, not in its initial values, not in the computation it handles, and not in the handlers it applies as items, a handler applied being a function value written elsewhere or inline. A handler declaration's cells are visible in its operation clauses likewise, and not in its `return` clause or its initial values. That a `return` clause cannot read one is what keeps cells from being a state monad in disguise: an ordinary return hands back the computation's value and no state of its own. A handler that wants its final state returned writes the parameter-passing interpreter instead and pays for the continuation.
+
+**A handling expression written inside an operation clause sees the cells of the expression owning that clause, besides its own.** Its clauses reach both; its initial values, `return` clauses, handled computation, and applied handlers reach the outer ones alone, its own not being open there. **Its own cells hide outer ones of the same name throughout the expression**: where its own are closed, such a name reaches neither cell, so `x!` names one cell wherever it stands in the expression.
+
+```stella
+handle program with
+  var n := 0
+  var m := 0
+  E
+    fast | get _ ->
+      handle work with
+        var n := m!                 -- the outer m
+        Own
+          fast | tick _ -> n! + m!  -- the inner n, and the outer m
+```
+
+**Nesting is unrestricted.** A handling expression with cells, and an application of a handler declaration with cells, may stand wherever an expression may, a clause of another included: each opens a region of its own, and every reference resolves, where it is written, to the cell of one expression.
 
 ### What reaches Core
 
-The `var` declarations become the handler's layout and the `@ ( ē )` of its `handle`; `x!` and `x := e` become `readCell` and `writeCell` on the key the name gives.
+**The cells become one `region` around the expression's items** ([Effects](../03-Typed-Core/03-Effects.md)): the declarations its layout and its initial values, in the order written.
+
+```text
+handle e with var c̄ := ē ; i1 ; … ; in
+
+  ⟹  region [ℓ] ( c̄ : σ̄ ) @ ( ē ) in  i1 (\_ -> … in (\_ -> e))
+```
+
+- **`ℓ` is a fresh region name**, the elaborator's and not the author's. A region name is bound by `region` alone and is never quantified, so nothing outside the expression names it.
+- **`x!` and `x := e` become `readCell ℓ.x` and `writeCell ℓ.x e`**, `ℓ` being the region of the expression the reference resolves to. A reference names its region and not only a key, so a region inside it declaring the same key does not capture it.
+- **A thunk handed to an item stands at a row holding `region ℓ`**, so the groups inside it reach the region, and a handler applied as an item instantiates its residual row with that row.
+- **A handling expression with no `var` opens no region.**
+
+A handler declaration desugars to a function whose body is the region around its `handle`.
 
 ```text
 Main.counter
   : forall (e : Row Effect). forall (a : Type).
-    Counter ∉ e => RegionKey ∉ e =>
+    Counter ∉ e =>
     ( Unit -{ ( Counter | e ) }-> a ) -{ e }-> a
   = Λ (e : Row Effect). Λ (a : Type).
-      Λ (_ : Counter ∉ e). Λ (_ : RegionKey ∉ e).
+      Λ (_ : Counter ∉ e).
         λ (thunk : Unit -{ ( Counter | e ) }-> a).
-          handle ( thunk Prim.Unit ) with
-            { handles Counter
-            ; cells [r] ( n : Int )
-            ; return (x : a) -> x
-            ; fast next (_ : Unit) ->
-                let v : Int = readCell n in
-                let _ : Unit = writeCell n
-                  ( ( openEff [ρ'] ( ( openEff [ρ'] Base.Int.add ) v ) ) 1 ) in
-                v
-            } @ ( 0 )
+          region [ℓ] ( n : Int ) @ ( 0 ) in
+            handle ( ( openEff [( region ℓ )] thunk ) Prim.Unit ) with
+              { handles Counter
+              ; return (x : a) -> x
+              ; fast next (_ : Unit) ->
+                  let v : Int = readCell ℓ.n in
+                  let _ : Unit = writeCell ℓ.n
+                    ( ( openEff [ρ'] ( ( openEff [ρ'] Base.Int.add ) v ) ) 1 ) in
+                  v
+              }
 
-  where ρ' = ( region r ( n : Int ) | e )
+  where ρ' = ( region ℓ | e )
 ```
 
-**The region variable is generated, and it is fresh.** `r` is the elaborator's, not the author's, and it must not be a variable already bound where the `handle` stands: the layout is kinded outside the binder and then stands inside it, so a binder sharing a name with something outside would draw it under the region ([Typing Rules](../03-Typed-Core/05-Typing-Rules.md)).
+**The scheme says nothing of regions.** `e` is bound outside `ℓ`, so `RegionKey ℓ ∉ e` holds inside the region, and that is what lets the thunk be widened by `region ℓ`. A handler with cells therefore takes an open residual row with no constraint beyond its effect's own, and may be applied wherever one without cells may.
 
-**`RegionKey ∉ e` is generated too, and has no surface spelling.** `RegionKey` is one of the two keys no source syntax writes (D16). The constraint therefore appears in the desugaring and in no signature an author reads or writes, and the section below is the whole of what it does.
-
-**A clause body reaching outside the region widens through it, once for each argument it passes.** The clauses stand at `ρ' = ( region r ι | e )` where a handler without cells leaves them at `e`. `Base.Int.add` is pure and curried, so each stage that consumes an argument is an arrow at the empty row standing where `ρ'` is ambient, and each is widened. Containment is written and never implied (D8); a clause body is where the elaborator must supply it, the author having written none.
-
-### Cells and nesting
-
-The generated constraint does one piece of work: **a handler with cells cannot be applied inside a clause of another handler with cells.** Both regions would stand in one row, which sharpness forbids ([Rows](../03-Typed-Core/02-Rows.md)).
-
-```stella
--- accepted: the inner handler stands in the computation the outer one handles
-counter (\_ -> collect (\_ -> program))
-
--- rejected: the inner handler stands in a clause of the outer one
-handler outer :: Log ~> () where
-  var seen := 0
-  fast | log _ -> counter (\_ -> program)
-```
-
-**The accepted case is the ordinary one.** Applying handlers one inside another's thunk is how handlers compose, and cells restrict it not at all — the computation a handler handles carries no region, so the two never meet. What the rule forbids is opening a region while another handler's clause is running, which is the one place two regions would have to share a row.
+**A clause body reaching outside the region widens through it, once for each argument it passes.** The clauses stand at `ρ' = ( region ℓ | e )` where a handler without cells leaves them at `e`. `Base.Int.add` is pure and curried, so each stage that consumes an argument is an arrow at the empty row standing where `ρ'` is ambient, and each is widened. Containment is written and never implied (D8); a clause body is where the elaborator must supply it, the author having written none.
 
 ### Cells and implicit handlers
 
-A handler with cells may be `implicit`, and the conditions above are where cells bear on it: **every initial value must elaborate to a value form.** Nothing else about cells enters the eligibility of a declaration.
+A handler with cells may be `implicit`, and one condition is where cells bear on it: **every initial value must elaborate to a value form.** Nothing else about cells enters the eligibility of a declaration, and an inserted application of one opens a region of its own wherever it lands.
 
 **The condition is on the Core the initializer elaborates to, not on how it is written.** A surface expression that looks like a value need not become one: a macro expands to whatever it expands to, and sugar may produce an application. What is required is that the elaborated term satisfy the value-form predicate the value restriction already uses ([Terms and Matching](../03-Typed-Core/04-Terms-and-Matching.md)). That is still a property of the declaration, so it is settled where the declaration is elaborated and reported against the `var` whose initial value failed.
 
 That condition is the `fast` condition applied to the one part of a handler an operation does not guard. `var n := 0` and `var seen := false` are value forms and cost nothing; a handler that wants a cell seeded by a performance is written explicitly, where the author has put the application somewhere and can see what runs there.
 
-What cells add beyond that is a way for an insertion to fail at a site where nothing was written, the generated constraint being discharged where the handler is applied rather than where it is declared. An insertion landing in a clause of a handler with cells is rejected, and is reported as the nesting problem above against the clause it landed in.
-
 ### What is not provided
 
-**No function written outside a handler reaches its cells.** `region r ι` has no surface spelling, by the decision that keeps `RegionKey` unwritable, so a top-level helper cannot declare the row that would let it read one. A local function in a clause body reaches cells where its type is inferred; one that must be written down does not. Whether to give the region a spelling is left open ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
+**No function written outside a handling expression reaches its cells.** `region ℓ` has no surface spelling, and a region name is bound by `region` alone and never quantified, so a top-level helper cannot declare the row that would let it read one. A local function in a clause body reaches cells where its type is inferred; one that must be written down does not. How a helper could be written against an expression's cells is left open ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
 
 ## Applying a handler
 
@@ -259,7 +288,7 @@ A handler is applied like any other function, to a thunk.
 runConsole (\_ -> program)
 ```
 
-**A handling expression writes the same application without the thunk.** `handle e with …` and `using … handle e` take a list of handlers and groups written in place, installed from the top down, the first outermost; the list desugars to `item₁ (\_ -> item₂ (\_ -> … (\_ -> e)))`, a group being a handler built where it stands ([Syntax](05-Syntax.md)).
+**A handling expression writes the same application without the thunk.** `handle e with …` and `using … handle e` take a list of handlers and groups written in place, installed from the top down, the first outermost; the list desugars to `item₁ (\_ -> item₂ (\_ -> … (\_ -> e)))`, a group being a handler built where it stands ([Syntax](05-Syntax.md)). Cells the list declares ahead of its items open a region around the whole of it ([Cells](#cells)).
 
 ```stella
 handle program with
@@ -422,10 +451,10 @@ A row problem is reported as a row problem, naming what is missing rather than w
 
 A cell problem names the cell and where cells stand.
 
-- `x!` or `x := e` naming no declared cell names the name, and says that a cell is reached from the operation clauses of the handler declaring it
-- The same written in a `return` clause, in an initial value, or outside a handler names where the region is open rather than treating the cell as undeclared
-- Two `var` declarations of one name name the name and both declarations
-- A handler with cells applied where another handler's cells are open names both handlers and the clause the application stands in, and says that the outer handler's region is open there. An inserted handler is reported the same way, against the clause the insertion landed in
+- `x!` or `x := e` naming no cell in scope names the name, and says that a cell is reached from the operation clauses of the handling expression or handler declaring it
+- The same written where a cell of that name is closed — in an initial value, a `return` clause, the computation handled, or a handler applied as an item — names the part it stands in rather than treating the cell as undeclared
+- Two `var` declarations of one name are reported where the second is written, as a name bound twice
+- A `var` after a group or a handler of a handling expression, or after a clause of a handler declaration, names the cell and says that every `var` stands ahead of them
 
 ## What reaches Core
 

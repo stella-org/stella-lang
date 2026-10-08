@@ -99,13 +99,14 @@ Origin = FromSource range
 
 ## Handlers
 
-- **`handle e with …` and `using … handle e` are one node**, `ExprHandle`, holding the items from the first, outermost, to the last, and the computation. An item is a handler applied, or a group written in place ([Effect Handlers](02-Effect-Handlers.md)).
+- **`handle e with …` and `using … handle e` are one node**, `ExprHandle`, holding the expression's cells, its items from the first, outermost, to the last, and the computation. An item is a handler applied, or a group written in place. **The cells are the expression's and not a group's**: every group of it reaches them, so they are held beside the items rather than in any of them ([Effect Handlers](02-Effect-Handlers.md#cells)).
 - **A group holds the effect it handles**, and the label where it handles an instance. A group headed by a label is given its effect from the operations its clauses name.
 - **A handler declaration holds the effect it handles**: the left of `~>`, or, for a signature written in full, the one element the thunk's row holds and the result's row does not, a row named by a type synonym read through it ([Effect Handlers](02-Effect-Handlers.md)).
 - **A clause holds the form in effect for it**, a group's marker and the default resolved: `ClauseFast`, `ClauseFull`, or `ClauseReifiable` with the pattern its continuation is bound by, the clause's last parameter.
 - **A clause holds one pattern per argument of its operation**, a `reifiable full` clause's continuation apart from them, and **a handler holds one clause per operation at most, and one return clause at most**. That every operation of the effect has a clause is not checked here: a handler missing one is rejected by the Core type checker.
 - **`ExprResume` stands only as the function of an `ExprApp`**, `resume e`, in the immediate body of a `full` clause: not inside a lambda, a local function, or a handling expression there ([Effect Handlers](02-Effect-Handlers.md)).
-- **A group and a handler declaration hold one `HandlerBody`**: the cells, the operation clauses, and the return clause where one is written.
+- **A group and a handler declaration hold one `HandlerBody`**: the operation clauses, and the return clause where one is written. A handler declaration holds its cells beside its body, as `ExprHandle` holds an expression's: they are the cells of the handling expression an application of it is, not of the effect it handles.
+- **A cell declaration holds the `CellVar` it binds and its initial value.** A `CellVar` keeps its binding identity, which is what elaboration maps to the region of the expression declaring it and to the cell's position there.
 
 ## Declarations
 
@@ -117,7 +118,7 @@ Origin = FromSource range
 | newtype | its kind signature, its parameters, and its one constructor of one field |
 | type synonym | its kind signature, its parameters, and the type it stands for |
 | effect | its parameters and its operations |
-| handler | `implicit`, its parameters, its signature, the effect it handles, and its `HandlerBody` |
+| handler | `implicit`, its parameters, its signature, the effect it handles, its cells, and its `HandlerBody` |
 | foreign | its `Observation` and its signature |
 | foreign type | its kind ([Foreign Types](../../proposals/06-Foreign-Types.md)) |
 | fixity | its associativity, its precedence, the value or constructor it names, a computation among the values, and the operator |
@@ -148,7 +149,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | `@[elaborationOnly]` on a declaration that is not exactly one the compiler lists | the attribute; the declaration is what it would be without it |
 | an item a row's bracket does not admit; an effect element or instance, or a capability target, that is no effect applied to its arguments, or whose effect does not resolve | that item, or that target |
 | an operation clause whose operation does not resolve or is not an operation of the effect handled, one with other than a pattern per argument of its operation and its continuation where it keeps one, a second clause for one operation, a second return clause | the clause |
-| a `var` of a handler declaration after a clause | the cell |
+| a `var` of a handling expression after a group or a handler, or of a handler declaration after a clause | the cell |
 | a group whose effect cannot be determined | the group |
 | a handler declaration whose effect cannot be determined, a fixity declaration whose target does not resolve, a computation declaration with parameters, a macro called at a declaration's position, which this version does not expand | the declaration |
 
@@ -160,9 +161,9 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 
 **Where a local name refers is decided by the bindings as written, whatever their errors.**
 
-- **A binder's bindings are numbered and entered into scope before what they scope over is resolved**, read off the syntax as written: the parameters of a declaration, a lambda, or a clause, the variables of a pattern, the bindings of a `let` block or a `where`, and the cells of a handler. They are numbered in the order written and handed to what binds them in that order; a binding is never told apart from another by its range, an expansion giving several names one range.
+- **A binder's bindings are numbered and entered into scope before what they scope over is resolved**, read off the syntax as written: the parameters of a declaration, a lambda, or a clause, the variables of a pattern, the bindings of a `let` block or a `where`, and the cells of a handling expression or a handler declaration. They are numbered in the order written and handed to what binds them in that order; a binding is never told apart from another by its range, an expansion giving several names one range.
 - **A pattern left invalid still binds the variables written in it**, an or-pattern's among them. Its bindings stand in no node of the tree, the pattern being invalid, and a reference to one still resolves, so a body is not reported again for what its pattern got wrong.
-- **Where one group of bindings binds a name twice, the first written is the one a reference reaches.** The group is what binds together: the parameters of one declaration, lambda, or clause, a `reifiable full` clause's continuation among its parameters; the patterns of one `case` alternative; one binding of a guard block; one `let` block or `where`, the names its definitions bind and the variables of its pattern bindings together; the cells of one handler; and the type variables of one `forall`. The later binding keeps a number of its own, and nothing refers to it; `x` and `x!` alike reach the first.
+- **Where one group of bindings binds a name twice, the first written is the one a reference reaches.** The group is what binds together: the parameters of one declaration, lambda, or clause, a `reifiable full` clause's continuation among its parameters; the patterns of one `case` alternative; one binding of a guard block; one `let` block or `where`, the names its definitions bind and the variables of its pattern bindings together; the cells of one handling expression or handler declaration; and the type variables of one `forall`. The later binding keeps a number of its own, and nothing refers to it; `x` and `x!` alike reach the first.
 
 ## From the concrete syntax tree
 
@@ -192,6 +193,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | `ExprSection` | the lambda it stands for |
 | `ExprAccess`, `ExprAt` | nested `ExprSelect`, and an `ExprOperation` with its label |
 | `ExprHandle`, `ExprUsing` | `ExprHandle` |
+| `ListCell`, `ListGroup`, `ListHandler` | a cell of the `ExprHandle` they are items of, a `HandlerGroup`, and a `HandlerApplied` |
 | `ExprLocalOpen`, `ExprImportIn` | the expression they enclose, its names resolved under the open |
 | `ExprParens`, `ExprUnit` | the expression it encloses, and `Prim.Unit` |
 | `FieldPun`, `RecordBinderPun` | a field binding the name |

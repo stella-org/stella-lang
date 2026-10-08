@@ -84,7 +84,7 @@ Wasm IR ──► WebAssembly modules      its input, Mid IR or a .dmo, is not y
 
 **Mid IR** retains useful type information and invariants while depending on no particular backend. It expresses closure construction and application, algebraic data construction and destruction, join points and tail calls, primitive operations, explicit control flow, handler and continuation operations, and abstracted allocation. JavaScript functions and objects, Wasm GC structs, and linear-memory layouts must not leak into this stage. It is an A-normal form, and [Mid IR](../04-MiddleEnd/01-Mid-IR.md) specifies it.
 
-**Bytecode** is the lowering of Mid IR to a machine Stella owns, which can be directly interpreted and executed by its own abstract machine, STEAM, allowing a program to run without relying on the existence of any compiler backends. ([Bytecode](../05-Backend/01-Bytecode.md)). Its continuations are multi-shot, so like the JavaScript backend and unlike the v0.1 Wasm backend it conforms to the reference semantics. Against the Core evaluator it is a second evaluator to compare with, and it runs the programs a one-shot backend cannot; the properties stated over Typed Core stay with the Core evaluator ([Implementation Plan](04-Implementation-Plan.md)).
+**Bytecode** is the lowering of Mid IR to a machine Stella owns, which can be directly interpreted and executed by its own abstract machine, STEAM, allowing a program to run without relying on the existence of any compiler backends. ([Bytecode](../05-Backend/01-Bytecode.md)). Its continuations are multi-shot, so like the JavaScript backend it conforms to the reference semantics; how a Wasm backend realizes continuations is undecided (D18). Against the Core evaluator it is a second evaluator to compare with, and it runs the programs that apply a continuation more than once; the properties stated over Typed Core stay with the Core evaluator ([Implementation Plan](04-Implementation-Plan.md)).
 
 Its output, a **`.dmo` module object** with the **`.dmi` interface** beside it, is what a backend builds on (D47). Mid IR is an in-memory representation, so the code a backend builds on is the lowered one — erased, in A-normal form, with closures and their captures explicit and decision trees already disjoint — rather than Typed Core.
 
@@ -109,7 +109,7 @@ The JavaScript backend is the reference backend. Delegating garbage collection, 
 
 The Wasm backend prioritizes Wasm GC. A backend using linear memory and a custom collector can be added later as a separate lowering.
 
-Effect handlers are the one place where backends differ in what they can implement. See [Semantics](../03-Typed-Core/06-Semantics.md).
+Effect handlers are the one place where backends differ in what conforming costs them: every backend applies a continuation as many times as the program does, and how a Wasm backend will is open. See [Semantics](../03-Typed-Core/06-Semantics.md).
 
 ## Roadmap
 

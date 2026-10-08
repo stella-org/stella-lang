@@ -44,10 +44,11 @@ namespace, whether its exports name its values, whether its globals are
 installable — a `func` over a function of at least one parameter, a `run` over one
 of none, neither expecting captures — whether a foreign the ABI fixes, an
 operation or a `Base.IO` entry, is declared at the arity the ABI gives it, whether
-a handler declares one cell or holds clauses for one operation twice, compared by
-the key and the name an index holds rather than by the index, and whether every
-`HNDL` and `TAILHNDL` supplies as many clauses and initial cell values as its
-handler holds are properties of the module rather than of its bytes. Steam checks
+a region declares one cell twice or a handler holds clauses for one operation
+twice, compared by the key and the name an index holds rather than by the index,
+and whether every `HNDL` and `TAILHNDL` supplies as many clauses as its handler
+holds and every `RGN` and `TAILRGN` as many initial values as its region has cells
+are properties of the module rather than of its bytes. Steam checks
 them where a module loads ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md));
 generated code has no such moment for what one module decides alone, so the backend
 checks them first and refuses the module otherwise. What another module declares is
@@ -178,7 +179,7 @@ folding a constant — rather than anything this document requires.
 ## What the host does not give
 
 **JavaScript has no proper tail calls on the hosts this backend targets**, and
-`TAILK`, `TAILU`, `TAILFFI`, and `TAILHNDL` oblige a transfer that pushes no frame
+`TAILK`, `TAILU`, `TAILFFI`, `TAILHNDL`, and `TAILRGN` oblige a transfer that pushes no frame
 ([Bytecode](01-Bytecode.md)). The obligation is the backend's to meet by its own
 means; a loop over a bounded tail call written as a JavaScript call is a program
 that runs in a test and exhausts the stack on real input.
@@ -197,19 +198,21 @@ continuation-passing style. That it is one of them is not a choice.
 ## The execution model: frames and a run loop
 
 **An activation is a frame on a stack of the runtime's own, and a function is a set
-of segments.** A function is cut at each non-tail call, each `PERF`, and each
-`HNDL`: its entry is one segment, what follows each such transfer another, and each
-join point a third kind. A segment runs straight to its next transfer and returns
-to the run loop what to do next — return a value, call, tail call, perform, install
-a handler, or continue at another segment of the same frame — so the host's call
-stack never holds more than one segment.
+of segments.** A function is cut at each non-tail call, each `PERF`, each `HNDL`,
+and each `RGN`: its entry is one segment, what follows each such transfer another,
+and each join point a third kind. A segment runs straight to its next transfer and
+returns to the run loop what to do next — return a value, call, tail call, perform,
+install a handler, open a region, or continue at another segment of the same
+frame — so the host's call stack never holds more than one segment.
 
 | What the loop does | Where it comes from |
 | --- | --- |
 | a call pushes an entry naming the frame, the register the value goes to, and the segment that continues | a non-tail call |
 | a tail call pushes nothing and replaces the frame | `TAILK`, `TAILU` |
 | a perform pushes the same entry, then answers as the clause's form says (below) | `PERF` |
-| an installation pushes the same entry, then a marker and, where the handler declares cells, a region directly below it, and calls the body | `HNDL`; `TAILHNDL` pushes no entry for the frame |
+| an installation pushes the same entry, then a marker, and calls the body | `HNDL`; `TAILHNDL` pushes no entry for the frame |
+| an opening pushes the same entry, then a region holding a fresh identity and the initial values, and calls the body with the identity | `RGN`; `TAILRGN` pushes no entry for the frame |
+| a cell is read or written where the segment stands, cutting nothing | `CGET`, `CSET` |
 | a value reaching an entry is written and the frame continues, is applied to the arguments an over-application left, or passes a marker, a region, or a clause's boundary as the next section says | `RET` |
 
 **Applying is decided by the count before the kind**, as the machine decides it:
@@ -233,34 +236,37 @@ measured on top of them.
 ## Handlers, continuations, and regions
 
 **The stack holds what the machine's holds, in the same order**
-([Bytecode](01-Bytecode.md)). Installing a handler pushes a marker and, where the
-handler declares cells, a region directly below it. A `HNDL` pushes these above the
-entry of the frame that installed it, and a `TAILHNDL`, pushing no entry for that
-frame, directly above whatever was below it. A marker a continuation re-pushes at its bottom has no
-region of its own below it. A marker is found by its key's string and a clause of it
-by the operation's name, looked up in a map built when the handler is installed, so
-no operation name can collide with a property the host gives every object.
+([Bytecode](01-Bytecode.md)). Installing a handler pushes a marker, and opening a
+region pushes a region holding its identity and its cells by position. A `HNDL` or
+an `RGN` pushes it above the entry of the frame that ran the instruction, and a
+`TAILHNDL` or a `TAILRGN`, pushing no entry for that frame, directly above whatever
+was below it. A marker is found by its key's string and a clause of it by the
+operation's name, looked up in a map built when the handler is installed, so no
+operation name can collide with a property the host gives every object.
 
-**A marker records two facts apart: whether installing produced it, and whether the
-entry below is the region it opened.** An owner of a handler that declares no cells
-opens no region, and the entry below it belongs to someone else, so being an owner
-does not say that the region below is its own. A value reaching a marker that owns
-its region closes that region first — finding anything else there is a defect — and
-then goes to the return clause. A value reaching a region no marker owns, or a
-clause's boundary, passes on down.
+**A region's identity is an object the runtime allocates at each opening, compared
+by reference.** It reaches the body as its argument and is held in registers and
+captures like any value; nothing but a cell access looks at it, and typing keeps
+it from every foreign. The module emits a descriptor per entry of `REGIONS`,
+holding the canonical string of each cell's key in the order of their positions,
+and an opening checks its count of initial values against it.
+
+**A cell is reached by the identity and a position.** A read or a write finds the
+innermost visible region of that identity and reads or writes the slot at that
+position. A value reaching a marker goes to its return clause, and one reaching a
+region closes it and passes on down, as one reaching a clause's boundary does.
 
 **A `full` clause takes the stack from the perform up to the answering marker.**
 The perform pushes its frame's entry first, so the continuation begins at the
 perform, and the run of entries from there up to and including the marker is taken
-off the stack and becomes the continuation; the handler's region, where it has one,
-stays below. The
-clause is then applied to the operation's argument and the continuation.
+off the stack and becomes the continuation; a region opened below the marker stays
+below. The clause is then applied to the operation's argument and the continuation.
 
 **A `fast` clause is applied where the perform stands, above a boundary.** The
 boundary records how far below it the answering marker stands, and a search for a
 marker or a cell that reaches it continues directly below that marker, so the body
 sees neither the handler nor what stood between it and the perform, while it sees
-the handler's region where it has one (D28). The distance is relative because a
+a region opened below the marker (D28). The distance is relative because a
 `full` operation the body performs may take the boundary with the marker into a
 continuation, and re-push the two anywhere. A search for a marker and a search for a cell are one
 walk, which is what keeps a perform and a cell access reaching the same context.
@@ -270,11 +276,12 @@ application can change is the register array of each frame in the segment and th
 cell slots of each region, so each is copied, holding what it held when taken; the
 values they hold are shared, a value written into in place being one value before
 and after. This rests on a frame being referred to by nothing but the one entry
-holding it and, while it runs, the loop. **The marker at the bottom is re-pushed as
-one owning nothing**, whatever it was taken as: a region its handler opened stayed
-behind, and closing it belongs to whoever holds it now. The first argument
-reaches the top of the segment, and arguments past it wait below the segment for
-what it returns.
+holding it and, while it runs, the loop. **A region's copy keeps its identity**:
+the code the segment holds names the region by its identity, and so does every
+closure made before the capture, so each copy is what they reach while it runs. A
+region opened below the marker the segment ends at is not in the segment, and every
+application shares it. The first argument reaches the top of the segment, and
+arguments past it wait below the segment for what it returns.
 
 **A cell is found afresh at each access.** Applying a continuation copies the
 regions it re-pushes, so a cell found before a transfer is not, in general, the one
@@ -338,6 +345,7 @@ Translation will set it as follows.
 | a run of lambdas | the annotation on its innermost lambda, `τ -{ ρ }-> τ'`, has `ρ` the closed empty row once normalized |
 | a `run` global | always: a top-level right-hand side is checked under the empty row ([Modules](../06-Modules/01-Modules.md)) |
 | a `handle` body, a handler clause | never, for now. A body runs under the row its handler handles, and a clause's row is not written in any annotation Translation reads |
+| a `region` body | never: it runs under a row holding the region |
 
 With the record, pure entries are generated as host functions, and two more
 things come with them.
@@ -477,13 +485,14 @@ compiling its source gives now, the format not being frozen.
 
 **Each property of re-entering a continuation has a value of its own that only it
 decides**: a region inside a continuation resumed twice, which shows its cells are
-copied; a continuation whose bottom marker owns a region, resumed twice from its
-clause, which shows that marker is re-pushed owning nothing; and one resumption held
-captured while a second runs through the same frame, which shows the frame's
-registers are copied — resumptions run one after another cannot show it, lowering
-giving every local a register of its own. A module no Core compiles to, such as a
-handler naming one cell twice, is made by changing a lowered one, and its manifest
-says what was changed.
+copied, and one outside it, which shows they are shared; a closure made before a
+capture and run in two copies, and a continuation resumed while a copy of it is
+running, which show that a copy keeps its identity and that a cell is reached in
+the copy running; and one resumption held captured while a second runs through the
+same frame, which shows the frame's registers are copied — resumptions run one
+after another cannot show it, lowering giving every local a register of its own. A
+module no Core compiles to, such as a region entry naming one cell twice, is made
+by changing a lowered one, and its manifest says what was changed.
 
 **What a run must produce includes the sequence of its observable effects.** The
 implementation module records the events the fixture chooses to observe, which
@@ -501,7 +510,7 @@ defect classes, which must still be reported as throws.
 it: a `full` clause resuming its continuation twice, each resumption beginning from
 the captured state, and a continuation captured outside a region carrying the cells
 it was captured with ([Bytecode](01-Bytecode.md)). A second resumption is an
-ordinary application, and no error is raised for one.
+ordinary application, as every other is.
 
 ## What is open
 

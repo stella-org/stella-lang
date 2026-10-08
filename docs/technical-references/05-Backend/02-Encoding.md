@@ -172,9 +172,10 @@ first because every other section indexes it, `OPS` stands before `EFFECTS` and
 | `0x0D` | `PRIMS` | yes |
 | `0x0E` | `CALLEES` | yes |
 | `0x0F` | `HANDLERS` | yes |
-| `0x10` | `FUNCTIONS` | yes |
-| `0x11` | `GLOBALS` | yes |
-| `0x12` | `EXPORTS` | yes |
+| `0x10` | `REGIONS` | yes |
+| `0x11` | `FUNCTIONS` | yes |
+| `0x12` | `GLOBALS` | yes |
+| `0x13` | `EXPORTS` | yes |
 | `0x7F` | `DEBUG` | no |
 
 **A required section is present even where it is empty**, as a `vec` of no
@@ -192,7 +193,10 @@ is why a reader that wants none of it passes over it.
 Adding a section that bears on meaning therefore takes the next format version as
 well as a low id. The version is what makes the refusal legible — a reader says
 it does not implement the format rather than naming a section nobody has heard
-of — and the id is what makes it happen at all.
+of — and the id is what makes it happen at all. **Versioning begins with the first
+released version of Stella**: until then the format is revised in place and stays
+at version 0, a build caching `.dmo` files dropping them where it changes
+([Bytecode](01-Bytecode.md)).
 
 `MODULE` holds the name of the module itself, which no other section carries.
 
@@ -239,7 +243,7 @@ key   0x01 str     a SymbolKey, by its symbol
 
 **There is no tag for a region key.** A `KEYS` table holds the keys terms carry,
 and no erased term carries a region's: a handler keeps the key of the element it
-removes, its cells keep their own, and `CGET` and `CSET` name those (D36).
+removes, a region the keys of its cells, and `CGET` and `CSET` a position (D36).
 
 ### Declarations
 
@@ -331,7 +335,7 @@ The array family is where the table already shows it: `unsafeIndex` holds `0x20`
 because it was written first, and the two entries added beside it took the codes
 after rather than the order a reader would group them in.
 
-**The codes of this version are grouped by module** — `Base.Int` from `0x00`,
+**The codes of this version are grouped by module** — `Base.Int` from `0x01`,
 `Base.String` from `0x10`, `Base.Array` from `0x20`, `Base.Number` from `0x30`, and
 `Base.Char` from `0x40` — which is how they were chosen and nothing more. **A later
 version assigns whatever unused code it likes**, and a module outgrowing its sixteen
@@ -353,7 +357,7 @@ carries codes needs them fixed somewhere, so they are fixed here.
 ### Handlers
 
 ```text
-HANDLERS payload   vec ( uvar key, vec uvar cells, vec clause )
+HANDLERS payload   vec ( uvar key, vec clause )
 
 clause   uvar op, u8 form
 
@@ -361,8 +365,18 @@ form   0x00 full
      | 0x01 fast
 ```
 
-`key` and each of `cells` index `KEYS`, and `op` indexes `OPS`. `cells` is empty
-for a handler declaring no region.
+`key` indexes `KEYS` and `op` indexes `OPS`.
+
+### Regions
+
+```text
+REGIONS payload   vec ( vec uvar cells )
+```
+
+Each of `cells` indexes `KEYS`: the keys of the region's cells, in the order of
+their positions. An entry carries no region key and no initial value, the values
+being registers of the instruction that opens the region
+([Bytecode](01-Bytecode.md)).
 
 ### Globals
 
@@ -452,9 +466,10 @@ a table is a `uvar`.
 | `0x18` | `VPAY` | `d`, key, `s` |
 | `0x19` | `VABS` | `d`, `s` |
 | `0x20` | `PERF` | `d`, key, operation name, `s` |
-| `0x21` | `HNDL` | `d`, handler, body `s`, return clause `s`, clause `r…`, cell `r…` |
-| `0x22` | `CGET` | `d`, key |
-| `0x23` | `CSET` | `d`, key, `s` |
+| `0x21` | `HNDL` | `d`, handler, body `s`, return clause `s`, clause `r…` |
+| `0x22` | `CGET` | `d`, region identity `s`, cell position |
+| `0x23` | `CSET` | `d`, region identity `s`, cell position, `s` |
+| `0x24` | `RGN` | `d`, region, body `s`, initial value `r…` |
 
 | Opcode | Tail | Operands |
 | --- | --- | --- |
@@ -467,12 +482,13 @@ a table is a `uvar`.
 | `0x89` | `BRC` | `s`, `vec ( constructor reference, branchNode )`, optNode |
 | `0x8A` | `BRL` | `s`, `vec ( constant, branchNode )`, branchNode |
 | `0x8B` | `BRK` | `s`, `vec ( key, branchNode )`, optNode |
-| `0x8C` | `TAILHNDL` | handler, body `s`, return clause `s`, clause `r…`, cell `r…` |
+| `0x8C` | `TAILHNDL` | handler, body `s`, return clause `s`, clause `r…` |
+| `0x8D` | `TAILRGN` | region, body `s`, initial value `r…` |
 
 `BRL` carries a `branchNode` rather than an `optNode`: literals cannot be
 exhausted, so its default is not optional ([Bytecode](01-Bytecode.md)).
 
-The gaps in the numbering — `0x0F`, `0x1A` to `0x1F`, `0x24` onwards — group the
+The gaps in the numbering — `0x0F`, `0x1A` to `0x1F`, `0x25` onwards — group the
 opcodes by what they touch, so that a reader of a hexadecimal dump can see which
 family an unknown opcode was meant to join. A reader rejects one it does not know
 rather than skipping it: an instruction's operands are what say how long it is,

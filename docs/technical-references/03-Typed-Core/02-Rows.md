@@ -14,7 +14,7 @@ Row theory concerns **keyed, unordered, duplicate-free collections**. Where a ke
 | labelled variant | `SymbolKey`, the name written for it | the payload's type |
 | effect | `EffectKey`, derived from the effect at the head | the effect application |
 | labelled effect | `SymbolKey`, the instance name written for it | the effect application |
-| region | `RegionKey`, the one there is | the region variable and its row of cells |
+| region | `RegionKey ℓ`, the name of the `region` binder | the region name |
 
 Seven structures, one theory (D16). What changes between them is which key constructor the elements carry and what a payload is; normalization, equality, and entailment run the same algorithm over all of them and branch on none of it.
 
@@ -30,7 +30,7 @@ The key constructors divide once more, and this division the checker does see.
 | --- | --- | --- | --- |
 | **structural** | `SymbolKey`, `TagKey`, `PositionKey` | the syntax itself | no |
 | **nominal** | `EffectKey` | a declaration | yes |
-| **reserved** | `RegionKey` | nothing; there is one | no |
+| **bound** | `RegionKey ℓ` | the `region` binder in scope | no |
 
 A `#Ok` written in one module and a `#Ok` written in another are the same key, and neither requires anything to have been declared. That is what lets an open variant be shared between modules that know nothing of each other.
 
@@ -44,7 +44,7 @@ cache : State Int
 
 Here `SymbolKey cache` identifies the instance within the row, while `State` decides which operations may be performed on it. Collapsing the two would lose one or the other.
 
-A `RegionKey` is a third thing again, and sharpness is what it rests on. **There is exactly one such key**, so a row holds at most one region, and the innermost is the only one — which is what lets a cell be named by its own key with nothing to say which region is meant (D36). No syntax writes it, so nothing outside the `handle` that owns a region can put one in a row or take one out.
+A `RegionKey ℓ` is a third thing again: neither written nor declared, but **bound**. Its identity is the region name `ℓ` a `region` binder of the term introduces, so each region has a key of its own, and regions open at one point stand side by side in one sharp row (D16, D36). A cell is reached by naming its region together with its key, `readCell ℓ.k`, so nothing has to search a row to decide which region is meant. No syntax writes the key, so nothing but the `region` that binds `ℓ` puts `region ℓ` in a row or takes it out.
 
 Sharing one theory does not mean sharing one notation.
 
@@ -118,7 +118,7 @@ F : RowKey ⇀ Payload      a finite map; sharpness makes keys unique
 T : { RowVar }            a finite set of row variables
 ```
 
-The payload is determined by the kind: a type `τ` at `Row Type`, an effect application `E τ̄` at `Row Effect`. The key is whichever of the four constructors the element carried, and `F` no more distinguishes them than a map distinguishes how its keys were spelled.
+The payload is determined by the kind and the element: a type `τ` at `Row Type`, and at `Row Effect` an effect application `E τ̄` or, for a region, its name. The key is whichever of the five constructors the element carried, and `F` no more distinguishes them than a map distinguishes how its keys were spelled.
 
 `⟨ F ; T ⟩` represents the union of the known elements `F` with the row variables of the unknown tail `T`.
 
@@ -131,7 +131,7 @@ nf( ρ1 ⊎ ρ2 )         = ⟨ F1 ∪ F2 ; T1 ∪ T2 ⟩                   wher
 
 The kinding side conditions guarantee that both unions are disjoint, so `∪` is well defined, and that `T` is a set.
 
-`nf` terminates and its result is unique, provided `key(ent)` cannot change during normalization. Every key constructor is rigid for its own reason: a `SymbolKey` and a `TagKey` are written literals (D13), a `PositionKey` is fixed by where the element stands, and an `EffectKey` comes from the constructor the element well-formedness rule requires at the head of a payload (D16). **No key depends on a metavariable**, and that is the substance of both decisions.
+`nf` terminates and its result is unique, provided `key(ent)` cannot change during normalization. Every key constructor is rigid for its own reason: a `SymbolKey` and a `TagKey` are written literals (D13), a `PositionKey` is fixed by where the element stands, an `EffectKey` comes from the constructor the element well-formedness rule requires at the head of a payload (D16), and a `RegionKey ℓ` carries a region name, which no instantiation replaces ([Kinds and Types](01-Kinds-and-Types.md)). **No key depends on a metavariable**, and that is the substance of both decisions.
 
 ### Equality
 
@@ -211,6 +211,18 @@ assumption (ρ1 # ρ2)    with nf(ρi) = ⟨Fi;Ti⟩
 ```
 
 The only closure added is symmetry of `#`. Since `Γ` is finite and each `nf` is finite, `Γ*` is finite and is constructed once.
+
+Two binders change `Γ*` besides the assumptions.
+
+**A type binder hides what was assumed of a variable it shadows.** A `forall` met while kinding is scoped lexically, and binding `a` again removes every atomic fact about the outer `a`: what was assumed of it says nothing of the inner one ([Kinds and Types](01-Kinds-and-Types.md)).
+
+**A `region` binder adds facts that freshness gives.** A row variable bound outside `ℓ` cannot be instantiated with a row mentioning `ℓ`: wherever its instantiation is formed, `ℓ` is not in scope, and capture-avoiding substitution keeps it so. Entering the body of `region [ℓ]` therefore adds
+
+```text
+{ RegionKey ℓ ∉ t  |  t : Row Effect ∈ Γ }
+```
+
+for every row variable of kind `Row Effect` bound before `ℓ`. A row variable bound later, inside the body, gets no such fact; a function that abstracts over a row there and needs the key absent says so in its type, as for any other key. This is what lets a function polymorphic in its row be applied inside a region with no constraint written for it, and what makes the body's row `( region ℓ | ρ )` sharp ([Typing Rules](05-Typing-Rules.md)).
 
 ### What entailment does not derive
 

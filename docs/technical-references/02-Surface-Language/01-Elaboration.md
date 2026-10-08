@@ -18,16 +18,18 @@ e⁺ ::= … | ?m                          term metavariable
 
 ```text
 Ψ ::= ·
-    | Ψ, ?k [Γκ] R          unresolved kind; Γκ the kind variables it may mention,
-                            R the requirements it carries
-    | Ψ, ?k := κ            solved
-    | Ψ, ?α : κ [Γτ; Γκ]    unresolved; the variables of either class it may mention
-    | Ψ, ?α := τ            solved
-    | Ψ, ?m : τ [Γx; Γτ; Γκ] unresolved; the values, types, and kinds it may mention
-    | Ψ, ?m := e            solved
+    | Ψ, ?k [Γκ] R                 unresolved kind; Γκ the kind variables it may
+                                   mention, R the requirements it carries
+    | Ψ, ?k := κ                   solved
+    | Ψ, ?α : κ [Γτ; Γκ; Γℓ]       unresolved; the type and kind variables and the
+                                   region names it may mention
+    | Ψ, ?α := τ                   solved
+    | Ψ, ?m : τ [Γx; Γτ; Γκ; Γℓ]   unresolved; the values, types, kinds, and region
+                                   names it may mention
+    | Ψ, ?m := e                   solved
 ```
 
-Recording the variables a metavariable was created under allows the scope check that decides whether a solution mentioning local variables may be assigned to it. A type metavariable records **both classes**, since a kind variable of an inner declaration escapes as readily as a type variable does — `?α`'s kind and the kinds inside its solution are where a kind variable reaches it. A kind metavariable records the kind variables alone: kinds and types are separate classes and no kind mentions a type variable (D2). A term metavariable records all three, value variables among them, since a solution such as a dictionary a resolver found may be a local of the site the goal stood at.
+Recording the variables a metavariable was created under allows the scope check that decides whether a solution mentioning local variables may be assigned to it. A type metavariable records **both classes**, since a kind variable of an inner declaration escapes as readily as a type variable does — `?α`'s kind and the kinds inside its solution are where a kind variable reaches it. A kind metavariable records the kind variables alone: kinds and types are separate classes and no kind mentions a type variable (D2). A term metavariable records all three, value variables among them, since a solution such as a dictionary a resolver found may be a local of the site the goal stood at. **A type and a term metavariable record the region names in scope as well** (D36): a region name is bound by its `region` and nowhere else, so a type mentioning `region ℓ` or a solution reading a cell of `ℓ` escapes its region exactly as a type mentioning a variable escapes its binder.
 
 **A substitution narrows what the metavariables inside it may mention.** A metavariable standing in a solution mentions none of the variables it was created under until it is solved, so assigning `?α := τ` restricts every metavariable of `τ` to `?α`'s own scope — and refuses the assignment where the kind such a metavariable stands at lies outside it. Without that, `?α` created outside a binder and solved to a type mentioning `?β` would admit whatever `?β` was later solved to, binder and all.
 
@@ -120,7 +122,7 @@ Where nothing in hand determines a kind — the argument of an application, an e
 
 A row's payload equations are type equations, so discharging them is this judgement's work rather than the row solver's. What they stand at follows the row element kind: a `Row Type` element carries a type, and what an effect's argument stands at is `Σ`'s to say, so a metavariable stands for each — **one per equation**, two arguments of one effect having no reason to share a kind.
 
-**A constraint is compared by its own form.** A Lacks holds where the two keys are one and the two rows are equal, and its row element kind is what the key settles where the key settles it: an `EffectKey` or a `RegionKey` is a `Row Effect` and a `TagKey` or a `PositionKey` a `Row Type`, while a `SymbolKey` keys a field and a labelled effect instance alike and so settles nothing ([Kinds and Types](../03-Typed-Core/01-Kinds-and-Types.md)). A Disjoint holds where its two rows are equal pairwise, and **one kind serves them both**, the two sides of `#` sharing one row element kind ([Rows](../03-Typed-Core/02-Rows.md)).
+**A constraint is compared by its own form.** A Lacks holds where the two keys are one and the two rows are equal, and its row element kind is what the key settles where the key settles it: an `EffectKey` or a `RegionKey ℓ` is a `Row Effect` and a `TagKey` or a `PositionKey` a `Row Type`, while a `SymbolKey` keys a field and a labelled effect instance alike and so settles nothing ([Kinds and Types](../03-Typed-Core/01-Kinds-and-Types.md)). A Disjoint holds where its two rows are equal pairwise, and **one kind serves them both**, the two sides of `#` sharing one row element kind ([Rows](../03-Typed-Core/02-Rows.md)).
 
 ### `forall` is compared through a correspondence
 

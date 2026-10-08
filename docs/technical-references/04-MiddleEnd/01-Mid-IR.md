@@ -7,9 +7,10 @@ argument is an atom, and every control construct stands in tail position.
 Core defines what a program means. Mid IR fixes what a program *does*, in terms
 every backend can carry out: allocating a closure, calling a known function,
 building and taking apart a data value, jumping to a join point, installing a
-handler, capturing a continuation. It commits to none of how a target
-represents those things. JavaScript functions and objects, Wasm GC structs, and
-layouts in linear memory belong past this stage and must not appear in it.
+handler, opening a region of cells, capturing a continuation. It commits to none
+of how a target represents those things. JavaScript functions and objects, Wasm GC
+structs, and layouts in linear memory belong past this stage and must not appear
+in it.
 
 Bytecode is the lowering that consumes Mid IR ([Bytecode](../05-Backend/01-Bytecode.md)).
 The JavaScript backend reads the `.dmo` that lowering produces rather than Mid IR
@@ -169,9 +170,10 @@ comp ::= pure atom                                 name a value
 
        -- effects
        | perform k.op a                            invoke an operation of the element keyed k
-       | handle h f [ā] @ [v̄]                      install h and call the body
-       | readCell k                                the cell keyed k of the innermost region
-       | writeCell k a                             replace what that cell holds
+       | handle h f [ā]                            install h and call the body
+       | region k̄ f [ā] @ [v̄]                     open a region, call the body with its identity
+       | readCell a i                              the cell at position i of the region a identifies
+       | writeCell a i a'                          replace what that cell holds
 
 callee ::= M.x | M.f | M.Ctor | prim op
 ```
@@ -181,21 +183,25 @@ value is what the handler's return clause produces, so binding it with a `let`
 is all that is needed to use it, and no other form has to carry a destination
 for it.
 
-`[ā]` is what the body closure captures and `[v̄]` the initial value of each cell
-of the handler's region, one per key of its `cells` and in that order. **The two
-are separate fields because they are neither the same values nor evaluated at
-the same time**: a capture list holds what the body names, so mixing the initial
-values into it would have the body capture what it never names, and the initial
-values are evaluated before the handler is installed while a capture list is
-collected when the closure is built. `[v̄]` is empty for a handler declaring no
-region; `[ā]` holds the body's free locals whether one is declared or not.
+`[ā]` is what the body closure captures.
 
-**A cell is reached by its key alone, and `writeCell` produces `Prim.Unit`.**
-Neither form says which region: the innermost one declaring the key is the one
-reached, and a write is done for its effect on that cell rather than for a result
-of its own (D36). Which region that is is settled where the computation runs
-rather than where it stands — a clause is a function of its own, so no scope
-within a function says what frame is installed around it.
+**`region` is a computation too, and its body is a function of one parameter**:
+the region's **identity**, a value telling this opening of the region from every
+other, the copies a continuation makes of it aside. The value of the `region` is
+the body's. `k̄` is the layout's keys in the order it writes them, `[ā]` what the
+body closure captures, and `[v̄]` the initial value of each cell, one per key and
+in that order. **The two lists are separate fields because they are neither the
+same values nor evaluated at the same time**: a capture list holds what the body
+names, so mixing the initial values into it would have the body capture what it
+never names, and the initial values are evaluated before the region opens while a
+capture list is collected when the closure is built.
+
+**A cell is reached by an identity and a position, and `writeCell` produces
+`Prim.Unit`.** The atom holds the identity of a region and `i` is the cell's
+position in that region's layout; a write is done for its effect on the cell rather
+than for a result of its own (D36). Which frame of that identity is reached is
+settled where the computation runs rather than where it stands
+([below](#regions)).
 
 **`recExtend` and `recUpdate` take their operands the other way about**, as Core
 writes them: the value first for one and the record first for the other
@@ -353,9 +359,9 @@ correspondence is the reason Core carries join points at all
 ## Functions and closures
 
 **Mid IR has no nested function.** Every lambda of Core, the body of every
-`handle`, every handler clause, and every return clause becomes an entry of the
-module's function table, and the free variables it needed become an explicit
-capture list.
+`handle` and of every `region`, every handler clause, and every return clause
+becomes an entry of the module's function table, and the free variables it needed
+become an explicit capture list.
 
 ```text
 Function ::= { id       : FuncId
@@ -385,13 +391,12 @@ group is still being built.
 another by global name, so each is a closure over an empty capture list
 ([Semantics](../03-Typed-Core/06-Semantics.md)).
 
-## Handlers and continuations
+## Handlers, regions, and continuations
 
 ```text
-handle h f [ā] @ [v̄]
+handle h f [ā]
 
 h ::= { key      : RowKey
-      , cells    : [RowKey]
       , return   : ClauseRef
       , clauses  : [ { op : OpName, form : full | fast, clause : ClauseRef } ]
       }
@@ -402,27 +407,9 @@ ClauseRef ::= { func : FuncId, captures : [atom] }
 **The handler carries the key alone.** Core's handler writes the row element
 whole because typing needs its payload to say which operations the clauses must
 exhaust; reduction consults `key(ent)` and nothing else, so erasure keeps the
-key ([Semantics](../03-Typed-Core/06-Semantics.md)).
-
-**A region is a frame of the continuation, not a store.** `cells` names the keys
-a handler's region declares and `[v̄]` gives their initial values, one per key;
-`readCell` and `writeCell` reach the innermost frame declaring the key, and a
-write replaces what that frame holds (D36).
-
-**A captured continuation carries the frame where the frame is inside it**, which
-is where the handler capturing it was installed *outside* the region. Two
-applications of such a continuation then begin from the same cell contents, and a
-write under the first is invisible to the second. A backend implementing a cell
-as a mutable location shared between resumptions would be non-conformant for
-that reason, exactly as a one-shot continuation is.
-
-Where the capturing handler is the one that owns the region, the frame stands
-outside what it captured and the cells stay live across its resumptions. That is
-the semantics, not a concession: a handler's cells are its state across the
-operations it handles.
-
-`cells` is empty for every handler that declares no region, and then no frame is
-installed and the form is the one it always was.
+key ([Semantics](../03-Typed-Core/06-Semantics.md)). **A handler holds no cells**:
+a handling expression with cells is a `region` whose body installs its handlers
+(below).
 
 ### Everything a handler runs is a function
 
@@ -447,16 +434,8 @@ to a join point of that activation to deliver it.
 **Returning needs no special rule of the body's.** A function returns from its
 activation; the handler is below the body's activation, so the body's return
 reaches it, runs the return clause, and the return clause's own value goes on to
-whatever called the `handle`. Where the handler declares no region that is the
-whole of it, and it is `handle v with h → e_r[x := v]` read as a machine step.
-
-**Where the handler owns a region, three paths reach a value and a consumer tells
-them apart.** An installed handler closes its region before its return clause
-runs, a handler a continuation reinstalled leaves the region of the one that owns
-it open, and a `full` clause's answer reaches the region with no return clause
-left to run. Mid IR fixes where the region stands and no more than that; which
-path a value takes is what a lowering settles
-([Bytecode](../05-Backend/01-Bytecode.md)).
+whatever called the `handle`. That is the whole of it, and it is
+`handle v with h → e_r[x := v]` read as a machine step.
 
 **A tail call inside the body keeps the handler.** It replaces the body's
 activation, which the handler does not stand in, so the path from wherever
@@ -466,6 +445,63 @@ holds of a tail call inside a clause.
 Join points do not enter a `handle`. A function boundary already discards them,
 so this is a consequence of the shape above rather than a restriction Mid IR
 imposes; Core discards the join point context at a `handle` for the same reason.
+
+### Regions
+
+```text
+region k̄ f [ā] @ [v̄]
+
+k̄ ::= [RowKey]          the layout's keys, in the order it writes them
+```
+
+**A region is a frame of the continuation, not a store.** Opening one pushes a
+frame of `|k̄|` cells holding `[v̄]` and calls `f` with the region's identity; a
+`readCell` or a `writeCell` reaches a cell of that frame by its position, and a
+write replaces what the cell holds (D36). The keys position the cells and say, as
+debug information, which is which. No read or write uses them, and they are
+distinct, one cell standing per key.
+
+**The frame stands between the caller and the body**, as a handler does, and a
+value reaching it closes the region and passes on: `region⟨ℓ⟩ θ in v → v` read as
+a machine step ([Semantics](../03-Typed-Core/06-Semantics.md)). Nothing runs
+there, a region having no return clause, so the value of a `region` is the body's.
+Join points do not enter one, its body being a function.
+
+**`region` and `handle` are separate forms.** A handling expression with cells is
+a `region` whose body installs the expression's handlers, so the clauses of every
+group reach the region, and none of them owns it. **A return clause reading a cell
+is not ruled out here**: Mid IR cannot tell a return clause inside a region from
+any other function inside one, and a consumer must not assume that a return clause
+reads no cell. The surface writes no such read; Core admits one
+([Typing Rules](../03-Typed-Core/05-Typing-Rules.md)).
+
+**The identity is an ordinary local of `Rep Val`.** It is the body's one
+parameter, and a function using the cells of a region it does not open captures
+the identity as it captures any local. A closure made under one opening therefore
+reaches that opening's cells wherever it is called, and no form searches for a
+region by anything but the identity it holds.
+
+**Which frame a cell access reaches is settled where it runs**: the innermost
+frame of that identity on the path, passing over what the body of a `fast` clause
+runs outside (below). One identity may stand on several frames, and those frames
+are copies of one opening: a continuation whose segment holds the frame copies it
+at each application, and **the copy keeps the identity of the opening it copies**.
+The code the segment holds names the region by its identity, and so does every
+closure made before the capture, so the innermost frame of the identity is the
+copy running ([Semantics](../03-Typed-Core/06-Semantics.md)).
+
+**A captured continuation carries the frame where the frame is inside it**, which
+is where the handler capturing it was installed *outside* the region. Each
+application of such a continuation begins from the values the frame held at the
+capture, and a write under one is invisible to another. A backend implementing a
+cell as a mutable location shared between resumptions would be non-conformant for
+that reason, exactly as one whose continuations were one-shot would be.
+
+Where the capturing handler was installed inside the region — a group of the
+handling expression that opened it among them — the frame stands outside what it
+captured and the cells stay live across its resumptions. That is the semantics,
+not a concession: a handling expression's cells are its state across the
+operations its groups handle.
 
 ### The two clause forms stay apart
 
@@ -501,9 +537,9 @@ form marks it or counts its uses.
 This is a constraint on the representation and not merely an omission. Mid IR is
 designed before effect lowering is written ([Implementation Plan](../01-Introduction/04-Implementation-Plan.md)),
 so a representation admitting only one resumption would settle D18 by accident,
-in a stage that has no standing to settle it. A backend whose continuations are
-one-shot is non-conforming and says so; Mid IR records no such limitation on its
-behalf.
+in a stage that has no standing to settle it. Every backend applies a continuation
+as often as the program does, and Mid IR gives none a form that would let it
+do less.
 
 ## Modules
 
@@ -605,8 +641,8 @@ keeps the outer node for this.
 side is already an atom binds an alias and makes no local, so `let z = y` leaves
 `y`'s own name in place rather than renaming it, and a pattern binding an
 occurrence an earlier one already materialized aliases that local the same way.
-A local holding an intermediate result of a folded spine, or a projection no
-pattern gave a name to, was created for no name at all.
+A local holding an intermediate result of a folded spine, a projection no
+pattern gave a name to, or a region's identity was created for no name at all.
 
 **It is a side table and not an annotation on the terms.** A Mid IR node has no
 identity of its own, and most nodes come from no single Core node: one
@@ -636,6 +672,7 @@ says what became of it.
 | Nested lambdas | The function table, with explicit captures |
 | `fail` | It was never a node: Core writes `perform Partial.abort`, and translation carries that through |
 | The payload of a handled row element | The handler's key |
+| Region names, and the types of a layout | The region's identity, a local; a cell's position in the layout |
 | Curried application chains | `callk`, `callu`, `ffi`, `ctor`, and `pap` |
 
 ## Invariants
@@ -681,13 +718,16 @@ that reads it: one never bound and one bound in a branch that does not enclose
 the read are both rejected, and the second passes every check of layout alone.
 
 **Functions a term names.** Every `closure`, `letrec` binding, `handle` body,
-and handler clause names a function of the table and supplies exactly the
-captures that function takes. Each function a handler reaches has the arity its
-form gives it: none for the body, two for a `full` clause, one for a `fast`
-clause and for the return clause. A handler names no operation twice and no cell
-key twice, and a `handle` supplies one initial value per key of its `cells` — a
-lowering pairs the two by position, so a count that disagrees leaves a cell
-holding another's value.
+`region` body, and handler clause names a function of the table and supplies
+exactly the captures that function takes. Each function a `handle` or a `region`
+reaches has the arity its form gives it: none for the body of a `handle`, two for
+a `full` clause, and one for a `fast` clause, for the return clause, and for the
+body of a `region`, which takes the identity. A handler names no operation twice.
+
+**Regions and cells.** A `region` names no key twice and supplies one initial
+value per key — a lowering pairs the two by position, so a count that disagrees
+leaves a cell with no value or a value with no cell. A `readCell` or a
+`writeCell` names no negative position.
 
 **Arities and fields.** A saturated `prim` supplies the arity the ABI manifest
 fixes, and a `pap` over one supplies fewer. A saturated `callk`, `ctor`, or
@@ -716,11 +756,12 @@ declaring module's own entry against the call is what turns a stale interface in
 rejected build rather than a call that supplies the wrong number of arguments
 ([Interface](../05-Backend/03-Interface.md)).
 
-That a `readCell` or a `writeCell` names a key of the region it reaches is not
-checked here either, and not for want of the declaration: the region is the one a
-walk of the continuation finds, and the function the form stands in says nothing
-about what frame is installed around it. The Core type checker established it
-while the row still carried the region ([Typing Rules](../03-Typed-Core/05-Typing-Rules.md)).
+That a `readCell` or a `writeCell` names a position the region has is not checked
+here either, and not for want of the declaration: the identity the form reads may
+be a capture, a parameter, or a value handed back through an operation, and the
+function the form stands in says nothing about which opening it belongs to.
+The Core type checker established it while the term still named the region by its
+binder ([Typing Rules](../03-Typed-Core/05-Typing-Rules.md)).
 
 That a handler's clauses **exhaust** the operations of the effect its element
 carried is not checked at all. The element's payload is what said which

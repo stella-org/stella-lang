@@ -44,9 +44,9 @@ Two uses stand beside those, and neither reaches a user.
   both ways gives the same value and the same sequence of observable effects, which
   exercises the whole of translation and lowering at once
   ([Implementation Plan](../01-Introduction/04-Implementation-Plan.md))
-- **A way to run what a one-shot backend cannot.** A continuation applied more than
-  once is what D33 undertakes and what D18 records the v0.1 Wasm backend as
-  lacking
+- **The reference another backend is compared against.** It runs every program the
+  reference semantics admits, a continuation applied more than once included, which
+  is what D33 undertakes and what D18 asks of every backend
 
 ## Two modes
 
@@ -714,11 +714,14 @@ This is the interpreter's internal representation and **not a published ABI**: n
 | closure | `{ function, captures }` |
 | partial application | `{ callee, args }` |
 | continuation | a captured stack segment |
+| a region's identity | an object allocated at each opening and compared by reference, which reaches a register as an opaque value carrying a brand of its own. Typing keeps it inside Stella code, so no foreign is handed one |
 | `IO` | one of `pure v`, `bind io k`, and a native action. **Opaque to the instruction set and not to the interpreter**: no instruction examines one (D25), and the loop that executes one takes it apart |
 | a value only a foreign observes | whatever the foreign gave, which nothing here takes apart |
 
-**Everything but a closure's capture vector and a region cell is immutable**, which
-is what lets the host's collector be the whole of memory management.
+**Everything the interpreter builds but a closure's capture vector and a region
+cell is immutable**, which is what lets the host's collector be the whole of memory
+management. A value only a foreign observes is not the interpreter's to build, and
+may be written into in place, as an array is by `Base.Array.unsafeSet`.
 
 **Literal identity is equality of the value, with a `Number`'s bit pattern deciding
 and all NaNs taken as one** (D37). `BRL` implements that rather than the host's
@@ -743,7 +746,11 @@ What holds an id rather than an index:
 | --- | --- |
 | a record's fields, and a variant's key | `RSEL`, `RRES`, `RUPD`, `BRK` compare ids |
 | a handler marker's key, and the clauses under it | `PERF` finds a marker by id and a clause by an operation's id |
-| a region frame's cell keys | `CGET` and `CSET` find the innermost visible frame declaring an id |
+
+**A region's cell keys are interned too, and nothing running compares them.** A
+cell is reached by the identity of its region's opening and a position, so the
+keys serve a loader alone, which refuses a region declaring one twice and names a
+region by them where it refuses one.
 
 **A constructor resolves the same way.** A data value holds the identity a loader
 resolved — the declaring module's name with the constructor's own — and not an index
@@ -801,10 +808,18 @@ TAILU s, r…      as CALLU without the Resume: an argument past the callee's
 
 RET s            hand s to the top of the stack, by the table below
 
-HNDL d, …        push Resume { current activation, d }, then a region frame where
-                 the handler declares cells, then an owner marker, then enter the
-                 body's closure
+HNDL d, …        push Resume { current activation, d }, then a marker, then enter
+                 the body's closure
 TAILHNDL …       the same without the Resume
+
+RGN d, …         push Resume { current activation, d }, then a region frame
+                 holding a fresh identity and the initial values, then enter the
+                 body's closure with the identity
+TAILRGN …        the same without the Resume
+
+CGET d, r, i     the cell at i of the innermost visible region frame whose
+                 identity is the one r holds
+CSET d, r, i, s  write s there; d takes Prim.Unit
 
 PERF d, key, op, s
                  the innermost visible marker whose key is key
@@ -831,8 +846,8 @@ what it does with a value that reaches it**.
 StackEntry
   = Resume          { activation, dest }
   | ApplyRemaining  { args }
-  | HandlerMarker   { key, clauses, return clause, owner }
-  | RegionFrame     { cells }
+  | HandlerMarker   { key, clauses, return clause }
+  | RegionFrame     { identity, cells }
   | ClauseBoundary  { distance to the answering marker }
   | RootBoundary    { key, op }
   | ClosedBoundary
@@ -840,39 +855,61 @@ StackEntry
 
 `Resume` is the only entry that carries a destination register. A tail call pushes
 none, which is the whole of what makes it a tail call, and `TAILHNDL` differs from
-`HNDL` in exactly that.
+`HNDL`, and `TAILRGN` from `RGN`, in exactly that.
 
 | A value reaching | What happens to it |
 | --- | --- |
 | `Resume { activation, dest }` | it is written into `dest` and that activation continues |
 | `ApplyRemaining { args }` | it is applied to `args`, and what that produces reaches the entry below |
-| an **owner** marker | the region frame below the marker closes first, then the return clause runs with the value, and what the clause produces reaches the entry below |
-| a **reinstatement** marker | the marker pops alone and its return clause runs with the value; the frame it stood in is untouched, and what the clause produces reaches the entry below |
-| a `RegionFrame` whose owner is gone | it pops with no return clause, and the value reaches the entry below |
+| a `HandlerMarker` | it pops and its return clause runs with the value, and what the clause produces reaches the entry below |
+| a `RegionFrame` | it pops, closing the region, and the value reaches the entry below |
 | a `ClauseBoundary` | it pops, and the value — a `fast` clause's — reaches the entry below, the `Resume` of the `PERF` it answers |
 | a `RootBoundary` | it pops, and the value is what the invocation produces |
 | a `ClosedBoundary` | it pops, and the value is what the closed run produces |
 
-The three rows about a marker and a frame are the three completion paths, and a marker's `owner` flag is what
-distinguishes them ([Bytecode](../05-Backend/01-Bytecode.md)). Nothing in a `.dmo`
-carries that flag: an owner marker is one `HNDL` pushed, and a reinstatement is one
-that arrived at the bottom of a re-pushed segment.
+The rows about a marker and a frame are the reduction rules for a value,
+`handle v with h → e_r[x := v]` and `region⟨ℓ⟩ θ in v → v`
+([Bytecode](../05-Backend/01-Bytecode.md)). A region frame closes with no clause
+whatever reaches it — the body's value, or a `full` clause's answer where the
+clause's marker stood above the frame.
 
-**Applying a continuation copies the segment.** What is copied is the register array
-of each activation in it, the markers, and the region frames it contains — not the
-values those hold, which are immutable and shared. This is the one thing a light
-interpreter cannot leave out: re-pushing the captured entries instead would let one
-application write over the state the next one needs.
+**Opening a region gives it an identity no other opening has had**: a host object
+allocated for the opening and compared by reference. It is fresh across every run
+of the host and not merely within one machine, because a continuation stored by
+one run may be applied by another and its frames keep the identities they were
+opened with; a counter kept by the machine would let two openings meet under one.
+
+**`CGET` and `CSET` find their frame by identity, through the walk `PERF` uses.**
+The innermost visible `RegionFrame` holding the identity the register holds is the
+one reached, and the cell is the one at the position the instruction names. One
+identity may stand on several frames, all copies of one opening, and the innermost
+is the copy running.
+
+**Applying a continuation copies the segment.** What is copied is the registers of
+each activation in it and the cells of each region frame in it, each copy holding
+what the original held at the capture — not the values those hold, which are
+shared rather than copied in turn, and not a marker or a boundary, which nothing
+changes. A value written into in place, such as an array or an opaque host value,
+is therefore one value before the capture and after, whichever copy holds it. This
+is the one thing a light interpreter cannot leave out: re-pushing the captured
+entries instead would let one application write over the state the next one needs.
+
+**A region frame's copy keeps the identity of the frame it copies.** The code the
+segment holds names its regions by identity, and so does every closure made before
+the capture, so each copy is what they reach while it runs. A region standing below
+the marker the segment ends at is not in the segment: the capture leaves it where
+it is, and every application shares its cells.
 
 **A `fast` clause's body runs on top of the stack and is searched past what it runs
 outside.** Core binds the body outside the handler that answered and outside `Ev_k`
 between that handler and the `perform`, while the machine leaves both where they
 stand, since nothing is captured (D28). The `ClauseBoundary` pushed above the
 `PERF`'s `Resume` is what reconciles the two: a search for a marker or a cell
-reaching it continues directly below the answering marker, so a handler or a
-region `Ev_k` installed is not found, the handler's own region — below its marker
-— is, and whatever the body installs above the boundary is found as usual. `PERF`,
-`CGET`, and `CSET` read the stack by that one walk ([Bytecode](../05-Backend/01-Bytecode.md)).
+reaching it continues directly below the answering marker, so a handler `Ev_k`
+installed, or a region frame standing in `Ev_k`, is not found, a region opened
+below the marker is, and whatever the body installs or opens above the boundary is
+found as usual. `PERF`, `CGET`, and `CSET` read the stack by that one walk
+([Bytecode](../05-Backend/01-Bytecode.md)).
 
 **The boundary holds a distance and not a position.** A `full` operation the body
 performs may be answered below the handler, and the segment it captures then holds
@@ -1006,7 +1043,9 @@ What loading refuses:
 | Two declarations of one name in one namespace: two constructors, two effects, or two values — a global and a foreign among them | the tables are arrays and a name table is what loading makes of them, so which of two a name meant would otherwise depend on the order they were written in |
 | An exported name that is not a value this module declares | `EXPORTS` names its own globals and foreigns, and nothing else |
 | Two join points of one function under one name | a transfer names one of them ([Bytecode](../05-Backend/01-Bytecode.md)) |
-| A handler declaring one cell twice, or holding two clauses for one operation | a cell is found by its key and a clause by its operation, so either standing twice would leave which one a `CGET` or a `PERF` means to the order of a table. What is compared is the identity and not the index, two indices being able to intern to one |
+| A handler holding two clauses for one operation | a clause is found by its operation, so one standing twice would leave which one a `PERF` means to the order of a table. What is compared is the identity and not the index, two indices being able to intern to one |
+| A region declaring one cell twice | a region's keys are its layout's, which Core makes distinct, so a key standing twice is a region no Core opens. What is compared is the identity, as above |
+| A `HNDL` or `TAILHNDL` supplying another count of clauses than its handler entry holds, or an `RGN` or `TAILRGN` another count of initial values than its region entry has cells | a clause and a cell are paired with their entry by position, so a count that disagrees leaves one with nothing or a value with no place. It is checked wherever in a function the instruction stands, before anything runs |
 | An import that is not loaded | nothing is resolved against a module that is not there |
 | A reference to a module this one does not import | **a header says which modules a term may name**, and the order modules happen to be loaded in adds nothing to it. This is not the row above: the module may be loaded and still be one this one never imported |
 | A global or foreign an imported module does not export | `EXPORTS` holds the value names a module publishes, its initialized globals and its foreign declarations alike |
@@ -1802,7 +1841,7 @@ Three kinds, reported differently because they mean different things.
 | --- | --- | --- |
 | **Load error** | an unresolved reference, an arity that does not agree, a missing foreign | the module is not loaded, and nothing of it ran |
 | **Fault** | an operation or a foreign failing as it is specified or defined to; a native action refusing; a native action in breach of its contract, throwing where it is performed; and a foreign or a native action answering with a host value the kind its signature gives cannot be, which names the entry ([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)) | the stack is discarded and the run ends; nothing catches one ([Bytecode](../05-Backend/01-Bytecode.md)). Where a drive loop was executing, its pending continuations are discarded with it |
-| **Interpreter bug** | reaching `VABS`, applying what is not callable, reading a register that holds nothing, a `Bind` over what is not an `IO` | a state no `.dmo` admits. Reaching one is a defect in the interpreter, in lowering, in a check a loader owes, or in an adapter that returned what its declaration did not promise |
+| **Interpreter bug** | reaching `VABS`, applying what is not callable, reading a register that holds nothing, a `Bind` over what is not an `IO`, a cell reached through what is no region's identity, of a region no visible frame holds, or at a position the region does not have | a state no `.dmo` admits. Reaching one is a defect in the interpreter, in lowering, in a check a loader owes, or in an adapter that returned what its declaration did not promise |
 
 The `DEBUG` section is where a report finds a function's name in a file that carries
 one ([Bytecode](../05-Backend/01-Bytecode.md)). How much more a report holds — a
@@ -1812,7 +1851,7 @@ stack trace, a source span — is the REPL's to decide and is not fixed here.
 
 The ten obligations of a consumer of a `.dmo` are Bytecode's, and Steam meets
 (3) — a continuation applicable any number of times — as the JavaScript backend
-does and the v0.1 Wasm backend does not.
+does.
 
 Two of them are the ABI's and are worth stating as this interpreter's:
 

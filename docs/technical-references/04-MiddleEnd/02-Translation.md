@@ -152,8 +152,9 @@ Erasing `TyLam` and `ConstraintLam` moves no evaluation, because the body of
 either is a value form — the value restriction is what makes the abstraction
 erasable at all.
 
-The result type written on a `LetJoin`, and the payload of the row element a
-`Handle` writes, go the same way: both were written for the checker.
+The result type written on a `LetJoin`, the payload of the row element a
+`Handle` writes, and the types of a `Region`'s layout go the same way: all three
+were written for the checker.
 
 ## Naming intermediate results
 
@@ -200,9 +201,10 @@ RecordExtend k e1 e2   atomize e1 (\a1 -> atomize e2 (\a2 -> ... ))
 Case (e1 … en) dt      each scrutinee in turn, then the tree
 Jump j (e1 … en)       each argument in turn, then the transfer
 Perform k op e         the argument, then the operation
-WriteCell k e          the value, then the write
-Handle e h @ ( ē )     each initial value in turn, then the region, then install,
-                       then the body
+WriteCell ℓ.k e        the value, then the write
+Handle e h             install, then the body
+Region [ℓ] ( k̄ : σ̄ ) @ ( ē ) e
+                       each initial value in turn, then open, then the body
 ```
 
 **Application is the one construct that reads right to left**, and it is why a
@@ -345,11 +347,13 @@ the atom it had, Core tracking no refinement there. In the default branch of
 
 ## Effects
 
-`Perform k op e` atomizes its argument and produces `perform k.op a`. `ReadCell k`
-is `readCell k`, which takes no operand at all, and `WriteCell k e` atomizes the
-value and produces `writeCell k a`. Each is one computation, bound where any other
-is, and none of them names the region it reaches: the key is the whole of what a
-cell is named by (D36).
+`Perform k op e` atomizes its argument and produces `perform k.op a`.
+`ReadCell ℓ.k` is `readCell r i`, and `WriteCell ℓ.k e` atomizes the value and
+produces `writeCell r i a`, where `r` is the atom holding the identity of the
+region `ℓ` names and `i` the position of `k` in its layout. Each is one
+computation, bound where any other is. **The region name and the key do not
+survive**: a cell is named by the identity of an opening and a position (D36), the
+erasure of [Semantics](../03-Typed-Core/06-Semantics.md).
 
 The type binders of a `Perform` are erased with every other type application, and
 its key is carried through. Nothing consults the ambient effect row, which is
@@ -358,14 +362,10 @@ found by ([Mid IR](01-Mid-IR.md)).
 
 ## Handlers
 
-`Handle e h @ ( ē )` produces the computation `handle h f [ā] @ [v̄]`. **The
-handled computation becomes a function, as every clause does.**
+`Handle e h` produces the computation `handle h f [ā]`. **The handled computation
+becomes a function, as every clause does.**
 
 ```text
-for the initial values ē, where h declares a region:
-  atomize each in turn, before anything else of the handle is emitted
-  the atoms are the [v̄], one per key of the layout and in the order it writes them
-
 for the handled computation e:
   lift it into a Function of no parameters, whose body is  go e ret
   its captures are the free locals of e
@@ -383,16 +383,6 @@ for the return clause and each operation clause:
 The operation's own type binders `b̄_i` are erased with every other type
 abstraction. The handler keeps `key(ent)` and drops the payload.
 
-**Of a region, the keys survive and nothing else does.** The handler's `cells`
-are the keys of the layout, in the order it writes them, which is what pairs them
-with the initial values; the region variable and the types the layout assigns are
-annotations the checker used and are erased (D36).
-
-**The initial values are atomized ahead of everything else the `handle` emits.**
-They are evaluated before the region is opened and the handler installed, so the
-bindings that name them stand outside the `handle` — and they are not among the
-body's captures, the body naming none of them.
-
 **Lifting the body is what lets the result of a `handle` be used.** The
 computation is a `handle`, so `atomize` binds it with a `let` like any other and
 whatever consumes the value is reached in the ordinary way. Translating the body
@@ -409,6 +399,50 @@ two agree without translation doing anything to make them.
 **A clause's form is copied, never inferred.** Core writes `full` or `fast` on
 every clause (D28), and whether a `full` clause happens to resume once cannot be
 read off its syntax. Translation reads the marker and writes it out.
+
+## Regions
+
+`Region [ℓ] ( k̄ : σ̄ ) @ ( ē ) e` produces the computation `region k̄ f [ā] @ [v̄]`.
+**The body becomes a function of one parameter, the region's identity.**
+
+```text
+for the initial values ē:
+  atomize each in turn, before anything else of the region is emitted
+  the atoms are the [v̄], one per key of the layout and in the order it writes them
+
+for the body e:
+  lift it into a Function whose one parameter is a fresh local of Rep Val,
+    which ℓ stands for within the body
+  its captures are the free locals of e, then the identities of the regions
+    other than ℓ whose cells it reaches
+  that function and those captures are the f and ā of the region
+```
+
+**Of the layout, the keys survive and nothing else does.** `k̄` is the keys in the
+order the layout writes them, which is what positions the cells and pairs them with
+the initial values; the types the layout assigns are annotations the checker used
+and are erased (D36).
+
+**A region name stands for an atom.** Within a function, translation maps each
+region name in scope to the local holding its identity and to its layout's keys.
+`ReadCell ℓ.k` and `WriteCell ℓ.k e` read the atom and the position of `k` from
+there. A name the map does not hold, or a key its layout does not declare, is
+input a checked term cannot be, and translation stops on it rather than emitting
+a cell of no region.
+
+**The initial values are atomized ahead of everything else the `region` emits.**
+They are evaluated before the region opens, so the bindings that name them stand
+outside the `region` — and they are not among the body's captures, the body naming
+none of them.
+
+**The identity is captured like a local.** A function whose body reaches the cells
+of a region it does not open — a handler clause, a lambda written in one, the body
+of a nested `handle` — takes the identity among its captures, and the site that
+builds it supplies the atom the enclosing function holds. That is the identity of
+the opening the closure is made under, which is what a closure called later, or in
+a copy of the region, reaches the cells of ([Mid IR](01-Mid-IR.md)).
+
+The identity is created for no name, so the debug table names no local for it.
 
 ## Closure conversion
 
@@ -438,10 +472,14 @@ A lambda whose body is not a lambda is the degenerate case, `n = 1`.
 
 `fv` is the free **locals** of a body: neither globals, which are named
 directly, nor join points, which cannot be captured because a join point does
-not cross a function boundary.
+not cross a function boundary. **The identity of every region whose cells the body
+reaches and does not open is among them**, a region name being free in a term
+exactly where a `ReadCell` or a `WriteCell` names it outside the `Region` binding
+it ([Regions](#regions)).
 
 Captures are ordered, and the order the function entry records is the order
-`closure` supplies them in. Nothing depends on which order translation picks, so
+`closure` supplies them in: translation puts the value variables first and the
+region identities after them. Nothing depends on which order translation picks, so
 long as it picks one and uses it on both sides.
 
 A lambda nested inside a run's body lifts in turn, an inner one's free variables

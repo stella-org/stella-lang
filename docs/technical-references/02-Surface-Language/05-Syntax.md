@@ -49,7 +49,7 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | any patterns after a clause's operation | other than one per argument of the operation, followed for a `reifiable full` clause by the continuation it keeps; a refutable one |
 | any name after a clause's `\|` | one naming no operation of the effect handled; in a group headed by a label, operations of several effects, or none |
 | any number of clauses for one operation | a second clause for one operation, a second `return` clause; no clause for an operation of the effect handled, which the Core type checker rejects |
-| `var` anywhere among a handler's items | one after a clause of a handler declaration; two of one name in one handler |
+| `var` anywhere among the items of a handling expression or a handler declaration | one after a group or a handler of a handling expression, or after a clause of a handler declaration; two of one name in one expression or declaration |
 | any type name or label at the head of a group | a type name that is no effect |
 | a `reifiable full` clause in any module | one in a module that does not import `Base.Continuation`, which its desugaring depends on |
 | an attribute, a directive, or a modifier with no declaration after it | the same |
@@ -152,7 +152,7 @@ operatorName ::= OPERATOR | QUAL_OPERATOR | "/"
 
 **The words of the second list in [Keywords](04-Lexical-Structure.md#keywords) are names wherever the grammar does not give them a meaning**, and `ident` says which. **A record label may be any word, a keyword included.** Two words are narrower than the rest:
 
-- **`var` is reserved.** A group in a handling expression may declare a cell after its head, `State var n := 0 | …`, where a name would otherwise read as an argument of an application.
+- **`var` is reserved.** An item of a handling expression may declare a cell, `var n := 0`, where a name would otherwise read as the label heading a group or as a handler applied.
 - **`by` is not a type variable**, since it closes a synthesized argument, `{{ d :: Show a by f }}`, where a type application would otherwise take it.
 
 ## Modules
@@ -397,16 +397,18 @@ recordBinder  ::= label ":" binder | label
 
 ```text
 handlerDecl ::= "handler" ident binderAtom* "::" type "where" block(handlerItem)
-handlerItem ::= "var" ident ":=" expr
+handlerItem ::= cellDecl
               | marker? clause+
-handlerListItem ::= (qualProperName | ident) marker? ("var" ident ":=" expr)* clause+
+handlerListItem ::= cellDecl
+                  | (qualProperName | ident) marker? clause+
                   | expr
+cellDecl ::= "var" ident ":=" expr
 clause ::= "|" marker? opName binderAtom* "->" expr
          | "|" "return" binderAtom "->" expr
 marker ::= "full" | "fast" | "reifiable" "full"
 ```
 
-**A group written in place is a head — an effect name or a label — followed by a marker, a cell declaration, or a clause**; any other item of a handling expression is a handler, an expression. The two are told apart by the token after the head ([Handler Surface Syntax](../../proposals/02-Handler-Surface-Syntax.md)).
+**An item of a handling expression is a cell declaration, a group written in place, or a handler.** A cell declaration begins with `var` and declares a cell of the expression, which every group of it reaches ([Effect Handlers](02-Effect-Handlers.md#cells)). A group is a head — an effect name or a label — followed by a marker or a clause; any other item is a handler, an expression. The two are told apart by the token after the head ([Handler Surface Syntax](../../proposals/02-Handler-Surface-Syntax.md)). The grammar admits a cell declaration among the items in any order, and name resolution rejects one after a group or a handler.
 
 **A top-level handler's block holds its cells and its clauses with no head**, the effect it handles following from its signature.
 

@@ -221,7 +221,7 @@ is decided afterwards, and an optimizer reads the summary without knowing which
 
 ```text
 magic            "DMI\0" — the bytes 0x44 0x4D 0x49 0x00
-format version   uvar — 1, the version this document describes
+format version   uvar — 0, the version this document describes
 flags            uvar — 0
 ABI version      uvar byteLength, then that many bytes of UTF-8
 section*         u8 id, uvar byteLength, then the payload
@@ -230,6 +230,10 @@ section*         u8 id, uvar byteLength, then the payload
 **The ABI version is the `.dmo`'s.** A file carries Core types naming the intrinsics
 of `Prim`, and foreigns whose observation an optimizer acts on, and what those mean
 is that version's; a reader holding another version reads none of it.
+
+**Versioning begins with the first released version of Stella**, for this format
+as for a `.dmo`: until then the format is revised in place and stays at version 0
+([Encoding](02-Encoding.md)).
 
 | Id | Section | Payload |
 | --- | --- | --- |
@@ -248,7 +252,7 @@ is that version's; a reader holding another version reads none of it.
 | `0x0D` | `ARITIES` | a map from a name to `uvar arity` |
 | `0x70` | `BUILD_HASH` | `uvar byteLength`, then the hash; absent where none was computed |
 
-**The sections `0x01` to `0x0D` that format 1 defines are all required**, empty or
+**The sections `0x01` to `0x0D` that format 0 defines are all required**, empty or
 not. No other id below `0x70` is defined, and a reader rejects one where it stands. **An id at or above `0x70` carries no meaning** and a reader
 skips one it does not know: the build hash stands there because nothing reads it to
 decide what the module means. A section that bears on name resolution, type
@@ -276,8 +280,8 @@ form. An optional part is `0` for none, or `1` followed by it; a boolean is `0` 
 | --- | --- |
 | kind | `0` a kind variable, `1` `Type`, `2` `Effect`, `3` `Row` then `0` for `Type` or `1` for `Effect`, `4` an arrow |
 | type | `0` a variable, `1` a constructor with its kind arguments, `2` an application, `3` `forall` with the variable and its kind, `4` a constrained type, `5` the empty row, `6` a row extended by an entry, `7` the union of two rows |
-| row entry | `0` a key and a type, `1` an effect and its arguments, `2` a labelled effect instance, `3` a region and its cells |
-| row key | `0` a symbol, `1` a tag, `2` a position, `3` an effect, `4` the region |
+| row entry | `0` a key and a type, `1` an effect and its arguments, `2` a labelled effect instance |
+| row key | `0` a symbol, `1` a tag, `2` a position, `3` an effect |
 | constraint | `0` `k ∉ ρ`, `1` `ρ1 # ρ2` |
 | scheme body | `0` a type, `1` a computation's result and row, `2` `forall`, `3` a constraint, `4` a synthesized parameter — its name if written, its dictionary type, its synthesizer |
 | value sort | `0` a value, `1` a foreign then its observation, `2` a handler, `3` a constructor then its type, `4` an operation then its effect |
@@ -293,6 +297,11 @@ form. An optional part is `0` for none, or `1` followed by it; a boolean is `0` 
 
 A scheme and a kind scheme lead with the kind variables they quantify; a type
 variable binder is a name and a kind.
+
+**No form carries a region name.** A top-level declaration is checked with no
+region in scope, and no type abstracts over one, so no published scheme mentions a
+region element or a region's key, and the row forms have no tag for either
+([Kinds and Types](../03-Typed-Core/01-Kinds-and-Types.md)).
 
 ## What a reader rejects
 
@@ -322,6 +331,7 @@ through the calls a translation produced (above).
 | A name carrying an unpaired surrogate | A name is text a Stella `String` could hold (D27), and no reader may read what is not |
 | An arity below one | A definitional arity counts leading lambdas; a value with none is absent from the table |
 | A precedence or a row position below zero | Each is a count, which a reader reads as one |
+| A region name, as a row element or as a key | No published scheme mentions one (above), and the format has no tag to write it with |
 
 None arises from the ordinary route: a translation gives a global installed as a
 function an arity of at least one, a precedence is written as decimal digits, and a

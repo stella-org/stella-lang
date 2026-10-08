@@ -30,10 +30,12 @@ e ::= x | M.x [[κ̄]]                    variable; `M.x` when κ̄ is empty
     | absurd [τ] e
     -- effects
     | perform k.op [τ̄] e
-    | handle e with h @ ( ē )
+    | handle e with h
     | openEff [ρ] e
-    | readCell k
-    | writeCell k e
+    -- regions of cells
+    | region [ℓ] ( k̄ : σ̄ ) @ ( ē ) in e
+    | readCell ℓ.k
+    | writeCell ℓ.k e
 
 c ::= literals of Int, Number, String, Char, Boolean
 ```
@@ -88,12 +90,15 @@ The typing rules enforce this by **discarding** the join point context `Δ`.
 ```text
 λ (x : τ). e                 check e with Δ := ·
 Λ (a : κ). v                 check v with Δ := ·
-handle e with h @ ( ē )      check e, the return clause, and every operation clause with Δ := ·
+handle e with h              check e, the return clause, and every operation clause with Δ := ·
+region [ℓ] … @ ( ē ) in e    check e with Δ := ·
 ```
 
 This is why `Δ` is a context separate from `Γ`: their scoping rules differ. `Γ` extends into the body of a lambda; `Δ` is cut off there. A single context could not express the difference.
 
 Discarding `Δ` at `handle` is conservative. A clause is entered from the `perform` site, which lies at an arbitrary depth inside the handled computation and in general in another function activation, so an outward `jump` from a clause body would be a non-local exit that unwinds the handler. This holds of both clause forms ([Effects](03-Effects.md)): a `full` clause is a function boundary outright, receiving a continuation and being invoked later, while a `fast` clause builds no continuation but is still entered from that arbitrary point. v0.1 takes the simple rule and may relax it; since the elaborator can move join points inward, the practical restriction is small.
+
+Discarding `Δ` at a `region`'s body has a reason of its own. A region closes only when its body reaches a value, so a tail context does not pass through its frame ([Semantics](06-Semantics.md)), and a `jump` out of the body would find no `letjoin` to transfer to. The initial values stand outside the region and keep `Δ`.
 
 Join points exist for two reasons: so that a decision tree can hold each alternative's body once, and so that lowering to Mid IR join points preserves structure.
 

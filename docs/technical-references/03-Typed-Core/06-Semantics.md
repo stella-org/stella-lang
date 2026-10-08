@@ -15,8 +15,8 @@ Evaluation is strict and call-by-value. Because effect rows expose the points at
 | `jump j (e1 … en)` | `e1` → … → `en` → transfer |
 | `perform k.op [τ̄] e` | `e` → capture the continuation |
 | `handle e with h` | install the handler → `e` |
-| `handle e with h @ (e1 … en)` | `e1` → … → `en` → open the region → install the handler → `e` |
-| `writeCell k e` | `e` → replace the cell |
+| `region [ℓ] (k̄ : σ̄) @ (e1 … en) in e` | `e1` → … → `en` → open the region → `e` |
+| `writeCell ℓ.k e` | `e` → replace the cell |
 
 **`e1 e2` evaluates the argument before the function** (D35). Application is the
 only construct of which that is true; every other row above reads left to right.
@@ -89,11 +89,11 @@ The question belongs to `full` clauses, which are the ones that bind a continuat
 
 Even a one-shot restriction would be **affine** — at most once — rather than linear, since abandonment is expressed by zero calls.
 
-Restricting this in Core would require affine types for continuations. That would noticeably enlarge the trusted core in exchange for a static guarantee about one backend's convenience, so v0.1 does not include it.
+Restricting this in Core would require affine types for continuations. That would noticeably enlarge the trusted core in exchange for a static guarantee about one backend's convenience, so Core does not include it.
 
-### Implementation capability, and provisional non-conformance
+### What it costs a backend
 
-The cost is backend-specific.
+The cost is backend-specific; the obligation is not.
 
 | Lowering | Arbitrary call depth | Multi-shot | Cost on JavaScript |
 | --- | --- | --- | --- |
@@ -101,29 +101,15 @@ The cost is backend-specific.
 | generators with `yield*` | yes | no | moderate |
 | full CPS conversion | yes | yes | high |
 | frames and a run loop of the backend's own, as the machine keeps | yes | yes | high, less where purity keeps a call on the host stack |
-| Wasm stack switching | yes | no | low (native) |
 
 Achieving both arbitrary call depth and multi-shot on JavaScript requires the backend to represent a continuation itself — by full CPS conversion, or by frames and a run loop of its own — and either costs the native stack and stack traces wherever it applies. Generators handle arbitrary depth via `yield*`, and a driver loop gives deep handler semantics directly, but JavaScript offers no way to clone a generator, so generators are strictly one-shot.
 
-Each backend therefore declares what it can implement. This is **not a capability difference permitted by the language semantics**; it is provisional tolerance of non-conformance.
+**Every backend conforms to the multi-shot semantics.** A lowering decides how a backend pays for it, never whether, so a lowering that is not multi-shot is not one a backend can use alone. Making the reference semantics target-parameterized instead would give the same Core different meanings on different backends, which conflicts with the backend independence of Mid IR.
 
+- **Steam**: multi-shot, copying a captured segment at each application (D33) ([Bytecode](../05-Backend/01-Bytecode.md)).
 - **JavaScript backend**: multi-shot, with frames and a run loop of its own, one of the two multi-shot rows above ([JavaScript](../05-Backend/05-JavaScript.md)). It passes the cases that decide it: a `full` clause resuming twice, each resumption from the captured state, and a continuation carrying the cells of a region it was captured outside.
-- **Wasm backend**: one-shot for now, following the stack-switching proposal.
+- **Wasm backend**: how it realizes a continuation is undecided. It is multi-shot as the others are; whether Wasm stack switching serves, and what copying of a captured stack it needs, is open ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
 - **Native backend**: nothing prevents multi-shot.
-
-### The known soundness gap in v0.1
-
-Stated precisely:
-
-> **The v0.1 Wasm backend does not satisfy type soundness.** Since the reference semantics is multi-shot, a program that resumes a continuation more than once is well typed. On that backend such a program raises a run-time error.
-
-v0.1 **accepts this as a known gap**, under three conditions.
-
-1. **Failure is loud and specific.** A second resumption raises a dedicated run-time error, comparable to OCaml 5's `Continuation_already_resumed`. It must not be undefined behaviour and must not silently produce a wrong result.
-2. **A static best-effort check is performed.** Only `full` clauses are in question, a `fast` clause having no continuation to resume. Detecting multiple resumption within a `full` clause is undecidable in general, since `k` can be stored and called in a loop, but the **syntactically evident** cases are detectable: a clause that mentions `k` more than once, or passes `k` to another function, warns at compile time. Most accidents are caught there, leaving the run-time check as a backstop. Writing a clause `fast` where its shape allows removes it from the question altogether.
-3. **Closing the gap is a requirement for v1.0**, recorded in [Open Questions](../99-Open-Questions/01-Open-Questions.md).
-
-On JavaScript the gap is closed by an execution model representing a continuation, which is the route the JavaScript backend takes. On Wasm the route is a cloning primitive entering the stack-switching proposal. Making the reference semantics target-parameterized is a third possibility, but it would mean the same Core has different meanings on different backends, which conflicts with the backend independence of Mid IR.
 
 ### Consequence for Mid IR
 
@@ -448,19 +434,19 @@ A **constructor spine is always a value**, saturated or not: a saturated one is 
 
 ### Run-time forms
 
-Seven forms arise during reduction and are never produced by elaboration.
+Five forms arise during reduction and are never produced by elaboration.
 
 ```text
 match θ dt            descending a decision tree
 openEffC [ρ] e        a computation whose effects are bounded by a wider row
 rec_i(x̄ : σ̄. v̄)       the i-th component of a local recursive binding group
+region⟨ℓ⟩ θ in e      an open region of cells named ℓ, θ a finite map from key to value
 opaque ω [τ]          a value an implementation returned, typed above
-region [r] θ in e     an open region of cells, θ a finite map from key to value
-handleO e with h      the handler a region was opened for
-handleI e with h      the same handler reinstalled by a resumption
 ```
 
 The last is the only one a `δ_f` produces, and the only one that is a value rather than a step in progress; its rule is given with the values.
+
+**Opening a region allocates a name** ([Regions](#regions)), and the names allocated so far, each with the layout of the region it opened, form a global context `Γ_R` of entries `region ℓ : ι`. Run-time terms are typed under it: `Γ_R` stands at the front of every `Γ` and, like `Σ`, is left implicit. A name in `Γ_R` is in scope everywhere, which is what lets a continuation holding a frame of that name be typed wherever it is carried.
 
 ```text
   Γ;Δ ⊢ e : τ ! r    Γ ⊨ r # ρ
@@ -471,43 +457,21 @@ The last is the only one a `δ_f` produces, and the only one that is a value rat
   ──────────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ rec_i(x̄ : σ̄. v̄) : σ_i ! ρ
 
-  nf(ι) = ⟨ G ; ∅ ⟩    dom(θ) = dom(G)    each k ∈ dom(θ) :  Γ;Δ ⊢ θ(k) : G(k) ! ()
-  Γ, r : Type; Δ ⊢ e : τ ! ( region r ι | ρ )      Γ ⊨ RegionKey ∉ ρ
-  r ∉ ftv(τ) ∪ ftv(ρ)
-  ─────────────────────────────────────────────────────────────────────────────────
-  Γ;Δ ⊢ region [r] θ in e : τ ! ρ
-
-  h = { handles ent ; cells [r] ( k̄ : σ̄ ) ; return (x : α) -> e_r ; cl_i }
-  r ∈ Γ                                             ← an occurrence, not a binder
-  ι = ( k̄ : σ̄ )      ρ' = ( region r ι | ρ )
-  Γ ⊢ ( ent | ρ ) : Row Effect      Γ;· ⊢ e : α ! ( ent | ρ )      payload(ent) = E τ̄
-  Γ ⊨ RegionKey ∉ ρ        Γ ⊢ ι : Row Type        the k̄ are distinct
-  Γ, x : α; · ⊢ e_r : β ! ρ
-  each i: the clause premises of the source rule, at ρ', under Γ
-  { op_i } = dom(Σ(E))    and the op_i are distinct
-  r ∉ ftv(β) ∪ ftv(ρ)
-  ─────────────────────────────────────────────────────────────────────────
-  Γ;Δ ⊢ handleO e with h : β ! ρ'
-  Γ;Δ ⊢ handleI e with h : β ! ρ'
+  ( region ℓ : ι ) ∈ Γ_R      ι = ( k̄ : σ̄ )      dom(θ) = { k̄ }
+  each j:  Γ;· ⊢ θ(k_j) : σ_j ! ()
+  Γ' = Γ, { RegionKey ℓ ∉ t | t : Row Effect ∈ Γ }
+  Γ';· ⊢ e : β ! ( region ℓ | ρ )      ℓ ∉ frn(β) ∪ frn(ρ)
+  ─────────────────────────────────────────────────────────────
+  Γ;Δ ⊢ region⟨ℓ⟩ θ in e : β ! ρ
 ```
-
-**`cells [r] ι` binds `r` in a source handler and refers to it in a run-time one.** The two forms above are reached only under an enclosing `region [r] θ in [ ]`, whose rule checks its body under `Γ, r : Type`; the `[r]` each carries is the occurrence that binding resolves. **The opening step is where the binder moves**, from the handler to the region the same step wraps around it, and it is the only step of the relation that moves one.
-
-**The move is capture-avoiding, and the rule says so rather than leaving it to be argued.** A handler's `cells` binder scopes over its operation clauses alone, while the region the step creates scopes over the initial values and the handled computation besides. That the name is free nowhere in the context is settled already: the typing rule requires `r ∉ dom(Γ)` ([Typing Rules](05-Typing-Rules.md)). What it does not settle is a binder of that name standing **within** the handled computation or an initial value, which the source term is free to have, those binders sharing no scope with `cells`. Widening the region over them would bring two binders of one name into one scope, and Core terms are unique up to α-equivalence — a convention substitution relies on, passing under a binder without renaming it. The step therefore renames to a globally fresh `r'`, which is why the rule writes `h[r := r']` rather than `h`. Nothing else in the relation moves a binder, so this is the only place the question arises.
-
-**`h[r := r']` is binder-aware.** What it renames is the `[r]` token of `cells` and the occurrences of `r` within that binder's scope, which is **every operation clause entire — its type annotations as well as its body**. A `full` clause writes its continuation's type `τ_i' -{ρ'}-> β`, and `ρ'` is `( region r ι | ρ )`, so renaming bodies alone would leave the old `r` standing in an annotation and the installed handler ill-scoped. What lies outside the scope is `handles ent`, the layout, and the return clause, and the renaming leaves all three alone. No `r` stands free there to begin with, the binder being fresh for `Γ`; one **bound** within the return clause's body is a different variable, and the fresh `r'` is what keeps it so.
-
-Well-scopedness of the run-time forms is then a property of the region, not of the handler. A `handleO` or `handleI` mentioning `r` stands within the `region [r]` that binds it; what carries one elsewhere carries the region with it.
 
 `openEffC [ρ] e` widens the **ambient row of a computation**, where `openEff` widens the **effect row inside a function's type**. Both are needed and neither subsumes the other: `openEff` is what allows a pure function to be passed where a wider arrow type is expected, and `openEffC` is what allows the result of applying such a function to sit in a context whose ambient row is the wider one.
 
 `rec_i` carries the type annotations of the group it came from, which is what makes its typing rule derivable and hence what makes preservation hold for `letrec`. It is a **local** form only. A top-level `rec` group installs its right-hand sides into `G` directly, and its recursive references are global names.
 
-`region [r] θ in e` is a region whose initial values have been evaluated. It carries `θ` — **the cells themselves, by value** — together with the region variable and the conditions the source rule imposed, which is what makes its rule derivable and hence what makes preservation hold across a write (D36). The values live here and nowhere else: there is no store, no address, and no two ways to reach one cell.
+`region⟨ℓ⟩ θ in e` is a region whose initial values have been evaluated. **It binds nothing**: its rule is the source rule ([Typing Rules](05-Typing-Rules.md)) with `ℓ ∈ Γ_R` in place of the binder and `θ` in place of the initial values. It carries `θ` — **the cells themselves, by value** — together with the name the opening allocated, which is what makes its rule derivable and hence what makes preservation hold across a write (D36). The values live here and nowhere else: there is no store, no address, and no two ways to reach one cell of one frame.
 
-`handleO` and `handleI` are the same handler installed, and the two are kept apart because **a region has one owner and any number of reinstatements**. `handleO` is what the opening step puts inside the region; `handleI` is what a resumption rebuilds, standing wherever the clause that holds the continuation applied it, which is inside the owner's region and not adjacent to it. Both are typed at `ρ'`, both standing within the region. They differ in one rule alone, the one for a value, and that difference is the whole reason for the marker: **an owner finishing ends the region, a reinstatement finishing does not.**
-
-The return clause is typed at `ρ` and so is not usable at `ρ'` without widening; where it runs inside the region, the rule wraps it in `openEffC`.
+**One name may label several frames.** A continuation copies its segment as it stands, frames and names included, so applying one twice puts two frames named `ℓ` into the term. Every frame of a name descends from one opening and carries a `θ` typed against the one layout `Γ_R(ℓ)`. Which of them a reference reaches is settled with the rules for cells ([Cells](#cells)).
 
 ### The spine cursor
 
@@ -639,10 +603,10 @@ Ev ::= []
      | letjoin j (x̄ : τ̄) : τ = e1 in Ev
      | jump j (v̄, Ev, ē)
      | perform k.op [τ̄] Ev
-     | handle e with h @ ( v̄, Ev, ē )
-     | handle Ev with h  |  handleO Ev with h  |  handleI Ev with h
-     | writeCell k Ev
-     | region [r] θ in Ev
+     | handle Ev with h
+     | region [ℓ] ( k̄ : σ̄ ) @ ( v̄, Ev, ē ) in e
+     | region⟨ℓ⟩ θ in Ev
+     | writeCell ℓ.k Ev
 ```
 
 ```text
@@ -651,23 +615,24 @@ Ev ::= []
   G ⊢ Ev[e] → Ev[e']                G ⊢ Ev[e] → fault φ
 ```
 
-That `handle Ev with h` is a context expresses evaluation proceeding **under** an installed handler, and it carries no `@ ( … )` because the step that opens the region consumes it: the initial values are evaluated first, in the context above it, and once they are values the whole form becomes a region wrapping an installed handler. That `letjoin … in Ev` is one lets the body of a join point binding be evaluated normally. A fault propagates out of every context, including `handle`, since no handler can intercept it.
+That `handle Ev with h` is a context expresses evaluation proceeding **under** an installed handler. A `region` whose initial values are not yet values is a context over them, evaluated outside the region; once they are, the opening step replaces the binder with a frame, and `region⟨ℓ⟩ θ in Ev` is evaluation proceeding **within** an open region. That `letjoin … in Ev` is one lets the body of a join point binding be evaluated normally. A fault propagates out of every context, including `handle` and a region frame, since no handler can intercept it.
 
 Capturing a continuation requires a second notion: a context installing no handler for the key in question.
 
 ```text
-Ev_k ::= an evaluation context in which every `handle _ with h'`, `handleO _ with h'`,
-         and `handleI _ with h'` on the path to the hole has a key other than k
+Ev_k ::= an evaluation context in which every `handle _ with h'` on the path
+         to the hole has a key other than k
 ```
 
-Reaching a cell requires the same notion once more, over regions rather than handlers.
+`Ev_k` says nothing of region frames. A frame on the path between the handler and the `perform` is part of the captured segment, which is what the copy rule for cells rests on ([Cells](#cells)).
+
+Reaching a cell requires the same notion once more, over region frames rather than handlers.
 
 ```text
-Ev_c ::= an evaluation context in which no `region [r] θ in _` on the path
-         to the hole has k in dom(θ)
+Ev_ℓ ::= an evaluation context with no `region⟨ℓ⟩ _ in _` on the path to the hole
 ```
 
-`Ev_c` picks the **innermost** region declaring `k`, exactly as `Ev_k` picks the innermost handler of a key. **Regions nest at run time.** A handler owning one may be applied within the computation another such handler handles, so a path to the hole may pass through several `region [r] θ in _`. What typing admits at most one of is a region in a **row**, which is what makes the region an expression can *reach* unique; it does not make the term carry one. Reduction has no types to consult and finds the region by walking, and `Ev_c` is what says which one it finds.
+`Ev_ℓ` picks the **innermost** frame named `ℓ`, as `Ev_k` picks the innermost handler of a key. **Region frames nest at run time**, and a reference passes over every frame of another name whatever cells it holds: the name says which region is meant, so nothing is searched for by key. Several frames of **one** name stand on one path only where a continuation has been applied while a copy of it was running; why the innermost is the right one there is argued with the rules for cells ([Cells](#cells)).
 
 A `jump` appears only in tail position, so the position it may occupy is narrower than a general context.
 
@@ -699,6 +664,8 @@ Tl ::= []  |  letjoin j' (x̄ : τ̄) : τ = e' in Tl
 ```
 
 `absurd [τ] v` has no rule: its argument has type `Variant ()`, which is uninhabited, so the redex does not arise.
+
+**`v[a := σ]` is capture-avoiding for region binders.** Where `v` holds a `region [ℓ]` and `ℓ ∈ frn(σ)`, the binder is renamed before the substitution passes under it, so the instantiation keeps the unique-binder convention ([Typing Rules](05-Typing-Rules.md)).
 
 **Application through `openEff`.** Discarding the coercion outright would not preserve typing. Consider a pure `f : Int -> Int` inside
 
@@ -768,82 +735,37 @@ Local totality ([Terms and Matching](04-Terms-and-Matching.md)) guarantees that 
   letjoin j (x̄ : τ̄) : τ = e1 in v    →  v
 ```
 
-`Tl` is a tail context, and a join point is out of scope under `λ`, `Λ`, and `handle`, so the position of the `jump` lies within the same function activation as the `letjoin`. That is what allows a backend to compile a jump as a transfer of control rather than as a continuation.
+`Tl` is a tail context, and a join point is out of scope under `λ`, `Λ`, `handle`, and the body of a `region`, so the position of the `jump` lies within the same function activation as the `letjoin`. That is what allows a backend to compile a jump as a transfer of control rather than as a continuation.
 
 The second rule discards a binding whose join point is no longer reachable.
 
 ### Operations and handlers
 
-`H` below stands for any of `handle`, `handleO`, and `handleI`: the two rules for a `perform` are the same whichever it is, neither of them reading a region or disturbing one.
-
 ```text
-  H Ev_k[ perform k.op [σ̄] v ] with h    →  e_i[ b̄_i := σ̄,  x_i := v,
-                                                k_i := λ(y : τ_i'). H' Ev_k[y] with h ]
-                                            where h = { handles ent ; … }, key(ent) = k,
-                                              its clause for op is
-                                              full op [b̄_i] (x_i, k_i) -> e_i,
-                                              and H' is handleI where h owns a region
-                                              and handle where it does not
+  handle Ev_k[ perform k.op [σ̄] v ] with h    →  e_i[ b̄_i := σ̄,  x_i := v,
+                                                     k_i := λ(y : τ_i'). handle Ev_k[y] with h ]
+                                                 where h = { handles ent ; … }, key(ent) = k,
+                                                   and its clause for op is
+                                                   full op [b̄_i] (x_i, k_i) -> e_i
 
-  H Ev_k[ perform k.op [σ̄] v ] with h    →  let y : τ_i' = e_i[ b̄_i := σ̄,  x_i := v ] in
-                                              ( H Ev_k[y] with h )
-                                            where h = { handles ent ; … }, key(ent) = k,
-                                              and its clause for op is
-                                              fast op [b̄_i] (x_i) -> e_i
+  handle Ev_k[ perform k.op [σ̄] v ] with h    →  let y : τ_i' = e_i[ b̄_i := σ̄,  x_i := v ] in
+                                                   ( handle Ev_k[y] with h )
+                                                 where h = { handles ent ; … }, key(ent) = k,
+                                                   and its clause for op is
+                                                   fast op [b̄_i] (x_i) -> e_i
 ```
+
+Neither rule reads a region or disturbs one. A region frame inside `Ev_k` travels with the segment, and one outside the `handle` stays where it is.
 
 **Both rules require `key(ent) = k`.** `Ev_k` says only that no *nearer* handler carries the key; that the one chosen carries it is a separate condition, and without it a handler of some other effect declaring an operation of the same name would match. The key is read from `ent`, which is what the handler writes, and never from the clause's name.
 
-**A resumption rebuilds `handleI`, never `handleO`.** A region has one owner, and it is the handler the opening step installed; what a continuation reinstalls stands inside that region rather than owning one. This is the distinction the `handleO` marker exists to record, and the rules for a value below are where it is read.
+**A `fast` clause binds its body with a `let` rather than placing it in the hole.** The body then runs where the clause stands, outside the handler and outside `Ev_k`, and only the value it produces enters the hole; why that position is observable is set out below. No continuation is constructed (D28).
 
-**A `fast` clause binds its body with a `let` rather than placing it in the hole.** The body is a computation of the clause's own row, and the hole is at the handled computation's, which carries no region; binding the value and putting *that* in the hole is what makes the two agree. No continuation is constructed either way (D28), and for a handler owning no region the two formulations agree, the clause's row lacking the handled key by sharpness in both.
-
-**That the region wraps the handler is what puts a cell where a clause can reach it.** Both rules place the clause body *outside* the handler — and the region stands outside that, so the body is still within it. Had the region been installed inside, a clause would run past its own cells and reach none.
-
-### Where a handler finishes
-
-```text
-  handle v with h                             →  e_r[x := v]
-                                                 no region; unchanged
-
-  handle e with h @ ( v̄ )                     →  region [r'] ( k̄ ↦ v̄ ) in
-                                                   ( handleO e with h[r := r'] )
-                                                 where h = { handles ent ; cells [r] ( k̄ : σ̄ ) ; … }
-                                                   and r' is globally fresh; the renaming is
-                                                   capture-avoiding and binder-aware
-
-  region [r] θ in ( handleO v with h )        →  e_r[x := v]
-                                                 the owner finishes: the region closes and the
-                                                 return clause runs outside it, in one step
-
-  handleI v with h                            →  openEffC [( region r ι )] ( e_r[x := v] )
-                                                 where h declares cells [r] ( k̄ : σ̄ ) and ι = ( k̄ : σ̄ );
-                                                 a reinstatement finishes: the return clause runs
-                                                 and the region it stands in is untouched
-
-  region [r] θ in v                           →  v
-                                                 a full clause's answer: the region closes with
-                                                 no return clause, that clause having already run
-```
-
-Four paths reach a value and the four rules are what tell them apart.
-
-| Path | Rule | Return clause | Region |
-| --- | --- | --- | --- |
-| the owner's computation finishes | the third | runs, at `ρ` | closes |
-| a `full` clause produces the answer | the fifth | does not run, having run already or not at all | closes |
-| a resumption's computation finishes | the fourth | runs, widened to `ρ'` | stays open |
-| a `full` clause resumes off the tail, or more than once | the `full` rule above, then the fourth once per resumption | runs once per resumption | stays open throughout |
-
-**The third rule is compound, and that is what keeps the final state out of the answer of an ordinary return.** Closing the region and running the return clause are not two steps with a moment between them at which both a cell and an answer exist; and the return clause stands at `ρ`, so it could not name a cell even were one still open ([Typing Rules](05-Typing-Rules.md)).
-
-**The fifth rule is what the `full` path needs.** A `full` clause replaces the handler with its own body, so what the region comes to wrap is that body, and when the body reaches the answer the region has nothing left to serve. `r ∉ ftv(β)` is what makes discarding it sound: the answer's type cannot mention the region, so no part of the answer can be reaching into it.
-
-**The fourth rule widens, and that is not decoration.** A reinstatement's return clause runs where a region is open, so its row must be `ρ'` while the clause is typed at `ρ`; `openEffC` records the difference and erases (D8).
+**Both rules place the clause body outside the handler, and that is what puts a cell where a clause can reach it.** A region a clause names is bound outside the `handle`, the clause's row being the row outside it, so its frame stands outside the handler; the body, running there, is within that frame. A surface handling expression opens its region outside all of its groups for this reason ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md)).
 
 Three things are visible in the `full` rule.
 
-**The handler is reinstalled.** The continuation `k_i` rebuilds `H' Ev_k[y] with h`, so resuming returns under the same handler. This is what makes handlers deep (D15). `H'` is `handleI` where the handler owns a region and `handle` where it does not; either way the handler is the same one, and only its standing as a region's owner is not passed on.
+**The handler is reinstalled.** The continuation `k_i` rebuilds `handle Ev_k[y] with h`, so resuming returns under the same handler. This is what makes handlers deep (D15). It stands wherever the clause applies `k_i`, which is within every region frame standing around the original `handle`.
 
 **Only the key of the handled element is consulted.** A handler writes the element whole, `handles ent`, because typing needs its payload; reduction reads `key(ent)` and nothing else, so an erased handler keeps the key alone.
 
@@ -853,44 +775,106 @@ Three things are visible in the `full` rule.
 
 **The `fast` rule constructs no continuation** (D28). The clause body is bound by a `let` and the handler rebuilt around the same `Ev_k` with that binding in the hole, so control reaches the handled computation again without a function value ever being made. The `let` is what reconciles the two rows: the body stands at the row a clause is typed at, the hole at the handled computation's, and a variable is at home in either.
 
-**The body runs outside `Ev_k` as well as outside the handler, and the first is observable.** That it stands outside the handler itself changes nothing, since a clause body's row lacks `key(ent)` by sharpness and it cannot perform on the key being handled wherever it runs. `Ev_k` is another matter: it may install a handler of some other key, or open a region declaring a cell key the body names — a function that handles an effect internally is pure to its caller, and one reached through `openEff` from under `h` puts its handler and its region inside `Ev_k`. The body reaches neither. What it installs itself is inside the body and is reached first, as usual; past that, what it looks for is found outside `h`. An operation it performs is answered by a handler outside `h`, and a cell it reads or writes is found outside `h` too — in `h`'s own region where `h` owns one, that region standing outside `h`, and otherwise in whichever region further out declares the key. A machine that runs the body on top of the whole continuation, rather than beside it, therefore passes over `Ev_k` whenever the body looks for a handler or a cell ([Bytecode](../05-Backend/01-Bytecode.md)).
+**The body runs outside `Ev_k` as well as outside the handler, and the first is observable.** That it stands outside the handler itself changes nothing, since a clause body's row lacks `key(ent)` by sharpness and it cannot perform on the key being handled wherever it runs. `Ev_k` is another matter: it may install a handler of some other key, or hold region frames — a function that handles an effect internally is pure to its caller, and one reached through `openEff` from under `h` puts its handler and its region inside `Ev_k`. The body reaches neither. What it installs itself is inside the body and is reached first, as usual; past that, what it looks for is found outside `h`. An operation it performs is answered by a handler outside `h`, and a cell it reads or writes is reached in a frame outside `h` — the frame of the region the name denotes, which a clause names only where it is bound outside the `handle`. **A frame inside `Ev_k` is passed over even where it carries that name**, as a copy brought into the handled computation by a continuation does. A machine that runs the body on top of the whole continuation, rather than beside it, therefore passes over `Ev_k` whenever the body looks for a handler or a cell ([Bytecode](../05-Backend/01-Bytecode.md)).
 
 A body that never reaches a value leaves the handled computation unfinished. The rule says what becomes of a value the body produces and requires no value of it; diverging, faulting, and performing an operation of `ρ` that is never resumed are the three ways that happens, the last of them recorded in the row ([Effects](03-Effects.md)).
 
-Since nothing is captured, the `fast` rule raises none of what D18 leaves open on its own account: it binds the body once and holds no continuation that could be applied again. The construct able to demand a multi-shot continuation is therefore `full` alone, which is what confines the gap recorded above to `full` clauses.
+Since nothing is captured, the `fast` rule raises no question of how often a continuation is applied on its own account: it binds the body once and holds no continuation that could be applied again. The construct able to demand a multi-shot continuation is therefore `full` alone, which is what confines the cost D18 places on a backend to `full` clauses.
 
 **That is not the same as the program being one-shot.** Where the body performs an operation of `ρ` and that operation's `full` handler applies its continuation twice, that continuation rebuilds its own handler around `Ev_k` and so runs `Ev_k` twice — the computation after the original `perform` is duplicated, by the other handler's continuation rather than by this rule.
 
 `fail τ` reduces through these rules too, being derived notation for `perform Partial.abort [τ] Prim.Unit`; which of the two applies is settled by the form of the installed handler's clause for `abort`.
 
+### Where a handler finishes
+
+```text
+  handle v with h      →  e_r[x := v]
+```
+
+The return clause runs where the `handle` stood, at `ρ`, and so within every region frame standing around it. A `full` clause that produces the answer has already replaced the handler with its own body, so its value is the value of the term the `handle` was, and no return clause runs for it. Two resumptions that each finish run the return clause once each, every one under the handler its continuation rebuilt.
+
+### Regions
+
+```text
+  region [ℓ] ( k̄ : σ̄ ) @ ( v̄ ) in e   →   region⟨ℓ'⟩ ( k̄ ↦ v̄ ) in e[ℓ := ℓ']      ℓ' globally fresh
+
+  region⟨ℓ⟩ θ in v                     →   v
+```
+
+**Opening a region allocates a name, and the name is the region's run-time identity.** `ℓ'` is globally fresh: distinct from every name in `Γ_R` and from every name in the term, so two openings — two applications of one function opening a region, recursive ones included — never share one. The step extends `Γ_R` with `region ℓ' : ( k̄ : σ̄ )`. `e[ℓ := ℓ']` replaces the binder's occurrences in `e`, in its type annotations as well as its terms, and nothing else, `ℓ` being bound in `e` alone. The step keeps the unique-binder convention, which is why the name is fresh rather than the binder's own.
+
+**A value reaching a region frame passes through it and closes it.** Nothing runs on the way out. `ℓ ∉ frn(β)` is what makes discarding the frame sound: the answer's type cannot mention the region, so no part of the answer reaches into it. The value may have come from the body's own computation or from a `full` clause of a handler standing in the body; the region does not tell them apart.
+
+**A `fast` clause body runs outside `Ev_k`**, so a region frame inside `Ev_k` is not on its path ([Operations and handlers](#operations-and-handlers)).
+
 ### Cells
 
 ```text
-  region [r] θ in Ev_c[ readCell k ]      →  region [r] θ in Ev_c[ θ(k) ]        k ∈ dom(θ)
+  region⟨ℓ⟩ θ in Ev_ℓ[ readCell ℓ.k ]        →  region⟨ℓ⟩ θ in Ev_ℓ[ θ(k) ]
 
-  region [r] θ in Ev_c[ writeCell k v ]   →  region [r] θ[k ↦ v] in Ev_c[ Prim.Unit ]
-                                                                                k ∈ dom(θ)
+  region⟨ℓ⟩ θ in Ev_ℓ[ writeCell ℓ.k v ]     →  region⟨ℓ⟩ θ[k ↦ v] in Ev_ℓ[ Prim.Unit ]
 ```
 
-**A write rewrites the evaluation context.** Nothing is mutated and nothing is shared: the region is a part of the term, and the step replaces it with another region. This is what makes a cell a binder with a lifetime rather than a location (D36).
+**A write rewrites the evaluation context.** Nothing is mutated and nothing is shared: the frame is a part of the term, and the step replaces it with another frame of the same name. This is what makes a cell a binder with a lifetime rather than a location (D36).
 
-What follows is the interaction with continuations, and **which continuations it holds of is the whole of it.** A continuation is `λ(y : τ_i'). H' Ev_k[y] with h`, so what it carries is whatever `Ev_k` contains — and whether that includes a region depends on where the capturing handler stands.
+What follows is the interaction with continuations, and **which continuations it holds of is the whole of it.** A continuation is `λ(y : τ_i'). handle Ev_k[y] with h`, and **it copies its segment as it stands, names included**: applying it twice yields two terms holding `region⟨ℓ⟩` under the same `ℓ`, and no rule renames them. What it carries is whatever `Ev_k` contains, and whether that includes a region depends on where the capturing handler stands.
 
-| The capturing handler | Does `Ev_k` contain the region | What two resumptions see |
+| The continuation is captured by | Is the region in the captured segment | What resumptions see |
 | --- | --- | --- |
-| installed **outside** the region | yes | each begins from `θ` as it stood at the capture |
-| the handler **owning** the region | no, the region stands outside it | both share the region, so a write under the first is visible to the second |
+| a handler standing **in** the region's body | no, the frame stands outside the handler | **one live region, shared**: a write before a resumption is seen by the resumed computation, and a write during one resumption by the next |
+| a handler standing **outside** the region | yes | **a copy per resumption**: each begins from `θ` as it stood at the capture |
 
-The second row is not an omission. A handler's own cells are its state across the operations it handles, and a `full` clause that resumes twice is resuming its own computation twice; the cells staying live through that is what makes them the handler's. The first row is what makes composition order observable, and it is the one that distinguishes this design from a store.
+The first row is not an omission. A region a handler's clauses use is their state across the operations they handle, and a `full` clause that resumes twice is resuming its own computation twice; the cells staying live through that is what makes them the state of that handler. The second row is what makes composition order observable, and it is the one that distinguishes this design from a store: with a counter's region opened outside a non-determinism handler the two branches thread one counter, and with the region opened inside it each branch has its own.
 
 ```text
--- runCounter owns a region whose cell n holds 0.
+-- runCounter opens a region whose cell n holds 0, and handles Counter in it.
 -- Nd is handled OUTSIDE it, by  full flip (_, k) -> pair (k True) (k False).
--- Ev_k for that flip contains runCounter's region, so each resumption
+-- Ev_k for that flip contains runCounter's region frame, so each resumption
 -- begins with n at 0.
 ```
 
-**That the snapshot is free where it matters is the point of the placement.** A `fast` clause captures nothing (D28), so the common path — a clause that reads and writes and hands control back — copies no cell at all; where a capture does happen, the values ride along in a context that was being copied regardless. This is what a store would not give: two resumptions would share one location whatever the composition order, and the first row of that table would read like the second.
+A copy is a copy of the cell slots; the values the slots hold are shared and not copied in turn, so a value written into in place, such as an array or an opaque host value, is one value before the capture and after.
+
+**That the snapshot is free where it matters is the point of the placement.** A `fast` clause captures nothing (D28), so the common path — a clause that reads and writes and hands control back — copies no cell at all; where a capture does happen, the values ride along in a segment that was being copied regardless. This is what a store would not give: two resumptions would share one location whatever the composition order, and the second row of that table would read like the first.
+
+#### Why the innermost frame of a name is the right one
+
+Copies keep their names, so one name may label several frames on one path, and `Ev_ℓ` picks the innermost. The proposition that justifies the choice:
+
+> When a well-typed term executes `readCell ℓ.k` or `writeCell ℓ.k`, the innermost `region⟨ℓ⟩` on the path is the region instance `ℓ` denotes, or the continuation copy of it that is running.
+
+It splits into a type-safety part and a coherence part.
+
+**Type safety does not depend on which copy is chosen.** Every frame named `ℓ` descends from one opening, so every one carries a `θ` typed against the one layout `Γ_R(ℓ)`, and reading or writing any of them preserves the type. For progress, a frame must exist. The only evaluation-context frame that puts `region ℓ` into the ambient row at the hole is `region⟨ℓ⟩` itself:
+
+- `handle` adds only its handled element;
+- `openEffC` runs its inner computation at a smaller row;
+- application requires the arrow's row to equal the ambient row, so a β-step adds nothing.
+
+So a hole at whose row `region ℓ` stands — which `readCell ℓ.k` requires — has a `region⟨ℓ⟩` on its path.
+
+**Coherence** rests on three facts and one definition.
+
+1. **Distinct openings carry distinct names.** A name is allocated fresh at each opening, so two dynamic instances never share one.
+2. **Frames sharing a name are copies of one opening.** A name is introduced by an opening and duplicated only by applying a continuation, which copies its segment as it stands. Every frame named `ℓ` therefore has the layout `Γ_R(ℓ)`.
+3. **A computation needing `ℓ` runs only beneath a frame named `ℓ`.** An eliminator of `ℓ` — a `readCell ℓ.k`, a `writeCell ℓ.k`, or the application of a function whose arrow carries `region ℓ` — is typed only where `region ℓ` is ambient, and by the argument above such a place has a `region⟨ℓ⟩` frame on its path. Preservation keeps this true across every step, continuation application included, since a copy carries its frames along with the code that needs them.
+4. **Definition.** Where several frames named `ℓ` stand on the path, the semantics selects the innermost: the copy currently running.
+
+None of this asks where a value referring to `ℓ` has been in the meantime. A value may be held for any length of time — in a closure, in a polymorphic data structure, behind an operation's type parameter, inside a continuation — and it reaches a cell only when it is eliminated. By fact 3 that happens beneath a frame named `ℓ`, and by the definition it reaches the innermost one.
+
+| Case | What happens |
+| --- | --- |
+| A continuation applied again while a copy of it is running | The second copy is pushed above the first under the same name (fact 2). Anything needing `ℓ` that runs while the second copy is on top reaches the second (definition) |
+| A continuation stored and applied later | Its segment, region frames included, travels with it and is copied at each application, names kept (fact 2). Its type admits an application only where its row is ambient, after widening, and the frames it needs come with it |
+| A value carried through an operation's type parameter and handed back | It may be held anywhere its type allows. It reaches a cell only when eliminated, which is beneath a frame named `ℓ` (fact 3), and reaches the innermost (definition) |
+| A closure whose type mentions `RegionKey ℓ` | It cannot be the answer or reach the residual row of its region (`ℓ ∉ frn(β) ∪ frn(ρ)`), and can be applied only where `region ℓ` is ambient (fact 3) |
+| A closure made before a capture and run in two copies | Each run stands beneath its own copy, and reaches that copy's cells |
+
+**A semantics that renamed each copy would differ observably.** A value created before a capture, handed out through a type parameter and back, would refer to the original instance; that instance is no longer on the path once its segment is captured, so such a value would get stuck. Keeping the name is what lets a closure made before a capture reach, in each copy that runs it, that copy's cells.
+
+**This agrees with Hoop's prompt-local state**, the reference semantics of D36 — Hoop being an effect-handler library whose run-time semantics is mechanised in F*. Hoop resolves a cell by its label to the innermost frame carrying that label, and relies on a placement invariant to keep that frame the clause's own. Stella resolves by name to the innermost frame of that name, which needs no placement invariant: frames of other openings carry other names and are passed over whatever their keys. Both copy a frame exactly when it lies inside a captured segment, so which cells a resumption shares and which it copies depends on the same thing in both, and the table above is Hoop's.
+
+**A construct that moves or duplicates frames carries a preservation obligation of its own.** In first-order Core a computation payload runs only where its row is ambient, so running one outside its region is rejected by typing. A construct that runs a computation beneath frames borrowed from elsewhere, as a scoped or higher-order effect may, must show that every frame it moves or copies keeps its name and that fact 3 holds after its steps.
 
 ## The runtime boundary
 
@@ -929,25 +913,24 @@ Erasure `⌊·⌋` removes the forms that carry no run-time content.
 
 ⌊letjoin j (x̄ : τ̄) : τ = e1 in e2⌋  = letjoin j (x̄) = ⌊e1⌋ in ⌊e2⌋
 
-⌊{ handles ent ; cells [r] ( k̄ : σ̄ ) ; return (x : τ) -> e_r ; cl_i }⌋
-    = { key key(ent) ; cells ( k̄ ) ; return x -> ⌊e_r⌋ ; ⌊cl_i⌋ }
+⌊{ handles ent ; return (x : τ) -> e_r ; cl_i }⌋
+    = { key key(ent) ; return x -> ⌊e_r⌋ ; ⌊cl_i⌋ }
 
 ⌊full op [b̄] (x : σ, k : τ) -> e⌋  = full op (x, k) -> ⌊e⌋
 ⌊fast op [b̄] (x : σ)        -> e⌋  = fast op (x)    -> ⌊e⌋
 
-⌊handle e with h @ ( ē )⌋  = handle ⌊e⌋ with ⌊h⌋ @ ( ⌊ē⌋ )
-⌊handleO e with h⌋         = handleO ⌊e⌋ with ⌊h⌋
-⌊handleI e with h⌋         = handleI ⌊e⌋ with ⌊h⌋
-⌊region [r] θ in e⌋        = region ⌊θ⌋ in ⌊e⌋
-⌊readCell k⌋               = readCell k
-⌊writeCell k e⌋            = writeCell k ⌊e⌋
+⌊handle e with h⌋                     = handle ⌊e⌋ with ⌊h⌋
+⌊region [ℓ] ( k̄ : σ̄ ) @ ( ē ) in e⌋  = region ℓ ( k̄ ) @ ( ⌊ē⌋ ) in ⌊e⌋
+⌊region⟨ℓ⟩ θ in e⌋                    = region⟨ℓ⟩ ⌊θ⌋ in ⌊e⌋
+⌊readCell ℓ.k⌋                        = readCell ℓ.i         i the position of k in ℓ's layout
+⌊writeCell ℓ.k e⌋                     = writeCell ℓ.i ⌊e⌋
 ```
 
 This is **not** a reduction relation. `openEff`, `openEffC`, `weaken`, and `[[κ̄]]` change a term's type or its ambient row, and `[[κ̄]]` additionally discards an instantiation that the typed rules require. A backend erases first and then evaluates; the typed relation above evaluates without erasing.
 
 An erased handler carries the key alone: the payload of the element is what says which operations the clauses must exhaust, and that is settled before evaluation begins. The result type of a join point goes the same way, being written for the checker rather than for reduction.
 
-**A region keeps its keys and its values and loses everything else.** The region variable `r` and the types the layout assigns are annotations for the checker; the keys are not, since reduction pairs them with the initial values in order and `Ev_c` walks by them. So an erased handler carries the key sequence and an erased region carries `θ`, which is the run-time content there is (D36).
+**A region keeps its name, its values, and the positions of its cells; its keys stay as debug information, and everything else goes.** The region name survives as a **term-level** binder: it stands for the run-time identity the opening step allocates, which is what a closure over a cell captures and what `Ev_ℓ` walks by. The types of the layout go, and so do the element `region ℓ` and the key `RegionKey ℓ`, which occur only in types. A cell is named by its position in the layout, `⌊θ⌋` mapping positions to values (D36).
 
 **The `full` and `fast` markers survive erasure.** They carry no type information; they say what a clause binds and which reduction rule applies to it, and a backend lowers the two differently — a `fast` clause needs no representation of a continuation at all. Core writes the marker on every clause, so which rule applies is settled in the erased term as well.
 
@@ -965,7 +948,7 @@ Every property assumes three things, and each does work the others do not (above
 
 A step to `fault φ` is outside the statement: a fault carries no type.
 
-Both the type and the ambient row are preserved exactly. Widening is never discarded by a step: applying through an `openEff` moves it to `openEffC`, and `openEffC` is discharged only against a value, whose type does not mention the ambient row. Handling an operation likewise leaves the row unchanged, since the clause body is typed at the residual row that the `handle` already had.
+Both the type and the ambient row are preserved exactly. Widening is never discarded by a step: applying through an `openEff` moves it to `openEffC`, and `openEffC` is discharged only against a value, whose type does not mention the ambient row. Handling an operation likewise leaves the row unchanged, since the clause body is typed at the residual row that the `handle` already had. `Γ_R` is the one thing a step changes: opening a region extends it with the name it allocates, and the statement is read under the extended one, every name already in it keeping its layout.
 
 **Progress.** If `Σ ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, and `·; · ⊢ e : τ ! ()`, then `e` is a value, or there exists `e2` with `G ⊢ e → e2`, or `G ⊢ e → fault φ` for some fault φ.
 
@@ -981,4 +964,4 @@ This is the property the whole design rests on, and it is the one that testing i
 
 **Erasure.** If `Σ ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, and `G ⊢ e → e2`, then `⌊e⌋` reduces to `⌊e2⌋` in zero or one steps under the erased relation, the zero-step case being a step that only introduced or discharged a coercion. If `G ⊢ e → fault φ` then `⌊e⌋` reduces to the same fault `φ`; an erased evaluator and a typed one fail identically. The value restriction is what makes this hold: the body of a type or constraint abstraction is already a value, so erasing the abstraction cannot move evaluation to a different point.
 
-**Non-conformance of the v0.1 Wasm backend.** The reduction rule for a `full` clause places no bound on applications of `k_i`, so a term applying it twice is well typed and has a defined reduction sequence. The v0.1 Wasm backend does not reproduce that sequence; it raises a run-time error at the second application. This is the precise content of the soundness gap recorded above.
+**A continuation applied twice is covered like any other term.** The reduction rule for a `full` clause places no bound on applications of `k_i`, so a term applying it twice is well typed and has a defined reduction sequence, and the properties above hold of it. A backend that does not reproduce that sequence does not conform (D18).

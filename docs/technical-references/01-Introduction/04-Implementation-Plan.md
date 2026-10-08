@@ -24,7 +24,7 @@ Row unification is where subtle errors concentrate, and two properties deserve e
 
 Two constraints must be respected even though the constructs they concern belong to Phase E.
 
-**Do not assume one-shot continuations** in Mid IR's representation ([Semantics](../03-Typed-Core/06-Semantics.md)). Mid IR is designed in Phase A while effect lowering belongs to Phase E, so the assumption would be baked in before the decision is made.
+**Do not assume one-shot continuations** in Mid IR's representation ([Semantics](../03-Typed-Core/06-Semantics.md)). Mid IR is designed in Phase A while effect lowering belongs to Phase E, so the assumption would be baked in before effect lowering is written, against D18.
 
 **Represent partially applied constructors** ([Semantics](../03-Typed-Core/06-Semantics.md)). A constructor application with fewer arguments than its arity is a value and may be passed around. Mid IR should retain constructor application in a form that lowers either to curried functions or to a partial-application object.
 
@@ -45,7 +45,7 @@ Two constraints must be respected even though the constructs they concern belong
 
 **The machine does not replace the Core evaluator.** Preservation reduces a Typed Core term one step and re-runs the type checker; erasure compares the typed relation against the erased one. A machine state carries no types, so it serves neither — there is nothing to type check, and no typed side to compare against. The Core evaluator is what those two properties are tested against, and the machine does not stand in for it. It is **a unit of its own** rather than part of step 4, which type checks a hand-written module and runs nothing.
 
-What the machine adds is of two kinds. It is a **second evaluator to compare against**: one program run both ways should give the same value and the same sequence of observable effects, which tests the whole of translation and lowering at once and is what catches a fold that reorders effects or drops one. And it **runs programs a one-shot backend cannot**, a second resumption of a continuation among them (D33), so effect safety and progress can be exercised on terms that D18's gap otherwise puts out of reach.
+What the machine adds is of two kinds. It is a **second evaluator to compare against**: one program run both ways should give the same value and the same sequence of observable effects, which tests the whole of translation and lowering at once and is what catches a fold that reorders effects or drops one. And it **runs every program the reference semantics admits**, a second resumption of a continuation among them (D33), so it is the reference another backend is compared against on those terms as on any other.
 
 Anything stronger — asserting preservation over machine states — would need a correspondence between a machine state and the Core term it stands for, and nothing defines one.
 
@@ -227,22 +227,27 @@ The heading of each group names the step of the plan that the group belongs to.
 | A handler mixing a `full` clause with a `fast` one | Accepted. The form is written per clause |
 | `fast abort1 [b] (_ : Unit) -> perform Abort2.abort2 [b] Prim.Unit` | Accepted. A polymorphic resume type rules out a pure terminating body, not a translation into another effect |
 | The handler interpreting `Partial` into `Maybe` | `full`. Its answer is `Maybe a` where the computation's is `a`, and only a `full` clause supplies an answer |
-| `readCell k` in the computation a handler handles | Rejected. The region stands in the row the operation clauses are typed at, not in that computation's (D36) |
-| `readCell k` in the return clause | Rejected. The return clause stands at `ρ`, which is what makes an ordinary return hand back no state |
-| `full next (_, k) -> let _ : Int = k Prim.Unit in readCell n`, the answer type being `Int` and the cell `Int` | Accepted. A `full` clause stands at `ρ'` and may make a cell's value its answer; what the rules withhold is the automatic return, not the ability |
-| `readCell k` for a key the region's layout does not declare | Rejected |
-| `writeCell k e` | Typed `Unit`, not the cell's type. The result may be dropped, which is what lets a clause set a cell and carry on |
-| A clause returning `λ (_ : Unit). readCell k` as the answer | Rejected. The closure carries `( region r ι \| ρ )` in its arrow, so it mentions `r`, and `r ∉ ftv(β)` |
-| A continuation typed to carry the region, where the handle's residual row does not | Rejected by the same condition, `r ∉ ftv(ρ)` |
-| A handler whose `cells` binder is already bound where the handler stands | Rejected. `r ∉ dom(Γ)`: the layout is kinded outside the binder and then stands inside it, so a binder shadowing an outer variable would draw that variable under the region |
-| An outer type variable standing in the layout and in the answer, beside a region that binds another name | Accepted. The two are different variables and neither condition above reads one for the other |
-| A handler owning a region whose residual row is not known to lack one | Rejected. `ρ'` is sharp only under `RegionKey ∉ ρ`, which the rule requires and an effect-polymorphic handler assumes |
-| A handler owning a region, installed inside another region's clause body | Rejected by that premise, there being a region in the ambient row already |
-| A handler owning a region, installed inside the computation another handler handles | Accepted. The handled computation carries no region, so the two never meet |
+| A `fast` clause standing in a region, reading `readCell ℓ.n` where the layout gives `n : Int` | Accepted at `Int`. The cell's type is read from the layout `Γ` binds `ℓ` with |
+| `writeCell ℓ.k e` | Typed `Unit`, not the cell's type, and rejected where it is bound at the cell's type. The result may be dropped, which is what lets a clause set a cell and carry on |
+| `readCell ℓ.k` in the computation a handler handles, and in its return clause, a region standing around the `handle` | **Accepted.** A region and a `handle` are separate binders, so whatever stands inside the region may name it. The surface writes neither, and a backend or an optimizer must not assume a return clause reads no cell |
+| `readCell ℓ.k` for a key the layout does not declare | Rejected |
+| `readCell ℓ.k` where no region binds `ℓ` | Rejected as ill-kinded. A region name out of scope makes a type mentioning it ill-kinded, which is the scope check for region names |
+| `readCell ℓ.k` where `ℓ` is in scope and `region ℓ` is not in the ambient row, as in the body of a function annotated pure | Rejected. The rule requires `RegionKey ℓ ∈ dom(nf(ρ))` |
+| An initial value of the wrong type, or a layout and initial values of different lengths | Rejected |
+| An initial value reading a cell of its own region | Rejected, `ℓ` being unbound there. The initial values are evaluated before the region opens, outside its binder |
+| A layout writing one key twice | Rejected by kinding the layout, a row extension requiring its key absent from the rest |
+| A region whose body is `λ (_ : Unit). readCell ℓ.k` | Rejected. The closure carries `region ℓ` in its arrow, so it mentions `ℓ`, and `ℓ ∉ frn(β)` |
+| A handler inside a region whose return clause hands back such a closure | Rejected by the same condition, the region's answer then mentioning `ℓ` |
+| A region standing at a row holding `State (Unit -{ ( region ℓ ) }-> Int)` | Rejected. `ℓ ∉ frn(ρ)` |
+| Two regions nested, the inner one reading the outer's cell beside its own | Accepted. Each region has its own key, so the two sit side by side in one sharp row |
+| A region opened in a clause of a handler that stands inside another region | Accepted. Nesting is unrestricted |
+| A region binder of a name already bound where it stands | Rejected. The checker's input follows the unique-binder convention, and an input breaking it is an elaborator defect rather than a term to rename |
+| A type abstraction, or a clause's type binder, of a name already bound | Rejected likewise. Read as written, `Λ b. λ (x : b). x` checked at `forall a. a -> b` would identify its own `b` with the outer one |
+| A `forall` in an annotation rebinding the name of a row variable an assumption is made about | The assumption does not reach the inner variable. A type is scoped lexically, and a row sharp only by the outer fact is rejected |
 | `handles` naming a region, or a `perform` naming one | Rejected. Both rules require the payload to be an effect application, and a region's is not |
-| A handler declaring no cells | Takes the rule it always took. **No region is opened and no `RegionKey` enters any row**, so a handler owning one may still be installed within it |
-| A layout writing one key twice | Rejected. The initial values are given one per key |
-| A `region r ι` type whose `ι` has a tail | Accepted. Only a layout is closed; a type is a row, which is what a helper polymorphic over the rest of a region needs |
+| `Λ e a. Λ (_ : E ∉ e). λ thunk. region [ℓ] … in handle ( ( openEff [( region ℓ )] thunk ) Prim.Unit ) with …`, at a scheme mentioning no region | Accepted. `RegionKey ℓ ∉ e` holds for `e`, bound outside `ℓ`, which is what lets the thunk be widened by the region |
+| The same with the thunk not widened by the region | Rejected by a row mismatch. The handled computation stands inside the region, and its row must hold it |
+| A row variable `t` bound inside the region, extended by `region ℓ` | Rejected as not sharp: freshness gives no fact for a variable bound after `ℓ`. Accepted where the function binding `t` assumes `RegionKey ℓ ∉ t` in its type |
 | `guard` whose consequent reaches no leaf and whose alternative does | Accepted, at the type the alternative gives |
 
 ### FFI and declarations (step 3)
@@ -281,20 +286,19 @@ The heading of each group names the step of the plan that the group belongs to.
 | That call, once it is evaluated | The innermost handler of the key is chosen: `Ev_k` lets no `handle` of that key stand between it and the hole |
 | `H Ev_k[perform k.op v] with h` whose clause for `op` is `fast` | Binds the body with a `let` and rebuilds the handler around `Ev_k` with that binding in the hole. No continuation value is built, and the `let` is what reconciles the clause's row with the handled computation's |
 | A `fast` clause body performing an operation that a handler inside `Ev_k` also handles | Answered by a handler outside `h`. The body stands outside `Ev_k`, so a handler a function reached through `openEff` installed there is not in its context |
-| A `fast` clause body reading or writing a cell whose key a region inside `Ev_k` also declares | Reaches the region outside `h` declaring the key — `h`'s own where it owns one, that region standing outside `h`. The region inside `Ev_k` is neither read nor written |
+| A `fast` clause body reading or writing a cell of `ℓ`, a frame named `ℓ` standing inside `Ev_k` as well | Reaches the frame outside `h`. The body stands outside `Ev_k`, so the frames inside it are not on its path |
 | A `perform` reaching a handler whose `key(ent)` differs | Does not arise. Both rules require `key(ent) = k`; `Ev_k` says only that no nearer handler carries it |
-| `handle e with h @ ( v̄ )` where `h` declares cells | Steps to `region [r'] (k̄ ↦ v̄) in ( handleO e with h[r := r'] )` for a globally fresh `r'`. The region stands **outside** the handler, which is what a clause body — placed outside it too — needs in order to reach a cell |
-| The term after that step | Type checks. `handleO` is a run-time form with a rule of its own, at `ρ'`; without one, preservation fails at the first step |
-| The opening step where the handled computation, or an initial value, binds a variable of the region's name within itself | The step renames to a globally fresh `r'`. The region it creates scopes over both, where the handler's `cells` binder scoped over the operation clauses alone, so keeping the name would bring two binders of one name into one scope. The context binding that name is a different matter and does not arise: the typing rule requires the binder fresh for `Γ` |
-| `h[r := r']` applied to a `full` clause | Renames the `r` of the continuation's annotation `τ' -{( region r ι \| ρ )}-> β` as well as the one in the body. Renaming bodies alone leaves the installed handler ill-scoped |
-| `region [r] θ in ( handleO v with h )` | Steps to `e_r[x := v]` in **one** step. Closing the region and running the return clause are not separable, which is what leaves no moment at which an answer and a cell both exist |
-| `handleI v with h`, a reinstatement finishing | Steps to `openEffC [( region r ι )] ( e_r[x := v] )`. The return clause runs and the owner's region is untouched, the widening reconciling the clause's `ρ` with the ambient `ρ'` |
-| `region [r] θ in v`, a `full` clause having produced the answer | Steps to `v`, the region closing with no return clause. Without this rule the `full` path reaches no value |
-| A continuation applied by any clause | Rebuilds `handleI`, never `handleO`. A region has one owner and it is not what a resumption reinstalls |
-| A `fast` clause of a handler owning a region | Its body is bound by a `let` and the value placed in the hole. Placing the body itself there does not typecheck, the body standing at `ρ'` and the hole at the handled computation's row |
-| A `full` clause of a handler installed **outside** a region, resuming twice | Each resumption begins from the cell contents at the capture, `Ev_k` containing the region. A write during the first is not seen by the second, which a store would not give |
-| A `full` clause of the handler **owning** the region, resuming twice | Both share the region, which stands outside what was captured. The cells stay live across the handler's own resumptions |
-| `writeCell k v` | Steps to `Prim.Unit`, the write having no result of its own. Reading back what was just set takes a `readCell` |
+| `region [ℓ] ( k̄ : σ̄ ) @ ( v̄ ) in e` | Steps to `region⟨ℓ'⟩ ( k̄ ↦ v̄ ) in e[ℓ := ℓ']` for a globally fresh `ℓ'`, the region's run-time identity. Two openings of one binder — two applications of one function, a recursive one included — never share a name |
+| The term after that step | Type checks under `Γ_R`, which the opening extends by `region ℓ' : ι`. The run-time form binds nothing, so without that global context preservation fails at the first step |
+| `region⟨ℓ⟩ θ in v` | Steps to `v`, closing the region. A value reaching a region frame passes through it, whether a handled computation's, a return clause's, or the answer a `full` clause produced |
+| `readCell ℓ.k` with a frame of another name declaring `k` nearer the hole | Passes over it. A cell is reached by its region's name and not by its key |
+| `readCell ℓ.k` with two frames named `ℓ` on the path | Reads the innermost, `Ev_ℓ` letting no `region⟨ℓ⟩` stand between it and the hole. That frame is the copy running |
+| `writeCell ℓ.k v` | Steps to `Prim.Unit` with `θ` updated at `k`, the write having no result of its own. Reading back what was just set takes a `readCell` |
+| A continuation applied twice, its segment holding a `region⟨ℓ⟩` | Each application copies the segment as it stands, the name included. No rule renames a copy, so a closure made before the capture reaches, in each copy that runs it, that copy's cells |
+| A value mentioning `ℓ` carried out through an operation's type parameter and handed back to two copies | Each run reaches the copy running it. A semantics renaming copies would leave it naming an instance no longer on the stack, and stuck |
+| A `full` clause of a handler installed **outside** a region, the region opened in the computation it handles, resuming twice | Each resumption begins from the cell contents at the capture, `Ev_k` containing the region. A write during the first is not seen by the second, which a store would not give: `choice(state(…))` |
+| A `full` clause of a handler installed **inside** a region, resuming twice | Both share the region, which stands below the handler, outside what was captured. A write during one is seen by the next: `state(choice(…))` |
+| Two handlers inside one region | Their clauses reach the one region, each seeing the other's writes |
 | A saturated foreign whose `δ_f` faults | Steps to `fault φ`, which propagates out of every context including `handle`. It is not caught by a handler and is not the `Partial` effect |
 | A term at ambient row `()` reaching a `perform` with no enclosing handler | Does not arise. This is what effect safety asserts |
 
@@ -306,7 +310,7 @@ The heading of each group names the step of the plan that the group belongs to.
 | A term whose reduction faults | The erased term faults identically |
 | The number of run-time arguments a backend passes to `δ_f` | Determined by the arrow count of the **declared** type, not by the instantiated result type |
 | A handler carrying a `full` clause and a `fast` clause | Both markers survive erasure, Core having written each of them. They carry no type information, and a backend lowers the two differently |
-| A handler owning a region | The keys and the values survive; the region variable and the cells' types do not. Reduction pairs the keys with the initial values and `Ev_c` walks by them, so neither is an annotation (D36) |
+| A `region` | The region name survives as a term-level binder, standing for the run-time identity the opening step allocates; the layout's types do not. A cell is named by its position in the layout, its key becoming debug information (D36) |
 
 ### Translation to Mid IR (step 5)
 
@@ -359,7 +363,7 @@ The heading of each group names the step of the plan that the group belongs to.
 | A group of mutually capturing closures | `CLOSN` for every member before any `SETCAP`. Filling one capture list first reads a closure that does not exist yet |
 | A continuation applied twice | Two independent runs, each resuming from the state that was captured, so that what the first did does not reach the second. Each application returns to the `CALLU` that made it rather than to the `HNDL` that installed the handler (D33) |
 | A `fast` clause | No continuation value is constructed, and the continuation is not split |
-| A `PERF`, `CGET`, or `CSET` in a `fast` clause's body, where a handler or a region between the answering marker and the `PERF` holds the key | Passes over them to what stands below the answering marker. What the body installs itself is found as usual, and a `full` operation the body performs, resumed twice, leaves the body where it was each time |
+| A `PERF`, `CGET`, or `CSET` in a `fast` clause's body, where a handler of the key, or a region frame of the identity, stands between the answering marker and the `PERF` | Passes over them to what stands below the answering marker. What the body installs itself is found as usual, and a `full` operation the body performs, resumed twice, leaves the body where it was each time |
 | `perform` under two handlers of one key | The innermost. Handlers of one key nest at run time, `openEff` being what puts a self-handling function under an outer one |
 | A faulting `FFI` inside a `handle` | The whole continuation is discarded, handler markers included. A fault is not the `Partial` effect and no clause sees it |
 | A `JMP` read from a file | The destination's parameter registers come from the `Join`, which names them. A count alone leaves a consumer unable to perform the transfer |
@@ -375,6 +379,24 @@ The heading of each group names the step of the plan that the group belongs to.
 | A local read in a branch that does not bind it | Rejected. It passes every check of layout alone, the numbering across a function being dense and unique either way |
 | A partial application of an operation, read back from a file | The operation alone. The entry it realizes comes from the ABI version, so no reader can find the two disagreeing |
 | `isNewtype` on a constructor | Carried from Core through Mid IR into `CTORS`. A `newtype` and a data type of one constructor with one field have the same shape, so a backend erasing the representation cannot tell them apart without the flag |
+
+### Regions on the machine and the JavaScript backend (step 5, interpreter 5, and step 6, 2)
+
+Each value below is a global of one hand-written Core module, compiled to the shared fixture `regions` and run on Steam and on the JavaScript backend alike. Every region declares a cell of one key, `n`, so that reaching the wrong frame is observable, and each row gives what reaching the wrong frame, or sharing what is copied, would give instead.
+
+| Input | Required outcome |
+| --- | --- |
+| `sharedGroups`: two handlers inside one region, `a` adding 1 to the cell and `b` multiplying it by 10, performed `a`, `b`, `a` | `1011`. Both clauses reach the one cell. Giving each group a cell of its own gives `2` |
+| `choiceState`: a region opened inside the computation a `full` clause resumes twice | `111`. The region is in the captured segment, so each resumption starts from the cell at the capture. Sharing it gives `112` |
+| `stateChoice`: the same with the region below the handler | `112`. The region is outside what the clause captures, so the second resumption sees the first's write. Copying it gives `111` |
+| `localClosure`: a `fast` clause building a function over the cell and calling it, twice | `607`. The function reads the cell it was built over |
+| `declaredApart`: a function opening a region of its own, applied inside a region declaring the same key | `10010`. Each clause reaches its own region |
+| `recursed`: a function opening a region applied again inside its own clause, with a closure over the outer region called in the inner clause | `21`. The closure reaches the outer region by its identity. Reaching the innermost region the same binder opened gives `22` |
+| `nestedCopy`: a continuation resumed while a copy of it is running | `1023`. Each copy's code reaches its own copy, the innermost frame of the identity. The second copy reaching the first's region gives `1036` |
+| `closureBefore`: a closure made before a capture, run in two copies | `102`. Each copy running it reaches that copy's region, the copies keeping the identity of the opening they copy. Sharing the region gives `103` |
+| `stashed`: a closure carried out through an operation's type parameter and handed back to two copies | `101`. Each runs it against its own region. Sharing the region gives `102` |
+| A region entry with two cells, opened by a `RGN`, or by a `TAILRGN` in a branch, supplying one initial value | Refused where the module loads, and where the JavaScript backend generates, naming the cells. The entry is what the instruction is held to |
+| A region entry naming one key twice, at one `KEYS` index or at two indices holding the same key | Refused likewise. A region's keys are distinct, whichever index names them |
 
 ### The host's foreign table (step 5, interpreter 6)
 
@@ -780,7 +802,7 @@ no identifier is at once ready and blocked
 | Nested binders closed inside out, and siblings closed in either order | Committed |
 | A binder closed twice, or a `forall` binder closed as a constraint or the reverse | A defect of the synthesizer |
 | A binder opened by a candidate a `transact` discarded | Not held open. The ledger is part of what an attempt owns |
-| A region element given to `extendRow` | Refused. Only the handler owning a region introduces one |
+| `extendRow` at `RegionKey ℓ` over `region ℓ`, `ℓ` a region the scope stands inside | Built. A region's name is how a type mentions it, and a clause reading a cell stands at a row that must hold it |
 | A row view's flexible tail, taken from a row in no build scope | Its `Type` is in no build scope either. A `Meta` turned back into a type without the row's scope would launder it into one |
 | `freshMetaType` in a `forall` body's scope, and in the root | Scoped to the body's variables, binder included, and to the site's. The scope is the build scope's; a caller has none to state |
 | A metavariable created in the root, equated in a child scope with the child's binder | A failure. The solution would mention a variable its scope does not hold |
@@ -854,20 +876,24 @@ no identifier is at once ready and blocked
 | `perform` of `Poly.ident [Boolean]` | Claimed at `Boolean`, the operation's own binder instantiated with the effect's parameters, simultaneously |
 | `perform` of an operation the effect lacks, with type arguments it does not bind, at a key that does not make the element, or at an ill-kinded element | Refused |
 | `perform` of an effect the kinding environment declares and the effect table lacks | A defect of the host. The two come from one signature |
-| A handler owning cells, closed with a body reading a cell | Claimed at its answer; the region variable fresh; the return clause binding the computation's result |
-| A `full` clause of a handler without cells | Its continuation at `τ -{ρ}-> β`, the resumption into the answer over the clauses' row |
+| A region opened with the layout `( n : Int )`, a handler opened in its body over the row `( region ℓ )` whose clause reads `n`, and the region closed around the handler | Claimed at what its body is claimed at; the region's name drawn fresh from the supply binder names come from; the `region` holding the cell and its initial value |
+| `openRegion` with a layout giving one key twice, and `closeRegion` with fewer initial values than cells | Refused |
+| A region whose body is a lambda reading its cell, claimed at an arrow carrying `region ℓ` | Refused as `RegionEscapes`. A reference into the region would outlive it |
+| A region whose body jumps to a join point outside, built inside the body or handed in as one | Refused. Core discards `Δ` at a region's body |
+| A region whose handler's residual row has a tail `e` bound outside the region | Built, needing nothing of `e`. A row variable bound outside `ℓ` lacks `RegionKey ℓ` |
+| `RegionKey ℓ` in a constraint, by `openConstraint` and by `require`, with `ℓ` in scope, and with no region of that name in scope | Accepted; refused as ill-kinded, the region unbound |
+| `entails` of `RegionKey ℓ ∉ ?m` inside the region, `?m` a row metavariable created outside it, and one created inside it | True by `?m`'s scope, which holds no `ℓ`; false for the one created inside, nothing yet deciding it |
+| `extendRow` by `region ℓ` over such a `?m`, and `openEff` by `( region ℓ )` of a function standing at it | Built with nothing left to watch where `?m` was created outside the region; the `Lacks` or the `Disjoint` watched under `?m` where it was created inside |
+| A `full` clause | Its continuation at `τ -{ρ}-> β`, the resumption into the answer over the clauses' row |
 | A handler naming an operation twice, or missing one, or whose computation jumps to a join point | Refused |
-| A handler owning cells over a residual row `e` nothing proves lacks a region | A failure. `RegionKey ∉ ρ` is required with the term |
-| A handler closed with fewer bodies than clauses, fewer initial values than cells, or the return clause's variable as an operation clause's body | Refused |
-| `readCell` and `writeCell` in an operation clause of a handler owning the cell, and inside a lambda there | Built: the cell's type, and `Unit`. A region is lexical and not reset by an abstraction |
-| `readCell` at the root, in the return clause, or at a key the layout lacks | Refused. The return clause stands outside the region |
-| A goal asked for in an operation clause of a handler owning cells, attempted with a runner reading a cell at its root | Committed. The goal carries its region, and the attempt's root stands in it |
-| A term metavariable created outside any region, assigned `readCell n` | A failure: the solution reads a cell the metavariable's region does not hold |
-| `readCell n` built in a clause of a handler owning `n`, placed in the same clause, and in a clause of a handler inside it that owns an `n` too | Built, and refused. The inner handler's `n` would capture it |
-| A goal asked for in the outer clause, placed in the inner one | Refused. A solution may read a cell of the region it was asked for in |
-| A literal built in the outer clause, and a handler there reading only its own cells, placed in the inner one | Built, both. Neither depends on a region |
-| A handler built in the outer clause whose own clause is a goal asked for there, unsolved, and solved to `readCell n`, placed in the inner one | Built, both. The goal is filled in the handler's own region, so neither depends on the outer one, and the scheduler's progress changes nothing |
-| A handler owning cells, built by the kernel and declared at its answer | Accepted by the Core type checker |
+| A handler closed with fewer bodies than clauses, or the return clause's variable as an operation clause's body | Refused |
+| `perform` or `openHandle` given a region element | Refused. Both name an effect, and a region is none |
+| `readCell` and `writeCell` in a clause standing in the region, and inside a lambda there | Built: the cell's type, and `Unit`. A cell is reached in any scope the region stands around, an abstraction's body included |
+| `readCell` in a scope the region does not stand around, or at a key the layout lacks | Refused |
+| `readCell` of an outer region's binder inside an inner region holding a cell of the same key | Names the outer region. A cell is named by its region's binder and not by its key, so the inner region captures nothing |
+| A goal asked for in a clause standing in a region, its target assigned `readCell ℓ.n` | Committed. The region's name is in the target's scope, as a type variable bound there is |
+| A term metavariable created outside any region, assigned `readCell ℓ.n` | A failure: the solution mentions a region name the metavariable's scope does not hold |
+| A region around a handler whose clause reads its cell, built by the kernel and declared at its answer | Accepted by the Core type checker |
 | Every form of Core⁺ — term, decision tree, occurrence, and operation clause — built by the kernel's requests alone | Every form reached but `EHole`, which is the Surface elaborator's alone; `ETermMeta` by `subgoal` only. The forms are named by a function matching every constructor, so a new one is placed before anything compiles |
 | The target of a goal not yet run, crossing the boundary | Reported as a residue |
 | A kernel-built term committed as a goal's solution, zonked, crossed, and walked for references | Accepted by the Core type checker, its references the committed term's |
@@ -1013,19 +1039,27 @@ These belong with elaboration and are written once a surface language exists ([E
 | Implicit declarations forming a cycle across two modules | Rejected where `Ξ` is assembled from the imports. Neither declaration is wrong on its own, so checking one at a time does not see it |
 | An implicit handler for a labelled instance's key | Out of scope for v0.1, `Ξ` being keyed and the spelling of labelled instances unsettled |
 
-### A handler's cells (step 7)
+### Cells (step 7)
+
+The rows on where a cell is reached are the resolver's. The rows on what a cell becomes belong with elaboration, and are written once the elaboration of cells exists ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md), [Name Resolution](../02-Surface-Language/06-Name-Resolution.md)).
 
 | Input | Expected |
 | --- | --- |
-| A handler declaration with `var` declarations | The declarations become its `cells` layout and the `@ ( ē )` of its `handle`, keys and initial values in the order written |
-| `x!` and `x := e` | `readCell` and `writeCell` on the key the name gives. The write is `Unit`, which a clause binds as it binds any other result |
-| Two `var` declarations of one name | Rejected where they are written. A region's keys are distinct |
-| `x!` or `x := e` in a `return` clause, in an initial value, or outside the handler | Rejected. A cell stands in the operation clauses alone |
-| `x` alone, where `x` names a cell | Never denotes the cell; it denotes a local `x` where one stands and is unbound otherwise. No value stands for a cell, which is what keeps one from being stored or returned |
-| The region variable the declarations generate | Fresh for the context the `handle` stands in, the layout being kinded outside the binder and then standing inside it |
-| The generated scheme | Carries `RegionKey ∉ e` beside the effect's own `Lacks`. That is what discharges the region premise where the residual row is a variable |
-| A handler with cells applied in a clause of another handler with cells | Rejected by that constraint, and reported against the clause the application stands in |
-| A handler with cells applied in the thunk of another | Accepted. The computation a handler handles carries no region, so the two never meet |
-| An implicit handler with cells, inserted into a clause of a handler with cells | Rejected the same way. The constraint is discharged where the handler is applied, not where it is declared |
-| A clause body of a handler with cells reaching a global | Widened through the region, the clauses standing at `ρ' = ( region r ι \| e )` where a handler without cells leaves them at `e`. A curried function is widened **once for each argument it is passed**, every stage being an arrow at the empty row standing where `ρ'` is ambient (D8) |
+| `handle e with var c := 0 ; State … ; Emit …` | Resolved with `c` open in the operation clauses of both groups. A cell belongs to the handling expression, and every group of it reaches it |
+| `x!` or `x := e` in an initial value, a `return` clause, the computation handled, or a handler applied as an item of the expression declaring `x` | Rejected as `CellClosedHere`, naming the part — `InInitialValue`, `InReturnClause`, `InHandledComputation`, or `InHandlerApplied` — rather than reporting the cell undeclared |
+| `x!` or `x := e` where no enclosing handling expression or handler declaration declares `x` | Rejected as `UnknownCell` where it is written. Nothing fills it in later from an outer handler |
+| Two `var` declarations of one name in one expression | Rejected as `BoundTwice`. A region's keys are distinct |
+| A `var` after a group or a handler of the expression | Rejected as `CellAfterItem`, and left out |
+| A `var` after a clause of a handler declaration | Rejected as `CellAfterClause`, and left out |
+| A handling expression in a clause, declaring `n` and reading an outer `m` | Its clauses reach its own `n` and the outer `m`. Its own `n` hides an outer `n` throughout the expression, so in its initial values and its handled computation `n!` is closed rather than reaching the outer cell |
+| `x` alone, where `x` names a cell | Never denotes the cell; it denotes a local `x` where one stands and is unbound otherwise. A `var x` and a value `x` stand together. No value stands for a cell, which is what keeps one from being stored or returned |
+| A handling expression with cells | `region [ℓ] ( c̄ : σ̄ ) @ ( ē ) in i1 (\_ -> … in (\_ -> e))`, `ℓ` fresh, keys and initial values in the order written, and `c!` and `c := e` in a clause `readCell ℓ.c` and `writeCell ℓ.c e`. The write is `Unit`, which a clause binds as it binds any other result |
+| A handling expression with no `var` | Opens no region |
+| A thunk handed to an item of an expression with cells | Stands at a row holding `region ℓ`, so the groups inside it reach the region and a handler applied as an item instantiates its residual row with that row |
+| A handler declaration with `var` declarations | A function whose body is the `region` around its `handle`, its scheme mentioning no region: the residual row variable is bound outside `ℓ` and lacks `RegionKey ℓ` |
+| One such handler applied twice, or applied again inside its own clause | Two regions. The initial values are evaluated at each application, so two computations run under it count separately |
+| A declared handler with a cell applied as an item of a handling expression with a cell of its own | Neither reaches the other's. The handler's clauses reach its own cells, and the expression's groups the expression's; two layouts never join |
+| A handler with cells applied in a clause of another handler with cells, explicitly or by insertion | Accepted. Each region has its own key, so nesting is unrestricted and no constraint is generated for it |
+| A clause body standing in a region reaching a global | Widened through the region, the clauses standing at `( region ℓ \| e )` where an expression without cells leaves them at `e`. A curried function is widened **once for each argument it is passed**, every stage being an arrow at the empty row standing where the region is ambient (D8) |
+| A clause handing out a local function over a cell — as the answer, or part of it | Rejected by the escape condition, the function's type carrying `region ℓ`. Calling it inside the clause is accepted |
 | `implicit` on a handler one of whose initial values does not elaborate to a value form | Rejected where it is declared. An initial value runs whenever the handler is applied, and an inserted application stands where nothing is written |
