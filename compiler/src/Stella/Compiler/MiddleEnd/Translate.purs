@@ -39,7 +39,7 @@ import Data.Foldable (foldl, traverse_)
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
@@ -62,6 +62,9 @@ data TranslateError
   -- | callers take those constructs first — one to a destination, the other
   -- | through a join point — so this reports a translator that grew a third.
   | ControlInValuePosition
+  -- | A `region`, `readCell`, or `writeCell`, which this translation does not
+  -- | lower.
+  | RegionNotLowered
 
 derive instance Eq TranslateError
 derive instance Generic TranslateError _
@@ -443,13 +446,14 @@ value ctx expr k = case stripErased expr of
   C.Perform _ key op _ arg ->
     atomize ctx arg \a -> k (RComp (M.CPerform key op a) (repAt ctx expr))
 
-  C.Handle _ body handler initial ->
-    handled ctx (repAt ctx expr) body handler initial k
+  C.Handle _ body handler ->
+    handled ctx (repAt ctx expr) body handler k
 
-  C.ReadCell _ key -> k (RComp (M.CReadCell key) (repAt ctx expr))
+  C.Region _ _ _ _ _ -> throw RegionNotLowered
 
-  C.WriteCell _ key written ->
-    atomize ctx written \a -> k (RComp (M.CWriteCell key a) (repAt ctx expr))
+  C.ReadCell _ _ _ -> throw RegionNotLowered
+
+  C.WriteCell _ _ _ _ -> throw RegionNotLowered
 
   -- reached only through `go`, which handles these before delegating here
   _ -> throw ControlInValuePosition
@@ -565,40 +569,30 @@ withAtoms ctx exprs k = fromStart 0 []
 
 -- Handlers -------------------------------------------------------------------
 
--- | `handle e with h @ ( ē )`, with the handled computation and every clause
--- | lifted into the function table.
--- |
--- | **The initial values are atomized first.** They are evaluated before the
--- | region is opened and the handler installed, so the bindings that name them
--- | stand outside the `handle`; the body names none of them and captures none.
--- |
--- | Of a region the keys survive, in the order the layout writes them, which is
--- | what pairs them with the initial values. The region variable and the cells'
--- | types were annotations (D36).
+-- | `handle e with h`, with the handled computation and every clause lifted into
+-- | the function table.
 handled
   :: forall a
    . Ctx
   -> Rep
   -> C.Expr (Typed a)
   -> C.Handler (Typed a)
-  -> P.Array (C.Expr (Typed a))
   -> (Result -> T a M.Expr)
   -> T a M.Expr
-handled ctx rep body handler initial k =
-  withAtoms ctx initial \cells -> do
-    lifted <- liftFunction ctx (sourceAt body) [] body
-    returnClause <- clauseRef ctx
-      [ Tuple handler.returnClause.binder handler.returnClause.ty ]
-      handler.returnClause.body
-    opClauses <- traverse (opClauseRef ctx) handler.opClauses
-    let
-      h =
-        { key: rowEntryKey handler.element
-        , cells: maybe [] (map _.key <<< _.cells) handler.cells
-        , returnClause
-        , opClauses
-        }
-    k (RComp (M.CHandle h lifted.func lifted.captures cells) rep)
+handled ctx rep body handler k = do
+  lifted <- liftFunction ctx (sourceAt body) [] body
+  returnClause <- clauseRef ctx
+    [ Tuple handler.returnClause.binder handler.returnClause.ty ]
+    handler.returnClause.body
+  opClauses <- traverse (opClauseRef ctx) handler.opClauses
+  let
+    h =
+      { key: rowEntryKey handler.element
+      , cells: []
+      , returnClause
+      , opClauses
+      }
+  k (RComp (M.CHandle h lifted.func lifted.captures []) rep)
 
 -- | A function a handler reaches, over its own binders as parameters.
 -- |
@@ -895,15 +889,15 @@ freeVars = case _ of
   C.VariantWeaken _ _ _ e -> freeVars e
   C.VariantAbsurd _ _ e -> freeVars e
   C.Perform _ _ _ _ arg -> freeVars arg
-  C.Handle _ body handler initial ->
+  C.Handle _ body handler ->
     Set.unions
       [ freeVars body
-      , unions (map freeVars initial)
       , Set.delete handler.returnClause.binder (freeVars handler.returnClause.body)
       , unions (map freeVarsClause handler.opClauses)
       ]
-  C.ReadCell _ _ -> Set.empty
-  C.WriteCell _ _ written -> freeVars written
+  C.Region _ _ _ initial body -> Set.union (unions (map freeVars initial)) (freeVars body)
+  C.ReadCell _ _ _ -> Set.empty
+  C.WriteCell _ _ _ written -> freeVars written
   C.OpenEff _ _ e -> freeVars e
 
 freeVarsClause :: forall a. C.OpClause a -> Set Ident

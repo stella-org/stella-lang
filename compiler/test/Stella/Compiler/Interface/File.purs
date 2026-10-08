@@ -24,7 +24,7 @@ import Stella.Compiler.Surface.Name (OperatorName(..))
 import Stella.Compiler.Surface.Type (TypeOperatorTarget(..))
 import Stella.Compiler.TypedCore.Domain (scalarString, scalarValue)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), RegionName(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..))
 import Stella.Compiler.TypedCore.Term (Literal(..))
@@ -108,7 +108,7 @@ rich =
                   ( Plain
                       ( TForall (TyVar "r") (KRow RowType)
                           ( TRowExtend (RowTypeEntry (SymbolKey (Symbol "s")) int)
-                              (TRowExtend (RowTypeEntry (TagKey (Tag "Ok")) int) (TRowExtend (RowTypeEntry (PositionKey 1) int) (TRowExtend (RowRegionEntry (TVar (TyVar "r")) TRowEmpty) (TRowExtend (RowTypeEntry RegionKey int) TRowEmpty))))
+                              (TRowExtend (RowTypeEntry (TagKey (Tag "Ok")) int) (TRowExtend (RowTypeEntry (PositionKey 1) int) TRowEmpty))
                           )
                       )
                   )
@@ -155,7 +155,7 @@ bytesOf s = case encode s of
 
 -- | The header a file of this format and ABI version begins with.
 header :: Bytes
-header = [ 0x44, 0x4D, 0x49, 0x00, 0x01, 0x00 ] <> text "stella-base-0.1"
+header = [ 0x44, 0x4D, 0x49, 0x00, 0x02, 0x00 ] <> text "stella-base-0.1"
 
 text :: P.String -> Bytes
 text s = case utf8 s of
@@ -223,9 +223,9 @@ spec = describe "Stella.Compiler.Interface.File" do
   describe "what a reader refuses" do
     it "other magic, another format version, unknown flags, and another ABI version" do
       decode [ 0x44, 0x4D, 0x4F, 0x00 ] `shouldEqual` Left BadMagic
-      decode ([ 0x44, 0x4D, 0x49, 0x00, 0x00 ] <> Array.drop 5 (file [] [])) `shouldEqual` Left (UnsupportedFormatVersion 0)
-      decode ([ 0x44, 0x4D, 0x49, 0x00, 0x01, 0x01 ] <> Array.drop 6 (file [] [])) `shouldEqual` Left (UnknownFlags 1)
-      decode ([ 0x44, 0x4D, 0x49, 0x00, 0x01, 0x00 ] <> text "other" <> Array.drop (Array.length header) (file [] []))
+      decode ([ 0x44, 0x4D, 0x49, 0x00, 0x01 ] <> Array.drop 5 (file [] [])) `shouldEqual` Left (UnsupportedFormatVersion 1)
+      decode ([ 0x44, 0x4D, 0x49, 0x00, 0x02, 0x01 ] <> Array.drop 6 (file [] [])) `shouldEqual` Left (UnknownFlags 1)
+      decode ([ 0x44, 0x4D, 0x49, 0x00, 0x02, 0x00 ] <> text "other" <> Array.drop (Array.length header) (file [] []))
         `shouldEqual` Left (UnknownAbiVersion "other")
 
     it "a section missing, or one it does not know below the boundary" do
@@ -253,3 +253,7 @@ spec = describe "Stella.Compiler.Interface.File" do
       case loneSurrogate of
         Nothing -> fail "a code unit is the only way to write one"
         Just name -> encode (stored empty { arities = Map.singleton (Ident name) 1 }) `shouldEqual` Left (NotScalarText name)
+
+    it "a region name, which no published scheme mentions" do
+      encode (stored empty { implicitHandlers = [ { handler: Ident "h", source: RowRegionEntry (RegionName "r"), targets: [] } ] })
+        `shouldEqual` Left (RegionInInterface (RegionName "r"))

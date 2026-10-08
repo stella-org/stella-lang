@@ -69,7 +69,7 @@ magic = [ 0x44, 0x4D, 0x49, 0x00 ]
 
 -- | The version of the format this module reads and writes.
 formatVersion :: P.Int
-formatVersion = 1
+formatVersion = 2
 
 -- Sections -------------------------------------------------------------------------
 
@@ -451,10 +451,7 @@ rowEntry = case _ of
     e' <- qname effNameText e
     args' <- vec type_ args
     pure (u8 2 <> s' <> e' <> args')
-  RowRegionEntry v cells -> do
-    v' <- type_ v
-    cells' <- type_ cells
-    pure (u8 3 <> v' <> cells')
+  RowRegionEntry name -> throwE (RegionInInterface name)
 
 rowKey :: RowKey -> E Bytes
 rowKey = case _ of
@@ -462,7 +459,7 @@ rowKey = case _ of
   TagKey (Tag t) -> (u8 1 <> _) <$> str t
   PositionKey n -> (u8 2 <> _) <$> count n
   EffectKey e -> (u8 3 <> _) <$> qname effNameText e
-  RegionKey -> pure (u8 4)
+  RegionKey name -> throwE (RegionInInterface name)
 
 constraint :: Constraint -> E Bytes
 constraint = case _ of
@@ -821,7 +818,6 @@ rowEntryR ss = do
     0 -> RowTypeEntry <$> rowKeyR ss <*> typeR ss
     1 -> RowEffectEntry <$> qnameR ss EffName <*> vecR (typeR ss)
     2 -> RowLabelledEffectEntry <$> map Symbol (strR ss) <*> qnameR ss EffName <*> vecR (typeR ss)
-    3 -> RowRegionEntry <$> typeR ss <*> typeR ss
     _ -> unknown RowEntryTag t
 
 rowKeyR :: Strings -> R RowKey
@@ -832,7 +828,6 @@ rowKeyR ss = do
     1 -> TagKey <<< Tag <$> strR ss
     2 -> PositionKey <$> structuralR
     3 -> EffectKey <$> qnameR ss EffName
-    4 -> pure RegionKey
     _ -> unknown RowKeyTag t
 
 constraintR :: Strings -> R Constraint

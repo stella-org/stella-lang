@@ -9,14 +9,14 @@
 -- |
 -- | | Value of `Main` | What it exercises |
 -- | | --- | --- |
--- | | `counted` | a `fast` clause reading and writing its handler's region |
+-- | | `counted` | a `fast` clause reading and writing the region around its handler |
 -- | | `resumedTwice` | a `full` clause applying its continuation twice |
 -- | | `resumedOnce`, `abandoned` | a `full` clause resuming in tail position, and one answering without resuming, which skips the return clause |
 -- | | `innermost`, `forwarded` | the innermost marker of a key answers; an operation an inner handler does not handle reaches the outer one |
 -- | | `contOverApplied` | a continuation applied to two arguments |
 -- | | `foldedOrder`, `chainedOrder` | an argument is evaluated before the function (D35), whether or not the spine folds into one call (D30) |
 -- | | `regionForked` | a region inside a continuation, each resumption starting from the cells as captured |
--- | | `ownedFork` | a `full` clause of a handler owning a region, resuming twice and using its own cells between |
+-- | | `ownedFork` | a `full` clause of a handler inside a region, resuming twice and using the region's cells between |
 -- | | `interleaved` | one resumption held captured while a second runs through the same activation |
 -- | | `askedOutside`, `readOutside`, `writtenOutside`, `installedByBody`, `forkedTwice` | a `fast` clause's body runs outside the handler and outside `Ev_k` |
 module Test.Stella.Compiler.Fixtures.Effects
@@ -32,7 +32,7 @@ import Prim as P
 import Data.Array as Array
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.TypedCore (DecisionTree(..), Decl(..), EffName(..), Export(..), Expr(..), Ident(..), Layout, Literal(..), Module, Occurrence(..), OpClause(..), OpDecl, OpName(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), TyVar(..), Type(..), monoScheme)
+import Stella.Compiler.TypedCore (Cell, DecisionTree(..), Decl(..), EffName(..), Export(..), Expr(..), Ident(..), Literal(..), Module, Occurrence(..), OpClause(..), OpDecl, OpName(..), Qualified(..), RegionName(..), RowEntry(..), RowKey(..), Symbol(..), Type(..), monoScheme)
 import Stella.Compiler.TypedCore.Prim (booleanTy, fn, intTy, pureFn, unitCtor, unitTy)
 import Test.Stella.Compiler.Fixtures.Programs (inInt, intName, mainName)
 import Test.Stella.Compiler.Fixtures.Value (Expected(..))
@@ -57,17 +57,24 @@ bool = TCon booleanTy []
 rowOf :: P.Array (Qualified EffName) -> Type
 rowOf = Array.foldr (\eff rest -> TRowExtend (RowEffectEntry eff []) rest) TRowEmpty
 
--- | `( region r ( n : Int ) | residual )`, the row a clause of a handler owning a
--- | region stands at.
+-- | `( region r | residual )`, the row everything inside the region named stands
+-- | at.
 regionRow :: P.String -> Type -> Type
-regionRow region residual =
-  TRowExtend (RowRegionEntry (TVar (TyVar region)) (TRowExtend (RowTypeEntry cell int) TRowEmpty)) residual
+regionRow region residual = TRowExtend (RowRegionEntry (RegionName region)) residual
 
 cell :: RowKey
 cell = SymbolKey (Symbol "n")
 
-layout :: P.String -> Layout
-layout region = { var: TyVar region, cells: [ { key: cell, ty: int } ] }
+-- | `( n : Int )`, the layout of every region here.
+cellLayout :: P.Array Cell
+cellLayout = [ { key: cell, ty: int } ]
+
+-- | `readCell r.n` and `writeCell r.n e`, for the region named.
+readN :: P.String -> Expr P.Int
+readN region = ReadCell 0 (RegionName region) cell
+
+writeN :: P.String -> Expr P.Int -> Expr P.Int
+writeN region = WriteCell 0 (RegionName region) cell
 
 -- | `Unit ->* τ`, an operation of that argument and resumption type.
 operation :: P.String -> Type -> OpDecl
@@ -135,8 +142,8 @@ full op resumesWith row answer body = FullClause
   , body
   }
 
--- | `handle handled with { handles eff ; clauses ; return }`, owning a region over
--- | the cell `n` where one is given.
+-- | `handle handled with { handles eff ; clauses ; return }`, inside a region of the
+-- | cell `n` where one is given: `region [r] ( n : Int ) @ ( initial ) in handle …`.
 handle
   :: Qualified EffName
   -> Maybe { region :: P.String, initial :: P.Int }
@@ -144,25 +151,22 @@ handle
   -> P.Array (OpClause P.Int)
   -> Expr P.Int
   -> Expr P.Int
-handle eff region returnClause opClauses handled =
-  Handle 0 handled
-    { element: RowEffectEntry eff []
-    , cells: map (\r -> layout r.region) region
-    , returnClause
-    , opClauses
-    }
-    (Array.fromFoldable (map (\r -> lit r.initial) region))
+handle eff region returnClause opClauses handled = case region of
+  Nothing -> handled'
+  Just r -> Region 0 (RegionName r.region) cellLayout [ lit r.initial ] handled'
+  where
+  handled' = Handle 0 handled { element: RowEffectEntry eff [], returnClause, opClauses }
 
 -- | A handler of one operation answering it with a `fast` clause.
 handleFast :: Qualified EffName -> P.String -> Maybe { region :: P.String, initial :: P.Int } -> Expr P.Int -> Expr P.Int -> Expr P.Int
 handleFast eff op region body = handle eff region identityReturn [ fast op body ]
 
--- | `let v = readCell n + 1 in let _ = writeCell n v in v` at `row`: the cell's next
--- | value, left in the cell.
-bump :: Type -> Expr P.Int
-bump row =
-  let' "v" int (intOpAt row "add" (ReadCell 0 cell) (lit 1))
-    $ let' "w" unit' (WriteCell 0 cell (var "v"))
+-- | `let v = readCell r.n + 1 in let _ = writeCell r.n v in v` at `row`: the cell's
+-- | next value, left in the cell.
+bump :: P.String -> Type -> Expr P.Int
+bump region row =
+  let' "v" int (intOpAt row "add" (readN region) (lit 1))
+    $ let' "w" unit' (writeN region (var "v"))
     $ var "v"
 
 -- The effects --------------------------------------------------------------------------------
@@ -257,8 +261,8 @@ effectsExpected =
 counting :: Expr P.Int -> Expr P.Int
 counting = handle counter (Just { region: "r", initial: 0 }) identityReturn
   [ fast "next"
-      ( let' "v" int (ReadCell 0 cell)
-          $ let' "w" unit' (WriteCell 0 cell (intOpAt (regionRow "r" TRowEmpty) "add" (var "v") (lit 1)))
+      ( let' "v" int (readN "r")
+          $ let' "w" unit' (writeN "r" (intOpAt (regionRow "r" TRowEmpty) "add" (var "v") (lit 1)))
           $ var "v"
       )
   ]
@@ -269,7 +273,7 @@ counted :: Expr P.Int
 counted = counting
   ( let' "a" int (perform counter "next")
       $ let' "b" int (perform counter "next")
-      $ intOpAt (rowOf [ counter ]) "add" (var "a") (var "b")
+      $ intOpAt (TRowExtend (RowEffectEntry counter []) (regionRow "r" TRowEmpty)) "add" (var "a") (var "b")
   )
 
 -- | `handle (fork ()) with { full fork u k -> let first = k 1 in let second = k 2 in
@@ -378,15 +382,15 @@ spine f =
     (OpenEff 0 counterRow (App 0 (OpenEff 0 counterRow (Global 0 (inMain f) [])) (perform counter "next")))
     (perform counter "next")
   where
-  counterRow = rowOf [ counter ]
+  counterRow = TRowExtend (RowEffectEntry counter []) (regionRow "r" TRowEmpty)
 
 -- Re-entering a continuation ---------------------------------------------------------------------
 
--- | `handle (handle (let a = next () in let b = fork () in let c = next () in c + b)
--- | with { handles Counter ; cells [r] ( n : Int ) ; fast next u -> bump } @ ( 10 ))
--- | with { full fork u k -> k 1 + k 2 }`.
+-- | `handle (region [r] ( n : Int ) @ ( 10 ) in handle (let a = next () in
+-- | let b = fork () in let c = next () in c + b) with { handles Counter ;
+-- | fast next u -> bump }) with { full fork u k -> k 1 + k 2 }`.
 -- |
--- | The continuation of `fork` holds the `Counter` handler and its region, whose
+-- | The continuation of `fork` holds the `Counter` handler and the region, whose
 -- | cell holds 11 at the capture. Each resumption starts from that cell: `c` is 12
 -- | both times, so 13 + 14 = 27. A region the two resumptions shared gives 12 and
 -- | 13, so 28.
@@ -396,7 +400,7 @@ regionForked =
     [ full "fork" int TRowEmpty int
         (intOp "add" (app (var "k") [ lit 1 ]) (app (var "k") [ lit 2 ]))
     ]
-    $ handleFast counter "next" (Just { region: "r", initial: 10 }) (bump (regionRow "r" forkRow))
+    $ handleFast counter "next" (Just { region: "r", initial: 10 }) (bump "r" (regionRow "r" forkRow))
         ( let' "a" int (perform counter "next")
             $ let' "b" int (perform fork "fork")
             $ let' "c" int (perform counter "next")
@@ -404,33 +408,28 @@ regionForked =
         )
   where
   forkRow = rowOf [ fork ]
-  innerRow = rowOf [ counter, fork ]
+  innerRow = TRowExtend (RowEffectEntry counter []) (regionRow "r" forkRow)
 
--- | `handle (fork () + 100) with { handles Fork ; cells [r] ( n : Int ) ;
--- |   full fork u k -> let _ = writeCell n (readCell n + 1) in let a = k (readCell n) in
--- |     let _ = writeCell n (readCell n + 10) in let b = k (readCell n) in
--- |     a + b + readCell n } @ ( 0 )`.
+-- | `region [r] ( n : Int ) @ ( 0 ) in handle (fork () + 100) with { handles Fork ;
+-- |   full fork u k -> let _ = writeCell r.n (readCell r.n + 1) in
+-- |     let a = k (readCell r.n) in let _ = writeCell r.n (readCell r.n + 10) in
+-- |     let b = k (readCell r.n) in a + b + readCell r.n }`.
 -- |
 -- | The region stands below the handler's marker and stays behind when the
 -- | continuation is taken, so the clause's writes persist between the resumptions:
 -- | `k 1` gives 101, `k 11` gives 111, and the cell ends at 11, so 223.
--- |
--- | The continuation's bottom is this handler, which owns the region. Each
--- | resumption re-pushes it as one owning nothing: were it still the owner, a
--- | resumption finishing would close what stands directly below it — the entry the
--- | clause waits in, and not a region at all.
 ownedFork :: Expr P.Int
 ownedFork =
   handle fork (Just { region: "r", initial: 0 }) identityReturn
     [ full "fork" int clauseRow int
-        ( let' "w1" unit' (WriteCell 0 cell (plus (ReadCell 0 cell) (lit 1)))
-            $ let' "a" int (app (var "k") [ ReadCell 0 cell ])
-            $ let' "w2" unit' (WriteCell 0 cell (plus (ReadCell 0 cell) (lit 10)))
-            $ let' "b" int (app (var "k") [ ReadCell 0 cell ])
-            $ plus (plus (var "a") (var "b")) (ReadCell 0 cell)
+        ( let' "w1" unit' (writeN "r" (plus (readN "r") (lit 1)))
+            $ let' "a" int (app (var "k") [ readN "r" ])
+            $ let' "w2" unit' (writeN "r" (plus (readN "r") (lit 10)))
+            $ let' "b" int (app (var "k") [ readN "r" ])
+            $ plus (plus (var "a") (var "b")) (readN "r")
         )
     ]
-    (intOpAt (rowOf [ fork ]) "add" (perform fork "fork") (lit 100))
+    (intOpAt (TRowExtend (RowEffectEntry fork []) clauseRow) "add" (perform fork "fork") (lit 100))
   where
   clauseRow = regionRow "r" TRowEmpty
   plus = intOpAt clauseRow "add"
@@ -485,17 +484,17 @@ shadowType = fn unit' (rowOf [ trigger ]) int
 shadowAsk :: Expr P.Int
 shadowAsk = lam "u" unit' $ handleFast ask "ask" Nothing (lit 100) (perform trigger "go")
 
--- | `λu. handle (go ()) with { handles Ask ; cells [r2] ( n : Int ) ;
--- | fast ask u -> readCell n } @ ( 42 )`: a region declaring the cell key the
--- | `Trigger` handler's region declares.
+-- | `λu. region [r2] ( n : Int ) @ ( 42 ) in handle (go ()) with { handles Ask ;
+-- | fast ask u -> readCell r2.n }`: a region declaring the cell key the region
+-- | around the `Trigger` handler declares.
 shadowCell :: Expr P.Int
 shadowCell = lam "u" unit'
-  $ handleFast ask "ask" (Just { region: "r2", initial: 42 }) (ReadCell 0 cell) (perform trigger "go")
+  $ handleFast ask "ask" (Just { region: "r2", initial: 42 }) (readN "r2") (perform trigger "go")
 
 -- | The same, asking its own region what `n` holds after `go`.
 shadowWrite :: Expr P.Int
 shadowWrite = lam "u" unit'
-  $ handleFast ask "ask" (Just { region: "r2", initial: 42 }) (ReadCell 0 cell)
+  $ handleFast ask "ask" (Just { region: "r2", initial: 42 }) (readN "r2")
       (let' "ignored" int (perform trigger "go") (perform ask "ask"))
 
 -- | `handle (handle (openEff [( Ask )] shadowAsk ()) with { fast go u -> ask () })
@@ -507,47 +506,48 @@ askedOutside =
     $ handleFast trigger "go" Nothing (perform ask "ask")
     $ callWidened (rowOf [ ask ]) "shadowAsk"
 
--- | `handle (shadowCell ()) with { cells [r] ( n : Int ) ; fast go u -> readCell n }
--- | @ ( 7 )`: the clause reads its own region, 7, and not `shadowCell`'s, 42.
+-- | `region [r] ( n : Int ) @ ( 7 ) in handle (shadowCell ()) with
+-- | { fast go u -> readCell r.n }`: the clause reads the region it names, 7, and
+-- | not `shadowCell`'s, 42.
 readOutside :: Expr P.Int
 readOutside =
-  handleFast trigger "go" (Just { region: "r", initial: 7 }) (ReadCell 0 cell) (call "shadowCell")
+  handleFast trigger "go" (Just { region: "r", initial: 7 }) (readN "r") (callWidened (regionRow "r" TRowEmpty) "shadowCell")
 
--- | `handle (let a = shadowWrite () in let b = go () in a + b) with
--- | { cells [r] ( n : Int ) ; fast go u -> let old = readCell n in
--- |   let _ = writeCell n 5 in old } @ ( 7 )`.
+-- | `region [r] ( n : Int ) @ ( 7 ) in handle (let a = shadowWrite () in
+-- | let b = go () in a + b) with { fast go u -> let old = readCell r.n in
+-- |   let _ = writeCell r.n 5 in old }`.
 -- |
--- | Inside `shadowWrite` the clause sets its own region's `n` to 5 and leaves the
+-- | Inside `shadowWrite` the clause sets region `r`'s `n` to 5 and leaves the
 -- | inner one at 42, so `a = 42`; the second `go` reads the 5 the first wrote, so
 -- | `b = 5`: 47. A write reaching the inner region gives 5 + 7 = 12.
 writtenOutside :: Expr P.Int
 writtenOutside =
   handleFast trigger "go" (Just { region: "r", initial: 7 }) swap
-    $ let' "a" int (call "shadowWrite")
+    $ let' "a" int (callWidened (regionRow "r" TRowEmpty) "shadowWrite")
     $ let' "b" int (perform trigger "go")
-    $ intOpAt (rowOf [ trigger ]) "add" (var "a") (var "b")
+    $ intOpAt (TRowExtend (RowEffectEntry trigger []) (regionRow "r" TRowEmpty)) "add" (var "a") (var "b")
   where
   swap =
-    let' "old" int (ReadCell 0 cell)
-      $ let' "w" unit' (WriteCell 0 cell (lit 5))
+    let' "old" int (readN "r")
+      $ let' "w" unit' (writeN "r" (lit 5))
       $ var "old"
 
--- | `handle (shadowCell ()) with { fast go u -> handle (ask ()) with
--- |   { cells [r3] ( n : Int ) ; fast ask u -> readCell n } @ ( 9 ) }`: what the body
+-- | `handle (shadowCell ()) with { fast go u -> region [r3] ( n : Int ) @ ( 9 ) in
+-- |   handle (ask ()) with { fast ask u -> readCell r3.n } }`: what the body
 -- | installs stands above its boundary and is found as usual, 9.
 installedByBody :: Expr P.Int
 installedByBody =
   handleFast trigger "go" Nothing
-    (handleFast ask "ask" (Just { region: "r3", initial: 9 }) (ReadCell 0 cell) (perform ask "ask"))
+    (handleFast ask "ask" (Just { region: "r3", initial: 9 }) (readN "r3") (perform ask "ask"))
     (call "shadowCell")
 
--- | `handle (handle (openEff [( Fork )] shadowCell ()) with { cells [r] ( n : Int ) ;
--- |   fast go u -> let f = fork () in f + readCell n } @ ( 7 )) with
+-- | `handle (region [r] ( n : Int ) @ ( 7 ) in handle (openEff [( region r, Fork )]
+-- |   shadowCell ()) with { fast go u -> let f = fork () in f + readCell r.n }) with
 -- | { full fork u k -> k 1 + k 2 }`.
 -- |
 -- | The continuation of `fork` carries the `Trigger` clause's boundary, the `Trigger`
 -- | handler, and what `shadowCell` installed, and re-pushes them twice. Each
--- | resumption continues the clause, which reads its own region: 1 + 7 and 2 + 7,
+-- | resumption continues the clause, which reads region `r`: 1 + 7 and 2 + 7,
 -- | so 17. Reading the region inside gives 43 + 44, so 87.
 forkedTwice :: Expr P.Int
 forkedTwice =
@@ -556,17 +556,17 @@ forkedTwice =
         (intOp "add" (app (var "k") [ lit 1 ]) (app (var "k") [ lit 2 ]))
     ]
     $ handleFast trigger "go" (Just { region: "r", initial: 7 }) forkThenRead
-        (callWidened (rowOf [ fork ]) "shadowCell")
+        (callWidened (regionRow "r" (rowOf [ fork ])) "shadowCell")
   where
   forkThenRead =
     let' "f" int (perform fork "fork")
-      $ intOpAt (regionRow "r" (rowOf [ fork ])) "add" (var "f") (ReadCell 0 cell)
+      $ intOpAt (regionRow "r" (rowOf [ fork ])) "add" (var "f") (readN "r")
 
 -- The refusal fixtures' source -------------------------------------------------------------------
 
 -- | A module the handler refusals are made from by changing what it lowers to.
 -- |
--- | `Meter` has two operations and its handler a region of two cells, `reading` and
+-- | `Meter` has two operations and a region of two cells around its handler, `reading` and
 -- | `spare`, so a handler entry has a second clause and a second cell to turn into a
 -- | repeat of the first, and one of each to leave out. `installed` installs it where
 -- | something waits for the answer, a `HNDL`; `inBranch` installs it in tail
@@ -593,21 +593,20 @@ meterModule =
   reading = SymbolKey (Symbol "reading")
   spare = SymbolKey (Symbol "spare")
   cells = [ { key: reading, ty: int }, { key: spare, ty: int } ]
-  meterRow =
-    TRowExtend (RowRegionEntry (TVar (TyVar "m")) (Array.foldr (\c rest -> TRowExtend (RowTypeEntry c.key c.ty) rest) TRowEmpty cells))
-      TRowEmpty
+  region = RegionName "m"
+  meterRow = TRowExtend (RowRegionEntry region) TRowEmpty
   metered =
-    Handle 0 (perform meter "bump")
-      { element: RowEffectEntry meter []
-      , cells: Just { var: TyVar "m", cells }
-      , returnClause: identityReturn
-      , opClauses:
-          [ fast "bump"
-              ( let' "v" int (intOpAt meterRow "add" (ReadCell 0 reading) (lit 1))
-                  $ let' "w" unit' (WriteCell 0 reading (var "v"))
-                  $ var "v"
-              )
-          , fast "peek" (ReadCell 0 spare)
-          ]
-      }
-      [ lit 0, lit 0 ]
+    Region 0 region cells [ lit 0, lit 0 ]
+      ( Handle 0 (perform meter "bump")
+          { element: RowEffectEntry meter []
+          , returnClause: identityReturn
+          , opClauses:
+              [ fast "bump"
+                  ( let' "v" int (intOpAt meterRow "add" (ReadCell 0 region reading) (lit 1))
+                      $ let' "w" unit' (WriteCell 0 region reading (var "v"))
+                      $ var "v"
+                  )
+              , fast "peek" (ReadCell 0 region spare)
+              ]
+          }
+      )

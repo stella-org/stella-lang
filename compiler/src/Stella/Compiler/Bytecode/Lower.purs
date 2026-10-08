@@ -183,7 +183,7 @@ keyOf = case _ of
   TagKey t -> Just (KTag t)
   PositionKey n -> Just (KPosition n)
   EffectKey e -> Just (KEffect e)
-  RegionKey -> Nothing
+  RegionKey _ -> Nothing
 
 calleeOf :: M.Callee -> CalleeEntry
 calleeOf = case _ of

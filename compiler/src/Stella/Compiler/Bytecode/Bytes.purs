@@ -46,7 +46,7 @@ import Prim as P
 import Stella.Compiler.Primitive (PrimOp)
 import Stella.Compiler.Bytecode.Float as Float
 import Stella.Compiler.TypedCore.Domain (ScalarString, scalarStringOf, scalarValue)
-import Stella.Compiler.TypedCore.Name (Ident)
+import Stella.Compiler.TypedCore.Name (Ident, RegionName)
 import Data.Array as Array
 import Data.List (List(..), (:))
 import Data.List as List
@@ -105,6 +105,9 @@ data EncodeError
   | ArityBelowOne Ident P.Int
   -- | A precedence or a row position below zero, which a count is never.
   | CountBelowZero P.Int
+  -- | A region name in an interface. A published scheme is checked with no
+  -- | region in scope, so none can mention one, and the format has no tag for it.
+  | RegionInInterface RegionName
 
 -- Writing ------------------------------------------------------------------------
 
