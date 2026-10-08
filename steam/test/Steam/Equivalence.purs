@@ -240,7 +240,7 @@ finished g first equation report state hole =
 byHost :: Either P.String Scenario
 byHost = start <#> \(Tuple g s0) ->
   let
-    Tuple submitted s1 = submitSynthesis env registry site (XMeta g) searching Nothing s0
+    Tuple submitted s1 = submitSynthesis env registry site (XMeta g) searching s0
     Tuple equation s2 = submitAttempting (attemptJob env registry) site (equating g) s1
     Tuple report s3 = runSynthesis env registry s2
   in
@@ -257,7 +257,7 @@ byGuest session = case start, bundle of
       attempts <- Ref.new 0
       health <- Ref.new Reusable
       pure { session, descriptor: trusted.descriptor, env, budget: 10_000_000, cancellation, attempts, health } :: _ Guests
-    node (submitGuestSynthesis guests site (XMeta g) searching Nothing s0) >>= case _ of
+    node (submitGuestSynthesis guests site (XMeta g) searching s0) >>= case _ of
       Left _ -> pure (Left "the submission was called off")
       Right (Tuple submitted s1) -> node (submitGuest guests site (equating g) s1) >>= case _ of
         Left _ -> pure (Left "the equation was called off")

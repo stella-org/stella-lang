@@ -26,7 +26,7 @@ import Data.String as String
 import Data.String.CodePoints (CodePoint)
 import Steam.Structural (Cut, NumberAtom(..), StructuralValue(..))
 import Stella.Compiler.TypedCore.Domain (ScalarString, ScalarValue, codePointOf, scalarStringOf, scalarsOf, textOf)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), RegionName(..), Symbol(..), Tag(..))
 import Stella.Compiler.TypedCore.Type (RowKey(..))
 
 -- | What a snapshot reads as.
@@ -88,7 +88,7 @@ renderKey = case _ of
   TagKey (Tag tag) -> "@" <> tag
   PositionKey i -> "_" <> show i
   EffectKey (Qualified (ModuleName moduleName) (EffName name)) -> "!" <> moduleName <> "." <> name
-  RegionKey -> "%region"
+  RegionKey (RegionName name) -> "%" <> name
 
 renderName :: Qualified Ident -> P.String
 renderName (Qualified (ModuleName moduleName) (Ident name)) = moduleName <> "." <> name

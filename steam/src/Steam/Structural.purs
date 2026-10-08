@@ -44,7 +44,7 @@ import Data.Tuple (Tuple(..))
 import Steam.Value (CtorId, KeyId, OpId, Value(..))
 import Stella.Compiler.Bytecode.Module (Key(..))
 import Stella.Compiler.TypedCore.Domain (ScalarString, ScalarValue, codePointOf, compareByScalar, compareNumber, sameNumber, scalarLength, scalarStringOf, scalarsOf, textOf)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident, ModuleName(..), OpName, Qualified(..), Symbol(..), Tag(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident, ModuleName(..), OpName, Qualified(..), RegionName(..), Symbol(..), Tag(..))
 import Stella.Compiler.TypedCore.Type (RowKey(..))
 
 -- | A `Number` under the identity of a literal: equality of the bit pattern, with
@@ -155,7 +155,7 @@ compareKeys a b = case compare (kind a) (kind b) of
     TagKey _ -> 1
     PositionKey _ -> 2
     EffectKey _ -> 3
-    RegionKey -> 4
+    RegionKey _ -> 4
 
   within :: RowKey -> RowKey -> Ordering
   within x y = case x, y of
@@ -163,6 +163,7 @@ compareKeys a b = case compare (kind a) (kind b) of
     TagKey (Tag left), TagKey (Tag right) -> compareByScalar left right
     PositionKey left, PositionKey right -> compare left right
     EffectKey left, EffectKey right -> effect left right
+    RegionKey (RegionName left), RegionKey (RegionName right) -> compareByScalar left right
     _, _ -> EQ
 
   effect (Qualified (ModuleName leftModule) (EffName left)) (Qualified (ModuleName rightModule) (EffName right)) =

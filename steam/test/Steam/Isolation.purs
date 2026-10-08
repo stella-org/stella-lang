@@ -209,7 +209,7 @@ spec = describe "what a guest keeps between attempts" do
       attempts <- liftEffect (Ref.new 0)
       guests <- guestsOn session attempts
       case runElabIn env (initialState (SessionId 0) 10) (freshTypeMeta emptyXContext XKType) of
-        Tuple (Done a@(XMeta _)) s0 -> node (submitGuestSynthesis guests site a caching Nothing s0) >>= case _ of
+        Tuple (Done a@(XMeta _)) s0 -> node (submitGuestSynthesis guests site a caching s0) >>= case _ of
           Right (Tuple { submission: Continue { attempt: Registered _ } } s1) ->
             node (submitGuest guests site (JobUnify { kind: XKType, left: a, right: xInt }) s1) >>= case _ of
               Right (Tuple (Continue { attempt: Committed }) s2) -> node (runGuests guests s2) >>= case _ of
@@ -239,13 +239,13 @@ spec = describe "what a guest keeps between attempts" do
       earlier <- guestsOn session attempts
       -- a compilation whose goal waits, which leaves its goal's type in the array
       case runElabIn env (initialState (SessionId 0) 10) (freshTypeMeta emptyXContext XKType) of
-        Tuple (Done a) s0 -> node (submitGuestSynthesis earlier site a caching Nothing s0) >>= case _ of
+        Tuple (Done a) s0 -> node (submitGuestSynthesis earlier site a caching s0) >>= case _ of
           Right (Tuple { submission: Continue { attempt: Registered _ } } _) -> pure unit
           _ -> fail "the goal did not wait"
         _ -> fail "no metavariable"
       -- another, of another session of the compiler, on the same Steam session
       later <- guestsOn session attempts
-      node (submitGuestSynthesis later site xInt caching Nothing (initialState (SessionId 1) 10)) >>= case _ of
+      node (submitGuestSynthesis later site xInt caching (initialState (SessionId 1) 10)) >>= case _ of
         Right (Tuple { submission: Stop report } _) -> case report.result of
           Halted (InvalidHandle _ ForeignHandle) -> pure unit
           other -> fail ("the kept handle was not refused as foreign: " <> show other)
