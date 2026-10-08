@@ -86,17 +86,20 @@ data VerifyError
   | CaptureCount M.FuncId M.FuncId P.Int P.Int
   -- | A function reached at an arity its form does not have, as the form's and
   -- | the function's: no parameters for the body of a `handle`, two for a
-  -- | `full` clause, one for a `fast` clause and for a return clause.
+  -- | `full` clause, and one for a `fast` clause, for a return clause, and for
+  -- | the body of a `region`.
   | ClauseArity M.FuncId M.FuncId P.Int P.Int
   -- | A handler naming one operation twice.
   | DuplicateOperation M.FuncId OpName
-  -- | A handler naming one cell key twice. A region's keys are distinct, and a
-  -- | repeat leaves a `readCell` on that key with two cells to name.
+  -- | A region naming one cell key twice. A region's keys are distinct, and a
+  -- | repeat leaves two cells where the layout declares one.
   | DuplicateCell M.FuncId RowKey
-  -- | A `handle` whose initial values do not match the keys of the handler's
-  -- | region, as the keys' count and the values'. A lowering pairs the two by
-  -- | position, so a disagreement leaves a cell holding another's value.
+  -- | A region whose initial values do not match its keys, as the keys' count
+  -- | and the values'. A cell takes the initial value at its own position, so a
+  -- | disagreement leaves a cell with none or a value with no cell.
   | CellCount M.FuncId P.Int P.Int
+  -- | A cell named by a negative position.
+  | NegativeCell M.FuncId P.Int
   -- | A saturated call, constructor, foreign, or operation whose arguments do
   -- | not match the declared arity, as the declaration's and the site's.
   | CallArity M.FuncId (Qualified Ident) P.Int P.Int
@@ -430,26 +433,39 @@ comp ctx env = case _ of
   M.CAbsurd a -> atom ctx env a
   M.CPerform _ _ a -> atom ctx env a
 
-  -- which region a cell key names is not a property of this function: the frame
-  -- is the one a walk of the continuation finds, and the Core type checker
-  -- established that the key is one the region declares
-  M.CReadCell _ -> Right unit
-  M.CWriteCell _ a -> atom ctx env a
+  -- how many cells the region has is not a property of this function: the
+  -- identity may have been captured, and the Core type checker established that
+  -- the cell is one the region declares
+  M.CReadCell region index -> do
+    atom ctx env region
+    cellPosition env index
+  M.CWriteCell region index a -> do
+    atom ctx env region
+    cellPosition env index
+    atom ctx env a
 
-  M.CHandle handler func captures initial -> do
-    clause ctx env 0 func captures
+  M.CRegion keys func captures initial -> do
+    clause ctx env 1 func captures
     traverse_ (atom ctx env) initial
+    case duplicate keys of
+      Just key -> Left (DuplicateCell env.func key)
+      Nothing -> Right unit
+    exactly (Array.length keys) (Array.length initial) (CellCount env.func)
+
+  M.CHandle handler func captures -> do
+    clause ctx env 0 func captures
     clause ctx env 1 handler.returnClause.func handler.returnClause.captures
     case duplicate (map _.op handler.opClauses) of
       Just op -> Left (DuplicateOperation env.func op)
       Nothing -> Right unit
-    case duplicate handler.cells of
-      Just key -> Left (DuplicateCell env.func key)
-      Nothing -> Right unit
-    exactly (Array.length handler.cells) (Array.length initial) (CellCount env.func)
     traverse_
       (\oc -> clause ctx env (formArity oc.form) oc.clause.func oc.clause.captures)
       handler.opClauses
+
+cellPosition :: Env -> P.Int -> Either VerifyError Unit
+cellPosition env index
+  | index >= 0 = Right unit
+  | otherwise = Left (NegativeCell env.func index)
 
 -- | The captures a closure supplies are in scope, and the function it names
 -- | takes exactly them.

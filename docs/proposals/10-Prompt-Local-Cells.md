@@ -529,8 +529,11 @@ handle program with
 **Mid IR.**
 
 - `handle h f [ā]` takes no initial values; a handler entry has no cells.
-- A new computation, `region n f [ā] @ [v̄]`, opens a region of `n` cells with initial values
-  `v̄` and calls `f`, a function of one parameter, with the region's identity.
+- A new computation, `region k̄ f [ā] @ [v̄]`, opens a region of `|k̄|` cells with initial values
+  `v̄` and calls `f`, a function of one parameter, with the region's identity. `k̄` is the
+  layout's keys in the order it writes them: a cell's position is its key's, the keys are
+  distinct, and `v̄` holds one value per key. They are what a region entry's cell count and debug
+  keys come from.
 - `readCell x i` and `writeCell x i a` name the local holding a region's identity and a cell
   position.
 - The identity is an ordinary local of `Rep` `Val`. A closure over a cell captures it as it
@@ -543,11 +546,9 @@ handle program with
   count and, as debug information, the keys.
 - `CGET d, r_region, i` and `CSET d, r_region, i, s` reach a cell by identity and position.
 - `HANDLERS` loses its cell vector, and region entries take a section of their own.
-- The `.dmo` format version is raised.
 - The `.dmi` encoding of keys and row entries drops the region tag. No published scheme mentions
-  a region name, top-level declarations being checked with no region in scope. The tags change
-  where they stand, so **the `.dmi` format version is raised too**, separately from the `.dmo`'s:
-  a reader of the old layout must refuse the new one rather than misread it.
+  a region name, top-level declarations being checked with no region in scope.
+- Neither format version changes. Versioning has not started, and both formats stay at version 0.
 
 **Steam and the JavaScript runtime.**
 

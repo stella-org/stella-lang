@@ -14,6 +14,7 @@
 module Stella.Compiler.MiddleEnd.Translate
   ( TranslateError(..)
   , translate
+  , Free
   , freeVars
   ) where
 
@@ -28,14 +29,14 @@ import Stella.Compiler.MiddleEnd.IR as M
 import Stella.Compiler.TypedCore.Check (Typed)
 import Stella.Compiler.TypedCore.Decl as D
 import Stella.Compiler.TypedCore.Declare (CheckedGroup, Declared)
-import Stella.Compiler.TypedCore.Name (Ident, JoinName, ModuleName, Qualified(..))
+import Stella.Compiler.TypedCore.Name (Ident, JoinName, ModuleName, Qualified(..), RegionName)
 import Stella.Compiler.TypedCore.Prim (asFunction)
 import Stella.Compiler.TypedCore.Signature (Signature, lookupCtor, lookupValue)
 import Stella.Compiler.TypedCore.Term as C
-import Stella.Compiler.TypedCore.Type (Type(..), TypeScheme, rowEntryKey)
+import Stella.Compiler.TypedCore.Type (RowKey, Type(..), TypeScheme, rowEntryKey)
 import Data.Array as Array
 import Data.Either (Either(..))
-import Data.Foldable (foldl, traverse_)
+import Data.Foldable (foldMap, foldl, traverse_)
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
 import Data.Map as Map
@@ -62,9 +63,9 @@ data TranslateError
   -- | callers take those constructs first — one to a destination, the other
   -- | through a join point — so this reports a translator that grew a third.
   | ControlInValuePosition
-  -- | A `region`, `readCell`, or `writeCell`, which this translation does not
-  -- | lower.
-  | RegionNotLowered
+  | UnboundRegion RegionName
+  -- | A cell the region's layout does not declare, as the region and the key.
+  | UnknownCell RegionName RowKey
 
 derive instance Eq TranslateError
 derive instance Generic TranslateError _
@@ -203,12 +204,21 @@ type Bound =
 type Ctx =
   { signature :: Signature
   , locals :: Map Ident Bound
+  , regions :: Map RegionName RegionBound
   , joins :: Map JoinName M.JoinId
   -- | The definitional arity of a top-level value of this module or of one it
   -- | imports: the number of leading lambdas the erased right-hand side has. A
   -- | value whose right-hand side is not a lambda has none, and a call to it is
   -- | `callu`.
   , arities :: Map (Qualified Ident) P.Int
+  }
+
+-- | What a region name stands for: the atom holding the identity of the region,
+-- | and its keys in the order the layout writes them, which is what a cell's
+-- | position is read from.
+type RegionBound =
+  { identity :: M.Atom
+  , keys :: P.Array RowKey
   }
 
 -- | What the head of an application spine is, and how many arguments saturate
@@ -259,6 +269,19 @@ lookupBound :: forall ann. Ctx -> Ident -> T ann Bound
 lookupBound ctx name = case Map.lookup name ctx.locals of
   Just bound -> pure bound
   Nothing -> throw (UnboundLocal name)
+
+lookupRegion :: forall ann. Ctx -> RegionName -> T ann RegionBound
+lookupRegion ctx name = case Map.lookup name ctx.regions of
+  Just region -> pure region
+  Nothing -> throw (UnboundRegion name)
+
+-- | The identity of the region a cell belongs to, and the cell's position in it.
+cellOf :: forall ann. Ctx -> RegionName -> RowKey -> T ann { region :: M.Atom, index :: P.Int }
+cellOf ctx name key = do
+  region <- lookupRegion ctx name
+  case Array.elemIndex key region.keys of
+    Just index -> pure { region: region.identity, index }
+    Nothing -> throw (UnknownCell name key)
 
 -- Destinations ---------------------------------------------------------------
 
@@ -449,11 +472,21 @@ value ctx expr k = case stripErased expr of
   C.Handle _ body handler ->
     handled ctx (repAt ctx expr) body handler k
 
-  C.Region _ _ _ _ _ -> throw RegionNotLowered
+  -- the initial values are evaluated before the region opens, so the bindings
+  -- naming them stand outside it and the body captures none of them
+  C.Region _ name cells initial body ->
+    withAtoms ctx initial \values -> do
+      let keys = map _.key cells
+      lifted <- liftRegionBody ctx (sourceAt body) name keys body
+      k (RComp (M.CRegion keys lifted.func lifted.captures values) (repAt ctx expr))
 
-  C.ReadCell _ _ _ -> throw RegionNotLowered
+  C.ReadCell _ name key -> do
+    cell <- cellOf ctx name key
+    k (RComp (M.CReadCell cell.region cell.index) (repAt ctx expr))
 
-  C.WriteCell _ _ _ _ -> throw RegionNotLowered
+  C.WriteCell _ name key written -> do
+    cell <- cellOf ctx name key
+    atomize ctx written \a -> k (RComp (M.CWriteCell cell.region cell.index a) (repAt ctx expr))
 
   -- reached only through `go`, which handles these before delegating here
   _ -> throw ControlInValuePosition
@@ -588,11 +621,10 @@ handled ctx rep body handler k = do
   let
     h =
       { key: rowEntryKey handler.element
-      , cells: []
       , returnClause
       , opClauses
       }
-  k (RComp (M.CHandle h lifted.func lifted.captures []) rep)
+  k (RComp (M.CHandle h lifted.func lifted.captures) rep)
 
 -- | A function a handler reaches, over its own binders as parameters.
 -- |
@@ -678,33 +710,74 @@ liftFunction
   -> P.Array (Tuple Ident Type)
   -> C.Expr (Typed a)
   -> T a { func :: M.FuncId, captures :: P.Array M.Atom }
-liftFunction ctx source params body = do
-  let bracketed = Set.fromFoldable (map (\(Tuple name _) -> name) params)
-  let free = Set.difference (freeVars body) bracketed
-  let captured = Array.filter (isCaptured ctx) (Set.toUnfoldable free)
+liftFunction ctx source params = lift ctx source { region: Nothing, values: params }
+
+-- | The body of a `region`, lifted into a function of one parameter: the
+-- | region's identity.
+liftRegionBody
+  :: forall a
+   . Ctx
+  -> a
+  -> RegionName
+  -> P.Array RowKey
+  -> C.Expr (Typed a)
+  -> T a { func :: M.FuncId, captures :: P.Array M.Atom }
+liftRegionBody ctx source name keys =
+  lift ctx source { region: Just { name, keys }, values: [] }
+
+-- | A function's parameters: the identity of a region where it is the body of
+-- | one, then the Core variables it binds.
+type Params =
+  { region :: Maybe { name :: RegionName, keys :: P.Array RowKey }
+  , values :: P.Array (Tuple Ident Type)
+  }
+
+-- | **A region's identity is captured like a local.** A function using the
+-- | cells of a region it does not open reaches them through the identity it
+-- | captured, which is the one of the opening its closure was made under, and
+-- | the captures list the region identities after the locals.
+lift
+  :: forall a
+   . Ctx
+  -> a
+  -> Params
+  -> C.Expr (Typed a)
+  -> T a { func :: M.FuncId, captures :: P.Array M.Atom }
+lift ctx source params body = do
+  let free = freeVars body
+  let bracketed = Set.fromFoldable (map (\(Tuple name _) -> name) params.values)
+  let captured = Array.filter (isCaptured ctx) (Set.toUnfoldable (Set.difference free.values bracketed))
+  let opened = Set.fromFoldable (map _.name params.region)
+  let capturedRegions = Set.toUnfoldable (Set.difference free.regions opened) :: P.Array RegionName
   -- what the enclosing function supplies, read before the numbering changes
   outers <- traverse (\name -> _.atom <$> lookupBound ctx name) captured
+  outerRegions <- traverse (\name -> _.identity <$> lookupRegion ctx name) capturedRegions
   func <- freshFunc
   recordFunction func (Just source)
   inFunction func do
-    paramInfos <- traverse (\(Tuple name ty) -> paramBinder ctx name ty) params
+    regionInfos <- traverse (\r -> regionBinder r.name r.keys) (Array.fromFoldable params.region)
+    paramInfos <- traverse (\(Tuple name ty) -> paramBinder ctx name ty) params.values
     captureInfos <- traverse (captureBinder ctx) captured
+    regionCaptureInfos <- traverse (regionCaptureBinder ctx) capturedRegions
     let
       inner = ctx
         { locals =
             foldl (\acc info -> Map.insert info.name info.bound acc)
               (foldl (\acc info -> Map.insert info.name info.bound acc) ctx.locals captureInfos)
               paramInfos
+        , regions =
+            foldl (\acc info -> Map.insert info.name info.bound acc) ctx.regions
+              (regionInfos <> regionCaptureInfos)
         , joins = Map.empty
         }
     translated <- go inner DRet body
     emitFunction
       { id: func
-      , params: map _.binder paramInfos
-      , captures: map _.binder captureInfos
+      , params: map _.binder regionInfos <> map _.binder paramInfos
+      , captures: map _.binder captureInfos <> map _.binder regionCaptureInfos
       , body: translated
       }
-    pure { func, captures: outers }
+    pure { func, captures: outers <> outerRegions }
 
 -- | A variable standing for a global, a literal, or a nullary constructor needs
 -- | no capture: the lifted body names it directly.
@@ -724,6 +797,18 @@ captureBinder ctx name = do
     , bound: { atom: M.ALocal local, rep: bound.rep }
     , outer: bound.atom
     }
+
+-- | The parameter holding a region's identity. Nothing is known of an identity
+-- | but that it is a value.
+regionBinder :: forall ann. RegionName -> P.Array RowKey -> T ann { name :: RegionName, binder :: M.Binder, bound :: RegionBound }
+regionBinder name keys = do
+  local <- freshLocal
+  pure { name, binder: { local, rep: RepVal }, bound: { identity: M.ALocal local, keys } }
+
+regionCaptureBinder :: forall ann. Ctx -> RegionName -> T ann { name :: RegionName, binder :: M.Binder, bound :: RegionBound }
+regionCaptureBinder ctx name = do
+  region <- lookupRegion ctx name
+  regionBinder name region.keys
 
 -- | A local recursive group. Every closure is allocated before any capture list
 -- | is filled, so a member may capture its neighbours.
@@ -853,75 +938,88 @@ materialize ctx types atoms occurrence k = case Map.lookup occurrence atoms of
 
 -- Free variables -------------------------------------------------------------
 
--- | The free value variables of a term.
+-- | What a term names from outside it: value variables, and the regions whose
+-- | cells it reaches.
 -- |
 -- | Global names are not among them, being named directly, and neither are join
 -- | points, which are not values.
-freeVars :: forall a. C.Expr a -> Set Ident
+type Free =
+  { values :: Set Ident
+  , regions :: Set RegionName
+  }
+
+value' :: Ident -> Free
+value' name = { values: Set.singleton name, regions: Set.empty }
+
+region' :: RegionName -> Free
+region' name = { values: Set.empty, regions: Set.singleton name }
+
+withoutValues :: P.Array Ident -> Free -> Free
+withoutValues names free = free { values = Set.difference free.values (Set.fromFoldable names) }
+
+withoutRegion :: RegionName -> Free -> Free
+withoutRegion name free = free { regions = Set.delete name free.regions }
+
+-- | The free value variables and region names of a term. A `region` binds its
+-- | name in its body and not in its initial values, which are evaluated before
+-- | it opens.
+freeVars :: forall a. C.Expr a -> Free
 freeVars = case _ of
-  C.Var _ name -> Set.singleton name
-  C.Global _ _ _ -> Set.empty
-  C.Lit _ _ -> Set.empty
-  C.Lam _ name _ body -> Set.delete name (freeVars body)
-  C.App _ f x -> Set.union (freeVars f) (freeVars x)
+  C.Var _ name -> value' name
+  C.Global _ _ _ -> mempty
+  C.Lit _ _ -> mempty
+  C.Lam _ name _ body -> withoutValues [ name ] (freeVars body)
+  C.App _ f x -> freeVars f <> freeVars x
   C.TyLam _ _ _ body -> freeVars body
   C.TyApp _ e _ -> freeVars e
   C.ConstraintLam _ _ body -> freeVars body
   C.ConstraintApp _ e -> freeVars e
-  C.Let _ name _ rhs body -> Set.union (freeVars rhs) (Set.delete name (freeVars body))
+  C.Let _ name _ rhs body -> freeVars rhs <> withoutValues [ name ] (freeVars body)
   C.LetRec _ bindings body ->
-    Set.difference
-      (Set.union (unions (map (freeVars <<< _.value) bindings)) (freeVars body))
-      (Set.fromFoldable (map _.name bindings))
-  C.Case _ scrutinees dt -> Set.union (unions (map freeVars scrutinees)) (freeVarsTree dt)
+    withoutValues (map _.name bindings)
+      (foldMap (freeVars <<< _.value) bindings <> freeVars body)
+  C.Case _ scrutinees dt -> foldMap freeVars scrutinees <> freeVarsTree dt
   C.LetJoin _ _ params _ definitionBody body ->
-    Set.union
-      (Set.difference (freeVars definitionBody) (Set.fromFoldable (map _.name params)))
-      (freeVars body)
-  C.Jump _ _ args -> unions (map freeVars args)
-  C.RecordEmpty _ -> Set.empty
-  C.RecordExtend _ _ v rest -> Set.union (freeVars v) (freeVars rest)
+    withoutValues (map _.name params) (freeVars definitionBody) <> freeVars body
+  C.Jump _ _ args -> foldMap freeVars args
+  C.RecordEmpty _ -> mempty
+  C.RecordExtend _ _ v rest -> freeVars v <> freeVars rest
   C.RecordSelect _ _ e -> freeVars e
   C.RecordRestrict _ _ e -> freeVars e
-  C.RecordUpdate _ _ rec newValue -> Set.union (freeVars rec) (freeVars newValue)
-  C.RecordMerge _ left right -> Set.union (freeVars left) (freeVars right)
+  C.RecordUpdate _ _ rec newValue -> freeVars rec <> freeVars newValue
+  C.RecordMerge _ left right -> freeVars left <> freeVars right
   C.VariantInject _ _ e -> freeVars e
   C.VariantWeaken _ _ _ e -> freeVars e
   C.VariantAbsurd _ _ e -> freeVars e
   C.Perform _ _ _ _ arg -> freeVars arg
   C.Handle _ body handler ->
-    Set.unions
-      [ freeVars body
-      , Set.delete handler.returnClause.binder (freeVars handler.returnClause.body)
-      , unions (map freeVarsClause handler.opClauses)
-      ]
-  C.Region _ _ _ initial body -> Set.union (unions (map freeVars initial)) (freeVars body)
-  C.ReadCell _ _ _ -> Set.empty
-  C.WriteCell _ _ _ written -> freeVars written
+    freeVars body
+      <> withoutValues [ handler.returnClause.binder ] (freeVars handler.returnClause.body)
+      <> foldMap freeVarsClause handler.opClauses
+  C.Region _ name _ initial body -> foldMap freeVars initial <> withoutRegion name (freeVars body)
+  C.ReadCell _ name _ -> region' name
+  C.WriteCell _ name _ written -> region' name <> freeVars written
   C.OpenEff _ _ e -> freeVars e
 
-freeVarsClause :: forall a. C.OpClause a -> Set Ident
+freeVarsClause :: forall a. C.OpClause a -> Free
 freeVarsClause = case _ of
   C.FullClause c ->
-    Set.delete c.argBinder.name (Set.delete c.contBinder.name (freeVars c.body))
+    withoutValues [ c.argBinder.name, c.contBinder.name ] (freeVars c.body)
   C.FastClause c ->
-    Set.delete c.argBinder.name (freeVars c.body)
+    withoutValues [ c.argBinder.name ] (freeVars c.body)
 
-freeVarsTree :: forall a. C.DecisionTree a -> Set Ident
+freeVarsTree :: forall a. C.DecisionTree a -> Free
 freeVarsTree = case _ of
   C.Leaf e -> freeVars e
-  C.Bind name _ inner -> Set.delete name (freeVarsTree inner)
+  C.Bind name _ inner -> withoutValues [ name ] (freeVarsTree inner)
   C.SwitchCtor _ branches fallback ->
-    Set.union (unions (map (freeVarsTree <<< _.tree) branches)) (unions (Array.fromFoldable (map freeVarsTree fallback)))
+    foldMap (freeVarsTree <<< _.tree) branches <> foldMap freeVarsTree fallback
   C.SwitchLit _ branches fallback ->
-    Set.union (unions (map (freeVarsTree <<< _.tree) branches)) (freeVarsTree fallback)
+    foldMap (freeVarsTree <<< _.tree) branches <> freeVarsTree fallback
   C.SwitchKey _ branches fallback ->
-    Set.union (unions (map (freeVarsTree <<< _.tree) branches)) (unions (Array.fromFoldable (map freeVarsTree fallback)))
+    foldMap (freeVarsTree <<< _.tree) branches <> foldMap freeVarsTree fallback
   C.Guard condition consequent alternative ->
-    Set.unions [ freeVars condition, freeVarsTree consequent, freeVarsTree alternative ]
-
-unions :: P.Array (Set Ident) -> Set Ident
-unions = foldl Set.union Set.empty
+    freeVars condition <> freeVarsTree consequent <> freeVarsTree alternative
 
 -- Modules --------------------------------------------------------------------
 
@@ -974,6 +1072,7 @@ translate imports m declared =
   ctx =
     { signature: declared.signature
     , locals: Map.empty
+    , regions: Map.empty
     , joins: Map.empty
     -- an arity is taken from the environment for the modules this one depends
     -- on, and this one speaks for its own

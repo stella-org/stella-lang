@@ -21,5 +21,5 @@ import Prim as P
 
 import Stella.Compiler.MiddleEnd.Rep (Rep(..), repOf)
 import Stella.Compiler.MiddleEnd.IR (Atom(..), Binder, Callee(..), ClauseForm(..), ClauseRef, Comp(..), CtorBranch, CtorEntry, Debug, EffectEntry, Expr(..), ForeignEntry, FuncId(..), Function, FunctionDebug, GlobalEntry, GlobalInit(..), Handler, JoinId(..), KeyBranch, LitBranch, Local(..), Module, OpClauseRef, RecBinding, emptyDebug)
-import Stella.Compiler.MiddleEnd.Translate (TranslateError(..), freeVars, translate)
+import Stella.Compiler.MiddleEnd.Translate (Free, TranslateError(..), freeVars, translate)
 import Stella.Compiler.MiddleEnd.Verify (VerifyError(..), verify)

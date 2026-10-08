@@ -44,6 +44,9 @@ data LowerError
   = Unverified VerifyError
   -- | A region key in a term. No erased term carries one.
   | RegionKeyInCode RowKey
+  -- | A `region`, `readCell`, or `writeCell`, which this lowering does not
+  -- | lower.
+  | RegionNotLowered
 
 derive instance Eq LowerError
 derive instance Generic LowerError _
@@ -333,21 +336,18 @@ comp d = case _ of
     a <- atomReg atom
     pure (a.code <> [ PERF d keyIx opIx a.reg ])
 
-  M.CHandle handler func captures initial -> do
-    o <- handlerOperands handler func captures initial
-    pure (o.code <> [ HNDL d o.handler o.body o.returnClause o.opClauses o.cells ])
+  M.CHandle handler func captures -> do
+    o <- handlerOperands handler func captures
+    pure (o.code <> [ HNDL d o.handler o.body o.returnClause o.opClauses [] ])
 
-  M.CReadCell key -> do
-    ix <- internKey key
-    pure [ CGET d ix ]
+  M.CRegion _ _ _ _ -> throw RegionNotLowered
 
-  M.CWriteCell key atom -> do
-    ix <- internKey key
-    a <- atomReg atom
-    pure (a.code <> [ CSET d ix a.reg ])
+  M.CReadCell _ _ -> throw RegionNotLowered
+
+  M.CWriteCell _ _ _ -> throw RegionNotLowered
 
 -- | What a `HNDL` names: the handler's entry in the module's table, and the
--- | registers its functions and its cells' initial values arrive in.
+-- | registers its functions arrive in.
 -- |
 -- | Every closure is built here by an ordinary `CLOS`, in the order the
 -- | instruction takes them, so the entry carries no capture list of its own.
@@ -355,39 +355,33 @@ handlerOperands
   :: M.Handler
   -> M.FuncId
   -> P.Array M.Atom
-  -> P.Array M.Atom
   -> L
        { code :: P.Array Instr
        , handler :: HandlerIx
        , body :: Reg
        , returnClause :: Reg
        , opClauses :: P.Array Reg
-       , cells :: P.Array Reg
        }
-handlerOperands handler func captures initial = do
+handlerOperands handler func captures = do
   key <- internKey handler.key
-  cellKeys <- traverse internKey handler.cells
   ops <- traverse (internOp <<< _.op) handler.opClauses
   ix <- internHandler
     { key
-    , cells: cellKeys
+    , cells: []
     , opClauses: Array.zipWith (\op oc -> { op, form: oc.form }) ops handler.opClauses
     }
   body <- closureReg func captures
   returnClause <- closureReg handler.returnClause.func handler.returnClause.captures
   clauses <- traverse (\oc -> closureReg oc.clause.func oc.clause.captures) handler.opClauses
-  values <- atomRegs initial
   pure
     { code:
         body.code
           <> returnClause.code
           <> Array.concatMap _.code clauses
-          <> values.code
     , handler: ix
     , body: body.reg
     , returnClause: returnClause.reg
     , opClauses: map _.reg clauses
-    , cells: values.regs
     }
 
 -- | A closure into a register of its own, which is how a handler's functions
@@ -426,11 +420,11 @@ tailComp rep = case _ of
     a <- atomRegs atoms
     pure { code: a.code, tail: TAILFFI ix a.regs }
 
-  M.CHandle handler func captures initial -> do
-    o <- handlerOperands handler func captures initial
+  M.CHandle handler func captures -> do
+    o <- handlerOperands handler func captures
     pure
       { code: o.code
-      , tail: TAILHNDL o.handler o.body o.returnClause o.opClauses o.cells
+      , tail: TAILHNDL o.handler o.body o.returnClause o.opClauses []
       }
 
   other -> do

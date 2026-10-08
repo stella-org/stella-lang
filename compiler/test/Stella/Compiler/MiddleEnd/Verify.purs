@@ -15,6 +15,7 @@ import Stella.Compiler.Primitive (PrimOp(..))
 import Stella.Compiler.MiddleEnd (Rep(..), VerifyError(..), emptyDebug, verify)
 import Stella.Compiler.MiddleEnd as M
 import Stella.Compiler.TypedCore (Ident(..), Literal(..), ModuleName(..), OpName(..), Qualified(..), RowKey(..), Symbol(..), TyName(..))
+import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
 import Test.Spec (Spec, describe, it)
@@ -85,40 +86,24 @@ bindThen :: P.Int -> M.Expr
 bindThen n =
   M.ELet (M.Local n) RepInt (M.CPure (M.ALit (LitInt 1))) (ret (M.Local n))
 
--- | A module installing a handler of one `fast` clause over the cells given,
--- | which is the shape the cases on a region vary.
--- |
--- | The body takes no parameters, and the return clause and the clause one each,
--- | so the arities are the ones each form calls for and nothing else can be what
--- | a case here reports.
-handling :: P.Array RowKey -> P.Array M.Atom -> M.Module
-handling cells initial = (moduleOf site) { functions = [ site, entered, body ] }
+-- | A module opening a region of the keys and initial values given, whose body
+-- | is what the cases on a region vary: the identity is its parameter.
+regionWith :: P.Array RowKey -> P.Array M.Atom -> M.Expr -> M.Module
+regionWith keys initial inner = (moduleOf site) { functions = [ site, body ] }
   where
   site =
     { id: M.FuncId 0
     , params: [ binder 0 ]
     , captures: []
-    , body:
-        M.ETail
-          ( M.CHandle
-              { key: nameKey
-              , cells
-              , returnClause: { func: M.FuncId 1, captures: [] }
-              , opClauses:
-                  [ { op: OpName "next"
-                    , form: M.ClauseFast
-                    , clause: { func: M.FuncId 1, captures: [] }
-                    }
-                  ]
-              }
-              (M.FuncId 2)
-              []
-              initial
-          )
+    , body: M.ETail (M.CRegion keys (M.FuncId 1) [] initial)
     }
 
-  entered = { id: M.FuncId 1, params: [ binder 0 ], captures: [], body: ret (M.Local 0) }
-  body = { id: M.FuncId 2, params: [], captures: [], body: bindThen 0 }
+  body = { id: M.FuncId 1, params: [ { local: M.Local 0, rep: RepVal } ], captures: [], body: inner }
+
+-- | A region of the cells given whose body reads its first cell.
+opening :: P.Array RowKey -> P.Array M.Atom -> M.Module
+opening keys initial =
+  regionWith keys initial (M.ETail (M.CReadCell (M.ALocal (M.Local 0)) 0))
 
 spec :: Spec Unit
 spec = describe "Stella.Compiler.MiddleEnd.Verify » modules a lowering must not accept" do
@@ -344,7 +329,6 @@ spec = describe "Stella.Compiler.MiddleEnd.Verify » modules a lowering must not
       clause = { id: M.FuncId 1, params: [ binder 0 ], captures: [], body: ret (M.Local 0) }
       handler =
         { key: nameKey
-        , cells: []
         , returnClause: { func: M.FuncId 1, captures: [] }
         , opClauses:
             [ { op: OpName "next"
@@ -353,23 +337,42 @@ spec = describe "Stella.Compiler.MiddleEnd.Verify » modules a lowering must not
               }
             ]
         }
-      body = M.ETail (M.CHandle handler (M.FuncId 2) [] [])
+      body = M.ETail (M.CHandle handler (M.FuncId 2) [])
       site = { id: M.FuncId 0, params: [ binder 0 ], captures: [], body }
       inner = { id: M.FuncId 2, params: [], captures: [], body: ret (M.Local 0) }
     verify ((moduleOf site) { functions = [ site, clause, inner ] })
       `shouldEqual` Left (ClauseArity (M.FuncId 0) (M.FuncId 1) 2 1)
 
-  it "accepts a handler owning a region, one initial value per key" do
-    verify (handling [ nameKey ] [ M.ALit (LitInt 0) ]) `shouldEqual` Right unit
+  it "accepts a region of one initial value per key, its body reading a cell" do
+    verify (opening [ nameKey ] [ M.ALit (LitInt 0) ]) `shouldEqual` Right unit
 
-  it "rejects a handle supplying more initial values than the region has keys" do
-    -- a lowering pairs the keys with the values by position, so a disagreement
-    -- leaves a cell holding another's value
-    verify (handling [ nameKey ] [ M.ALit (LitInt 0), M.ALit (LitInt 1) ])
+  it "rejects a region supplying more initial values than it has keys" do
+    -- a cell takes the initial value at its own position, so a disagreement
+    -- leaves a value with no cell
+    verify (opening [ nameKey ] [ M.ALit (LitInt 0), M.ALit (LitInt 1) ])
       `shouldEqual` Left (CellCount (M.FuncId 0) 1 2)
 
-  it "rejects a handler naming one cell key twice" do
-    -- a region's keys are distinct, and a repeat leaves a read on that key with
-    -- two cells to name
-    verify (handling [ nameKey, nameKey ] [ M.ALit (LitInt 0), M.ALit (LitInt 1) ])
+  it "rejects a region naming one cell key twice" do
+    verify (opening [ nameKey, nameKey ] [ M.ALit (LitInt 0), M.ALit (LitInt 1) ])
       `shouldEqual` Left (DuplicateCell (M.FuncId 0) nameKey)
+
+  it "rejects a region whose body takes no identity" do
+    let
+      m = opening [ nameKey ] [ M.ALit (LitInt 0) ]
+      body = { id: M.FuncId 1, params: [], captures: [], body: bindThen 0 }
+    verify (m { functions = Array.take 1 m.functions <> [ body ] })
+      `shouldEqual` Left (ClauseArity (M.FuncId 0) (M.FuncId 1) 1 0)
+
+  it "rejects a cell reached through an identity not in scope" do
+    verify (regionWith [ nameKey ] [ M.ALit (LitInt 0) ] (M.ETail (M.CReadCell (M.ALocal (M.Local 1)) 0)))
+      `shouldEqual` Left (LocalNotInScope (M.FuncId 1) (M.Local 1))
+
+  it "rejects a cell named by a negative position" do
+    verify
+      ( regionWith [ nameKey ] [ M.ALit (LitInt 0) ]
+          ( M.ELet (M.Local 1) RepVal
+              (M.CWriteCell (M.ALocal (M.Local 0)) (-1) (M.ALit (LitInt 1)))
+              (ret (M.Local 1))
+          )
+      )
+      `shouldEqual` Left (NegativeCell (M.FuncId 1) (-1))

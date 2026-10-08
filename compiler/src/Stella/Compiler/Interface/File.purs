@@ -69,7 +69,7 @@ magic = [ 0x44, 0x4D, 0x49, 0x00 ]
 
 -- | The version of the format this module reads and writes.
 formatVersion :: P.Int
-formatVersion = 2
+formatVersion = 0
 
 -- Sections -------------------------------------------------------------------------
 

@@ -3,8 +3,8 @@
 -- | Mid IR is an A-normal form: every intermediate result is named by a
 -- | binding, every argument is an atom, and every control construct stands in
 -- | tail position. It has no nested function — a lambda, the body of a
--- | `handle`, and every handler clause is an entry of the module's function
--- | table, over an explicit capture list.
+-- | `handle` or of a `region`, and every handler clause is an entry of the
+-- | module's function table, over an explicit capture list.
 -- |
 -- | Types are gone. What survives of them is a `Rep` on each binding.
 module Stella.Compiler.MiddleEnd.IR
@@ -124,26 +124,29 @@ data Comp
   | CAbsurd Atom
   | CPerform RowKey OpName Atom
   -- | Install a handler and call the body, which is a function of no
-  -- | parameters. The value is what the return clause produces, so a `let`
-  -- | binds it like any other computation.
+  -- | parameters, over the captures given. The value is what the return clause
+  -- | produces, so a `let` binds it like any other computation.
+  | CHandle Handler FuncId (P.Array Atom)
+  -- | Open a region of cells and call the body, a function of one parameter,
+  -- | with the region's **identity**: a value telling this opening of the
+  -- | region from every other, the copies a continuation makes of it aside.
+  -- | The value is the body's.
   -- |
-  -- | The first array is what the body closure captures and the second the
-  -- | initial value of each cell of the handler's region, one per key of its
-  -- | `cells` and in that order. **The two are separate because they are neither
+  -- | The keys are the region's layout in the order it is written, which is what
+  -- | positions the cells; they say nothing a read or a write uses. The first
+  -- | array is what the body captures and the second the initial value of each
+  -- | cell, in the same order. **The two are separate because they are neither
   -- | the same values nor evaluated at the same time**: a capture list holds what
-  -- | the body names, and the initial values are evaluated before the region is
-  -- | opened. The second is empty for a handler declaring no region; the first
-  -- | holds the body's free locals, region or no region.
-  | CHandle Handler FuncId (P.Array Atom) (P.Array Atom)
-  -- | The cell keyed thus of the innermost region declaring it. **A cell is
-  -- | named by its key alone**, a row holding at most one region (D36), and
-  -- | which region that is is settled where the computation runs: a clause is a
-  -- | function of its own, so no scope within a function says what frame stands
-  -- | around it.
-  | CReadCell RowKey
+  -- | the body names, and the initial values are evaluated before the region
+  -- | opens.
+  | CRegion (P.Array RowKey) FuncId (P.Array Atom) (P.Array Atom)
+  -- | The cell at that position of the region whose identity the atom holds.
+  -- | The identity is an ordinary value, so a function using a region's cells
+  -- | captures it like any other.
+  | CReadCell Atom P.Int
   -- | Replace what that cell holds. The value is `Prim.Unit`, a write being done
   -- | for its effect on the region rather than for a result of its own.
-  | CWriteCell RowKey Atom
+  | CWriteCell Atom P.Int Atom
 
 -- | The body of a function, of a join point, or of a branch.
 data Expr
@@ -193,15 +196,8 @@ type KeyBranch =
 -- | A handler carries the key of the element it removes and nothing else of
 -- | that element: typing needed the payload to say which operations the clauses
 -- | exhaust, and that is settled before this stage.
--- |
--- | Of a region, `cells` is what survives: the keys of the handler's layout, in
--- | the order it writes them, which is what pairs them with the initial values a
--- | `CHandle` supplies. The region variable and the cells' types were annotations
--- | (D36). It is empty for a handler declaring no region, and then no frame is
--- | installed.
 type Handler =
   { key :: RowKey
-  , cells :: P.Array RowKey
   , returnClause :: ClauseRef
   , opClauses :: P.Array OpClauseRef
   }
@@ -304,8 +300,9 @@ type Debug ann =
   -- | A `Local` is unique within a function and not beyond one, so nothing but a
   -- | function and a local together identifies a binding.
   -- |
-  -- | A local holding an intermediate result of a spine, or a projection no
-  -- | pattern gave a name to, was created for no name and appears in neither map.
+  -- | A local holding an intermediate result of a spine, a projection no
+  -- | pattern gave a name to, or a region's identity was created for no name
+  -- | and appears in neither map.
   , locals :: Map FuncId (Map Local Ident)
   }
 
