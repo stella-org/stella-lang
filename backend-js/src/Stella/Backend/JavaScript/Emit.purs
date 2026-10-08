@@ -121,7 +121,8 @@ emit options fm = do
       ( S.Const (handlerName i)
           ( rtCall "handler"
               [ S.String h.key
-              , S.Array (map S.String h.cells)
+              -- a handler entry declares no cells
+              , S.Array []
               , S.Array (map (\c -> S.Array [ S.String c.op, S.Boolean c.fast ]) h.clauses)
               ]
           )
@@ -448,7 +449,8 @@ exit fm = case _ of
     , S.Assign (mField "callee") (reg o.body)
     , S.Assign (mField "ret") (reg o.ret)
     , S.Assign (mField "args") (S.Array (map reg o.clauses))
-    , S.Assign (mField "cells") (S.Array (map reg o.cells))
+    -- a handler is installed over no cells
+    , S.Assign (mField "cells") (S.Array [])
     ]
 
   defaultBlock default what = case default of
@@ -490,8 +492,6 @@ expr fm = case _ of
   Payload k s -> rtCall "payload" [ reg s, S.String k ]
   Prim op args -> operation op (map reg args)
   CallForeign ref args -> foreignCall fm ref (map reg args)
-  CellGet k -> rtCall "cget" [ S.Ident "m", S.String k ]
-  CellSet k s -> rtCall "cset" [ S.Ident "m", S.String k, reg s ]
 
 operation :: PrimOp -> P.Array S.Expr -> S.Expr
 operation op args = inline op args

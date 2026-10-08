@@ -122,11 +122,6 @@ data Expr
   -- | A foreign called with all its arguments. Its body is synchronous and applies no
   -- | Stella function, so the call cuts no segment.
   | CallForeign ForeignRef (P.Array P.Int)
-  -- | What the cell keyed thus holds, in the innermost region visible from the
-  -- | running frame.
-  | CellGet P.String
-  -- | Replace what that cell holds with the register's value, giving `Prim.Unit`.
-  | CellSet P.String P.Int
 
 data Stmt
   = Set P.Int Expr
@@ -160,28 +155,25 @@ data Exit
   -- | What the operation gives reaches register `dest`, and what follows is
   -- | segment `resume`, as after a call.
   | Perform { key :: P.String, op :: P.String, arg :: P.Int, dest :: P.Int, resume :: SegmentId }
-  -- | Install the `handler`-th handler of the table over the clauses and initial
-  -- | cell values in those registers, and call the body. Its answer reaches `dest`
+  -- | Install the `handler`-th handler of the table over the clauses in those
+  -- | registers, and call the body. Its answer reaches `dest`
   -- | and what follows is segment `resume`, as after a call.
   | Handle { handler :: P.Int, operands :: HandleOperands, dest :: P.Int, resume :: SegmentId }
   -- | The same in tail position, replacing the frame.
   | TailHandle { handler :: P.Int, operands :: HandleOperands }
 
--- | What installing a handler takes: the body, the return clause, a clause per
--- | operation in the order the handler table lists them, and a value per cell.
+-- | What installing a handler takes: the body, the return clause, and a clause per
+-- | operation in the order the handler table lists them.
 type HandleOperands =
   { body :: P.Int
   , ret :: P.Int
   , clauses :: P.Array P.Int
-  , cells :: P.Array P.Int
   }
 
--- | A handler of the table: the key of the effect it answers, the key of each cell
--- | of its region, and the operation each clause answers with whether that clause
--- | is `fast`.
+-- | A handler of the table: the key of the effect it answers, and the operation
+-- | each clause answers with whether that clause is `fast`.
 type Handler =
   { key :: P.String
-  , cells :: P.Array P.String
   , clauses :: P.Array { op :: P.String, fast :: P.Boolean }
   }
 

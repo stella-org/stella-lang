@@ -356,19 +356,21 @@ fixtureOptions dir foreignManifest entry dmo =
 -- | and so does such a fixture generating.
 -- |
 -- | Each refusal is pinned whole, since the manifest's `mentions` does not tell
--- | them apart: every shape refusal names the same effect, and a report naming a
--- | foreign says nothing of what was wrong with it.
+-- | them apart: every shape refusal of a handler names the same effect and every
+-- | one of a region the same cells, and a report naming a foreign says nothing of
+-- | what was wrong with it.
 generationRefusals :: P.Array { name :: P.String, refusal :: JsError -> P.Boolean }
 generationRefusals =
-  [ { name: "handler-cell-twice", refusal: (_ == CellKeyTwice "s:reading") }
-  , { name: "handler-cell-aliased", refusal: (_ == CellKeyTwice "s:reading") }
+  [ { name: "region-cell-twice", refusal: (_ == CellKeyTwice "s:reading") }
+  , { name: "region-cell-aliased", refusal: (_ == CellKeyTwice "s:reading") }
   , { name: "handler-clause-twice", refusal: (_ == ClauseTwice "bump") }
   , { name: "handler-clause-aliased", refusal: (_ == ClauseTwice "bump") }
   -- the handler entry holds two of each and the instruction supplies one
   , { name: "handler-hndl-clauses", refusal: (_ == HandlerClausesDisagree meter 2 1) }
   , { name: "handler-tailhndl-clauses", refusal: (_ == HandlerClausesDisagree meter 2 1) }
-  , { name: "handler-hndl-cells", refusal: (_ == HandlerCellsDisagree meter 2 1) }
-  , { name: "handler-tailhndl-cells", refusal: (_ == HandlerCellsDisagree meter 2 1) }
+  -- the region entry has two cells and the instruction supplies one value
+  , { name: "region-rgn-cells", refusal: (_ == RegionCellsDisagree [ "s:reading", "s:spare" ] 1) }
+  , { name: "region-tailrgn-cells", refusal: (_ == RegionCellsDisagree [ "s:reading", "s:spare" ] 1) }
   , { name: "foreign-no-entry", refusal: (_ == ForeignWithoutImplementation (inHost "greet")) }
   , { name: "foreign-no-signature", refusal: (_ == NoSignature (inHost "greet")) }
   -- `greet` is declared at arity one and its signature has two params

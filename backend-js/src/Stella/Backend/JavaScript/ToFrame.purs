@@ -140,9 +140,8 @@ resolve dmo = do
   -- clause is found by once the marker is found by its key
   handler keys entry = do
     key <- keyOf entry.key
-    cells <- traverse keyOf entry.cells
     clauses <- traverse clause entry.opClauses
-    pure { key, cells, clauses }
+    pure { key, clauses }
     where
     keyOf (KeyIx i) = at "KEYS" keys i
 
@@ -342,9 +341,9 @@ cutNode scope next0 node = go [] 0
         key <- keyAt scope k
         opName <- opAt scope op
         cutAt acc i \resume -> Perform { key, op: opName, arg: s, dest: d, resume }
-      HNDL (B.Reg d) h body ret clauses cells -> do
+      HNDL (B.Reg d) h body ret clauses -> do
         handler <- handlerAt scope h
-        cutAt acc i \resume -> Handle { handler, operands: handleOperands body ret clauses cells, dest: d, resume }
+        cutAt acc i \resume -> Handle { handler, operands: handleOperands body ret clauses, dest: d, resume }
       _ -> do
         stmt <- instrStmt scope instr
         go (Array.snoc acc stmt) (i + 1)
@@ -374,9 +373,10 @@ cutTail scope next0 = case _ of
     ref <- foreignAt scope f
     checkForeignCall scope.dmo ref (Array.length args)
     leaf (ReturnCall ref (regs args))
-  TAILHNDL h body ret clauses cells -> do
+  TAILHNDL h body ret clauses -> do
     handler <- handlerAt scope h
-    leaf (TailHandle { handler, operands: handleOperands body ret clauses cells })
+    leaf (TailHandle { handler, operands: handleOperands body ret clauses })
+  TAILRGN _ _ _ -> Left (Unsupported "a region")
   JMP (JoinName name) args -> case Map.lookup name scope.joins of
     Nothing -> Left (NoSuchJoin scope.func name)
     Just j ->
@@ -476,20 +476,17 @@ instrStmt scope = case _ of
     ref <- foreignAt scope f
     checkForeignCall scope.dmo ref (Array.length args)
     pure (Set d (CallForeign ref (regs args)))
-  CGET (B.Reg d) k -> do
-    key <- keyAt scope k
-    pure (Set d (CellGet key))
-  CSET (B.Reg d) k (B.Reg s) -> do
-    key <- keyAt scope k
-    pure (Set d (CellSet key s))
+  CGET _ _ _ -> Left (Unsupported "a cell of a region")
+  CSET _ _ _ _ -> Left (Unsupported "a cell of a region")
+  RGN _ _ _ _ -> Left (Unsupported "a region")
   CALLK _ _ _ -> Left (Unsupported "a call standing where no segment can be cut")
   CALLU _ _ _ -> Left (Unsupported "a call standing where no segment can be cut")
   PERF _ _ _ _ -> Left (Unsupported "a perform standing where no segment can be cut")
-  HNDL _ _ _ _ _ _ -> Left (Unsupported "a handler standing where no segment can be cut")
+  HNDL _ _ _ _ _ -> Left (Unsupported "a handler standing where no segment can be cut")
 
-handleOperands :: B.Reg -> B.Reg -> P.Array B.Reg -> P.Array B.Reg -> HandleOperands
-handleOperands body ret clauses cells =
-  { body: regIndex body, ret: regIndex ret, clauses: regs clauses, cells: regs cells }
+handleOperands :: B.Reg -> B.Reg -> P.Array B.Reg -> HandleOperands
+handleOperands body ret clauses =
+  { body: regIndex body, ret: regIndex ret, clauses: regs clauses }
 
 -- Table lookups ----------------------------------------------------------------------------
 

@@ -74,16 +74,19 @@ data JsError
   -- | declares twice.
   | NoSuchJoin P.Int P.Int
   | JoinTwice P.Int P.Int
-  -- | A handler declaring one cell twice, as the key's canonical string, or holding
-  -- | two clauses for one operation, as its name. Two indices may hold one key or
-  -- | one name, so what is compared is what they hold.
+  -- | A region declaring one cell twice, as the key's canonical string, or a
+  -- | handler holding two clauses for one operation, as its name. Two indices may
+  -- | hold one key or one name, so what is compared is what they hold.
   | CellKeyTwice P.String
   | ClauseTwice P.String
-  -- | A `HNDL` or `TAILHNDL` supplying another count of clauses, or of initial cell
-  -- | values, than its handler entry holds: the canonical string of the handler's
-  -- | key, the entry's count, and the instruction's.
+  -- | A `HNDL` or `TAILHNDL` supplying another count of clauses than its handler
+  -- | entry holds: the canonical string of the handler's key, the entry's count,
+  -- | and the instruction's.
   | HandlerClausesDisagree P.String P.Int P.Int
-  | HandlerCellsDisagree P.String P.Int P.Int
+  -- | A `RGN` or `TAILRGN` supplying another count of initial values than its
+  -- | region entry has cells: the canonical strings of the cells' keys, and the
+  -- | instruction's count.
+  | RegionCellsDisagree (P.Array P.String) P.Int
 
 derive instance Eq JsError
 derive instance Generic JsError _

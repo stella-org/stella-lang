@@ -22,7 +22,7 @@ import Data.Foldable (for_)
 import Data.Maybe (Maybe(..))
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.Bytecode.Instr (FuncIx(..), Function, HandlerIx(..), Instr(..), KeyIx(..), Node, OpIx(..), Tail(..))
+import Stella.Compiler.Bytecode.Instr (FuncIx(..), Function, HandlerIx(..), Instr(..), KeyIx(..), Node, OpIx(..), RegionIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Dmo, GlobalInit(..))
 import Stella.Backend.JavaScript.Error (JsError(..))
 import Stella.Backend.JavaScript.ToFrame (keyString, runtimeEntry)
@@ -63,23 +63,27 @@ check dmo = do
     Just entry | entry.arity /= f.arity -> Left (EntryDeclaredAtWrongArity f.name entry.arity f.arity)
     _ -> Right unit
 
-  -- a cell is found by its key and a clause by its operation, so either standing
-  -- twice would leave which one a cell access or a perform means to the order of a
-  -- table
+  -- a clause is found by its operation, so two for one would leave which one a
+  -- perform means to the order of a table; a region's keys are what its layout
+  -- declares, which Core makes distinct
   for_ dmo.handlers \h -> do
-    cells <- traverse keyText h.cells
-    firstTwice cells CellKeyTwice
     ops <- traverse (\c -> opText c.op) h.opClauses
     firstTwice ops ClauseTwice
+  for_ dmo.regions \r -> do
+    cells <- traverse keyText r.cells
+    firstTwice cells CellKeyTwice
 
-  -- every installation supplies one clause per clause of its handler entry and one
-  -- initial value per cell, wherever in a function it stands
+  -- every installation supplies one clause per clause of its handler entry, and
+  -- every opening one initial value per cell of its region entry, wherever in a
+  -- function it stands
   for_ dmo.functions \f -> for_ (nodesOf f) \node -> do
     for_ node.code case _ of
-      HNDL _ ix _ _ clauses cells -> operands ix clauses cells
+      HNDL _ ix _ _ clauses -> operands ix clauses
+      RGN _ ix _ initial -> opening ix initial
       _ -> Right unit
     case node.tail of
-      TAILHNDL ix _ _ clauses cells -> operands ix clauses cells
+      TAILHNDL ix _ _ clauses -> operands ix clauses
+      TAILRGN ix _ initial -> opening ix initial
       _ -> Right unit
 
   where
@@ -91,15 +95,20 @@ check dmo = do
     Just (OpName op) -> Right op
     Nothing -> Left (NoSuchIndex "OPS" i)
 
-  operands :: forall a b. HandlerIx -> P.Array a -> P.Array b -> Either JsError Unit
-  operands (HandlerIx i) clauses cells = case Array.index dmo.handlers i of
+  operands :: forall a. HandlerIx -> P.Array a -> Either JsError Unit
+  operands (HandlerIx i) clauses = case Array.index dmo.handlers i of
     Nothing -> Left (NoSuchIndex "HANDLERS" i)
     Just h -> do
       key <- keyText h.key
       when (Array.length clauses /= Array.length h.opClauses)
         (Left (HandlerClausesDisagree key (Array.length h.opClauses) (Array.length clauses)))
-      when (Array.length cells /= Array.length h.cells)
-        (Left (HandlerCellsDisagree key (Array.length h.cells) (Array.length cells)))
+
+  opening :: forall a. RegionIx -> P.Array a -> Either JsError Unit
+  opening (RegionIx i) initial = case Array.index dmo.regions i of
+    Nothing -> Left (NoSuchIndex "REGIONS" i)
+    Just r -> when (Array.length initial /= Array.length r.cells) do
+      keys <- traverse keyText r.cells
+      Left (RegionCellsDisagree keys (Array.length initial))
 
   own :: forall a. Qualified a -> P.Boolean
   own q = qualifier q == dmo.name
