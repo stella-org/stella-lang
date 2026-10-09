@@ -730,7 +730,7 @@ What a signature, a field, and an annotation write, read into Core⁺ ([Elaborat
 | `{\| State \|}`, and `{\| Console Int \|}` where `Console` has no parameter | A kind that does not meet, where the application and where the argument stand. An effect's arity is its kind, judged as an application's is |
 | A type operator naming an effect, in an effect row and as an argument of a type constructor | An element of the row; reported where the operator is written. An effect is no type |
 | `{\| State Int, State String \|}`, and `{\| E, M.E \|}` naming one effect | A key written twice, reported at the later item, both kept. An unlabelled element is keyed by its effect, however it is spelt |
-| A `λ` checked at `Int -> Int / {\| Console \|}` in this version | Outside the subset, where the parameter stands. Equated with the pure arrow it would be reported as a mismatch the program does not have |
+| A declaration's body checked directly against `Int -> Int / {\| Console \|}`, the arrow its own signature writes | A checking boundary at `( Console )`, its body under a row of its own. Equated with the pure arrow it would be reported as a mismatch the program does not have |
 | `forall r a. { x :: Int, ...r } -> a`, and the same with `r` and `a` quantified implicitly | `forall r. x ∉ r => forall a. …` both times. An atom stands under the innermost binder it is about; under every quantifier it changes the scheme a module publishes |
 | `{ a :: Int, ... } -> { a :: Int, ... }` | One quantified row, `a ∉` it once. Every `...` of a kind in one signature is one variable |
 | `{ ...r, ...s }` | `r # s`, the pair in one order however the spreads are written |
@@ -1159,6 +1159,12 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | `f :: forall a. a -> a; f = f` | Judged as an immediate self-reference before any expansion, and refused. Expanding first turns it into a recursive function |
 | A local function in a clause reading a cell | Its row is the region's element alone; applied in the clause, it is widened by the rest of the clause's row |
 | `x!` with no enclosing handling expression declaring `x`, under an open ambient row | Refused by name resolution. An open row is no evidence a cell exists |
+| `use k = k ()` at `(Unit -> Int / {\| Console \|}) -> Int` | Outside the subset in this version, where the boundary stands: the row expected cannot hold `Console`, and no implicit handler is sought. A row mismatch would refuse what a handler may resolve |
+| `wider k u = k u` at `(Unit -> Int / {\| Console \|}) -> Unit -> Int / {\| Console, Clock \|}` | `openEff [( Clock )]` around `k`, accepted by Core and lowered. The fit is the application's, against the boundary's row once decided |
+| `logged k u = twice k u`, `twice : forall e. (Unit -{e}-> Unit) -> Unit -{e}-> Unit`, at `( Console )` | `twice`'s `e` an instantiation row, decided `( Console )` by the fits of its argument and its application. An inference row would not take the ambient one |
+| `apply k u = (\v -> k v) u` at `(Unit -> Unit / {\| Console \|}) -> Unit -> Unit / {\| Console \|}` | Accepted, the λ's row `( Console )` by rule 1 |
+| The same at `(Unit -> Unit / {\| Console \|}) -> Unit -> Unit` | Outside the subset in this version, where the boundary stands. The boundary is decided only once the λ's row is, after the resolution |
+| A form inferred at `Unit -{( Console )}-> Unit` where `Unit -{( Console, Clock )}-> Unit` is expected | The arguments and results equated, and `( Console )` fitted into `( Console, Clock )` around the form. Subsumption is the outermost row's containment alone |
 
 ### Binding groups and generalization (step 7)
 

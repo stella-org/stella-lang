@@ -363,14 +363,43 @@ spec = describe "Stella.Compiler.Build" do
         Left errors -> map printCompileError errors `shouldEqual` [ "`( name :: Int )` and `( 0 :: Int, 1 :: Int )` are different rows" ]
         Right _ -> fail "compiled"
 
-    it "is outside this version where a λ stands at an arrow performing effects, or a function performing them is applied" do
+    it "checks a λ at an arrow a signature writes as a boundary at its row, a body performing what the row does not hold asking for an implicit handler" do
       compilingUnder [ "module M where", "import Effects" ]
         [ "run :: Int -> Int / {| Console |}", "run x = x", "use :: (Unit -> Int / {| Console |}) -> Int", "use k = k ()" ]
         case _ of
           Left errors -> map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors `shouldEqual`
-            [ "4:5 This version of the compiler does not elaborate a λ at an arrow that performs effects yet"
-            , "6:9 This version of the compiler does not elaborate applying a function that performs effects yet"
-            ]
+            [ "6:5 This version of the compiler does not elaborate implicit-handler resolution at this checking boundary yet" ]
+          Right _ -> fail "compiled"
+
+    it "fits a function into the row ambient where it is applied, widening it there, through to the module's bytecode" do
+      compilingUnder [ "module M where", "import Effects" ]
+        [ "effect Clock where"
+        , "  tick :: Unit ->* Unit"
+        , "same :: (Unit -> Int / {| Console |}) -> Unit -> Int / {| Console |}"
+        , "same k u = k u"
+        , "wider :: (Unit -> Int / {| Console |}) -> Unit -> Int / {| Console, Clock |}"
+        , "wider k u = k u"
+        , "twice :: forall e. (Unit -> Unit / {| ...e |}) -> Unit -> Unit / {| ...e |}"
+        , "twice k u = k u"
+        , "logged :: (Unit -> Unit / {| Console |}) -> Unit -> Unit / {| Console |}"
+        , "logged k u = twice k u"
+        ]
+        case _ of
+          Left errors -> fail (joinWith "; " (map printCompileError errors))
+          Right r -> r.handed `shouldEqual` [ "core same wider twice logged", "mid M", "bytecode M" ]
+
+    it "infers a λ's row from what its body performs, the row decided by the direction of its fits" do
+      compilingUnder [ "module M where", "import Effects" ]
+        [ "apply :: (Unit -> Unit / {| Console |}) -> Unit -> Unit / {| Console |}", "apply k u = (\\v -> k v) u" ]
+        case _ of
+          Left errors -> fail (joinWith "; " (map printCompileError errors))
+          Right r -> r.handed `shouldEqual` [ "core apply", "mid M", "bytecode M" ]
+      compilingUnder [ "module M where", "import Effects" ]
+        [ "apply :: (Unit -> Unit / {| Console |}) -> Unit -> Unit", "apply k u = (\\v -> k v) u" ]
+        case _ of
+          -- the boundary is decided only once the λ's row is
+          Left errors -> map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors `shouldEqual`
+            [ "4:9 This version of the compiler does not elaborate implicit-handler resolution at this checking boundary yet" ]
           Right _ -> fail "compiled"
 
   describe "a row spreading a row variable" do

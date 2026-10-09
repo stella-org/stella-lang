@@ -19,6 +19,7 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Context (XContext)
 import Stella.Compiler.Elaborate.CorePlus.Term (TermMetaVar(..), XDecisionTree(..), XExpr(..), XHandler, XOpClause(..), freeVarsOf, metasOfTerm)
+import Stella.Compiler.Elaborate.CorePlus.Row (xnf)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitState(..), FitUse(..))
 import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint, XType(..), freeKindVars, freeRegions, freeRigids, kindMetasOfType, metasOf)
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, TermBinding(..), TermMetaInfo, TermScope, UnifyError, narrowMetas, substitute, substituteKind)
@@ -201,11 +202,14 @@ zonkExpr ctx = go
     EReadCell a name key -> EReadCell a name key
     EWriteCell a name key v -> EWriteCell a name key (go v)
     EOpenEff a row e -> EOpenEff a (ty row) (go e)
-    -- a decided wrapping fit becomes what it was decided to; one undecided
-    -- stays, for making the term Core to report
+    -- a decided wrapping fit becomes what it was decided to, a widening by a
+    -- row that is empty once solved nothing; one undecided stays, for making
+    -- the term Core to report
     EFit a f e -> case Map.lookup f ctx.fits of
       Just { use: Wrapping, state: Equal } -> go e
-      Just { use: Wrapping, state: Widen w } -> EOpenEff a (ty w) (go e)
+      Just { use: Wrapping, state: Widen w } -> case xnf (ty w) of
+        Right n | Map.isEmpty n.known, Set.isEmpty n.rigid, Set.isEmpty n.flexible -> go e
+        _ -> EOpenEff a (ty w) (go e)
       _ -> EFit a f (go e)
     ETermMeta a m -> case Map.lookup m ctx.termBindings of
       Just (TermAssigned solution) -> go (map (const a) solution)

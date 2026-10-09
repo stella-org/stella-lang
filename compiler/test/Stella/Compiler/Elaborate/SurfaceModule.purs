@@ -196,6 +196,7 @@ at = case _ of
   LeftUnchecked o _ -> located o <> " left unchecked"
   AttributeRejected o _ -> located o <> " attribute rejected"
   ForeignRefused o _ r -> located o <> " foreign refused " <> show r.position <> " " <> show r.refusal
+  EffectRowAmbiguous _ os -> joinWith " " (map located os) <> " effect row ambiguous"
   CoreRefused _ -> "the Core checker refused it"
   InternalEntryMismatch _ -> "an internal entry mismatched"
   Broken _ -> "broken"
@@ -237,7 +238,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         , "bad :: Int"
         , "bad = inc"
         , "lam :: Int"
-        , "lam = (\\x -> x) 1"
+        , "lam = (1, 2)"
         , "open :: Int"
         , "open = const 1 id"
         , "c :: Int / {| |}"
@@ -250,7 +251,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
             [ "3:1 without a signature"
             , "11:1 outside: this declaration"
             , "5:7 rejected"
-            , "7:9 outside: a λ whose type is not known where it stands"
+            , "7:8 outside: this form"
             , "9:8 type undetermined"
             , "9:16 type undetermined"
             ]
@@ -399,7 +400,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         -- states none
         afterF = stated "f" 1 "b" (initialState (SessionId 0) 10)
         afterG = stated "g" 2 "a" (snd afterF)
-        r = settleBodies (attemptPending primSession) (snd afterG) (map body [ Tuple "f" 1, Tuple "g" 2, Tuple "h" 3 ])
+        r = settleBodies primSession (attemptPending primSession) (snd afterG) (map body [ Tuple "f" 1, Tuple "g" 2, Tuple "h" 3 ])
       map at r.errors `shouldEqual` [ "1:1 rejected", "2:1 left unchecked" ]
       map _.name r.values `shouldEqual` [ inM "h" ]
 
@@ -410,7 +411,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         afterF = runAttempt primSession (createSynthesis (siteIn "f" 1) (XCon intTy []) refusingRef) (initialState (SessionId 0) 10)
         afterG = stated "g" 2 "a" (snd afterF)
         registry = Map.singleton refusingRef (\_ -> F.throw [ TextPart "no" ])
-        r = settleBodies (attemptJob primSession registry) (snd afterG) (map body [ Tuple "f" 1, Tuple "g" 2, Tuple "h" 3 ])
+        r = settleBodies primSession (attemptJob primSession registry) (snd afterG) (map body [ Tuple "f" 1, Tuple "g" 2, Tuple "h" 3 ])
       map at r.errors `shouldEqual` [ "1:1 synthesis failed", "2:1 left unchecked" ]
       map _.name r.values `shouldEqual` [ inM "h" ]
   where

@@ -23,10 +23,15 @@
 -- | undecided stands as equality jobs, which the loop runs once every body has
 -- | been elaborated, so an equation one body states may be decided by what
 -- | another does. A body that fails, or holds a form this version does not
--- | read, leaves nothing behind. Once the loop is done, each body is zonked and
--- | made a Core term, and a type nothing decided is reported where it stands.
--- | A body is a value only once every equation stated for it holds; one the
--- | loop stopped before deciding is reported, never returned.
+-- | read, leaves nothing behind. Once the loop is quiescent, the fits left
+-- | undecided are resolved by direction, each declaration's apart
+-- | ([Resolve](../Driver/Resolve.purs)); a declaration whose effect rows nothing
+-- | decides is reported, and a checking boundary its body cannot meet without
+-- | an implicit handler is outside what this version elaborates. Then each
+-- | body is zonked and made a Core term, and a type nothing decided is
+-- | reported where it stands. A body is a value only once every equation and
+-- | fit stated for it holds; one the loop stopped before deciding is reported,
+-- | never returned.
 -- |
 -- | **A foreign is read as a value's signature is, and has no body**: what it
 -- | takes and gives must cross to the host ([ForeignBoundary](../../ForeignBoundary.purs)),
@@ -68,10 +73,11 @@ import Stella.Compiler.Elaborate.Surface.Internal (internalEntries)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
 import Stella.Compiler.Elaborate.Driver.Loop (Attempter, runAttempting)
 import Stella.Compiler.Elaborate.Driver.Loop as Loop
+import Stella.Compiler.Elaborate.Driver.Resolve (ComponentOutcome(..), Resolution(..), resolveByDirection)
 import Stella.Compiler.Elaborate.Environment.Catalog (CatalogEntry, EntrySort(..))
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceEnv, takesSynthesized)
-import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SolverState, initialState)
+import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, initialState)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
 import Stella.Compiler.Elaborate.Surface.Expr (elaborateValue, runSurf)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..), elaborateSignature, schemeOf, settledScheme)
@@ -127,6 +133,8 @@ data ElaborationError
   -- | reaching its module lacks or holds at another scheme than the one listed:
   -- | the compiler's fault.
   | InternalEntryMismatch (Qualified Ident)
+  -- | A declaration whose effect rows nothing decided, where its fits stand.
+  | EffectRowAmbiguous (Qualified Ident) (Array Surface.Origin)
   -- | An attempt that postponed itself, which nothing the elaborator states
   -- | does: it is the elaborator's fault.
   | AttemptPostponed
@@ -378,7 +386,7 @@ elaborateValues imports surface importedEntries m =
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
   bodyErrors = bodies.errors
 
-  settled' = settleBodies (attemptPending session) bodies.state bodies.bodies
+  settled' = settleBodies session (attemptPending session) bodies.state bodies.bodies
 
 -- | A signature with a data type the module declares, and its constructors.
 addData :: ModuleName -> Signature -> DataDecl -> Signature
@@ -423,25 +431,63 @@ constructorsOf self decl = map entry decl.constructors
 -- | unchecked. A defect leaves no body a value. A body made a value holding a
 -- | type nothing decided is reported where that type stands.
 settleBodies
-  :: Attempter
+  :: SessionEnv
+  -> Attempter
   -> SolverState
   -> Array Elaborating
   -> { values :: Array ElaboratedValue, errors :: Array ElaborationError }
-settleBodies attempter state bodies =
+settleBodies session attempter state bodies =
   { values: Array.catMaybes (map snd finished)
   , errors: loopErrors <> Array.concatMap fst finished
   }
   where
-  Tuple report after = runAttempting attempter state
+  componentErrors c = case c.outcome of
+    Settled -> []
+    Ambiguous a -> [ { error: EffectRowAmbiguous c.owner (Array.mapMaybe sourceOrigin a.origins), names: [ c.owner ] } ]
+    Refused d -> [ { error: rejected d, names: Array.cons c.owner (diagnosticDeclarations d) } ]
 
-  -- what the loop stopped at, and the declarations it names; `Nothing` at a
-  -- defect, which leaves nothing to trust
-  Tuple loopErrors named = case report.result of
-    Loop.Completed -> Tuple [] (Just Set.empty)
-    Loop.Rejected d -> Tuple [ Rejected d ] (Just (Set.fromFoldable (diagnosticDeclarations d)))
-    Loop.Blocked waiting -> Tuple (map (\p -> EquationUndecided p.origin) (NonEmptyArray.toArray waiting)) (Just (Set.fromFoldable (map (\p -> declarationOf p.origin) waiting)))
-    Loop.Exhausted p -> Tuple [ EquationUndecided p.origin ] (Just (Set.singleton (declarationOf p.origin)))
-    Loop.Halted d -> Tuple [ Broken d ] Nothing
+  -- a boundary no row expected of it contains asks for an implicit handler,
+  -- which this version does not resolve
+  rejected d = case d of
+    BoundaryNotContained o _ | Just at <- sourceOrigin o -> Unsupported (OutsideSubset at "implicit-handler resolution at this checking boundary")
+    _ -> Rejected d
+
+  sourceOrigin = case _ of
+    AtSource o -> Just o.origin
+    InDeclaration _ -> Nothing
+
+  Tuple report quiet = runAttempting attempter state
+
+  -- at quiescence, the fits left undecided are resolved by direction, each
+  -- declaration's apart, and the jobs left after are reported
+  Tuple resolution after = case report.result of
+    Loop.Completed -> resolved
+    Loop.Blocked _ -> resolved
+    _ -> Tuple Nothing quiet
+    where
+    resolved = case resolveByDirection session attempter declarationOf quiet of
+      Tuple r s -> Tuple (Just r) s
+  Tuple left _ = runAttempting attempter after
+
+  -- what the loop and the resolution stopped at, and the declarations they
+  -- name; `Nothing` at a defect, which leaves nothing to trust
+  Tuple loopErrors named = case report.result, resolution of
+    Loop.Rejected d, _ -> Tuple [ rejected d ] (Just (Set.fromFoldable (diagnosticDeclarations d)))
+    Loop.Exhausted p, _ -> Tuple [ EquationUndecided p.origin ] (Just (Set.singleton (declarationOf p.origin)))
+    Loop.Halted d, _ -> Tuple [ Broken d ] Nothing
+    _, Just (ResolutionHalted d) -> Tuple [ Broken d ] Nothing
+    _, Just (Resolution r) ->
+      let
+        components = Array.concatMap componentErrors r.components
+        resolvedNames = Set.fromFoldable (Array.concatMap _.names components)
+        -- a job of a declaration the resolution reported is reported by that
+        stillWaiting = case left.result of
+          Loop.Blocked waiting -> Array.filter (\p -> not (Set.member (declarationOf p.origin) resolvedNames)) (NonEmptyArray.toArray waiting)
+          _ -> []
+      in
+        Tuple (map _.error components <> map (\p -> EquationUndecided p.origin) stillWaiting)
+          (Just (Set.union resolvedNames (Set.fromFoldable (map (\p -> declarationOf p.origin) stillWaiting))))
+    _, Nothing -> Tuple [] (Just Set.empty)
 
   -- the declarations a job still waits for
   waiting = Set.fromFoldable (map (\p -> declarationOf p.site.origin) (Map.values after.tentative.scheduler.pending))
