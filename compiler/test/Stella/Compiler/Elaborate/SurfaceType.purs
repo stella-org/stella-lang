@@ -302,7 +302,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Type" do
         Left err -> fail (show err.error)
         Right sig -> do
           let
-            scope = { declaration, kindVars: Set.empty, tyVars: Map.singleton (TyVar "e") (XKRow RowEffect), localTypes: Map.empty, anonymous: Map.empty, synonyms: libSynonyms }
+            scope = { declaration, kindVars: Set.empty, tyVars: Map.singleton (TyVar "e") (XKRow RowEffect), localTypes: Map.empty, anonymous: Map.empty, synonyms: libSynonyms, localSynonyms: Map.empty }
             nested = TypeEffectRow (at 12) [ EffectElement (console 12), EffectSpread (at 13) (Just (v rowVar)) ]
             row = TypeEffectRow (at 9) [ EffectElement (state 9 [ int ]), EffectSpread (at 10) (Just nested) ]
           case runElabIn (sessionEnvOf sig []) (initialState (SessionId 0) 10) (readTypeAt scope (XKRow RowEffect) row) of

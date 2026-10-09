@@ -50,6 +50,7 @@ module Stella.Compiler.Elaborate.Surface.Type
   , Read
   , Scope
   , LocalHead
+  , SynonymShape
   , ReadBinder
   , elaborateSignature
   , elaborateType
@@ -58,6 +59,7 @@ module Stella.Compiler.Elaborate.Surface.Type
   , readKind
   , siteOf
   , typeKindVars
+  , typeParts
   , xFunction
   , settledScheme
   , schemeOf
@@ -125,6 +127,14 @@ data Unsupported
   -- | A synonym applied to fewer arguments than it has parameters, which it
   -- | names with how many it has.
   | SynonymUnsaturated Surface.Origin (Qualified TyName) Int
+  -- | A synonym of the module defined in terms of itself, where it is declared.
+  | SynonymCycle Surface.Origin (Qualified TyName)
+  -- | A use of a synonym of the module that could not be read, as reported
+  -- | where it is declared.
+  | SynonymUnexpandable Surface.Origin (Qualified TyName)
+  -- | A foreign type at a kind no type constructor stands at: one taking what
+  -- | no type variable may stand at, or producing what is no `Type`.
+  | ForeignKindInvalid Surface.Origin XKind
 
 -- | A condition the sharpness of a row written in a type puts on its tails:
 -- | that a tail lacks a key the row holds beside it, or that two of its tails
@@ -190,7 +200,9 @@ type SynthesizedMark = { name :: Maybe Ident, synthesizer :: Qualified Ident }
 -- | variables in scope, the kind of each type variable bound, the type
 -- | constructors the module declares whose kinds are being decided, and the
 -- | row variable `...` stands for at each row kind, where a signature
--- | quantifies one, and the type synonyms a type is read through.
+-- | quantifies one, and the type synonyms a type is read through: those the
+-- | imports declare, and those of the module whose bodies are read so far, each
+-- | at its shape, or at nothing where it could not be read.
 type Scope =
   { declaration :: Qualified Ident
   , kindVars :: Set KindVar
@@ -198,6 +210,7 @@ type Scope =
   , localTypes :: Map (Qualified TyName) LocalHead
   , anonymous :: Map RowElemKind TyVar
   , synonyms :: SynonymEnv
+  , localSynonyms :: Map (Qualified TyName) (Maybe SynonymShape)
   }
 
 -- | The kind a type constructor of the module is read at while its declaration
@@ -259,6 +272,7 @@ elaborateSpine computation synonyms declaration signature = do
       , localTypes: Map.empty
       , anonymous: Map.fromFoldable (map (\s -> Tuple s.kind s.var) spreads)
       , synonyms
+      , localSynonyms: Map.empty
       }
   body <- checkAt scope XKType spine.type
   let taken = quantify quantified body.implied body.type
@@ -287,7 +301,7 @@ elaborateSpine computation synonyms declaration signature = do
 -- | every part of it is read.
 elaborateType :: SynonymEnv -> Qualified Ident -> XContext -> Type -> Elab Read
 elaborateType synonyms declaration context t = do
-  r <- checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars, localTypes: Map.empty, anonymous: Map.empty, synonyms } XKType t
+  r <- checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars, localTypes: Map.empty, anonymous: Map.empty, synonyms, localSynonyms: Map.empty } XKType t
   -- a form not read is reported before anything is required of what it stands in
   when (Array.null r.unsupported) do
     for_ r.implied \i -> require { context, origin: AtSource { declaration, origin: i.origin } } (atomConstraint i.atom)
@@ -429,32 +443,59 @@ type SynonymUse = { origin :: Surface.Origin, name :: Qualified TyName, argument
 -- | needs a condition of the row it is given, which a synonym carries none of,
 -- | and is outside what this version reads.
 expandSynonym :: Scope -> SynonymUse -> Elab Read
-expandSynonym scope use = case lookupSynonym use.name scope.synonyms of
-  Nothing -> unreadType scope (OutsideSubset use.origin "a type synonym the module declares")
-  Just entry
-    | Array.length use.arguments < Array.length entry.params -> unreadType scope (SynonymUnsaturated use.origin use.name (Array.length entry.params))
-    | extendsParameter entry -> unreadType scope (OutsideSubset use.origin "a type synonym extending a row it is given")
-    | otherwise -> do
-        kinds <- traverse (\_ -> freshKindMeta scope.kindVars quantifiable) entry.kind.kindVars
-        let
-          byKind = Map.fromFoldable (Array.zip entry.kind.kindVars kinds)
-          count = Array.length entry.params
-        given <- traverse
-          (\(Tuple p a) -> checkAt scope (instantiateKindVars byKind (fromCoreKind p.kind)) a)
-          (Array.zip entry.params (Array.take count use.arguments))
-        let
-          body = substituteKindVars byKind (fromCore entry.body)
-          captured = Set.intersection (bindersIn body) (foldMap (freeRigids <<< _.type) given)
-          taken = Set.union (bindersIn body) (foldMap (freeRigids <<< _.type) given)
-        renames <- traverse (\b@(TyVar hint) -> Tuple b <$> freshBinderName taken hint) (Array.fromFoldable captured)
-        let
-          expanded = substituteTyVars (Map.fromFoldable (Array.zip (map _.name entry.params) (map _.type given))) (Map.fromFoldable renames) body
-          read = joined given expanded (dropArrows count (instantiateKindVars byKind (fromCoreKind entry.kind.body)))
-        foldM (applied scope use.origin) (read { unwritten = map (\kind -> { origin: use.origin, kind }) kinds <> read.unwritten }) (Array.drop count use.arguments)
+expandSynonym scope use = case Map.lookup use.name scope.localSynonyms of
+  Just (Just local) -> expandShape scope use local
+  -- one the module declares that could not be read, as reported where it is
+  Just Nothing -> unreadType scope (SynonymUnexpandable use.origin use.name)
+  Nothing -> case lookupSynonym use.name scope.synonyms of
+    Just entry -> expandShape scope use (shapeOf entry)
+    Nothing -> unreadType scope (OutsideSubset use.origin "a type synonym the module declares")
+
+-- | What a synonym is, read for expanding it: the kind variables it writes,
+-- | instantiated afresh at each use, its parameters at their kinds, the kind of
+-- | what it stands for, and what it stands for, written in terms of its
+-- | parameters.
+type SynonymShape =
+  { kindVars :: Array KindVar
+  , params :: Array { name :: TyVar, kind :: XKind }
+  , result :: XKind
+  , body :: XType
+  }
+
+-- | The shape of a synonym an interface holds.
+shapeOf :: SynonymEntry -> SynonymShape
+shapeOf entry =
+  { kindVars: entry.kind.kindVars
+  , params: map (\p -> { name: p.name, kind: fromCoreKind p.kind }) entry.params
+  , result: dropArrows (Array.length entry.params) (fromCoreKind entry.kind.body)
+  , body: fromCore entry.body
+  }
   where
   dropArrows n kind = case kind of
     XKFun _ result | n > 0 -> dropArrows (n - 1) result
     _ -> kind
+
+expandShape :: Scope -> SynonymUse -> SynonymShape -> Elab Read
+expandShape scope use shape
+  | Array.length use.arguments < Array.length shape.params = unreadType scope (SynonymUnsaturated use.origin use.name (Array.length shape.params))
+  | extendsParameter shape = unreadType scope (OutsideSubset use.origin "a type synonym extending a row it is given")
+  | otherwise = do
+      kinds <- traverse (\_ -> freshKindMeta scope.kindVars quantifiable) shape.kindVars
+      let
+        byKind = Map.fromFoldable (Array.zip shape.kindVars kinds)
+        count = Array.length shape.params
+      given <- traverse
+        (\(Tuple p a) -> checkAt scope (instantiateKindVars byKind p.kind) a)
+        (Array.zip shape.params (Array.take count use.arguments))
+      let
+        body = substituteKindVars byKind shape.body
+        captured = Set.intersection (bindersIn body) (foldMap (freeRigids <<< _.type) given)
+        taken = Set.union (bindersIn body) (foldMap (freeRigids <<< _.type) given)
+      renames <- traverse (\b@(TyVar hint) -> Tuple b <$> freshBinderName taken hint) (Array.fromFoldable captured)
+      let
+        expanded = substituteTyVars (Map.fromFoldable (Array.zip (map _.name shape.params) (map _.type given))) (Map.fromFoldable renames) body
+        read = joined given expanded (instantiateKindVars byKind shape.result)
+      foldM (applied scope use.origin) (read { unwritten = map (\kind -> { origin: use.origin, kind }) kinds <> read.unwritten }) (Array.drop count use.arguments)
 
 -- | What is read, applied to one more argument.
 applied :: Scope -> Surface.Origin -> Read -> Type -> Elab Read
@@ -467,8 +508,8 @@ applied scope origin f x = do
 -- | Whether a synonym's body spreads a parameter into a row holding a key or
 -- | another row beside it. Below a `forall` binding a parameter's name, that
 -- | name is the `forall`'s, whose conditions the `forall` carries.
-extendsParameter :: SynonymEntry -> Boolean
-extendsParameter entry = go (Set.fromFoldable (map _.name entry.params)) (fromCore entry.body)
+extendsParameter :: SynonymShape -> Boolean
+extendsParameter shape = go (Set.fromFoldable (map _.name shape.params)) shape.body
   where
   go params t = case t of
     XForall b _ body -> go (Set.delete b params) body

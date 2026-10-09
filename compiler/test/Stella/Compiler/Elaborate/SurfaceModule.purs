@@ -181,6 +181,9 @@ at = case _ of
   Unsupported (AnonymousSpread o) -> located o <> " anonymous spread"
   Unsupported (UnheldConstraint o _) -> located o <> " unheld"
   Unsupported (SynonymUnsaturated o _ _) -> located o <> " unsaturated"
+  Unsupported (SynonymCycle o _) -> located o <> " cycle"
+  Unsupported (SynonymUnexpandable o _) -> located o <> " unexpandable"
+  Unsupported (ForeignKindInvalid o _) -> located o <> " foreign kind"
   WithoutSignature o _ -> located o <> " without a signature"
   KindUndetermined o -> located o <> " kind undetermined"
   Rejected (EquationFailed (AtSource s) _) -> located s.origin <> " rejected"
@@ -234,7 +237,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         , "lam = (\\x -> x) 1"
         , "open :: Int"
         , "open = const 1 id"
-        , "newtype T = T Int"
+        , "foreign f :: Int -> Int"
         , "ok :: Int"
         , "ok = 1"
         ]

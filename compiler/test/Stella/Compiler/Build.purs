@@ -148,6 +148,21 @@ interfaceSynonyms =
   , arities: Map.empty
   }
 
+-- | `Marks`, declaring `attribute note Int`.
+interfaceMarks :: ModuleInterface
+interfaceMarks =
+  { name: marksModule
+  , imports: []
+  , exports: emptyExports { attributes = Map.singleton "note" { entity: Qualified marksModule (Ident "note"), via: Declared } }
+  , declarations: emptyDeclarations { attributes = Map.singleton (Ident "note") { positional: [ int ], keyword: [] } }
+  , implicitHandlers: []
+  , catalogOnly: Set.empty
+  , arities: Map.empty
+  }
+
+marksModule :: ModuleName
+marksModule = ModuleName "Marks"
+
 synonymsModule :: ModuleName
 synonymsModule = ModuleName "Synonyms"
 
@@ -161,7 +176,7 @@ moduleA :: ModuleName
 moduleA = ModuleName "Macros"
 
 environment :: BuildEnvironment
-environment = case foldM (flip addInterface) initialEnvironment (syntaxInterfaces <> [ interfaceA, interfaceC, interfaceEffects, interfaceSynonyms ]) of
+environment = case foldM (flip addInterface) initialEnvironment (syntaxInterfaces <> [ interfaceA, interfaceC, interfaceEffects, interfaceSynonyms, interfaceMarks ]) of
   Right env -> env
   Left _ -> initialEnvironment
 
@@ -455,6 +470,84 @@ spec = describe "Stella.Compiler.Build" do
         \r -> case r.result of
           Left err -> map _.message (NonEmptyArray.toArray (buildMessages err)) `shouldEqual` [ "This version of the compiler does not elaborate a reference to a value taking a synthesized argument yet" ]
           Right _ -> fail "built"
+
+  describe "a module's type declarations" do
+    let
+      rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors
+      typesModule =
+        [ "type Pair a = (a, a)"
+        , "type Listed = List Age"
+        , "newtype Age = Age Int"
+        , "foreign type Handle :: Type"
+        , "data Box = Box (Pair Age) Handle"
+        , "data List a = Nil | Cons a (List a)"
+        , "swap :: Pair Int -> Pair Int"
+        , "swap p = p"
+        ]
+
+    it "are read heads first, a synonym naming what is declared after it, through to the interface and its file" do
+      compilingUnder [ "module M (Pair, Listed, Age(..), Handle, Box(..), List(..), swap) where" ] typesModule case _ of
+        Left errors -> fail (joinWith "; " (rendered errors))
+        Right r -> do
+          let
+            m n = Qualified (ModuleName "M") (TyName n)
+            a = TVar (TyVar "a")
+            pairOf t = TApp (TCon recordTy []) (TRowExtend (RowTypeEntry (PositionKey 0) t) (TRowExtend (RowTypeEntry (PositionKey 1) t) TRowEmpty))
+            age = TCon (m "Age") []
+            typeOf n = Map.lookup (TyName n) r.interface.declarations.types
+          map (\t -> Tuple t.kind t.sort) (typeOf "Pair") `shouldEqual` Just (Tuple (monoScheme (KFun KType KType)) (Synonym { params: [ { name: TyVar "a", kind: KType } ], body: pairOf a }))
+          map _.sort (typeOf "Listed") `shouldEqual` Just (Synonym { params: [], body: TApp (TCon (m "List") []) age })
+          map _.sort (typeOf "Handle") `shouldEqual` Just ForeignType
+          map _.sort (typeOf "Age") `shouldEqual` Just (DataType { params: [], constructors: [ { name: Ident "Age", fields: [ int ] } ], isNewtype: true })
+          map _.sort (typeOf "Box") `shouldEqual` Just (DataType { params: [], constructors: [ { name: Ident "Box", fields: [ pairOf age, TCon (m "Handle") [] ] } ], isNewtype: false })
+          map _.scheme (Map.lookup (Ident "swap") r.interface.declarations.values) `shouldEqual` Just (plainScheme (monoScheme (pureFn (pairOf int) (pairOf int))))
+          case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
+            Right stored -> stored.interface `shouldEqual` r.interface
+            Left problem -> fail problem
+
+    it "give a module importing them the synonyms to expand" do
+      building
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A (Pair, Age(..))" ] [ "both :: Pair Age -> Pair Age", "both p = p" ])
+        , Tuple "src/A.stel" (moduleOf "A" [] typesModule)
+        ]
+        \r -> case r.result of
+          Right built -> built `shouldEqual` [ "A", "B" ]
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+
+    it "report a cycle of synonyms at each of its declarations, and a use of one where it stands" do
+      compiling [ "type A = B", "type B = A", "type C = (A, Int)" ] case _ of
+        Left errors -> rendered errors `shouldEqual`
+          [ "2:6 The type synonym `A` is defined in terms of itself, and stands for no type"
+          , "3:6 The type synonym `B` is defined in terms of itself, and stands for no type"
+          , "4:11 The type synonym `A` cannot be expanded, as reported where it is declared"
+          ]
+        Right _ -> fail "compiled"
+
+    it "refuse a foreign type at a kind no type constructor stands at" do
+      compiling [ "foreign type E :: Effect", "foreign type F :: Effect -> Type" ] case _ of
+        Left errors -> rendered errors `shouldEqual`
+          [ "2:14 A foreign type takes types at kinds a type variable may stand at and produces `Type`, and `Effect` is no such kind"
+          , "3:14 A foreign type takes types at kinds a type variable may stand at and produces `Type`, and `Effect -> Type` is no such kind"
+          ]
+        Right _ -> fail "compiled"
+
+    it "check an attribute on a synonym or a foreign type against the values of the module, one declared after it among them" do
+      compilingUnder [ "module M where", "import Marks" ]
+        [ "@[note answer]", "type S = Int", "@[note answer]", "foreign type H :: Type", "answer :: Int", "answer = 42" ]
+        case _ of
+          Left errors -> fail (joinWith "; " (rendered errors))
+          Right _ -> pure unit
+      compilingUnder [ "module M where", "import Marks" ] [ "@[note answer]", "type S = Int", "answer :: String", "answer = \"no\"" ] case _ of
+        Left errors -> map stageOf errors `shouldEqual` [ "elaboration" ]
+        Right _ -> fail "compiled"
+
+    it "refuse a synonym extending a row it is given, and one whose parameter's kind nothing decides" do
+      compiling [ "type W r = { a :: Int, ...r }", "type K f = f" ] case _ of
+        Left errors -> rendered errors `shouldEqual`
+          [ "2:6 This version of the compiler does not elaborate a type synonym extending a row it is given yet"
+          , "3:8 This version of the compiler does not elaborate a type parameter whose kind is decided only by generalizing it; its kind must be written yet"
+          ]
+        Right _ -> fail "compiled"
 
   describe "a type synonym an import declares" do
     it "is expanded where it is used, the interface holding what it stands for, through its file" do

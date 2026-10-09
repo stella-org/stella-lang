@@ -49,6 +49,9 @@ elaborationOrigins = case _ of
   Unsupported (AnonymousSpread o) -> [ o ]
   Unsupported (UnheldConstraint o _) -> [ o ]
   Unsupported (SynonymUnsaturated o _ _) -> [ o ]
+  Unsupported (SynonymCycle o _) -> [ o ]
+  Unsupported (SynonymUnexpandable o _) -> [ o ]
+  Unsupported (ForeignKindInvalid o _) -> [ o ]
   WithoutSignature o _ -> [ o ]
   KindUndetermined o -> [ o ]
   Rejected d -> diagnosticOrigins d
@@ -85,6 +88,9 @@ printElaborationError = case _ of
   Unsupported (UnheldConstraint _ (LacksAtom key (TyVar v))) -> fmt @"This row needs `{v}` not to hold `{k}`, and `{v}` is bound where no such condition can be carried; a `forall` written in this type can bind the row instead" { v, k: keyName key }
   Unsupported (UnheldConstraint _ (DisjointAtom (TyVar a) (TyVar b))) -> fmt @"This row needs `{a}` and `{b}` to hold no key in common, and they are bound where no such condition can be carried; a `forall` written in this type can bind them instead" { a, b }
   Unsupported (SynonymUnsaturated _ (Qualified _ (TyName n)) count) -> fmt @"`{n}` is a type synonym of {count} {parameters}, and stands for a type only applied to every one of them" { n, count, parameters: if count == 1 then "parameter" else "parameters" }
+  Unsupported (SynonymCycle _ (Qualified _ (TyName n))) -> fmt @"The type synonym `{n}` is defined in terms of itself, and stands for no type" { n }
+  Unsupported (SynonymUnexpandable _ (Qualified _ (TyName n))) -> fmt @"The type synonym `{n}` cannot be expanded, as reported where it is declared" { n }
+  Unsupported (ForeignKindInvalid _ k) -> fmt @"A foreign type takes types at kinds a type variable may stand at and produces `Type`, and `{k}` is no such kind" { k: printKind k }
   WithoutSignature _ name -> fmt @"`{name}` needs a type signature in this version of the compiler" { name: nameOf name }
   KindUndetermined _ -> "Nothing here determines the kind of this type"
   Rejected d -> printDiagnostic d

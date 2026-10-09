@@ -1,13 +1,17 @@
--- | A module's data and value declarations elaborated into Core, against what
+-- | A module's type and value declarations elaborated into Core, against what
 -- | its imports reach ([Elaboration](../../../../../docs/technical-references/02-Surface-Language/01-Elaboration.md)).
 -- |
--- | **The data declarations are elaborated before any value**
--- | ([Data](Data.purs)), and what they declare is added to the signature and
--- | the catalog the values are elaborated against. That signature is the
--- | module's own: the build environment is not, and the Core checker is given
--- | the signature of the imports alone, as for any module. A data declaration
--- | that does not elaborate leaves the values unread, a value naming its type
--- | having nothing to be read against.
+-- | **The type declarations are elaborated before any value**
+-- | ([Types](Types.purs)), and what they declare is added to what the values
+-- | are elaborated against: the data types and their constructors, and the
+-- | foreign types, to the signature and the catalog, and the synonyms to those
+-- | the values' types are read through. That signature is the module's own:
+-- | the build environment is not, and the Core checker is given the signature
+-- | of the imports alone, as for any module, with the foreign types the module
+-- | declares, which no Core declaration produces. A type declaration that does
+-- | not elaborate leaves the values unread, a value naming its type having
+-- | nothing to be read against. An attribute on a synonym or a foreign type,
+-- | having no Core declaration to stand on, is checked here.
 -- |
 -- | **Every signature is read before any body.** A declaration's scheme is
 -- | what every other declaration refers to it at, so the schemes are settled
@@ -25,7 +29,7 @@
 -- | loop stopped before deciding is reported, never returned.
 -- |
 -- | **A value declaration needs a signature in this version**, a fixity gives
--- | Core nothing, and every declaration but a data declaration and a value
+-- | Core nothing, and every declaration but a type declaration and a value
 -- | declaration is outside what it elaborates.
 module Stella.Compiler.Elaborate.Surface.Module
   ( ElaborationError(..)
@@ -43,7 +47,7 @@ import Prim hiding (Type)
 import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
-import Data.Either (Either(..), either, hush)
+import Data.Either (Either(..), either)
 import Data.Foldable (foldl)
 import Data.Traversable (traverse)
 import Data.Map as Map
@@ -53,7 +57,8 @@ import Data.Tuple (Tuple(..), fst, snd)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
 import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), XExpr, toCoreExpr)
 import Stella.Compiler.Elaborate.CorePlus.Type (fromCore)
-import Stella.Compiler.Elaborate.Surface.Data (readData, settledData)
+import Stella.Compiler.Elaborate.Surface.Types (readTypes, settledTypes)
+import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEntry)
 import Stella.Compiler.Elaborate.Surface.Internal (internalEntries)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
 import Stella.Compiler.Elaborate.Driver.Loop (Attempter, runAttempting)
@@ -72,16 +77,17 @@ import Stella.Compiler.Interface.Assemble (CoreInterface, CoreTypeSort(..), core
 import Stella.Compiler.Interface.Module (Exports, TypeEntity(..), Via(..))
 import Stella.Compiler.Interface.Scheme (Scheme, plainScheme)
 import Stella.Compiler.Surface.Decl (Declaration(..), declarationOrigin)
-import Stella.Compiler.Surface.Decl (Module) as Surface
+import Stella.Compiler.Surface.Decl (Attribute, Module) as Surface
 import Stella.Compiler.Surface.Origin (Origin) as Surface
 import Stella.Compiler.TypedCore (Decl(DeclData), Expr, Module) as Core
 import Stella.Compiler.TypedCore (Attribute, DataDecl, DeclError(..), DeclFailure, Decl(DeclNonRec, DeclRec), Declared, Export(..), declareAnnotated)
 import Stella.Compiler.TypedCore.Declare (ctorInfo, dataEntry)
-import Stella.Compiler.TypedCore.AttributeCheck (AttributeError)
+import Stella.Compiler.TypedCore.AttributeCheck (AttributeError, checkAttribute)
 import Stella.Compiler.TypedCore.Check (isFunVal)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName, Qualified(..), TyName(..))
-import Stella.Compiler.TypedCore.Signature (Signature, TyConInfo(..))
+import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
+import Stella.Compiler.TypedCore.Kind (KindScheme)
 import Stella.Compiler.TypedCore.Type (TypeScheme)
 
 data ElaborationError
@@ -144,6 +150,14 @@ type Elaborating =
 -- | A data declaration elaborated, and where it stands.
 type ElaboratedData = { origin :: Surface.Origin, decl :: DataDecl }
 
+-- | A type synonym elaborated: where it stands, its attributes, its name, and
+-- | what an interface holds of it.
+type ElaboratedSynonym = { origin :: Surface.Origin, attributes :: Array Surface.Attribute, name :: Qualified TyName, entry :: SynonymEntry }
+
+-- | A foreign type elaborated: where it stands, its attributes, its name, and
+-- | its kind scheme.
+type ElaboratedForeignType = { origin :: Surface.Origin, attributes :: Array Surface.Attribute, name :: Qualified TyName, kind :: KindScheme }
+
 -- | Elaborate the module's data and value declarations against the signature
 -- | and the catalog its imports give.
 elaborateValues
@@ -151,41 +165,56 @@ elaborateValues
   -> SurfaceEnv
   -> Array CatalogEntry
   -> Surface.Module
-  -> { data :: Array ElaboratedData, values :: Array ElaboratedValue, errors :: Array ElaborationError }
+  -> { data :: Array ElaboratedData, synonyms :: Array ElaboratedSynonym, foreignTypes :: Array ElaboratedForeignType, values :: Array ElaboratedValue, errors :: Array ElaborationError }
 elaborateValues imports surface importedEntries m =
   if Array.null dataErrors then
     { data: elaboratedData
+    , synonyms: types.synonyms
+    , foreignTypes: types.foreignTypes
     , values: settled'.values
-    , errors: internalErrors <> unsupported <> signatureErrors <> bodyErrors <> settled'.errors
+    , errors: internalErrors <> unsupported <> signatureErrors <> attributeErrors <> bodyErrors <> settled'.errors
     }
-  else { data: [], values: [], errors: dataErrors <> unsupported }
+  else { data: [], synonyms: [], foreignTypes: [], values: [], errors: dataErrors <> unsupported }
   where
   initial0 = initialState (SessionId 0) 1_000_000
 
-  -- the data declarations, each head before any field
-  declarations = Array.mapMaybe
-    ( case _ of
-        DeclData d -> Just d
-        _ -> Nothing
-    )
-    m.declarations
-  Tuple dataRead initial = case runAttempt (sessionEnvOf imports importedEntries) (readData surface.synonyms declarations) initial0 of
-    Tuple (Done reads) s ->
-      let
-        settledOnes = map (\r -> { origin: r.declaration.origin, decl: settledData s.tentative.metas r }) reads
-      in
-        Tuple
-          { data: Array.mapMaybe (\d -> map { origin: d.origin, decl: _ } (hush d.decl)) settledOnes
-          , errors: Array.concatMap (\d -> either (map Unsupported) (const []) d.decl) settledOnes
-          }
-          s
-    Tuple outcome _ -> Tuple { data: [], errors: [ failure outcome ] } initial0
-  elaboratedData = dataRead.data
-  dataErrors = dataRead.errors
+  -- the type declarations, every head before anything a head names
+  typeDeclarations =
+    { data: Array.mapMaybe
+        ( case _ of
+            DeclData d -> Just { origin: d.origin, attributes: d.attributes, name: d.name, kind: d.kind, params: d.params, constructors: d.constructors, isNewtype: false }
+            DeclNewtype d -> Just { origin: d.origin, attributes: d.attributes, name: d.name, kind: d.kind, params: d.params, constructors: [ { origin: d.constructor.origin, name: d.constructor.name, fields: [ d.constructor.field ] } ], isNewtype: true }
+            _ -> Nothing
+        )
+        m.declarations
+    , synonyms: Array.mapMaybe
+        ( case _ of
+            DeclSynonym d -> Just d
+            _ -> Nothing
+        )
+        m.declarations
+    , foreignTypes: Array.mapMaybe
+        ( case _ of
+            DeclForeignType d -> Just d
+            _ -> Nothing
+        )
+        m.declarations
+    }
+  typesRead = case runAttempt (sessionEnvOf imports importedEntries) (readTypes surface.synonyms typeDeclarations) initial0 of
+    Tuple (Done reads) s -> { types: settledTypes s.tentative.metas reads, errors: [], state: s }
+    Tuple outcome _ -> { types: { data: [], synonyms: [], foreignTypes: [], unsupported: [] }, errors: [ failure outcome ], state: initial0 }
+  initial = typesRead.state
+  types = typesRead.types
+  elaboratedData = types.data
 
   -- the signature and the catalog the values are elaborated against: the
-  -- imports', with the data types and constructors the module declares
-  signature = foldl (addData m.name) imports (map _.decl elaboratedData)
+  -- imports', with the data types, their constructors, and the foreign types
+  -- the module declares
+  signature = foldl addForeignType (foldl (addData m.name) imports (map _.decl elaboratedData)) types.foreignTypes
+  dataErrors = typesRead.errors <> map Unsupported types.unsupported
+  -- the synonyms the values' types are read through: the imports', and the
+  -- module's own
+  withSynonyms = surface { synonyms = Map.union (Map.fromFoldable (map (\s -> Tuple s.name s.entry) types.synonyms)) surface.synonyms }
   -- the entries the compiler's desugarings refer to, read off it
   Tuple internal internalErrors = case internalEntries signature of
     Right entries -> Tuple entries []
@@ -205,6 +234,9 @@ elaborateValues imports surface importedEntries m =
         , signature: signature'
         }
     DeclData _ -> Nothing
+    DeclNewtype _ -> Nothing
+    DeclSynonym _ -> Nothing
+    DeclForeignType _ -> Nothing
     DeclFixity _ -> Nothing
     DeclTypeFixity _ -> Nothing
     other -> Just (Left (Unsupported (OutsideSubset (declarationOrigin other) "this declaration")))
@@ -226,7 +258,7 @@ elaborateValues imports surface importedEntries m =
   -- every signature read, as one attempt each
   read = foldl readOne { state: initial, read: [], errors: [] } written
   readOne acc c =
-    case runAttempt importedSession (elaborateSignature surface.synonyms c.declared.name c.signature) acc.state of
+    case runAttempt importedSession (elaborateSignature withSynonyms.synonyms c.declared.name c.signature) acc.state of
       Tuple (Done e) s
         | Array.null e.unsupported -> acc { state = s, read = Array.snoc acc.read (Tuple c.declared e) }
         | otherwise -> acc { errors = acc.errors <> map Unsupported e.unsupported }
@@ -247,13 +279,26 @@ elaborateValues imports surface importedEntries m =
     )
     settled
 
+  -- an attribute on a declaration with no Core form is checked here, once
+  -- the scheme of every value of the module is known, a constant naming one
+  attributeSignature = foldl (\s v -> s { values = Map.insert v.declared.name { scheme: v.scheme, isForeign: false } s.values }) signature schemes
+  attributeErrors = Array.concatMap
+    ( \d -> Array.mapMaybe
+        ( \a -> case coreAttribute a of
+            Right attribute -> either (Just <<< AttributeRejected d.origin) (const Nothing) (checkAttribute attributeSignature attribute)
+            Left _ -> Nothing
+        )
+        d.attributes
+    )
+    (map (\s -> { origin: s.origin, attributes: s.attributes }) types.synonyms <> map (\f -> { origin: f.origin, attributes: f.attributes }) types.foreignTypes)
+
   -- the catalog the bodies are elaborated against: what the imports publish,
   -- and every value the module declares at its scheme, with its attributes
   own = map (\v -> { name: v.declared.name, sort: ValueEntry, scheme: { kindVars: v.scheme.kindVars, body: fromCore v.scheme.body }, attributes: v.declared.attributes }) schemes
   session = sessionEnvOf signature (imported <> own)
   -- what the bodies read beyond: the module's values taking a synthesized
   -- argument among those the imports declare
-  withOwn = surface { synthesizing = surface.synthesizing <> Set.fromFoldable (map _.declared.name (Array.filter (takesSynthesized <<< _.spine) schemes)) }
+  withOwn = withSynonyms { synthesizing = withSynonyms.synthesizing <> Set.fromFoldable (map _.declared.name (Array.filter (takesSynthesized <<< _.spine) schemes)) }
 
   -- every body, as one attempt each, a body that does not elaborate leaving
   -- nothing behind
@@ -276,6 +321,11 @@ addData self sig decl =
     }
   where
   owner = Qualified self decl.name
+
+-- | A signature with a foreign type the module declares: an opaque type of the
+-- | module, which no Core declaration produces.
+addForeignType :: Signature -> ElaboratedForeignType -> Signature
+addForeignType sig f = sig { types = Map.insert f.name (IntrinsicTyCon f.kind CanonicalOpaque) sig.types }
 
 -- | The catalog entry of each constructor of a data type the module declares.
 constructorsOf :: ModuleName -> DataDecl -> Array CatalogEntry
@@ -381,9 +431,11 @@ type ElaboratedModule =
 -- | the module imports, and exports each value it declares that is reached from
 -- | outside — by its name, as a macro, or through an operator it exports —
 -- | and each data type it declares and exports, with the constructors it
--- | exports of it. The Core part of its interface holds each data type it
--- | declares and the scheme of every value and constructor; a module this
--- | version elaborates declares no other type, and no effect or attribute.
+-- | exports of it. The Core part of its interface holds each data type and
+-- | newtype it declares, each synonym at its parameters and the type it stands
+-- | for, each foreign type at its kind, and the scheme of every value and
+-- | constructor; a module this version elaborates declares no effect or
+-- | attribute.
 -- | **The Core checker refusing it is the elaborator's fault**, reported as
 -- | such, but for an attribute's arguments, which only the Core checker checks:
 -- | one that does not check is reported where its declaration stands.
@@ -440,7 +492,9 @@ elaborateModule signature surface imported m exports =
     }
   result = case NonEmptyArray.fromArray errors of
     Just es -> Left es
-    Nothing -> case declareAnnotated signature core of
+    -- a foreign type the module declares has no Core declaration, and is in
+    -- what the module is checked against as the ABI's types are
+    Nothing -> case declareAnnotated (foldl addForeignType signature elaborated.foreignTypes) core of
       Right declared -> Right { core, declared, interface }
       -- an attribute's arguments are checked by Core alone
       Left { at, error: AttributeIllTyped err } -> Left (NonEmptyArray.singleton (AttributeRejected at err))
@@ -461,13 +515,18 @@ elaborateModule signature surface imported m exports =
         ( map (\v -> Tuple (nameOf v.name) v.spine) values
             <> Array.concatMap (\d -> map (\c -> Tuple c.name (plainScheme (ctorInfo (Qualified m.name d.decl.name) d.decl c).scheme)) d.decl.constructors) elaborated.data
         )
-    , types: Map.fromFoldable (map (\d -> Tuple d.decl.name { kind: dataKind d.decl, sort: CoreData { params: d.decl.params, fields: map _.fields d.decl.constructors } }) elaborated.data)
+    , types: Map.fromFoldable
+        ( map (\d -> Tuple d.decl.name { kind: dataKind d.decl, sort: CoreData { params: d.decl.params, fields: map _.fields d.decl.constructors } }) elaborated.data
+            <> map (\s -> Tuple (tyNameOf s.name) { kind: s.entry.kind, sort: CoreSynonym { params: s.entry.params, body: s.entry.body } }) elaborated.synonyms
+            <> map (\f -> Tuple (tyNameOf f.name) { kind: f.kind, sort: CoreForeign }) elaborated.foreignTypes
+        )
     , effects: Map.empty
     , attributes: Map.empty
     , implicitHandlers: Map.empty
     }
 
   nameOf (Qualified _ n) = n
+  tyNameOf (Qualified _ n) = n
   identText (Ident n) = n
   tyNameText (TyName n) = n
 
