@@ -43,17 +43,17 @@ import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Traversable (traverse)
-import Data.Tuple (Tuple(..))
+import Data.Tuple (Tuple(..), snd)
 import Stella.Compiler.CST.Range (covering, kindRange, typeRange)
 import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Resolve.Fixity (rebracket)
-import Stella.Compiler.Resolve.Label (reportLabelsTwice)
+import Stella.Compiler.Resolve.Label (reportLabelsTwice, reportTagsTwice)
 import Stella.Compiler.Resolve.Monad (Found(..), Resolve, ResolveReason(..), ResolveWarning(..), TypeReference(..), freshBinding, lookupType, lookupTypeOperator, lookupValue, report, typeVariable, typeVariables, warn, withTypeVariables)
 import Stella.Compiler.Surface.Name (TypeVar(..))
 import Stella.Compiler.Surface.Origin (Origin, originOf, spanning)
 import Stella.Compiler.Surface.Type (ComputationType, EffectApplication, EffectRowItem(..), HandlerSignature(..), Kind(..), OperationSignature, RecordRowItem(..), Signature, SignaturePrefix(..), Type(..), TypeOperatorTarget(..), TypeVarBinder, VariantRowItem(..), typeOrigin)
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
-import Stella.Compiler.TypedCore.Name (Ident(..), KindVar(..), Symbol(..), Tag(..), TyVar(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), Qualified(..), Symbol(..), Tag(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (unitTy)
 
 -- | A kind. A word other than `Type`, `Effect`, and `Row`, a qualified one,
@@ -111,8 +111,15 @@ resolveType t = case t of
   CST.TypeRecord _ items -> do
     reportLabelsTwice (Array.mapMaybe fieldLabel items)
     TypeRecord o <$> rowItems recordItem items
-  CST.TypeVariant _ items -> TypeVariant o <$> rowItems variantItem items
-  CST.TypeEffectRow _ items -> TypeEffectRow o <$> rowItems effectItem items
+  CST.TypeVariant _ items -> do
+    reportLabelsTwice (Array.mapMaybe fieldLabel items)
+    reportTagsTwice (Array.mapMaybe tagName items)
+    TypeVariant o <$> rowItems variantItem items
+  CST.TypeEffectRow _ items -> do
+    reportLabelsTwice (Array.mapMaybe fieldLabel items)
+    resolved <- traverse (\item -> Tuple (itemRange item) <$> effectItem item) items
+    reportEffectsTwice resolved
+    pure (TypeEffectRow o (Array.mapMaybe snd resolved))
   CST.TypeSynthesized _ _ _ -> invalid SynthesizedMisplaced
   CST.TypeDirective _ _ -> pure (TypeInvalid o)
   where
@@ -120,6 +127,9 @@ resolveType t = case t of
   invalid reason = report (typeRange t) reason $> TypeInvalid o
   fieldLabel = case _ of
     CST.RowField n _ -> Just n
+    _ -> Nothing
+  tagName = case _ of
+    CST.RowTag n _ -> Just n
     _ -> Nothing
 
 -- | The signature of a value, a foreign, or a `let` binding.
@@ -346,6 +356,19 @@ effectItem item = case item of
   CST.RowField n t -> map (EffectInstance (itemOrigin item) (Symbol n.name)) <$> effectApplication InRow t
   CST.RowSpread _ t -> Just <<< EffectSpread (itemOrigin item) <$> traverse resolveType t
   _ -> misplaced item
+
+-- | Reports each unlabelled effect of an effect row written after one of the
+-- | same effect, in the order written: an effect's key is the effect, however
+-- | its name is spelt.
+reportEffectsTwice :: Array (Tuple CST.SourceRange (Maybe EffectRowItem)) -> Resolve Unit
+reportEffectsTwice items = void (foldM step Set.empty items)
+  where
+  step seen (Tuple range item) = case item of
+    Just (EffectElement application)
+      | Set.member application.effect seen -> report range (EffectTwice (effectText application.effect)) $> seen
+      | otherwise -> pure (Set.insert application.effect seen)
+    _ -> pure seen
+  effectText (Qualified _ (EffName n)) = n
 
 misplaced :: forall a. CST.RowItem -> Resolve (Maybe a)
 misplaced item = report (itemRange item) RowItemMisplaced $> Nothing

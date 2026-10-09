@@ -37,9 +37,9 @@ import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), fromCore)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal)
 import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, equate, freshKindMeta, freshTypeMeta)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, currentMetas, equate, freshKindMeta, freshTypeMeta)
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
-import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..))
+import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), substitute)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..), elaborateType, xFunction)
 import Stella.Compiler.Surface.Expr (Binder(..), Expr(..), exprOrigin)
 import Stella.Compiler.Surface.Name (LocalVar(..))
@@ -110,22 +110,32 @@ lambdas :: Scope -> Array Binder -> Expr -> XType -> Surf (XExpr Surface.Origin)
 lambdas scope binders body expected = case Array.uncons binders of
   Nothing -> check scope body expected
   Just { head, tail } -> do
-    parts <- arrow scope (binderOrigin head) expected
+    parts <- arrow "a λ at an arrow that performs effects" scope (binderOrigin head) expected
     case head of
       BinderVar o (LocalVar v) ->
         ELam o v.name parts.argument <$> lambdas (scope { context = bindVar scope.context v.name parts.argument }) tail body parts.result
       BinderInvalid o -> outside (ReportedAlready o)
       other -> outside (OutsideSubset (binderOrigin other) "a pattern that is no variable")
 
--- | The argument and the result of a pure arrow the type must be.
-arrow :: Scope -> Surface.Origin -> XType -> Surf { argument :: XType, result :: XType }
-arrow scope origin ty = case ty of
-  XApp (XApp (XApp (XCon name []) argument) XRowEmpty) result | name == functionTy -> pure { argument, result }
-  _ -> do
-    argument <- lift (freshTypeMeta scope.context XKType)
-    result <- lift (freshTypeMeta scope.context XKType)
-    lift (equate (siteAt scope origin) { kind: XKType, left: ty, right: xFunction argument XRowEmpty result })
-    pure { argument, result }
+-- | The argument and the result of a pure arrow the type must be. An arrow
+-- | known to perform effects is outside what this version elaborates, what the
+-- | arrow is for said by the text given.
+arrow :: String -> Scope -> Surface.Origin -> XType -> Surf { argument :: XType, result :: XType }
+arrow what scope origin ty = do
+  metas <- lift currentMetas
+  case substitute metas ty of
+    XApp (XApp (XApp (XCon name []) argument) row) result
+      | name == functionTy, row == XRowEmpty -> pure { argument, result }
+      | name == functionTy, not (isMeta row) -> outside (OutsideSubset origin what)
+    _ -> do
+      argument <- lift (freshTypeMeta scope.context XKType)
+      result <- lift (freshTypeMeta scope.context XKType)
+      lift (equate (siteAt scope origin) { kind: XKType, left: ty, right: xFunction argument XRowEmpty result })
+      pure { argument, result }
+  where
+  isMeta = case _ of
+    XMeta _ -> true
+    _ -> false
 
 check :: Scope -> Expr -> XType -> Surf (XExpr Surface.Origin)
 check scope expr expected = case expr of
@@ -146,7 +156,7 @@ infer scope expr = case expr of
   ExprLiteral o literal -> pure { expr: ELit o literal, type: fromCore (litType literal) }
   ExprApp _ f x -> do
     f' <- infer scope f
-    parts <- arrow scope (exprOrigin f) f'.type
+    parts <- arrow "applying a function that performs effects" scope (exprOrigin f) f'.type
     x' <- check scope x parts.argument
     pure { expr: EApp (exprOrigin expr) f'.expr x', type: parts.result }
   ExprTyped _ inner t -> do

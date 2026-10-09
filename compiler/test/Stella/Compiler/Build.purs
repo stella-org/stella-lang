@@ -9,6 +9,7 @@ import Prim hiding (Type)
 import Fmt (fmt)
 import Data.Array as Array
 import Data.Array.NonEmpty as NonEmptyArray
+import Data.Bifunctor (lmap)
 import Data.Either (Either(..))
 import Data.Foldable (foldM, for_)
 import Data.Identity (Identity(..))
@@ -29,6 +30,7 @@ import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..))
 import Stella.Compiler.Elaborate.Surface.Module (ElaborationError(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment, viewFor)
+import Stella.Compiler.Interface.File (decode, encode)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
 import Stella.Compiler.Interface.Prim (primAttribute)
 import Stella.Compiler.Interface.Scheme (plainScheme)
@@ -42,10 +44,10 @@ import Stella.Compiler.Resolve.Module (ResolutionError(..))
 import Stella.Compiler.Resolve.Monad (ResolveError(..), ResolveReason(..)) as Resolve
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore (Decl(..))
-import Stella.Compiler.TypedCore.Kind (Kind(..), monoScheme)
-import Stella.Compiler.TypedCore.Name (Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..))
-import Stella.Compiler.TypedCore.Prim (intTy, pureFn)
-import Stella.Compiler.TypedCore.Type (RowKey(..), Type(..))
+import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..))
+import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, recordTy, unitTy)
+import Stella.Compiler.TypedCore.Type (RowEntry(..), RowKey(..), Type(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
@@ -105,11 +107,32 @@ interfaceC =
   , arities: Map.empty
   }
 
+-- | `Effects`, declaring `effect Console` with `log :: Int ->* Unit`.
+interfaceEffects :: ModuleInterface
+interfaceEffects =
+  { name: effectsModule
+  , imports: []
+  , exports: emptyExports { types = Map.singleton "Console" { entity: EffectEntity consoleName, via: Declared, members: [ Ident "log" ] } }
+  , declarations: emptyDeclarations
+      { effects = Map.singleton (EffName "Console") { params: [], operations: [ { name: Ident "log", binders: [], arguments: [ int ], resumesWith: TCon unitTy [] } ], attributes: [] }
+      , values = Map.singleton (Ident "log") { sort: SortOperation consoleName, scheme: plainScheme (monoScheme (pureFn int (TCon unitTy []))), attributes: [] }
+      }
+  , implicitHandlers: []
+  , catalogOnly: Set.empty
+  , arities: Map.empty
+  }
+
+effectsModule :: ModuleName
+effectsModule = ModuleName "Effects"
+
+consoleName :: Qualified EffName
+consoleName = Qualified effectsModule (EffName "Console")
+
 moduleA :: ModuleName
 moduleA = ModuleName "Macros"
 
 environment :: BuildEnvironment
-environment = case foldM (flip addInterface) initialEnvironment (syntaxInterfaces <> [ interfaceA, interfaceC ]) of
+environment = case foldM (flip addInterface) initialEnvironment (syntaxInterfaces <> [ interfaceA, interfaceC, interfaceEffects ]) of
   Right env -> env
   Left _ -> initialEnvironment
 
@@ -245,6 +268,64 @@ spec = describe "Stella.Compiler.Build" do
             Map.keys r.interface.exports.values `shouldEqual` Set.fromFoldable [ "Box", "f" ]
             Map.keys r.interface.exports.macros `shouldEqual` Set.singleton "mac"
             r.interface.arities `shouldEqual` Map.singleton (Ident "f") 1
+
+  describe "a structural type" do
+    let
+      consoleRow = TRowExtend (RowEffectEntry consoleName []) TRowEmpty
+      consoleThunk = fn (TCon unitTy []) consoleRow int
+      record fields = TApp (TCon recordTy []) (Array.foldr (\(Tuple k t) rest -> TRowExtend (RowTypeEntry k t) rest) TRowEmpty fields)
+      boxName = Qualified (ModuleName "M") (TyName "Box")
+      structural = compilingUnder [ "module M (Named(..), Box(..), pairUp, useK, wrap, tag) where", "import Effects" ]
+
+    it "is read where a signature or a field writes it — a record, a tuple, a variant, an arrow's effect row — through to the interface and its file" do
+      structural
+        [ "data Named = Named { name :: Int, age :: Int }"
+        , "data Box e = Box (Unit -> Int / e)"
+        , "pairUp :: (Int, Int) -> (Int, Int)"
+        , "pairUp p = p"
+        , "useK :: (Unit -> Int / {| Console |}) -> (Unit -> Int / {| Console |})"
+        , "useK k = k"
+        , "wrap :: (Unit -> Int / {| Console |}) -> Box {| Console |}"
+        , "wrap k = Box k"
+        , "tag :: ['Ok :: Int, err :: Int] -> ['Ok :: Int, err :: Int]"
+        , "tag v = v"
+        ]
+        case _ of
+          Left errors -> fail (joinWith "; " (map printCompileError errors))
+          Right r -> do
+            r.handed `shouldEqual` [ "core pairUp useK wrap tag", "mid M", "bytecode M" ]
+            let scheme n = map _.scheme (Map.lookup (Ident n) r.interface.declarations.values)
+            scheme "Named" `shouldEqual` Just (plainScheme (monoScheme (pureFn (record [ Tuple (SymbolKey (Symbol "name")) int, Tuple (SymbolKey (Symbol "age")) int ]) (TCon (Qualified (ModuleName "M") (TyName "Named")) []))))
+            scheme "pairUp" `shouldEqual` Just (plainScheme (monoScheme (pureFn (record [ Tuple (PositionKey 0) int, Tuple (PositionKey 1) int ]) (record [ Tuple (PositionKey 0) int, Tuple (PositionKey 1) int ]))))
+            scheme "wrap" `shouldEqual` Just (plainScheme (monoScheme (pureFn consoleThunk (TApp (TCon boxName []) consoleRow))))
+            map (\t -> t.kind.body) (Map.lookup (TyName "Box") r.interface.declarations.types) `shouldEqual` Just (KFun (KRow RowEffect) KType)
+            case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
+              Right stored -> stored.interface `shouldEqual` r.interface
+              Left problem -> fail problem
+
+    it "is used at its scheme by a module importing the declaration" do
+      building
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "g :: { name :: Int } -> { name :: Int }", "g r = getName r" ])
+        , Tuple "src/A.stel" (moduleOf "A" [] [ "getName :: { name :: Int } -> { name :: Int }", "getName r = r" ])
+        ]
+        \r -> case r.result of
+          Right built -> built `shouldEqual` [ "A", "B" ]
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+
+    it "is reported by the rows that do not fit, each shown with what it holds" do
+      compiling [ "f :: { name :: Int } -> (Int, Int)", "f r = r" ] case _ of
+        Left errors -> map printCompileError errors `shouldEqual` [ "`( name :: Int )` and `( 0 :: Int, 1 :: Int )` are different rows" ]
+        Right _ -> fail "compiled"
+
+    it "is outside this version where a λ stands at an arrow performing effects, or a function performing them is applied" do
+      compilingUnder [ "module M where", "import Effects" ]
+        [ "run :: Int -> Int / {| Console |}", "run x = x", "use :: (Unit -> Int / {| Console |}) -> Int", "use k = k ()" ]
+        case _ of
+          Left errors -> map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors `shouldEqual`
+            [ "4:5 This version of the compiler does not elaborate a λ at an arrow that performs effects yet"
+            , "6:9 This version of the compiler does not elaborate applying a function that performs effects yet"
+            ]
+          Right _ -> fail "compiled"
 
   describe "a quotation" do
     let

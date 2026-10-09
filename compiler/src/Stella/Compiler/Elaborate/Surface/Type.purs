@@ -15,10 +15,17 @@
 -- | instantiated afresh where the constructor is used, and a metavariable
 -- | standing for a kind left unwritten is the one kind every use shares.
 -- |
+-- | **A row is read in the bracket it is written in**: a record's and a
+-- | variant's at `Row Type`, under `Prim.Record` and `Prim.Variant`, a tuple's
+-- | as a record keyed by position, and an effect row at `Row Effect`, each
+-- | effect applied at the kinds its parameters are declared at. An arrow
+-- | carries the effect row `/` writes on it, and is pure otherwise.
+-- |
 -- | **This version reads a subset of types**: variables, constructors,
--- | applications, pure arrows, `forall`, and kind annotations. Anything else is
--- | reported as outside it, and stands meanwhile as a fresh metavariable, so
--- | what surrounds it is still read.
+-- | applications, arrows, `forall`, kind annotations, tuples, rows written
+-- | without a spread, and type operators naming a type constructor. Anything
+-- | else is reported as outside it, and stands meanwhile as a fresh
+-- | metavariable, so what surrounds it is still read.
 module Stella.Compiler.Elaborate.Surface.Type
   ( Unsupported(..)
   , Elaborated
@@ -43,18 +50,18 @@ import Prim hiding (Type)
 import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
-import Data.Foldable (foldr)
+import Data.Foldable (foldM, foldr)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Data.Either (Either(..))
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, emptyXContext)
-import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..), kindMetasOf)
-import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), toCore)
+import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..), fromCoreKind, kindMetasOf)
+import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), toCore)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, equateKinds, freshKindMeta, freshTypeMeta, raiseDiagnostic)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Elaborate.Mechanism.Kinding (instantiate)
@@ -63,16 +70,21 @@ import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), MetaContext, UnifyError(..), substitute, substituteKind)
 import Stella.Compiler.Surface.Name (TypeVar(..))
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.Surface.Type (Kind(..), Signature, Type(..), TypeVarBinder, typeOrigin)
-import Stella.Compiler.TypedCore.Name (Ident, KindVar, Qualified, TyName, TyVar)
-import Stella.Compiler.TypedCore.Prim (functionTy)
-import Stella.Compiler.TypedCore.Type (TypeScheme)
+import Stella.Compiler.Surface.Type (EffectApplication, EffectRowItem(..), Kind(..), RecordRowItem(..), Signature, Type(..), TypeOperatorTarget(..), TypeVarBinder, VariantRowItem(..), typeOrigin)
+import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
+import Stella.Compiler.TypedCore.Name (EffName, Ident, KindVar, Qualified, TyName, TyVar)
+import Stella.Compiler.TypedCore.Prim (functionTy, recordTy, variantTy)
+import Stella.Compiler.TypedCore.Type (RowKey(..), TypeScheme)
 
--- | A form this version does not read, where it stands: what it is, or that
--- | resolution reported it already.
+-- | A part of a type that is not read, where it stands: a form this version
+-- | does not read, one resolution reported already, or an effect standing
+-- | where a type does.
 data Unsupported
   = OutsideSubset Surface.Origin String
   | ReportedAlready Surface.Origin
+  -- | A type operator naming an effect, applied where no effect row's element
+  -- | stands: an effect is no type.
+  | EffectAsType Surface.Origin (Qualified EffName)
 
 -- | A signature elaborated: where its type stands; the kind variables its
 -- | kinds mention, which its scheme binds; its type; each place a kind was
@@ -192,7 +204,26 @@ readType scope t = case t of
     a' <- checkAt scope XKType a
     b' <- checkAt scope XKType b
     pure (joined [ a', b' ] (xFunction a'.type XRowEmpty b'.type) XKType)
-  TypeFunction o _ _ (Just _) -> unsupported (OutsideSubset o "an effect row")
+  TypeFunction _ a b (Just row) -> do
+    a' <- checkAt scope XKType a
+    b' <- checkAt scope XKType b
+    row' <- checkAt scope (XKRow RowEffect) row
+    pure (joined [ a', b', row' ] (xFunction a'.type row'.type b'.type) XKType)
+  TypeTuple _ components -> do
+    read <- traverse (checkAt scope XKType) components
+    let row = foldr (\(Tuple n c) rest -> XRowExtend (XRowTypeEntry (PositionKey n) c.type) rest) XRowEmpty (Array.mapWithIndex Tuple read)
+    pure (joined read (XApp (XCon recordTy []) row) XKType)
+  TypeRecord _ items -> do
+    row <- rowOf scope RowType (map recordItem items)
+    pure row { type = XApp (XCon recordTy []) row.type, kind = XKType }
+  TypeVariant _ items -> do
+    row <- rowOf scope RowType (map variantItem items)
+    pure row { type = XApp (XCon variantTy []) row.type, kind = XKType }
+  TypeEffectRow _ items -> rowOf scope RowEffect (map effectItem items)
+  TypeOperator o op l r -> case op.target of
+    TargetTypeConstructor name -> readType scope (TypeApp o (TypeApp o (TypeConstructor op.origin name) l) r)
+    TargetTypeSynonym _ -> unsupported (OutsideSubset op.origin "a type synonym")
+    TargetEffect effect -> unsupported (EffectAsType op.origin effect)
   TypeForall _ binders body -> do
     bound <- traverse (binder scope) binders
     let inner = scope { tyVars = foldr (\b m -> Map.insert (nameOf b.var) b.kind m) scope.tyVars bound }
@@ -214,22 +245,106 @@ readType scope t = case t of
   TypeSynthesized o _ _ _ -> unsupported (OutsideSubset o "a synthesized argument")
   TypeWildcard o -> unsupported (OutsideSubset o "a wildcard")
   TypeHole o _ -> unsupported (OutsideSubset o "a typed hole")
-  TypeOperator o _ _ _ -> unsupported (OutsideSubset o "a type operator")
-  TypeTuple o _ -> unsupported (OutsideSubset o "a tuple type")
-  TypeRecord o _ -> unsupported (OutsideSubset o "a record type")
-  TypeVariant o _ -> unsupported (OutsideSubset o "a variant type")
-  TypeEffectRow o _ -> unsupported (OutsideSubset o "an effect row")
   where
   plain ty kind = { type: ty, kind, unwritten: [], unsupported: [] }
-
-  joined parts ty kind =
-    { type: ty, kind, unwritten: Array.concatMap _.unwritten parts, unsupported: Array.concatMap _.unsupported parts }
 
   -- a form not read stands as a metavariable of a kind of its own
   unsupported problem = do
     kind <- freshKindMeta scope.kindVars Set.empty
     meta <- freshTypeMeta (emptyXContext { kindVars = scope.kindVars }) kind
     pure { type: meta, kind, unwritten: [], unsupported: [ problem ] }
+
+joined :: Array Read -> XType -> XKind -> Read
+joined parts ty kind =
+  { type: ty, kind, unwritten: Array.concatMap _.unwritten parts, unsupported: Array.concatMap _.unsupported parts }
+
+-- | An item of a row as written: an element, read by the action given, or a
+-- | spread.
+data RowItem
+  = Element (Scope -> Elab { entry :: XRowEntry, read :: Read })
+  | Spread Surface.Origin
+
+recordItem :: RecordRowItem -> RowItem
+recordItem = case _ of
+  RecordField _ label t -> Element (typeEntry (SymbolKey label) t)
+  RecordSpread o _ -> Spread o
+
+variantItem :: VariantRowItem -> RowItem
+variantItem = case _ of
+  VariantTag _ tag t -> Element (typeEntry (TagKey tag) t)
+  VariantLabel _ label t -> Element (typeEntry (SymbolKey label) t)
+  VariantSpread o _ -> Spread o
+
+effectItem :: EffectRowItem -> RowItem
+effectItem = case _ of
+  EffectElement application -> Element \scope -> do
+    e <- effectApplication scope application
+    pure { entry: XRowEffectEntry application.effect e.arguments, read: e.read }
+  EffectInstance _ label application -> Element \scope -> do
+    e <- effectApplication scope application
+    pure { entry: XRowLabelledEffectEntry label application.effect e.arguments, read: e.read }
+  EffectSpread o _ -> Spread o
+
+-- | An element of a `Row Type`: its payload at `Type`, under its key.
+typeEntry :: RowKey -> Type -> Scope -> Elab { entry :: XRowEntry, read :: Read }
+typeEntry key t scope = do
+  payload <- checkAt scope XKType t
+  pure { entry: XRowTypeEntry key payload.type, read: payload }
+
+-- | A row of the element kind given, its elements in the order written and
+-- | nothing beyond them. A spread is outside what this version reads, and the
+-- | row holding one is read with a metavariable for its tail.
+rowOf :: Scope -> RowElemKind -> Array RowItem -> Elab Read
+rowOf scope elementKind items = do
+  elements <- traverse
+    ( case _ of
+        Element element -> Just <$> element scope
+        Spread _ -> pure Nothing
+    )
+    items
+  let spreads = Array.mapMaybe spreadOrigin items
+  tail <-
+    if Array.null spreads then pure XRowEmpty
+    else freshTypeMeta (emptyXContext { kindVars = scope.kindVars }) (XKRow elementKind)
+  let
+    present = Array.catMaybes elements
+    read = joined (map _.read present) (foldr (\e rest -> XRowExtend e.entry rest) tail present) (XKRow elementKind)
+  pure read { unsupported = read.unsupported <> map (\o -> OutsideSubset o "a spread") spreads }
+  where
+  spreadOrigin = case _ of
+    Spread o -> Just o
+    Element _ -> Nothing
+
+-- | An effect applied to its arguments, read as an application of something at
+-- | the arrow of its parameters' kinds into `Effect`: each argument is read at
+-- | the kind its parameter is declared at, and an effect applied to more or to
+-- | fewer arguments than it has parameters is a kind that does not meet.
+effectApplication :: Scope -> EffectApplication -> Elab { arguments :: Array XType, read :: Read }
+effectApplication scope application = do
+  env <- askEnv
+  case Map.lookup application.effect env.session.kinding.effects of
+    Nothing -> do
+      r <- unreadEffect
+      pure { arguments: [], read: r }
+    Just params -> do
+      read <- traverse (readType scope) application.arguments
+      result <- foldM
+        ( \kind argument -> do
+            rest <- freshKindMeta scope.kindVars Set.empty
+            equateKinds (siteOf scope (typeOrigin argument.written)) kind (XKFun argument.kind rest)
+            pure rest
+        )
+        (foldr XKFun XKEffect (map fromCoreKind params))
+        (Array.zipWith (\written r -> { written, kind: r.kind }) application.arguments read)
+      equateKinds (siteOf scope application.origin) result XKEffect
+      pure { arguments: map _.type read, read: joined read XRowEmpty XKEffect }
+  where
+  unreadEffect = pure
+    { type: XRowEmpty
+    , kind: XKEffect
+    , unwritten: []
+    , unsupported: [ OutsideSubset application.origin "an effect the signature does not hold" ]
+    }
 
 -- | A kind with the kind variables given replaced.
 instantiateKindVars :: Map KindVar XKind -> XKind -> XKind
@@ -281,32 +396,53 @@ nameOf (TypeVar v) = v.name
 firstMention :: TypeVar -> Type -> Maybe Surface.Origin
 firstMention x = case _ of
   TypeVariable o y | x == y -> Just o
-  TypeApp _ f y -> either (firstMention x f) (firstMention x y)
-  TypeFunction _ a b _ -> either (firstMention x a) (firstMention x b)
-  TypeForall _ _ body -> firstMention x body
-  TypeKinded _ inner _ -> firstMention x inner
-  _ -> Nothing
-  where
-  either first second = case first of
-    Just o -> Just o
-    Nothing -> second
+  t -> Array.findMap (firstMention x) (typeParts t)
 
 -- | The kind variables the kinds written in a type mention.
 typeKindVars :: Type -> Array KindVar
-typeKindVars = case _ of
-  TypeApp _ f x -> typeKindVars f <> typeKindVars x
-  TypeFunction _ a b _ -> typeKindVars a <> typeKindVars b
-  TypeForall _ binders body -> Array.concatMap (\b -> maybe [] kindVars b.kind) binders <> typeKindVars body
-  TypeKinded _ inner k -> typeKindVars inner <> kindVars k
-  _ -> []
+typeKindVars t = written <> Array.concatMap typeKindVars (typeParts t)
   where
-  maybe d f = case _ of
-    Just x -> f x
-    Nothing -> d
+  written = case t of
+    TypeForall _ binders _ -> Array.concatMap (\b -> maybe [] kindVars b.kind) binders
+    TypeKinded _ _ k -> kindVars k
+    _ -> []
   kindVars = case _ of
     KindArrow _ a b -> kindVars a <> kindVars b
     KindVariable _ v -> [ v ]
     _ -> []
+
+-- | The types a type is written with, in the order written.
+typeParts :: Type -> Array Type
+typeParts = case _ of
+  TypeApp _ f x -> [ f, x ]
+  TypeOperator _ _ l r -> [ l, r ]
+  TypeFunction _ a b row -> [ a, b ] <> Array.fromFoldable row
+  TypeForall _ _ body -> [ body ]
+  TypeConstrained _ c body -> [ c, body ]
+  TypeKinded _ inner _ -> [ inner ]
+  TypeTuple _ components -> components
+  TypeRecord _ items -> Array.concatMap
+    ( case _ of
+        RecordField _ _ t -> [ t ]
+        RecordSpread _ t -> Array.fromFoldable t
+    )
+    items
+  TypeVariant _ items -> Array.concatMap
+    ( case _ of
+        VariantTag _ _ t -> [ t ]
+        VariantLabel _ _ t -> [ t ]
+        VariantSpread _ t -> Array.fromFoldable t
+    )
+    items
+  TypeEffectRow _ items -> Array.concatMap
+    ( case _ of
+        EffectElement application -> application.arguments
+        EffectInstance _ _ application -> application.arguments
+        EffectSpread _ t -> Array.fromFoldable t
+    )
+    items
+  TypeSynthesized _ _ t _ -> [ t ]
+  _ -> []
 
 -- | The Core scheme of a signature once its kinds are decided: every
 -- | metavariable solved, or each place whose kind was left undetermined, once
@@ -328,3 +464,4 @@ instance Show Unsupported where
   show = case _ of
     OutsideSubset o what -> "OutsideSubset (" <> show o <> ") " <> show what
     ReportedAlready o -> "ReportedAlready (" <> show o <> ")"
+    EffectAsType o e -> "EffectAsType (" <> show o <> ") (" <> show e <> ")"

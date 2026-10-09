@@ -237,6 +237,16 @@ spec = describe "Stella.Compiler.Resolve.Type" do
         "[r#0] ({ a :: Prim.Int, b :: Prim.Int, a :: Prim.String, ...r#0 } -> Prim.Int)"
         [ LabelTwice "a" ]
 
+    it "report a tag or a label a variant's row writes twice, keeping both items" do
+      shows [ "f :: ['Ok :: Int, err :: Int, 'Ok :: String, err :: String] -> Int" ]
+        "[] ([ 'Ok :: Prim.Int, err :: Prim.Int, 'Ok :: Prim.String, err :: Prim.String ] -> Prim.Int)"
+        [ LabelTwice "err", TagTwice "Ok" ]
+
+    it "report an effect an effect row holds twice unlabelled, and a label it writes twice, keeping both items" do
+      shows [ "f :: Int -> Int / {| E, State Int, s :: E, State String, s :: E, E |}" ]
+        "[] (Prim.Int -> Prim.Int / {| A.E, A.State Prim.Int, s :: A.E, A.State Prim.String, s :: A.E, A.E |})"
+        [ LabelTwice "s", EffectTwice "State", EffectTwice "E" ]
+
     it "drop an item their bracket does not admit, and an element of an effect row that is no effect" do
       shows [ "f :: { 'A :: Int, Int } -> [Int] -> {| a :: Int, T, x, 'B :: E |}" ]
         "[x#0] ({  } -> ([  ] -> {|  |}))"

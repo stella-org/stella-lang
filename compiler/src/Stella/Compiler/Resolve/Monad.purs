@@ -273,8 +273,13 @@ data ResolveReason
   | NotAnOperation String
   -- | `op@x` where `x` is no label.
   | LabelExpected
-  -- | A label a record, its update, or its pattern writes twice.
+  -- | A label a record, its update, or its pattern writes twice, or a row of a
+  -- | variant or of effects.
   | LabelTwice String
+  -- | A tag a variant's row writes twice.
+  | TagTwice String
+  -- | An effect an effect row holds twice, unlabelled: its key is the effect.
+  | EffectTwice String
   -- | A `let` block whose signatures and definitions do not pair up.
   | LetGrouping GroupReason
   -- | `x!` or `x := e` where no cell of the name is in scope.
@@ -434,6 +439,8 @@ printResolveReason = case _ of
   NotAnOperation n -> "`" <> n <> "` is not an operation, which a label selects the instance of"
   LabelExpected -> "A label, the name of an instance, follows `@` here"
   LabelTwice l -> "The label `" <> l <> "` is written twice here"
+  TagTwice t -> "The tag `'" <> t <> "` is written twice here"
+  EffectTwice e -> "The effect `" <> e <> "` is written twice here; a row holds an effect once, and a second instance of it is written with a label"
   LetGrouping reason -> printGroupReason reason
   UnknownCell n -> "There is no cell `" <> n <> "` here; a cell is reached from the operation clauses of the handling expression or handler declaring it"
   CellClosedHere n where_ ->

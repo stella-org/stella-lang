@@ -174,6 +174,7 @@ at :: ElaborationError -> String
 at = case _ of
   Unsupported (OutsideSubset o what) -> located o <> " outside: " <> what
   Unsupported (ReportedAlready o) -> located o <> " reported"
+  Unsupported (EffectAsType o _) -> located o <> " effect as type"
   WithoutSignature o _ -> located o <> " without a signature"
   KindUndetermined o -> located o <> " kind undetermined"
   Rejected (EquationFailed (AtSource s) _) -> located s.origin <> " rejected"
