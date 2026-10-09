@@ -60,6 +60,7 @@ import Stella.Compiler.Elaborate.Driver.Loop (Attempter, runAttempting)
 import Stella.Compiler.Elaborate.Driver.Loop as Loop
 import Stella.Compiler.Elaborate.Environment.Catalog (CatalogEntry, EntrySort(..))
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
+import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEnv)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SolverState, initialState)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
 import Stella.Compiler.Elaborate.Surface.Expr (elaborateValue, runSurf)
@@ -145,10 +146,11 @@ type ElaboratedData = { origin :: Surface.Origin, decl :: DataDecl }
 -- | and the catalog its imports give.
 elaborateValues
   :: Signature
+  -> SynonymEnv
   -> Array CatalogEntry
   -> Surface.Module
   -> { data :: Array ElaboratedData, values :: Array ElaboratedValue, errors :: Array ElaborationError }
-elaborateValues imports importedEntries m =
+elaborateValues imports synonyms importedEntries m =
   if Array.null dataErrors then
     { data: elaboratedData
     , values: settled'.values
@@ -165,7 +167,7 @@ elaborateValues imports importedEntries m =
         _ -> Nothing
     )
     m.declarations
-  Tuple dataRead initial = case runAttempt (sessionEnvOf imports importedEntries) (readData declarations) initial0 of
+  Tuple dataRead initial = case runAttempt (sessionEnvOf imports importedEntries) (readData synonyms declarations) initial0 of
     Tuple (Done reads) s ->
       let
         settledOnes = map (\r -> { origin: r.declaration.origin, decl: settledData s.tentative.metas r }) reads
@@ -222,7 +224,7 @@ elaborateValues imports importedEntries m =
   -- every signature read, as one attempt each
   read = foldl readOne { state: initial, read: [], errors: [] } written
   readOne acc c =
-    case runAttempt importedSession (elaborateSignature c.declared.name c.signature) acc.state of
+    case runAttempt importedSession (elaborateSignature synonyms c.declared.name c.signature) acc.state of
       Tuple (Done e) s
         | Array.null e.unsupported -> acc { state = s, read = Array.snoc acc.read (Tuple c.declared e) }
         | otherwise -> acc { errors = acc.errors <> map Unsupported e.unsupported }
@@ -252,7 +254,7 @@ elaborateValues imports importedEntries m =
   -- nothing behind
   bodies = foldl bodyOne { state: read.state, bodies: [], errors: [] } schemes
   bodyOne acc v =
-    case runAttempt session (runSurf (elaborateValue internal v.declared.name v.declared.origin v.scheme v.declared.params v.declared.body)) acc.state of
+    case runAttempt session (runSurf (elaborateValue internal synonyms v.declared.name v.declared.origin v.scheme v.declared.params v.declared.body)) acc.state of
       Tuple (Done (Right body)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, body } }
       Tuple (Done (Left problem)) _ -> acc { errors = Array.snoc acc.errors (Unsupported problem) }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
@@ -382,14 +384,15 @@ type ElaboratedModule =
 -- | one that does not check is reported where its declaration stands.
 elaborateModule
   :: Signature
+  -> SynonymEnv
   -> Array CatalogEntry
   -> Surface.Module
   -> Exports
   -> ElaboratedModule
-elaborateModule signature imported m exports =
+elaborateModule signature synonyms imported m exports =
   { result, values: elaborated.values }
   where
-  elaborated = elaborateValues signature imported m
+  elaborated = elaborateValues signature synonyms imported m
   values = elaborated.values
 
   ordinalOf = Map.fromFoldable (Array.mapWithIndex (\i v -> Tuple v.name i) values)

@@ -26,6 +26,7 @@ import Stella.Compiler.Elaborate.Driver.Synthesis (attemptJob)
 import Stella.Compiler.Elaborate.Protocol.Facade as F
 import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Environment.Imported (importedCatalog, importedSignature, sessionEnvOf)
+import Stella.Compiler.Elaborate.Environment.Synonyms (importedSynonyms)
 import Stella.Compiler.Elaborate.Kernel.Elab (createSynthesis, equate, freshTypeMeta, initialState)
 import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), elaborateModule, settleBodies)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..))
@@ -123,7 +124,7 @@ elaboratingUnder header body k = case environment of
         [], Right view -> case importedSignature env view of
           Left err -> fail (show err)
           Right signature -> do
-            let elaborated = elaborateModule signature (importedCatalog env view) resolved.module resolved.exports
+            let elaborated = elaborateModule signature (importedSynonyms env view) (importedCatalog env view) resolved.module resolved.exports
             k case elaborated.result of
               Left errors -> { values: elaborated.values, errors: NonEmptyArray.toArray errors, module: Nothing }
               Right made -> { values: elaborated.values, errors: [], module: Just { core: made.core, declared: made.declared } }
@@ -179,6 +180,7 @@ at = case _ of
   Unsupported (SpreadTwice o _) -> located o <> " spread twice"
   Unsupported (AnonymousSpread o) -> located o <> " anonymous spread"
   Unsupported (UnheldConstraint o _) -> located o <> " unheld"
+  Unsupported (SynonymUnsaturated o _ _) -> located o <> " unsaturated"
   WithoutSignature o _ -> located o <> " without a signature"
   KindUndetermined o -> located o <> " kind undetermined"
   Rejected (EquationFailed (AtSource s) _) -> located s.origin <> " rejected"

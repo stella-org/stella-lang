@@ -122,6 +122,35 @@ interfaceEffects =
   , arities: Map.empty
   }
 
+-- | `Synonyms`, declaring `type Twice a = (a, a)` and `type Effects = {| Console |}`,
+-- | as an interface holds them.
+interfaceSynonyms :: ModuleInterface
+interfaceSynonyms =
+  { name: synonymsModule
+  , imports: [ effectsModule ]
+  , exports: emptyExports { types = Map.fromFoldable (map (\n -> Tuple n { entity: TypeEntity (Qualified synonymsModule (TyName n)), via: Declared, members: [] }) [ "Twice", "Effects" ]) }
+  , declarations: emptyDeclarations
+      { types = Map.fromFoldable
+          [ Tuple (TyName "Twice")
+              { kind: monoScheme (KFun KType KType)
+              , sort: Synonym { params: [ { name: TyVar "a", kind: KType } ], body: TApp (TCon recordTy []) (TRowExtend (RowTypeEntry (PositionKey 0) (TVar (TyVar "a"))) (TRowExtend (RowTypeEntry (PositionKey 1) (TVar (TyVar "a"))) TRowEmpty)) }
+              , attributes: []
+              }
+          , Tuple (TyName "Effects")
+              { kind: monoScheme (KRow RowEffect)
+              , sort: Synonym { params: [], body: TRowExtend (RowEffectEntry consoleName []) TRowEmpty }
+              , attributes: []
+              }
+          ]
+      }
+  , implicitHandlers: []
+  , catalogOnly: Set.empty
+  , arities: Map.empty
+  }
+
+synonymsModule :: ModuleName
+synonymsModule = ModuleName "Synonyms"
+
 effectsModule :: ModuleName
 effectsModule = ModuleName "Effects"
 
@@ -132,7 +161,7 @@ moduleA :: ModuleName
 moduleA = ModuleName "Macros"
 
 environment :: BuildEnvironment
-environment = case foldM (flip addInterface) initialEnvironment (syntaxInterfaces <> [ interfaceA, interfaceC, interfaceEffects ]) of
+environment = case foldM (flip addInterface) initialEnvironment (syntaxInterfaces <> [ interfaceA, interfaceC, interfaceEffects, interfaceSynonyms ]) of
   Right env -> env
   Left _ -> initialEnvironment
 
@@ -378,6 +407,33 @@ spec = describe "Stella.Compiler.Build" do
 
     it "makes an arrow pure where it spreads only empty rows, as its normal form says" do
       compiles [ "f :: Int -> Int / {| ...{||}, ...{||} |}", "f x = x" ]
+
+  describe "a type synonym an import declares" do
+    it "is expanded where it is used, the interface holding what it stands for, through its file" do
+      compilingUnder [ "module M (swap, run) where", "import Synonyms" ]
+        [ "swap :: Twice Int -> Twice Int"
+        , "swap p = p"
+        , "run :: (Unit -> Int / Effects) -> (Unit -> Int / Effects)"
+        , "run k = k"
+        ]
+        case _ of
+          Left errors -> fail (joinWith "; " (map printCompileError errors))
+          Right r -> do
+            let
+              scheme n = map _.scheme (Map.lookup (Ident n) r.interface.declarations.values)
+              twice = TApp (TCon recordTy []) (TRowExtend (RowTypeEntry (PositionKey 0) int) (TRowExtend (RowTypeEntry (PositionKey 1) int) TRowEmpty))
+              thunk = fn (TCon unitTy []) (TRowExtend (RowEffectEntry consoleName []) TRowEmpty) int
+            scheme "swap" `shouldEqual` Just (plainScheme (monoScheme (pureFn twice twice)))
+            scheme "run" `shouldEqual` Just (plainScheme (monoScheme (pureFn thunk thunk)))
+            case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
+              Right stored -> stored.interface `shouldEqual` r.interface
+              Left problem -> fail problem
+
+    it "is refused applied to fewer arguments than it has parameters, where the application stands" do
+      compilingUnder [ "module M where", "import Synonyms" ] [ "f :: Twice -> Int", "f x = 1" ] case _ of
+        Left errors -> map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors `shouldEqual`
+          [ "3:6 `Twice` is a type synonym of 1 parameter, and stands for a type only applied to every one of them" ]
+        Right _ -> fail "compiled"
 
   describe "a quotation" do
     let

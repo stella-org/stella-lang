@@ -30,11 +30,15 @@
 -- | annotation requires it where it stands, and a data type's field, whose
 -- | parameters carry no condition, refuses it.
 -- |
+-- | **A type synonym is expanded where it is used**, its whole spine of
+-- | applications read at once: its parameters are replaced by as many
+-- | arguments, and the arguments beyond them are applied to what it stands for.
+-- |
 -- | **This version reads a subset of types**: variables, constructors,
 -- | applications, arrows, `forall`, kind annotations, tuples, rows and the rows
 -- | they spread, where a spread row is read as the empty row, elements over a
--- | row, unions, and row variables, and type operators naming a type
--- | constructor.
+-- | row, unions, and row variables, the type synonyms the imports declare, and
+-- | type operators naming a type constructor or one of those synonyms.
 -- | Anything else is reported as outside it, and stands meanwhile as a fresh
 -- | metavariable, so what surrounds it is still read.
 module Stella.Compiler.Elaborate.Surface.Type
@@ -77,7 +81,10 @@ import Data.Generic.Rep (class Generic)
 import Data.Show.Generic (genericShow)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..), fromCoreKind, kindMetasOf)
-import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..), toCore, xRowEntryKey)
+import Data.Monoid.Disj (Disj(..))
+import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..), freeRigids, fromCore, toCore, xRowEntryKey)
+import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEntry, SynonymEnv, lookupSynonym)
+import Stella.Compiler.Elaborate.Kernel.Builder.Common (foldChildren, substituteKindVars, substituteTyVars)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, equateKinds, freshBinderName, freshKindMeta, freshTypeMeta, raiseDiagnostic, require)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Elaborate.Mechanism.Kinding (instantiate)
@@ -88,7 +95,7 @@ import Stella.Compiler.Surface.Name (TypeVar(..))
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.Surface.Type (EffectApplication, EffectRowItem(..), Kind(..), RecordRowItem(..), Signature, Type(..), TypeOperatorTarget(..), TypeVarBinder, VariantRowItem(..), typeOrigin)
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
-import Stella.Compiler.TypedCore.Name (EffName, Ident, KindVar, Qualified, TyName, TyVar)
+import Stella.Compiler.TypedCore.Name (EffName, Ident, KindVar, Qualified, TyName, TyVar(..))
 import Stella.Compiler.TypedCore.Prim (functionTy, recordTy, variantTy)
 import Stella.Compiler.TypedCore.Type (RowKey(..), TypeScheme)
 
@@ -110,6 +117,9 @@ data Unsupported
   -- | A condition a row's sharpness puts on a variable bound where no
   -- | condition can be carried: a data type's parameter.
   | UnheldConstraint Surface.Origin Atom
+  -- | A synonym applied to fewer arguments than it has parameters, which it
+  -- | names with how many it has.
+  | SynonymUnsaturated Surface.Origin (Qualified TyName) Int
 
 -- | A condition the sharpness of a row written in a type puts on its tails:
 -- | that a tail lacks a key the row holds beside it, or that two of its tails
@@ -169,13 +179,14 @@ type Elaborated =
 -- | variables in scope, the kind of each type variable bound, the type
 -- | constructors the module declares whose kinds are being decided, and the
 -- | row variable `...` stands for at each row kind, where a signature
--- | quantifies one.
+-- | quantifies one, and the type synonyms a type is read through.
 type Scope =
   { declaration :: Qualified Ident
   , kindVars :: Set KindVar
   , tyVars :: Map TyVar XKind
   , localTypes :: Map (Qualified TyName) LocalHead
   , anonymous :: Map RowElemKind TyVar
+  , synonyms :: SynonymEnv
   }
 
 -- | The kind a type constructor of the module is read at while its declaration
@@ -204,8 +215,8 @@ type Read =
 -- | **`...` with no row is a variable the signature quantifies implicitly**, one
 -- | per row kind, so every `...` of one kind in the signature is the same row;
 -- | it is named apart from every name source can write.
-elaborateSignature :: Qualified Ident -> Signature Type -> Elab Elaborated
-elaborateSignature declaration signature = do
+elaborateSignature :: SynonymEnv -> Qualified Ident -> Signature Type -> Elab Elaborated
+elaborateSignature synonyms declaration signature = do
   let kindVars = foldr Set.insert Set.empty (typeKindVars signature.body)
   named <- traverse (\v -> { var: v, kind: _ } <$> freshKindMeta kindVars quantifiable) signature.implicit
   spreads <- traverse
@@ -223,6 +234,7 @@ elaborateSignature declaration signature = do
       , tyVars: Map.fromFoldable (map (\q -> Tuple q.var q.kind) quantified)
       , localTypes: Map.empty
       , anonymous: Map.fromFoldable (map (\s -> Tuple s.kind s.var) spreads)
+      , synonyms
       }
   body <- checkAt scope XKType signature.body
   let taken = quantify quantified body.implied body.type
@@ -247,9 +259,9 @@ elaborateSignature declaration signature = do
 -- | those of the signature around it. What its rows require of those is
 -- | required where the annotation stands, from what the context assumes, once
 -- | every part of it is read.
-elaborateType :: Qualified Ident -> XContext -> Type -> Elab Read
-elaborateType declaration context t = do
-  r <- checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars, localTypes: Map.empty, anonymous: Map.empty } XKType t
+elaborateType :: SynonymEnv -> Qualified Ident -> XContext -> Type -> Elab Read
+elaborateType synonyms declaration context t = do
+  r <- checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars, localTypes: Map.empty, anonymous: Map.empty, synonyms } XKType t
   -- a form not read is reported before anything is required of what it stands in
   when (Array.null r.unsupported) do
     for_ r.implied \i -> require { context, origin: AtSource { declaration, origin: i.origin } } (atomConstraint i.atom)
@@ -302,6 +314,7 @@ readType scope t = case t of
           , implied: []
           }
       Nothing -> unsupported (OutsideSubset o "a type constructor the signature does not hold")
+  TypeApp _ _ _ | Just use <- synonymSpine t -> expandSynonym scope use
   TypeApp o f x -> do
     f' <- readType scope f
     x' <- readType scope x
@@ -330,7 +343,7 @@ readType scope t = case t of
   TypeEffectRow o items -> rowOf scope o RowEffect (map effectItem items)
   TypeOperator o op l r -> case op.target of
     TargetTypeConstructor name -> readType scope (TypeApp o (TypeApp o (TypeConstructor op.origin name) l) r)
-    TargetTypeSynonym _ -> unsupported (OutsideSubset op.origin "a type synonym")
+    TargetTypeSynonym name -> expandSynonym scope { origin: o, name, arguments: [ l, r ] }
     TargetEffect effect -> unsupported (EffectAsType op.origin effect)
   TypeForall _ binders body -> do
     bound <- traverse (binder scope) binders
@@ -351,7 +364,7 @@ readType scope t = case t of
       Right written -> checkAt scope written inner
       Left problem -> unsupported problem
   TypeInvalid o -> unsupported (ReportedAlready o)
-  TypeSynonym o _ -> unsupported (OutsideSubset o "a type synonym")
+  TypeSynonym o name -> expandSynonym scope { origin: o, name, arguments: [] }
   TypeConstrained o _ _ -> unsupported (OutsideSubset o "a constraint")
   TypeSynthesized o _ _ _ -> unsupported (OutsideSubset o "a synthesized argument")
   TypeWildcard o -> unsupported (OutsideSubset o "a wildcard")
@@ -359,11 +372,103 @@ readType scope t = case t of
   where
   plain ty kind = { type: ty, kind, unwritten: [], unsupported: [], implied: [] }
 
-  -- a form not read stands as a metavariable of a kind of its own
-  unsupported problem = do
-    kind <- freshKindMeta scope.kindVars Set.empty
-    meta <- freshTypeMeta (emptyXContext { kindVars = scope.kindVars }) kind
-    pure { type: meta, kind, unwritten: [], unsupported: [ problem ], implied: [] }
+  unsupported = unreadType scope
+
+-- | A synonym and the arguments it is applied to, where the type is one: the
+-- | whole spine of applications headed by a synonym or by a type operator
+-- | naming one, its operands the operator's first two arguments.
+synonymSpine :: Type -> Maybe SynonymUse
+synonymSpine t = go t []
+  where
+  go x arguments = case x of
+    TypeApp _ f a -> go f (Array.cons a arguments)
+    TypeSynonym _ name -> Just { origin: typeOrigin t, name, arguments }
+    TypeOperator _ { target: TargetTypeSynonym name } l r -> Just { origin: typeOrigin t, name, arguments: [ l, r ] <> arguments }
+    _ -> Nothing
+
+-- | A synonym written applied to its arguments, and where the application
+-- | stands.
+type SynonymUse = { origin :: Surface.Origin, name :: Qualified TyName, arguments :: Array Type }
+
+-- | A synonym applied to its arguments, expanded.
+-- |
+-- | **Saturation is judged on the whole spine.** A synonym applied to fewer
+-- | arguments than it has parameters is refused; its parameters are replaced
+-- | by as many arguments, each read at its parameter's kind, the synonym's kind
+-- | variables instantiated afresh; and the arguments beyond them are applied to
+-- | what it stands for. A `forall` of the synonym's body binding a name an
+-- | argument mentions free is renamed, so the argument is not captured.
+-- |
+-- | A synonym whose body spreads a parameter into a row beside something else
+-- | needs a condition of the row it is given, which a synonym carries none of,
+-- | and is outside what this version reads.
+expandSynonym :: Scope -> SynonymUse -> Elab Read
+expandSynonym scope use = case lookupSynonym use.name scope.synonyms of
+  Nothing -> unreadType scope (OutsideSubset use.origin "a type synonym the module declares")
+  Just entry
+    | Array.length use.arguments < Array.length entry.params -> unreadType scope (SynonymUnsaturated use.origin use.name (Array.length entry.params))
+    | extendsParameter entry -> unreadType scope (OutsideSubset use.origin "a type synonym extending a row it is given")
+    | otherwise -> do
+        kinds <- traverse (\_ -> freshKindMeta scope.kindVars quantifiable) entry.kind.kindVars
+        let
+          byKind = Map.fromFoldable (Array.zip entry.kind.kindVars kinds)
+          count = Array.length entry.params
+        given <- traverse
+          (\(Tuple p a) -> checkAt scope (instantiateKindVars byKind (fromCoreKind p.kind)) a)
+          (Array.zip entry.params (Array.take count use.arguments))
+        let
+          body = substituteKindVars byKind (fromCore entry.body)
+          captured = Set.intersection (bindersIn body) (foldMap (freeRigids <<< _.type) given)
+          taken = Set.union (bindersIn body) (foldMap (freeRigids <<< _.type) given)
+        renames <- traverse (\b@(TyVar hint) -> Tuple b <$> freshBinderName taken hint) (Array.fromFoldable captured)
+        let
+          expanded = substituteTyVars (Map.fromFoldable (Array.zip (map _.name entry.params) (map _.type given))) (Map.fromFoldable renames) body
+          read = joined given expanded (dropArrows count (instantiateKindVars byKind (fromCoreKind entry.kind.body)))
+        foldM (applied scope use.origin) (read { unwritten = map (\kind -> { origin: use.origin, kind }) kinds <> read.unwritten }) (Array.drop count use.arguments)
+  where
+  dropArrows n kind = case kind of
+    XKFun _ result | n > 0 -> dropArrows (n - 1) result
+    _ -> kind
+
+-- | What is read, applied to one more argument.
+applied :: Scope -> Surface.Origin -> Read -> Type -> Elab Read
+applied scope origin f x = do
+  x' <- readType scope x
+  result <- freshKindMeta scope.kindVars Set.empty
+  equateKinds (siteOf scope origin) f.kind (XKFun x'.kind result)
+  pure (joined [ f, x' ] (XApp f.type x'.type) result)
+
+-- | Whether a synonym's body spreads a parameter into a row holding a key or
+-- | another row beside it. Below a `forall` binding a parameter's name, that
+-- | name is the `forall`'s, whose conditions the `forall` carries.
+extendsParameter :: SynonymEntry -> Boolean
+extendsParameter entry = go (Set.fromFoldable (map _.name entry.params)) (fromCore entry.body)
+  where
+  go params t = case t of
+    XForall b _ body -> go (Set.delete b params) body
+    XRowExtend _ _ -> extends params t || descend params t
+    XRowUnion _ _ -> extends params t || descend params t
+    _ -> descend params t
+  descend params t = case foldChildren (\c -> Disj (go params c)) t of
+    Disj b -> b
+  extends params t =
+    let
+      parts = partsOf t
+    in
+      Array.any (\v -> Set.member v params) parts.tails && (not (Array.null parts.keys) || Array.length parts.tails > 1)
+
+-- | The type variables a `forall` inside the type binds.
+bindersIn :: XType -> Set TyVar
+bindersIn = case _ of
+  XForall b _ body -> Set.insert b (bindersIn body)
+  other -> foldChildren bindersIn other
+
+-- | A form not read, standing as a metavariable of a kind of its own.
+unreadType :: Scope -> Unsupported -> Elab Read
+unreadType scope problem = do
+  kind <- freshKindMeta scope.kindVars Set.empty
+  meta <- freshTypeMeta (emptyXContext { kindVars = scope.kindVars }) kind
+  pure { type: meta, kind, unwritten: [], unsupported: [ problem ], implied: [] }
 
 joined :: Array Read -> XType -> XKind -> Read
 joined parts ty kind =

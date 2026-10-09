@@ -40,6 +40,7 @@ import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..))
 import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), fromCore)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal)
 import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
+import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEnv)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
 import Stella.Compiler.Elaborate.CorePlus.Row (xnf)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, currentMetas, equate, freshKindMeta, freshTypeMeta, require)
@@ -84,9 +85,10 @@ outside :: forall a. Unsupported -> Surf a
 outside = Surf <<< pure <<< Left
 
 -- | What an expression is elaborated under: the declaration it belongs to, the
--- | context its node stands in, and the entries the compiler's desugarings
--- | refer to that no catalog holds.
-type Scope = { declaration :: Qualified Ident, context :: XContext, internal :: Internal }
+-- | context its node stands in, the entries the compiler's desugarings refer to
+-- | that no catalog holds, and the type synonyms its annotations are read
+-- | through.
+type Scope = { declaration :: Qualified Ident, context :: XContext, internal :: Internal, synonyms :: SynonymEnv }
 
 siteAt :: Scope -> Surface.Origin -> Site
 siteAt scope origin = { context: scope.context, origin: AtSource { declaration: scope.declaration, origin } }
@@ -95,15 +97,16 @@ siteAt scope origin = { context: scope.context, origin: AtSource { declaration: 
 -- | `λ`s for its parameters, and its body checked against what is left.
 elaborateValue
   :: Internal
+  -> SynonymEnv
   -> Qualified Ident
   -> Surface.Origin
   -> TypeScheme
   -> Array Binder
   -> Expr
   -> Surf (XExpr Surface.Origin)
-elaborateValue internal declaration origin scheme params body = opened scope0 (fromCore scheme.body)
+elaborateValue internal synonyms declaration origin scheme params body = opened scope0 (fromCore scheme.body)
   where
-  scope0 = { declaration, context: bindKindVars emptyXContext scheme.kindVars, internal }
+  scope0 = { declaration, context: bindKindVars emptyXContext scheme.kindVars, internal, synonyms }
 
   opened scope = case _ of
     XForall a k rest -> ETyLam origin a k <$> opened (scope { context = bindTyVar scope.context a k }) rest
@@ -170,7 +173,7 @@ infer scope expr = case expr of
     x' <- check scope x parts.argument
     pure { expr: EApp (exprOrigin expr) f'.expr x', type: parts.result }
   ExprTyped _ inner t -> do
-    annotation <- lift (elaborateType scope.declaration scope.context t)
+    annotation <- lift (elaborateType scope.synonyms scope.declaration scope.context t)
     case Array.head annotation.unsupported of
       Just problem -> outside problem
       Nothing -> do

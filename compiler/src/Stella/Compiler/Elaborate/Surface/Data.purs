@@ -42,6 +42,7 @@ import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..), toCoreKind)
 import Stella.Compiler.Elaborate.CorePlus.Type (XType, toCore)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, equateKinds)
+import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEnv)
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, substitute, substituteKind)
 import Stella.Compiler.Elaborate.Surface.Type (LocalHead, Scope, Unsupported(..), readBinder, readKind, readTypeAt, siteOf, typeKindVars)
 import Stella.Compiler.Interface.Assemble (coreAttribute)
@@ -63,14 +64,14 @@ type DataRead =
   }
 
 -- | Every data declaration given, each head first, then each one's fields.
-readData :: Array DataDeclaration -> Elab (Array DataRead)
-readData declarations = do
-  heads <- traverse readHead declarations
+readData :: SynonymEnv -> Array DataDeclaration -> Elab (Array DataRead)
+readData synonyms declarations = do
+  heads <- traverse (readHead synonyms) declarations
   let
     inModule = Map.fromFoldable (map (\h -> Tuple h.declaration.name { kindVars: h.kindVars, body: headKind h.params }) heads)
   for heads \h -> do
     let
-      scope = (scopeOf h.declaration h.kindVars)
+      scope = (scopeOf synonyms h.declaration h.kindVars)
         { tyVars = Map.fromFoldable (map (\p -> Tuple (nameOf p.var) p.kind) h.params)
         , localTypes = inModule
         }
@@ -83,8 +84,8 @@ readData declarations = do
 
 -- | A declaration's head: its parameters, and the kind it writes for itself
 -- | equated with the kind they give it.
-readHead :: DataDeclaration -> Elab DataRead
-readHead d = do
+readHead :: SynonymEnv -> DataDeclaration -> Elab DataRead
+readHead synonyms d = do
   let
     -- a kind variable is bound by the declaration it is written in, wherever
     -- in it it is written
@@ -93,7 +94,7 @@ readHead d = do
           <> maybe [] kindVarsOf d.kind
           <> Array.concatMap (Array.concatMap typeKindVars <<< _.fields) d.constructors
       )
-    scope = scopeOf d kindVars
+    scope = scopeOf synonyms d kindVars
   params <- for d.params \b -> do
     read <- readBinder scope b
     pure { param: { var: read.var, kind: read.kind, origin: b.origin }, unsupported: read.unsupported }
@@ -149,13 +150,14 @@ settledData metas r
 
 -- | What a declaration's types are read under: its kind variables, and the
 -- | declaration named as a value is, for locating what is reported of it.
-scopeOf :: DataDeclaration -> Array KindVar -> Scope
-scopeOf d kindVars =
+scopeOf :: SynonymEnv -> DataDeclaration -> Array KindVar -> Scope
+scopeOf synonyms d kindVars =
   { declaration: case d.name of Qualified m (TyName n) -> Qualified m (Ident n)
   , kindVars: Set.fromFoldable kindVars
   , tyVars: Map.empty
   , localTypes: Map.empty :: Map.Map (Qualified TyName) LocalHead
   , anonymous: Map.empty
+  , synonyms
   }
 
 kindVarsOf :: Kind -> Array KindVar

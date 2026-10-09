@@ -48,6 +48,7 @@ elaborationOrigins = case _ of
   Unsupported (SpreadTwice o _) -> [ o ]
   Unsupported (AnonymousSpread o) -> [ o ]
   Unsupported (UnheldConstraint o _) -> [ o ]
+  Unsupported (SynonymUnsaturated o _ _) -> [ o ]
   WithoutSignature o _ -> [ o ]
   KindUndetermined o -> [ o ]
   Rejected d -> diagnosticOrigins d
@@ -83,6 +84,7 @@ printElaborationError = case _ of
   Unsupported (AnonymousSpread _) -> "`...` alone stands for a row a signature quantifies, and nothing quantifies one here; name the row"
   Unsupported (UnheldConstraint _ (LacksAtom key (TyVar v))) -> fmt @"This row needs `{v}` not to hold `{k}`, and `{v}` is bound where no such condition can be carried; a `forall` written in this type can bind the row instead" { v, k: keyName key }
   Unsupported (UnheldConstraint _ (DisjointAtom (TyVar a) (TyVar b))) -> fmt @"This row needs `{a}` and `{b}` to hold no key in common, and they are bound where no such condition can be carried; a `forall` written in this type can bind them instead" { a, b }
+  Unsupported (SynonymUnsaturated _ (Qualified _ (TyName n)) count) -> fmt @"`{n}` is a type synonym of {count} {parameters}, and stands for a type only applied to every one of them" { n, count, parameters: if count == 1 then "parameter" else "parameters" }
   WithoutSignature _ name -> fmt @"`{name}` needs a type signature in this version of the compiler" { name: nameOf name }
   KindUndetermined _ -> "Nothing here determines the kind of this type"
   Rejected d -> printDiagnostic d

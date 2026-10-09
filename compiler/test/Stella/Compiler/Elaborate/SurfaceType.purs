@@ -14,6 +14,7 @@ import Effect.Aff (Aff)
 import Stella.Compiler.CST.Types (inSource)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
+import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEnv)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), emptySessionEnv, equateKinds, freshKindMeta, initialState, runElabIn)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), UnifyError(..))
@@ -44,6 +45,30 @@ lib = ModuleName "Lib"
 
 -- | `data Box a = Box a`, `data Pair a b = Pair a b`, `data Phantom = Phantom` at
 -- | `forall k. Type`, `effect Console`, and `effect State (s :: Type)`.
+-- | The synonyms of `Lib`, as an interface holds them: `Twice a = Pair a a`,
+-- | `Const a b = a`, `Id (f :: Type -> Type) = f`, `Capture a = forall b. a -> b`,
+-- | `Effects = {| Console |}`, `WithConsole e = {| Console, ...e |}`, and
+-- | `Shadowing e = forall e. Unit -> Unit / {| Console, ...e |}`, whose `forall`
+-- | binds the name of its parameter again.
+libSynonyms :: SynonymEnv
+libSynonyms = Map.fromFoldable
+  [ synonym "Twice" [ param "a" Core.KType ] Core.KType (Core.TApp (Core.TApp (Core.TCon pairName []) (tv "a")) (tv "a"))
+  , synonym "Const" [ param "a" Core.KType, param "b" Core.KType ] Core.KType (tv "a")
+  , synonym "Id" [ param "f" (Core.KFun Core.KType Core.KType) ] (Core.KFun Core.KType Core.KType) (tv "f")
+  , synonym "Capture" [ param "a" Core.KType ] Core.KType (Core.TForall (TyVar "b") Core.KType (pureFn (tv "a") (tv "b")))
+  , synonym "Effects" [] (Core.KRow RowEffect) (Core.TRowExtend (Core.RowEffectEntry consoleName []) Core.TRowEmpty)
+  , synonym "WithConsole" [ param "e" (Core.KRow RowEffect) ] (Core.KRow RowEffect) (Core.TRowExtend (Core.RowEffectEntry consoleName []) (tv "e"))
+  , synonym "Shadowing" [ param "e" (Core.KRow RowEffect) ] Core.KType
+      ( Core.TForall (TyVar "e") (Core.KRow RowEffect)
+          (Core.TConstrained (Core.Lacks (EffectKey consoleName) (tv "e")) (fn (Core.TCon unitTy []) (Core.TRowExtend (Core.RowEffectEntry consoleName []) (tv "e")) (Core.TCon unitTy [])))
+      )
+  ]
+  where
+  tv = Core.TVar <<< TyVar
+  param name kind = { name: TyVar name, kind }
+  synonym name params result body =
+    Tuple (Qualified lib (TyName name)) { kind: { kindVars: [], body: Array.foldr (\p k -> Core.KFun p.kind k) result params }, params, body }
+
 libCore :: Module Unit
 libCore =
   { annotation: unit
@@ -97,7 +122,7 @@ elaborating :: Array TypeVar -> Type -> (Ran -> Aff Unit) -> Aff Unit
 elaborating implicit body k = case declare primSignature libCore of
   Left err -> fail (show err.error)
   Right sig -> do
-    let Tuple outcome state = runElabIn (sessionEnvOf sig []) (initialState (SessionId 0) 10) (elaborateSignature declaration { implicit, body })
+    let Tuple outcome state = runElabIn (sessionEnvOf sig []) (initialState (SessionId 0) 10) (elaborateSignature libSynonyms declaration { implicit, body })
     k
       { outcome
       , scheme: case outcome of
@@ -121,6 +146,9 @@ tailR = var 3 "r"
 
 tailS :: TypeVar
 tailS = var 4 "s"
+
+b :: TypeVar
+b = var 5 "b"
 
 consoleName :: Qualified EffName
 consoleName = Qualified lib (EffName "Console")
@@ -204,7 +232,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Type" do
 
     it "reports what this version does not read, and reads what surrounds it" do
       elaborating [ a ] (arrow (TypeConstrained (at 12) (app box (v a)) (v a)) (TypeSynonym (at 10) (Qualified lib (TyName "S")))) \r -> case r.outcome of
-        Done e -> e.unsupported `shouldEqual` [ OutsideSubset (at 12) "a constraint", OutsideSubset (at 10) "a type synonym" ]
+        Done e -> e.unsupported `shouldEqual` [ OutsideSubset (at 12) "a constraint", OutsideSubset (at 10) "a type synonym the module declares" ]
         _ -> fail "not elaborated"
 
   describe "a spread" do
@@ -263,7 +291,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Type" do
         Left err -> fail (show err.error)
         Right sig -> do
           let
-            scope = { declaration, kindVars: Set.empty, tyVars: Map.singleton (TyVar "e") (XKRow RowEffect), localTypes: Map.empty, anonymous: Map.empty }
+            scope = { declaration, kindVars: Set.empty, tyVars: Map.singleton (TyVar "e") (XKRow RowEffect), localTypes: Map.empty, anonymous: Map.empty, synonyms: libSynonyms }
             nested = TypeEffectRow (at 12) [ EffectElement (console 12), EffectSpread (at 13) (Just (v rowVar)) ]
             row = TypeEffectRow (at 9) [ EffectElement (state 9 [ int ]), EffectSpread (at 10) (Just nested) ]
           case runElabIn (sessionEnvOf sig []) (initialState (SessionId 0) 10) (readTypeAt scope (XKRow RowEffect) row) of
@@ -340,6 +368,67 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Type" do
         Failed (EquationFailed (AtSource o) _) -> o.origin `shouldEqual` at 3
         _ -> fail "not refused"
 
+  describe "a type synonym" do
+    let
+      synonym n = TypeSynonym (at 20) (Qualified lib (TyName n))
+      pair x y = Core.TApp (Core.TApp (Core.TCon pairName []) x) y
+      consoleOnly = Core.TRowExtend (Core.RowEffectEntry consoleName []) Core.TRowEmpty
+
+    it "is what it stands for, its parameters replaced by the arguments it is applied to" do
+      elaborating [] (arrow (app (synonym "Twice") int) int) \ran ->
+        ran.scheme `shouldEqual` Right { kindVars: [], body: pureFn (pair coreInt coreInt) coreInt }
+      -- a type operator naming a synonym is the synonym applied to its operands
+      elaborating [] (arrow (TypeOperator (at 12) { origin: at 13, target: TargetTypeSynonym (Qualified lib (TyName "Const")) } int (app box int)) int) \ran ->
+        ran.scheme `shouldEqual` Right { kindVars: [], body: pureFn coreInt coreInt }
+
+    it "applies what it stands for to the arguments beyond its parameters" do
+      elaborating [] (arrow (app (app (synonym "Id") box) int) int) \ran ->
+        ran.scheme `shouldEqual` Right { kindVars: [], body: pureFn (coreBox coreInt) coreInt }
+
+    it "is refused applied to fewer arguments than it has parameters, the whole application judged" do
+      elaborating [] (arrow (app (synonym "Const") int) int) \ran -> case ran.outcome of
+        Done done -> done.unsupported `shouldEqual` [ SynonymUnsaturated (at 5) (Qualified lib (TyName "Const")) 2 ]
+        _ -> fail "not elaborated"
+
+    it "reads each argument at its parameter's kind" do
+      elaborating [] (arrow (app (synonym "Twice") box) int) \ran -> case ran.outcome of
+        Failed (EquationFailed (AtSource o) _) -> o.origin `shouldEqual` at 2
+        _ -> fail "not refused"
+
+    it "renames a forall of what it stands for that would capture an argument" do
+      elaborating [ b ] (arrow (app (synonym "Capture") (v b)) int) \ran ->
+        ran.scheme `shouldEqual` Right
+          { kindVars: []
+          , body: Core.TForall (TyVar "b") Core.KType (pureFn (Core.TForall (TyVar "b#0") Core.KType (pureFn (Core.TVar (TyVar "b")) (Core.TVar (TyVar "b#0")))) coreInt)
+          }
+
+    it "of a row stands where a row does, after `/` and spread into another, the keys it brings judged with the row's" do
+      elaborating [] (TypeFunction (at 4) int int (Just (synonym "Effects"))) \ran ->
+        ran.scheme `shouldEqual` Right { kindVars: [], body: fn coreInt consoleOnly coreInt }
+      elaborating [] (TypeFunction (at 4) int int (Just (TypeEffectRow (at 9) [ EffectElement (state 9 [ int ]), EffectSpread (at 10) (Just (synonym "Effects")) ]))) \ran ->
+        ran.scheme `shouldEqual` Right
+          { kindVars: [], body: fn coreInt (Core.TRowExtend (Core.RowEffectEntry stateName [ coreInt ]) consoleOnly) coreInt }
+      elaborating [] (TypeFunction (at 4) int int (Just (TypeEffectRow (at 9) [ EffectElement (console 9), EffectSpread (at 10) (Just (synonym "Effects")) ]))) \ran -> case ran.outcome of
+        Done done -> done.unsupported `shouldEqual` [ KeyTwice (at 9) (EffectKey consoleName) ]
+        _ -> fail "not elaborated"
+
+    it "whose forall binds a parameter's name again is expanded, the row there the forall's" do
+      let unitType = Core.TCon unitTy []
+      elaborating [] (arrow (app (synonym "Shadowing") (TypeEffectRow (at 9) [ EffectElement (console 9) ])) int) \ran ->
+        ran.scheme `shouldEqual` Right
+          { kindVars: []
+          , body: pureFn
+              ( Core.TForall (TyVar "e") (Core.KRow RowEffect)
+                  (Core.TConstrained (Core.Lacks (EffectKey consoleName) (Core.TVar (TyVar "e"))) (fn unitType (Core.TRowExtend (Core.RowEffectEntry consoleName []) (Core.TVar (TyVar "e"))) unitType))
+              )
+              coreInt
+          }
+
+    it "extending a row it is given is outside what this version reads" do
+      elaborating [ rowVar ] (TypeFunction (at 4) int int (Just (app (synonym "WithConsole") (v rowVar)))) \ran -> case ran.outcome of
+        Done done -> done.unsupported `shouldEqual` [ OutsideSubset (at 5) "a type synonym extending a row it is given" ]
+        _ -> fail "not elaborated"
+
   describe "a type shown to an author" do
     it "is written as source writes it: an arrow with its row, a record, a tuple, a variant, and an effect row" do
       let
@@ -359,7 +448,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Type" do
         r.scheme `shouldEqual` Right
           { kindVars: [], body: Core.TForall (TyVar "a") Core.KType (pureFn (Core.TApp (Core.TApp (Core.TCon pairName []) coreInt) (Core.TVar (TyVar "a"))) coreInt) }
 
-    it "naming an effect is no type, and one naming a synonym is not read yet" do
+    it "naming an effect is no type, and one naming a synonym the module declares is not read yet" do
       elaborating [] (arrow (TypeOperator (at 12) { origin: at 13, target: TargetEffect stateName } int int) (TypeOperator (at 14) { origin: at 15, target: TargetTypeSynonym (Qualified lib (TyName "S")) } int int)) \r -> case r.outcome of
-        Done done -> done.unsupported `shouldEqual` [ EffectAsType (at 13) stateName, OutsideSubset (at 15) "a type synonym" ]
+        Done done -> done.unsupported `shouldEqual` [ EffectAsType (at 13) stateName, OutsideSubset (at 14) "a type synonym the module declares" ]
         _ -> fail "not elaborated"
