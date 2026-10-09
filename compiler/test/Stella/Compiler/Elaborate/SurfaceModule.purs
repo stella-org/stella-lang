@@ -26,7 +26,7 @@ import Stella.Compiler.Elaborate.Driver.Synthesis (attemptJob)
 import Stella.Compiler.Elaborate.Protocol.Facade as F
 import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Environment.Imported (importedCatalog, importedSignature, sessionEnvOf)
-import Stella.Compiler.Elaborate.Environment.Synonyms (importedSynonyms)
+import Stella.Compiler.Elaborate.Environment.Surface (importedSurface)
 import Stella.Compiler.Elaborate.Kernel.Elab (createSynthesis, equate, freshTypeMeta, initialState)
 import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), elaborateModule, settleBodies)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..))
@@ -124,7 +124,7 @@ elaboratingUnder header body k = case environment of
         [], Right view -> case importedSignature env view of
           Left err -> fail (show err)
           Right signature -> do
-            let elaborated = elaborateModule signature (importedSynonyms env view) (importedCatalog env view) resolved.module resolved.exports
+            let elaborated = elaborateModule signature (importedSurface env view) (importedCatalog env view) resolved.module resolved.exports
             k case elaborated.result of
               Left errors -> { values: elaborated.values, errors: NonEmptyArray.toArray errors, module: Nothing }
               Right made -> { values: elaborated.values, errors: [], module: Just { core: made.core, declared: made.declared } }
@@ -419,4 +419,4 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     )
   inM = Qualified (ModuleName "M") <<< Ident
   siteIn name line = { context: emptyXContext, origin: AtSource { declaration: inM name, origin: origin line } }
-  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1) }
+  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, spine: plainScheme { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1) }

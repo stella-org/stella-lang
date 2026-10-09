@@ -60,17 +60,17 @@ import Stella.Compiler.Elaborate.Driver.Loop (Attempter, runAttempting)
 import Stella.Compiler.Elaborate.Driver.Loop as Loop
 import Stella.Compiler.Elaborate.Environment.Catalog (CatalogEntry, EntrySort(..))
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
-import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEnv)
+import Stella.Compiler.Elaborate.Environment.Surface (SurfaceEnv, takesSynthesized)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SolverState, initialState)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
 import Stella.Compiler.Elaborate.Surface.Expr (elaborateValue, runSurf)
-import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..), elaborateSignature, settledScheme)
+import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..), elaborateSignature, schemeOf, settledScheme)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect, Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Surface.Group (groups)
 import Stella.Compiler.Interface.Assemble (CoreInterface, CoreTypeSort(..), coreAttribute, reachedFromOutside)
 import Stella.Compiler.Interface.Module (Exports, TypeEntity(..), Via(..))
-import Stella.Compiler.Interface.Scheme (plainScheme)
+import Stella.Compiler.Interface.Scheme (Scheme, plainScheme)
 import Stella.Compiler.Surface.Decl (Declaration(..), declarationOrigin)
 import Stella.Compiler.Surface.Decl (Module) as Surface
 import Stella.Compiler.Surface.Origin (Origin) as Surface
@@ -125,6 +125,7 @@ type ElaboratedValue =
   , ordinal :: Int
   , attributes :: Array Attribute
   , scheme :: TypeScheme
+  , spine :: Scheme
   , body :: Core.Expr Surface.Origin
   }
 
@@ -136,6 +137,7 @@ type Elaborating =
   , ordinal :: Int
   , attributes :: Array Attribute
   , scheme :: TypeScheme
+  , spine :: Scheme
   , body :: XExpr Surface.Origin
   }
 
@@ -146,11 +148,11 @@ type ElaboratedData = { origin :: Surface.Origin, decl :: DataDecl }
 -- | and the catalog its imports give.
 elaborateValues
   :: Signature
-  -> SynonymEnv
+  -> SurfaceEnv
   -> Array CatalogEntry
   -> Surface.Module
   -> { data :: Array ElaboratedData, values :: Array ElaboratedValue, errors :: Array ElaborationError }
-elaborateValues imports synonyms importedEntries m =
+elaborateValues imports surface importedEntries m =
   if Array.null dataErrors then
     { data: elaboratedData
     , values: settled'.values
@@ -167,7 +169,7 @@ elaborateValues imports synonyms importedEntries m =
         _ -> Nothing
     )
     m.declarations
-  Tuple dataRead initial = case runAttempt (sessionEnvOf imports importedEntries) (readData synonyms declarations) initial0 of
+  Tuple dataRead initial = case runAttempt (sessionEnvOf imports importedEntries) (readData surface.synonyms declarations) initial0 of
     Tuple (Done reads) s ->
       let
         settledOnes = map (\r -> { origin: r.declaration.origin, decl: settledData s.tentative.metas r }) reads
@@ -224,17 +226,17 @@ elaborateValues imports synonyms importedEntries m =
   -- every signature read, as one attempt each
   read = foldl readOne { state: initial, read: [], errors: [] } written
   readOne acc c =
-    case runAttempt importedSession (elaborateSignature synonyms c.declared.name c.signature) acc.state of
+    case runAttempt importedSession (elaborateSignature surface.synonyms c.declared.name c.signature) acc.state of
       Tuple (Done e) s
         | Array.null e.unsupported -> acc { state = s, read = Array.snoc acc.read (Tuple c.declared e) }
         | otherwise -> acc { errors = acc.errors <> map Unsupported e.unsupported }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
 
   -- their schemes, once every kind is decided
-  settled = map (\(Tuple d e) -> Tuple d (settledScheme read.state.tentative.metas e)) read.read
+  settled = map (\(Tuple d e) -> Tuple d (map (\scheme -> { scheme, spine: schemeOf e scheme }) (settledScheme read.state.tentative.metas e))) read.read
   schemes = Array.mapMaybe
     ( \(Tuple d s) -> case s of
-        Right scheme -> Just { declared: d, scheme }
+        Right r -> Just { declared: d, scheme: r.scheme, spine: r.spine }
         Left _ -> Nothing
     )
     settled
@@ -249,13 +251,16 @@ elaborateValues imports synonyms importedEntries m =
   -- and every value the module declares at its scheme, with its attributes
   own = map (\v -> { name: v.declared.name, sort: ValueEntry, scheme: { kindVars: v.scheme.kindVars, body: fromCore v.scheme.body }, attributes: v.declared.attributes }) schemes
   session = sessionEnvOf signature (imported <> own)
+  -- what the bodies read beyond: the module's values taking a synthesized
+  -- argument among those the imports declare
+  withOwn = surface { synthesizing = surface.synthesizing <> Set.fromFoldable (map _.declared.name (Array.filter (takesSynthesized <<< _.spine) schemes)) }
 
   -- every body, as one attempt each, a body that does not elaborate leaving
   -- nothing behind
   bodies = foldl bodyOne { state: read.state, bodies: [], errors: [] } schemes
   bodyOne acc v =
-    case runAttempt session (runSurf (elaborateValue internal synonyms v.declared.name v.declared.origin v.scheme v.declared.params v.declared.body)) acc.state of
-      Tuple (Done (Right body)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, body } }
+    case runAttempt session (runSurf (elaborateValue internal withOwn v.declared.name v.declared.origin v.scheme v.declared.params v.declared.body)) acc.state of
+      Tuple (Done (Right body)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, spine: v.spine, body } }
       Tuple (Done (Left problem)) _ -> acc { errors = Array.snoc acc.errors (Unsupported problem) }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
   bodyErrors = bodies.errors
@@ -322,7 +327,7 @@ settleBodies attempter state bodies =
       | Set.member b.name names -> Tuple [] Nothing
       | Set.member b.name waiting -> Tuple [ LeftUnchecked b.origin b.name ] Nothing
       | otherwise -> case toCoreExpr (zonkExpr after.tentative.metas b.body) of
-          Right body -> Tuple [] (Just { name: b.name, origin: b.origin, ordinal: b.ordinal, attributes: b.attributes, scheme: b.scheme, body })
+          Right body -> Tuple [] (Just { name: b.name, origin: b.origin, ordinal: b.ordinal, attributes: b.attributes, scheme: b.scheme, spine: b.spine, body })
           -- a place is reported once, however many undecided types stand there
           Left residues -> Tuple (map TypeUndetermined (Array.nubEq (map residueOrigin (NonEmptyArray.toArray residues)))) Nothing
 
@@ -384,15 +389,15 @@ type ElaboratedModule =
 -- | one that does not check is reported where its declaration stands.
 elaborateModule
   :: Signature
-  -> SynonymEnv
+  -> SurfaceEnv
   -> Array CatalogEntry
   -> Surface.Module
   -> Exports
   -> ElaboratedModule
-elaborateModule signature synonyms imported m exports =
+elaborateModule signature surface imported m exports =
   { result, values: elaborated.values }
   where
-  elaborated = elaborateValues signature synonyms imported m
+  elaborated = elaborateValues signature surface imported m
   values = elaborated.values
 
   ordinalOf = Map.fromFoldable (Array.mapWithIndex (\i v -> Tuple v.name i) values)
@@ -453,7 +458,7 @@ elaborateModule signature synonyms imported m exports =
 
   interface =
     { schemes: Map.fromFoldable
-        ( map (\v -> Tuple (nameOf v.name) (plainScheme v.scheme)) values
+        ( map (\v -> Tuple (nameOf v.name) v.spine) values
             <> Array.concatMap (\d -> map (\c -> Tuple c.name (plainScheme (ctorInfo (Qualified m.name d.decl.name) d.decl c).scheme)) d.decl.constructors) elaborated.data
         )
     , types: Map.fromFoldable (map (\d -> Tuple d.decl.name { kind: dataKind d.decl, sort: CoreData { params: d.decl.params, fields: map _.fields d.decl.constructors } }) elaborated.data)

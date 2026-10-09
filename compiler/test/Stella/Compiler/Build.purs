@@ -33,7 +33,7 @@ import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, in
 import Stella.Compiler.Interface.File (decode, encode)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
 import Stella.Compiler.Interface.Prim (primAttribute)
-import Stella.Compiler.Interface.Scheme (coreScheme, plainScheme)
+import Stella.Compiler.Interface.Scheme (SchemeBody(..), coreScheme, plainScheme)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (ParseOutcome(..), RunParser, defaultSettings)
@@ -407,6 +407,54 @@ spec = describe "Stella.Compiler.Build" do
 
     it "makes an arrow pure where it spreads only empty rows, as its normal form says" do
       compiles [ "f :: Int -> Int / {| ...{||}, ...{||} |}", "f x = x" ]
+
+  describe "a synthesized argument" do
+    let
+      dictModule = [ "data Dict a = Dict a", "make :: Int", "make = 1", "showWith :: {{ d :: Dict Int by make }} -> Int -> Int", "showWith d x = x" ]
+      rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors
+
+    it "is a parameter of the definition, the interface publishing it on the spine, through its file" do
+      compilingUnder [ "module M (Dict(..), make, showWith) where" ] dictModule case _ of
+        Left errors -> fail (joinWith "; " (rendered errors))
+        Right r -> do
+          let dict = TApp (TCon (Qualified (ModuleName "M") (TyName "Dict")) []) int
+          map _.scheme (Map.lookup (Ident "showWith") r.interface.declarations.values) `shouldEqual`
+            Just { kindVars: [], body: Synthesized { name: Just (Ident "d"), dictionary: dict, synthesizer: Qualified (ModuleName "M") (Ident "make") } (Plain (pureFn int int)) }
+          case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
+            Right stored -> stored.interface `shouldEqual` r.interface
+            Left problem -> fail problem
+
+    it "is followed by a forall the definition opens where it stands, a synthesized argument after it among them" do
+      compilingUnder [ "module M (idWith, both) where" ]
+        ( dictModule <>
+            [ "idWith :: {{ d :: Dict Int by make }} -> (forall a. a -> a)"
+            , "idWith d x = x"
+            , "both :: {{ d :: Dict Int by make }} -> (forall a. {{ e :: Dict a by make }} -> a -> a)"
+            , "both d e x = x"
+            ]
+        )
+        case _ of
+          Left errors -> fail (joinWith "; " (rendered errors))
+          Right r -> do
+            let
+              a = TVar (TyVar "a")
+              dict t = TApp (TCon (Qualified (ModuleName "M") (TyName "Dict")) []) t
+              parameter name t = { name: Just (Ident name), dictionary: dict t, synthesizer: Qualified (ModuleName "M") (Ident "make") }
+              scheme n = map _.scheme (Map.lookup (Ident n) r.interface.declarations.values)
+            scheme "idWith" `shouldEqual` Just { kindVars: [], body: Synthesized (parameter "d" int) (Forall (TyVar "a") KType (Plain (pureFn a a))) }
+            scheme "both" `shouldEqual` Just { kindVars: [], body: Synthesized (parameter "d" int) (Forall (TyVar "a") KType (Synthesized (parameter "e" a) (Plain (pureFn a a)))) }
+
+    it "keeps a reference to what takes one outside this version, in the module and in one importing it" do
+      compiling (dictModule <> [ "use :: Dict Int -> Int -> Int", "use d x = showWith d x" ]) case _ of
+        Left errors -> rendered errors `shouldEqual` [ "8:11 This version of the compiler does not elaborate a reference to a value taking a synthesized argument yet" ]
+        Right _ -> fail "compiled"
+      building
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "use :: Dict Int -> Int -> Int", "use d x = showWith d x" ])
+        , Tuple "src/A.stel" (moduleOf "A" [] dictModule)
+        ]
+        \r -> case r.result of
+          Left err -> map _.message (NonEmptyArray.toArray (buildMessages err)) `shouldEqual` [ "This version of the compiler does not elaborate a reference to a value taking a synthesized argument yet" ]
+          Right _ -> fail "built"
 
   describe "a type synonym an import declares" do
     it "is expanded where it is used, the interface holding what it stands for, through its file" do

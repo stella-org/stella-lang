@@ -60,6 +60,9 @@ module Stella.Compiler.Elaborate.Surface.Type
   , typeKindVars
   , xFunction
   , settledScheme
+  , schemeOf
+  , elaborateComputationSignature
+  , SynthesizedMark
   ) where
 
 import Prelude
@@ -93,11 +96,13 @@ import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), MetaContext, UnifyError(..), substitute, substituteKind)
 import Stella.Compiler.Surface.Name (TypeVar(..))
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.Surface.Type (EffectApplication, EffectRowItem(..), Kind(..), RecordRowItem(..), Signature, Type(..), TypeOperatorTarget(..), TypeVarBinder, VariantRowItem(..), typeOrigin)
+import Stella.Compiler.Surface.Type (ComputationType, EffectApplication, EffectRowItem(..), Kind(..), RecordRowItem(..), Signature, SignaturePrefix(..), Type(..), TypeOperatorTarget(..), TypeVarBinder, VariantRowItem(..), typeOrigin)
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
 import Stella.Compiler.TypedCore.Name (EffName, Ident, KindVar, Qualified, TyName, TyVar(..))
-import Stella.Compiler.TypedCore.Prim (functionTy, recordTy, variantTy)
+import Stella.Compiler.Interface.Scheme (Scheme, SchemeBody(..))
+import Stella.Compiler.TypedCore.Prim (asFunction, functionTy, recordTy, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Type (RowKey(..), TypeScheme)
+import Stella.Compiler.TypedCore.Type (Type(..)) as Core
 
 -- | A part of a type that is not read, where it stands: a form this version
 -- | does not read, one resolution reported already, or an effect standing
@@ -173,7 +178,13 @@ type Elaborated =
   , type :: XType
   , unwritten :: Array { origin :: Surface.Origin, kind :: XKind }
   , unsupported :: Array Unsupported
+  , synthesized :: Array SynthesizedMark
+  , computation :: Boolean
   }
+
+-- | A synthesized argument on a signature's spine, its dictionary's type read
+-- | with the rest of the type: the name written for it, and its synthesizer.
+type SynthesizedMark = { name :: Maybe Ident, synthesizer :: Qualified Ident }
 
 -- | What a type is read under: the declaration it belongs to, the kind
 -- | variables in scope, the kind of each type variable bound, the type
@@ -216,7 +227,20 @@ type Read =
 -- | per row kind, so every `...` of one kind in the signature is the same row;
 -- | it is named apart from every name source can write.
 elaborateSignature :: SynonymEnv -> Qualified Ident -> Signature Type -> Elab Elaborated
-elaborateSignature synonyms declaration signature = do
+elaborateSignature = elaborateSpine false
+
+-- | The signature of a computation declaration, `forall ā. C => {{ … }} -> τ / ρ`,
+-- | read as its Core type is, `∀ā. C => … -> Unit -{ρ}-> τ`, the computation
+-- | marked on its spine.
+elaborateComputationSignature :: SynonymEnv -> Qualified Ident -> Signature ComputationType -> Elab Elaborated
+elaborateComputationSignature synonyms declaration signature =
+  elaborateSpine true synonyms declaration { implicit: signature.implicit, body: computationAsType signature.body }
+
+-- | A signature read, a computation's where the flag says it is one, each
+-- | synthesized argument on its spine read as the type of its dictionary.
+elaborateSpine :: Boolean -> SynonymEnv -> Qualified Ident -> Signature Type -> Elab Elaborated
+elaborateSpine computation synonyms declaration signature = do
+  let spine = synthesizedOnSpine signature.body
   let kindVars = foldr Set.insert Set.empty (typeKindVars signature.body)
   named <- traverse (\v -> { var: v, kind: _ } <$> freshKindMeta kindVars quantifiable) signature.implicit
   spreads <- traverse
@@ -236,7 +260,7 @@ elaborateSignature synonyms declaration signature = do
       , anonymous: Map.fromFoldable (map (\s -> Tuple s.kind s.var) spreads)
       , synonyms
       }
-  body <- checkAt scope XKType signature.body
+  body <- checkAt scope XKType spine.type
   let taken = quantify quantified body.implied body.type
   pure
     { origin: typeOrigin signature.body
@@ -245,6 +269,8 @@ elaborateSignature synonyms declaration signature = do
     -- an implicit variable is written first where it is first mentioned
     , unwritten: map (\i -> { origin: fromMaybe (typeOrigin signature.body) (firstMention i.var signature.body), kind: i.kind }) named <> body.unwritten
     , unsupported: body.unsupported <> map (\i -> UnheldConstraint i.origin i.atom) taken.rest
+    , synthesized: spine.marks
+    , computation
     }
   where
   spreadKind = case _ of
@@ -773,6 +799,46 @@ settledScheme metas e =
       Nothing -> Left (NonEmptyArray.singleton e.origin)
   where
   undetermined u = not (Set.isEmpty (kindMetasOf (substituteKind metas u.kind)))
+
+-- | A signature's spine with each synthesized argument on it read as the type
+-- | of its dictionary, behind the pure arrow it stands behind, and the
+-- | arguments in the order written. A synthesized argument stands only where
+-- | quantifiers, constraints, and other synthesized arguments are all that
+-- | stands before it.
+synthesizedOnSpine :: Type -> { type :: Type, marks :: Array SynthesizedMark }
+synthesizedOnSpine t = case t of
+  TypeForall o binders body -> let r = synthesizedOnSpine body in r { type = TypeForall o binders r.type }
+  TypeConstrained o c body -> let r = synthesizedOnSpine body in r { type = TypeConstrained o c r.type }
+  TypeFunction o (TypeSynthesized _ name dictionary synthesizer) rest Nothing ->
+    let
+      r = synthesizedOnSpine rest
+    in
+      { type: TypeFunction o dictionary r.type Nothing, marks: Array.cons { name, synthesizer } r.marks }
+  _ -> { type: t, marks: [] }
+
+-- | A computation type written as the type it is in Core: its spine, then a
+-- | thunk `Unit -{ρ}-> τ`.
+computationAsType :: ComputationType -> Type
+computationAsType c = foldr prefixed (TypeFunction c.origin (TypeConstructor c.origin unitTy) c.result (Just c.row)) c.prefix
+  where
+  prefixed prefix rest = case prefix of
+    PrefixForall o binders -> TypeForall o binders rest
+    PrefixConstraint constraint -> TypeConstrained (typeOrigin constraint) constraint rest
+    PrefixSynthesized synthesized -> TypeFunction (typeOrigin synthesized) synthesized rest Nothing
+
+-- | The scheme an interface publishes of a signature, from its Core scheme:
+-- | each quantifier and constraint on the spine, each synthesized argument
+-- | where its arrow stands, and a computation's thunk as the computation it is.
+schemeOf :: Elaborated -> TypeScheme -> Scheme
+schemeOf e s = { kindVars: s.kindVars, body: go e.synthesized s.body }
+  where
+  go marks t = case t, Array.uncons marks, asFunction t of
+    Core.TForall a k body, _, _ -> Forall a k (go marks body)
+    Core.TConstrained c body, _, _ -> Constrained c (go marks body)
+    _, Just { head, tail }, Just f | f.row == Core.TRowEmpty ->
+      Synthesized { name: head.name, dictionary: f.argument, synthesizer: head.synthesizer } (go tail f.result)
+    _, Nothing, Just f | e.computation -> Computation f.result f.row
+    _, _, _ -> Plain t
 
 derive instance Eq Unsupported
 

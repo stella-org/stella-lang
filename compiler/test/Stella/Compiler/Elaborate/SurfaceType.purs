@@ -15,7 +15,7 @@ import Stella.Compiler.CST.Types (inSource)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEnv)
-import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), emptySessionEnv, equateKinds, freshKindMeta, initialState, runElabIn)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), emptySessionEnv, equateKinds, freshKindMeta, initialState, runElabIn)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), UnifyError(..))
 import Data.Set as Set
@@ -23,13 +23,14 @@ import Data.Array as Array
 import Data.Map as Map
 import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..))
 import Stella.Compiler.Elaborate.Surface.Report (printType)
-import Stella.Compiler.Elaborate.Surface.Type (Atom(..), Elaborated, Unsupported(..), elaborateSignature, readTypeAt, settledScheme, xFunction)
+import Stella.Compiler.Elaborate.Surface.Type (Atom(..), Elaborated, Unsupported(..), elaborateComputationSignature, elaborateSignature, readTypeAt, schemeOf, settledScheme, xFunction)
+import Stella.Compiler.Interface.Scheme (Scheme, SchemeBody(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Surface.Name (BindingId(..), TypeVar(..))
 import Stella.Compiler.Surface.Origin as Surface
 import Data.Foldable (foldr)
-import Stella.Compiler.Surface.Type (EffectApplication, EffectRowItem(..), Kind(..), RecordRowItem(..), Type(..), TypeOperatorTarget(..), VariantRowItem(..))
+import Stella.Compiler.Surface.Type (EffectApplication, EffectRowItem(..), Kind(..), RecordRowItem(..), SignaturePrefix(..), Type(..), TypeOperatorTarget(..), VariantRowItem(..))
 import Stella.Compiler.TypedCore (Decl(..), Module, declare, primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..)) as Core
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
@@ -115,21 +116,31 @@ app = TypeApp (at 5)
 declaration :: Qualified Ident
 declaration = Qualified (ModuleName "M") (Ident "f")
 
-type Ran = { outcome :: Outcome Elaborated, scheme :: Either (Array Surface.Origin) Core.TypeScheme }
+type Ran = { outcome :: Outcome Elaborated, scheme :: Either (Array Surface.Origin) Core.TypeScheme, published :: Maybe Scheme }
 
 -- | The signature elaborated in a session of `Lib`, and its scheme settled.
 elaborating :: Array TypeVar -> Type -> (Ran -> Aff Unit) -> Aff Unit
-elaborating implicit body k = case declare primSignature libCore of
+elaborating implicit body = elaboratingBy (elaborateSignature libSynonyms declaration { implicit, body })
+
+-- | A signature elaborated by the action given, in a session of `Lib`; its
+-- | scheme settled, and the scheme an interface publishes of it.
+elaboratingBy :: Elab Elaborated -> (Ran -> Aff Unit) -> Aff Unit
+elaboratingBy action k = case declare primSignature libCore of
   Left err -> fail (show err.error)
   Right sig -> do
-    let Tuple outcome state = runElabIn (sessionEnvOf sig []) (initialState (SessionId 0) 10) (elaborateSignature libSynonyms declaration { implicit, body })
+    let
+      Tuple outcome state = runElabIn (sessionEnvOf sig []) (initialState (SessionId 0) 10) action
+      scheme = case outcome of
+        Done e -> case settledScheme state.tentative.metas e of
+          Left places -> Left (NonEmptyArray.toArray places)
+          Right s -> Right s
+        _ -> Left []
     k
       { outcome
-      , scheme: case outcome of
-          Done e -> case settledScheme state.tentative.metas e of
-            Left places -> Left (NonEmptyArray.toArray places)
-            Right scheme -> Right scheme
-          _ -> Left []
+      , scheme
+      , published: case outcome, scheme of
+          Done e, Right s -> Just (schemeOf e s)
+          _, _ -> Nothing
       }
 
 coreBox :: Core.Type -> Core.Type
@@ -428,6 +439,30 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Type" do
       elaborating [ rowVar ] (TypeFunction (at 4) int int (Just (app (synonym "WithConsole") (v rowVar)))) \ran -> case ran.outcome of
         Done done -> done.unsupported `shouldEqual` [ OutsideSubset (at 5) "a type synonym extending a row it is given" ]
         _ -> fail "not elaborated"
+
+  describe "a scheme's spine" do
+    let
+      synthesizer = Qualified lib (Ident "make")
+      dictionary = TypeSynthesized (at 30) (Just (Ident "d")) (app box (v a)) synthesizer
+      consoleRow = TypeEffectRow (at 31) [ EffectElement (console 31) ]
+      coreConsole = Core.TRowExtend (Core.RowEffectEntry consoleName []) Core.TRowEmpty
+      boxA = coreBox (Core.TVar (TyVar "a"))
+      parameter = { name: Just (Ident "d"), dictionary: boxA, synthesizer }
+
+    it "holds a synthesized argument where it stands, a parameter of its dictionary's type in Core" do
+      elaborating [ a ] (TypeFunction (at 4) dictionary (arrow (v a) int) Nothing) \ran -> do
+        ran.scheme `shouldEqual` Right { kindVars: [], body: Core.TForall (TyVar "a") Core.KType (pureFn boxA (pureFn (Core.TVar (TyVar "a")) coreInt)) }
+        ran.published `shouldEqual` Just { kindVars: [], body: Forall (TyVar "a") Core.KType (Synthesized parameter (Plain (pureFn (Core.TVar (TyVar "a")) coreInt))) }
+
+    it "of a computation declaration ends in the computation, a thunk in Core" do
+      let
+        computation prefix = { origin: at 32, prefix, result: v a, row: consoleRow }
+        binderA = { origin: at 33, var: a, kind: Just (KindType (at 33)) }
+      elaboratingBy (elaborateComputationSignature libSynonyms declaration { implicit: [], body: computation [ PrefixForall (at 33) [ binderA ], PrefixSynthesized dictionary ] }) \ran -> do
+        ran.scheme `shouldEqual` Right { kindVars: [], body: Core.TForall (TyVar "a") Core.KType (pureFn boxA (fn (Core.TCon unitTy []) coreConsole (Core.TVar (TyVar "a")))) }
+        ran.published `shouldEqual` Just { kindVars: [], body: Forall (TyVar "a") Core.KType (Synthesized parameter (Computation (Core.TVar (TyVar "a")) coreConsole)) }
+      elaboratingBy (elaborateComputationSignature libSynonyms declaration { implicit: [], body: { origin: at 32, prefix: [], result: int, row: consoleRow } }) \ran ->
+        ran.published `shouldEqual` Just { kindVars: [], body: Computation coreInt coreConsole }
 
   describe "a type shown to an author" do
     it "is written as source writes it: an arrow with its row, a record, a tuple, a variant, and an effect row" do

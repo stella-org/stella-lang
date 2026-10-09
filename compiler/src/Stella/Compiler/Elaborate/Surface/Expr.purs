@@ -17,8 +17,11 @@
 -- |
 -- | **This version elaborates a subset**: variables, globals and constructors,
 -- | literals, application, λ over variables where its type is known, and type
--- | annotations, over pure arrows. Anything else is reported where it stands,
--- | and the declaration holding it is not elaborated further.
+-- | annotations, over pure arrows. A synthesized argument of the declaration's
+-- | own is a parameter like any other; a reference to a value taking one is
+-- | outside the subset, a goal being what supplies the argument. Anything else
+-- | is reported where it stands, and the declaration holding it is not
+-- | elaborated further.
 module Stella.Compiler.Elaborate.Surface.Expr
   ( Surf
   , runSurf
@@ -40,7 +43,7 @@ import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..))
 import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), fromCore)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal)
 import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
-import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEnv)
+import Stella.Compiler.Elaborate.Environment.Surface (SurfaceEnv)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
 import Stella.Compiler.Elaborate.CorePlus.Row (xnf)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, currentMetas, equate, freshKindMeta, freshTypeMeta, require)
@@ -86,9 +89,10 @@ outside = Surf <<< pure <<< Left
 
 -- | What an expression is elaborated under: the declaration it belongs to, the
 -- | context its node stands in, the entries the compiler's desugarings refer to
--- | that no catalog holds, and the type synonyms its annotations are read
--- | through.
-type Scope = { declaration :: Qualified Ident, context :: XContext, internal :: Internal, synonyms :: SynonymEnv }
+-- | that no catalog holds, and what the surface elaborator reads of the imports
+-- | and of the module: the synonyms its annotations are read through, and the
+-- | values taking a synthesized argument.
+type Scope = { declaration :: Qualified Ident, context :: XContext, internal :: Internal, surface :: SurfaceEnv }
 
 siteAt :: Scope -> Surface.Origin -> Site
 siteAt scope origin = { context: scope.context, origin: AtSource { declaration: scope.declaration, origin } }
@@ -97,36 +101,42 @@ siteAt scope origin = { context: scope.context, origin: AtSource { declaration: 
 -- | `λ`s for its parameters, and its body checked against what is left.
 elaborateValue
   :: Internal
-  -> SynonymEnv
+  -> SurfaceEnv
   -> Qualified Ident
   -> Surface.Origin
   -> TypeScheme
   -> Array Binder
   -> Expr
   -> Surf (XExpr Surface.Origin)
-elaborateValue internal synonyms declaration origin scheme params body = opened scope0 (fromCore scheme.body)
+elaborateValue internal surface declaration origin scheme params body =
+  abstractions origin true scope0 params body (fromCore scheme.body)
   where
-  scope0 = { declaration, context: bindKindVars emptyXContext scheme.kindVars, internal, synonyms }
+  scope0 = { declaration, context: bindKindVars emptyXContext scheme.kindVars, internal, surface }
 
-  opened scope = case _ of
-    XForall a k rest -> ETyLam origin a k <$> opened (scope { context = bindTyVar scope.context a k }) rest
-    XConstrained c rest -> do
-      context <- lift (assume (siteAt scope origin) c)
-      EConstraintLam origin c <$> opened (scope { context = context }) rest
-    ty -> lambdas scope params body ty
-
--- | `λ`s binding the variables given at the argument types the expected type's
--- | arrows give, then the body at what is left.
-lambdas :: Scope -> Array Binder -> Expr -> XType -> Surf (XExpr Surface.Origin)
-lambdas scope binders body expected = case Array.uncons binders of
-  Nothing -> check scope body expected
-  Just { head, tail } -> do
+-- | The expected type opened along its spine: a `Λ` for each quantifier and a
+-- | constraint abstraction for each constraint, the constraint assumed in what
+-- | it encloses, and a `λ` for each variable given at the argument its arrow
+-- | gives; then the body at what is left. Quantifiers and constraints are
+-- | opened in front of the first variable and wherever variables remain, so a
+-- | `forall` following a parameter, a synthesized argument's among them, is
+-- | opened where it stands; one left once every variable is bound is the
+-- | body's to meet.
+abstractions :: Surface.Origin -> Boolean -> Scope -> Array Binder -> Expr -> XType -> Surf (XExpr Surface.Origin)
+abstractions origin front scope binders body expected = case expected, Array.uncons binders of
+  XForall a k rest, _ | opening -> ETyLam origin a k <$> abstractions origin front (scope { context = bindTyVar scope.context a k }) binders body rest
+  XConstrained c rest, _ | opening -> do
+    context <- lift (assume (siteAt scope origin) c)
+    EConstraintLam origin c <$> abstractions origin front (scope { context = context }) binders body rest
+  _, Nothing -> check scope body expected
+  _, Just { head, tail } -> do
     parts <- arrow "a λ at an arrow that performs effects" scope (binderOrigin head) expected
     case head of
       BinderVar o (LocalVar v) ->
-        ELam o v.name parts.argument <$> lambdas (scope { context = bindVar scope.context v.name parts.argument }) tail body parts.result
+        ELam o v.name parts.argument <$> abstractions origin false (scope { context = bindVar scope.context v.name parts.argument }) tail body parts.result
       BinderInvalid o -> outside (ReportedAlready o)
       other -> outside (OutsideSubset (binderOrigin other) "a pattern that is no variable")
+  where
+  opening = front || not (Array.null binders)
 
 -- | The argument and the result of a pure arrow the type must be. An arrow
 -- | whose row, zonked and normalized, holds an element or a row variable — one
@@ -152,7 +162,7 @@ arrow what scope origin ty = do
 
 check :: Scope -> Expr -> XType -> Surf (XExpr Surface.Origin)
 check scope expr expected = case expr of
-  ExprLambda _ binders body -> lambdas scope binders body expected
+  ExprLambda o binders body -> abstractions o false scope binders body expected
   ExprInvalid o -> outside (ReportedAlready o)
   _ -> do
     inferred <- infer scope expr
@@ -173,7 +183,7 @@ infer scope expr = case expr of
     x' <- check scope x parts.argument
     pure { expr: EApp (exprOrigin expr) f'.expr x', type: parts.result }
   ExprTyped _ inner t -> do
-    annotation <- lift (elaborateType scope.synonyms scope.declaration scope.context t)
+    annotation <- lift (elaborateType scope.surface.synonyms scope.declaration scope.context t)
     case Array.head annotation.unsupported of
       Just problem -> outside problem
       Nothing -> do
@@ -190,6 +200,9 @@ infer scope expr = case expr of
     env <- lift askEnv
     case lookupScheme env.session.catalog name of
       Nothing -> outside (OutsideSubset o "a global the catalog does not hold")
+      -- a synthesized argument is supplied by a goal, which this version does
+      -- not create
+      Just _ | Set.member name scope.surface.synthesizing -> outside (OutsideSubset o "a reference to a value taking a synthesized argument")
       Just scheme -> do
         kinds <- lift (traverse (\_ -> freshKindMeta scope.context.kindVars (Set.singleton Quantifiable)) scheme.kindVars)
         let ty = substituteKindVars (Map.fromFoldable (Array.zip scheme.kindVars kinds)) scheme.body
