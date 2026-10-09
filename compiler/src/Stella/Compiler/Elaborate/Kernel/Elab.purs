@@ -44,6 +44,12 @@ module Stella.Compiler.Elaborate.Kernel.Elab
   , freshInstantiationRow
   , placeFit
   , runFit
+  , openBoundary
+  , closeBoundary
+  , runBoundary
+  , fitRemainders
+  , boundaryFits
+  , formUnion
   , freshTypeMeta
   , freshKindMeta
   , equateKinds
@@ -93,9 +99,9 @@ import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Mechanism.Kinding (KindingEnv, emptyKindingEnv)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (Arena, ExprObject, GoalObject, Handle, HandleClass(..), HandleError(..), HandleObject(..), BinderObject, JoinObject, OccurrenceObject, ScopeId(..), ScopeObject, SessionId, TreeObject, TypeObject, emptyArena, issueIn, resolveIn)
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce, recheck)
-import Stella.Compiler.Elaborate.Mechanism.Pending (EqualityGoal, GoalRecord, Job(..), PendingId, Site, SynthRef, goalOf, newGoal)
-import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm, xnf)
-import Stella.Compiler.Elaborate.Mechanism.Fit (Classified(..), FitRecord, FitState(..), FitUse, classify, sharedEntries)
+import Stella.Compiler.Elaborate.Mechanism.Pending (EqualityGoal, GoalRecord, HandlerGoal, Job(..), PendingId, Site, SynthRef, goalOf, newGoal)
+import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm, rebuild, xnf)
+import Stella.Compiler.Elaborate.Mechanism.Fit (Classified(..), FitRecord, FitState(..), FitUse, classify, remaindersOf, sharedAcross, sharedEntries, unionOf)
 import Stella.Compiler.Elaborate.Mechanism.Scheduler (Scheduler, create, emptyScheduler, enqueueInitial, wake)
 import Stella.Compiler.Elaborate.CorePlus.Term (FitId(..), TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
@@ -105,7 +111,7 @@ import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar, RegionName(.
 import Stella.Compiler.Elaborate.Vocabulary.Trace (TraceEvent, Tracing(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement, MetaBinding(..), MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupMeta, lookupTermMeta, regionScopeOf, substitute, unifyKind, unifyType)
 import Stella.Compiler.Elaborate.Mechanism.Unify as Unify
-import Data.Either (Either(..))
+import Data.Either (Either(..), either)
 import Data.Foldable (foldl, for_)
 import Data.Generic.Rep (class Generic)
 import Data.Array as Array
@@ -115,7 +121,8 @@ import Data.Maybe (Maybe(..))
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
-import Data.Tuple (Tuple(..))
+import Data.Traversable (for)
+import Data.Tuple (Tuple(..), fst, snd)
 
 -- | What an attempt owns, and what a rollback restores entire.
 -- |
@@ -658,9 +665,136 @@ placeFit site use source target = do
 runFit :: FitId -> Elab Unit
 runFit f = decideFit f >>= case _ of
   FitDecided -> pure unit
-  FitWaiting on -> do
-    written <- writtenSoFar
-    postponeWith (SolverStuck { blockedOn: on, written })
+  FitWaiting on -> waitOn on
+
+-- | The ambient row of a checking boundary, opened under the context given: an
+-- | inference row nothing but the boundary decides.
+openBoundary :: XContext -> Elab MetaVar
+openBoundary context = Elab \_ s ->
+  let
+    Tuple m metas = freshMeta { kind: XKRow RowEffect, scope: metaScopeOf context } s.tentative.metas
+  in
+    Tuple (Done m) (s { tentative { metas = metas { boundaryRows = Set.insert m metas.boundaryRows } } })
+
+-- | Close a checking boundary once its body is built under `?σ`: a
+-- | `JobImplicitHandler` holding `?σ` and the row expected, queued for a first
+-- | attempt as a job created inside an attempt is.
+closeBoundary :: Site -> MetaVar -> XType -> Elab Unit
+closeBoundary site boundary expected = Elab \_ s ->
+  let
+    Tuple id created = create site (JobImplicitHandler { boundary, expected }) s.tentative.scheduler
+  in
+    Tuple (Done unit) (s { tentative { scheduler = enqueueInitial id created } })
+
+-- | A checking boundary's job, attempted.
+-- |
+-- | **The body's complete source row `U` is the compatible union of the sources
+-- | of the boundary's fits**, those whose target is `?σ` alone, and the job
+-- | waits only where the union cannot be formed. Then `fit(U, ρ)`: contained,
+-- | `?σ := ρ`, which wakes the fits inside to be decided against `ρ`; not
+-- | contained, a failure no implicit handler is sought for here; undecided, the
+-- | job waits on the flexible tails left.
+runBoundary :: Site -> HandlerGoal -> Elab Unit
+runBoundary site goal = do
+  metas <- metaContext
+  case lookupMeta metas goal.boundary of
+    Just (Unsolved _) -> do
+      sources <- boundarySources goal.boundary
+      formUnion (map (\f -> { site: f.site, row: f.source }) sources) >>= case _ of
+        Left tails -> waitOn tails
+        Right u -> do
+          settled <- equateShared site Set.empty (rebuild u) goal.expected
+          case classify settled.source settled.target of
+            Contained _ -> unify site { kind: XKRow RowEffect, left: XMeta goal.boundary, right: goal.expected }
+            NotContained remainders -> raiseDiagnostic (BoundaryNotContained site.origin remainders)
+            Waiting on -> waitOn on
+    _ -> break (BoundaryRowAbsent goal.boundary)
+
+-- | The undecided fits whose target's remainder is the boundary row given
+-- | alone, each with what is left of its rows. Only a fit whose target holds
+-- | that row is read.
+boundarySources :: MetaVar -> Elab (P.Array { id :: FitId, site :: Site, source :: XRowNormalForm, target :: XRowNormalForm })
+boundarySources boundary = do
+  metas <- metaContext
+  let
+    holds u = case xnf (substitute metas u.target) of
+      Right n -> Set.member boundary n.flexible
+      Left _ -> false
+    candidates = Map.keys
+      ( Map.filter
+          ( \record -> case record.state of
+              Undecided u -> holds u
+              _ -> false
+          )
+          metas.fits
+      )
+  map (Array.filter alone) (fitRemainders candidates)
+  where
+  alone f = Map.isEmpty f.target.known && Set.isEmpty f.target.rigid && f.target.flexible == Set.singleton boundary
+
+-- | The undecided fits among those named, the keys each one's rows share
+-- | equated, with what is left of each row once what the two share has
+-- | cancelled. Nothing of a fit not named is read or changed, so the driver's
+-- | resolution reads one component's fits through this and no other's.
+fitRemainders :: Set FitId -> Elab (P.Array { id :: FitId, site :: Site, source :: XRowNormalForm, target :: XRowNormalForm })
+fitRemainders ids = do
+  metas <- metaContext
+  map Array.catMaybes $ for (Map.toUnfoldable (Map.filterKeys (\f -> Set.member f ids) metas.fits) :: P.Array (Tuple FitId FitRecord)) \(Tuple f record) -> case record.state of
+    Undecided u -> do
+      settled <- equateShared record.site u.equated u.source u.target
+      writeFit f (record { state = Undecided u { equated = settled.equated } })
+      let
+        r = remaindersOf settled.source settled.target
+      pure (Just { id: f, site: record.site, source: r.source, target: r.target })
+    _ -> pure Nothing
+
+-- | What a waiting boundary contributes to the resolution of fits: `fit(U, ρ)`
+-- | where the union of its sources is formed, and otherwise `fit(Sᵢ, ρ)` for each
+-- | source, each as what is left of its rows.
+boundaryFits :: Site -> HandlerGoal -> Elab (P.Array { source :: XRowNormalForm, target :: XRowNormalForm })
+boundaryFits site goal = do
+  sources <- boundarySources goal.boundary
+  union <- formUnion (map (\f -> { site: f.site, row: f.source }) sources)
+  for (either (const (map _.source sources)) Array.singleton union) \source -> do
+    settled <- equateShared site Set.empty (rebuild source) goal.expected
+    pure (remaindersOf settled.source settled.target)
+
+-- | The compatible union of the rows given, each from the site given; or the
+-- | distinct flexible tails that keep it from being formed.
+-- |
+-- | **The keys the rows share are equated before their tails are counted**, as
+-- | a fit's are: an equation may identify two tails, and the rows are read
+-- | again until no shared key is left unequated. **What the union needs to be
+-- | a row is required at the sites of both rows it is between**, the union
+-- | being the row ambient at each, so which of the two comes first decides
+-- | nothing.
+formUnion :: P.Array { site :: Site, row :: XRowNormalForm } -> Elab (Either (Set MetaVar) XRowNormalForm)
+formUnion inputs = go Set.empty (map _.row inputs)
+  where
+  siteAt i = map _.site (Array.index inputs i)
+
+  go equated rows = do
+    metas <- metaContext
+    current <- for (Array.zip (map _.site inputs) rows) \(Tuple site n) -> case xnf (substitute metas (rebuild n)) of
+      Right n' -> pure n'
+      Left err -> break (FitSideNotARow site.origin err)
+    case Array.filter (\e -> not (Set.member (Tuple e.between e.key) equated)) (sharedAcross current) of
+      [] -> case unionOf current of
+        Left tails -> pure (Left tails)
+        Right u -> do
+          for_ u.apart \a -> for_ (Array.mapMaybe siteAt (Array.nub [ fst a.between, snd a.between ])) \site -> require site a.constraint
+          pure (Right u.row)
+      fresh -> do
+        for_ fresh \e -> for_ (siteAt (snd e.between)) \site ->
+          equate site { kind: XKRow RowEffect, left: XRowExtend e.first XRowEmpty, right: XRowExtend e.other XRowEmpty }
+        go (Set.union equated (Set.fromFoldable (map (\e -> Tuple e.between e.key) fresh))) current
+
+-- | Wait on the metavariables given, extracted as a unification's are: one this
+-- | attempt created stands for what its refinement was made from.
+waitOn :: forall a. Set MetaVar -> Elab a
+waitOn on = do
+  written <- writtenSoFar
+  postponeWith (SolverStuck { blockedOn: on, written })
 
 -- | Decide a fit against `Ψ` as it stands, and record what is decided.
 -- |

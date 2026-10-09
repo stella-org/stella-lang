@@ -441,22 +441,25 @@ Core:  ( openEff [( Clock )] k ) Prim.Unit
 
 #### Resolving fits by direction
 
-A fit still undecided when the loop reaches quiescence is resolved by the direction of the containment it states. Fits are taken in connected components — fits, jobs, and obligations sharing an unsolved metavariable — and each component is resolved inside a transaction, to a fixpoint.
+A fit still undecided when the loop reaches quiescence is resolved by the direction of the containment it states. Fits are taken in connected components — the fits, jobs, and obligations of one owner, the declaration body or the binding group they belong to, sharing an unsolved metavariable, a job joined by every metavariable an attempt of it could assign — and each component is resolved inside a transaction of its own, to a fixpoint, reading and changing nothing of another.
 
 1. **A target whose remainder is one flexible tail `?m`** is solved to the compatible union of the source remainders of every undecided fit whose target's remainder is `?m`. The ambient row takes the least row its sources need.
 2. **A source whose remainder is one flexible tail `?t` created by instantiation** is solved to the target's remainder. The tail of an instantiated effect-polymorphic function takes the ambient row.
 
-**Each round computes its assignments from the state as it stands and installs them simultaneously**, rule 1 before rule 2. Assignments that depend on one another — a metavariable rule 1 and rule 2 both reach, or one standing in another's union — are not made, and the component is ambiguous. The outcome therefore depends on no order of the fits. Every assignment goes through the ordinary assignment of [Elaborator API](03-Elaborator-API.md): occurs check, scope, level, the obligations it is watched by, and the jobs it wakes. **A checking boundary's fits are not taken**; the boundary's own fits against its expected row stand in for them, and only their assignments are kept ([below](#explicit-checking-boundaries)).
+**Each round computes its assignments from the state as it stands and installs them simultaneously**, rule 1 before rule 2. Assignments that depend on one another — a metavariable rule 1 and rule 2 both reach, or one standing in another's union — are not made, and the component is ambiguous. The outcome therefore depends on no order of the fits. Every assignment goes through the ordinary assignment of [Elaborator API](03-Elaborator-API.md): occurs check, scope, level, the obligations it is watched by, and the jobs it wakes. **A round that assigns nothing is a fixpoint only where nothing has moved**: a union not formed is waited on while the component's other assignments, the equations of the keys a union shares, and the jobs they wake still decide something, and the component is ambiguous only once none does. **A checking boundary's fits are not taken**; the boundary's own fits against its expected row stand in for them, and only their assignments are kept ([below](#explicit-checking-boundaries)).
 
 **The compatible union** of rows is the least one formed without a new decision:
 
 | Rows hold | Union |
 | --- | --- |
-| one key in several | one element, the payloads equated |
+| one key in several | one element, the payloads equated before the tails are counted |
 | distinct known keys | joined |
 | a key and a tail | joined, `k ∉ tail` required |
+| distinct tails, at most one of them flexible | joined, the tails required apart |
 | the same tail in several | one tail |
 | two distinct flexible tails | not formed: their disjointness would be a new decision, so the fit waits |
+
+**What a union needs to be a row is required at the site of each row it joins**, the union being the row ambient at each, so the order the rows come in decides nothing.
 
 **A row metavariable records whether instantiation made it.** One created for a scheme's row quantifier where the scheme is instantiated is an **instantiation row**; every other — the row of a λ with no expected type, the row of an arrow whose shape was not known — is an **inference row**. Where two are identified, the result is an instantiation row only if both were, so the direction of a unification decides nothing. Rule 2 maximizes an instantiation tail only: an inference tail is a function's own least row, and filling it with the ambient one would lose that.
 

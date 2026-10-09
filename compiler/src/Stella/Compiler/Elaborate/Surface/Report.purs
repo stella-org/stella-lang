@@ -77,6 +77,7 @@ diagnosticOrigins = case _ of
   TermAssignmentFailed o _ -> sourceOf o
   SynthesisFailed s -> sourceOf s.goal.origin
   RowNotContained o _ -> sourceOf o
+  BoundaryNotContained o _ -> sourceOf o
 
 sourceOf :: Origin -> Array Surface.Origin
 sourceOf = case _ of
@@ -146,6 +147,7 @@ printDiagnostic = case _ of
   TermAssignmentFailed _ _ -> "A term filled in here is not valid where it stands"
   SynthesisFailed _ -> "A synthesizer failed here"
   RowNotContained _ r -> fmt @"This performs `{s}`, which is not among the effects allowed here" { s: printEffectRow (rebuild r.source) }
+  BoundaryNotContained _ r -> fmt @"This performs `{s}` beyond the effects expected here, which this version of the compiler does not resolve with an implicit handler yet" { s: printEffectRow (rebuild r.source) }
 
 -- | Why a row's sharpness does not hold: the key or the row variables it is
 -- | about.

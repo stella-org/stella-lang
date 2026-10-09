@@ -181,6 +181,9 @@ data TermBinding
 -- | unification identifies two, the tail left is an instantiation row only if
 -- | both were, so the direction of a unification decides nothing.
 -- |
+-- | `boundaryRows` are the ambient rows checking boundaries opened, which only
+-- | the boundary decides.
+-- |
 -- | `fits` are the fits elaboration has placed, each with what is decided of it
 -- | ([Fit](Fit.purs)), and `nextFit` the supply their identifiers are drawn from.
 type MetaContext =
@@ -192,6 +195,7 @@ type MetaContext =
   , nextTerm :: P.Int
   , assigned :: Set MetaVar
   , instantiationRows :: Set MetaVar
+  , boundaryRows :: Set MetaVar
   , fits :: Map FitId FitRecord
   , nextFit :: P.Int
   }
@@ -304,6 +308,7 @@ emptyContext =
   , nextTerm: 0
   , assigned: Set.empty
   , instantiationRows: Set.empty
+  , boundaryRows: Set.empty
   , fits: Map.empty
   , nextFit: 0
   }

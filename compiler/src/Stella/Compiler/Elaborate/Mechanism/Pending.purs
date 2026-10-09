@@ -12,6 +12,7 @@ module Stella.Compiler.Elaborate.Mechanism.Pending
   , GoalRecord
   , newGoal
   , goalOf
+  , HandlerGoal
   , Job(..)
   , Pending
   ) where
@@ -117,6 +118,15 @@ data Job
   -- | `Ψ` holds.
   | JobEffectFit FitId
   | JobSynthesis GoalRecord
+  -- | A checking boundary, decided once its body is built.
+  | JobImplicitHandler HandlerGoal
+
+-- | A checking boundary: the ambient row `?σ` its body was built under, and the
+-- | row expected of it.
+type HandlerGoal =
+  { boundary :: MetaVar
+  , expected :: XType
+  }
 
 -- | `awaiting` is the metavariables the job last postponed on.
 -- |

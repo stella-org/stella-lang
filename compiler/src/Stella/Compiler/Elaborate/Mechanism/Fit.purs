@@ -27,7 +27,11 @@ module Stella.Compiler.Elaborate.Mechanism.Fit
   , Remainders
   , Classified(..)
   , classify
+  , remaindersOf
   , sharedEntries
+  , Union
+  , sharedAcross
+  , unionOf
   ) where
 
 import Prelude
@@ -35,15 +39,18 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin, XContext)
-import Stella.Compiler.Elaborate.CorePlus.Row (XRowNormalForm, rebuild)
-import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XRowEntry, XType)
+import Stella.Compiler.Elaborate.CorePlus.Row (XRowNormalForm, emptyXNormalForm, rebuild)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XRowEntry, XType(..))
 import Stella.Compiler.TypedCore (RowKey)
 import Data.Array as Array
+import Data.Either (Either(..))
 import Data.Generic.Rep (class Generic)
 import Data.Map as Map
+import Data.Maybe (Maybe(..))
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
+import Data.Tuple (Tuple(..))
 
 -- | What a fit is placed for.
 data FitUse
@@ -99,26 +106,27 @@ data Classified
 -- | caller's to have equated ([`sharedEntries`](#v:sharedEntries)).
 classify :: XRowNormalForm -> XRowNormalForm -> Classified
 classify source target =
-  if Map.isEmpty sourceKnown && Set.isEmpty sourceRigid && Set.isEmpty sourceFlexible then
-    Contained (if Map.isEmpty targetKnown && Set.isEmpty targetRigid && Set.isEmpty targetFlexible then Equal else Widen (rebuild remainders.target))
-  else if (not (Map.isEmpty sourceKnown) || not (Set.isEmpty sourceRigid)) && Set.isEmpty targetFlexible then
-    NotContained remainders
+  if isEmpty r.source then
+    Contained (if isEmpty r.target then Equal else Widen (rebuild r.target))
+  else if (not (Map.isEmpty r.source.known) || not (Set.isEmpty r.source.rigid)) && Set.isEmpty r.target.flexible then
+    NotContained r
   else
-    Waiting (Set.union sourceFlexible targetFlexible)
+    Waiting (Set.union r.source.flexible r.target.flexible)
   where
-  sharedKeys = Set.intersection (Map.keys source.known) (Map.keys target.known)
+  r = remaindersOf source target
 
-  sourceKnown = Map.filterKeys (\k -> not (Set.member k sharedKeys)) source.known
-  targetKnown = Map.filterKeys (\k -> not (Set.member k sharedKeys)) target.known
-  sourceRigid = Set.difference source.rigid target.rigid
-  targetRigid = Set.difference target.rigid source.rigid
-  sourceFlexible = Set.difference source.flexible target.flexible
-  targetFlexible = Set.difference target.flexible source.flexible
+-- | What is left of each of two rows once the keys and the tails they share
+-- | have cancelled.
+remaindersOf :: XRowNormalForm -> XRowNormalForm -> Remainders
+remaindersOf source target =
+  { source: { known: Map.filterKeys (\k -> not (Set.member k shared)) source.known, rigid: Set.difference source.rigid target.rigid, flexible: Set.difference source.flexible target.flexible }
+  , target: { known: Map.filterKeys (\k -> not (Set.member k shared)) target.known, rigid: Set.difference target.rigid source.rigid, flexible: Set.difference target.flexible source.flexible }
+  }
+  where
+  shared = Set.intersection (Map.keys source.known) (Map.keys target.known)
 
-  remainders =
-    { source: { known: sourceKnown, rigid: sourceRigid, flexible: sourceFlexible }
-    , target: { known: targetKnown, rigid: targetRigid, flexible: targetFlexible }
-    }
+isEmpty :: XRowNormalForm -> P.Boolean
+isEmpty n = Map.isEmpty n.known && Set.isEmpty n.rigid && Set.isEmpty n.flexible
 
 -- | The entries of each key the two normal forms hold, the source's first, whose
 -- | payloads must be equal for the key to cancel.
@@ -126,6 +134,58 @@ sharedEntries :: XRowNormalForm -> XRowNormalForm -> P.Array { key :: RowKey, so
 sharedEntries source target = Array.mapMaybe entries (Set.toUnfoldable (Set.intersection (Map.keys source.known) (Map.keys target.known)))
   where
   entries key = { key, source: _, target: _ } <$> Map.lookup key source.known <*> Map.lookup key target.known
+
+-- | What the compatible union of rows needs to be a row, each need with the two
+-- | rows given it is between: a key of one absent from a tail of the other, and
+-- | two tails of two apart.
+type Union =
+  { row :: XRowNormalForm
+  , apart :: P.Array { between :: Tuple P.Int P.Int, constraint :: XConstraint }
+  }
+
+-- | The entries of each key two of the rows given hold, with the two rows they
+-- | are of, whose payloads must be equal for the rows to have a union.
+sharedAcross :: P.Array XRowNormalForm -> P.Array { between :: Tuple P.Int P.Int, key :: RowKey, first :: XRowEntry, other :: XRowEntry }
+sharedAcross rows = Array.concatMap (\(Tuple i j) -> map (\e -> { between: Tuple i j, key: e.key, first: e.source, other: e.target }) (pairOf i j)) (pairs (Array.length rows))
+  where
+  pairOf i j = case Array.index rows i, Array.index rows j of
+    Just a, Just b -> sharedEntries a b
+    _, _ -> []
+
+-- | The compatible union of the rows given, the least row holding each formed
+-- | without a new decision, their shared keys equated already; or, where they
+-- | hold two distinct flexible tails, those tails: that the two are apart would
+-- | be a new decision.
+unionOf :: P.Array XRowNormalForm -> Either (Set MetaVar) Union
+unionOf rows =
+  if Set.size flexible > 1 then Left flexible
+  else Right { row: Array.foldl add emptyXNormalForm rows, apart: Array.concatMap needs (pairs (Array.length rows)) }
+  where
+  flexible = Array.foldl (\acc n -> Set.union acc n.flexible) Set.empty rows
+
+  add acc n = { known: Map.union acc.known n.known, rigid: Set.union acc.rigid n.rigid, flexible: Set.union acc.flexible n.flexible }
+
+  needs (Tuple i j) = case Array.index rows i, Array.index rows j of
+    Just a, Just b -> map (\constraint -> { between: Tuple i j, constraint }) (lacks a b <> lacks b a <> disjoint a b)
+    _, _ -> []
+
+  -- each key of one absent from each tail of the other that does not hold it
+  lacks a b =
+    Array.concatMap (\key -> map (XLacks key) (only b a))
+      (Array.filter (\key -> not (Map.member key b.known)) (Array.fromFoldable (Map.keys a.known)))
+
+  -- two tails apart, where neither holds the other
+  disjoint a b =
+    Array.concatMap (\t -> map (XDisjoint t) (only b a)) (only a b)
+
+  -- the tails of one the other does not hold
+  only a b = Array.filter (\t -> not (Array.elem t (tailsOf b))) (tailsOf a)
+
+  tailsOf n = map XVar (Set.toUnfoldable n.rigid) <> map XMeta (Set.toUnfoldable n.flexible)
+
+-- | Every pair of positions below the count given, the lower first.
+pairs :: P.Int -> P.Array (Tuple P.Int P.Int)
+pairs n = Array.concatMap (\i -> map (Tuple i) (Array.range (i + 1) (n - 1))) (if n < 2 then [] else Array.range 0 (n - 2))
 
 derive instance Eq FitUse
 derive instance Generic FitUse _

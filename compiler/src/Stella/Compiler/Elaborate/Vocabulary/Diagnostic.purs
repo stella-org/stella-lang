@@ -79,6 +79,10 @@ data Diagnostic
   -- | the fit was placed: what is left of each row once what the two share has
   -- | cancelled.
   | RowNotContained Origin { source :: XRowNormalForm, target :: XRowNormalForm }
+  -- | A checking boundary whose body performs what the row expected of it cannot
+  -- | hold, which only an implicit handler could take it to: what is left of
+  -- | each once what the two share has cancelled.
+  | BoundaryNotContained Origin { source :: XRowNormalForm, target :: XRowNormalForm }
 
 -- | Something the mechanism, or whoever drove it, got wrong.
 -- |
@@ -264,6 +268,15 @@ data Defect
   -- | A fit still undecided where its term is made Core, every fit being
   -- | decided or reported before that.
   | FitLeftUndecided FitId
+  -- | A checking boundary whose ambient row `Ψ` does not hold unsolved: only the
+  -- | boundary assigns it.
+  | BoundaryRowAbsent MetaVar
+  -- | A metavariable two owners of the resolution of fits share, which keeps
+  -- | their components from being resolved apart.
+  | OwnersShareMetavariable MetaVar
+  -- | A postponement met by the resolution of fits, which runs outside every
+  -- | attempt and has nothing to postpone.
+  | ResolutionPostponed
 
 -- | How a synthesis job's target disagrees with its goal, read against `Ψ` as
 -- | it stands where the job is about to be attempted.

@@ -486,6 +486,7 @@ diagnosticDeclarations = case _ of
   TermAssignmentFailed o _ -> [ declarationOf o ]
   SynthesisFailed s -> [ declarationOf s.goal.origin ]
   RowNotContained o _ -> [ declarationOf o ]
+  BoundaryNotContained o _ -> [ declarationOf o ]
 
 failure :: forall a. Outcome a -> ElaborationError
 failure = case _ of

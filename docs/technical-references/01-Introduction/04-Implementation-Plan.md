@@ -1114,7 +1114,7 @@ The rows on where a cell is reached are the resolver's. The rows on what a cell 
 
 ### Fits (step 7, division 2)
 
-A fit decided, waited on, and made Core, before anything of the surface places one ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md#fits)). Each is written by hand, as an equation is in division 2.
+A fit decided, waited on, resolved by direction, and made Core, and a checking boundary decided, before anything of the surface places one ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md#fits)). Each is written by hand, as an equation is in division 2.
 
 | Input | Required outcome |
 | --- | --- |
@@ -1126,6 +1126,19 @@ A fit decided, waited on, and made Core, before anything of the surface places o
 | A fit placed by an attempt that fails | Taken back, with its job. The table of fits is part of `Ψ`'s tentative state |
 | A fit whose rows hold a tail `Ψ` does not hold, on both sides or on one | The host's defect. On both it would cancel into an equality, and on one be waited on by a job no assignment wakes |
 | `?i ≡ ?n` and `?n ≡ ?i`, `?i` an instantiation row and `?n` an inference one | An inference row either way. The row left is an instantiation row only where both were, so the direction decides nothing |
+| `( Console ) ⊆ ?e` and `( Clock ) ⊆ ?e`, `?e` an inference row, at quiescence | Rule 1: `?e := ( Console, Clock )`, the fits `Widen ( Clock )` and `Widen ( Console )`. Taking the first fit as an equation fixes `?e` at `( Console )` and refuses the second |
+| `( Console \| ?t ) ⊆ ( Console, Clock \| e )`, `?t` an instantiation row; the same with an inference row | `?t := ( Clock \| e )`; left undecided and rolled back. Rule 2 maximizes an instantiation tail only |
+| `?t ⊆ ?m`, `?t` an instantiation row | Ambiguous. Rule 1's `?m := ?t` and rule 2's `?t := ?m` depend on one another, and neither is made |
+| `( Console \| ?a ) ⊆ ?m` and `( Clock \| ?b ) ⊆ ?m`, beside `e ⊆ ?a` and `e ⊆ ?b` | `?m := ( Console, Clock \| e )` in the second round. A union not formed is waited on while the component's other assignments are made |
+| `( Console \| ?a ) ⊆ ?m` and `( Clock \| ?b ) ⊆ ?m` alone | Ambiguous, rolled back. Two distinct flexible tails form no union, and nothing else moves |
+| `( StateR ?a \| ?a )` and `( StateR ?b \| ?b )` joined | `( StateR ?a \| ?a )`, once `?a ≡ ?b`. A shared key's payloads are equated before the tails are counted |
+| A union of `( Console )` and `e`, `Console ∉ e` assumed where one of the two is placed and not where the other is | Refused, whichever comes first. What a union needs to be a row is required at the site of each row it joins |
+| Two owners' components, one ending ambiguous after resolution equated a payload of its fit | The other kept; the ambiguous one rolled back with its equation, and the warnings of the jobs it ran dropped. A component reads and changes no fit of another |
+| A row equality waiting on its tails `?x` and `?y` and holding a payload `?p`, beside a fit holding `?p` | One component. A job is joined by every metavariable an attempt of it could assign |
+| Two owners' fits sharing a metavariable | The host's defect. Their components could not be resolved apart |
+| A boundary's body fitting `( Console )` into `?σ`, closed at `( Console, Clock )` | `?σ := ( Console, Clock )` and the fit `Widen ( Clock )`, with no resolution. The fits inside are decided again against the row expected |
+| A boundary's body fitting `( Console \| ?t1 )` and `( Clock \| ?t2 )`, instantiation rows, closed at `( Console, Clock \| e )` | `?t1 := ( Clock \| e )`, `?t2 := ( Console \| e )`, then `?σ := ρ`. The union is not formed, and the boundary stands in for its fits by `fit(Sᵢ, ρ)` |
+| A boundary's body fitting `( Console, Clock )` into `( Console \| ?σ )`, closed at `( Console )` | Refused, naming `( Clock )`, in this version: no implicit handler is sought before the surface asks for one. A boundary's fits are chosen by their target's remainder |
 
 ### Effect-aware expressions (step 7)
 
