@@ -157,7 +157,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 
 **A dropped declaration's name stays in scope.** The top-level scope is built before any declaration is resolved, so what refers to the name still resolves, and one error is not reported again at every use.
 
-**An error about a form that can still be held leaves it as it is.** A name bound twice keeps both bindings, a declaration of a name declared already is kept beside the first, a record writing a label twice keeps both fields, and a positional parameter an attribute declaration writes after a keyword one is kept among its positional parameters, in the order written; the error is reported and nothing is replaced.
+**An error about a form that can still be held leaves it as it is.** A name bound twice keeps both bindings, a declaration of a name declared already is kept beside the first, a record writing a label twice keeps both fields, a row in a type writing a key twice — a variant's tag or label, an effect row's label or unlabelled effect — keeps both items, and a positional parameter an attribute declaration writes after a keyword one is kept among its positional parameters, in the order written; the error is reported and nothing is replaced.
 
 **Where a local name refers is decided by the bindings as written, whatever their errors.**
 

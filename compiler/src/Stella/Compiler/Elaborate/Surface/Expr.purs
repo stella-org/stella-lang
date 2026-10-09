@@ -118,8 +118,9 @@ lambdas scope binders body expected = case Array.uncons binders of
       other -> outside (OutsideSubset (binderOrigin other) "a pattern that is no variable")
 
 -- | The argument and the result of a pure arrow the type must be. An arrow
--- | known to perform effects is outside what this version elaborates, what the
--- | arrow is for said by the text given.
+-- | whose row is neither empty nor an unsolved metavariable — a row variable
+-- | among them — is outside what this version elaborates, what the arrow is for
+-- | said by the text given; an unsolved row is equated with the empty one.
 arrow :: String -> Scope -> Surface.Origin -> XType -> Surf { argument :: XType, result :: XType }
 arrow what scope origin ty = do
   metas <- lift currentMetas

@@ -719,6 +719,19 @@ Only what can cross the boundary may be declared (D44), and the declaration is t
 | `IO τ` in an **argument** | Refused. Only a result may be an action; an argument of one would be a reified computation the host was handed and could not run |
 | The signature the compiler derives | The kinds of the declared type, in order, and a `params` length equal to the arity
 
+### Types read from the surface (step 7)
+
+What a signature, a field, and an annotation write, read into Core⁺ ([Elaboration](../02-Surface-Language/01-Elaboration.md#a-signatures-type)).
+
+| Input | Required outcome |
+| --- | --- |
+| `(Int, String)` | `Record ( 0 : Int, 1 : String )`. A tuple is the record keyed by its positions; Core has no tuple of its own |
+| `{\| cache :: State Int \|}` | The element `State Int` under `SymbolKey cache`. The label is the key, and the effect the payload |
+| `{\| State \|}`, and `{\| Console Int \|}` where `Console` has no parameter | A kind that does not meet, where the application and where the argument stand. An effect's arity is its kind, judged as an application's is |
+| A type operator naming an effect, in an effect row and as an argument of a type constructor | An element of the row; reported where the operator is written. An effect is no type |
+| `{\| State Int, State String \|}`, and `{\| E, M.E \|}` naming one effect | A key written twice, reported at the later item, both kept. An unlabelled element is keyed by its effect, however it is spelt |
+| A `λ` checked at `Int -> Int / {\| Console \|}` in this version | Outside the subset, where the parameter stands. Equated with the pure arrow it would be reported as a mismatch the program does not have |
+
 ### Kind and type unification (step 7, division 2)
 
 These need no surface language: an equation is written by hand, as a Core module is in step 4 ([Elaboration](../02-Surface-Language/01-Elaboration.md)).
