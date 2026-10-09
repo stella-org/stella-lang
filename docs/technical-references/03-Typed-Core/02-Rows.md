@@ -339,7 +339,7 @@ Names are written in that case (`...r` and `...s`). What matters is that the rul
 
 This limitation is met more often at `Row Type` than at `Row Effect`, because an effect row is a single ambient context for a computation whereas record arguments may be unrelated.
 
-Implicit quantification is always **outermost**. A quantifier at a higher-rank position must be written explicitly.
+**Implicit binders belong to the outer spine of a scheme**, and never arise at a higher-rank position, where a quantifier must be written explicitly. The sharpness constraints of the rows may stand between them, each under the innermost binder of a variable it is about ([Elaboration](../02-Surface-Language/01-Elaboration.md#a-signatures-type)).
 
 ### Openness is visible in the syntax
 
@@ -359,9 +359,9 @@ PureScript's `{ name :: String | r }` is not adopted because `|` privileges the 
 
 ### Nothing reaches Core
 
-`...`, anonymity, implicit quantification, and the filling in of Lacks constraints all disappear during elaboration. Core sees only `⊎`, `forall`, and `∉`.
+`...`, anonymity, implicit quantification, and the filling in of Lacks and Disjoint constraints all disappear during elaboration. Core sees only `⊎`, `forall`, `∉`, and `#`.
 
-**Implicit quantification of Lacks constraints.** `{ name :: String, ...r }` is `( name : String ) ⊎ r`, which the kinding rules require `name ∉ r` for. That constraint is supplied implicitly, exactly as `forall` is, whether the spread is named or anonymous.
+**Implicit sharpness constraints.** `{ name :: String, ...r }` is `( name : String ) ⊎ r`, which the kinding rules require `name ∉ r` for. That constraint is supplied implicitly, exactly as `forall` is, whether the spread is named or anonymous, and so is `r # s` for a row spreading two, `{ ...r, ...s }` being `r ⊎ s`. Each stands under the innermost binder of a variable it is about ([Elaboration](../02-Surface-Language/01-Elaboration.md#a-signatures-type)).
 
 ```purescript
 logAll :: List String -> Unit / {| Console, ...e |}
@@ -371,4 +371,4 @@ logAll :: List String -> Unit / {| Console, ...e |}
 --   => List String -{ ( Console ) ⊎ e }-> Unit
 ```
 
-The author never writes a Lacks constraint. The cost of sharpness is absorbed here.
+The author never writes a Lacks or a Disjoint constraint. The cost of sharpness is absorbed here.

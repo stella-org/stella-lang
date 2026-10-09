@@ -731,6 +731,16 @@ What a signature, a field, and an annotation write, read into Core⁺ ([Elaborat
 | A type operator naming an effect, in an effect row and as an argument of a type constructor | An element of the row; reported where the operator is written. An effect is no type |
 | `{\| State Int, State String \|}`, and `{\| E, M.E \|}` naming one effect | A key written twice, reported at the later item, both kept. An unlabelled element is keyed by its effect, however it is spelt |
 | A `λ` checked at `Int -> Int / {\| Console \|}` in this version | Outside the subset, where the parameter stands. Equated with the pure arrow it would be reported as a mismatch the program does not have |
+| `forall r a. { x :: Int, ...r } -> a`, and the same with `r` and `a` quantified implicitly | `forall r. x ∉ r => forall a. …` both times. An atom stands under the innermost binder it is about; under every quantifier it changes the scheme a module publishes |
+| `{ a :: Int, ... } -> { a :: Int, ... }` | One quantified row, `a ∉` it once. Every `...` of a kind in one signature is one variable |
+| `{ ...r, ...s }` | `r # s`, the pair in one order however the spreads are written |
+| `(forall s. { a :: Int, ...s } -> Int) -> Int` | `a ∉ s` under the inner `forall`. A higher-rank binder carries what its own variable needs |
+| `{\| State Int, ...{\| Console, ...e \|} \|}` | `Console ∉ e` and `State ∉ e`, each once. What a spread brings is needed once however deep the spreads |
+| `{ ...r, ...r }`, and a key a spread brings again | Refused where the row stands. A row holds each key once, and a set of tails would hide the second |
+| `data R r = R { name :: Int, ...r }`, and `data P = P (forall s. { name :: Int, ...s } -> Int)` | Refused where the row stands, and admitted. A constructor's type carries no constraint, and a field's own `forall` does |
+| `(x :: { a :: Int, ...r })` under a signature that does not give `a ∉ r`, and the same holding a wildcard | The requirement reported where the annotation's row stands; the wildcard reported and nothing required. What is not read comes first |
+| `...` alone in an annotation | Refused where it stands. Only a signature quantifies a row |
+| A global at `forall r. a ∉ r => …`, referred to in a body that assumes `a ∉ r'` and at a closed row | A constraint application each time, the requirement proved from the assumption and from the row |
 
 ### Kind and type unification (step 7, division 2)
 
