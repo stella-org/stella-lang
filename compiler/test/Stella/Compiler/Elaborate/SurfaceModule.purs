@@ -184,6 +184,8 @@ at = case _ of
   Unsupported (SynonymCycle o _) -> located o <> " cycle"
   Unsupported (SynonymUnexpandable o _) -> located o <> " unexpandable"
   Unsupported (ForeignKindInvalid o _) -> located o <> " foreign kind"
+  Unsupported (EffectKindVariable o) -> located o <> " effect kind variable"
+  Unsupported (EffectKindUndetermined o) -> located o <> " effect kind undetermined"
   WithoutSignature o _ -> located o <> " without a signature"
   KindUndetermined o -> located o <> " kind undetermined"
   Rejected (EquationFailed (AtSource s) _) -> located s.origin <> " rejected"

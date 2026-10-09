@@ -1,13 +1,13 @@
 -- | A module's type declarations — its data types, newtypes, type synonyms,
--- | and foreign types — elaborated, their kinds inferred together
+-- | foreign types, and effects — elaborated, their kinds inferred together
 -- | ([Elaboration](../../../../../docs/technical-references/02-Surface-Language/01-Elaboration.md)).
 -- |
 -- | **Every head is read before anything a head names.** Each declaration's
 -- | head is read first: a data type's or a newtype's parameters and the kind
 -- | it writes for itself, a synonym's parameters and the kind of what it stands
--- | for, and a foreign type's kind. Then each synonym's body is read, after the
--- | bodies of the synonyms it is written in terms of; then every constructor's
--- | fields. Each is read with every head of the module in scope, so a
+-- | for, a foreign type's kind, and an effect's parameters. Then each synonym's
+-- | body is read, after the bodies of the synonyms it is written in terms of;
+-- | then every constructor's fields and every operation's types. Each is read with every head of the module in scope, so a
 -- | declaration may name one written after it, and the kinds the heads leave
 -- | unwritten are decided by the same equations, wherever they are met.
 -- |
@@ -32,6 +32,13 @@
 -- | and a parameter carries no condition, so such a field is refused; a row
 -- | variable a `forall` of the field binds carries its conditions there.
 -- |
+-- | **An effect has no kind scheme.** Its parameters, and an operation's own type
+-- | variables, stand at kinds that mention no kind variable, and one whose kind
+-- | nothing decided is to be written: nothing could generalize it. An
+-- | operation's types need no condition of either, neither carrying one; a
+-- | `forall` inside one of them carries its own. An operation takes its
+-- | arguments as Core's one argument.
+-- |
 -- | A constructor's tag is its position among its declaration's constructors.
 module Stella.Compiler.Elaborate.Surface.Types
   ( TypeDeclarations
@@ -41,6 +48,8 @@ module Stella.Compiler.Elaborate.Surface.Types
   , Param
   , SynonymRead
   , ForeignTypeRead
+  , EffectRead
+  , OperationRead
   , SettledTypes
   , readTypes
   , settledTypes
@@ -59,25 +68,27 @@ import Data.Set as Set
 import Data.Traversable (for, traverse)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..), fromCoreKind, toCoreKind)
-import Stella.Compiler.Elaborate.CorePlus.Type (XType, toCore)
+import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), toCore)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEntry, SynonymEnv)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, equateKinds, freshKindMeta)
-import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, substitute, substituteKind)
+import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), MetaContext, substitute, substituteKind)
 import Stella.Compiler.Elaborate.Surface.Group (groups)
 import Stella.Compiler.Elaborate.Surface.Type (LocalHead, Scope, SynonymShape, Unsupported(..), readBinder, readKind, readTypeAt, siteOf, typeKindVars, typeParts)
 import Stella.Compiler.Interface.Assemble (coreAttribute)
-import Stella.Compiler.Surface.Decl (ConstructorDeclaration, ForeignTypeDeclaration, SynonymDeclaration)
+import Stella.Compiler.Surface.Decl (ConstructorDeclaration, EffectDeclaration, ForeignTypeDeclaration, SynonymDeclaration)
 import Stella.Compiler.Surface.Decl (Attribute) as Surface
 import Stella.Compiler.Surface.Name (TypeVar(..))
 import Stella.Compiler.Surface.Origin (Origin) as Surface
-import Stella.Compiler.Surface.Type (Kind(..), Type(..), TypeOperatorTarget(..), TypeVarBinder)
-import Stella.Compiler.TypedCore (DataDecl)
+import Stella.Compiler.Surface.Type (Kind(..), OperationSignature, Type(..), TypeOperatorTarget(..), TypeVarBinder)
+import Stella.Compiler.TypedCore (DataDecl, EffectDecl)
+import Stella.Compiler.Elaborate.Environment.Imported (operationArgument)
+import Stella.Compiler.TypedCore.Type (Type) as Core
 import Stella.Compiler.TypedCore.Kind (Kind(KFun)) as CoreKind
 import Stella.Compiler.TypedCore.Kind (KindScheme)
 import Stella.Compiler.TypedCore.Context (bindKindVars, emptyContext)
 import Stella.Compiler.TypedCore.Kinding (producesType, quantifiableKind)
 import Stella.Compiler.TypedCore.Type (TyBinder)
-import Stella.Compiler.TypedCore.Name (Ident(..), KindVar, Qualified(..), TyName(..), TyVar)
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar, OpName(..), Qualified(..), TyName(..), TyVar)
 
 -- | The type declarations of a module, a newtype written as the data type of
 -- | one constructor of one field it is.
@@ -85,6 +96,7 @@ type TypeDeclarations =
   { data :: Array DataDeclaration
   , synonyms :: Array SynonymDeclaration
   , foreignTypes :: Array ForeignTypeDeclaration
+  , effects :: Array EffectDeclaration
   }
 
 type DataDeclaration =
@@ -127,50 +139,126 @@ type TypesRead =
   { data :: Array DataRead
   , synonyms :: Array SynonymRead
   , foreignTypes :: Array ForeignTypeRead
+  , effects :: Array EffectRead
+  }
+
+-- | An effect read, its kinds not yet decided: its parameters, and each
+-- | operation's own type variables, its arguments, and the type it resumes with.
+type EffectRead =
+  { declaration :: EffectDeclaration
+  , params :: Array Param
+  , operations :: Array OperationRead
+  , unsupported :: Array Unsupported
+  }
+
+type OperationRead =
+  { origin :: Surface.Origin
+  , name :: Qualified Ident
+  , binders :: Array Param
+  , arguments :: Array XType
+  , resumesWith :: XType
   }
 
 -- | Every type declaration given: the heads, then the synonyms' bodies in
--- | dependency order, then the fields.
+-- | dependency order, then the fields and the operations.
 readTypes :: SynonymEnv -> TypeDeclarations -> Elab TypesRead
 readTypes imported declarations = do
   dataHeads <- traverse (readDataHead imported) declarations.data
   synonymHeads <- traverse (readSynonymHead imported) declarations.synonyms
+  effectHeads <- traverse (readEffectHead imported) declarations.effects
   let
     foreignTypes = map (\d -> { declaration: d, kind: foreignKind d }) declarations.foreignTypes
     heads = Map.fromFoldable
       ( map (\h -> Tuple h.declaration.name { kindVars: h.kindVars, body: headKind h.params }) dataHeads
           <> Array.mapMaybe (\f -> map (\k -> Tuple f.declaration.name { kindVars: k.kindVars, body: fromCoreKind k.body }) (hushRight f.kind)) foreignTypes
       )
-    inScope name kindVars params = (scopeOf imported (declarationIdent name) kindVars)
+    -- an effect whose head is refused is no shape a use is read against, so no
+    -- use of it decides anything of its parameters
+    effects = Map.fromFoldable (map (\h -> Tuple h.declaration.name (if Array.null h.unsupported then Just (map _.kind h.params) else Nothing)) effectHeads)
+    inScope declaration kindVars params = (scopeOf imported declaration kindVars)
       { tyVars = Map.fromFoldable (map (\p -> Tuple (nameOf p.var) p.kind) params)
       , localTypes = heads
+      , localEffects = effects
       }
   -- each synonym's body, after those it refers to
   synonyms <- foldM (readSynonymGroup inScope synonymHeads) { read: Map.empty, shapes: Map.empty } (synonymOrder declarations.synonyms)
   let shapes = synonyms.shapes
   data' <- for dataHeads \h -> do
-    let scope = (inScope h.declaration.name h.kindVars h.params) { localSynonyms = shapes }
+    let scope = (inScope (declarationIdent h.declaration.name) h.kindVars h.params) { localSynonyms = shapes }
     constructors <- for h.declaration.constructors \c -> do
       fields <- traverse (readTypeAt scope XKType) c.fields
       -- a parameter carries no condition, so a row needing one of it is refused
       let unheld = map (\i -> UnheldConstraint i.origin i.atom) (Array.concatMap _.implied fields)
       pure { constructor: { origin: c.origin, name: c.name, fields: map _.type fields }, unsupported: Array.concatMap _.unsupported fields <> unheld }
     pure h { constructors = map _.constructor constructors, unsupported = h.unsupported <> Array.concatMap _.unsupported constructors }
+  -- an effect whose head is refused is refused whole, and its operations are
+  -- not read: what they make of a parameter would only be refused beside it
+  effects' <- for effectHeads \h ->
+    if not (Array.null h.unsupported) then pure h
+    else do
+      operations <- for h.declaration.operations \o ->
+        -- the effect has no kind scheme to bind a kind variable the operation
+        -- writes, on a variable of its own or inside its types; such an
+        -- operation is refused before anything is read of it, so no equation of
+        -- the kind variable stands in the way of saying so
+        if not (Array.null (operationKindVars o.signature)) then
+          pure { operation: { origin: o.origin, name: o.name, binders: [], arguments: [], resumesWith: XRowEmpty }, unsupported: [ EffectKindVariable o.origin ] }
+        else do
+          let declaration = effectIdent h.declaration.name
+          binders <- for o.signature.binders (readParam (scopeOf imported declaration []))
+          let scope = (inScope declaration [] (h.params <> map _.param binders)) { localSynonyms = shapes }
+          arguments <- traverse (readTypeAt scope XKType) o.signature.arguments
+          resumesWith <- readTypeAt scope XKType o.signature.resumesWith
+          let
+            parts = Array.snoc arguments resumesWith
+            -- neither the effect's parameters nor the operation's own variables
+            -- carry a condition, so a row needing one of them is refused
+            unheld = map (\i -> UnheldConstraint i.origin i.atom) (Array.concatMap _.implied parts)
+          pure
+            { operation: { origin: o.origin, name: o.name, binders: map _.param binders, arguments: map _.type arguments, resumesWith: resumesWith.type }
+            , unsupported: Array.concatMap _.unsupported binders <> Array.concatMap _.unsupported parts <> unheld
+            }
+      pure h { operations = map _.operation operations, unsupported = h.unsupported <> Array.concatMap _.unsupported operations }
   pure
     { data: data'
     , synonyms: Array.mapMaybe (\s -> Map.lookup s.name synonyms.read) declarations.synonyms
     , foreignTypes
+    , effects: effects'
     }
   where
   hushRight = case _ of
     Right x -> Just x
     Left _ -> Nothing
 
+-- | The kind variables an operation's signature writes: on its own type
+-- | variables, or inside its types.
+operationKindVars :: OperationSignature -> Array KindVar
+operationKindVars s = Array.concatMap (\b -> maybe [] kindVarsOf b.kind) s.binders <> Array.concatMap typeKindVars (Array.snoc s.arguments s.resumesWith)
+
+-- | An effect's head: its parameters, each at the kind written or at a
+-- | metavariable.
+readEffectHead :: SynonymEnv -> EffectDeclaration -> Elab EffectRead
+readEffectHead imported d = do
+  params <- for d.params (readEffectParam (scopeOf imported (effectIdent d.name) []))
+  pure { declaration: d, params: map _.param params, operations: [], unsupported: Array.concatMap _.unsupported params }
+
+-- | A parameter of an effect or a type variable of an operation: at the kind
+-- | written, which mentions no kind variable, an effect having no kind scheme
+-- | to bind one, or at a metavariable.
+readEffectParam :: Scope -> TypeVarBinder -> Elab { param :: Param, unsupported :: Array Unsupported }
+readEffectParam scope b = case b.kind of
+  -- reported here, and standing meanwhile at a kind of its own, so no use of
+  -- the parameter is refused for the kind it was not given
+  Just k | not (Array.null (kindVarsOf k)) -> do
+    kind <- freshKindMeta Set.empty (Set.singleton Quantifiable)
+    pure { param: { var: b.var, kind, origin: b.origin }, unsupported: [ EffectKindVariable b.origin ] }
+  _ -> readParam scope b
+
 -- | The synonyms of one strongly connected component read: a cycle's each
 -- | reported where it is declared and none read, and a synonym on its own read
 -- | in terms of those read before it.
 readSynonymGroup
-  :: (Qualified TyName -> Array KindVar -> Array Param -> Scope)
+  :: (Qualified Ident -> Array KindVar -> Array Param -> Scope)
   -> Array SynonymRead
   -> { read :: Map.Map (Qualified TyName) SynonymRead, shapes :: Map.Map (Qualified TyName) (Maybe SynonymShape) }
   -> { members :: Array SynonymDeclaration, recursive :: Boolean }
@@ -178,7 +266,7 @@ readSynonymGroup
 readSynonymGroup inScope heads acc group = case group.recursive, Array.head group.members of
   true, _ -> pure (foldr cyclic acc group.members)
   false, Just d | Just h <- Array.find (\s -> s.declaration.name == d.name) heads -> do
-    let scope = (inScope h.declaration.name h.kindVars h.params) { localSynonyms = acc.shapes }
+    let scope = (inScope (declarationIdent h.declaration.name) h.kindVars h.params) { localSynonyms = acc.shapes }
     body <- readTypeAt scope h.result d.body
     let
       -- what a row of the body needs of a parameter, a synonym has no way to ask
@@ -298,12 +386,14 @@ headKind :: forall r. Array { kind :: XKind | r } -> XKind
 headKind = foldr (\p k -> XKFun p.kind k) XKType
 
 -- | The module's type declarations once every kind of them is decided: the
--- | Core declarations of its data types, the synonyms as an interface holds
--- | them, and the foreign types' kind schemes; or what keeps them from being so.
+-- | Core declarations of its data types and its effects, the synonyms as an
+-- | interface holds them, and the foreign types' kind schemes; or what keeps
+-- | them from being so.
 type SettledTypes =
   { data :: Array { origin :: Surface.Origin, decl :: DataDecl }
   , synonyms :: Array { origin :: Surface.Origin, attributes :: Array Surface.Attribute, name :: Qualified TyName, entry :: SynonymEntry }
   , foreignTypes :: Array { origin :: Surface.Origin, attributes :: Array Surface.Attribute, name :: Qualified TyName, kind :: KindScheme }
+  , effects :: Array { origin :: Surface.Origin, name :: Qualified EffName, decl :: EffectDecl, arguments :: Array (Array Core.Type) }
   , unsupported :: Array Unsupported
   }
 
@@ -312,8 +402,10 @@ settledTypes metas r =
   { data: Array.mapMaybe (\{ read, settled } -> map { origin: read.declaration.origin, decl: _ } (hush settled)) data'
   , synonyms: Array.mapMaybe (\{ read, settled } -> map (\entry -> { origin: read.declaration.origin, attributes: read.declaration.attributes, name: read.declaration.name, entry }) (hush settled)) synonyms
   , foreignTypes: Array.mapMaybe (\f -> map (\kind -> { origin: f.declaration.origin, attributes: f.declaration.attributes, name: f.declaration.name, kind }) (hush f.kind)) r.foreignTypes
+  , effects: Array.mapMaybe (\{ read, settled } -> map (\s -> { origin: read.declaration.origin, name: read.declaration.name, decl: s.decl, arguments: s.arguments }) (hush settled)) effects
   , unsupported: Array.concatMap (errorsOf <<< _.settled) data'
       <> Array.concatMap (errorsOf <<< _.settled) synonyms
+      <> Array.concatMap (errorsOf <<< _.settled) effects
       <> Array.concatMap
         ( \f -> case f.kind of
             Left problem -> [ problem ]
@@ -324,6 +416,7 @@ settledTypes metas r =
   where
   data' = map (\read -> { read, settled: settledData metas read }) r.data
   synonyms = map (\read -> { read, settled: settledSynonym metas read }) r.synonyms
+  effects = map (\read -> { read, settled: settledEffect metas read }) r.effects
 
   hush :: forall e a. Either e a -> Maybe a
   hush = case _ of
@@ -373,17 +466,55 @@ settledSynonym metas r
         Nothing -> Left [ OutsideSubset r.declaration.origin "a type synonym whose body's kinds are decided only by generalizing them" ]
       pure { kind: { kindVars: r.kindVars, body: foldr (\p k -> CoreKind.KFun p.kind k) result params }, params, body }
 
+-- | An effect once every kind of it is decided: the Core declaration, each
+-- | operation's arguments as written beside it, or what keeps it from being
+-- | one. An operation takes its arguments as Core's one argument: none is
+-- | `Prim.Unit`, one is itself, and several are a record of them by position.
+settledEffect :: MetaContext -> EffectRead -> Either (Array Unsupported) { decl :: EffectDecl, arguments :: Array (Array Core.Type) }
+settledEffect metas r
+  | not (Array.null r.unsupported) = Left r.unsupported
+  | otherwise =
+      do
+        params <- effectParams r.params
+        operations <- for r.operations \o -> do
+          tyBinders <- effectParams o.binders
+          types <- case traverse (toCore <<< substitute metas) (Array.snoc o.arguments o.resumesWith) of
+            Just ts -> Right ts
+            Nothing -> Left [ OutsideSubset o.origin "an operation whose types' kinds are decided only by generalizing them" ]
+          let arguments = Array.take (Array.length o.arguments) types
+          resumesWith <- case Array.last types of
+            Just t -> Right t
+            Nothing -> Left [ ReportedAlready o.origin ]
+          pure { op: { name: opName o.name, tyBinders, argument: operationArgument arguments, resumesWith }, arguments }
+        attributes <- case traverse coreAttribute r.declaration.attributes of
+          Right as -> Right as
+          Left o -> Left [ ReportedAlready o ]
+        pure
+          { decl: { name: local r.declaration.name, params, operations: map _.op operations, attributes }
+          , arguments: map _.arguments operations
+          }
+      where
+      -- an effect has no kind scheme, so a kind nothing decided is no limit of
+      -- this version but a kind to be written
+      effectParams = settledParamsReporting metas EffectKindUndetermined
+      opName (Qualified _ (Ident n)) = OpName n
+
 -- | Every parameter's kind decided, or each parameter whose kind is not
 -- | reported where it stands.
 settledParams :: MetaContext -> Array Param -> Either (Array Unsupported) (Array TyBinder)
-settledParams metas params = case traverse decided params of
+settledParams metas = settledParamsReporting metas (\o -> OutsideSubset o "a type parameter whose kind is decided only by generalizing it; its kind must be written")
+
+-- | `settledParams`, each parameter whose kind is undetermined reported as the
+-- | function given says.
+settledParamsReporting :: MetaContext -> (Surface.Origin -> Unsupported) -> Array Param -> Either (Array Unsupported) (Array TyBinder)
+settledParamsReporting metas undeterminedAt params = case traverse decided params of
   Just ps -> Right ps
   Nothing -> Left (Array.mapMaybe undetermined params)
   where
   decided p = { name: nameOf p.var, kind: _ } <$> toCoreKind (substituteKind metas p.kind)
   undetermined p = case decided p of
     Just _ -> Nothing
-    Nothing -> Just (OutsideSubset p.origin "a type parameter whose kind is decided only by generalizing it; its kind must be written")
+    Nothing -> Just (undeterminedAt p.origin)
 
 -- | What a declaration's types are read under: its kind variables, the
 -- | synonyms the imports declare, and the declaration named as a value is, for
@@ -397,10 +528,14 @@ scopeOf imported declaration kindVars =
   , anonymous: Map.empty
   , synonyms: imported
   , localSynonyms: Map.empty
+  , localEffects: Map.empty
   }
 
 declarationIdent :: Qualified TyName -> Qualified Ident
 declarationIdent (Qualified m (TyName n)) = Qualified m (Ident n)
+
+effectIdent :: Qualified EffName -> Qualified Ident
+effectIdent (Qualified m (EffName n)) = Qualified m (Ident n)
 
 kindVarsOf :: Kind -> Array KindVar
 kindVarsOf = case _ of

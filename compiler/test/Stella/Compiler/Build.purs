@@ -46,7 +46,7 @@ import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore (Decl(..))
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..), TyVar(..))
-import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, recordTy, unitTy)
+import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, recordTy, stringTy, unitTy)
 import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), Type(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -546,6 +546,92 @@ spec = describe "Stella.Compiler.Build" do
         Left errors -> rendered errors `shouldEqual`
           [ "2:6 This version of the compiler does not elaborate a type synonym extending a row it is given yet"
           , "3:8 This version of the compiler does not elaborate a type parameter whose kind is decided only by generalizing it; its kind must be written yet"
+          ]
+        Right _ -> fail "compiled"
+
+  describe "an effect the module declares" do
+    let
+      rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors
+      effectsModule' =
+        [ "effect State s where"
+        , "  get :: Unit ->* s"
+        , "  put :: s ->* Unit"
+        , "effect Log where"
+        , "  writeAt :: Int -> String ->* Unit"
+        , "effect Pick where"
+        , "  pick :: forall a. a -> a ->* a"
+        , "effect Apply f where"
+        , "  apply :: f Int ->* Unit"
+        , "data Thunk = Thunk (Unit -> Int / {| State Int, Log |})"
+        , "both :: (Unit -> Int / {| State Int, Log |}) -> Thunk"
+        , "both k = Thunk k"
+        ]
+
+    it "is declared to Core with its operations, each taking its arguments as one, through to the interface and its file" do
+      compilingUnder [ "module M (State, Log, Pick, Apply, Thunk(..), both) where" ] effectsModule' case _ of
+        Left errors -> fail (joinWith "; " (rendered errors))
+        Right r -> do
+          let
+            s = TVar (TyVar "s")
+            a = TVar (TyVar "a")
+            unit' = TCon unitTy []
+            effect n = Map.lookup (EffName n) r.interface.declarations.effects
+            scheme n = map _.scheme (Map.lookup (Ident n) r.interface.declarations.values)
+            positions ts = TApp (TCon recordTy []) (Array.foldr (\(Tuple k t) rest -> TRowExtend (RowTypeEntry (PositionKey k) t) rest) TRowEmpty (Array.mapWithIndex Tuple ts))
+          map _.params (effect "State") `shouldEqual` Just [ { name: TyVar "s", kind: KType } ]
+          map (map _.arguments <<< _.operations) (effect "State") `shouldEqual` Just [ [ unit' ], [ s ] ]
+          map (map _.arguments <<< _.operations) (effect "Log") `shouldEqual` Just [ [ int, TCon stringTy [] ] ]
+          -- a parameter's kind is decided by what the operations make of it
+          map _.params (effect "Apply") `shouldEqual` Just [ { name: TyVar "f", kind: KFun KType KType } ]
+          scheme "get" `shouldEqual` Just (plainScheme { kindVars: [], body: TForall (TyVar "s") KType (pureFn unit' s) })
+          scheme "writeAt" `shouldEqual` Just (plainScheme (monoScheme (pureFn (positions [ int, TCon stringTy [] ]) unit')))
+          scheme "pick" `shouldEqual` Just (plainScheme { kindVars: [], body: TForall (TyVar "a") KType (pureFn (positions [ a, a ]) a) })
+          case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
+            Right stored -> stored.interface `shouldEqual` r.interface
+            Left problem -> fail problem
+
+    it "is named in a row by a module importing it" do
+      building
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A (State)" ] [ "run :: (Unit -> Int / {| State Int |}) -> (Unit -> Int / {| State Int |})", "run k = k" ])
+        , Tuple "src/A.stel" (moduleOf "A" [] effectsModule')
+        ]
+        \r -> case r.result of
+          Right built -> built `shouldEqual` [ "A", "B" ]
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+
+    it "refuses a parameter at a kind variable or at a kind nothing decides, and an operation whose rows need a condition no binder of it carries" do
+      compiling
+        [ "effect E (a :: k) where"
+        , "  op :: a ->* Unit"
+        , "effect F a where"
+        , "  op2 :: Unit ->* Unit"
+        , "effect G r where"
+        , "  op3 :: { a :: Int, ...r } ->* Unit"
+        , "effect H where"
+        , "  op4 :: { a :: Int, ... } ->* Unit"
+        , "effect I where"
+        , "  op5 :: (forall s. { a :: Int, ...s } -> Int) ->* Unit"
+        ]
+        case _ of
+          Left errors -> rendered errors `shouldEqual`
+            [ "2:11 An effect has no kind scheme, so a parameter of it, or a type variable of an operation, stands at a kind with no kind variable"
+            , "4:10 Nothing here determines the kind of this parameter, and an effect has no kind scheme to leave it open in; write its kind"
+            , "7:10 This row needs `r` not to hold `a`, and `r` is bound where no such condition can be carried; a `forall` written in this type can bind the row instead"
+            , "9:22 `...` alone stands for a row a signature quantifies, and nothing quantifies one here; name the row"
+            ]
+          Right _ -> fail "compiled"
+
+    it "refuses a kind variable written inside an operation's types, and keeps a refused parameter from failing its uses" do
+      compiling [ "effect K where", "  op6 :: (forall (f :: k -> Type) (a :: k). f a -> f a) ->* Unit" ] case _ of
+        Left errors -> rendered errors `shouldEqual` [ "3:3 An effect has no kind scheme, so a parameter of it, or a type variable of an operation, stands at a kind with no kind variable" ]
+        Right _ -> fail "compiled"
+      compiling [ "effect E (a :: k) where", "  op :: a ->* Unit", "data List a = Nil | Cons a (List a)", "data D = D (Unit -> Int / {| E Int |}) (Unit -> Int / {| E List |})" ] case _ of
+        Left errors -> rendered errors `shouldEqual` [ "2:11 An effect has no kind scheme, so a parameter of it, or a type variable of an operation, stands at a kind with no kind variable" ]
+        Right _ -> fail "compiled"
+      compiling [ "effect L where", "  op7 :: (forall (a :: k). a -> a) ->* Unit", "  op8 :: forall (b :: k). b -> b ->* b" ] case _ of
+        Left errors -> rendered errors `shouldEqual`
+          [ "3:3 An effect has no kind scheme, so a parameter of it, or a type variable of an operation, stands at a kind with no kind variable"
+          , "4:3 An effect has no kind scheme, so a parameter of it, or a type variable of an operation, stands at a kind with no kind variable"
           ]
         Right _ -> fail "compiled"
 

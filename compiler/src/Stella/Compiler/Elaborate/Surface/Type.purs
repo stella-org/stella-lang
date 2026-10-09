@@ -135,6 +135,12 @@ data Unsupported
   -- | A foreign type at a kind no type constructor stands at: one taking what
   -- | no type variable may stand at, or producing what is no `Type`.
   | ForeignKindInvalid Surface.Origin XKind
+  -- | An effect's parameter, or an operation's own type variable, written at a
+  -- | kind mentioning a kind variable: an effect has no kind scheme.
+  | EffectKindVariable Surface.Origin
+  -- | An effect's parameter, or an operation's own type variable, whose kind
+  -- | nothing decided: an effect has no kind scheme to generalize it into.
+  | EffectKindUndetermined Surface.Origin
 
 -- | A condition the sharpness of a row written in a type puts on its tails:
 -- | that a tail lacks a key the row holds beside it, or that two of its tails
@@ -202,7 +208,9 @@ type SynthesizedMark = { name :: Maybe Ident, synthesizer :: Qualified Ident }
 -- | row variable `...` stands for at each row kind, where a signature
 -- | quantifies one, and the type synonyms a type is read through: those the
 -- | imports declare, and those of the module whose bodies are read so far, each
--- | at its shape, or at nothing where it could not be read.
+-- | at its shape, or at nothing where it could not be read; and the kinds of
+-- | the parameters of each effect the module declares, while its declarations
+-- | are read, or nothing for one whose head is refused.
 type Scope =
   { declaration :: Qualified Ident
   , kindVars :: Set KindVar
@@ -211,6 +219,7 @@ type Scope =
   , anonymous :: Map RowElemKind TyVar
   , synonyms :: SynonymEnv
   , localSynonyms :: Map (Qualified TyName) (Maybe SynonymShape)
+  , localEffects :: Map (Qualified EffName) (Maybe (Array XKind))
   }
 
 -- | The kind a type constructor of the module is read at while its declaration
@@ -273,6 +282,7 @@ elaborateSpine computation synonyms declaration signature = do
       , anonymous: Map.fromFoldable (map (\s -> Tuple s.kind s.var) spreads)
       , synonyms
       , localSynonyms: Map.empty
+      , localEffects: Map.empty
       }
   body <- checkAt scope XKType spine.type
   let taken = quantify quantified body.implied body.type
@@ -301,7 +311,7 @@ elaborateSpine computation synonyms declaration signature = do
 -- | every part of it is read.
 elaborateType :: SynonymEnv -> Qualified Ident -> XContext -> Type -> Elab Read
 elaborateType synonyms declaration context t = do
-  r <- checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars, localTypes: Map.empty, anonymous: Map.empty, synonyms, localSynonyms: Map.empty } XKType t
+  r <- checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars, localTypes: Map.empty, anonymous: Map.empty, synonyms, localSynonyms: Map.empty, localEffects: Map.empty } XKType t
   -- a form not read is reported before anything is required of what it stands in
   when (Array.null r.unsupported) do
     for_ r.implied \i -> require { context, origin: AtSource { declaration, origin: i.origin } } (atomConstraint i.atom)
@@ -657,11 +667,22 @@ partsOf = case _ of
 effectApplication :: Scope -> EffectApplication -> Elab { arguments :: Array XType, read :: Read }
 effectApplication scope application = do
   env <- askEnv
-  case Map.lookup application.effect env.session.kinding.effects of
+  -- one the module declares, its parameters' kinds being decided, or one an
+  -- import declares
+  let
+    declared = case Map.lookup application.effect scope.localEffects of
+      Just kinds -> Just kinds
+      Nothing -> map (Just <<< map fromCoreKind) (Map.lookup application.effect env.session.kinding.effects)
+  case declared of
     Nothing -> do
       r <- unreadEffect
       pure { arguments: [], read: r }
-    Just params -> do
+    -- one the module declares whose head is refused, as reported there: its
+    -- arguments are read, and judged against no parameter
+    Just Nothing -> do
+      read <- traverse (readType scope) application.arguments
+      pure { arguments: map _.type read, read: joined read XRowEmpty XKEffect }
+    Just (Just params) -> do
       read <- traverse (readType scope) application.arguments
       result <- foldM
         ( \kind argument -> do
@@ -669,7 +690,7 @@ effectApplication scope application = do
             equateKinds (siteOf scope (typeOrigin argument.written)) kind (XKFun argument.kind rest)
             pure rest
         )
-        (foldr XKFun XKEffect (map fromCoreKind params))
+        (foldr XKFun XKEffect params)
         (Array.zipWith (\written r -> { written, kind: r.kind }) application.arguments read)
       equateKinds (siteOf scope application.origin) result XKEffect
       pure { arguments: map _.type read, read: joined read XRowEmpty XKEffect }

@@ -3,9 +3,9 @@
 -- |
 -- | **The type declarations are elaborated before any value**
 -- | ([Types](Types.purs)), and what they declare is added to what the values
--- | are elaborated against: the data types and their constructors, and the
--- | foreign types, to the signature and the catalog, and the synonyms to those
--- | the values' types are read through. That signature is the module's own:
+-- | are elaborated against: the data types, the foreign types, and the effects
+-- | to the signature, the constructors to the signature and the catalog, and
+-- | the synonyms to those the values' types are read through. That signature is the module's own:
 -- | the build environment is not, and the Core checker is given the signature
 -- | of the imports alone, as for any module, with the foreign types the module
 -- | declares, which no Core declaration produces. A type declaration that does
@@ -79,16 +79,17 @@ import Stella.Compiler.Interface.Scheme (Scheme, plainScheme)
 import Stella.Compiler.Surface.Decl (Declaration(..), declarationOrigin)
 import Stella.Compiler.Surface.Decl (Attribute, Module) as Surface
 import Stella.Compiler.Surface.Origin (Origin) as Surface
-import Stella.Compiler.TypedCore (Decl(DeclData), Expr, Module) as Core
-import Stella.Compiler.TypedCore (Attribute, DataDecl, DeclError(..), DeclFailure, Decl(DeclNonRec, DeclRec), Declared, Export(..), declareAnnotated)
+import Stella.Compiler.TypedCore (Decl(DeclData, DeclEffect), Expr, Module) as Core
+import Stella.Compiler.TypedCore (Attribute, DataDecl, DeclError(..), DeclFailure, Decl(DeclNonRec, DeclRec), Declared, EffectDecl, Export(..), declareAnnotated)
 import Stella.Compiler.TypedCore.Declare (ctorInfo, dataEntry)
 import Stella.Compiler.TypedCore.AttributeCheck (AttributeError, checkAttribute)
 import Stella.Compiler.TypedCore.Check (isFunVal)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
-import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName, Qualified(..), TyName(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName, OpName(..), Qualified(..), TyName(..))
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
 import Stella.Compiler.TypedCore.Kind (KindScheme)
-import Stella.Compiler.TypedCore.Type (TypeScheme)
+import Stella.Compiler.TypedCore.Type (Type(..), TypeScheme)
+import Stella.Compiler.TypedCore.Prim (pureFn)
 
 data ElaborationError
   -- | A form this version does not elaborate, or one resolution reported.
@@ -154,6 +155,10 @@ type ElaboratedData = { origin :: Surface.Origin, decl :: DataDecl }
 -- | what an interface holds of it.
 type ElaboratedSynonym = { origin :: Surface.Origin, attributes :: Array Surface.Attribute, name :: Qualified TyName, entry :: SynonymEntry }
 
+-- | An effect elaborated: where it stands, its name, its Core declaration, and
+-- | the arguments each operation is written with.
+type ElaboratedEffect = { origin :: Surface.Origin, name :: Qualified EffName, decl :: EffectDecl, arguments :: Array (Array Type) }
+
 -- | A foreign type elaborated: where it stands, its attributes, its name, and
 -- | its kind scheme.
 type ElaboratedForeignType = { origin :: Surface.Origin, attributes :: Array Surface.Attribute, name :: Qualified TyName, kind :: KindScheme }
@@ -165,16 +170,17 @@ elaborateValues
   -> SurfaceEnv
   -> Array CatalogEntry
   -> Surface.Module
-  -> { data :: Array ElaboratedData, synonyms :: Array ElaboratedSynonym, foreignTypes :: Array ElaboratedForeignType, values :: Array ElaboratedValue, errors :: Array ElaborationError }
+  -> { data :: Array ElaboratedData, synonyms :: Array ElaboratedSynonym, foreignTypes :: Array ElaboratedForeignType, effects :: Array ElaboratedEffect, values :: Array ElaboratedValue, errors :: Array ElaborationError }
 elaborateValues imports surface importedEntries m =
   if Array.null dataErrors then
     { data: elaboratedData
     , synonyms: types.synonyms
     , foreignTypes: types.foreignTypes
+    , effects: types.effects
     , values: settled'.values
     , errors: internalErrors <> unsupported <> signatureErrors <> attributeErrors <> bodyErrors <> settled'.errors
     }
-  else { data: [], synonyms: [], foreignTypes: [], values: [], errors: dataErrors <> unsupported }
+  else { data: [], synonyms: [], foreignTypes: [], effects: [], values: [], errors: dataErrors <> unsupported }
   where
   initial0 = initialState (SessionId 0) 1_000_000
 
@@ -199,18 +205,24 @@ elaborateValues imports surface importedEntries m =
             _ -> Nothing
         )
         m.declarations
+    , effects: Array.mapMaybe
+        ( case _ of
+            DeclEffect d -> Just d
+            _ -> Nothing
+        )
+        m.declarations
     }
   typesRead = case runAttempt (sessionEnvOf imports importedEntries) (readTypes surface.synonyms typeDeclarations) initial0 of
     Tuple (Done reads) s -> { types: settledTypes s.tentative.metas reads, errors: [], state: s }
-    Tuple outcome _ -> { types: { data: [], synonyms: [], foreignTypes: [], unsupported: [] }, errors: [ failure outcome ], state: initial0 }
+    Tuple outcome _ -> { types: { data: [], synonyms: [], foreignTypes: [], effects: [], unsupported: [] }, errors: [ failure outcome ], state: initial0 }
   initial = typesRead.state
   types = typesRead.types
   elaboratedData = types.data
 
   -- the signature and the catalog the values are elaborated against: the
-  -- imports', with the data types, their constructors, and the foreign types
-  -- the module declares
-  signature = foldl addForeignType (foldl (addData m.name) imports (map _.decl elaboratedData)) types.foreignTypes
+  -- imports', with the data types, their constructors, the foreign types, and
+  -- the effects the module declares
+  signature = foldl addEffect (foldl addForeignType (foldl (addData m.name) imports (map _.decl elaboratedData)) types.foreignTypes) types.effects
   dataErrors = typesRead.errors <> map Unsupported types.unsupported
   -- the synonyms the values' types are read through: the imports', and the
   -- module's own
@@ -237,6 +249,7 @@ elaborateValues imports surface importedEntries m =
     DeclNewtype _ -> Nothing
     DeclSynonym _ -> Nothing
     DeclForeignType _ -> Nothing
+    DeclEffect _ -> Nothing
     DeclFixity _ -> Nothing
     DeclTypeFixity _ -> Nothing
     other -> Just (Left (Unsupported (OutsideSubset (declarationOrigin other) "this declaration")))
@@ -326,6 +339,10 @@ addData self sig decl =
 -- | module, which no Core declaration produces.
 addForeignType :: Signature -> ElaboratedForeignType -> Signature
 addForeignType sig f = sig { types = Map.insert f.name (IntrinsicTyCon f.kind CanonicalOpaque) sig.types }
+
+-- | A signature with an effect the module declares, and its operations.
+addEffect :: Signature -> ElaboratedEffect -> Signature
+addEffect sig e = sig { effects = Map.insert e.name { params: e.decl.params, operations: Map.fromFoldable (map (\o -> Tuple o.name o) e.decl.operations) } sig.effects }
 
 -- | The catalog entry of each constructor of a data type the module declares.
 constructorsOf :: ModuleName -> DataDecl -> Array CatalogEntry
@@ -434,8 +451,8 @@ type ElaboratedModule =
 -- | exports of it. The Core part of its interface holds each data type and
 -- | newtype it declares, each synonym at its parameters and the type it stands
 -- | for, each foreign type at its kind, and the scheme of every value and
--- | constructor; a module this version elaborates declares no effect or
--- | attribute.
+-- | constructor and each effect with its operations, each operation's scheme
+-- | among the values'; a module this version elaborates declares no attribute.
 -- | **The Core checker refusing it is the elaborator's fault**, reported as
 -- | such, but for an attribute's arguments, which only the Core checker checks:
 -- | one that does not check is reported where its declaration stands.
@@ -466,7 +483,7 @@ elaborateModule signature surface imported m exports =
     grouped
   errors = elaborated.errors <> recursiveValues
 
-  decls = map (\d -> Core.DeclData d.origin d.decl) elaborated.data <> map
+  decls = map (\d -> Core.DeclData d.origin d.decl) elaborated.data <> map (\e -> Core.DeclEffect e.origin e.decl) elaborated.effects <> map
     ( \g -> case members g of
         [ v ] | not g.recursive -> DeclNonRec v.origin (binding v)
         vs -> DeclRec (maybe m.origin _.origin (Array.head vs)) (map binding vs)
@@ -487,6 +504,7 @@ elaborateModule signature surface imported m exports =
     , name: m.name
     , imports: Array.nub (map _.module m.imports)
     , exports: Array.concatMap typeExports elaborated.data
+        <> map (ExportEffect <<< _.decl.name) (Array.filter effectExported elaborated.effects)
         <> map (ExportValue <<< nameOf <<< _.name) (Array.filter (reachedFromOutside m.name exports operators <<< nameOf <<< _.name) values)
     , decls
     }
@@ -505,6 +523,11 @@ elaborateModule signature surface imported m exports =
     | declaredHere (map (\e -> e.entity == TypeEntity (Qualified m.name d.decl.name) && e.via == Declared) (Map.lookup (tyNameText d.decl.name) exports.types)) =
         [ ExportType d.decl.name ] <> map (ExportCtor <<< _.name) (Array.filter (\c -> exportedValue c.name) d.decl.constructors)
     | otherwise = []
+  -- an effect exported by name, with its operations
+  effectExported e = declaredHere (map (\x -> x.entity == EffectEntity e.name && x.via == Declared) (Map.lookup (effNameText e.decl.name) exports.types))
+  -- an operation's scheme: its effect's parameters and its own variables
+  -- quantified over its one argument to what it resumes with
+  operationSchemes e = map (\o -> Tuple (identOfOp o.name) (plainScheme { kindVars: [], body: Array.foldr (\b t -> TForall b.name b.kind t) (pureFn o.argument o.resumesWith) (e.decl.params <> o.tyBinders) })) e.decl.operations
   exportedValue c = declaredHere (map (\e -> e.entity == Qualified m.name c && e.via == Declared) (Map.lookup (identText c) exports.values))
   declaredHere = case _ of
     Just true -> true
@@ -514,13 +537,14 @@ elaborateModule signature surface imported m exports =
     { schemes: Map.fromFoldable
         ( map (\v -> Tuple (nameOf v.name) v.spine) values
             <> Array.concatMap (\d -> map (\c -> Tuple c.name (plainScheme (ctorInfo (Qualified m.name d.decl.name) d.decl c).scheme)) d.decl.constructors) elaborated.data
+            <> Array.concatMap operationSchemes elaborated.effects
         )
     , types: Map.fromFoldable
         ( map (\d -> Tuple d.decl.name { kind: dataKind d.decl, sort: CoreData { params: d.decl.params, fields: map _.fields d.decl.constructors } }) elaborated.data
             <> map (\s -> Tuple (tyNameOf s.name) { kind: s.entry.kind, sort: CoreSynonym { params: s.entry.params, body: s.entry.body } }) elaborated.synonyms
             <> map (\f -> Tuple (tyNameOf f.name) { kind: f.kind, sort: CoreForeign }) elaborated.foreignTypes
         )
-    , effects: Map.empty
+    , effects: Map.fromFoldable (map (\e -> Tuple e.decl.name { params: e.decl.params, operations: Array.zipWith (\o arguments -> { binders: o.tyBinders, arguments, resumesWith: o.resumesWith }) e.decl.operations e.arguments }) elaborated.effects)
     , attributes: Map.empty
     , implicitHandlers: Map.empty
     }
@@ -529,6 +553,8 @@ elaborateModule signature surface imported m exports =
   tyNameOf (Qualified _ n) = n
   identText (Ident n) = n
   tyNameText (TyName n) = n
+  effNameText (EffName n) = n
+  identOfOp (OpName n) = Ident n
 
   -- `T : forall k̄. κ̄ -> Type`
   dataKind decl = case dataEntry m.name decl of

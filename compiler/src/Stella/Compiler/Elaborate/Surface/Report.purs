@@ -52,6 +52,8 @@ elaborationOrigins = case _ of
   Unsupported (SynonymCycle o _) -> [ o ]
   Unsupported (SynonymUnexpandable o _) -> [ o ]
   Unsupported (ForeignKindInvalid o _) -> [ o ]
+  Unsupported (EffectKindVariable o) -> [ o ]
+  Unsupported (EffectKindUndetermined o) -> [ o ]
   WithoutSignature o _ -> [ o ]
   KindUndetermined o -> [ o ]
   Rejected d -> diagnosticOrigins d
@@ -91,6 +93,8 @@ printElaborationError = case _ of
   Unsupported (SynonymCycle _ (Qualified _ (TyName n))) -> fmt @"The type synonym `{n}` is defined in terms of itself, and stands for no type" { n }
   Unsupported (SynonymUnexpandable _ (Qualified _ (TyName n))) -> fmt @"The type synonym `{n}` cannot be expanded, as reported where it is declared" { n }
   Unsupported (ForeignKindInvalid _ k) -> fmt @"A foreign type takes types at kinds a type variable may stand at and produces `Type`, and `{k}` is no such kind" { k: printKind k }
+  Unsupported (EffectKindVariable _) -> "An effect has no kind scheme, so a parameter of it, or a type variable of an operation, stands at a kind with no kind variable"
+  Unsupported (EffectKindUndetermined _) -> "Nothing here determines the kind of this parameter, and an effect has no kind scheme to leave it open in; write its kind"
   WithoutSignature _ name -> fmt @"`{name}` needs a type signature in this version of the compiler" { name: nameOf name }
   KindUndetermined _ -> "Nothing here determines the kind of this type"
   Rejected d -> printDiagnostic d
