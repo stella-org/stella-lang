@@ -745,6 +745,11 @@ What a signature, a field, and an annotation write, read into Core⁺ ([Elaborat
 | `Capture b` where `type Capture a = forall b. a -> b` | `forall b#0. b -> b#0`. The synonym's `forall` is renamed, and the argument's `b` is not captured |
 | `Twice Box` where `type Twice a = Pair a a` | A kind that does not meet, where the argument stands. Each argument is read at its parameter's kind |
 | `{\| Console, ...Effects \|}` where `type Effects = {\| Console \|}` | A key written twice, where the row stands. What a synonym stands for is spread as a written row is |
+| `type Listed = List Age` written before `data List a = …` and `newtype Age = Age Int` | Read, the heads first. A synonym names a type declared after it as a field does |
+| `type A = B`, `type B = A`, and `type C = (A, Int)` | `A` and `B` reported each once, where declared; `C` once, where it uses `A`, and not as a member of the cycle |
+| `type W r = { a :: Int, ...r }` declared in the module | Refused where it is declared. What the row needs of `r` no synonym can ask of where it is used |
+| `foreign type E :: Effect`, and `foreign type F :: Effect -> Type` | Refused where declared. A foreign type's kind is held to a type constructor's; otherwise the interface would carry what an importer refuses |
+| `@[note answer]` on a synonym and on a foreign type, `answer :: Int` declared after them | Accepted. The attribute is checked once every value of the module is at its scheme, neither declaration having a Core form to carry it |
 | `{{ d :: Box a by make }} -> a -> Int` | Core `forall a. Box a -> a -> Int`; the interface publishes `Synthesized` on the spine where the arrow stands. The Core scheme alone would lose that a goal fills the parameter |
 | `forall a. {{ d :: Box a by make }} -> a / {\| Console \|}`, a computation declaration's | Core `forall a. Box a -> Unit -{( Console )}-> a`, published as `Forall`, `Synthesized`, then `Computation` |
 | `f :: {{ d :: D Int by make }} -> (forall a. {{ e :: D a by make }} -> a -> a)`, `f d e x = x` | `λ d. Λ a. λ e. λ x. x`, accepted by Core. The spine is opened again after each parameter, a synthesized one's included |
