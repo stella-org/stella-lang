@@ -741,6 +741,11 @@ What a signature, a field, and an annotation write, read into Core⁺ ([Elaborat
 | `(x :: { a :: Int, ...r })` under a signature that does not give `a ∉ r`, and the same holding a wildcard | The requirement reported where the annotation's row stands; the wildcard reported and nothing required. What is not read comes first |
 | `...` alone in an annotation | Refused where it stands. Only a signature quantifies a row |
 | A global at `forall r. a ∉ r => …`, referred to in a body that assumes `a ∉ r'` and at a closed row | A constraint application each time, the requirement proved from the assumption and from the row |
+| `Id Box Int` where `type Id (f :: Type -> Type) = f`, and `Const Int` where `type Const a b = a` | `Box Int`, the argument beyond the parameter applied to what the synonym stands for; refused where the application stands. Saturation is judged on the whole spine, not where `Id Box` is met |
+| `Capture b` where `type Capture a = forall b. a -> b` | `forall b#0. b -> b#0`. The synonym's `forall` is renamed, and the argument's `b` is not captured |
+| `Twice Box` where `type Twice a = Pair a a` | A kind that does not meet, where the argument stands. Each argument is read at its parameter's kind |
+| `{\| Console, ...Effects \|}` where `type Effects = {\| Console \|}` | A key written twice, where the row stands. What a synonym stands for is spread as a written row is |
+| `WithConsole e` where `type WithConsole e = {\| Console, ...e \|}`, and `Shadowing e` where `type Shadowing e = forall e. Unit -> Unit / {\| Console, ...e \|}` | Outside the subset, and expanded. The first needs a condition of what it is given; in the second the row is the `forall`'s, which carries it |
 
 ### Kind and type unification (step 7, division 2)
 
