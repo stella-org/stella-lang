@@ -22,6 +22,7 @@ module Stella.Compiler.Interface.Assemble
   , AssembleError(..)
   , surfaceInterface
   , coreAttribute
+  , coreConstant
   , reachedFromOutside
   , assemble
   ) where
@@ -216,7 +217,7 @@ declaration = case _ of
   Surface.DeclTypeFixity d ->
     pure [ TypeOperatorDecl d.operator { associativity: d.associativity, precedence: d.precedence, target: d.target } ]
   Surface.DeclAttribute d -> do
-    keyword <- for d.keyword \k -> { label: k.label, default: _ } <$> traverse (hush <<< constant) k.default
+    keyword <- for d.keyword \k -> { label: k.label, default: _ } <$> traverse (hush <<< coreConstant) k.default
     pure [ AttributeDecl (local d.name) { positional: Array.length d.positional, keyword } ]
   where
   value name sort attributes = do
@@ -233,16 +234,17 @@ attribute = hush <<< coreAttribute
 -- | constant.
 coreAttribute :: Surface.Attribute -> Either Surface.Origin Attribute
 coreAttribute a = do
-  positional <- traverse constant a.positional
-  keyword <- for a.keyword \k -> { label: k.label, value: _ } <$> constant k.value
+  positional <- traverse coreConstant a.positional
+  keyword <- for a.keyword \k -> { label: k.label, value: _ } <$> coreConstant k.value
   pure { name: a.name, positional, keyword }
 
-constant :: Surface.Constant -> Either Surface.Origin Constant
-constant = case _ of
+-- | A constant as Core holds it, or where it is invalid.
+coreConstant :: Surface.Constant -> Either Surface.Origin Constant
+coreConstant = case _ of
   Surface.ConstantLiteral _ l -> Right (ConstantLiteral l)
   Surface.ConstantValue _ q -> Right (ConstantValue q)
-  Surface.ConstantConstructor _ q cs -> ConstantConstructor q <$> traverse constant cs
-  Surface.ConstantRecord _ fs -> ConstantRecord <$> for fs \f -> { label: f.label, value: _ } <$> constant f.value
+  Surface.ConstantConstructor _ q cs -> ConstantConstructor q <$> traverse coreConstant cs
+  Surface.ConstantRecord _ fs -> ConstantRecord <$> for fs \f -> { label: f.label, value: _ } <$> coreConstant f.value
   Surface.ConstantInvalid o -> Left o
 
 -- | The interface the parts make, or where they do not speak of one module.

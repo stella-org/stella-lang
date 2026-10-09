@@ -12,6 +12,7 @@ import Test.Stella.Compiler.Elaborate.Equate as ElaborateEquate
 import Test.Stella.Compiler.Elaborate.SurfaceType as ElaborateSurfaceType
 import Test.Stella.Compiler.Elaborate.Group as ElaborateGroup
 import Test.Stella.Compiler.Build as Build
+import Test.Stella.Compiler.ForeignBoundary as ForeignBoundary
 import Test.Stella.Compiler.Interface.FromCore as InterfaceFromCore
 import Test.Stella.Compiler.Elaborate.SurfaceModule as ElaborateSurfaceModule
 import Test.Stella.Compiler.Macro.Bundle as MacroBundle
@@ -128,6 +129,7 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateSurfaceType.spec
   ElaborateGroup.spec
   Build.spec
+  ForeignBoundary.spec
   InterfaceFromCore.spec
   ElaborateSurfaceModule.spec
   MacroCheck.spec

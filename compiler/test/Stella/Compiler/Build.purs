@@ -43,10 +43,12 @@ import Stella.Compiler.Build (BackendProblem(..), BuildError(..), SourceRoot, de
 import Stella.Compiler.Resolve.Module (ResolutionError(..))
 import Stella.Compiler.Resolve.Monad (ResolveError(..), ResolveReason(..)) as Resolve
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.TypedCore (Decl(..))
+import Stella.Compiler.Surface.Decl (Observation(..))
+import Stella.Compiler.TypedCore (Constant(..), Decl(..))
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
+import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..), TyVar(..))
-import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, recordTy, stringTy, unitTy)
+import Stella.Compiler.TypedCore.Prim (booleanTy, fn, intTy, ioTy, numberTy, pureFn, recordTy, stringTy, unitTy)
 import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), Type(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -633,6 +635,107 @@ spec = describe "Stella.Compiler.Build" do
           [ "3:3 An effect has no kind scheme, so a parameter of it, or a type variable of an operation, stands at a kind with no kind variable"
           , "4:3 An effect has no kind scheme, so a parameter of it, or a type variable of an operation, stands at a kind with no kind variable"
           ]
+        Right _ -> fail "compiled"
+
+  describe "a foreign and an attribute the module declares" do
+    let
+      rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors
+      foreignModule =
+        [ "foreign type Handle :: Type"
+        , "foreign root :: Number -> Number"
+        , "foreign open :: String -> IO Handle"
+        , "#observ(none)"
+        , "foreign close :: Handle -> IO Unit"
+        , "foreign answer :: Int"
+        , "attribute level Int (strict :: Boolean = false)"
+        , "@[level 1]"
+        , "twice :: Number -> Number"
+        , "twice x = root (root x)"
+        , "@[level answer strict=true]"
+        , "@[level 2]"
+        , "type S = Int"
+        , "v :: Int"
+        , "v = answer"
+        ]
+
+    it "are declared to Core, the foreigns at their schemes and the attribute at its parameters' types, through to the interface and its file" do
+      compiling foreignModule case _ of
+        Left errors -> fail (joinWith "; " (rendered errors))
+        Right r -> do
+          let
+            value n = Map.lookup (Ident n) r.interface.declarations.values
+            handle = TCon (Qualified (ModuleName "M") (TyName "Handle")) []
+            io t = TApp (TCon ioTy []) t
+            number = TCon numberTy []
+          map _.sort (value "root") `shouldEqual` Just (SortForeign MayObserve)
+          map _.sort (value "close") `shouldEqual` Just (SortForeign ObservesNone)
+          map _.scheme (value "root") `shouldEqual` Just (plainScheme (monoScheme (pureFn number number)))
+          map _.scheme (value "open") `shouldEqual` Just (plainScheme (monoScheme (pureFn (TCon stringTy []) (io handle))))
+          map _.scheme (value "answer") `shouldEqual` Just (plainScheme (monoScheme int))
+          Map.lookup (Ident "level") r.interface.declarations.attributes `shouldEqual` Just { positional: [ int ], keyword: [ { label: "strict", type: TCon booleanTy [], default: Just (ConstantLiteral (LitBoolean false)) } ] }
+          r.handed `shouldEqual` [ "core twice v", "mid M", "bytecode M" ]
+          case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
+            Right stored -> stored.interface `shouldEqual` r.interface
+            Left problem -> fail problem
+
+    it "give a module importing them the foreigns to apply and the attribute to attach" do
+      building
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A (root, attribute level)" ] [ "@[level 3]", "half :: Number -> Number", "half x = root x" ])
+        , Tuple "src/A.stel" (moduleOf "A" [] foreignModule)
+        ]
+        \r -> case r.result of
+          Right built -> built `shouldEqual` [ "A", "B" ]
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+
+    it "refuse a foreign whose type does not cross to the host, where it is declared" do
+      compiling
+        [ "data Box = Box Int"
+        , "foreign a :: Box -> Int"
+        , "foreign b :: Int -> { x :: Int }"
+        , "foreign c :: [ 'Ok :: Int ] -> Int"
+        , "foreign d :: (Int -> Int) -> Int"
+        , "foreign e :: forall t. t -> Int"
+        , "foreign f :: IO Int -> IO Unit"
+        , "foreign g :: Int -> IO (IO Int)"
+        , "foreign h :: forall r. { x :: Int, ...r } -> Int"
+        , "foreign i :: Int -> Int / {| |}"
+        ]
+        case _ of
+          Left errors -> rendered errors `shouldEqual`
+            [ "3:9 The argument 1 of the foreign `a` cannot cross to the host, as `Box` is a data type; only `Int`, `Number`, `Char`, `String`, `Boolean`, `Unit`, and a foreign type cross, and as the result an `IO` action producing one of them"
+            , "4:9 The result of the foreign `b` cannot cross to the host, as it is a record; only `Int`, `Number`, `Char`, `String`, `Boolean`, `Unit`, and a foreign type cross, and as the result an `IO` action producing one of them"
+            , "5:9 The argument 1 of the foreign `c` cannot cross to the host, as it is a variant; only `Int`, `Number`, `Char`, `String`, `Boolean`, `Unit`, and a foreign type cross, and as the result an `IO` action producing one of them"
+            , "6:9 The argument 1 of the foreign `d` cannot cross to the host, as it is a function; only `Int`, `Number`, `Char`, `String`, `Boolean`, `Unit`, and a foreign type cross, and as the result an `IO` action producing one of them"
+            , "7:9 The argument 1 of the foreign `e` cannot cross to the host, as `t` is a type variable; only `Int`, `Number`, `Char`, `String`, `Boolean`, `Unit`, and a foreign type cross, and as the result an `IO` action producing one of them"
+            , "8:9 The argument 1 of the foreign `f` cannot cross to the host, as it is an `IO` action, which crosses only as the result; only `Int`, `Number`, `Char`, `String`, `Boolean`, `Unit`, and a foreign type cross, and as the result an `IO` action producing one of them"
+            , "9:9 The result of the foreign `g` cannot cross to the host, as it is an `IO` action producing an `IO` action; only `Int`, `Number`, `Char`, `String`, `Boolean`, `Unit`, and a foreign type cross, and as the result an `IO` action producing one of them"
+            , "10:9 The type of the foreign `h` holds a constraint, and the host cannot be handed evidence for one"
+            ]
+          Right _ -> fail "compiled"
+
+    it "refuse a foreign with an arrow performing effects, wherever a value passes through it" do
+      compilingUnder [ "module M where", "import Effects" ]
+        [ "foreign type Box :: Type -> Type"
+        , "foreign j :: Int -> Int / {| Console |}"
+        , "foreign k :: Box (Int -> Int / {| Console |}) -> Int"
+        , "foreign l :: Int -> IO (Box (Int -> Int / {| Console |}))"
+        ]
+        case _ of
+          Left errors -> rendered errors `shouldEqual`
+            [ "4:9 The foreign `j` has an arrow performing effects where its argument 1 stands; the arrows of a foreign's type are pure, and a foreign that performs effects returns an `IO` action instead"
+            , "5:9 The foreign `k` has an arrow performing effects where its argument 1 stands; the arrows of a foreign's type are pure, and a foreign that performs effects returns an `IO` action instead"
+            , "6:9 The foreign `l` has an arrow performing effects where its result stands; the arrows of a foreign's type are pure, and a foreign that performs effects returns an `IO` action instead"
+            ]
+          Right _ -> fail "compiled"
+
+    it "take an arrow whose row's normal form is empty as pure" do
+      compiling [ "foreign type Box :: Type -> Type", "foreign m :: Int -> Int / {| ...{||}, ...{||} |}", "foreign n :: Box (Int -> Int / {| ...{||} |}) -> Int" ] case _ of
+        Left errors -> fail (joinWith "; " (rendered errors))
+        Right r -> map _.sort (Map.lookup (Ident "m") r.interface.declarations.values) `shouldEqual` Just (SortForeign MayObserve)
+
+    it "check an attribute's arguments against its declaration" do
+      compiling [ "attribute level Int", "@[level \"high\"]", "v :: Int", "v = 1" ] case _ of
+        Left errors -> map stageOf errors `shouldEqual` [ "elaboration" ]
         Right _ -> fail "compiled"
 
   describe "a type synonym an import declares" do

@@ -40,6 +40,10 @@
 -- | arguments as Core's one argument.
 -- |
 -- | A constructor's tag is its position among its declaration's constructors.
+-- |
+-- | **An attribute declaration's parameters are closed types at `Type`**,
+-- | read against every type the module declares; one holding a kind nothing
+-- | decided is refused where it stands, as nothing could generalize it.
 module Stella.Compiler.Elaborate.Surface.Types
   ( TypeDeclarations
   , DataDeclaration
@@ -53,16 +57,18 @@ module Stella.Compiler.Elaborate.Surface.Types
   , SettledTypes
   , readTypes
   , settledTypes
+  , AttributeRefused
+  , readAttributeDeclaration
   ) where
 
 import Prelude
 import Prim hiding (Type)
 
 import Data.Array as Array
-import Data.Either (Either(..))
+import Data.Either (Either(..), either)
 import Data.Foldable (foldM, foldr)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), maybe)
+import Data.Maybe (Maybe(..), isNothing, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Traversable (for, traverse)
@@ -70,17 +76,18 @@ import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..), fromCoreKind, toCoreKind)
 import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), toCore)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEntry, SynonymEnv)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, equateKinds, freshKindMeta)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, currentMetas, equateKinds, freshKindMeta)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), MetaContext, substitute, substituteKind)
 import Stella.Compiler.Elaborate.Surface.Group (groups)
-import Stella.Compiler.Elaborate.Surface.Type (LocalHead, Scope, SynonymShape, Unsupported(..), readBinder, readKind, readTypeAt, siteOf, typeKindVars, typeParts)
-import Stella.Compiler.Interface.Assemble (coreAttribute)
-import Stella.Compiler.Surface.Decl (ConstructorDeclaration, EffectDeclaration, ForeignTypeDeclaration, SynonymDeclaration)
+import Stella.Compiler.Elaborate.CorePlus.Context (emptyXContext)
+import Stella.Compiler.Elaborate.Surface.Type (LocalHead, Scope, SynonymShape, Unsupported(..), elaborateType, readBinder, readKind, readTypeAt, siteOf, typeKindVars, typeParts)
+import Stella.Compiler.Interface.Assemble (coreAttribute, coreConstant)
+import Stella.Compiler.Surface.Decl (AttributeDeclaration, ConstructorDeclaration, EffectDeclaration, ForeignTypeDeclaration, SynonymDeclaration)
 import Stella.Compiler.Surface.Decl (Attribute) as Surface
 import Stella.Compiler.Surface.Name (TypeVar(..))
 import Stella.Compiler.Surface.Origin (Origin) as Surface
-import Stella.Compiler.Surface.Type (Kind(..), OperationSignature, Type(..), TypeOperatorTarget(..), TypeVarBinder)
-import Stella.Compiler.TypedCore (DataDecl, EffectDecl)
+import Stella.Compiler.Surface.Type (Kind(..), OperationSignature, Type(..), TypeOperatorTarget(..), TypeVarBinder, typeOrigin)
+import Stella.Compiler.TypedCore (AttributeDecl, DataDecl, EffectDecl)
 import Stella.Compiler.Elaborate.Environment.Imported (operationArgument)
 import Stella.Compiler.TypedCore.Type (Type) as Core
 import Stella.Compiler.TypedCore.Kind (Kind(KFun)) as CoreKind
@@ -88,7 +95,7 @@ import Stella.Compiler.TypedCore.Kind (KindScheme)
 import Stella.Compiler.TypedCore.Context (bindKindVars, emptyContext)
 import Stella.Compiler.TypedCore.Kinding (producesType, quantifiableKind)
 import Stella.Compiler.TypedCore.Type (TyBinder)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar, OpName(..), Qualified(..), TyName(..), TyVar)
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar, OpName(..), Qualified(..), TyName(..), TyVar, unqualified)
 
 -- | The type declarations of a module, a newtype written as the data type of
 -- | one constructor of one field it is.
@@ -548,3 +555,25 @@ local (Qualified _ a) = a
 
 nameOf :: TypeVar -> TyVar
 nameOf (TypeVar v) = v.name
+
+-- | An attribute declaration: its parameters' types, closed and read at
+-- | `Type`, and each keyword parameter's default as Core holds a constant; or
+-- | what keeps it from being one: a form not read, or the place of each type
+-- | holding a kind nothing decided, which nothing could generalize.
+readAttributeDeclaration :: SynonymEnv -> AttributeDeclaration -> Elab (Either AttributeRefused AttributeDecl)
+readAttributeDeclaration synonyms d = do
+  positional <- for d.positional \t -> { written: t, read: _ } <$> elaborateType synonyms d.name emptyXContext t
+  keyword <- for d.keyword \k -> { parameter: k, written: k.type, read: _ } <$> elaborateType synonyms d.name emptyXContext k.type
+  metas <- currentMetas
+  let
+    unsupported = Array.concatMap (_.unsupported <<< _.read) positional <> Array.concatMap (_.unsupported <<< _.read) keyword
+      <> Array.mapMaybe (\k -> either (Just <<< ReportedAlready) (const Nothing) (traverse coreConstant k.parameter.default)) keyword
+    closed r = toCore (substitute metas r.type)
+    undetermined = map (typeOrigin <<< _.written) (Array.filter (isNothing <<< closed <<< _.read) positional) <> map (typeOrigin <<< _.written) (Array.filter (isNothing <<< closed <<< _.read) keyword)
+  pure case traverse (closed <<< _.read) positional, for keyword (\k -> { label: k.parameter.label, type: _, default: _ } <$> closed k.read <*> either (const Nothing) Just (traverse coreConstant k.parameter.default)) of
+    Just positional', Just keyword' | Array.null unsupported -> Right { name: unqualified d.name, positional: positional', keyword: keyword' }
+    -- a type not read holds nothing to decide
+    _, _ -> Left { unsupported, undetermined: if Array.null unsupported then undetermined else [] }
+
+-- | What keeps an attribute declaration from being one.
+type AttributeRefused = { unsupported :: Array Unsupported, undetermined :: Array Surface.Origin }

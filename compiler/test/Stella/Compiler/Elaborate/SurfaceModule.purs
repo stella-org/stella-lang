@@ -195,6 +195,7 @@ at = case _ of
   TypeUndetermined o -> located o <> " type undetermined"
   LeftUnchecked o _ -> located o <> " left unchecked"
   AttributeRejected o _ -> located o <> " attribute rejected"
+  ForeignRefused o _ r -> located o <> " foreign refused " <> show r.position <> " " <> show r.refusal
   CoreRefused _ -> "the Core checker refused it"
   InternalEntryMismatch _ -> "an internal entry mismatched"
   Broken _ -> "broken"
@@ -239,14 +240,15 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         , "lam = (\\x -> x) 1"
         , "open :: Int"
         , "open = const 1 id"
-        , "foreign f :: Int -> Int"
+        , "c :: Int / {| |}"
+        , "c = 1"
         , "ok :: Int"
         , "ok = 1"
         ]
         \r -> do
           map at r.errors `shouldEqual`
             [ "3:1 without a signature"
-            , "10:9 outside: this declaration"
+            , "11:1 outside: this declaration"
             , "5:7 rejected"
             , "7:9 outside: a λ whose type is not known where it stands"
             , "9:8 type undetermined"
@@ -257,6 +259,11 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     it "reports a constructor whose kind arguments nothing decides, and leaves its declaration out" do
       elaborating [ "p :: Phantom -> Int", "p x = 1", "ok :: Int", "ok = 1" ] \r -> do
         map at r.errors `shouldEqual` [ "3:6 kind undetermined" ]
+        map _.name r.values `shouldEqual` [ Qualified (ModuleName "M") (Ident "ok") ]
+
+    it "reports an attribute declaration whose parameter's type holds a kind nothing decides, at each such type" do
+      elaborating [ "attribute q Int Phantom (k :: Phantom)", "ok :: Int", "ok = 1" ] \r -> do
+        map at r.errors `shouldEqual` [ "3:17 kind undetermined", "3:31 kind undetermined" ]
         map _.name r.values `shouldEqual` [ Qualified (ModuleName "M") (Ident "ok") ]
 
   describe "a data declaration" do

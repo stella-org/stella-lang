@@ -26,12 +26,13 @@ import Fmt (fmt)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowNormalForm)
-import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..))
+import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Breach(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError(..))
 import Stella.Compiler.Elaborate.Surface.Module (ElaborationError(..))
 import Stella.Compiler.Elaborate.Surface.Type (Atom(..), Unsupported(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
+import Stella.Compiler.ForeignBoundary (Position(..), Refusal(..), Refused)
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), Qualified(..), RegionName(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
@@ -61,6 +62,7 @@ elaborationOrigins = case _ of
   TypeUndetermined o -> [ o ]
   LeftUnchecked o _ -> [ o ]
   AttributeRejected o _ -> [ o ]
+  ForeignRefused o _ _ -> [ o ]
   CoreRefused failure -> [ failure.at ]
   InternalEntryMismatch _ -> []
   Broken _ -> []
@@ -102,6 +104,7 @@ printElaborationError = case _ of
   TypeUndetermined _ -> "Nothing determines the type here"
   LeftUnchecked _ name -> fmt @"`{name}` was not checked, as checking stopped at an error elsewhere" { name: nameOf name }
   AttributeRejected _ err -> "The arguments of this attribute do not match its declaration: " <> show err
+  ForeignRefused _ name refused -> printRefused (nameOf name) refused
   CoreRefused failure -> internal ("the Core checker refused what was elaborated: " <> show failure.error)
   InternalEntryMismatch name -> internal ("an entry the compiler refers to is missing or at another scheme than listed: " <> show name)
   Broken defect -> internal (show defect)
@@ -109,6 +112,29 @@ printElaborationError = case _ of
   where
   internal what = "Internal compiler error: " <> what
   nameOf (Qualified _ (Ident n)) = n
+
+-- | Why a foreign's type does not cross to the host, and what does.
+printRefused :: String -> Refused -> String
+printRefused name refused = case refused.refusal of
+  ConstrainedType -> fmt @"The type of the foreign `{name}` holds a constraint, and the host cannot be handed evidence for one" { name }
+  PerformingArrow -> fmt @"The foreign `{name}` has an arrow performing effects where its {place} stands; the arrows of a foreign's type are pure, and a foreign that performs effects returns an `IO` action instead" { name, place: placeOf refused.position }
+  refusal -> fmt @"The {place} of the foreign `{name}` cannot cross to the host, as {why}; only `Int`, `Number`, `Char`, `String`, `Boolean`, `Unit`, and a foreign type cross, and as the result an `IO` action producing one of them" { name, place: placeOf refused.position, why: reason refusal }
+  where
+  placeOf = case _ of
+    Argument n -> fmt @"argument {n}" { n }
+    Result -> "result"
+  reason = case _ of
+    DataType (Qualified _ (TyName n)) -> fmt @"`{n}` is a data type" { n }
+    RecordType -> "it is a record"
+    VariantType -> "it is a variant"
+    FunctionType -> "it is a function"
+    TypeVariable (TyVar v) -> fmt @"`{v}` is a type variable" { v }
+    ActionArgument -> "it is an `IO` action, which crosses only as the result"
+    ActionOfAction -> "it is an `IO` action producing an `IO` action"
+    NoValue t -> fmt @"`{t}` is none of these" { t: printType (fromCore t) }
+    -- the refusals of the whole type are said above
+    ConstrainedType -> "it holds a constraint"
+    PerformingArrow -> "it performs effects"
 
 printDiagnostic :: Diagnostic -> String
 printDiagnostic = case _ of

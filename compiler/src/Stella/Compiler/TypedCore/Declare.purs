@@ -23,6 +23,8 @@ module Stella.Compiler.TypedCore.Declare
   , ctorInfo
   , declare
   , declareAnnotated
+  , impureArrow
+  , isEmptyRow
   ) where
 
 import Prelude
@@ -484,6 +486,8 @@ checkPurity at name scheme = case impureArrow scheme.body of
   Just row -> Left { at, error: EffectfulForeign name row }
   Nothing -> Right unit
 
+-- | The row of an arrow performing effects that the type holds where a value
+-- | passes through, a constraint's own types aside.
 impureArrow :: Type -> Maybe Type
 impureArrow ty = case asFunction ty of
   Just parts | not (isEmptyRow parts.row) -> Just parts.row
@@ -506,6 +510,7 @@ entryImpureArrow = case _ of
   -- A region carries only its name, through which nothing crosses.
   RowRegionEntry _ -> Nothing
 
+-- | Whether a row's normal form holds no element and no tail.
 isEmptyRow :: Type -> P.Boolean
 isEmptyRow row = case nf row of
   Right normal -> Map.isEmpty normal.known && Set.isEmpty normal.tail
