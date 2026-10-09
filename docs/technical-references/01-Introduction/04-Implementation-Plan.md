@@ -745,6 +745,10 @@ What a signature, a field, and an annotation write, read into Core⁺ ([Elaborat
 | `Capture b` where `type Capture a = forall b. a -> b` | `forall b#0. b -> b#0`. The synonym's `forall` is renamed, and the argument's `b` is not captured |
 | `Twice Box` where `type Twice a = Pair a a` | A kind that does not meet, where the argument stands. Each argument is read at its parameter's kind |
 | `{\| Console, ...Effects \|}` where `type Effects = {\| Console \|}` | A key written twice, where the row stands. What a synonym stands for is spread as a written row is |
+| `{{ d :: Box a by make }} -> a -> Int` | Core `forall a. Box a -> a -> Int`; the interface publishes `Synthesized` on the spine where the arrow stands. The Core scheme alone would lose that a goal fills the parameter |
+| `forall a. {{ d :: Box a by make }} -> a / {\| Console \|}`, a computation declaration's | Core `forall a. Box a -> Unit -{( Console )}-> a`, published as `Forall`, `Synthesized`, then `Computation` |
+| `f :: {{ d :: D Int by make }} -> (forall a. {{ e :: D a by make }} -> a -> a)`, `f d e x = x` | `λ d. Λ a. λ e. λ x. x`, accepted by Core. The spine is opened again after each parameter, a synthesized one's included |
+| A reference to a value taking a synthesized argument, of the module or of an import | Outside the subset, where the reference stands. Nothing yet creates the goal that supplies the argument |
 | `WithConsole e` where `type WithConsole e = {\| Console, ...e \|}`, and `Shadowing e` where `type Shadowing e = forall e. Unit -> Unit / {\| Console, ...e \|}` | Outside the subset, and expanded. The first needs a condition of what it is given; in the second the row is the `forall`'s, which carries it |
 
 ### Kind and type unification (step 7, division 2)
