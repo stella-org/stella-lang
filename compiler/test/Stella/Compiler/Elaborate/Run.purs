@@ -499,6 +499,7 @@ spec = describe "Elaborate.Run" do
   jobTarget = case _ of
     JobSynthesis goal -> Just (goalOf goal).target
     JobUnify _ -> Nothing
+    JobEffectFit _ -> Nothing
 
   -- Attempt a job queued for its first attempt, taking it from the queue first.
   attemptTaken id s0 = case takeReady s0.tentative.scheduler of

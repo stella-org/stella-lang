@@ -22,7 +22,7 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin, XContext)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind)
-import Stella.Compiler.Elaborate.CorePlus.Term (TermMetaVar)
+import Stella.Compiler.Elaborate.CorePlus.Term (FitId, TermMetaVar)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (freshTermMeta, termScopeOf)
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType)
@@ -40,7 +40,7 @@ import Data.Show.Generic (genericShow)
 -- | recognized as one.
 newtype PendingId = PendingId P.Int
 
--- | What a job is decided against, which the three kinds take different things
+-- | What a job is decided against, which the kinds of job take different things
 -- | from.
 -- |
 -- | **What an equality takes is the kind variables in scope where it was written**
@@ -113,6 +113,9 @@ goalOf (GoalRecord goal) = goal
 
 data Job
   = JobUnify EqualityGoal
+  -- | A fit waiting on the flexible tails its decision depends on, whose record
+  -- | `Ψ` holds.
+  | JobEffectFit FitId
   | JobSynthesis GoalRecord
 
 -- | `awaiting` is the metavariables the job last postponed on.

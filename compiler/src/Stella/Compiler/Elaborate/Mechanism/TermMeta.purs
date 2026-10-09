@@ -19,6 +19,7 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Context (XContext)
 import Stella.Compiler.Elaborate.CorePlus.Term (TermMetaVar(..), XDecisionTree(..), XExpr(..), XHandler, XOpClause(..), freeVarsOf, metasOfTerm)
+import Stella.Compiler.Elaborate.Mechanism.Fit (FitState(..), FitUse(..))
 import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint, XType(..), freeKindVars, freeRegions, freeRigids, kindMetasOfType, metasOf)
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, TermBinding(..), TermMetaInfo, TermScope, UnifyError, narrowMetas, substitute, substituteKind)
 import Stella.Compiler.TypedCore (Ident, JoinName, KindVar, RegionName, TyVar)
@@ -200,6 +201,12 @@ zonkExpr ctx = go
     EReadCell a name key -> EReadCell a name key
     EWriteCell a name key v -> EWriteCell a name key (go v)
     EOpenEff a row e -> EOpenEff a (ty row) (go e)
+    -- a decided wrapping fit becomes what it was decided to; one undecided
+    -- stays, for making the term Core to report
+    EFit a f e -> case Map.lookup f ctx.fits of
+      Just { use: Wrapping, state: Equal } -> go e
+      Just { use: Wrapping, state: Widen w } -> EOpenEff a (ty w) (go e)
+      _ -> EFit a f (go e)
     ETermMeta a m -> case Map.lookup m ctx.termBindings of
       Just (TermAssigned solution) -> go (map (const a) solution)
       _ -> ETermMeta a m

@@ -47,6 +47,7 @@ module Stella.Compiler.Elaborate.Mechanism.Unify
   , freshMeta
   , freshKindMeta
   , lookupMeta
+  , isInstantiationRow
   , regionScopeOf
   , lookupKindMeta
   , lookupTermMeta
@@ -64,9 +65,10 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.Elaborate.Mechanism.Fit (FitRecord)
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar(..), XKind(..), kindMetasOf, kindVarsOf, occursInKind)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm, payloadEquations, rebuild, xnf)
-import Stella.Compiler.Elaborate.CorePlus.Term (TermMetaVar, XExpr)
+import Stella.Compiler.Elaborate.CorePlus.Term (FitId, TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), Scope, XConstraint(..), XRowEntry(..), XType(..), freeRigids, kindMetasOfType, metasOf, occursIn, outOfScope)
 import Stella.Compiler.TypedCore (Ident, KindVar, RegionName, RowElemKind(..), RowKey(..), TyVar)
 import Data.Array as Array
@@ -172,6 +174,15 @@ data TermBinding
 -- | It rides with `Ψ` rather than beside it so that no step of a unification has
 -- | to remember to carry it: a substitution and the record of having made one are
 -- | written in one place.
+-- |
+-- | **A `Row Effect` metavariable records its provenance** in `instantiationRows`:
+-- | one created for a scheme's row quantifier where the scheme is instantiated
+-- | is an instantiation row, and every other an inference row. Where a
+-- | unification identifies two, the tail left is an instantiation row only if
+-- | both were, so the direction of a unification decides nothing.
+-- |
+-- | `fits` are the fits elaboration has placed, each with what is decided of it
+-- | ([Fit](Fit.purs)), and `nextFit` the supply their identifiers are drawn from.
 type MetaContext =
   { bindings :: Map MetaVar MetaBinding
   , kindBindings :: Map KindMetaVar KindMetaBinding
@@ -180,6 +191,9 @@ type MetaContext =
   , nextKind :: P.Int
   , nextTerm :: P.Int
   , assigned :: Set MetaVar
+  , instantiationRows :: Set MetaVar
+  , fits :: Map FitId FitRecord
+  , nextFit :: P.Int
   }
 
 -- | What a unification reads off the site of the equation it is given.
@@ -289,6 +303,9 @@ emptyContext =
   , nextKind: 0
   , nextTerm: 0
   , assigned: Set.empty
+  , instantiationRows: Set.empty
+  , fits: Map.empty
+  , nextFit: 0
   }
 
 -- | What a step reached, as its caller reads it. The journal is emptied in the
@@ -326,6 +343,11 @@ freshKindMeta info ctx =
 
 lookupMeta :: MetaContext -> MetaVar -> Maybe MetaBinding
 lookupMeta ctx m = Map.lookup m ctx.bindings
+
+-- | Whether a metavariable was created as an instantiation row, or is the tail
+-- | two of them were identified through.
+isInstantiationRow :: MetaContext -> MetaVar -> P.Boolean
+isInstantiationRow ctx m = Set.member m ctx.instantiationRows
 
 -- | The region names an unsolved metavariable's solution may mention, which are
 -- | those in scope where it was created. A solved one has none of its own.
@@ -930,7 +952,11 @@ refine bound ctx r s d1 d2 r1 r2 =
               }
           in
             let
-              Tuple t ctx' = freshMeta freshInfo ctxK
+              Tuple t ctxT = freshMeta freshInfo ctxK
+              -- the tail left is an instantiation row only if both were
+              ctx' =
+                if Set.member r ctxT.instantiationRows && Set.member s ctxT.instantiationRows then ctxT { instantiationRows = Set.insert t ctxT.instantiationRows }
+                else ctxT
             in
               case assignRow bound ctx' r (rebuild { known: d2, rigid: r2, flexible: Set.singleton t }) of
                 Stepped ctx'' ->
@@ -969,7 +995,7 @@ assignMeta ctx m solution =
               Left err ->
                 Broke err
               Right ctx' ->
-                Stepped ctx'
+                Stepped (identified m solution ctx')
                   { bindings = Map.insert m (Assigned solution) ctx'.bindings
                   , assigned = Set.insert m ctx'.assigned
                   }
@@ -979,6 +1005,20 @@ assignMeta ctx m solution =
 
     Nothing ->
       Broke (MetaUnbound m)
+
+-- | The provenance of what an assignment identifies a metavariable with.
+-- |
+-- | **A solution that is another metavariable alone identifies the two**, and
+-- | the one left is an instantiation row only if both were, whichever side of
+-- | the equation each stood on. A solution with anything beside a tail makes
+-- | no identification.
+identified :: MetaVar -> XType -> MetaContext -> MetaContext
+identified m solution ctx = case xnf (substitute ctx solution) of
+  Right n
+    | Map.isEmpty n.known, Set.isEmpty n.rigid, [ t ] <- (Set.toUnfoldable n.flexible :: P.Array MetaVar), t /= m ->
+        if Set.member m ctx.instantiationRows then ctx
+        else ctx { instantiationRows = Set.delete t ctx.instantiationRows }
+  _ -> ctx
 
 -- | The kind a solution commits to, unified against the kind of the
 -- | metavariable. A solution whose elements give no row element kind away

@@ -75,7 +75,7 @@ import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SolverState, initialS
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
 import Stella.Compiler.Elaborate.Surface.Expr (elaborateValue, runSurf)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..), elaborateSignature, schemeOf, settledScheme)
-import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect, Diagnostic(..))
+import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Surface.Group (groups)
 import Stella.Compiler.ForeignBoundary (Refused, crossingOf)
@@ -455,13 +455,21 @@ settleBodies attempter state bodies =
       | otherwise -> case toCoreExpr (zonkExpr after.tentative.metas b.body) of
           Right body -> Tuple [] (Just { name: b.name, origin: b.origin, ordinal: b.ordinal, attributes: b.attributes, scheme: b.scheme, spine: b.spine, body })
           -- a place is reported once, however many undecided types stand there
-          Left residues -> Tuple (map TypeUndetermined (Array.nubEq (map residueOrigin (NonEmptyArray.toArray residues)))) Nothing
+          Left residues -> case Array.findMap fitOf (NonEmptyArray.toArray residues) of
+            -- every fit is decided or reported before a body is made Core
+            Just f -> Tuple [ Broken (FitLeftUndecided f) ] Nothing
+            Nothing -> Tuple (map TypeUndetermined (Array.nubEq (map residueOrigin (NonEmptyArray.toArray residues)))) Nothing
 
   residueOrigin = case _ of
     ResidualTypeMeta o _ -> o
     ResidualKindMeta o _ -> o
     ResidualTermMeta o _ -> o
     ResidualHole o _ -> o
+    ResidualFit o _ -> o
+
+  fitOf = case _ of
+    ResidualFit _ f -> Just f
+    _ -> Nothing
 
 -- | The declaration a site stands in.
 declarationOf :: Origin -> Qualified Ident
@@ -477,6 +485,7 @@ diagnosticDeclarations = case _ of
   ObligationRejected r -> [ declarationOf r.obligation ]
   TermAssignmentFailed o _ -> [ declarationOf o ]
   SynthesisFailed s -> [ declarationOf s.goal.origin ]
+  RowNotContained o _ -> [ declarationOf o ]
 
 failure :: forall a. Outcome a -> ElaborationError
 failure = case _ of

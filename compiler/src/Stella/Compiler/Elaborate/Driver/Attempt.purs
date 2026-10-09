@@ -33,7 +33,7 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic, Inadmissible(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle, HandleObject(..), emptyArena)
-import Stella.Compiler.Elaborate.Kernel.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, Tentative, break, checkSynthesisTarget, issue, requireClosed, runElabIn, unify, withFrame)
+import Stella.Compiler.Elaborate.Kernel.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, Tentative, break, checkSynthesisTarget, issue, requireClosed, runElabIn, runFit, unify, withFrame)
 import Stella.Compiler.Elaborate.Vocabulary.Outcome (Attempt(..))
 import Stella.Compiler.Elaborate.Vocabulary.Outcome (Attempt(..)) as Exports
 import Stella.Compiler.Elaborate.Vocabulary.Envelope (Envelope) as Exports
@@ -136,6 +136,7 @@ type Runner = Pending -> Elab Unit
 hostRunner :: Runner
 hostRunner p = case p.job of
   JobUnify goal -> unify p.site goal
+  JobEffectFit f -> runFit f
   JobSynthesis goal -> break (SynthesizerUnavailable (goalOf goal).synthesizer)
 
 -- | `attemptPendingWith hostRunner`.
@@ -247,6 +248,7 @@ openAttempt session id s0 = case lookupPending s0.tentative.scheduler id of
   checked p = case p.job of
     JobSynthesis goal -> checkSynthesisTarget p.id p.site goal *> (Just <$> issue (GoalObject { id: p.id, goal }))
     JobUnify _ -> pure Nothing
+    JobEffectFit _ -> pure Nothing
 
   -- The site the job was created at, and its goal where it has one. Nothing
   -- inside the attempt changes either.
@@ -255,6 +257,7 @@ openAttempt session id s0 = case lookupPending s0.tentative.scheduler id of
     , goal: case p.job of
         JobSynthesis goal -> Just { id: p.id, goal }
         JobUnify _ -> Nothing
+        JobEffectFit _ -> Nothing
     }
 
 -- | Ask what the action given does, under the conversation's frame.

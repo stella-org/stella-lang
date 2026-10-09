@@ -118,6 +118,7 @@ answered build = case asked of
             term <- build root goalTarget >>= resolveExpr
             assignTerm p.site goalTarget term.term
           JobUnify _ -> raiseDiagnostic failure
+          JobEffectFit _ -> raiseDiagnostic failure
         Tuple result s1 = attemptPendingWith session runner id (s0 { tentative { scheduler = taken } })
       in
         Right (Tuple result (zonkExpr s1.tentative.metas (ETermMeta unit target)))

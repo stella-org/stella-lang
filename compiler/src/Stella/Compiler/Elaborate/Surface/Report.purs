@@ -11,6 +11,7 @@ module Stella.Compiler.Elaborate.Surface.Report
   ( elaborationOrigins
   , printElaborationError
   , printType
+  , printEffectRow
   , printKind
   ) where
 
@@ -25,7 +26,7 @@ import Data.String (joinWith)
 import Fmt (fmt)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
-import Stella.Compiler.Elaborate.CorePlus.Row (XRowNormalForm)
+import Stella.Compiler.Elaborate.CorePlus.Row (XRowNormalForm, rebuild)
 import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Breach(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError(..))
@@ -75,6 +76,7 @@ diagnosticOrigins = case _ of
   ObligationRejected r -> sourceOf r.obligation
   TermAssignmentFailed o _ -> sourceOf o
   SynthesisFailed s -> sourceOf s.goal.origin
+  RowNotContained o _ -> sourceOf o
 
 sourceOf :: Origin -> Array Surface.Origin
 sourceOf = case _ of
@@ -143,6 +145,7 @@ printDiagnostic = case _ of
   ObligationRejected r -> printBreach r.breach
   TermAssignmentFailed _ _ -> "A term filled in here is not valid where it stands"
   SynthesisFailed _ -> "A synthesizer failed here"
+  RowNotContained _ r -> fmt @"This performs `{s}`, which is not among the effects allowed here" { s: printEffectRow (rebuild r.source) }
 
 -- | Why a row's sharpness does not hold: the key or the row variables it is
 -- | about.
@@ -196,7 +199,14 @@ rowOf n = foldr XRowExtend tail (Array.fromFoldable (Map.values n.known))
 -- | the row `/` puts on it, a record, a variant, and an effect row in their
 -- | brackets, and a record keyed by its positions as a tuple.
 printType :: XType -> String
-printType = go 0
+printType = (printers unit).type
+
+-- | An effect row, in the brackets of one where it is more than a variable.
+printEffectRow :: XType -> String
+printEffectRow = (printers unit).effectRow
+
+printers :: Unit -> { type :: XType -> String, effectRow :: XType -> String }
+printers _ = { type: go 0, effectRow }
   where
   -- 0: anywhere; 1: the function of an application, an arrow's argument, or
   -- the result of an arrow carrying a row; 2: an argument of an application

@@ -41,6 +41,9 @@ module Stella.Compiler.Elaborate.Kernel.Elab
   , transact
   , unify
   , equate
+  , freshInstantiationRow
+  , placeFit
+  , runFit
   , freshTypeMeta
   , freshKindMeta
   , equateKinds
@@ -91,18 +94,19 @@ import Stella.Compiler.Elaborate.Mechanism.Kinding (KindingEnv, emptyKindingEnv)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (Arena, ExprObject, GoalObject, Handle, HandleClass(..), HandleError(..), HandleObject(..), BinderObject, JoinObject, OccurrenceObject, ScopeId(..), ScopeObject, SessionId, TreeObject, TypeObject, emptyArena, issueIn, resolveIn)
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce, recheck)
 import Stella.Compiler.Elaborate.Mechanism.Pending (EqualityGoal, GoalRecord, Job(..), PendingId, Site, SynthRef, goalOf, newGoal)
-import Stella.Compiler.Elaborate.CorePlus.Row (XRowError)
+import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm, xnf)
+import Stella.Compiler.Elaborate.Mechanism.Fit (Classified(..), FitRecord, FitState(..), FitUse, classify, sharedEntries)
 import Stella.Compiler.Elaborate.Mechanism.Scheduler (Scheduler, create, emptyScheduler, enqueueInitial, wake)
-import Stella.Compiler.Elaborate.CorePlus.Term (TermMetaVar, XExpr)
+import Stella.Compiler.Elaborate.CorePlus.Term (FitId(..), TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta as TermMeta
-import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint, XType(..))
-import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar, RegionName(..), TyVar(..))
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XType(..))
+import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar, RegionName(..), RowElemKind(..), RowKey, TyVar(..))
 import Stella.Compiler.Elaborate.Vocabulary.Trace (TraceEvent, Tracing(..))
-import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement, MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupTermMeta, regionScopeOf, substitute, unifyKind, unifyType)
+import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement, MetaBinding(..), MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupMeta, lookupTermMeta, regionScopeOf, substitute, unifyKind, unifyType)
 import Stella.Compiler.Elaborate.Mechanism.Unify as Unify
 import Data.Either (Either(..))
-import Data.Foldable (foldl)
+import Data.Foldable (foldl, for_)
 import Data.Generic.Rep (class Generic)
 import Data.Array as Array
 import Data.Map (Map)
@@ -605,6 +609,118 @@ equate site goal = do
         in
           Tuple (Done unit) (s { tentative { scheduler = enqueueInitial id created } })
 
+-- | A row metavariable at `Row Effect` created for a scheme's row quantifier
+-- | where the scheme is instantiated, under the context given: an
+-- | instantiation row, which the resolution of fits may widen to the row
+-- | ambient where it is used.
+freshInstantiationRow :: XContext -> Elab XType
+freshInstantiationRow context = Elab \_ s ->
+  let
+    Tuple m metas = freshMeta { kind: XKRow RowEffect, scope: metaScopeOf context } s.tentative.metas
+  in
+    Tuple (Done (XMeta m)) (s { tentative { metas = metas { instantiationRows = Set.insert m metas.instantiationRows } } })
+
+-- | What deciding a fit came to, short of a failure.
+data FitProgress
+  = FitDecided
+  -- | Undecided, until one of these is assigned.
+  | FitWaiting (Set MetaVar)
+
+-- | `source ⊆ target`, placed at the site given for the use given, both rows at
+-- | `Row Effect`.
+-- |
+-- | **It is decided where it is placed when it can be**, and is otherwise a
+-- | `JobEffectFit`, queued as an equality job is, to be decided again once
+-- | what it waits on is assigned. The fit and the job are part of the attempt
+-- | that placed them, and a rollback takes both back. A source holding what the
+-- | target cannot is a failure where the fit is placed.
+placeFit :: Site -> FitUse -> XType -> XType -> Elab FitId
+placeFit site use source target = do
+  f <- Elab \_ s ->
+    let
+      metas = s.tentative.metas
+      f = FitId metas.nextFit
+      record = { use, site, state: Undecided { source, target, equated: Set.empty } }
+    in
+      Tuple (Done f) (s { tentative { metas = metas { fits = Map.insert f record metas.fits, nextFit = metas.nextFit + 1 } } })
+  decideFit f >>= case _ of
+    FitDecided -> pure f
+    FitWaiting _ -> Elab \_ s ->
+      let
+        Tuple id created = create site (JobEffectFit f) s.tentative.scheduler
+      in
+        Tuple (Done f) (s { tentative { scheduler = enqueueInitial id created } })
+
+-- | A fit's job, attempted: the fit decided again against `Ψ` as it stands,
+-- | and the attempt waiting on the flexible tails left where it is still
+-- | undecided. Those may include a tail an equation of this attempt created, so
+-- | the dependencies are extracted as a unification's are.
+runFit :: FitId -> Elab Unit
+runFit f = decideFit f >>= case _ of
+  FitDecided -> pure unit
+  FitWaiting on -> do
+    written <- writtenSoFar
+    postponeWith (SolverStuck { blockedOn: on, written })
+
+-- | Decide a fit against `Ψ` as it stands, and record what is decided.
+-- |
+-- | **The keys the two rows share are equated before anything is decided**,
+-- | each once: an equation may solve a tail and bring a key into both, so
+-- | the rows are read again until no shared key is left unequated. A `Widen w`
+-- | requires the source apart from `w`, which is what Core's `openEff` asks of
+-- | the term it becomes.
+decideFit :: FitId -> Elab FitProgress
+decideFit f = lookupFit f >>= \record -> case record.state of
+  Undecided u -> do
+    settled <- equateShared record.site u.equated u.source u.target
+    case classify settled.source settled.target of
+      NotContained remainders ->
+        raiseDiagnostic (RowNotContained record.site.origin remainders)
+      Contained state -> do
+        case state of
+          Widen w -> do
+            metas <- metaContext
+            require record.site (XDisjoint (substitute metas u.source) w)
+          _ -> pure unit
+        writeFit f (record { state = state })
+        pure FitDecided
+      Waiting on -> do
+        writeFit f (record { state = Undecided u { equated = settled.equated } })
+        pure (FitWaiting on)
+  -- decided already, by an attempt that committed
+  _ -> pure FitDecided
+
+-- | The two rows of a fit normalized, every key they share equated.
+equateShared :: Site -> Set RowKey -> XType -> XType -> Elab { source :: XRowNormalForm, target :: XRowNormalForm, equated :: Set RowKey }
+equateShared site equated source target = do
+  metas <- metaContext
+  case xnf (substitute metas source), xnf (substitute metas target) of
+    Left err, _ -> break (FitSideNotARow site.origin err)
+    _, Left err -> break (FitSideNotARow site.origin err)
+    Right ns, Right nt -> case Array.find (\m -> not (unsolvedIn metas m)) (Set.toUnfoldable (Set.union ns.flexible nt.flexible) :: P.Array MetaVar), Array.filter (\e -> not (Set.member e.key equated)) (sharedEntries ns nt) of
+      -- every tail is held unsolved before any cancels, as a unification's are
+      Just m, _ -> break (FitTailUnbound site.origin m)
+      Nothing, [] -> pure { source: ns, target: nt, equated }
+      Nothing, fresh -> do
+        -- a key's two entries are equal as the one-element rows they make
+        for_ fresh \e -> equate site { kind: XKRow RowEffect, left: XRowExtend e.source XRowEmpty, right: XRowExtend e.target XRowEmpty }
+        equateShared site (Set.union equated (Set.fromFoldable (map _.key fresh))) source target
+
+-- | Whether `Ψ` holds a metavariable unsolved.
+unsolvedIn :: MetaContext -> MetaVar -> P.Boolean
+unsolvedIn metas m = case lookupMeta metas m of
+  Just (Unsolved _) -> true
+  _ -> false
+
+lookupFit :: FitId -> Elab FitRecord
+lookupFit f = Elab \_ s -> case Map.lookup f s.tentative.metas.fits of
+  Just record -> Tuple (Done record) s
+  Nothing -> Tuple (Broke (FitAbsent f)) s
+
+writeFit :: FitId -> FitRecord -> Elab Unit
+writeFit f record = Elab \_ s ->
+  Tuple (Done unit) (s { tentative { metas { fits = Map.insert f record s.tentative.metas.fits } } })
+
 -- | Which of a unification's errors is about the caller rather than about the
 -- | program.
 -- |
@@ -710,14 +826,18 @@ invariantBreach = case _ of
 freshTypeMeta :: XContext -> XKind -> Elab XType
 freshTypeMeta context kind = Elab \_ s ->
   let
-    scope =
-      { types: Map.keys context.tyVars
-      , kinds: context.kindVars
-      , regions: Map.keys context.regions
-      }
-    Tuple m metas = freshMeta { kind, scope } s.tentative.metas
+    Tuple m metas = freshMeta { kind, scope: metaScopeOf context } s.tentative.metas
   in
     Tuple (Done (XMeta m)) (s { tentative { metas = metas } })
+
+-- | What a type metavariable created under a context may mention: the type and
+-- | kind variables and the region names it binds.
+metaScopeOf :: XContext -> { types :: Set TyVar, kinds :: Set KindVar, regions :: Set RegionName }
+metaScopeOf context =
+  { types: Map.keys context.tyVars
+  , kinds: context.kindVars
+  , regions: Map.keys context.regions
+  }
 
 -- | A kind metavariable, which may mention the kind variables given and no other,
 -- | and which only a kind meeting the requirements given solves. A kind left

@@ -1112,6 +1112,21 @@ The rows on where a cell is reached are the resolver's. The rows on what a cell 
 | A clause handing out a local function over a cell — as the answer, or part of it | Rejected by the escape condition, the function's type carrying `region ℓ`. Calling it inside the clause is accepted |
 | `implicit` on a handler one of whose initial values does not elaborate to a value form | Rejected where it is declared. An initial value runs whenever the handler is applied, and an inserted application stands where nothing is written |
 
+### Fits (step 7, division 2)
+
+A fit decided, waited on, and made Core, before anything of the surface places one ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md#fits)). Each is written by hand, as an equation is in division 2.
+
+| Input | Required outcome |
+| --- | --- |
+| `( Console ) ⊆ ( Console, Clock )` | `Widen ( Clock )`: an `openEff [( Clock )]` around what the fit wraps, and the source required apart from `( Clock )`. `( Console ) ⊆ ( Console )` is `Equal`, and leaves the expression alone |
+| `( State ?a ) ⊆ ( State Int )`, and `( State Int ) ⊆ ( State String )` | `?a := Int`, then `Equal`; a failed equation. A shared key's payloads are equated before anything is decided |
+| `( Console, Clock ) ⊆ ( Clock )` | Refused where the fit was placed, naming `( Console )`. What is left of the source once the shared keys cancel is what the target cannot hold |
+| `( Console ) ⊆ ?m`, `?m` assigned `( Console, Clock )` afterwards | A `JobEffectFit` waiting on `?m`, woken by the assignment and decided `Widen ( Clock )`. Where it is placed nothing decides it yet |
+| `( Console ) ⊆ ?m`, nothing assigning `?m` | The job reported waiting, and the term holding the fit no Core. A fit undecided where its term is made Core is the host's defect, never a residue to report |
+| A fit placed by an attempt that fails | Taken back, with its job. The table of fits is part of `Ψ`'s tentative state |
+| A fit whose rows hold a tail `Ψ` does not hold, on both sides or on one | The host's defect. On both it would cancel into an equality, and on one be waited on by a job no assignment wakes |
+| `?i ≡ ?n` and `?n ≡ ?i`, `?i` an instantiation row and `?n` an inference one | An inference row either way. The row left is an instantiation row only where both were, so the direction decides nothing |
+
 ### Effect-aware expressions (step 7)
 
 The judgement, fits, and computation references of [Elaboration](../02-Surface-Language/01-Elaboration.md#inference).

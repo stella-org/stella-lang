@@ -33,9 +33,9 @@ import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis, Breach)
 import Stella.Compiler.Elaborate.Mechanism.Pending (Job, PendingId, SynthRef)
 import Stella.Compiler.Elaborate.Mechanism.Scheduler (Invariant)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError)
-import Stella.Compiler.Elaborate.CorePlus.Term (TermMetaVar)
+import Stella.Compiler.Elaborate.CorePlus.Term (FitId, TermMetaVar)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType)
-import Stella.Compiler.Elaborate.CorePlus.Row (XRowError)
+import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm)
 import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError)
 import Stella.Compiler.TypedCore (EffName, Ident, JoinName, OpName, Qualified, RegionName, RowKey, TyName, TyVar)
 import Data.Array.NonEmpty (NonEmptyArray)
@@ -75,6 +75,10 @@ data Diagnostic
   -- | A synthesizer's `throw`: the goal it was running, and the message it
   -- | built, frozen where it was thrown.
   | SynthesisFailed { goal :: GoalSummary, message :: P.Array FrozenMessagePart }
+  -- | A fit whose source performs what its target cannot hold, reported where
+  -- | the fit was placed: what is left of each row once what the two share has
+  -- | cancelled.
+  | RowNotContained Origin { source :: XRowNormalForm, target :: XRowNormalForm }
 
 -- | Something the mechanism, or whoever drove it, got wrong.
 -- |
@@ -248,6 +252,18 @@ data Defect
   -- | name, or awaiting one it is not registered under, is one no assignment
   -- | wakes, so reporting it as waiting would blame the program for the loop.
   | SchedulerBroken (NonEmptyArray Invariant)
+  -- | A fit attempted, or read, under an identifier `Ψ` does not hold.
+  | FitAbsent FitId
+  -- | A side of a fit with no row normal form. Both sides are rows of
+  -- | `Row Effect` by the premise of whoever placed the fit.
+  | FitSideNotARow Origin XRowError
+  -- | A flexible tail of a fit's side that `Ψ` does not hold. A tail two sides
+  -- | share would otherwise cancel into an equality, and one on a side alone be
+  -- | waited on by a job no assignment wakes.
+  | FitTailUnbound Origin MetaVar
+  -- | A fit still undecided where its term is made Core, every fit being
+  -- | decided or reported before that.
+  | FitLeftUndecided FitId
 
 -- | How a synthesis job's target disagrees with its goal, read against `Ψ` as
 -- | it stands where the job is about to be attempted.

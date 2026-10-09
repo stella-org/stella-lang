@@ -2,8 +2,9 @@
 -- |
 -- | Core has no metavariables (D12), so these are a separate type rather than a
 -- | widening of `Stella.Compiler.TypedCore.Term`: every position Core writes a
--- | type or a kind in holds an `XType` or an `XKind` here, and two forms exist
--- | that Core has none of — a term metavariable `?m`, and a typed hole.
+-- | type or a kind in holds an `XType` or an `XKind` here, and three forms exist
+-- | that Core has none of — a fit, which becomes an `openEff` or nothing once
+-- | it is decided, a term metavariable `?m`, and a typed hole.
 -- |
 -- | A synthesis goal `⟨ τ by f ⟩` is not among them. It is what elaboration is
 -- | handed, and it is taken apart where it is met into a term metavariable in
@@ -14,6 +15,7 @@
 -- | refuses while anything unresolved remains.
 module Stella.Compiler.Elaborate.CorePlus.Term
   ( TermMetaVar(..)
+  , FitId(..)
   , XExpr(..)
   , XParam
   , XBinding
@@ -59,8 +61,12 @@ import Data.Traversable (traverse)
 -- | in the metavariable context, not here.
 newtype TermMetaVar = TermMetaVar P.Int
 
--- | A Core⁺ term. Each constructor but the last two mirrors the Core form of the
--- | same name ([Term](../TypedCore/Term.purs)).
+-- | A fit of `Ψ`. What it is placed for and what is decided of it live in the
+-- | metavariable context, not here.
+newtype FitId = FitId P.Int
+
+-- | A Core⁺ term. Each constructor but the last three mirrors the Core form of
+-- | the same name ([Term](../TypedCore/Term.purs)).
 data XExpr a
   = EVar a Ident
   | EGlobal a (Qualified Ident) (P.Array XKind)
@@ -91,6 +97,9 @@ data XExpr a
   | EReadCell a RegionName RowKey
   | EWriteCell a RegionName RowKey (XExpr a)
   | EOpenEff a XType (XExpr a)
+  -- | The expression a wrapping fit holds: `openEff [w]` around it where the fit
+  -- | is decided `Widen w`, and the expression alone where it is decided equal.
+  | EFit a FitId (XExpr a)
   -- | `?m`, a term to be supplied later.
   | ETermMeta a TermMetaVar
   -- | `hole τ`, a place the author left open. It is reported, never filled.
@@ -177,6 +186,9 @@ data Residue a
   | ResidualKindMeta a KindMetaVar
   | ResidualTermMeta a TermMetaVar
   | ResidualHole a XType
+  -- | A fit nothing decided, which every fit is before its declaration is made
+  -- | Core: one left is the host's defect rather than the program's.
+  | ResidualFit a FitId
 
 -- | The variables a term mentions free, one set per class.
 -- |
@@ -230,6 +242,7 @@ xExprAnnotation = case _ of
   EReadCell a _ _ -> a
   EWriteCell a _ _ _ -> a
   EOpenEff a _ _ -> a
+  EFit a _ _ -> a
   ETermMeta a _ -> a
   EHole a _ -> a
 
@@ -373,6 +386,7 @@ convExpr = case _ of
   EReadCell a name key -> pure (ReadCell a name key)
   EWriteCell a name key value -> WriteCell a name key <$> convExpr value
   EOpenEff a row e -> OpenEff a <$> convType a row <*> convExpr e
+  EFit a f e -> convExpr e *> residue (ResidualFit a f)
   ETermMeta a m -> residue (ResidualTermMeta a m)
   EHole a ty -> convType a ty *> residue (ResidualHole a ty)
 
@@ -509,6 +523,7 @@ freeVarsOf = case _ of
   EReadCell _ name _ -> regionVar name
   EWriteCell _ name _ v -> regionVar name <> freeVarsOf v
   EOpenEff _ row e -> typeVars row <> freeVarsOf e
+  EFit _ _ e -> freeVarsOf e
   ETermMeta _ _ -> none
   EHole _ ty -> typeVars ty
   where
@@ -612,6 +627,7 @@ metasOfTerm = case _ of
   EReadCell _ _ _ -> noMetas
   EWriteCell _ _ _ v -> metasOfTerm v
   EOpenEff _ row e -> typeMetas row <> metasOfTerm e
+  EFit _ _ e -> metasOfTerm e
   ETermMeta _ m -> noMetas { terms = Set.singleton m }
   EHole _ ty -> typeMetas ty
   where
@@ -681,6 +697,7 @@ termMetasUnderRegions = go Set.empty
     EReadCell _ _ _ -> []
     EWriteCell _ _ _ v -> go bound v
     EOpenEff _ _ e -> go bound e
+    EFit _ _ e -> go bound e
     ETermMeta _ m -> [ { meta: m, bound } ]
     EHole _ _ -> []
 
@@ -708,6 +725,10 @@ kindMetas k = noMetas { kinds = kindMetasOf k }
 derive instance Eq TermMetaVar
 derive instance Ord TermMetaVar
 derive newtype instance Show TermMetaVar
+
+derive instance Eq FitId
+derive instance Ord FitId
+derive newtype instance Show FitId
 
 derive instance Eq a => Eq (XExpr a)
 derive instance Functor XExpr

@@ -2,8 +2,9 @@
 -- | reached by the kernel's requests alone.
 -- |
 -- | What this case is for is that **no form of Core⁺ is out of a synthesizer's
--- | reach except the one that is so by design**: a typed hole, which is the
--- | Surface elaborator's for reporting and recovery. A term metavariable is
+-- | reach except the two that are so by design**: a typed hole, which is the
+-- | Surface elaborator's for reporting and recovery, and a fit, which the
+-- | Surface elaborator places where it infers an effect row. A term metavariable is
 -- | reached too, by `subgoal` alone, which makes it together with the job that
 -- | fills it. The forms are named by a function that matches every constructor,
 -- | so a form added to Core⁺ does not compile here until it is named, and is not
@@ -302,6 +303,7 @@ forms = case _ of
   EReadCell _ _ _ -> [ "EReadCell" ]
   EWriteCell _ _ _ v -> [ "EWriteCell" ] <> forms v
   EOpenEff _ _ e -> [ "EOpenEff" ] <> forms e
+  EFit _ _ e -> [ "EFit" ] <> forms e
   ETermMeta _ _ -> [ "ETermMeta" ]
   EHole _ _ -> [ "EHole" ]
   where
@@ -323,7 +325,7 @@ forms = case _ of
     OccRecordField o _ -> [ "OccRecordField" ] <> occurrenceForms o
     OccVariantPayload o _ -> [ "OccVariantPayload" ] <> occurrenceForms o
 
--- | Every form of Core⁺ but the typed hole.
+-- | Every form of Core⁺ but the typed hole and the fit.
 reachable :: P.Array P.String
 reachable =
   [ "EVar"
@@ -372,7 +374,7 @@ reachable =
 
 spec :: Spec Unit
 spec = describe "Elaborate, the kernel's reach over Core⁺" do
-  it "builds every form but the typed hole by its requests alone" do
+  it "builds every form but the typed hole and the fit by its requests alone" do
     case fst (runElabIn session (initialState (SessionId 0) 10) (withFrame frame (everyForm >>= traverse resolveExpr))) of
       Done objects -> do
         let

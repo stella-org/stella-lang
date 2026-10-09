@@ -430,14 +430,14 @@ What is checked directly is `awaiting` and the ready queue. That the blocked tab
 
 **A metavariable records the level of the binding group it was created in**, beside its kind and its scope. Assigning `?α := τ` lowers every unsolved metavariable of `τ` to `?α`'s level, in the same act that narrows their scopes, so that a metavariable reachable from outside a group never stands at the group's level. The level is part of `Ψ`, and a rollback restores it.
 
-**A `Row Effect` metavariable also records its provenance**: an instantiation row, created for a scheme's row quantifier where the scheme is instantiated, or an inference row, created any other way. Where an assignment identifies two, the one left records an instantiation row only if both did. Merging is part of the same assignment, so the direction of a unification decides nothing.
+**A `Row Effect` metavariable also records its provenance**: an instantiation row, created for a scheme's row quantifier where the scheme is instantiated, or an inference row, created any other way. Where an assignment identifies two — its solution the other metavariable alone, or the fresh tail a refinement of two flexible tails gives both — the one left records an instantiation row only if both did. Merging is part of the same assignment, so the direction of a unification decides nothing.
 
 ### Fits
 
 ```text
 Core⁺:  EFit a FitId (XExpr a)             the expression a wrapping fit wraps
-Ψ:      fits : FitId ⇀ { use : Wrapping | Demanding, state }
-        state ::= Undecided { source, target, site }
+Ψ:      fits : FitId ⇀ { use : Wrapping | Demanding, site, state }
+        state ::= Undecided { source, target, equated }
                 | Equal
                 | Widen w
 job:    JobEffectFit FitId
@@ -445,6 +445,7 @@ job:    JobEffectFit FitId
 
 - **The table of fits is part of `Ψ`'s tentative state.** An attempt that rolls back takes back the fits it created and every decision it made about one.
 - **A fit is decided where it is created when it can be**, and is otherwise a `JobEffectFit`, registered under the flexible tails its decision waits on. Attempting one decides it again against `Ψ` as it stands; the host's runner carries it out, as it does an equation.
+- **Deciding a fit equates the keys its two rows share first**, each key once — `equated` records the ones done — as the two one-element rows the key's entries make, so a payload mismatch is a failed equation; an equation that solves a tail can bring another key into both, and the rows are read again until none is left. Every flexible tail of either row is checked to be one `Ψ` holds unsolved before anything cancels, as a unification checks its tails: one it does not hold would cancel against itself, or be waited on by a job no assignment wakes, and is a defect of the host. A `Widen w` requires the source apart from `w`, which is what Core's `openEff` asks of the term it becomes; a source holding what the target cannot is a failure where the fit was placed, naming what is left of each row once what the two share has cancelled.
 - **A wrapping fit's `Widen w` becomes `openEff [w]`** around the expression its `EFit` holds when the term is made Core, and `Equal` leaves the expression alone. **A demanding fit**, which a cell read or write places, has no `EFit` and produces no term.
 - **An `EFit` still `Undecided` when the term is made Core is a defect of the host**, not a residue: every fit is decided or reported before a declaration is zonked.
 
@@ -749,7 +750,7 @@ jump               : Scope -> Join -> [Expr] -> Elab Expr
 
 **A builder is not a type checker.** Each `Expr` holds the type it is claimed at, zonked and kinded at `Type` under its scope; the kernel checks the scope, the class of each handle, and how a binder is used, and whether a claim is borne out is the Core type checker's to decide once the term is zonked. **A leaf is claimed at the one type it can have, and the host computes it**: a variable at the type the scope binds it at, a global at its scheme instantiated at the kinds given — judged as `instantiateScheme` judges it, by the one procedure — and a literal at its literal type. `localVariable` accepts only a name the scope binds, so no name can be made up; the names a term binder binds are the host's to draw, and a synthesizer receives the variable as an `Expr` rather than a name.
 
-**Two forms have no builder.** `?m` is made by `subgoal` alone, which creates the job that fills it. A typed hole is the Surface elaborator's, for reporting and recovery: a synthesizer that cannot build a candidate throws, where a hole would succeed here and fail only at the Core boundary, after the search had stopped.
+**Three forms have no builder.** `?m` is made by `subgoal` alone, which creates the job that fills it. A typed hole is the Surface elaborator's, for reporting and recovery: a synthesizer that cannot build a candidate throws, where a hole would succeed here and fail only at the Core boundary, after the search had stopped. A fit is the Surface elaborator's too, placed where it infers an effect row; a synthesizer writes the `openEff` it means.
 
 **A binder of a term is opened and closed as a binder of a type is**: first order, exactly once, inside out, in the scope it was opened in, by the operation for its sort. Its body's scope binds what it binds — a value, a type variable, an assumption — and the name is the host's, fresh where it is bound; the variable comes back as an `Expr` or a `Type` built in the body's scope, so a term that mentions it stays under the binder. A `let`'s right-hand side is given where the `let` is opened, as a term the outer scope may use, and its variable is bound at what that term is claimed at; every name of a `letrec` is bound in each right-hand side and in the body, each declared type is one the outer scope may use at `Type`, and the group is closed with one right-hand side for each name.
 
@@ -866,8 +867,9 @@ writeCell   : Scope -> Binder -> RowKey -> Expr -> Elab Expr
 | `EReadCell`, `EWriteCell` | `readCell`, `writeCell` |
 | `ETermMeta` | `subgoal`, and nothing else: a term metavariable is made together with the job that fills it |
 | `EHole` | none. A typed hole is the Surface elaborator's, for reporting and recovery |
+| `EFit` | none. A fit is the Surface elaborator's, placed where it infers an effect row |
 
-The table is complete, and a test holds it so: it builds every form but `EHole` by these requests alone — a term, a decision tree, an occurrence, and an operation clause — and names the forms by functions matching every constructor, so a form added to Core⁺ is placed on one side or the other before anything compiles. **What a request builds reaches the Core type checker only through the target it is committed to**: a candidate a `transact` discarded leaves no term, name, or reference behind, what does not resolve is reported as a residue, and a term in scope whose claim it does not bear out is built and committed here and refused there.
+The table is complete, and a test holds it so: it builds every form but `EHole` and `EFit` by these requests alone — a term, a decision tree, an occurrence, and an operation clause — and names the forms by functions matching every constructor, so a form added to Core⁺ is placed on one side or the other before anything compiles. **What a request builds reaches the Core type checker only through the target it is committed to**: a candidate a `transact` discarded leaves no term, name, or reference behind, what does not resolve is reported as a residue, and a term in scope whose claim it does not bear out is built and committed here and refused there.
 
 ### The catalog
 
@@ -1000,7 +1002,7 @@ The mechanism's own failure is `raiseDiagnostic`, which takes a diagnostic it ha
 | --- | --- | --- | --- |
 | **program diagnostic** | an equation no substitution satisfies; an obligation broken or rejected; a result escaping its scope; a result whose claim the goal's type refutes; a `throw` | `Failed` | yes |
 | **synthesizer defect** | a postponement nothing can wake; a stale handle, one of the wrong class, or one of another session; a builder asked for what cannot be built; a binder left open by an attempt that succeeds, or closed twice; an equation between kinds that cannot meet, or a goal not at `Type`; an occurrence read outside its branch or its `case`, or a constructor the session does not know; an operation its effect does not declare, a handler's clauses naming one twice or missing one, or a cell read where no region holds it; a request naming another conversation, or a transaction other than the innermost, or an attempt finished with a transaction open, or a commit with none open; a result not built in its goal's root scope | `Broke`, naming the synthesizer and the goal | no |
-| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; a catalog scheme ill-formed under what it declares; a name the catalog calls a constructor and the constructor table does not hold; an effect the kinding environment declares and the effect table does not hold; a handler's answer type or residual row mentioning the region variable it binds; a session or a conversation that has issued every identifier it can; a kernel request answered in another shape than its own, or a command in another shape than its own, or a candidate failure answered in a transaction the driver did not open; the mechanism's own invariants | `Broke` | no |
+| **host defect** | a `SynthRef` the session has no implementation for; a synthesis job whose target disagrees with its goal; a kernel operation reading a goal the frame does not hold; a catalog scheme ill-formed under what it declares; a name the catalog calls a constructor and the constructor table does not hold; an effect the kinding environment declares and the effect table does not hold; a handler's answer type or residual row mentioning the region variable it binds; a session or a conversation that has issued every identifier it can; a kernel request answered in another shape than its own, or a command in another shape than its own, or a candidate failure answered in a transaction the driver did not open; a fit `Ψ` does not hold, a side of one that is no row, a flexible tail of one `Ψ` does not hold, and a fit still undecided where its term is made Core; the mechanism's own invariants | `Broke` | no |
 
 **A `SynthRef` with no implementation is the host's defect and not the program's.** Name resolution resolved it against `Σ` where the goal was written ([above](#what-a-synthesis-goal-carries)), so the name exists; a session unable to run what it names was set up without it.
 
