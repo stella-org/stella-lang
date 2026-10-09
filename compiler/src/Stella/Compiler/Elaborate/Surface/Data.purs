@@ -16,6 +16,11 @@
 -- | what this version elaborates: deciding it is generalizing it, which this
 -- | version does not do, so its kind must be written.
 -- |
+-- | **A field's rows are sharp under no condition on a parameter.** A row
+-- | spreading a parameter needs it to lack the keys the row holds beside it,
+-- | and a parameter carries no condition, so such a field is refused; a row
+-- | variable a `forall` of the field binds carries its conditions there.
+-- |
 -- | A constructor's tag is its position among its declaration's constructors.
 module Stella.Compiler.Elaborate.Surface.Data
   ( DataRead
@@ -71,7 +76,9 @@ readData declarations = do
         }
     constructors <- for h.declaration.constructors \c -> do
       fields <- traverse (readTypeAt scope XKType) c.fields
-      pure { constructor: { origin: c.origin, name: c.name, fields: map _.type fields }, unsupported: Array.concatMap _.unsupported fields }
+      -- a parameter carries no condition, so a row needing one of it is refused
+      let unheld = map (\i -> UnheldConstraint i.origin i.atom) (Array.concatMap _.implied fields)
+      pure { constructor: { origin: c.origin, name: c.name, fields: map _.type fields }, unsupported: Array.concatMap _.unsupported fields <> unheld }
     pure h { constructors = map _.constructor constructors, unsupported = h.unsupported <> Array.concatMap _.unsupported constructors }
 
 -- | A declaration's head: its parameters, and the kind it writes for itself
@@ -148,6 +155,7 @@ scopeOf d kindVars =
   , kindVars: Set.fromFoldable kindVars
   , tyVars: Map.empty
   , localTypes: Map.empty :: Map.Map (Qualified TyName) LocalHead
+  , anonymous: Map.empty
   }
 
 kindVarsOf :: Kind -> Array KindVar

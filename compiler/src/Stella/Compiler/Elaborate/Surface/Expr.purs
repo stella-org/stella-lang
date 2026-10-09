@@ -11,6 +11,10 @@
 -- | with what is expected. Every equation is stated where the node it is about
 -- | stands, and one that cannot be decided yet is left to the loop.
 -- |
+-- | **A scheme's constraints are assumed where its declaration's body opens
+-- | it**, under a constraint abstraction, **and required where a global is
+-- | instantiated**, under a constraint application.
+-- |
 -- | **This version elaborates a subset**: variables, globals and constructors,
 -- | literals, application, λ over variables where its type is known, and type
 -- | annotations, over pure arrows. Anything else is reported where it stands,
@@ -37,7 +41,8 @@ import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), fromCore)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal)
 import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, currentMetas, equate, freshKindMeta, freshTypeMeta)
+import Stella.Compiler.Elaborate.CorePlus.Row (xnf)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, currentMetas, equate, freshKindMeta, freshTypeMeta, require)
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), substitute)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..), elaborateType, xFunction)
@@ -102,6 +107,9 @@ elaborateValue internal declaration origin scheme params body = opened scope0 (f
 
   opened scope = case _ of
     XForall a k rest -> ETyLam origin a k <$> opened (scope { context = bindTyVar scope.context a k }) rest
+    XConstrained c rest -> do
+      context <- lift (assume (siteAt scope origin) c)
+      EConstraintLam origin c <$> opened (scope { context = context }) rest
     ty -> lambdas scope params body ty
 
 -- | `λ`s binding the variables given at the argument types the expected type's
@@ -118,25 +126,26 @@ lambdas scope binders body expected = case Array.uncons binders of
       other -> outside (OutsideSubset (binderOrigin other) "a pattern that is no variable")
 
 -- | The argument and the result of a pure arrow the type must be. An arrow
--- | whose row is neither empty nor an unsolved metavariable — a row variable
--- | among them — is outside what this version elaborates, what the arrow is for
--- | said by the text given; an unsolved row is equated with the empty one.
+-- | whose row, zonked and normalized, holds an element or a row variable — one
+-- | that need not be empty among them — is outside what this version
+-- | elaborates, what the arrow is for said by the text given; a row of unsolved
+-- | metavariables alone is equated with the empty one.
 arrow :: String -> Scope -> Surface.Origin -> XType -> Surf { argument :: XType, result :: XType }
 arrow what scope origin ty = do
   metas <- lift currentMetas
   case substitute metas ty of
-    XApp (XApp (XApp (XCon name []) argument) row) result
-      | name == functionTy, row == XRowEmpty -> pure { argument, result }
-      | name == functionTy, not (isMeta row) -> outside (OutsideSubset origin what)
-    _ -> do
-      argument <- lift (freshTypeMeta scope.context XKType)
-      result <- lift (freshTypeMeta scope.context XKType)
-      lift (equate (siteAt scope origin) { kind: XKType, left: ty, right: xFunction argument XRowEmpty result })
-      pure { argument, result }
+    XApp (XApp (XApp (XCon name []) argument) row) result | name == functionTy -> case xnf row of
+      Right n
+        | not (Map.isEmpty n.known) || not (Set.isEmpty n.rigid) -> outside (OutsideSubset origin what)
+        | Set.isEmpty n.flexible -> pure { argument, result }
+      _ -> equatedWithPure
+    _ -> equatedWithPure
   where
-  isMeta = case _ of
-    XMeta _ -> true
-    _ -> false
+  equatedWithPure = do
+    argument <- lift (freshTypeMeta scope.context XKType)
+    result <- lift (freshTypeMeta scope.context XKType)
+    lift (equate (siteAt scope origin) { kind: XKType, left: ty, right: xFunction argument XRowEmpty result })
+    pure { argument, result }
 
 check :: Scope -> Expr -> XType -> Surf (XExpr Surface.Origin)
 check scope expr expected = case expr of
@@ -191,7 +200,9 @@ infer scope expr = case expr of
     XForall a k rest -> do
       m <- lift (freshTypeMeta scope.context k)
       instantiated o (ETyApp o e m) (substituteTyVars (Map.singleton a m) Map.empty rest)
-    XConstrained _ _ -> outside (OutsideSubset o "a global whose scheme is constrained")
+    XConstrained c rest -> do
+      lift (require (siteAt scope o) c)
+      instantiated o (EConstraintApp o e) rest
     ty -> pure { expr: e, type: ty }
 
 binderOrigin :: Binder -> Surface.Origin

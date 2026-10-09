@@ -33,7 +33,7 @@ import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, in
 import Stella.Compiler.Interface.File (decode, encode)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
 import Stella.Compiler.Interface.Prim (primAttribute)
-import Stella.Compiler.Interface.Scheme (plainScheme)
+import Stella.Compiler.Interface.Scheme (coreScheme, plainScheme)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (ParseOutcome(..), RunParser, defaultSettings)
@@ -45,9 +45,9 @@ import Stella.Compiler.Resolve.Monad (ResolveError(..), ResolveReason(..)) as Re
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore (Decl(..))
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, recordTy, unitTy)
-import Stella.Compiler.TypedCore.Type (RowEntry(..), RowKey(..), Type(..))
+import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), Type(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
@@ -326,6 +326,58 @@ spec = describe "Stella.Compiler.Build" do
             , "6:9 This version of the compiler does not elaborate applying a function that performs effects yet"
             ]
           Right _ -> fail "compiled"
+
+  describe "a row spreading a row variable" do
+    let
+      rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors
+      compiles lines = compiling lines case _ of
+        Left errors -> fail (joinWith "; " (rendered errors))
+        Right _ -> pure unit
+      refused lines expected = compiling lines case _ of
+        Left errors -> rendered errors `shouldEqual` expected
+        Right _ -> fail "compiled"
+
+    it "is quantified with what the row needs of it, which a body assumes and a reference requires" do
+      compiling
+        [ "keep :: { name :: Int, ... } -> { name :: Int, ... }"
+        , "keep r = r"
+        , "again :: { name :: Int, ... } -> { name :: Int, ... }"
+        , "again r = keep r"
+        ]
+        case _ of
+          Left errors -> fail (joinWith "; " (rendered errors))
+          Right r -> do
+            let
+              tail = TVar (TyVar "r#0")
+              named = TApp (TCon recordTy []) (TRowExtend (RowTypeEntry (SymbolKey (Symbol "name")) int) tail)
+            map (coreScheme <<< _.scheme) (Map.lookup (Ident "keep") r.interface.declarations.values) `shouldEqual`
+              Just { kindVars: [], body: TForall (TyVar "r#0") (KRow RowType) (TConstrained (Lacks (SymbolKey (Symbol "name")) tail) (pureFn named named)) }
+
+    it "is instantiated by a module importing the declaration, what it needs required there" do
+      building
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "g :: { name :: Int, age :: Int } -> { name :: Int, age :: Int }", "g r = keep r" ])
+        , Tuple "src/A.stel" (moduleOf "A" [] [ "keep :: { name :: Int, ... } -> { name :: Int, ... }", "keep r = r" ])
+        ]
+        \r -> case r.result of
+          Right built -> built `shouldEqual` [ "A", "B" ]
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+
+    it "in a data type's field is refused where it needs a parameter to lack a key, and admitted under the field's own forall" do
+      refused [ "data R r = R { name :: Int, ...r }" ]
+        [ "2:14 This row needs `r` not to hold `name`, and `r` is bound where no such condition can be carried; a `forall` written in this type can bind the row instead" ]
+      compiles [ "data P = P (forall s. { name :: Int, ...s } -> Int)" ]
+
+    it "in an annotation needs of the signature's variables what the site assumes, and `...` alone stands for nothing there" do
+      compiles [ "f :: { a :: Int, ...r } -> { a :: Int, ...r }", "f x = (x :: { a :: Int, ...r })" ]
+      refused [ "f :: { ...r } -> { ...r }", "f x = (x :: { a :: Int, ...r })" ] [ "3:13 Nothing here says that `r` does not hold `a`, which a row holding `a` beside `r` needs" ]
+      refused [ "f :: { a :: Int, ...r } -> { a :: Int, ...r }", "f x = (x :: { a :: Int, ... })" ]
+        [ "3:25 `...` alone stands for a row a signature quantifies, and nothing quantifies one here; name the row" ]
+      -- what is not read is reported, and nothing is required of it
+      refused [ "f :: { ...r } -> { ...r }", "f x = (x :: { a :: Int, ...r, b :: _ })" ]
+        [ "3:36 This version of the compiler does not elaborate a wildcard yet" ]
+
+    it "makes an arrow pure where it spreads only empty rows, as its normal form says" do
+      compiles [ "f :: Int -> Int / {| ...{||}, ...{||} |}", "f x = x" ]
 
   describe "a quotation" do
     let

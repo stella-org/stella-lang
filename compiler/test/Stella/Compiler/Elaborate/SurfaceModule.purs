@@ -175,6 +175,10 @@ at = case _ of
   Unsupported (OutsideSubset o what) -> located o <> " outside: " <> what
   Unsupported (ReportedAlready o) -> located o <> " reported"
   Unsupported (EffectAsType o _) -> located o <> " effect as type"
+  Unsupported (KeyTwice o _) -> located o <> " key twice"
+  Unsupported (SpreadTwice o _) -> located o <> " spread twice"
+  Unsupported (AnonymousSpread o) -> located o <> " anonymous spread"
+  Unsupported (UnheldConstraint o _) -> located o <> " unheld"
   WithoutSignature o _ -> located o <> " without a signature"
   KindUndetermined o -> located o <> " kind undetermined"
   Rejected (EquationFailed (AtSource s) _) -> located s.origin <> " rejected"

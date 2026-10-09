@@ -19,9 +19,10 @@ import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), UnifyError(..))
 import Data.Set as Set
 import Data.Array as Array
+import Data.Map as Map
 import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..))
 import Stella.Compiler.Elaborate.Surface.Report (printType)
-import Stella.Compiler.Elaborate.Surface.Type (Elaborated, Unsupported(..), elaborateSignature, settledScheme, xFunction)
+import Stella.Compiler.Elaborate.Surface.Type (Atom(..), Elaborated, Unsupported(..), elaborateSignature, readTypeAt, settledScheme, xFunction)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Surface.Name (BindingId(..), TypeVar(..))
@@ -33,7 +34,7 @@ import Stella.Compiler.TypedCore.Kind (Kind(..)) as Core
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), OpName(..), Qualified(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, recordTy, unitTy, variantTy)
-import Stella.Compiler.TypedCore.Type (RowEntry(..), Type(..), TypeScheme) as Core
+import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), Type(..), TypeScheme) as Core
 import Stella.Compiler.TypedCore.Type (RowKey(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -114,6 +115,12 @@ coreInt = Core.TCon intTy []
 
 rowVar :: TypeVar
 rowVar = var 2 "e"
+
+tailR :: TypeVar
+tailR = var 3 "r"
+
+tailS :: TypeVar
+tailS = var 4 "s"
 
 consoleName :: Qualified EffName
 consoleName = Qualified lib (EffName "Console")
@@ -196,8 +203,106 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Type" do
         r.scheme `shouldEqual` Left [ at 11 ]
 
     it "reports what this version does not read, and reads what surrounds it" do
-      elaborating [ a ] (arrow (TypeRecord (at 9) [ RecordField (at 9) (Symbol "x") (v a), RecordSpread (at 12) Nothing ]) (TypeSynonym (at 10) (Qualified lib (TyName "S")))) \r -> case r.outcome of
-        Done e -> e.unsupported `shouldEqual` [ OutsideSubset (at 12) "a spread", OutsideSubset (at 10) "a type synonym" ]
+      elaborating [ a ] (arrow (TypeConstrained (at 12) (app box (v a)) (v a)) (TypeSynonym (at 10) (Qualified lib (TyName "S")))) \r -> case r.outcome of
+        Done e -> e.unsupported `shouldEqual` [ OutsideSubset (at 12) "a constraint", OutsideSubset (at 10) "a type synonym" ]
+        _ -> fail "not elaborated"
+
+  describe "a spread" do
+    let
+      tyVar = Core.TVar <<< TyVar
+      lacks key tail = Core.TConstrained (Core.Lacks key (tyVar tail))
+      field n t = RecordField (at 9) (Symbol n) t
+      fieldKey n = SymbolKey (Symbol n)
+      -- `Record ( n̄ : τ̄ | tail )`
+      recordOver fields tail = Core.TApp (Core.TCon recordTy []) (Array.foldr (\(Tuple k t) rest -> Core.TRowExtend (Core.RowTypeEntry k t) rest) tail fields)
+
+    it "of a row variable needs it to lack each key the row holds, under the quantifier binding it" do
+      elaborating [ tailR ] (arrow (TypeRecord (at 9) [ field "a" int, RecordSpread (at 12) (Just (v tailR)) ]) int) \ran ->
+        ran.scheme `shouldEqual` Right
+          { kindVars: []
+          , body: Core.TForall (TyVar "r") (Core.KRow RowType) (lacks (fieldKey "a") "r" (pureFn (recordOver [ Tuple (fieldKey "a") coreInt ] (tyVar "r")) coreInt))
+          }
+
+    it "with no row is one variable per row kind the signature quantifies, in the order first mentioned" do
+      let
+        anonymousRecord = TypeRecord (at 9) [ field "age" int, RecordSpread (at 12) Nothing ]
+        anonymousRow = TypeEffectRow (at 13) [ EffectElement (console 13), EffectSpread (at 14) Nothing ]
+      elaborating [ a ] (arrow (v a) (TypeFunction (at 4) anonymousRecord anonymousRecord (Just anonymousRow))) \ran ->
+        ran.scheme `shouldEqual` Right
+          { kindVars: []
+          , body: Core.TForall (TyVar "a") Core.KType
+              ( Core.TForall (TyVar "r#0") (Core.KRow RowType)
+                  ( Core.TConstrained (Core.Lacks (fieldKey "age") (tyVar "r#0"))
+                      ( Core.TForall (TyVar "e#1") (Core.KRow RowEffect)
+                          ( Core.TConstrained (Core.Lacks (EffectKey consoleName) (tyVar "e#1"))
+                              ( pureFn (tyVar "a")
+                                  (fn (recordOver [ Tuple (fieldKey "age") coreInt ] (tyVar "r#0")) (Core.TRowExtend (Core.RowEffectEntry consoleName []) (tyVar "e#1")) (recordOver [ Tuple (fieldKey "age") coreInt ] (tyVar "r#0")))
+                              )
+                          )
+                      )
+                  )
+              )
+          }
+
+    it "needs of a variable what stands directly under the innermost binder it is about, quantifiers written or implicit" do
+      let
+        body = arrow (TypeRecord (at 9) [ field "x" int, RecordSpread (at 12) (Just (v tailR)) ]) (v a)
+        -- `forall r. x ∉ r => forall a. Record ( x : Int | r ) -> a`
+        expected = Right
+          { kindVars: []
+          , body: Core.TForall (TyVar "r") (Core.KRow RowType)
+              (lacks (fieldKey "x") "r" (Core.TForall (TyVar "a") Core.KType (pureFn (recordOver [ Tuple (fieldKey "x") coreInt ] (tyVar "r")) (tyVar "a"))))
+          }
+      elaborating [] (TypeForall (at 6) [ { origin: at 7, var: tailR, kind: Nothing }, { origin: at 8, var: a, kind: Nothing } ] body) \ran ->
+        ran.scheme `shouldEqual` expected
+      elaborating [ tailR, a ] body \ran ->
+        ran.scheme `shouldEqual` expected
+
+    it "of a row spread again is needed once, however deep the spreads" do
+      case declare primSignature libCore of
+        Left err -> fail (show err.error)
+        Right sig -> do
+          let
+            scope = { declaration, kindVars: Set.empty, tyVars: Map.singleton (TyVar "e") (XKRow RowEffect), localTypes: Map.empty, anonymous: Map.empty }
+            nested = TypeEffectRow (at 12) [ EffectElement (console 12), EffectSpread (at 13) (Just (v rowVar)) ]
+            row = TypeEffectRow (at 9) [ EffectElement (state 9 [ int ]), EffectSpread (at 10) (Just nested) ]
+          case runElabIn (sessionEnvOf sig []) (initialState (SessionId 0) 10) (readTypeAt scope (XKRow RowEffect) row) of
+            Tuple (Done read) _ -> map _.atom read.implied `shouldEqual` [ LacksAtom (EffectKey consoleName) (TyVar "e"), LacksAtom (EffectKey stateName) (TyVar "e") ]
+            _ -> fail "not read"
+
+    it "of two row variables needs them apart" do
+      elaborating [ tailR, tailS ] (arrow (TypeRecord (at 9) [ RecordSpread (at 12) (Just (v tailR)), RecordSpread (at 13) (Just (v tailS)) ]) int) \ran ->
+        ran.scheme `shouldEqual` Right
+          { kindVars: []
+          , body: Core.TForall (TyVar "r") (Core.KRow RowType) (Core.TForall (TyVar "s") (Core.KRow RowType) (Core.TConstrained (Core.Disjoint (tyVar "r") (tyVar "s")) (pureFn (Core.TApp (Core.TCon recordTy []) (Core.TRowUnion (tyVar "r") (tyVar "s"))) coreInt)))
+          }
+
+    it "of a variable a forall inside the type binds is carried under that forall, with what it needs of outer variables" do
+      let
+        inner = TypeForall (at 6) [ { origin: at 7, var: tailS, kind: Nothing } ] (arrow (TypeRecord (at 9) [ field "a" int, RecordSpread (at 12) (Just (v tailS)), RecordSpread (at 13) (Just (v tailR)) ]) int)
+      elaborating [ tailR ] (arrow inner int) \ran ->
+        ran.scheme `shouldEqual` Right
+          { kindVars: []
+          , body: Core.TForall (TyVar "r") (Core.KRow RowType)
+              ( Core.TConstrained (Core.Lacks (fieldKey "a") (tyVar "r"))
+                  ( pureFn
+                      ( Core.TForall (TyVar "s") (Core.KRow RowType)
+                          ( Core.TConstrained (Core.Lacks (fieldKey "a") (tyVar "s"))
+                              (Core.TConstrained (Core.Disjoint (tyVar "r") (tyVar "s")) (pureFn (recordOver [ Tuple (fieldKey "a") coreInt ] (Core.TRowUnion (tyVar "s") (tyVar "r"))) coreInt))
+                          )
+                      )
+                      coreInt
+                  )
+              )
+          }
+
+    it "refuses a row variable spread twice, and a key a spread brings again" do
+      elaborating [ tailR ] (arrow (TypeRecord (at 9) [ RecordSpread (at 12) (Just (v tailR)), RecordSpread (at 13) (Just (v tailR)) ]) int) \ran -> case ran.outcome of
+        Done done -> done.unsupported `shouldEqual` [ SpreadTwice (at 9) (TyVar "r") ]
+        _ -> fail "not elaborated"
+      let nested = TypeEffectRow (at 13) [ EffectElement (console 13) ]
+      elaborating [] (TypeFunction (at 4) int int (Just (TypeEffectRow (at 9) [ EffectElement (console 9), EffectSpread (at 12) (Just nested) ]))) \ran -> case ran.outcome of
+        Done done -> done.unsupported `shouldEqual` [ KeyTwice (at 9) (EffectKey consoleName) ]
         _ -> fail "not elaborated"
 
   describe "a row" do

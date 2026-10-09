@@ -21,13 +21,27 @@
 -- | effect applied at the kinds its parameters are declared at. An arrow
 -- | carries the effect row `/` writes on it, and is pure otherwise.
 -- |
+-- | **What a row's sharpness needs of the rows it spreads is carried by the
+-- | binder of their variables.** A key the row holds is absent from each row
+-- | variable it spreads, and two such variables are apart: each condition
+-- | stands as a constraint under the innermost binder that binds a variable it
+-- | is about — a `forall` written in the type, or the signature's implicit
+-- | quantifiers. One about none of them is left to whoever reads the type: an
+-- | annotation requires it where it stands, and a data type's field, whose
+-- | parameters carry no condition, refuses it.
+-- |
 -- | **This version reads a subset of types**: variables, constructors,
--- | applications, arrows, `forall`, kind annotations, tuples, rows written
--- | without a spread, and type operators naming a type constructor. Anything
--- | else is reported as outside it, and stands meanwhile as a fresh
+-- | applications, arrows, `forall`, kind annotations, tuples, rows and the rows
+-- | they spread, where a spread row is read as the empty row, elements over a
+-- | row, unions, and row variables, and type operators naming a type
+-- | constructor.
+-- | Anything else is reported as outside it, and stands meanwhile as a fresh
 -- | metavariable, so what surrounds it is still read.
 module Stella.Compiler.Elaborate.Surface.Type
   ( Unsupported(..)
+  , Atom(..)
+  , Implied
+  , atomConstraint
   , Elaborated
   , Read
   , Scope
@@ -50,19 +64,21 @@ import Prim hiding (Type)
 import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
-import Data.Foldable (foldM, foldr)
+import Data.Foldable (foldM, foldMap, foldl, foldr, for_)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Data.Either (Either(..))
+import Data.Generic.Rep (class Generic)
+import Data.Show.Generic (genericShow)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..), fromCoreKind, kindMetasOf)
-import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), toCore)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, equateKinds, freshKindMeta, freshTypeMeta, raiseDiagnostic)
+import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..), toCore, xRowEntryKey)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, equateKinds, freshBinderName, freshKindMeta, freshTypeMeta, raiseDiagnostic, require)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Elaborate.Mechanism.Kinding (instantiate)
 import Stella.Compiler.Elaborate.Mechanism.Kinding (quantifiable) as Kinding
@@ -85,6 +101,57 @@ data Unsupported
   -- | A type operator naming an effect, applied where no effect row's element
   -- | stands: an effect is no type.
   | EffectAsType Surface.Origin (Qualified EffName)
+  -- | A row that would hold a key twice, one of them brought by a spread.
+  | KeyTwice Surface.Origin RowKey
+  -- | A row spreading one row variable twice.
+  | SpreadTwice Surface.Origin TyVar
+  -- | `...` with no row, where nothing quantifies the row it stands for.
+  | AnonymousSpread Surface.Origin
+  -- | A condition a row's sharpness puts on a variable bound where no
+  -- | condition can be carried: a data type's parameter.
+  | UnheldConstraint Surface.Origin Atom
+
+-- | A condition the sharpness of a row written in a type puts on its tails:
+-- | that a tail lacks a key the row holds beside it, or that two of its tails
+-- | are apart. A row's tails are row variables, so the condition is atomic.
+data Atom
+  = LacksAtom RowKey TyVar
+  | DisjointAtom TyVar TyVar
+
+-- | An atom, and where the row requiring it stands.
+type Implied = { origin :: Surface.Origin, atom :: Atom }
+
+-- | The constraint an atom is.
+atomConstraint :: Atom -> XConstraint
+atomConstraint = case _ of
+  LacksAtom key tail -> XLacks key (XVar tail)
+  DisjointAtom a b -> XDisjoint (XVar a) (XVar b)
+
+-- | The variables an atom is about.
+atomVars :: Atom -> Set TyVar
+atomVars = case _ of
+  LacksAtom _ tail -> Set.singleton tail
+  DisjointAtom a b -> Set.fromFoldable [ a, b ]
+
+-- | `C̄ => τ`, the atoms given normalized: each once, in their order.
+constrained :: Array Implied -> XType -> XType
+constrained implied body = foldr (\a t -> XConstrained (atomConstraint a) t) body (Set.toUnfoldable (Set.fromFoldable (map _.atom implied)) :: Array Atom)
+
+-- | `forall` of the binders given, outermost first, over the body: each atom
+-- | about one of them stands directly under the innermost binder it is about,
+-- | and the atoms about none of them are given back.
+quantify :: Array { var :: TyVar, kind :: XKind } -> Array Implied -> XType -> { type :: XType, rest :: Array Implied }
+quantify binders implied body = foldr bind { type: body, rest: implied } binders
+  where
+  bind b inner =
+    let
+      split = Array.partition (\i -> Set.member b.var (atomVars i.atom)) inner.rest
+    in
+      { type: XForall b.var b.kind (constrained split.yes inner.type), rest: split.no }
+
+-- | Each atom once, the first given standing for it.
+distinctAtoms :: Array Implied -> Array Implied
+distinctAtoms = Array.nubByEq (\x y -> x.atom == y.atom)
 
 -- | A signature elaborated: where its type stands; the kind variables its
 -- | kinds mention, which its scheme binds; its type; each place a kind was
@@ -99,13 +166,16 @@ type Elaborated =
   }
 
 -- | What a type is read under: the declaration it belongs to, the kind
--- | variables in scope, the kind of each type variable bound, and the type
--- | constructors the module declares whose kinds are being decided.
+-- | variables in scope, the kind of each type variable bound, the type
+-- | constructors the module declares whose kinds are being decided, and the
+-- | row variable `...` stands for at each row kind, where a signature
+-- | quantifies one.
 type Scope =
   { declaration :: Qualified Ident
   , kindVars :: Set KindVar
   , tyVars :: Map TyVar XKind
   , localTypes :: Map (Qualified TyName) LocalHead
+  , anonymous :: Map RowElemKind TyVar
   }
 
 -- | The kind a type constructor of the module is read at while its declaration
@@ -117,37 +187,73 @@ type LocalHead = { kindVars :: Array KindVar, body :: XKind }
 -- | and what was outside the subset.
 type ReadBinder = { var :: TypeVar, kind :: XKind, unwritten :: Array { origin :: Surface.Origin, kind :: XKind }, unsupported :: Array Unsupported }
 
--- | What reading one type gave.
-type Read = { type :: XType, kind :: XKind, unwritten :: Array { origin :: Surface.Origin, kind :: XKind }, unsupported :: Array Unsupported }
+-- | What reading one type gave. `implied` are the atoms its rows require that
+-- | no binder in it took: they are about variables bound around it.
+type Read =
+  { type :: XType
+  , kind :: XKind
+  , unwritten :: Array { origin :: Surface.Origin, kind :: XKind }
+  , unsupported :: Array Unsupported
+  , implied :: Array Implied
+  }
 
--- | `forall ā. τ`, where `ā` are the variables the signature quantifies
--- | implicitly, at `Type`.
+-- | `forall ā. C̄ => τ`, at `Type`: `ā` the variables the signature quantifies
+-- | implicitly, in the order they are first mentioned, and `C̄` what the rows
+-- | of `τ` require of them that no `forall` inside `τ` took.
+-- |
+-- | **`...` with no row is a variable the signature quantifies implicitly**, one
+-- | per row kind, so every `...` of one kind in the signature is the same row;
+-- | it is named apart from every name source can write.
 elaborateSignature :: Qualified Ident -> Signature Type -> Elab Elaborated
 elaborateSignature declaration signature = do
   let kindVars = foldr Set.insert Set.empty (typeKindVars signature.body)
-  implicit <- traverse (\v -> { var: v, kind: _ } <$> freshKindMeta kindVars quantifiable) signature.implicit
+  named <- traverse (\v -> { var: v, kind: _ } <$> freshKindMeta kindVars quantifiable) signature.implicit
+  spreads <- traverse
+    (\k -> { kind: k, var: _ } <$> freshBinderName (writtenTyVars signature.body) (hintOf k))
+    (Array.nub (Array.mapMaybe spreadKind (mentions signature.body)))
   let
+    quantified = Array.nub (Array.mapMaybe quantifier (mentions signature.body))
+      <> map (\n -> { var: nameOf n.var, kind: n.kind }) (Array.filter (\n -> not (Array.elem (MentionVar n.var) (mentions signature.body))) named)
+    quantifier = case _ of
+      MentionVar v -> map (\n -> { var: nameOf n.var, kind: n.kind }) (Array.find (\n -> n.var == v) named)
+      MentionSpread k -> map (\s -> { var: s.var, kind: XKRow k }) (Array.find (\s -> s.kind == k) spreads)
     scope =
       { declaration
       , kindVars
-      , tyVars: Map.fromFoldable (map (\i -> Tuple (nameOf i.var) i.kind) implicit)
+      , tyVars: Map.fromFoldable (map (\q -> Tuple q.var q.kind) quantified)
       , localTypes: Map.empty
+      , anonymous: Map.fromFoldable (map (\s -> Tuple s.kind s.var) spreads)
       }
   body <- checkAt scope XKType signature.body
+  let taken = quantify quantified body.implied body.type
   pure
     { origin: typeOrigin signature.body
     , kindVars: Array.fromFoldable kindVars
-    , type: foldr (\i t -> XForall (nameOf i.var) i.kind t) body.type implicit
+    , type: taken.type
     -- an implicit variable is written first where it is first mentioned
-    , unwritten: map (\i -> { origin: fromMaybe (typeOrigin signature.body) (firstMention i.var signature.body), kind: i.kind }) implicit <> body.unwritten
-    , unsupported: body.unsupported
+    , unwritten: map (\i -> { origin: fromMaybe (typeOrigin signature.body) (firstMention i.var signature.body), kind: i.kind }) named <> body.unwritten
+    , unsupported: body.unsupported <> map (\i -> UnheldConstraint i.origin i.atom) taken.rest
     }
+  where
+  spreadKind = case _ of
+    MentionSpread k -> Just k
+    MentionVar _ -> Nothing
+  hintOf = case _ of
+    RowType -> "r"
+    RowEffect -> "e"
 
 -- | A type written inside a declaration, at `Type`, under the kind variables and
 -- | the type variables the context binds: an annotation, whose variables are
--- | those of the signature around it.
+-- | those of the signature around it. What its rows require of those is
+-- | required where the annotation stands, from what the context assumes, once
+-- | every part of it is read.
 elaborateType :: Qualified Ident -> XContext -> Type -> Elab Read
-elaborateType declaration context = checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars, localTypes: Map.empty } XKType
+elaborateType declaration context t = do
+  r <- checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars, localTypes: Map.empty, anonymous: Map.empty } XKType t
+  -- a form not read is reported before anything is required of what it stands in
+  when (Array.null r.unsupported) do
+    for_ r.implied \i -> require { context, origin: AtSource { declaration, origin: i.origin } } (atomConstraint i.atom)
+  pure r { implied = [] }
 
 -- | A type at the kind given, under the scope given.
 readTypeAt :: Scope -> XKind -> Type -> Elab Read
@@ -181,6 +287,7 @@ readType scope t = case t of
       , kind: instantiateKindVars instantiated head.body
       , unwritten: map (\kind -> { origin: o, kind }) args
       , unsupported: []
+      , implied: []
       }
   TypeConstructor o name -> do
     env <- askEnv
@@ -192,6 +299,7 @@ readType scope t = case t of
           , kind: instantiate scheme args
           , unwritten: map (\kind -> { origin: o, kind }) args
           , unsupported: []
+          , implied: []
           }
       Nothing -> unsupported (OutsideSubset o "a type constructor the signature does not hold")
   TypeApp o f x -> do
@@ -213,13 +321,13 @@ readType scope t = case t of
     read <- traverse (checkAt scope XKType) components
     let row = foldr (\(Tuple n c) rest -> XRowExtend (XRowTypeEntry (PositionKey n) c.type) rest) XRowEmpty (Array.mapWithIndex Tuple read)
     pure (joined read (XApp (XCon recordTy []) row) XKType)
-  TypeRecord _ items -> do
-    row <- rowOf scope RowType (map recordItem items)
+  TypeRecord o items -> do
+    row <- rowOf scope o RowType (map recordItem items)
     pure row { type = XApp (XCon recordTy []) row.type, kind = XKType }
-  TypeVariant _ items -> do
-    row <- rowOf scope RowType (map variantItem items)
+  TypeVariant o items -> do
+    row <- rowOf scope o RowType (map variantItem items)
     pure row { type = XApp (XCon variantTy []) row.type, kind = XKType }
-  TypeEffectRow _ items -> rowOf scope RowEffect (map effectItem items)
+  TypeEffectRow o items -> rowOf scope o RowEffect (map effectItem items)
   TypeOperator o op l r -> case op.target of
     TargetTypeConstructor name -> readType scope (TypeApp o (TypeApp o (TypeConstructor op.origin name) l) r)
     TargetTypeSynonym _ -> unsupported (OutsideSubset op.origin "a type synonym")
@@ -228,11 +336,14 @@ readType scope t = case t of
     bound <- traverse (binder scope) binders
     let inner = scope { tyVars = foldr (\b m -> Map.insert (nameOf b.var) b.kind m) scope.tyVars bound }
     body' <- checkAt inner XKType body
+    -- what the rows require of a variable this `forall` binds stands under it
+    let taken = quantify (map (\b -> { var: nameOf b.var, kind: b.kind }) bound) body'.implied body'.type
     pure
-      { type: foldr (\b ty -> XForall (nameOf b.var) b.kind ty) body'.type bound
+      { type: taken.type
       , kind: XKType
       , unwritten: Array.concatMap _.unwritten bound <> body'.unwritten
       , unsupported: Array.concatMap _.unsupported bound <> body'.unsupported
+      , implied: taken.rest
       }
   TypeKinded _ inner k -> do
     kind <- readKind k
@@ -246,34 +357,39 @@ readType scope t = case t of
   TypeWildcard o -> unsupported (OutsideSubset o "a wildcard")
   TypeHole o _ -> unsupported (OutsideSubset o "a typed hole")
   where
-  plain ty kind = { type: ty, kind, unwritten: [], unsupported: [] }
+  plain ty kind = { type: ty, kind, unwritten: [], unsupported: [], implied: [] }
 
   -- a form not read stands as a metavariable of a kind of its own
   unsupported problem = do
     kind <- freshKindMeta scope.kindVars Set.empty
     meta <- freshTypeMeta (emptyXContext { kindVars = scope.kindVars }) kind
-    pure { type: meta, kind, unwritten: [], unsupported: [ problem ] }
+    pure { type: meta, kind, unwritten: [], unsupported: [ problem ], implied: [] }
 
 joined :: Array Read -> XType -> XKind -> Read
 joined parts ty kind =
-  { type: ty, kind, unwritten: Array.concatMap _.unwritten parts, unsupported: Array.concatMap _.unsupported parts }
+  { type: ty
+  , kind
+  , unwritten: Array.concatMap _.unwritten parts
+  , unsupported: Array.concatMap _.unsupported parts
+  , implied: distinctAtoms (Array.concatMap _.implied parts)
+  }
 
 -- | An item of a row as written: an element, read by the action given, or a
 -- | spread.
 data RowItem
   = Element (Scope -> Elab { entry :: XRowEntry, read :: Read })
-  | Spread Surface.Origin
+  | Spread Surface.Origin (Maybe Type)
 
 recordItem :: RecordRowItem -> RowItem
 recordItem = case _ of
   RecordField _ label t -> Element (typeEntry (SymbolKey label) t)
-  RecordSpread o _ -> Spread o
+  RecordSpread o t -> Spread o t
 
 variantItem :: VariantRowItem -> RowItem
 variantItem = case _ of
   VariantTag _ tag t -> Element (typeEntry (TagKey tag) t)
   VariantLabel _ label t -> Element (typeEntry (SymbolKey label) t)
-  VariantSpread o _ -> Spread o
+  VariantSpread o t -> Spread o t
 
 effectItem :: EffectRowItem -> RowItem
 effectItem = case _ of
@@ -283,7 +399,7 @@ effectItem = case _ of
   EffectInstance _ label application -> Element \scope -> do
     e <- effectApplication scope application
     pure { entry: XRowLabelledEffectEntry label application.effect e.arguments, read: e.read }
-  EffectSpread o _ -> Spread o
+  EffectSpread o t -> Spread o t
 
 -- | An element of a `Row Type`: its payload at `Type`, under its key.
 typeEntry :: RowKey -> Type -> Scope -> Elab { entry :: XRowEntry, read :: Read }
@@ -291,29 +407,76 @@ typeEntry key t scope = do
   payload <- checkAt scope XKType t
   pure { entry: XRowTypeEntry key payload.type, read: payload }
 
--- | A row of the element kind given, its elements in the order written and
--- | nothing beyond them. A spread is outside what this version reads, and the
--- | row holding one is read with a metavariable for its tail.
-rowOf :: Scope -> RowElemKind -> Array RowItem -> Elab Read
-rowOf scope elementKind items = do
-  elements <- traverse
+-- | A row of the element kind given, written at the origin given: its
+-- | elements in the order written, over the union of the rows it spreads, each
+-- | read at the row's kind. `...` alone spreads the row variable the signature
+-- | quantifies at that kind.
+-- |
+-- | **The row is sharp only under the atoms it implies**: each key it holds
+-- | is absent from each row variable it spreads, and the row variables are
+-- | apart, which `⊎` asks of what it joins. They are left for the binder of
+-- | those variables to carry. A key held twice, a row variable spread twice,
+-- | and a spread of a row this version does not take apart into the empty
+-- | row, elements, unions, and row variables are reported where the row stands.
+rowOf :: Scope -> Surface.Origin -> RowElemKind -> Array RowItem -> Elab Read
+rowOf scope origin elementKind items = do
+  read <- traverse
     ( case _ of
-        Element element -> Just <$> element scope
-        Spread _ -> pure Nothing
+        Element element -> (\e -> { entry: Just e.entry, read: e.read }) <$> element scope
+        Spread _ (Just t) -> { entry: Nothing, read: _ } <$> checkAt scope (XKRow elementKind) t
+        Spread o Nothing -> case Map.lookup elementKind scope.anonymous of
+          Just v -> pure { entry: Nothing, read: { type: XVar v, kind: XKRow elementKind, unwritten: [], unsupported: [], implied: [] } }
+          Nothing -> { entry: Nothing, read: _ } <$> unreadRow o
     )
     items
-  let spreads = Array.mapMaybe spreadOrigin items
-  tail <-
-    if Array.null spreads then pure XRowEmpty
-    else freshTypeMeta (emptyXContext { kindVars = scope.kindVars }) (XKRow elementKind)
   let
-    present = Array.catMaybes elements
-    read = joined (map _.read present) (foldr (\e rest -> XRowExtend e.entry rest) tail present) (XKRow elementKind)
-  pure read { unsupported = read.unsupported <> map (\o -> OutsideSubset o "a spread") spreads }
+    entries = Array.mapMaybe _.entry read
+    spread = Array.mapMaybe (\r -> if isJust r.entry then Nothing else Just r.read.type) read
+    tail = case Array.uncons spread of
+      Nothing -> XRowEmpty
+      Just { head, tail: rest } -> foldl XRowUnion head rest
+    row = foldr XRowExtend tail entries
+    parts = partsOf row
+    keys = Array.nub parts.keys
+    tails = Array.nub parts.tails
+    problems =
+      map (KeyTwice origin) (Array.nub (twice parts.keys))
+        <> map (SpreadTwice origin) (Array.nub (twice parts.tails))
+        <> (if Array.null parts.other then [] else [ OutsideSubset origin "a spread of a row that is not made of the empty row, elements over rows, unions, and row variables" ])
+    atoms =
+      (LacksAtom <$> keys <*> tails)
+        <> Array.concat (Array.mapWithIndex (\n a -> map (disjoint a) (Array.drop (n + 1) tails)) tails)
+    joinedRead = joined (map _.read read) row (XKRow elementKind)
+  pure joinedRead
+    { unsupported = joinedRead.unsupported <> problems
+    , implied = distinctAtoms (joinedRead.implied <> map { origin, atom: _ } atoms)
+    }
   where
-  spreadOrigin = case _ of
-    Spread o -> Just o
-    Element _ -> Nothing
+  -- a pair of row variables apart, the same condition however they are ordered
+  disjoint a b = if a <= b then DisjointAtom a b else DisjointAtom b a
+  unreadRow o = pure { type: XRowEmpty, kind: XKRow elementKind, unwritten: [], unsupported: [ AnonymousSpread o ], implied: [] }
+
+  twice :: forall a. Eq a => Array a -> Array a
+  twice xs = Array.filter (\x -> Array.length (Array.filter (_ == x) xs) > 1) xs
+
+-- | What a row is made of: the keys it holds, the row variables it spreads,
+-- | each as often as it does, and what else stands for a row in it. A
+-- | metavariable is a form not read, reported where it stands.
+partsOf :: XType -> { keys :: Array RowKey, tails :: Array TyVar, other :: Array XType }
+partsOf = case _ of
+  XRowEmpty -> none
+  XRowExtend entry rest -> let r = partsOf rest in r { keys = Array.cons (xRowEntryKey entry) r.keys }
+  XRowUnion l r ->
+    let
+      left = partsOf l
+      right = partsOf r
+    in
+      { keys: left.keys <> right.keys, tails: left.tails <> right.tails, other: left.other <> right.other }
+  XVar v -> none { tails = [ v ] }
+  XMeta _ -> none
+  other -> none { other = [ other ] }
+  where
+  none = { keys: [], tails: [], other: [] }
 
 -- | An effect applied to its arguments, read as an application of something at
 -- | the arrow of its parameters' kinds into `Effect`: each argument is read at
@@ -344,6 +507,7 @@ effectApplication scope application = do
     , kind: XKEffect
     , unwritten: []
     , unsupported: [ OutsideSubset application.origin "an effect the signature does not hold" ]
+    , implied: []
     }
 
 -- | A kind with the kind variables given replaced.
@@ -411,6 +575,53 @@ typeKindVars t = written <> Array.concatMap typeKindVars (typeParts t)
     KindVariable _ v -> [ v ]
     _ -> []
 
+-- | What a signature may quantify implicitly, as a type mentions it: a type
+-- | variable, or `...` alone at a row kind.
+data Mention
+  = MentionVar TypeVar
+  | MentionSpread RowElemKind
+
+derive instance Eq Mention
+
+-- | Each variable and each `...` alone a type mentions, in the order written.
+mentions :: Type -> Array Mention
+mentions t = case t of
+  TypeVariable _ v -> [ MentionVar v ]
+  TypeRecord _ items -> Array.concatMap
+    ( case _ of
+        RecordField _ _ x -> mentions x
+        RecordSpread _ x -> spreadMentions RowType x
+    )
+    items
+  TypeVariant _ items -> Array.concatMap
+    ( case _ of
+        VariantTag _ _ x -> mentions x
+        VariantLabel _ _ x -> mentions x
+        VariantSpread _ x -> spreadMentions RowType x
+    )
+    items
+  TypeEffectRow _ items -> Array.concatMap
+    ( case _ of
+        EffectElement application -> Array.concatMap mentions application.arguments
+        EffectInstance _ _ application -> Array.concatMap mentions application.arguments
+        EffectSpread _ x -> spreadMentions RowEffect x
+    )
+    items
+  _ -> Array.concatMap mentions (typeParts t)
+  where
+  spreadMentions kind = case _ of
+    Just x -> mentions x
+    Nothing -> [ MentionSpread kind ]
+
+-- | Every type variable a type writes, bound or mentioned.
+writtenTyVars :: Type -> Set TyVar
+writtenTyVars t = Set.fromFoldable own <> foldMap writtenTyVars (typeParts t)
+  where
+  own = case t of
+    TypeVariable _ v -> [ nameOf v ]
+    TypeForall _ binders _ -> map (nameOf <<< _.var) binders
+    _ -> []
+
 -- | The types a type is written with, in the order written.
 typeParts :: Type -> Array Type
 typeParts = case _ of
@@ -460,8 +671,14 @@ settledScheme metas e =
 
 derive instance Eq Unsupported
 
+derive instance Generic Unsupported _
+
 instance Show Unsupported where
-  show = case _ of
-    OutsideSubset o what -> "OutsideSubset (" <> show o <> ") " <> show what
-    ReportedAlready o -> "ReportedAlready (" <> show o <> ")"
-    EffectAsType o e -> "EffectAsType (" <> show o <> ") (" <> show e <> ")"
+  show = genericShow
+
+derive instance Eq Atom
+derive instance Ord Atom
+derive instance Generic Atom _
+
+instance Show Atom where
+  show = genericShow

@@ -27,9 +27,10 @@ import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowNormalForm)
 import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..))
+import Stella.Compiler.Elaborate.Mechanism.Obligation (Breach(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError(..))
 import Stella.Compiler.Elaborate.Surface.Module (ElaborationError(..))
-import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..))
+import Stella.Compiler.Elaborate.Surface.Type (Atom(..), Unsupported(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
@@ -43,6 +44,10 @@ elaborationOrigins = case _ of
   Unsupported (OutsideSubset o _) -> [ o ]
   Unsupported (ReportedAlready o) -> [ o ]
   Unsupported (EffectAsType o _) -> [ o ]
+  Unsupported (KeyTwice o _) -> [ o ]
+  Unsupported (SpreadTwice o _) -> [ o ]
+  Unsupported (AnonymousSpread o) -> [ o ]
+  Unsupported (UnheldConstraint o _) -> [ o ]
   WithoutSignature o _ -> [ o ]
   KindUndetermined o -> [ o ]
   Rejected d -> diagnosticOrigins d
@@ -73,6 +78,11 @@ printElaborationError = case _ of
   Unsupported (OutsideSubset _ what) -> fmt @"This version of the compiler does not elaborate {what} yet" { what }
   Unsupported (ReportedAlready _) -> "This was not read, as reported already"
   Unsupported (EffectAsType _ (Qualified _ (EffName e))) -> fmt @"This names the effect `{e}`, which stands as an element of an effect row and is no type" { e }
+  Unsupported (KeyTwice _ key) -> fmt @"This row would hold `{k}` twice, once through a row it spreads; a row holds each key once" { k: keyName key }
+  Unsupported (SpreadTwice _ (TyVar v)) -> fmt @"This row spreads `{v}` twice; a row holds each key once, so a row variable is spread into it once" { v }
+  Unsupported (AnonymousSpread _) -> "`...` alone stands for a row a signature quantifies, and nothing quantifies one here; name the row"
+  Unsupported (UnheldConstraint _ (LacksAtom key (TyVar v))) -> fmt @"This row needs `{v}` not to hold `{k}`, and `{v}` is bound where no such condition can be carried; a `forall` written in this type can bind the row instead" { v, k: keyName key }
+  Unsupported (UnheldConstraint _ (DisjointAtom (TyVar a) (TyVar b))) -> fmt @"This row needs `{a}` and `{b}` to hold no key in common, and they are bound where no such condition can be carried; a `forall` written in this type can bind them instead" { a, b }
   WithoutSignature _ name -> fmt @"`{name}` needs a type signature in this version of the compiler" { name: nameOf name }
   KindUndetermined _ -> "Nothing here determines the kind of this type"
   Rejected d -> printDiagnostic d
@@ -91,10 +101,21 @@ printElaborationError = case _ of
 printDiagnostic :: Diagnostic -> String
 printDiagnostic = case _ of
   EquationFailed _ err -> printUnifyError err
-  ObligationBroken _ -> "A row constraint no longer holds once this is solved"
-  ObligationRejected _ -> "A row constraint does not hold here"
+  ObligationBroken b -> printBreach b.breach
+  ObligationRejected r -> printBreach r.breach
   TermAssignmentFailed _ _ -> "A term filled in here is not valid where it stands"
   SynthesisFailed _ -> "A synthesizer failed here"
+
+-- | Why a row's sharpness does not hold: the key or the row variables it is
+-- | about.
+printBreach :: Breach -> String
+printBreach = case _ of
+  SolutionCarriesKey key -> fmt @"A row here would hold `{k}` twice" { k: keyName key }
+  LacksUnprovenAtSite key (TyVar v) -> fmt @"Nothing here says that `{v}` does not hold `{k}`, which a row holding `{k}` beside `{v}` needs" { v, k: keyName key }
+  SidesShareKey key -> fmt @"Two rows joined here would both hold `{k}`" { k: keyName key }
+  DisjointUnprovenAtSite (TyVar a) (TyVar b) -> fmt @"Nothing here says that `{a}` and `{b}` hold no key in common, which a row holding both needs" { a, b }
+  SiteFactsFailed _ -> "The rows the signature here describes need conditions that contradict each other"
+  ObligationNotARow _ -> "Internal compiler error: a row constraint was decided of what is no row"
 
 printUnifyError :: UnifyError -> String
 printUnifyError = case _ of
@@ -207,23 +228,25 @@ printType = go 0
     tail -> { entries: [], spreads: [ tail ] }
 
   entry = case _ of
-    XRowTypeEntry key payload -> fmt @"{key} :: {payload}" { key: keyText key, payload: go 0 payload }
+    XRowTypeEntry key payload -> fmt @"{key} :: {payload}" { key: keyName key, payload: go 0 payload }
     XRowEffectEntry e args -> effectText e args
     XRowLabelledEffectEntry (Symbol s) e args -> fmt @"{s} :: {effect}" { s, effect: effectText e args }
     XRowRegionEntry (RegionName r) -> fmt @"region {r}" { r }
 
   effectText (Qualified _ (EffName e)) args = joinWith " " (Array.cons e (map (go 2) args))
 
-  keyText = case _ of
-    SymbolKey (Symbol s) -> s
-    TagKey (Tag t) -> "'" <> t
-    PositionKey n -> show n
-    EffectKey (Qualified _ (EffName e)) -> e
-    RegionKey (RegionName r) -> "region " <> r
-
   bracketed open close = case _ of
     [] -> open <> close
     items -> fmt @"{open} {items} {close}" { open, items: joinWith ", " items, close }
+
+-- | A row's key as source writes it.
+keyName :: RowKey -> String
+keyName = case _ of
+  SymbolKey (Symbol s) -> s
+  TagKey (Tag t) -> "'" <> t
+  PositionKey n -> show n
+  EffectKey (Qualified _ (EffName e)) -> e
+  RegionKey (RegionName r) -> "region " <> r
 
 -- | A kind as an author would write it, a metavariable as `?`.
 printKind :: XKind -> String
