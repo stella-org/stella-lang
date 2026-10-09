@@ -1,8 +1,4 @@
 -- | Kinds of Typed Core.
--- |
--- | Kinds and types are separate syntactic classes (D2), and kinds are
--- | stratified into three layers (D24): row element kinds, general kinds, and
--- | the quantifiable subset.
 module Stella.Compiler.TypedCore.Kind
   ( RowElemKind(..)
   , Kind(..)
@@ -26,17 +22,17 @@ import Data.Generic.Rep (class Generic)
 import Data.Show.Generic (genericShow)
 
 -- | The kinds a row may have elements of, written `ε`.
--- |
--- | `Row` is applied to one of these and to nothing else, which is what keeps
--- | degenerate row kinds such as `Row (Type -> Type)` out of the grammar.
 data RowElemKind
   = RowType
   | RowEffect
 
--- | A kind, written `κ`.
--- |
--- | `KEffect` is the result kind of an effect constructor. It is a kind but not
--- | a quantifiable one, so `forall (e : Effect)` is underivable (D24).
+derive instance Eq RowElemKind
+derive instance Ord RowElemKind
+derive instance Generic RowElemKind _
+instance Show RowElemKind where
+  show = genericShow
+
+-- | A *raw* kind `κ`, which means not checked for well-formedness.
 data Kind
   = KVar KindVar
   | KType
@@ -44,8 +40,15 @@ data Kind
   | KRow RowElemKind
   | KFun Kind Kind
 
--- | A prenex kind scheme over `a`. The binder disappears when `kindVars` is
--- | empty, which is the case for most declarations.
+derive instance Eq Kind
+derive instance Ord Kind
+derive instance Generic Kind _
+instance Show Kind where
+  show x = genericShow x
+
+-- | A prenex kind scheme over `a`.
+-- | The binder disappears when `kindVars` is empty, which is
+-- | the case for most declarations.
 type Scheme a =
   { kindVars :: Array KindVar
   , body :: a
@@ -59,9 +62,8 @@ monoScheme :: forall a. a -> Scheme a
 monoScheme body = { kindVars: [], body }
 
 -- | The kind variables a kind mentions.
--- |
--- | Kind schemes are prenex (D3), so a kind has no binder of its own and every
--- | variable here is free.
+-- | Since kind schemes are prenex, a kind has no binder of its own
+-- | and every variable here is free.
 kindVarsOf :: Kind -> Set KindVar
 kindVarsOf = case _ of
   KVar k -> Set.singleton k
@@ -71,18 +73,13 @@ kindVarsOf = case _ of
   KFun a b -> kindVarsOf a <> kindVarsOf b
 
 -- | What a kind produces once it is fully applied.
--- |
--- | Only row syntax may produce a row, so this is `Type` for every type
--- | constructor and for every arrow inside a quantifiable kind, and `Effect`
--- | for an effect constructor.
 resultKind :: Kind -> Kind
 resultKind = case _ of
   KFun _ b -> resultKind b
   k -> k
 
--- | Instantiate kind variables. Kind schemes are prenex and instantiation is
--- | explicit, so this is a substitution over a kind and nothing more: there is
--- | no binder to avoid capturing.
+-- | Instantiate kind variables. Since there is no computation at kind level,
+-- | we don't have to consider capturing; there is no kind-abstraction.
 substituteKind :: Map KindVar Kind -> Kind -> Kind
 substituteKind sub = go
   where
@@ -93,16 +90,3 @@ substituteKind sub = go
     KRow e -> KRow e
     KFun a b -> KFun (go a) (go b)
 
-derive instance Eq RowElemKind
-derive instance Ord RowElemKind
-derive instance Generic RowElemKind _
-
-instance Show RowElemKind where
-  show = genericShow
-
-derive instance Eq Kind
-derive instance Ord Kind
-derive instance Generic Kind _
-
-instance Show Kind where
-  show x = genericShow x
