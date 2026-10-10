@@ -1,5 +1,5 @@
--- | A value declaration's body elaborated into Core⁺, checked against its
--- | signature ([Elaboration](../../../../../docs/technical-references/02-Surface-Language/01-Elaboration.md)).
+-- | A value or computation declaration's body elaborated into Core⁺, checked
+-- | against its signature ([Elaboration](../../../../../docs/technical-references/02-Surface-Language/01-Elaboration.md)).
 -- |
 -- | **Checking is directed by the signature.** A declaration's scheme is opened
 -- | by type abstractions, its parameters are bound by λs at the argument types
@@ -19,20 +19,26 @@
 -- | decides. An arrow instantiation or inference gives is no boundary, its row
 -- | being ambient as it is.
 -- |
+-- | **A computation is a thunk**: its definition binds the `Unit` of its Core
+-- | type ahead of its body, which is checked under a boundary at the row its
+-- | signature writes, and a reference to it is forced, applied to `Prim.Unit`
+-- | as any function is applied.
+-- |
 -- | **A scheme's constraints are assumed where its declaration's body opens
 -- | it**, under a constraint abstraction, **and required where a global is
 -- | instantiated**, under a constraint application.
 -- |
--- | **This version elaborates a subset**: variables, globals and constructors,
--- | literals, application, λ over variables, and type annotations. A
--- | synthesized argument of the declaration's own is a parameter like any
--- | other; a reference to a value taking one is outside the subset, a goal
--- | being what supplies the argument. Anything else is reported where it
+-- | **This version elaborates a subset**: variables, globals, computations,
+-- | constructors, literals, application, λ over variables, and type
+-- | annotations. A synthesized argument of the declaration's own is a parameter
+-- | like any other; a reference to a value taking one is outside the subset, a
+-- | goal being what supplies the argument. Anything else is reported where it
 -- | stands, and the declaration holding it is not elaborated further.
 module Stella.Compiler.Elaborate.Surface.Expr
   ( Surf
   , runSurf
   , elaborateValue
+  , elaborateComputation
   ) where
 
 import Prelude
@@ -52,7 +58,7 @@ import Stella.Compiler.Elaborate.Surface.Internal (Internal)
 import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceEnv)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, closeBoundary, currentMetas, equate, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, require)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, closeBoundary, currentMetas, equate, freshIdent, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, require)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), substitute)
@@ -61,7 +67,7 @@ import Stella.Compiler.Surface.Expr (Binder(..), Expr(..), exprOrigin)
 import Stella.Compiler.Surface.Name (LocalVar(..))
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Name (Ident, Qualified)
-import Stella.Compiler.TypedCore.Prim (functionTy, litType)
+import Stella.Compiler.TypedCore.Prim (functionTy, litType, unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
 import Stella.Compiler.TypedCore.Type (TypeScheme)
 
@@ -126,10 +132,34 @@ elaborateValue
   -> Array Binder
   -> Expr
   -> Surf (XExpr Surface.Origin)
-elaborateValue internal surface declaration origin scheme params body =
+elaborateValue internal surface declaration origin scheme params =
+  definition internal surface declaration origin scheme (map Named params)
+
+-- | A computation declaration's definition, at its Core scheme `∀ā. C =>
+-- | Unit -{ρ}-> τ`: as a value's, its one parameter the thunk's `Unit`, so its
+-- | body is checked against `τ` under a checking boundary at `ρ`.
+elaborateComputation
+  :: Internal
+  -> SurfaceEnv
+  -> Qualified Ident
+  -> Surface.Origin
+  -> TypeScheme
+  -> Expr
+  -> Surf (XExpr Surface.Origin)
+elaborateComputation internal surface declaration origin scheme =
+  definition internal surface declaration origin scheme [ Thunk ]
+
+definition :: Internal -> SurfaceEnv -> Qualified Ident -> Surface.Origin -> TypeScheme -> Array Parameter -> Expr -> Surf (XExpr Surface.Origin)
+definition internal surface declaration origin scheme params body =
   boundary scope0 origin XRowEmpty \scope -> abstractions origin true Written scope params body (fromCore scheme.body)
   where
   scope0 = { declaration, context: bindKindVars emptyXContext scheme.kindVars, ambient: XRowEmpty, internal, surface }
+
+-- | A parameter a definition binds: one written, or a computation's thunk,
+-- | whose `Unit` nothing names.
+data Parameter
+  = Named Binder
+  | Thunk
 
 -- | What the action given builds under a checking boundary's ambient row, the
 -- | boundary closed against the row expected once it is built.
@@ -149,27 +179,34 @@ boundary scope origin expected inside = do
 -- | synthesized argument's among them, is opened where it stands; one left
 -- | once every variable is bound is the body's to meet. A `λ` at an arrow that
 -- | is written is a checking boundary at the arrow's row.
-abstractions :: Surface.Origin -> Boolean -> Expected -> Scope -> Array Binder -> Expr -> XType -> Surf (XExpr Surface.Origin)
-abstractions origin front expected scope binders body ty = case ty, Array.uncons binders of
-  XForall a k rest, _ | opening -> ETyLam origin a k <$> abstractions origin front expected (scope { context = bindTyVar scope.context a k }) binders body rest
+abstractions :: Surface.Origin -> Boolean -> Expected -> Scope -> Array Parameter -> Expr -> XType -> Surf (XExpr Surface.Origin)
+abstractions origin front expected scope params body ty = case ty, Array.uncons params of
+  XForall a k rest, _ | opening -> ETyLam origin a k <$> abstractions origin front expected (scope { context = bindTyVar scope.context a k }) params body rest
   XConstrained c rest, _ | opening -> do
     context <- lift (assume (siteAt scope origin) c)
-    EConstraintLam origin c <$> abstractions origin front expected (scope { context = context }) binders body rest
+    EConstraintLam origin c <$> abstractions origin front expected (scope { context = context }) params body rest
   _, Nothing -> check scope body expected ty
   _, Just { head, tail } -> do
-    parts <- arrow scope (binderOrigin head) ty
-    case head of
-      BinderVar o (LocalVar v) -> do
+    let at = parameterOrigin head
+    parts <- arrow scope at ty
+    let
+      bound o name = do
         let
-          inner = scope { context = bindVar scope.context v.name parts.argument }
+          inner = scope { context = bindVar scope.context name parts.argument }
           rest s = abstractions origin false expected s tail body parts.result
-        ELam o v.name parts.argument <$> case expected of
+        ELam o name parts.argument <$> case expected of
           Written -> boundary inner o parts.row rest
           Derived -> rest (inner { ambient = parts.row })
-      BinderInvalid o -> outside (ReportedAlready o)
-      other -> outside (OutsideSubset (binderOrigin other) "a pattern that is no variable")
+    case head of
+      Named (BinderVar o (LocalVar v)) -> bound o v.name
+      Named (BinderInvalid o) -> outside (ReportedAlready o)
+      Named other -> outside (OutsideSubset (binderOrigin other) "a pattern that is no variable")
+      Thunk -> bound at =<< lift (freshIdent (Map.keys scope.context.vars) "u")
   where
-  opening = front || not (Array.null binders)
+  opening = front || not (Array.null params)
+  parameterOrigin = case _ of
+    Named b -> binderOrigin b
+    Thunk -> origin
 
 -- | The argument, the row, and the result of the arrow the type must be: its
 -- | own where it is one, and otherwise an arrow of fresh metavariables it is
@@ -188,7 +225,7 @@ arrow scope origin ty = do
 
 check :: Scope -> Expr -> Expected -> XType -> Surf (XExpr Surface.Origin)
 check scope expr expected ty = case expr of
-  ExprLambda o binders body -> abstractions o false expected scope binders body ty
+  ExprLambda o binders body -> abstractions o false expected scope (map Named binders) body ty
   ExprInvalid o -> outside (ReportedAlready o)
   _ -> do
     inferred <- infer scope expr
@@ -223,14 +260,14 @@ infer scope expr = case expr of
     Nothing -> outside (OutsideSubset o "a variable bound outside what this version elaborates")
   ExprValue o name -> global o name
   ExprConstructor o name -> global o name
+  -- a computation is forced, applied to `Prim.Unit` where it is referred to
+  ExprComputation o name -> do
+    thunk <- global o name
+    applied o thunk \argument -> subsume scope o { expr: EGlobal o unitCtor [], type: XCon unitTy [] } argument
   ExprLiteral o literal -> pure { expr: ELit o literal, type: fromCore (litType literal) }
-  -- the function is fitted into the row ambient where it is applied
   ExprApp _ f x -> do
     f' <- infer scope f
-    parts <- arrow scope (exprOrigin f) f'.type
-    x' <- check scope x Derived parts.argument
-    fit <- lift (placeFit (siteAt scope (exprOrigin f)) Wrapping parts.row scope.ambient)
-    pure { expr: EApp (exprOrigin expr) (EFit (exprOrigin f) fit f'.expr) x', type: parts.result }
+    applied (exprOrigin f) f' \argument -> check scope x Derived argument
   ExprTyped _ inner t -> do
     annotation <- lift (elaborateType scope.surface.synonyms scope.declaration scope.context t)
     case Array.head annotation.unsupported of
@@ -244,6 +281,14 @@ infer scope expr = case expr of
   ExprInvalid o -> outside (ReportedAlready o)
   _ -> outside (OutsideSubset (exprOrigin expr) "this form")
   where
+  -- a function inferred where it stands, applied to the argument built at the
+  -- type it takes, and fitted there into the row ambient
+  applied at f argument = do
+    parts <- arrow scope at f.type
+    x <- argument parts.argument
+    fit <- lift (placeFit (siteAt scope at) Wrapping parts.row scope.ambient)
+    pure { expr: EApp (exprOrigin expr) (EFit at fit f.expr) x, type: parts.result }
+
   lambda binders body = case Array.uncons binders of
     Nothing -> infer scope body
     Just { head: BinderVar o (LocalVar v), tail } -> do

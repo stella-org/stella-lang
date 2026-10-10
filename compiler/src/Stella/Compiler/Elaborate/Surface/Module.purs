@@ -38,9 +38,11 @@
 -- | which its type decides where it is declared. An attribute declaration's
 -- | parameters are read at closed types against the module's types.
 -- |
+-- | **A computation declaration is a value whose Core type is a thunk**, its
+-- | signature read as that type and its body under it.
+-- |
 -- | **A value declaration needs a signature in this version**, a fixity gives
--- | Core nothing, and a handler and a computation declaration are outside what
--- | it elaborates.
+-- | Core nothing, and a handler is outside what it elaborates.
 module Stella.Compiler.Elaborate.Surface.Module
   ( ElaborationError(..)
   , ElaboratedValue
@@ -80,8 +82,8 @@ import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceEnv, takesSynthesized)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, initialState)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
-import Stella.Compiler.Elaborate.Surface.Expr (elaborateValue, runSurf)
-import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..), elaborateSignature, schemeOf, settledScheme)
+import Stella.Compiler.Elaborate.Surface.Expr (elaborateComputation, elaborateValue, runSurf)
+import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..), elaborateComputationSignature, elaborateSignature, schemeOf, settledScheme)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Surface.Group (groups)
@@ -91,6 +93,7 @@ import Stella.Compiler.Interface.Module (Exports, TypeEntity(..), Via(..))
 import Stella.Compiler.Interface.Scheme (Scheme, plainScheme)
 import Stella.Compiler.Surface.Decl (Declaration(..), declarationOrigin)
 import Stella.Compiler.Surface.Decl (Attribute, Module) as Surface
+import Stella.Compiler.Surface.Expr (Binder, Expr) as Surface
 import Stella.Compiler.Surface.Origin (Origin) as Surface
 import Stella.Compiler.TypedCore (Decl(DeclAttribute, DeclData, DeclEffect, DeclForeign), Expr, Module) as Core
 import Stella.Compiler.TypedCore (Attribute, AttributeDecl, DataDecl, DeclError(..), DeclFailure, Decl(DeclNonRec, DeclRec), Declared, EffectDecl, Export(..), ForeignDecl, declareAnnotated)
@@ -269,15 +272,22 @@ elaborateValues imports surface importedEntries m =
       Nothing, _ -> Left (WithoutSignature d.origin d.name)
       _, Left o -> Left (Unsupported (ReportedAlready o))
       Just signature', Right attributes -> Right
-        { declared: { name: d.name, origin: d.origin, ordinal, attributes, definition: Right { params: d.params, body: d.body } }
-        , signature: signature'
+        { declared: { name: d.name, origin: d.origin, ordinal, attributes, definition: Right (ValueBody d.params d.body) }
+        , read: \synonyms -> elaborateSignature synonyms d.name signature'
         }
     -- a foreign is read as a value's signature is, and has no body
     DeclForeign d -> Just case traverse coreAttribute d.attributes of
       Left o -> Left (Unsupported (ReportedAlready o))
       Right attributes -> Right
         { declared: { name: d.name, origin: d.origin, ordinal, attributes, definition: Left d.observation }
-        , signature: d.signature
+        , read: \synonyms -> elaborateSignature synonyms d.name d.signature
+        }
+    -- a computation's signature is read as its Core type, a thunk
+    DeclComputation d -> Just case traverse coreAttribute d.attributes of
+      Left o -> Left (Unsupported (ReportedAlready o))
+      Right attributes -> Right
+        { declared: { name: d.name, origin: d.origin, ordinal, attributes, definition: Right (ComputationBody d.body) }
+        , read: \synonyms -> elaborateComputationSignature synonyms d.name d.signature
         }
     DeclAttribute _ -> Nothing
     DeclData _ -> Nothing
@@ -306,7 +316,7 @@ elaborateValues imports surface importedEntries m =
   -- every signature read, as one attempt each
   read = foldl readOne { state: initial, read: [], errors: [] } written
   readOne acc c =
-    case runAttempt importedSession (elaborateSignature withSynonyms.synonyms c.declared.name c.signature) acc.state of
+    case runAttempt importedSession (c.read withSynonyms.synonyms) acc.state of
       Tuple (Done e) s
         | Array.null e.unsupported -> acc { state = s, read = Array.snoc acc.read (Tuple c.declared e) }
         | otherwise -> acc { errors = acc.errors <> map Unsupported e.unsupported }
@@ -380,8 +390,14 @@ elaborateValues imports surface importedEntries m =
   -- every body, as one attempt each, a body that does not elaborate leaving
   -- nothing behind
   bodies = foldl bodyOne { state: attributesRead.state, bodies: [], errors: [] } defined
-  bodyOne acc v =
-    case runAttempt session (runSurf (elaborateValue internal withOwn v.declared.name v.declared.origin v.scheme v.definition.params v.definition.body)) acc.state of
+  bodyOne acc v = case v.definition of
+    ValueBody params body -> attemptBody acc v (elaborateValue internal withOwn v.declared.name v.declared.origin v.scheme params body)
+    -- a synthesized argument is supplied by a goal, which this version does
+    -- not create, and a computation has no parameter to bind it to
+    ComputationBody _ | takesSynthesized v.spine -> acc { errors = Array.snoc acc.errors (Unsupported (OutsideSubset v.declared.origin "a computation taking a synthesized argument")) }
+    ComputationBody body -> attemptBody acc v (elaborateComputation internal withOwn v.declared.name v.declared.origin v.scheme body)
+  attemptBody acc v elaborating =
+    case runAttempt session (runSurf elaborating) acc.state of
       Tuple (Done (Right body)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, spine: v.spine, body } }
       Tuple (Done (Left problem)) _ -> acc { errors = Array.snoc acc.errors (Unsupported problem) }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
@@ -407,6 +423,12 @@ addForeignType sig f = sig { types = Map.insert f.name (IntrinsicTyCon f.kind Ca
 -- | A signature with an effect the module declares, and its operations.
 addEffect :: Signature -> ElaboratedEffect -> Signature
 addEffect sig e = sig { effects = Map.insert e.name { params: e.decl.params, operations: Map.fromFoldable (map (\o -> Tuple o.name o) e.decl.operations) } sig.effects }
+
+-- | The body a declaration defines: a value's, by its parameters, or a
+-- | computation's, which has none.
+data Body
+  = ValueBody (Array Surface.Binder) Surface.Expr
+  | ComputationBody Surface.Expr
 
 -- | Whether a declaration's definition is a foreign's, which has no body.
 isForeignDefinition :: forall a b. Either a b -> Boolean

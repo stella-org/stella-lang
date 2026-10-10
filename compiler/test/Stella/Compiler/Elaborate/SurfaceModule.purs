@@ -39,10 +39,10 @@ import Stella.Compiler.Interface.Scheme (plainScheme)
 import Stella.Compiler.Resolve.Module (resolveModule)
 import Stella.Compiler.Surface.Origin (rangeOf)
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, Export(..), Module, primSignature)
+import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, Export(..), Expr(..), Module, primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..), TyVar(..))
-import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy)
+import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy, unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Type (RowKey(..), Type(..))
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Test.Spec (Spec, describe, it)
@@ -242,15 +242,12 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         , "lam = (1, 2)"
         , "open :: Int"
         , "open = const 1 id"
-        , "c :: Int / {| |}"
-        , "c = 1"
         , "ok :: Int"
         , "ok = 1"
         ]
         \r -> do
           map at r.errors `shouldEqual`
             [ "3:1 without a signature"
-            , "11:1 outside: this declaration"
             , "5:7 rejected"
             , "7:8 outside: this form"
             , "9:8 type undetermined"
@@ -333,6 +330,60 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
 
     it "rejects a field at a kind other than Type where it stands" do
       elaborating [ "data Bad = Bad (Int Int)" ] \r -> map at r.errors `shouldEqual` [ "3:17 rejected" ]
+
+  describe "a computation declaration" do
+    let
+      computations =
+        [ "effect Console where"
+        , "  log :: Int ->* Unit"
+        , "n :: Int / {||}"
+        , "n = 1"
+        , "loud :: Int / {| Console |}"
+        , "loud = n"
+        , "louder :: Int / {| Console |}"
+        , "louder = loud"
+        , "anyRow :: forall e. Int / {| ...e |}"
+        , "anyRow = 1"
+        , "pairC :: forall a. Tuple Int (a -> a) / {||}"
+        , "pairC = Tuple 1 (\\y -> y)"
+        , "v :: Int"
+        , "v = n"
+        , "fromAny :: Int"
+        , "fromAny = anyRow"
+        , "loudAny :: Int / {| Console |}"
+        , "loudAny = anyRow"
+        , "paired :: Tuple Int (Int -> Int)"
+        , "paired = pairC"
+        , "again :: Int / {| Console |}"
+        , "again = again"
+        ]
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == Qualified (ModuleName "M") (Ident name)) values)
+    it "is a thunk its body is checked in at its row, and a reference forces it, applied to `Prim.Unit`" do
+      elaborating computations \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "n" r.values of
+          Just (Lam _ _ (TCon u []) (Lit _ (LitInt 1))) | u == unitTy -> pure unit
+          other -> fail ("not a thunk: " <> show other)
+        bodyOf "v" r.values `shouldEqual` Just (App unit (Global unit (Qualified (ModuleName "M") (Ident "n")) []) (Global unit unitCtor []))
+        -- a computation referring to itself is a function, its recursion under the thunk
+        checked r \core -> shapes core `shouldEqual`
+          [ "nonrec n", "nonrec loud", "nonrec louder", "nonrec anyRow", "nonrec pairC", "nonrec v", "nonrec fromAny", "nonrec loudAny", "nonrec paired", "rec again" ]
+
+    it "forced at a value's right-hand side with a row the value's boundary cannot meet asks for an implicit handler there" do
+      elaborating [ "effect Console where", "  log :: Int ->* Unit", "loud :: Int / {| Console |}", "loud = 1", "w :: Int", "w = loud" ] \r ->
+        map at r.errors `shouldEqual` [ "8:1 outside: implicit-handler resolution at this checking boundary" ]
+
+    it "taking a synthesized argument is read and published to the other bodies, its own body outside this version" do
+      elaborating
+        [ "data Dict a = Dict a"
+        , "make :: Int"
+        , "make = 1"
+        , "sc :: {{ d :: Dict Int by make }} -> Int / {||}"
+        , "sc = 1"
+        , "use :: Int"
+        , "use = sc"
+        ]
+        \r -> map at r.errors `shouldEqual` [ "7:1 outside: a computation taking a synthesized argument", "9:7 outside: a reference to a value taking a synthesized argument" ]
 
   describe "the Core module" do
     it "binds each value after what it refers to, the one written first taken first, and a recursive group as one" do

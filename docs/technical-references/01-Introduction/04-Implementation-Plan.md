@@ -1171,6 +1171,11 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | A boundary at `()` whose body's sources `( Console \| ?a )` and `( Clock \| ?b )` form a union only once their tails are closed | The closing undone, and the declaration reported outside the subset where the boundary stands. What the closing met is the report, not the ambiguity left once it is undone |
 | A row a waiting equation awaits, neither of its sides showing it | Left open. What an equation could still assign is required of |
 | A row a `Lacks` names, and one a `Disjoint` names | Closed, `()` meeting the `Lacks`; left open |
+| `n :: Int / {\|\|}; n = 1`, and `v :: Int; v = n` | `n = λ(u : Unit). 1` at `Unit -> Int`, published as `Computation`; `v = n Prim.Unit` |
+| `w :: Int; w = loud`, `loud :: Int / {\| Console \|}` | Outside the subset where `w`'s right-hand side stands, a boundary at `()`. Not at the reference, whose fit is decided against the boundary's row |
+| An imported value `v : Unit -> Int` and an imported computation `c :: Int / {\|\|}`, of one Core type | `c` forced to `Int`, and `v` a function. What the interface marks a computation decides the forcing, and nothing in its Core type |
+| A computation whose spine takes a synthesized argument | Outside the subset where it is declared, its scheme still entered into the module-local catalog before every body. The thunk's λ would otherwise take the dictionary's arrow |
+| `again :: Int / {\| Console \|}; again = again` | A `DeclRec`, the reference standing under the thunk's λ |
 
 ### Binding groups and generalization (step 7)
 

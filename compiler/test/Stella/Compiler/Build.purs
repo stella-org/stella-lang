@@ -507,6 +507,45 @@ spec = describe "Stella.Compiler.Build" do
           Left err -> map _.message (NonEmptyArray.toArray (buildMessages err)) `shouldEqual` [ "This version of the compiler does not elaborate a reference to a value taking a synthesized argument yet" ]
           Right _ -> fail "built"
 
+  describe "a computation declaration" do
+    let
+      consoleRow = TRowExtend (RowEffectEntry consoleName []) TRowEmpty
+      rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors
+      computations = [ "n :: Int / {||}", "n = 1", "loud :: Int / {| Console |}", "loud = n", "v :: Int", "v = n" ]
+
+    it "is a thunk in Core, the interface publishing it as a computation, through its file" do
+      compilingUnder [ "module M (n, loud) where", "import Effects" ] computations case _ of
+        Left errors -> fail (joinWith "; " (rendered errors))
+        Right r -> do
+          r.handed `shouldEqual` [ "core n loud v", "mid M", "bytecode M" ]
+          let scheme name = map _.scheme (Map.lookup (Ident name) r.interface.declarations.values)
+          scheme "n" `shouldEqual` Just { kindVars: [], body: Computation int TRowEmpty }
+          scheme "loud" `shouldEqual` Just { kindVars: [], body: Computation int consoleRow }
+          r.interface.arities `shouldEqual` Map.fromFoldable [ Tuple (Ident "n") 1, Tuple (Ident "loud") 1 ]
+          case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
+            Right stored -> stored.interface `shouldEqual` r.interface
+            Left problem -> fail problem
+
+    it "forced at a value's right-hand side with a row it performs asks for an implicit handler at the value's boundary" do
+      compilingUnder [ "module M where", "import Effects" ] (computations <> [ "w :: Int", "w = loud" ]) case _ of
+        Left errors -> rendered errors `shouldEqual` [ "10:1 This version of the compiler does not elaborate implicit-handler resolution at this checking boundary yet" ]
+        Right _ -> fail "compiled"
+
+    it "is forced where it is referred to by the mark its interface carries, and a value of the same Core type is not" do
+      let
+        declaring = Tuple "src/A.stel" (moduleOf "A" [] [ "v :: Unit -> Int", "v u = 1", "c :: Int / {||}", "c = 1" ])
+      building
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "fromC :: Int", "fromC = c", "fromV :: Unit -> Int", "fromV = v" ]), declaring ]
+        \r -> case r.result of
+          Right built -> built `shouldEqual` [ "A", "B" ]
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+      building
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "fromC :: Unit -> Int", "fromC = c", "fromV :: Int", "fromV = v" ]), declaring ]
+        \r -> case r.result of
+          -- the computation is forced to `Int`, and the value stays a function
+          Left err -> map _.message (NonEmptyArray.toArray (buildMessages err)) `shouldEqual` [ "`Int` and `Unit -> Int` are different types", "`Unit -> Int` and `Int` are different types" ]
+          Right _ -> fail "built"
+
   describe "a module's type declarations" do
     let
       rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors
