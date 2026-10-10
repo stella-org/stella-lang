@@ -512,7 +512,7 @@ Core:  let f : Unit -{( region ℓ )}-> Int = λ _. readCell ℓ.n in ( openEff 
 
 ### Closing
 
-**A row a function needs nothing of is closed to `()` before it is generalized**, once, after every fit of its group is decided and immediately before the quantifiers are chosen. A `Row Effect` candidate is closed where it occurs once across the zonked types of the group's members and its residual atoms, and nothing but a Lacks requires it; the Lacks are then dropped, `()` satisfying every one. Occurrences are counted over the whole group, so a metavariable two members share is never closed by the order they are visited in. The jobs are run again after closing, and where they fail the closing is undone and the failure reported by its cause.
+**A row a function needs nothing of is closed to `()` before it is generalized**, once, after the fits of its group are resolved by direction and immediately before the quantifiers are chosen — for a declaration with a signature, before its body is made Core. A fit the resolution leaves undecided is not reported yet: closing may decide it. **Candidates are found from the group's zonked terms, its undecided fits, and its residual atoms**: each unsolved metavariable at `Row Effect` there that no checking boundary owns. **A candidate is closed where it stands at most once across the types the group's zonked terms and members write, and nothing requires anything of it**: no undecided fit has it in its target, no waiting equation or goal could assign it — by either of its sides or by what it waits on — and no residual atom but a Lacks names it. A fit and an atom find a candidate and are no occurrence of it: how many fits name a row says nothing of how it stands in a type. A Disjoint keeps a candidate open, and the Lacks are dropped, `()` satisfying every one. Occurrences are counted over the whole group, so a metavariable two members share is never closed by the order they are visited in. **The candidates are closed together, and the jobs and the resolution of the fits run again**; where either fails, the closing is undone, and what failed is what the declaration is reported by — the rows decided again without the closing need not fail the same way — a checking boundary its body cannot meet being outside the subset as it is wherever it is decided. A fit still undecided after is reported as an ambiguous effect row.
 
 A closed row costs nothing: a fit adapts a pure function to any ambient row. `id = \x -> x` is `∀a. a -> a` rather than `∀a e. a -{e}-> a`, and the scheme agrees with the signature an author would write. Closing never removes a known element, a region included.
 
@@ -617,7 +617,7 @@ For each top-level group, in the dependency order above:
 8. Run the loop to quiescence; report a goal still waiting as undecided synthesis.
 9. Snapshot the candidates for closing.
 10. Close.
-11. Run the loop to quiescence; undo the closing and report where it fails.
+11. Run the loop to quiescence and resolve the fits again; where either fails, undo the closing and report the failure by its cause.
 12. Confirm that no synthesis goal, term metavariable, undecided fit, or pending boundary job remains; restrict what an equality job still touches; ask for a signature where a restricted metavariable is unsolved.
 13. Compute the final `Qᵢ`; report candidates of a body alone as ambiguous.
 14. Compute `Cᵢ` and check it against `Qᵢ`.

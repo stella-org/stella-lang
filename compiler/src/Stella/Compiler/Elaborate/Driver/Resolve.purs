@@ -31,6 +31,7 @@ module Stella.Compiler.Elaborate.Driver.Resolve
   , Resolved
   , Resolution(..)
   , resolveByDirection
+  , resolveOwners
   ) where
 
 import Prelude
@@ -130,9 +131,14 @@ type Assignment =
 -- | Resolve every component holding an undecided fit or a waiting boundary,
 -- | each by the owner the function given reads off the site of what it holds.
 resolveByDirection :: forall k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> SolverState -> Tuple (Resolution k) SolverState
-resolveByDirection session attempter owner s0 = case componentsOf owner s0 of
+resolveByDirection session attempter owner = resolveOwners session attempter owner (const true)
+
+-- | `resolveByDirection`, for the components of the owners the predicate given
+-- | admits alone.
+resolveOwners :: forall k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> (k -> P.Boolean) -> SolverState -> Tuple (Resolution k) SolverState
+resolveOwners session attempter owner admitted s0 = case componentsOf owner s0 of
   Left defect -> Tuple (ResolutionHalted defect) s0
-  Right components -> foldl step (Tuple (Resolution { components: [], warnings: [] }) s0) components
+  Right components -> foldl step (Tuple (Resolution { components: [], warnings: [] }) s0) (Array.filter (admitted <<< _.owner) components)
   where
   step acc component = case acc of
     Tuple (Resolution r) s -> case resolveComponent session attempter component s of

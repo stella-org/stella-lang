@@ -1165,6 +1165,12 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | `apply k u = (\v -> k v) u` at `(Unit -> Unit / {\| Console \|}) -> Unit -> Unit / {\| Console \|}` | Accepted, the λ's row `( Console )` by rule 1 |
 | The same at `(Unit -> Unit / {\| Console \|}) -> Unit -> Unit` | Outside the subset in this version, where the boundary stands. The boundary is decided only once the λ's row is, after the resolution |
 | A form inferred at `Unit -{( Console )}-> Unit` where `Unit -{( Console, Clock )}-> Unit` is expected | The arguments and results equated, and `( Console )` fitted into `( Console, Clock )` around the form. Subsumption is the outermost row's containment alone |
+| `n = (\u -> 1) ()` and `m = (\x -> x) 1`, at `Int` | Accepted, each λ's row closed to `()`: no fit needs anything of it. Left open, it would be an ambiguous effect row |
+| A row named by two fits and standing once in a type the term writes; one standing there twice | Closed; left open. A fit finds a candidate and is no occurrence of it |
+| `( Console \| ?a ) ⊆ ?e` and `( Clock \| ?b ) ⊆ ?e`, nothing else deciding them | `?a` and `?b` closed, then `?e := ( Console, Clock )` by rule 1. A row in a fit's target is required of, and not closed |
+| A boundary at `()` whose body's sources `( Console \| ?a )` and `( Clock \| ?b )` form a union only once their tails are closed | The closing undone, and the declaration reported outside the subset where the boundary stands. What the closing met is the report, not the ambiguity left once it is undone |
+| A row a waiting equation awaits, neither of its sides showing it | Left open. What an equation could still assign is required of |
+| A row a `Lacks` names, and one a `Disjoint` names | Closed, `()` meeting the `Lacks`; left open |
 
 ### Binding groups and generalization (step 7)
 

@@ -402,6 +402,11 @@ spec = describe "Stella.Compiler.Build" do
             [ "4:9 This version of the compiler does not elaborate implicit-handler resolution at this checking boundary yet" ]
           Right _ -> fail "compiled"
 
+    it "closes the row of a λ nothing needs anything of, a pure local function then applied at any row" do
+      compiling [ "n :: Int", "n = (\\u -> 1) ()", "m :: Int", "m = (\\x -> x) 1" ] case _ of
+        Left errors -> fail (joinWith "; " (map printCompileError errors))
+        Right r -> r.handed `shouldEqual` [ "core n m", "mid M", "bytecode M" ]
+
   describe "a row spreading a row variable" do
     let
       rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors

@@ -64,7 +64,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), maybe)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
-import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
+import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), XExpr, toCoreExpr)
 import Stella.Compiler.Elaborate.CorePlus.Type (fromCore)
 import Stella.Compiler.Elaborate.Surface.Types (readAttributeDeclaration, readTypes, settledTypes)
@@ -74,6 +74,7 @@ import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
 import Stella.Compiler.Elaborate.Driver.Loop (Attempter, runAttempting)
 import Stella.Compiler.Elaborate.Driver.Loop as Loop
 import Stella.Compiler.Elaborate.Driver.Resolve (ComponentOutcome(..), Resolution(..), resolveByDirection)
+import Stella.Compiler.Elaborate.Driver.Close (Closing(..), Undoing(..), closeRows)
 import Stella.Compiler.Elaborate.Environment.Catalog (CatalogEntry, EntrySort(..))
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceEnv, takesSynthesized)
@@ -456,29 +457,54 @@ settleBodies session attempter state bodies =
     AtSource o -> Just o.origin
     InDeclaration _ -> Nothing
 
+  -- a body's rows closed, a defect stopping every later one; a closing
+  -- undone is the declaration's report, the rows decided again without it
+  -- need not fail as it did
+  closing acc b = case acc of
+    { defect: Nothing, state: s, undone } -> case closeRows session attempter declarationOf b.name { context: emptyXContext, origin: InDeclaration b.name } b.body s of
+      Tuple (Left d) s' -> { defect: Just d, state: s', undone }
+      Tuple (Right (Undone u)) s' -> { defect: Nothing, state: s', undone: Map.insert b.name u.cause undone }
+      Tuple (Right _) s' -> { defect: Nothing, state: s', undone }
+    stopped -> stopped
+
+  undoneError = case _ of
+    UndoneBy d -> rejected d
+    UndoneWaiting p -> EquationUndecided p.origin
+
   Tuple report quiet = runAttempting attempter state
 
-  -- at quiescence, the fits left undecided are resolved by direction, each
-  -- declaration's apart, and the jobs left after are reported
-  Tuple resolution after = case report.result of
-    Loop.Completed -> resolved
-    Loop.Blocked _ -> resolved
+  -- at quiescence: the fits left undecided resolved by direction, each
+  -- declaration's rows nothing needs closed, the fits resolved again and the
+  -- loop run to what it then waits on, every state handed on to the next
+  Tuple settledBy after = case report.result of
+    Loop.Completed -> settling
+    Loop.Blocked _ -> settling
     _ -> Tuple Nothing quiet
     where
-    resolved = case resolveByDirection session attempter declarationOf quiet of
-      Tuple r s -> Tuple (Just r) s
-  Tuple left _ = runAttempting attempter after
+    settling = case resolveByDirection session attempter declarationOf quiet of
+      Tuple (ResolutionHalted d) s1 -> Tuple (Just (Left d)) s1
+      Tuple (Resolution _) s1 -> case foldl closing { defect: Nothing, state: s1, undone: Map.empty } bodies of
+        { defect: Just d, state: s2 } -> Tuple (Just (Left d)) s2
+        { state: s2, undone } ->
+          let
+            Tuple resolution s3 = resolveByDirection session attempter declarationOf s2
+            Tuple left s4 = runAttempting attempter s3
+          in
+            Tuple (Just (Right { resolution, left, undone })) s4
 
-  -- what the loop and the resolution stopped at, and the declarations they
-  -- name; `Nothing` at a defect, which leaves nothing to trust
-  Tuple loopErrors named = case report.result, resolution of
+  -- what the loop, the resolution, and the closing stopped at, and the
+  -- declarations they name; `Nothing` at a defect, which leaves nothing to
+  -- trust
+  Tuple loopErrors named = case report.result, settledBy of
     Loop.Rejected d, _ -> Tuple [ rejected d ] (Just (Set.fromFoldable (diagnosticDeclarations d)))
     Loop.Exhausted p, _ -> Tuple [ EquationUndecided p.origin ] (Just (Set.singleton (declarationOf p.origin)))
     Loop.Halted d, _ -> Tuple [ Broken d ] Nothing
-    _, Just (ResolutionHalted d) -> Tuple [ Broken d ] Nothing
-    _, Just (Resolution r) ->
+    _, Just (Left d) -> Tuple [ Broken d ] Nothing
+    _, Just (Right { resolution: ResolutionHalted d }) -> Tuple [ Broken d ] Nothing
+    _, Just (Right { resolution: Resolution r, left, undone }) ->
       let
-        components = Array.concatMap componentErrors r.components
+        closings = map (\(Tuple name cause) -> { error: undoneError cause, names: [ name ] }) (Map.toUnfoldable undone :: Array (Tuple (Qualified Ident) Undoing))
+        components = closings <> Array.concatMap componentErrors (Array.filter (\c -> not (Map.member c.owner undone)) r.components)
         resolvedNames = Set.fromFoldable (Array.concatMap _.names components)
         -- a job of a declaration the resolution reported is reported by that
         stillWaiting = case left.result of

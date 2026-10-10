@@ -36,6 +36,7 @@ module Stella.Compiler.Elaborate.CorePlus.Term
   , toCoreExpr
   , freeVarsOf
   , metasOfTerm
+  , typesOfTerm
   , termMetasUnderRegions
   ) where
 
@@ -653,6 +654,56 @@ metasOfTerm = case _ of
         <> metasOfTerm c.body
     XFastClause c ->
       foldMap (kindMetas <<< _.kind) c.tyBinders <> typeMetas c.argBinder.ty <> metasOfTerm c.body
+
+-- | Every type a term writes, in the order a depth-first walk meets them: a
+-- | binder's, a type argument's, a constraint's as the type it constrains
+-- | nothing of, and every other a node holds.
+typesOfTerm :: forall a. XExpr a -> P.Array XType
+typesOfTerm = case _ of
+  EVar _ _ -> []
+  EGlobal _ _ _ -> []
+  ELit _ _ -> []
+  ELam _ _ ty body -> [ ty ] <> typesOfTerm body
+  EApp _ f x -> typesOfTerm f <> typesOfTerm x
+  ETyLam _ _ _ body -> typesOfTerm body
+  ETyApp _ e ty -> typesOfTerm e <> [ ty ]
+  EConstraintLam _ c body -> [ XConstrained c XRowEmpty ] <> typesOfTerm body
+  EConstraintApp _ e -> typesOfTerm e
+  ELet _ _ ty v body -> [ ty ] <> typesOfTerm v <> typesOfTerm body
+  ELetRec _ bindings body -> foldMap (\b -> [ b.ty ] <> typesOfTerm b.value) bindings <> typesOfTerm body
+  ECase _ scrutinees dt -> foldMap typesOfTerm scrutinees <> treeTypes dt
+  ELetJoin _ _ params result v body -> map _.ty params <> [ result ] <> typesOfTerm v <> typesOfTerm body
+  EJump _ _ args -> foldMap typesOfTerm args
+  ERecordEmpty _ -> []
+  ERecordExtend _ _ v rest -> typesOfTerm v <> typesOfTerm rest
+  ERecordSelect _ _ e -> typesOfTerm e
+  ERecordRestrict _ _ e -> typesOfTerm e
+  ERecordUpdate _ _ rec v -> typesOfTerm rec <> typesOfTerm v
+  ERecordMerge _ l r -> typesOfTerm l <> typesOfTerm r
+  EVariantInject _ _ v -> typesOfTerm v
+  EVariantWeaken _ _ ty e -> [ ty ] <> typesOfTerm e
+  EVariantAbsurd _ ty e -> [ ty ] <> typesOfTerm e
+  EPerform _ _ _ tyArgs arg -> tyArgs <> typesOfTerm arg
+  EHandle _ body h -> typesOfTerm body <> [ XRowExtend h.element XRowEmpty, h.returnClause.ty ] <> typesOfTerm h.returnClause.body <> foldMap clauseTypes h.opClauses
+  ERegion _ _ cells initial body -> map _.ty cells <> foldMap typesOfTerm initial <> typesOfTerm body
+  EReadCell _ _ _ -> []
+  EWriteCell _ _ _ v -> typesOfTerm v
+  EOpenEff _ row e -> [ row ] <> typesOfTerm e
+  EFit _ _ e -> typesOfTerm e
+  ETermMeta _ _ -> []
+  EHole _ ty -> [ ty ]
+  where
+  treeTypes = case _ of
+    XLeaf e -> typesOfTerm e
+    XBind _ _ dt -> treeTypes dt
+    XSwitchCtor _ branches d -> foldMap (treeTypes <<< _.tree) branches <> foldMap treeTypes d
+    XSwitchLit _ branches d -> foldMap (treeTypes <<< _.tree) branches <> treeTypes d
+    XSwitchKey _ branches d -> foldMap (treeTypes <<< _.tree) branches <> foldMap treeTypes d
+    XGuard e yes no -> typesOfTerm e <> treeTypes yes <> treeTypes no
+
+  clauseTypes = case _ of
+    XFullClause c -> [ c.argBinder.ty, c.contBinder.ty ] <> typesOfTerm c.body
+    XFastClause c -> [ c.argBinder.ty ] <> typesOfTerm c.body
 
 -- | The term metavariables a term holds, each with the region names bound around
 -- | it inside the term.

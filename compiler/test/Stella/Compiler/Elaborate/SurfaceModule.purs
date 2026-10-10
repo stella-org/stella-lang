@@ -27,7 +27,8 @@ import Stella.Compiler.Elaborate.Protocol.Facade as F
 import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Environment.Imported (importedCatalog, importedSignature, sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Surface (importedSurface)
-import Stella.Compiler.Elaborate.Kernel.Elab (createSynthesis, equate, freshTypeMeta, initialState)
+import Stella.Compiler.Elaborate.Kernel.Elab (closeBoundary, createSynthesis, equate, freshTypeMeta, initialState, openBoundary, placeFit)
+import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), elaborateModule, settleBodies)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
@@ -40,7 +41,7 @@ import Stella.Compiler.Surface.Origin (rangeOf)
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, Export(..), Module, primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
-import Stella.Compiler.TypedCore.Name (Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy)
 import Stella.Compiler.TypedCore.Type (RowKey(..), Type(..))
 import Stella.Compiler.TypedCore.Term (Literal(..))
@@ -413,6 +414,26 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         registry = Map.singleton refusingRef (\_ -> F.throw [ TextPart "no" ])
         r = settleBodies primSession (attemptJob primSession registry) (snd afterG) (map body [ Tuple "f" 1, Tuple "g" 2, Tuple "h" 3 ])
       map at r.errors `shouldEqual` [ "1:1 synthesis failed", "2:1 left unchecked" ]
+      map _.name r.values `shouldEqual` [ inM "h" ]
+
+    it "report a closing undone by what undid it, and not by the rows left undecided after" do
+      let
+        -- `f`'s boundary holds `( Console | ?a )` and `( Clock | ?b )`, whose
+        -- union is formed only once their tails are closed, and then holds
+        -- what `()` cannot
+        effect n = XRowEffectEntry (Qualified (ModuleName "M") (EffName n)) []
+        afterF = runAttempt primSession
+          ( do
+              sigma <- openBoundary emptyXContext
+              a <- freshTypeMeta emptyXContext (XKRow RowEffect)
+              b <- freshTypeMeta emptyXContext (XKRow RowEffect)
+              _ <- placeFit (siteIn "f" 1) Wrapping (XRowExtend (effect "Console") a) (XMeta sigma)
+              _ <- placeFit (siteIn "f" 1) Wrapping (XRowExtend (effect "Clock") b) (XMeta sigma)
+              closeBoundary (siteIn "f" 1) sigma XRowEmpty
+          )
+          (initialState (SessionId 0) 100)
+        r = settleBodies primSession (attemptPending primSession) (snd afterF) (map body [ Tuple "f" 1, Tuple "h" 3 ])
+      map at r.errors `shouldEqual` [ "1:1 outside: implicit-handler resolution at this checking boundary" ]
       map _.name r.values `shouldEqual` [ inM "h" ]
   where
   primSession = sessionEnvOf primSignature []

@@ -21,6 +21,7 @@ module Stella.Compiler.Elaborate.CorePlus.Type
   , toCore
   , toCoreConstraint
   , metasOf
+  , metaOccurrences
   , kindMetasOfType
   , freeRigids
   , freeKindVars
@@ -175,6 +176,28 @@ constraintMetas :: XConstraint -> Set MetaVar
 constraintMetas = case _ of
   XLacks _ row -> metasOf row
   XDisjoint l r -> metasOf l <> metasOf r
+
+-- | Every place a metavariable stands in a type, as often as it stands there.
+metaOccurrences :: XType -> P.Array MetaVar
+metaOccurrences = case _ of
+  XVar _ -> []
+  XMeta m -> [ m ]
+  XCon _ _ -> []
+  XApp f a -> metaOccurrences f <> metaOccurrences a
+  XForall _ _ body -> metaOccurrences body
+  XConstrained c body -> constraintOccurrences c <> metaOccurrences body
+  XRowEmpty -> []
+  XRowExtend entry rest -> entryOccurrences entry <> metaOccurrences rest
+  XRowUnion l r -> metaOccurrences l <> metaOccurrences r
+  where
+  entryOccurrences = case _ of
+    XRowTypeEntry _ ty -> metaOccurrences ty
+    XRowEffectEntry _ args -> foldMap metaOccurrences args
+    XRowLabelledEffectEntry _ _ args -> foldMap metaOccurrences args
+    XRowRegionEntry _ -> []
+  constraintOccurrences = case _ of
+    XLacks _ row -> metaOccurrences row
+    XDisjoint l r -> metaOccurrences l <> metaOccurrences r
 
 -- | Whether assigning to `m` would make it refer to itself.
 occursIn :: MetaVar -> XType -> P.Boolean
