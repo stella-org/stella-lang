@@ -1,20 +1,24 @@
--- | What the surface elaborator reads of the imports beyond the signature and
--- | the catalog: the type synonyms types are read through, and the values
--- | whose schemes take a synthesized argument
+-- | What the surface elaborator reads of the imports and the module beyond the
+-- | signature and the catalog: the type synonyms types are read through, the
+-- | values whose schemes take a synthesized argument, and the schemes of the
+-- | module's values without a signature
 -- | ([Elaboration](../../../../../docs/technical-references/02-Surface-Language/01-Elaboration.md)).
 -- |
 -- | **Neither is the kernel's.** A synonym is expanded before any type reaches
 -- | the mechanism, and a synthesized argument is a parameter of the
 -- | dictionary's type in Core; what a reference to such a value owes is the
--- | surface elaborator's to supply.
+-- | surface elaborator's to supply. **A value without a signature is in no
+-- | catalog**: the module's synthesizers never read it, generalized or not.
 module Stella.Compiler.Elaborate.Environment.Surface
   ( SurfaceEnv
+  , SurfaceBinding(..)
   , emptySurface
   , importedSurface
   , takesSynthesized
   ) where
 
 import Data.Array as Array
+import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set (Set)
@@ -24,22 +28,29 @@ import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEnv, emptySynonyms
 import Stella.Compiler.Interface.Environment (BuildEnvironment, ModuleView, lookupInterface, reachable)
 import Stella.Compiler.Interface.Scheme (Scheme, SchemeBody(..))
 import Stella.Compiler.TypedCore.Name (Ident, Qualified(..))
+import Stella.Compiler.TypedCore.Type (TypeScheme)
 
--- | The synonyms, and the values taking a synthesized argument, each by the
--- | qualified name of its declaration.
+-- | The synonyms, the values taking a synthesized argument, and the module's
+-- | values without a signature, each by the qualified name of its declaration.
 type SurfaceEnv =
   { synonyms :: SynonymEnv
   , synthesizing :: Set (Qualified Ident)
+  , bindings :: Map (Qualified Ident) SurfaceBinding
   }
 
+-- | A value without a signature, as a reference to it reads it: at the scheme
+-- | its group's generalization made final.
+data SurfaceBinding = Final TypeScheme
+
 emptySurface :: SurfaceEnv
-emptySurface = { synonyms: emptySynonyms, synthesizing: Set.empty }
+emptySurface = { synonyms: emptySynonyms, synthesizing: Set.empty, bindings: Map.empty }
 
 -- | What the modules the imports reach declare.
 importedSurface :: BuildEnvironment -> ModuleView -> SurfaceEnv
 importedSurface env view =
   { synonyms: importedSynonyms env view
   , synthesizing: Set.fromFoldable (Array.concatMap synthesizingOf (Set.toUnfoldable (reachable view)))
+  , bindings: Map.empty
   }
   where
   synthesizingOf m = case lookupInterface m env of

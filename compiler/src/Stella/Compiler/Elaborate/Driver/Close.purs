@@ -5,10 +5,10 @@
 -- | **Candidates are found from the owner's term, its undecided fits, and its
 -- | residual atoms, and judged on the types alone.** A candidate is an unsolved
 -- | metavariable at `Row Effect` that no checking boundary owns. It is closed
--- | where it stands at most once in the types the owner's term writes, nothing
--- | requires anything of it — no undecided fit has it in its target, no
--- | waiting equation or goal could assign it, and no atom but a `Lacks` names
--- | it — a `Lacks` being met by `()`.
+-- | where it stands at most once in the types the owner's term writes and its
+-- | members are given, and nothing requires anything of it — no undecided fit
+-- | has it in its target, no waiting equation or goal could assign it, and no
+-- | atom but a `Lacks` names it — a `Lacks` being met by `()`.
 -- | A fit only names a row where it is used, so how many fits name one says
 -- | nothing of how it stands in a type.
 -- |
@@ -34,10 +34,11 @@ import Stella.Compiler.Elaborate.Driver.Loop (Attempter, PendingReport, RunResul
 import Stella.Compiler.Elaborate.Driver.Resolve (ComponentOutcome(..), Resolution(..), resolveOwners)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, atLevel, runElabIn, unify)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitState(..))
+import Stella.Compiler.Elaborate.Mechanism.Obligation (ResidualAtom(..), residualAtoms)
 import Stella.Compiler.Elaborate.Mechanism.Pending (Job(..), Site, goalOf)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
-import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), lookupMeta, substitute, substituteKind)
-import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic)
+import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), lookupMeta, regionScopeOf, substitute, substituteKind)
+import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic, Warning)
 import Stella.Compiler.TypedCore (RowElemKind(..))
 import Data.Array as Array
 import Data.Either (Either(..))
@@ -78,11 +79,12 @@ instance Show Closing where
   show x = genericShow x
 
 -- | Close the rows of the owner given that nothing needs anything of, its term
--- | the one given, the site given where it is reported, and the level given its
--- | binding group's, which closing and resolving again run at.
-closeRows :: forall a k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> k -> P.Int -> Site -> XExpr a -> SolverState -> Tuple (Either Defect Closing) SolverState
-closeRows session attempter owner key level site term s0 =
-  if Set.isEmpty closable then Tuple (Right NothingClosed) s0
+-- | the one given and the types its members are given those given, the site given where it is reported, and the level given its
+-- | binding group's, which closing and resolving again run at; with what the
+-- | jobs run again warned of where the closing is kept.
+closeRows :: forall a k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> k -> P.Int -> Site -> XExpr a -> P.Array XType -> SolverState -> Tuple (Either Defect { closing :: Closing, warnings :: P.Array Warning }) SolverState
+closeRows session attempter owner key level site term types s0 =
+  if Set.isEmpty closable then Tuple (Right { closing: NothingClosed, warnings: [] }) s0
   else case runElabIn session s0 (atLevel level (for_ (Set.toUnfoldable closable :: P.Array MetaVar) \m -> unify site { kind: XKRow RowEffect, left: XMeta m, right: XRowEmpty })) of
     Tuple (Done _) s1 ->
       let
@@ -90,16 +92,16 @@ closeRows session attempter owner key level site term s0 =
       in
         case report.result of
           Halted defect -> Tuple (Left defect) (undo s2)
-          Rejected d -> Tuple (Right (Undone { closed: closable, cause: UndoneBy d })) (undo s2)
-          Exhausted p -> Tuple (Right (Undone { closed: closable, cause: UndoneWaiting p })) (undo s2)
+          Rejected d -> Tuple (Right { closing: Undone { closed: closable, cause: UndoneBy d }, warnings: [] }) (undo s2)
+          Exhausted p -> Tuple (Right { closing: Undone { closed: closable, cause: UndoneWaiting p }, warnings: [] }) (undo s2)
           _ -> case resolveOwners session attempter owner (const level) (_ == key) s2 of
             Tuple (ResolutionHalted defect) s3 -> Tuple (Left defect) (undo s3)
             Tuple (Resolution r) s3 -> case Array.findMap refusal r.components of
-              Just d -> Tuple (Right (Undone { closed: closable, cause: UndoneBy d })) (undo s3)
-              Nothing -> Tuple (Right (Closed closable)) s3
+              Just d -> Tuple (Right { closing: Undone { closed: closable, cause: UndoneBy d }, warnings: [] }) (undo s3)
+              Nothing -> Tuple (Right { closing: Closed closable, warnings: report.warnings <> r.warnings }) s3
     Tuple (Broke defect) s1 -> Tuple (Left defect) (undo s1)
     Tuple (Postponed _) s1 -> Tuple (Left ResolutionPostponed) (undo s1)
-    Tuple (Failed d) s1 -> Tuple (Right (Undone { closed: closable, cause: UndoneBy d })) (undo s1)
+    Tuple (Failed d) s1 -> Tuple (Right { closing: Undone { closed: closable, cause: UndoneBy d }, warnings: [] }) (undo s1)
   where
   undo s = s { tentative = s0.tentative }
 
@@ -110,8 +112,10 @@ closeRows session attempter owner key level site term s0 =
   metas = s0.tentative.metas
   zonked = substitute metas
 
-  -- the types the owner's term writes, where a candidate is counted
-  occurrences = Array.concatMap (metaOccurrences <<< zonked) (typesOfTerm (zonkExpr metas term))
+  -- the types the owner's term writes and its members are given, where a
+  -- candidate is counted: every fit kept a fit, so that the row a decided
+  -- widening carries counts no more than an undecided fit's does
+  occurrences = Array.concatMap (metaOccurrences <<< zonked) (typesOfTerm (zonkExpr (metas { fits = Map.empty }) term) <> types)
 
   owned :: forall r. { origin :: Origin | r } -> P.Boolean
   owned at = owner at.origin == key
@@ -122,7 +126,14 @@ closeRows session attempter owner key level site term s0 =
         _ -> Nothing
     )
     (Array.fromFoldable (Map.values metas.fits))
-  atoms = map (\entry -> entry.obligation.constraint) (Array.filter (\entry -> owned entry.obligation) (Array.fromFoldable (Map.values s0.tentative.obligations.entries)))
+  -- the atoms the owner's obligations leave, each about the flexible tails
+  -- it holds; one that no longer holds keeps every row it names open
+  atoms = Array.concatMap
+    ( \entry -> case residualAtoms zonked (regionScopeOf metas) entry.obligation of
+        Right left -> map atomMetas left
+        Left _ -> [ { metas: constraintMetas entry.obligation.constraint, disjoint: true } ]
+    )
+    (Array.filter (\entry -> owned entry.obligation) (Array.fromFoldable (Map.values s0.tentative.obligations.entries)))
   -- what a waiting equation or goal could still assign, what it waits on
   -- among it
   equations = Array.mapMaybe
@@ -133,6 +144,11 @@ closeRows session attempter owner key level site term s0 =
     )
     (Array.fromFoldable (Map.values s0.tentative.scheduler.pending))
 
+  atomMetas = case _ of
+    LacksAtom _ t -> { metas: Set.singleton t, disjoint: false }
+    DisjointRigid t _ -> { metas: Set.singleton t, disjoint: true }
+    DisjointFlexible t1 t2 -> { metas: Set.fromFoldable [ t1, t2 ], disjoint: true }
+
   constraintMetas = case _ of
     XLacks _ row -> metasOf (zonked row)
     XDisjoint l r -> Set.union (metasOf (zonked l)) (metasOf (zonked r))
@@ -140,16 +156,13 @@ closeRows session attempter owner key level site term s0 =
   found = Set.unions
     [ Set.fromFoldable occurrences
     , Set.unions (map (\f -> Set.union (metasOf f.source) (metasOf f.target)) fits)
-    , Set.unions (map constraintMetas atoms)
+    , Set.unions (map _.metas atoms)
     ]
   required = Set.unions
     [ Set.unions (map (metasOf <<< _.target) fits)
     , Set.unions equations
-    , Set.unions (map constraintMetas (Array.filter isDisjoint atoms))
+    , Set.unions (map _.metas (Array.filter _.disjoint atoms))
     ]
-  isDisjoint = case _ of
-    XDisjoint _ _ -> true
-    XLacks _ _ -> false
 
   isRow m = case lookupMeta metas m of
     Just (Unsolved info) -> substituteKind metas info.kind == XKRow RowEffect && not (Set.member m metas.boundaryRows)

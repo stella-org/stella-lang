@@ -20,7 +20,7 @@ import Stella.Compiler.Surface.Decl (Observation(..))
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..))
-import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..))
+import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
 import Stella.Compiler.Elaborate.Driver.Synthesis (attemptJob)
 import Stella.Compiler.Elaborate.Protocol.Facade as F
@@ -188,7 +188,9 @@ at = case _ of
   Unsupported (ForeignKindInvalid o _) -> located o <> " foreign kind"
   Unsupported (EffectKindVariable o) -> located o <> " effect kind variable"
   Unsupported (EffectKindUndetermined o) -> located o <> " effect kind undetermined"
-  WithoutSignature o _ -> located o <> " without a signature"
+  SignatureNeeded o _ -> located o <> " signature needed"
+  ConstraintEscapes o _ -> located o <> " constraint escapes"
+  SynthesisUndecided o -> located o <> " synthesis undecided"
   KindUndetermined o -> located o <> " kind undetermined"
   Rejected (EquationFailed (AtSource s) _) -> located s.origin <> " rejected"
   Rejected (SynthesisFailed { goal: { origin: AtSource s } }) -> located s.origin <> " synthesis failed"
@@ -250,13 +252,12 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         ]
         \r -> do
           map at r.errors `shouldEqual`
-            [ "3:1 without a signature"
-            , "5:7 rejected"
+            [ "5:7 rejected"
             , "7:8 outside: this form"
             , "9:8 type undetermined"
             , "9:16 type undetermined"
             ]
-          map _.name r.values `shouldEqual` [ Qualified (ModuleName "M") (Ident "ok") ]
+          map _.name r.values `shouldEqual` map (Qualified (ModuleName "M") <<< Ident) [ "k", "ok" ]
 
     it "reports a constructor whose kind arguments nothing decides, and leaves its declaration out" do
       elaborating [ "p :: Phantom -> Int", "p x = 1", "ok :: Int", "ok = 1" ] \r -> do
@@ -487,6 +488,105 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map at r.errors `shouldEqual` [ "4:1 outside: a recursive value that is no function" ]
       elaborating [ "p :: forall a. a -> a", "p = q", "q :: forall a. a -> a", "q = p" ] \r ->
         map at r.errors `shouldEqual` [ "4:1 outside: a recursive value that is no function", "6:1 outside: a recursive value that is no function" ]
+
+  describe "a value declaration without a signature" do
+    let
+      schemeOf name values = map (\v -> printType (fromCore v.scheme.body)) (Array.find (\x -> x.name == inM name) values)
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+      shouting =
+        [ "effect Console where"
+        , "  log :: Int ->* Unit"
+        , "shout :: Int -> Unit / {| Console |}"
+        , "shout x = shout x"
+        ]
+    it "is generalized, the rows nothing needs closed, and the Core checker accepts it" do
+      elaborating
+        ( shouting <>
+            [ "ident = \\x -> x"
+            , "ap f x = f x"
+            , "first x y = x"
+            , "n = inc 1"
+            , "say x = shout x"
+            , "nothing = ()"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          map (\name -> schemeOf name r.values) [ "ident", "ap", "first", "n", "say", "nothing" ] `shouldEqual` map Just
+            [ "forall a. a -> a"
+            , "forall a. forall b. forall c. (a -> c / {| ...b |}) -> a -> c / {| ...b |}"
+            , "forall a. forall b. a -> b -> a"
+            , "Int"
+            , "Int -> Unit / {| Console |}"
+            , "Unit"
+            ]
+          checked r \core -> shapes core `shouldEqual` [ "rec shout", "nonrec ident", "nonrec ap", "nonrec first", "nonrec n", "nonrec say", "nonrec nothing" ]
+
+    it "is η-expanded where it is a function that may move and no value form, and left as it is where it is one" do
+      elaborating [ "g = id", "t = Tuple 1" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "g" r.values `shouldEqual` Just "forall a. a -> a"
+        case bodyOf "g" r.values of
+          Just (TyLam _ a _ (Lam _ x _ (App _ (TyApp _ (Global _ _ _) (TVar a')) (Var _ x')))) | a == a' && x == x' -> pure unit
+          other -> fail ("not expanded: " <> show other)
+        schemeOf "t" r.values `shouldEqual` Just "forall a. a -> Tuple Int a"
+        case bodyOf "t" r.values of
+          Just (TyLam _ a _ (App _ (TyApp _ (TyApp _ (Global _ _ _) _) (TVar a')) (Lit _ (LitInt 1)))) | a == a' -> pure unit
+          other -> fail ("not the spine: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec g", "nonrec t" ]
+
+    it "asks for a signature where it is no value form and leaves its type undecided" do
+      elaborating [ "w = id id", "v = id 1" ] \r -> do
+        map at r.errors `shouldEqual` [ "3:1 signature needed" ]
+        map _.name r.values `shouldEqual` [ inM "v" ]
+        schemeOf "v" r.values `shouldEqual` Just "Int"
+
+    it "reports a type its body alone holds where it stands, an annotation asked for" do
+      elaborating [ "f x = const x id" ] \r ->
+        map at r.errors `shouldEqual` [ "3:7 type undetermined", "3:15 type undetermined" ]
+
+    it "reports its annotations' holes and the wildcards nothing decides before anything is generalized" do
+      elaborating [ "h x = (x :: ?a)", "k x = (x :: _)", "ok x = (inc :: _ -> Int) x" ] \r -> do
+        map at r.errors `shouldEqual` [ "3:13 hole a ?", "4:13 type undetermined" ]
+        schemeOf "ok" r.values `shouldEqual` Just "Int -> Int"
+
+    it "is in dependency order, whatever order it is written in, and is referred to from a body with a signature" do
+      elaborating [ "a = b 1", "m :: Tuple Int String", "m = Tuple (b 1) (b \"s\")", "b x = x" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "a" r.values `shouldEqual` Just "Int"
+        schemeOf "b" r.values `shouldEqual` Just "forall a. a -> a"
+        checked r \core -> shapes core `shouldEqual` [ "nonrec b", "nonrec a", "nonrec m" ]
+
+    it "forcing a computation whose row is not empty is a mismatch of rows, the right-hand side no boundary" do
+      elaborating [ "effect Console where", "  log :: Int ->* Unit", "loud :: Int / {| Console |}", "loud = 1", "w = loud" ] \r ->
+        map at r.errors `shouldEqual` [ "rejected" ]
+
+    it "is outside this version where it is recursive" do
+      elaborating [ "loop x = loop x", "p x = q x", "q x = p x", "ok = 1" ] \r -> do
+        map at r.errors `shouldEqual`
+          [ "3:1 outside: a recursive declaration without a signature"
+          , "4:1 outside: a recursive declaration without a signature"
+          , "5:1 outside: a recursive declaration without a signature"
+          ]
+        map _.name r.values `shouldEqual` [ inM "ok" ]
+
+    it "leaves a declaration referring to one with no scheme unchecked, and one referring to a body with a signature that failed checked" do
+      elaborating
+        [ "bad = id id"
+        , "user = bad"
+        , "signed :: Int"
+        , "signed = inc bad"
+        , "wrong :: Int"
+        , "wrong = inc ()"
+        , "fine = wrong"
+        ]
+        \r -> do
+          map at r.errors `shouldEqual` [ "3:1 signature needed", "4:1 left unchecked", "6:1 left unchecked", "8:13 rejected" ]
+          schemeOf "fine" r.values `shouldEqual` Just "Int"
+      -- a signature that gave no scheme leaves what refers to the value unchecked
+      elaborating [ "bad :: _", "bad = 1", "user = bad", "signed :: Int", "signed = bad", "ok = user" ] \r -> do
+        map at r.errors `shouldEqual` [ "3:8 outside: a wildcard", "5:1 left unchecked", "8:1 left unchecked", "7:1 left unchecked" ]
+        map _.name r.values `shouldEqual` []
 
   describe "a computation declaration" do
     let

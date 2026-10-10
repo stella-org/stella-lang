@@ -30,6 +30,10 @@
 -- | again once its fits are decided where it was one already; anything else
 -- | no value form is the Core checker's to refuse, as the author's.
 -- |
+-- | **A definition without a signature is inferred**, its parameters at fresh
+-- | types and its body under a fresh inference row, under `()` and no
+-- | boundary; one with no parameter may be η-expanded as a quantified body is.
+-- |
 -- | **A scheme's constraints are assumed where its declaration's body opens
 -- | it**, under a constraint abstraction, **and required where a global is
 -- | instantiated**, under a constraint application.
@@ -46,7 +50,11 @@ module Stella.Compiler.Elaborate.Surface.Expr
   , runSurf
   , elaborateValue
   , elaborateComputation
+  , inferDefinition
+  , expandable
   , immediateReferences
+  , references
+  , asArrow
   ) where
 
 import Prelude
@@ -54,6 +62,7 @@ import Prim hiding (Type)
 
 import Data.Array as Array
 import Data.Either (Either(..))
+import Data.Foldable (foldMap)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Set (Set)
@@ -66,14 +75,14 @@ import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), fromCore)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal)
 import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Environment.Constructors (lookupConstructor)
-import Stella.Compiler.Elaborate.Environment.Surface (SurfaceEnv)
+import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, closeBoundary, currentMetas, equate, freshIdent, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, require)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), substitute)
 import Stella.Compiler.Elaborate.Surface.Type (TypeHole, Unsupported(..), Wildcard, elaborateType, xFunction)
-import Stella.Compiler.Surface.Expr (Binder(..), Expr(..), exprOrigin)
+import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder(..), Expr(..), GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..), exprOrigin)
 import Stella.Compiler.Surface.Name (LocalVar(..))
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Name (Ident, Qualified)
@@ -169,6 +178,44 @@ elaborateComputation
 elaborateComputation internal surface declaration origin scheme =
   definition internal surface declaration origin scheme [ Thunk ]
 
+-- | A value declaration's definition where it has no signature, inferred: a
+-- | `λ` for each parameter at a fresh type, its body under a fresh inference
+-- | row, the whole of it under `()`, which no boundary holds. **A body with no
+-- | parameter is η-expanded where that is asked for**, built as the `λ`
+-- | applying it to its parameter is inferred, and contracted again once its
+-- | fits are decided where it was a value form already.
+inferDefinition
+  :: Internal
+  -> SurfaceEnv
+  -> Qualified Ident
+  -> Surface.Origin
+  -> Array Binder
+  -> Expr
+  -> Boolean
+  -> Surf { expr :: XExpr Surface.Origin, type :: XType }
+inferDefinition internal surface declaration origin params body expand = case params of
+  [] | expand -> do
+    argument <- lift (freshTypeMeta scope.context XKType)
+    row <- lift (freshTypeMeta scope.context (XKRow RowEffect))
+    x <- lift (freshIdent (Map.keys scope.context.vars) "x")
+    let inner = scope { context = bindVar scope.context x argument, ambient = row }
+    f <- infer inner body
+    applied <- applyTo inner at at f \a -> subsume inner at { expr: EVar at x, type: argument } a
+    lambda <- expansion at (ELam at x argument applied.expr)
+    pure { expr: lambda, type: xFunction argument row applied.type }
+  [] -> infer scope body
+  _ -> infer scope (ExprLambda origin params body)
+  where
+  scope = { declaration, context: emptyXContext, ambient: XRowEmpty, internal, surface }
+  at = exprOrigin body
+
+-- | Whether a definition's body is one η-expansion may move under a `λ`: one
+-- | with no parameter, that may move, and is no `λ` already.
+expandable :: Array Binder -> Expr -> Boolean
+expandable params body = Array.null params && delayable body && case body of
+  ExprLambda _ _ _ -> false
+  _ -> true
+
 definition :: Internal -> SurfaceEnv -> Qualified Ident -> Surface.Origin -> TypeScheme -> Array Parameter -> Expr -> Surf (XExpr Surface.Origin)
 definition internal surface declaration origin scheme params body =
   boundary scope0 origin XRowEmpty \scope -> abstractions origin true false Written scope params body (fromCore scheme.body)
@@ -248,27 +295,33 @@ quantifiedBody scope body expected ty = do
   case body, asArrow (substitute metas ty) of
     ExprLambda _ _ _, _ -> check scope body expected ty
     _, Just _ | delayable body -> do
-      env <- lift askEnv
       parts <- arrow scope origin ty
       x <- lift (freshIdent (Map.keys scope.context.vars) "x")
       lambda <- lambdaAt scope origin expected x parts \s -> do
         f <- infer s body
         applied <- applyTo s origin origin f \argument -> subsume s origin { expr: EVar origin x, type: parts.argument } argument
         subsume s origin applied parts.result
-      let
-        isConstructor = isJust <<< lookupConstructor env.session.constructors
-        -- what the λ applies, under the fits around the application
-        applies = case _ of
-          EFit _ _ e -> applies e
-          EApp _ f _ -> Just f
-          _ -> Nothing
-        contractible = case lambda of
-          ELam _ _ _ inner -> maybe false (isValueForm isConstructor) (applies inner)
-          _ -> false
-      pure (EEta origin contractible lambda)
+      expansion origin lambda
     _, _ -> check scope body expected ty
   where
   origin = exprOrigin body
+
+-- | A `λ` an η-expansion built, marked as one, and as contractible where what it
+-- | applies to its parameter is a value form as it stands.
+expansion :: Surface.Origin -> XExpr Surface.Origin -> Surf (XExpr Surface.Origin)
+expansion origin lambda = do
+  env <- lift askEnv
+  let
+    isConstructor = isJust <<< lookupConstructor env.session.constructors
+    -- what the λ applies, under the fits around the application
+    applies = case _ of
+      EFit _ _ e -> applies e
+      EApp _ f _ -> Just f
+      _ -> Nothing
+    contractible = case lambda of
+      ELam _ _ _ inner -> maybe false (isValueForm isConstructor) (applies inner)
+      _ -> false
+  pure (EEta origin contractible lambda)
 
 -- | Whether the evaluation of an expression may move under a λ with no
 -- | observable difference: a variable, a global, a constructor, a literal, a
@@ -300,6 +353,53 @@ immediateReferences = case _ of
   ExprApp _ f x -> Set.union (immediateReferences f) (immediateReferences x)
   ExprTyped _ inner _ -> immediateReferences inner
   _ -> Set.empty
+
+-- | The top-level values and computations an expression refers to anywhere in
+-- | it, read off every form, whether or not this version elaborates it. A
+-- | local is no reference, being bound where it is used.
+references :: Expr -> Set (Qualified Ident)
+references = case _ of
+  ExprLocal _ _ -> Set.empty
+  ExprValue _ name -> Set.singleton name
+  ExprComputation _ name -> Set.singleton name
+  ExprConstructor _ _ -> Set.empty
+  ExprOperation _ _ _ -> Set.empty
+  ExprDiscriminator _ _ -> Set.empty
+  ExprTag _ _ -> Set.empty
+  ExprLiteral _ _ -> Set.empty
+  ExprHole _ _ -> Set.empty
+  ExprApp _ f x -> references f <> references x
+  ExprOperator _ op l r -> references op <> references l <> references r
+  ExprTyped _ inner _ -> references inner
+  ExprSelect _ inner _ -> references inner
+  ExprTuple _ es -> foldMap references es
+  ExprRecord _ fields -> foldMap field fields
+  ExprLambda _ _ body -> references body
+  ExprLet _ bindings body -> foldMap binding bindings <> references body
+  ExprCase _ scrutinees alternatives -> foldMap references scrutinees <> foldMap (alternative <<< _.body) alternatives
+  ExprHandle _ cells items body -> foldMap (references <<< _.initial) cells <> foldMap item items <> references body
+  ExprCellRead _ _ -> Set.empty
+  ExprCellWrite _ _ value -> references value
+  ExprResume _ -> Set.empty
+  ExprInvalid _ -> Set.empty
+  where
+  field = case _ of
+    FieldValue _ _ e -> references e
+    FieldUpdate _ _ e -> references e
+    FieldSpread _ e -> references e
+  binding = case _ of
+    LetValue b -> references b.body
+    LetPattern b -> references b.body
+  alternative = case _ of
+    Unconditional e -> references e
+    Guarded lines -> foldMap guardLine lines
+  guardLine = case _ of
+    GuardBinding _ _ e -> references e
+    GuardWhen _ condition e -> references condition <> references e
+    GuardOtherwise _ e -> references e
+  item = case _ of
+    HandlerApplied e -> references e
+    HandlerGroup g -> foldMap (references <<< _.body) g.body.operations <> foldMap (references <<< _.body) g.body.return
 
 -- | The argument, the row, and the result of the arrow the type must be: its
 -- | own where it is one, and otherwise an arrow of fresh metavariables it is
@@ -413,9 +513,10 @@ infer scope expr = case expr of
         let ty = substituteKindVars (Map.fromFoldable (Array.zip scheme.kindVars kinds)) scheme.body
         instantiated o (EGlobal o name kinds) ty
 
-  lookupScheme catalog name = case lookupEntry catalog name of
-    Just entry -> Just entry.scheme
-    Nothing -> Map.lookup name scope.internal
+  lookupScheme catalog name = case lookupEntry catalog name, Map.lookup name scope.surface.bindings of
+    Just entry, _ -> Just entry.scheme
+    Nothing, Just (Final scheme) -> Just { kindVars: scheme.kindVars, body: fromCore scheme.body }
+    Nothing, Nothing -> Map.lookup name scope.internal
 
   instantiated o e = case _ of
     XForall a k rest -> do

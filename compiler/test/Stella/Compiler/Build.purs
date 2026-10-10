@@ -572,6 +572,28 @@ spec = describe "Stella.Compiler.Build" do
           Left err -> map _.message (NonEmptyArray.toArray (buildMessages err)) `shouldEqual` [ "`Int` and `Unit -> Int` are different types", "`Unit -> Int` and `Int` are different types" ]
           Right _ -> fail "built"
 
+  describe "a value declaration without a signature" do
+    it "is generalized, the interface publishing the scheme inferred, through its file" do
+      compilingUnder [ "module M (ident, n) where" ] [ "ident = \\x -> x", "n = ident 1" ] case _ of
+        Left errors -> fail (joinWith "; " (map printCompileError errors))
+        Right r -> do
+          r.handed `shouldEqual` [ "core ident n", "mid M", "bytecode M" ]
+          let scheme name = map _.scheme (Map.lookup (Ident name) r.interface.declarations.values)
+          scheme "ident" `shouldEqual` Just (plainScheme (monoScheme (TForall (TyVar "a") KType (pureFn (TVar (TyVar "a")) (TVar (TyVar "a"))))))
+          scheme "n" `shouldEqual` Just (plainScheme (monoScheme int))
+          case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
+            Right stored -> stored.interface `shouldEqual` r.interface
+            Left problem -> fail problem
+
+    it "is used at its scheme by a module importing it, at each type it is instantiated at" do
+      building
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "n :: Int", "n = ident 1", "s :: String", "s = ident \"s\"" ])
+        , Tuple "src/A.stel" (moduleOf "A" [] [ "ident = \\x -> x" ])
+        ]
+        \r -> case r.result of
+          Right built -> built `shouldEqual` [ "A", "B" ]
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+
   describe "a module's type declarations" do
     let
       rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors

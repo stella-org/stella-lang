@@ -80,8 +80,8 @@ closing action k = case runAttempt session action (initialState (SessionId 0) 10
     let
       Tuple _ quiet = run session s
       Tuple _ resolved = resolveByDirection session (attemptPending session) ownerOf (const 0) quiet
-    case closeRows session (attemptPending session) ownerOf declaration 0 site r.term resolved of
-      Tuple (Right c) after -> k r.keep c after
+    case closeRows session (attemptPending session) ownerOf declaration 0 site r.term [] resolved of
+      Tuple (Right c) after -> k r.keep c.closing after
       Tuple (Left d) _ -> fail (show d)
   Tuple _ _ -> fail "the attempt did not commit"
 
@@ -158,7 +158,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Close" do
       )
       \_ closed _ -> closed `shouldEqual` NothingClosed
 
-  it "closes a row a `Lacks` names, `()` meeting it, and leaves one a `Disjoint` names" do
+  it "closes a row an atom `Lacks` names, `()` meeting it, and leaves one an atom `Disjoint` names" do
     closing
       ( do
           e <- freshTypeMeta emptyXContext rowEffect
@@ -170,11 +170,21 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Close" do
     closing
       ( do
           e <- freshTypeMeta emptyXContext rowEffect
-          require site (XDisjoint e (row [ clock ] XRowEmpty))
+          d <- freshTypeMeta emptyXContext rowEffect
+          require site (XDisjoint e d)
           f <- placeFit site Wrapping e (row [ console ] XRowEmpty)
           pure { term: EFit unit f literal, keep: unit }
       )
       \_ closed _ -> closed `shouldEqual` NothingClosed
+    -- a `Disjoint` of a known key is a `Lacks` of its atoms, which `()` meets
+    closing
+      ( do
+          e <- freshTypeMeta emptyXContext rowEffect
+          require site (XDisjoint e (row [ clock ] XRowEmpty))
+          f <- placeFit site Wrapping e (row [ console ] XRowEmpty)
+          pure { term: EFit unit f literal, keep: e }
+      )
+      \e closed _ -> closed `shouldEqual` Closed (Set.fromFoldable (metaOf e))
 
   it "undone where what it decides is refused, the refusal kept as what the owner is reported by" do
     closing
@@ -202,8 +212,8 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Close" do
           -- an equation of `f` waiting on `?e`, which neither of its sides names
           Tuple id created = create 0 site (JobUnify { kind: rowEffect, left: XRowUnion r.x r.y, right: row [ console ] XRowEmpty }) s.tentative.scheduler
           waiting = s { tentative { scheduler = reblock' id created (Set.fromFoldable (Array.mapMaybe metaOf [ r.e ])) } }
-        case closeRows session (attemptPending session) ownerOf declaration 0 site r.term waiting of
-          Tuple (Right c) _ -> c `shouldEqual` NothingClosed
+        case closeRows session (attemptPending session) ownerOf declaration 0 site r.term [] waiting of
+          Tuple (Right c) _ -> c.closing `shouldEqual` NothingClosed
           Tuple (Left d) _ -> fail (show d)
       Tuple _ _ -> fail "the attempt did not commit"
   where

@@ -41,8 +41,14 @@
 -- | **A computation declaration is a value whose Core type is a thunk**, its
 -- | signature read as that type and its body under it.
 -- |
--- | **A value declaration needs a signature in this version**, a fixity gives
--- | Core nothing, and a handler is outside what it elaborates.
+-- | **A value without a signature is generalized**, each strongly connected
+-- | component of the references such values make to one another a group, the
+-- | groups in dependency order and before any body with a signature; its scheme
+-- | is read by the module's bodies and is in no catalog. A recursive group is
+-- | outside what this version elaborates, and a declaration referring to a value
+-- | with no scheme — one its group did not generalize, or one whose signature
+-- | gave none — is left unchecked. A fixity gives Core nothing, and a handler
+-- | is outside what it elaborates.
 module Stella.Compiler.Elaborate.Surface.Module
   ( ElaborationError(..)
   , ElaboratedValue
@@ -56,6 +62,9 @@ module Stella.Compiler.Elaborate.Surface.Module
 import Prelude
 import Prim hiding (Type)
 
+import Control.Monad.Except (ExceptT, runExceptT, throwError)
+import Control.Monad.State (State, get, gets, modify_, put, runState, state)
+import Control.Monad.Trans.Class (lift)
 import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
@@ -64,31 +73,34 @@ import Data.Foldable (foldl)
 import Data.Traversable (traverse)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
-import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), XExpr, toCoreExpr)
+import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), XExpr, isSettledValueForm, toCoreExpr)
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind, kindMetasOf)
-import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType, fromCore, kindMetasOfType, metasOf)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType, fromCore, kindMetasOfType, metasOf, toCore)
 import Stella.Compiler.Elaborate.Surface.Types (readAttributeDeclaration, readTypes, settledTypes)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEntry)
-import Stella.Compiler.Elaborate.Surface.Internal (internalEntries)
+import Stella.Compiler.Elaborate.Surface.Internal (Internal, internalEntries)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
 import Stella.Compiler.Elaborate.Driver.Loop (Attempter, runAttempting)
 import Stella.Compiler.Elaborate.Driver.Loop as Loop
-import Stella.Compiler.Elaborate.Driver.Resolve (ComponentOutcome(..), Resolution(..), resolveByDirection)
+import Stella.Compiler.Elaborate.Driver.Resolve (ComponentOutcome(..), Resolution(..), resolveByDirection, resolveOwners)
+import Stella.Compiler.Elaborate.Driver.Generalize (Hindrance(..)) as Hindrance
+import Stella.Compiler.Elaborate.Driver.Generalize (Commitment(..), Finalization(..), Hindrance, Preparation(..), commitGeneralization, finalizeGeneralization, prepareGeneralization)
 import Stella.Compiler.Elaborate.Driver.Close (Closing(..), Undoing(..), closeRows)
 import Stella.Compiler.Elaborate.Environment.Catalog (CatalogEntry, EntrySort(..))
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
-import Stella.Compiler.Elaborate.Environment.Surface (SurfaceEnv, takesSynthesized)
-import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, initialState)
+import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv, takesSynthesized)
+import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, atLevel, initialState)
+import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..))
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
-import Stella.Compiler.Elaborate.Mechanism.Unify (substitute, substituteKind)
-import Stella.Compiler.Elaborate.Surface.Expr (elaborateComputation, elaborateValue, immediateReferences, runSurf)
+import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, substitute, substituteKind)
+import Stella.Compiler.Elaborate.Surface.Expr (asArrow, elaborateComputation, elaborateValue, expandable, immediateReferences, inferDefinition, references, runSurf)
 import Stella.Compiler.Elaborate.Surface.Type (TypeHole, Unsupported(..), Wildcard, elaborateComputationSignature, elaborateSignature, schemeOf, settledScheme)
-import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
+import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..), Warning)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Surface.Group (groups)
 import Stella.Compiler.ForeignBoundary (Refused, crossingOf)
@@ -105,7 +117,7 @@ import Stella.Compiler.TypedCore.Declare (ctorInfo, dataEntry)
 import Stella.Compiler.TypedCore.AttributeCheck (AttributeError, checkAttribute)
 import Stella.Compiler.TypedCore.Check (CheckError(NotAValueForm), isFunVal)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName, OpName(..), Qualified(..), TyName(..), unqualified)
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName, OpName(..), Qualified(..), TyName(..), TyVar, unqualified)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
 import Stella.Compiler.TypedCore.Kind (KindScheme)
 import Stella.Compiler.TypedCore.Type (Type(..), TypeScheme)
@@ -114,8 +126,16 @@ import Stella.Compiler.TypedCore.Prim (pureFn)
 data ElaborationError
   -- | A form this version does not elaborate, or one resolution reported.
   = Unsupported Unsupported
-  -- | A value declaration with no signature, which this version needs.
-  | WithoutSignature Surface.Origin (Qualified Ident)
+  -- | A value without a signature whose type its right-hand side leaves
+  -- | undecided where that is no value form, or whose synthesis would cross a
+  -- | quantifier: a signature decides it.
+  | SignatureNeeded Surface.Origin (Qualified Ident)
+  -- | A constraint naming the type variable given, which a `forall` inside the
+  -- | value binds, where the constraint arose: the value's scheme would leave
+  -- | the variable free.
+  | ConstraintEscapes Surface.Origin TyVar
+  -- | A synthesis nothing decided, where it is asked for.
+  | SynthesisUndecided Surface.Origin
   -- | A kind nothing decided, where it was left unwritten: a binder, or a
   -- | constructor instantiated at fresh kinds.
   | KindUndetermined Surface.Origin
@@ -212,7 +232,7 @@ elaborateValues
   -> SurfaceEnv
   -> Array CatalogEntry
   -> Surface.Module
-  -> { data :: Array ElaboratedData, synonyms :: Array ElaboratedSynonym, foreignTypes :: Array ElaboratedForeignType, effects :: Array ElaboratedEffect, foreigns :: Array ElaboratedForeign, attributes :: Array ElaboratedAttribute, values :: Array ElaboratedValue, immediate :: Map (Qualified Ident) (Set (Qualified Ident)), errors :: Array ElaborationError }
+  -> { data :: Array ElaboratedData, synonyms :: Array ElaboratedSynonym, foreignTypes :: Array ElaboratedForeignType, effects :: Array ElaboratedEffect, foreigns :: Array ElaboratedForeign, attributes :: Array ElaboratedAttribute, values :: Array ElaboratedValue, immediate :: Map (Qualified Ident) (Set (Qualified Ident)), errors :: Array ElaborationError, warnings :: Array Warning }
 elaborateValues imports surface importedEntries m =
   if Array.null dataErrors then
     { data: elaboratedData
@@ -221,11 +241,12 @@ elaborateValues imports surface importedEntries m =
     , effects: types.effects
     , foreigns: crossing.foreigns
     , attributes: attributesRead.declared
-    , values: settled'.values
+    , values: Array.sortWith _.ordinal (generalized.values <> settled'.values)
     , immediate
-    , errors: internalErrors <> unsupported <> signatureErrors <> crossing.errors <> attributesRead.errors <> attributeErrors <> bodyErrors <> settled'.errors
+    , errors: internalErrors <> unsupported <> signatureErrors <> crossing.errors <> attributesRead.errors <> generalized.errors <> attributeErrors <> bodyErrors <> settled'.errors
+    , warnings: generalized.warnings
     }
-  else { data: [], synonyms: [], foreignTypes: [], effects: [], foreigns: [], attributes: [], values: [], immediate: Map.empty, errors: dataErrors <> unsupported }
+  else { data: [], synonyms: [], foreignTypes: [], effects: [], foreigns: [], attributes: [], values: [], immediate: Map.empty, errors: dataErrors <> unsupported, warnings: [] }
   where
   initial0 = initialState (SessionId 0) 1_000_000
 
@@ -283,10 +304,10 @@ elaborateValues imports surface importedEntries m =
   -- gives Core nothing
   candidates = Array.catMaybes (Array.mapWithIndex candidate m.declarations)
   candidate ordinal = case _ of
-    DeclValue d -> Just case d.signature, traverse coreAttribute d.attributes of
-      Nothing, _ -> Left (WithoutSignature d.origin d.name)
-      _, Left o -> Left (Unsupported (ReportedAlready o))
-      Just signature', Right attributes -> Right
+    -- a value without a signature is generalized instead
+    DeclValue d -> d.signature <#> \signature' -> case traverse coreAttribute d.attributes of
+      Left o -> Left (Unsupported (ReportedAlready o))
+      Right attributes -> Right
         { declared: { name: d.name, origin: d.origin, ordinal, attributes, definition: Right (ValueBody d.params d.body) }
         , read: \synonyms -> elaborateSignature synonyms d.name signature'
         }
@@ -381,7 +402,10 @@ elaborateValues imports surface importedEntries m =
   -- naming one, and every attribute declaration of the module
   attributeSignature =
     foldl (\s a -> s { attributes = Map.insert (Qualified m.name a.decl.name) { positional: a.decl.positional, keyword: a.decl.keyword } s.attributes })
-      (foldl (\s v -> s { values = Map.insert v.declared.name { scheme: v.scheme, isForeign: isForeignDefinition v.declared.definition } s.values }) signature schemes)
+      ( foldl (\s v -> s { values = Map.insert v.name { scheme: v.scheme, isForeign: false } s.values })
+          (foldl (\s v -> s { values = Map.insert v.declared.name { scheme: v.scheme, isForeign: isForeignDefinition v.declared.definition } s.values }) signature schemes)
+          generalized.values
+      )
       attributesRead.declared
   attributeErrors = Array.concatMap
     ( \d -> Array.mapMaybe
@@ -402,20 +426,79 @@ elaborateValues imports surface importedEntries m =
   -- argument among those the imports declare
   withOwn = withSynonyms { synthesizing = withSynonyms.synthesizing <> Set.fromFoldable (map _.declared.name (Array.filter (takesSynthesized <<< _.spine) schemes)) }
 
+  -- the values without a signature
+  unsignedRead = Array.catMaybes (Array.mapWithIndex unsignedOf m.declarations)
+  unsignedOf ordinal = case _ of
+    DeclValue d | Nothing <- d.signature -> Just case traverse coreAttribute d.attributes of
+      Left o -> Left { name: d.name, error: Unsupported (ReportedAlready o) }
+      Right attributes -> Right { name: d.name, origin: d.origin, ordinal, attributes, params: d.params, body: d.body }
+    _ -> Nothing
+  -- the values, computations, and foreigns with a signature that gave no
+  -- scheme, which a reference to them cannot be checked against
+  unread = Set.difference
+    ( Set.fromFoldable
+        ( Array.mapMaybe
+            ( case _ of
+                DeclValue d -> d.signature $> d.name
+                DeclComputation d -> Just d.name
+                DeclForeign d -> Just d.name
+                _ -> Nothing
+            )
+            m.declarations
+        )
+    )
+    (Set.fromFoldable (map _.declared.name schemes))
+  unsigned = Array.mapMaybe (either (const Nothing) Just) unsignedRead
+  unsignedIndex = Map.fromFoldable (Array.mapWithIndex (\i u -> Tuple u.name i) unsigned)
+
+  -- each strongly connected component of the references they make to one
+  -- another a group, generalized in dependency order before any body with a
+  -- signature is elaborated, and published whole once committed; one
+  -- referring to a value with no scheme — one without a signature its group
+  -- did not generalize, or one whose signature gave none — is left unchecked
+  generalized = foldl generalizeOne
+    { state: attributesRead.state
+    , bindings: Map.empty
+    , values: []
+    , unavailable: Set.union unread (Set.fromFoldable (Array.mapMaybe (either (Just <<< _.name) (const Nothing)) unsignedRead))
+    , errors: Array.mapMaybe (either (Just <<< _.error) (const Nothing)) unsignedRead
+    , warnings: []
+    }
+    (groups (map (\u -> Set.fromFoldable (Array.mapMaybe (\n -> Map.lookup n unsignedIndex) (Array.fromFoldable (references u.body)))) unsigned))
+  generalizeOne acc g = case g.recursive, Array.mapMaybe (Array.index unsigned) g.members of
+    false, [ u ]
+      | meets (references u.body) acc.unavailable -> acc { unavailable = Set.insert u.name acc.unavailable, errors = Array.snoc acc.errors (LeftUnchecked u.origin u.name) }
+      | otherwise ->
+          let
+            done = generalizeValue session (attemptPending session) internal (withOwn { bindings = acc.bindings }) (\n -> Map.member n signature.ctors) u acc.state
+          in
+            case done.result of
+              Left errors -> acc { state = done.state, unavailable = Set.insert u.name acc.unavailable, errors = acc.errors <> errors }
+              Right r -> acc { state = done.state, bindings = Map.insert u.name (Final r.value.scheme) acc.bindings, values = Array.snoc acc.values r.value, warnings = acc.warnings <> r.warnings }
+    _, members ->
+      acc
+        { unavailable = Set.union acc.unavailable (Set.fromFoldable (map _.name members))
+        , errors = acc.errors <> map (\u -> Unsupported (OutsideSubset u.origin "a recursive declaration without a signature")) members
+        }
+
   -- every body, as one attempt each, a body that does not elaborate leaving
-  -- nothing behind
-  bodies = foldl bodyOne { state: attributesRead.state, bodies: [], errors: [] } defined
+  -- nothing behind; one referring to a value with no scheme is left unchecked
+  withFinal = withOwn { bindings = generalized.bindings }
+  bodies = foldl bodyOne { state: generalized.state, bodies: [], errors: [] } defined
   bodyOne acc v = case v.definition of
-    ValueBody params body -> attemptBody acc v (elaborateValue internal withOwn v.declared.name v.declared.origin v.scheme params body)
+    ValueBody _ body | meets (references body) generalized.unavailable -> unchecked acc v
+    ComputationBody body | meets (references body) generalized.unavailable -> unchecked acc v
+    ValueBody params body -> attemptBody acc v (elaborateValue internal withFinal v.declared.name v.declared.origin v.scheme params body)
     -- a synthesized argument is supplied by a goal, which this version does
     -- not create, and a computation has no parameter to bind it to
     ComputationBody _ | takesSynthesized v.spine -> acc { errors = Array.snoc acc.errors (Unsupported (OutsideSubset v.declared.origin "a computation taking a synthesized argument")) }
-    ComputationBody body -> attemptBody acc v (elaborateComputation internal withOwn v.declared.name v.declared.origin v.scheme body)
+    ComputationBody body -> attemptBody acc v (elaborateComputation internal withFinal v.declared.name v.declared.origin v.scheme body)
   attemptBody acc v elaborating =
     case runAttempt session (runSurf elaborating) acc.state of
       Tuple (Done (Right built)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, spine: v.spine, body: built.value, holes: built.holes, wildcards: built.wildcards } }
       Tuple (Done (Left problem)) _ -> acc { errors = Array.snoc acc.errors (Unsupported problem) }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
+  unchecked acc v = acc { errors = Array.snoc acc.errors (LeftUnchecked v.declared.origin v.declared.name) }
   bodyErrors = bodies.errors
   -- what each value with no parameter refers to before entering any λ
   immediate = Map.fromFoldable
@@ -425,6 +508,7 @@ elaborateValues imports surface importedEntries m =
             _ -> Nothing
         )
         defined
+        <> map (\u -> Tuple u.name (immediateReferences u.body)) (Array.filter (Array.null <<< _.params) unsigned)
     )
 
   settled' = settleBodies session (attemptPending session) bodies.state bodies.bodies
@@ -493,29 +577,15 @@ settleBodies session attempter state bodies =
     Ambiguous a -> [ { error: EffectRowAmbiguous c.owner (Array.mapMaybe sourceOrigin a.origins), names: [ c.owner ] } ]
     Refused d -> [ { error: rejected d, names: Array.cons c.owner (diagnosticDeclarations d) } ]
 
-  -- a boundary no row expected of it contains asks for an implicit handler,
-  -- which this version does not resolve
-  rejected d = case d of
-    BoundaryNotContained o _ | Just at <- sourceOrigin o -> Unsupported (OutsideSubset at "implicit-handler resolution at this checking boundary")
-    _ -> Rejected d
-
-  sourceOrigin = case _ of
-    AtSource o -> Just o.origin
-    InDeclaration _ -> Nothing
-
   -- a body's rows closed, a defect stopping every later one; a closing
   -- undone is the declaration's report, the rows decided again without it
   -- need not fail as it did
   closing acc b = case acc of
-    { defect: Nothing, state: s, undone } -> case closeRows session attempter declarationOf b.name 0 { context: emptyXContext, origin: InDeclaration b.name } b.body s of
+    { defect: Nothing, state: s, undone } -> case closeRows session attempter declarationOf b.name 0 { context: emptyXContext, origin: InDeclaration b.name } b.body [] s of
       Tuple (Left d) s' -> { defect: Just d, state: s', undone }
-      Tuple (Right (Undone u)) s' -> { defect: Nothing, state: s', undone: Map.insert b.name u.cause undone }
+      Tuple (Right { closing: Undone u }) s' -> { defect: Nothing, state: s', undone: Map.insert b.name u.cause undone }
       Tuple (Right _) s' -> { defect: Nothing, state: s', undone }
     stopped -> stopped
-
-  undoneError = case _ of
-    UndoneBy d -> rejected d
-    UndoneWaiting p -> EquationUndecided p.origin
 
   Tuple report quiet = runAttempting attempter state
 
@@ -579,23 +649,7 @@ settleBodies session attempter state bodies =
   settled b =
     let
       metas = after.tentative.metas
-      open = Array.filter (\w -> not (Set.isEmpty (typeMetas w) && Set.isEmpty (kindMetas w))) b.wildcards
-      reported = map (\h -> TypeHoleStands h.origin h.name (substitute metas h.type)) b.holes
-        <> map TypeUndetermined (Array.nubEq (map _.origin open))
-      written = map (\h -> { type: h.type, kind: h.kind }) b.holes <> map (\w -> { type: w.type, kind: w.kind }) b.wildcards
-      types = Set.unions (map typeMetas written)
-      kinds = Set.unions (map kindMetas written)
-      covered = case _ of
-        ResidualTypeMeta _ m -> Set.member m types
-        ResidualKindMeta _ k -> Set.member k kinds
-        _ -> false
-
-      -- what is undecided in a type an annotation writes, however deep
-      typeMetas :: forall r. { type :: XType | r } -> Set MetaVar
-      typeMetas w = metasOf (substitute metas w.type)
-
-      kindMetas :: forall r. { type :: XType, kind :: XKind | r } -> Set KindMetaVar
-      kindMetas w = Set.union (kindMetasOfType (substitute metas w.type)) (kindMetasOf (substituteKind metas w.kind))
+      { reported, covered } = annotated metas b.holes b.wildcards
     in
       case toCoreExpr (zonkExpr metas b.body) of
         Right body
@@ -608,18 +662,269 @@ settleBodies session attempter state bodies =
           -- a place is reported once, however many undecided types stand there
           Nothing -> Tuple (reported <> map TypeUndetermined (Array.nubEq (map residueOrigin (Array.filter (not <<< covered) (NonEmptyArray.toArray residues))))) Nothing
 
-  residueOrigin = case _ of
-    ResidualTypeMeta o _ -> o
-    ResidualKindMeta o _ -> o
-    ResidualTermMeta o _ -> o
-    ResidualHole o _ -> o
-    ResidualFit o _ -> o
-    ResidualRecursiveRef o _ -> o
+-- | The typed holes and the wildcards an annotation holds, settled: each hole
+-- | reported, each wildcard not wholly decided reported where it is written,
+-- | and the residues of what they stand for, which are not reported again.
+annotated :: MetaContext -> Array TypeHole -> Array Wildcard -> { reported :: Array ElaborationError, covered :: Residue Surface.Origin -> Boolean }
+annotated metas holes wildcards = { reported, covered }
+  where
+  open = Array.filter (\w -> not (Set.isEmpty (typeMetas w) && Set.isEmpty (kindMetas w))) wildcards
+  reported = map (\h -> TypeHoleStands h.origin h.name (substitute metas h.type)) holes
+    <> map TypeUndetermined (Array.nubEq (map _.origin open))
+  written = map (\h -> { type: h.type, kind: h.kind }) holes <> map (\w -> { type: w.type, kind: w.kind }) wildcards
+  types = Set.unions (map typeMetas written)
+  kinds = Set.unions (map kindMetas written)
+  covered = case _ of
+    ResidualTypeMeta _ m -> Set.member m types
+    ResidualKindMeta _ k -> Set.member k kinds
+    _ -> false
 
-  defectOf = case _ of
-    ResidualFit _ f -> Just (FitLeftUndecided f)
-    ResidualRecursiveRef _ id -> Just (RecursiveReferenceLeft id)
+  -- what is undecided in a type an annotation writes, however deep
+  typeMetas :: forall r. { type :: XType | r } -> Set MetaVar
+  typeMetas w = metasOf (substitute metas w.type)
+
+  kindMetas :: forall r. { type :: XType, kind :: XKind | r } -> Set KindMetaVar
+  kindMetas w = Set.union (kindMetasOfType (substitute metas w.type)) (kindMetasOf (substituteKind metas w.kind))
+
+residueOrigin :: forall a. Residue a -> a
+residueOrigin = case _ of
+  ResidualTypeMeta o _ -> o
+  ResidualKindMeta o _ -> o
+  ResidualTermMeta o _ -> o
+  ResidualHole o _ -> o
+  ResidualFit o _ -> o
+  ResidualRecursiveRef o _ -> o
+
+-- | A residue no body made Core may hold, which is the host's defect.
+defectOf :: forall a. Residue a -> Maybe Defect
+defectOf = case _ of
+  ResidualFit _ f -> Just (FitLeftUndecided f)
+  ResidualRecursiveRef _ id -> Just (RecursiveReferenceLeft id)
+  _ -> Nothing
+
+-- | A diagnostic as the author is told it: a boundary no row expected of it
+-- | contains asks for an implicit handler, which this version does not resolve.
+rejected :: Diagnostic -> ElaborationError
+rejected d = case d of
+  BoundaryNotContained o _ | Just at <- sourceOrigin o -> Unsupported (OutsideSubset at "implicit-handler resolution at this checking boundary")
+  _ -> Rejected d
+
+-- | Why a closing was undone, as the declaration is reported by it.
+undoneError :: Undoing -> ElaborationError
+undoneError = case _ of
+  UndoneBy d -> rejected d
+  UndoneWaiting p -> EquationUndecided p.origin
+
+-- | Where in source a site stands, if anywhere but its declaration.
+sourceOrigin :: Origin -> Maybe Surface.Origin
+sourceOrigin = case _ of
+  AtSource o -> Just o.origin
+  InDeclaration _ -> Nothing
+
+-- | A value declaration without a signature: its name, where it was declared
+-- | and its ordinal, its attributes, its parameters, and its body.
+type Unsigned =
+  { name :: Qualified Ident
+  , origin :: Surface.Origin
+  , ordinal :: Int
+  , attributes :: Array Attribute
+  , params :: Array Surface.Binder
+  , body :: Surface.Expr
+  }
+
+-- | The level a top-level group is generalized at, every one of them: a group
+-- | is done with, committed or rolled back, before the next begins.
+topLevel :: Int
+topLevel = 1
+
+-- | Generalizing one group: what keeps it from being generalized, over the
+-- | solver state.
+type Generalizing = ExceptT (Array ElaborationError) (State SolverState)
+
+-- | A value without a signature, generalized as a group of its own
+-- | ([Elaboration](../../../../../docs/technical-references/02-Surface-Language/01-Elaboration.md#the-procedure)):
+-- | its body inferred at the top level, the loop run to quiescence and its
+-- | fits resolved by direction, the value restriction and the provisional
+-- | quantifiers, its rows closed, its annotations' holes and wildcards judged,
+-- | and its quantifiers made final and committed. With what the jobs it ran
+-- | warned of.
+-- |
+-- | **A group that is not generalized leaves nothing behind**: its tentative
+-- | state is rolled back to where it began, its warnings with it, and what the
+-- | rollback leaves alone — the fuel spent and what identifiers are drawn from
+-- | — is kept.
+-- |
+-- | **A body η-expansion may move is built again under its `λ` once its type
+-- | is known to be a function** and it is no value form: where it is known as
+-- | the body is built, or else once the loop is quiescent, the group starts
+-- | over once with the body expanded, nothing of the first build kept.
+generalizeValue
+  :: SessionEnv
+  -> Attempter
+  -> Internal
+  -> SurfaceEnv
+  -> (Qualified Ident -> Boolean)
+  -> Unsigned
+  -> SolverState
+  -> { result :: Either (Array ElaborationError) { value :: ElaboratedValue, warnings :: Array Warning }, state :: SolverState }
+generalizeValue session attempter internal surface isConstructor u s0 =
+  case runState (runExceptT (attempt false)) s0 of
+    Tuple (Left errors) s -> { result: Left errors, state: { tentative: s0.tentative, retained: s.retained } }
+    Tuple (Right r) s -> { result: Right r, state: s }
+  where
+  site = { context: emptyXContext, origin: InDeclaration u.name }
+
+  attempt :: Boolean -> Generalizing { value :: ElaboratedValue, warnings :: Array Warning }
+  attempt expanded = do
+    built <- elaborated expanded
+    asked <- gets (expansionAsked expanded built.value)
+    if asked then again
+    else do
+      report <- step (runAttempting attempter)
+      throwIfAny (stoppedErrors report.result)
+      asked' <- gets (expansionAsked expanded built.value)
+      if asked' then again else settle built report.warnings
+
+  -- the group started over with its body expanded
+  again = do
+    modify_ \s -> { tentative: s0.tentative, retained: s.retained }
+    attempt true
+
+  expansionAsked expanded built s =
+    let
+      metas = s.tentative.metas
+    in
+      not expanded && expandable u.params u.body
+        && not (isSettledValueForm isConstructor (zonkExpr metas built.expr))
+        && isJust (asArrow (substitute metas built.type))
+
+  elaborated expanded = do
+    s <- get
+    case runAttempt session (atLevel topLevel (runSurf (inferDefinition internal surface u.name u.origin u.params u.body expanded))) s of
+      Tuple (Done (Right built)) s' -> put s' $> built
+      Tuple (Done (Left problem)) s' -> put s' *> throwError [ Unsupported problem ]
+      Tuple outcome s' -> put s' *> throwError [ failure outcome ]
+
+  settle built loopWarnings = do
+    let typed = built.value
+    resolution <- step (resolveOwners session attempter declarationOf (const topLevel) (_ == u.name))
+    resolutionWarnings <- case resolution of
+      ResolutionHalted d -> throwError [ Broken d ]
+      Resolution r -> case Array.findMap refusal r.components of
+        Just d -> throwError [ rejected d ]
+        Nothing -> pure r.warnings
+    member <- gets \s -> { key: u.name, name: u.name, type: typed.type, body: typed.expr, valueForm: isSettledValueForm isConstructor (zonkExpr s.tentative.metas typed.expr) }
+    prepared <- step (prepareGeneralization attempter declarationOf topLevel [ member ])
+    draft <- case prepared.preparation of
+      Drafted d -> pure d
+      Hindered hindrances -> hindered member hindrances
+      PreparationStopped result -> throwError (stoppedErrors result)
+    closed <- step (closeRows session attempter declarationOf u.name topLevel site typed.expr [ typed.type ])
+    closingWarnings <- case closed of
+      Left d -> throwError [ Broken d ]
+      Right { closing: Undone c } -> throwError [ undoneError c.cause ]
+      Right c -> pure c.warnings
+    -- a hole or a wildcard is reported before what it stands for is
+    -- quantified or found ambiguous
+    noted <- gets \s -> annotated s.tentative.metas built.holes built.wildcards
+    throwIfAny noted.reported
+    planned <- step (finalizeGeneralization declarationOf draft [ member ])
+    plan <- case planned of
+      Planned p -> pure p
+      FinalizationHindered hindrances -> hindered member hindrances
+    committed <- step (commitGeneralization declarationOf plan [ member ])
+    finalized <- case committed of
+      Generalized { members: [ f ] } -> pure f
+      Generalized _ -> throwError [ Broken (CommitmentAmiss u.name) ]
+      GeneralizationHindered hindrances -> hindered member hindrances
+      GeneralizationHalted d -> throwError [ Broken d ]
+    metas <- gets _.tentative.metas
+    scheme <- case toCore finalized.scheme.body of
+      Just body -> pure { kindVars: finalized.scheme.kindVars, body }
+      Nothing -> throwError [ Broken (CommitmentAmiss u.name) ]
+    body <- case toCoreExpr (zonkExpr metas finalized.body) of
+      Right body -> pure body
+      Left residues -> throwError case Array.findMap defectOf (NonEmptyArray.toArray residues) of
+        Just defect -> [ Broken defect ]
+        Nothing -> map TypeUndetermined (Array.nubEq (map residueOrigin (NonEmptyArray.toArray residues)))
+    pure
+      { value: { name: u.name, origin: u.origin, ordinal: u.ordinal, attributes: u.attributes, scheme, spine: plainScheme scheme, body }
+      , warnings: loopWarnings <> resolutionWarnings <> prepared.warnings <> closingWarnings
+      }
+
+  hindered :: forall r x. { body :: XExpr Surface.Origin | r } -> Array (Hindrance (Qualified Ident)) -> Generalizing x
+  hindered member hindrances = do
+    metas <- gets _.tentative.metas
+    throwError (hindranceErrors u (either NonEmptyArray.toArray (const []) (toCoreExpr (zonkExpr metas member.body))) hindrances)
+
+  refusal c = case c.outcome of
+    Refused d -> Just d
     _ -> Nothing
+
+  step :: forall x. (SolverState -> Tuple x SolverState) -> Generalizing x
+  step f = lift (state f)
+
+  throwIfAny errors = unless (Array.null errors) (throwError errors)
+
+-- | What the loop stopping short of quiescence reports.
+stoppedErrors :: Loop.RunResult -> Array ElaborationError
+stoppedErrors = case _ of
+  Loop.Rejected d -> [ rejected d ]
+  Loop.Exhausted p -> [ EquationUndecided p.origin ]
+  Loop.Halted d -> [ Broken d ]
+  Loop.Completed -> []
+  Loop.Blocked _ -> []
+
+-- | What keeps a value without a signature from being generalized, as its
+-- | author is told it, each where the residues of its body place it, and where
+-- | the value is declared where nothing does.
+hindranceErrors :: Unsigned -> Array (Residue Surface.Origin) -> Array (Hindrance (Qualified Ident)) -> Array ElaborationError
+hindranceErrors u residues hindrances =
+  (if Array.any asksSignature hindrances then [ SignatureNeeded u.origin u.name ] else [])
+    <> (if Array.null rows then [] else [ EffectRowAmbiguous u.name (Array.nubEq (map at rows)) ])
+    <> Array.concatMap one hindrances
+  where
+  asksSignature = case _ of
+    Hindrance.RestrictedUnsolved _ -> true
+    Hindrance.GoalTouchesQuantifier _ _ _ -> true
+    _ -> false
+  rows = Array.mapMaybe
+    ( case _ of
+        Hindrance.FitLeft _ o _ -> Just o
+        Hindrance.BoundaryLeft _ o _ -> Just o
+        _ -> Nothing
+    )
+    hindrances
+  one = case _ of
+    Hindrance.SynthesisUndecided _ o _ -> [ SynthesisUndecided (at o) ]
+    Hindrance.AmbiguousCandidates _ ms -> map TypeUndetermined
+      ( placed \r -> case r of
+          ResidualTypeMeta o m | Array.elem m ms -> Just o
+          _ -> Nothing
+      )
+    Hindrance.AmbiguousKindCandidates _ ks -> map TypeUndetermined
+      ( placed \r -> case r of
+          ResidualKindMeta o k | Array.elem k ks -> Just o
+          _ -> Nothing
+      )
+    Hindrance.KindNotQuantifiable _ _ -> [ KindUndetermined u.origin ]
+    Hindrance.TermMetaLeft _ t -> map SynthesisUndecided
+      ( placed \r -> case r of
+          ResidualTermMeta o t' | t == t' -> Just o
+          _ -> Nothing
+      )
+    Hindrance.ConstraintRefused _ o breach -> [ Rejected (ObligationRejected { obligation: o, basis: Required, breach }) ]
+    Hindrance.AmbiguousConstraint _ o -> [ TypeUndetermined (at o) ]
+    Hindrance.RecursiveArgumentAmbiguous _ o -> [ TypeUndetermined (at o) ]
+    Hindrance.ConstraintEscapes _ o v -> [ ConstraintEscapes (at o) v ]
+    Hindrance.RestrictedUnsolved _ -> []
+    Hindrance.GoalTouchesQuantifier _ _ _ -> []
+    Hindrance.FitLeft _ _ _ -> []
+    Hindrance.BoundaryLeft _ _ _ -> []
+  at o = fromMaybe u.origin (sourceOrigin o)
+  placed f = case Array.nubEq (Array.mapMaybe f residues) of
+    [] -> [ u.origin ]
+    os -> os
 
 -- | The declaration a site stands in.
 declarationOf :: Origin -> Qualified Ident
@@ -797,3 +1102,7 @@ elaborateModule signature surface imported m exports =
   dataKind decl = case dataEntry m.name decl of
     DataTyCon kind _ -> kind
     IntrinsicTyCon kind _ -> kind
+
+-- | Whether the two sets share a member.
+meets :: forall x. Ord x => Set x -> Set x -> Boolean
+meets a b = not (Set.isEmpty (Set.intersection a b))

@@ -41,6 +41,7 @@ module Stella.Compiler.Elaborate.CorePlus.Term
   , typeVarsOfTerm
   , typeVarsOfType
   , isValueForm
+  , isSettledValueForm
   , termMetasUnderRegions
   ) where
 
@@ -849,13 +850,21 @@ instance Show a => Show (Residue a) where
 -- | the predicate given telling a constructor, a wrapping fit judged by what it
 -- | holds: what it is once it is decided equal. An η-expansion's λ is one.
 isValueForm :: forall a. (Qualified Ident -> P.Boolean) -> XExpr a -> P.Boolean
-isValueForm isConstructor = value
+isValueForm = valueFormWith true
+
+-- | Whether a zonked term is a value form whatever its fits still undecided
+-- | come to: one may widen what it holds, so the form it stands in is none.
+isSettledValueForm :: forall a. (Qualified Ident -> P.Boolean) -> XExpr a -> P.Boolean
+isSettledValueForm = valueFormWith false
+
+valueFormWith :: forall a. P.Boolean -> (Qualified Ident -> P.Boolean) -> XExpr a -> P.Boolean
+valueFormWith throughFits isConstructor = value
   where
   value = case _ of
     ELit _ _ -> true
     ELam _ _ _ _ -> true
     EEta _ _ _ -> true
-    EFit _ _ e -> value e
+    EFit _ _ e -> throughFits && value e
     ETyLam _ _ _ body -> value body
     EConstraintLam _ _ body -> value body
     ERecordEmpty _ -> true
@@ -864,7 +873,7 @@ isValueForm isConstructor = value
     other -> spine other
   spine = case _ of
     EGlobal _ name _ -> isConstructor name
-    EFit _ _ e -> spine e
+    EFit _ _ e -> throughFits && spine e
     EApp _ f x -> spine f && value x
     ETyApp _ e _ -> spine e
     EConstraintApp _ e -> spine e

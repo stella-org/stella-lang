@@ -1183,7 +1183,8 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | `( Console \| ?a ) ⊆ ?e` and `( Clock \| ?b ) ⊆ ?e`, nothing else deciding them | `?a` and `?b` closed, then `?e := ( Console, Clock )` by rule 1. A row in a fit's target is required of, and not closed |
 | A boundary at `()` whose body's sources `( Console \| ?a )` and `( Clock \| ?b )` form a union only once their tails are closed | The closing undone, and the declaration reported outside the subset where the boundary stands. What the closing met is the report, not the ambiguity left once it is undone |
 | A row a waiting equation awaits, neither of its sides showing it | Left open. What an equation could still assign is required of |
-| A row a `Lacks` names, and one a `Disjoint` names | Closed, `()` meeting the `Lacks`; left open |
+| A row an atom `Lacks` names — `?e # ( Clock )` among them — and one an atom `Disjoint` names, `?e # ?d` | Closed, `()` meeting the `Lacks`; left open. The atoms are the obligations decomposed, not the constraints as written |
+| A pure function applied under a λ with no expected type, its fit decided a widening of the λ's row | The row closed. The row a decided widening carries is the fit's, and no occurrence |
 | `n :: Int / {\|\|}; n = 1`, and `v :: Int; v = n` | `n = λ(u : Unit). 1` at `Unit -> Int`, published as `Computation`; `v = n Prim.Unit` |
 | `w :: Int; w = loud`, `loud :: Int / {\| Console \|}` | Outside the subset where `w`'s right-hand side stands, a boundary at `()`. Not at the reference, whose fit is decided against the boundary's row |
 | An imported value `v : Unit -> Int` and an imported computation `c :: Int / {\|\|}`, of one Core type | `c` forced to `Int`, and `v` a function. What the interface marks a computation decides the forcing, and nothing in its Core type |
@@ -1197,6 +1198,10 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | Input | Required outcome |
 | --- | --- |
 | `id = \x -> x` | `∀a. a -> a`: the λ's row, occurring once, is closed |
+| `g = id`, and `t = Tuple 1` | `g : ∀a. a -> a`, `Λ a. λ x. id [a] x`: η-expanded before it is generalized. `t` a constructor spine, left as it is |
+| `f x = (x :: _)` | Reported where `_` is written, before the quantifiers are chosen. Not quantified |
+| `bad = id id; user = bad`, and `other = v` where `v`'s signature gave no scheme | A signature asked for at `bad`; `user` and `other` left unchecked, not reported as referring to what the catalog does not hold. A value whose body failed under a signature it read is referred to at that scheme |
+| A value without a signature an interface publishes | Instantiated at each use by a module importing it, as a written scheme is |
 | A row metavariable two members of a group share, occurring once in each | Not closed: occurrences are counted over the group |
 | A local `let` whose right-hand side is a value and whose type is polymorphic | Monomorphic (D48). Using it at two types is a mismatch |
 | A top-level declaration whose right-hand side is an application leaving its type undetermined | A signature asked for. Not left monomorphic for a later declaration to fix |

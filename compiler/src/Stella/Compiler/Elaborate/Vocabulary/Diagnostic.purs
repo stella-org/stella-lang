@@ -273,6 +273,9 @@ data Defect
   | RecursiveReferenceLeft RecRefId
   -- | `Ψ` holding, once a group is generalized, a metavariable the group retired.
   | RetiredMetavariableHeld
+  -- | A group committed other than as it was planned: its members not those
+  -- | given, or a scheme holding what no generalization made rigid.
+  | CommitmentAmiss (Qualified Ident)
   -- | A checking boundary whose ambient row `Ψ` does not hold unsolved: only the
   -- | boundary assigns it.
   | BoundaryRowAbsent MetaVar
