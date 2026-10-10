@@ -110,8 +110,9 @@ assignTermMeta ctx m given = case Map.lookup m ctx.termBindings of
     escaping (TermCapturesJoin m) free.joins
     escaping (TermEscapingRegion m) (Set.difference free.regions info.scope.regions)
     narrowedTerms <- foldM (narrowTerm info.scope) ctx (Set.toUnfoldable metas.terms :: P.Array TermMetaVar)
+    -- a term metavariable stands at no level, and lowers nothing it holds
     narrowed <- lmap TermNarrowing
-      (narrowMetas narrowedTerms (typeScope info.scope) metas.types metas.kinds)
+      (narrowMetas narrowedTerms (typeScope info.scope) top metas.types metas.kinds)
     pure narrowed
       { termBindings = Map.insert m (TermAssigned (map (const unit) solution)) narrowed.termBindings }
   where
@@ -141,7 +142,7 @@ narrowTerm scope ctx t = case Map.lookup t ctx.termBindings of
     case Set.findMin (Set.difference (freeRegions ty) within.regions) of
       Just r -> Left (TermEscapingRegion t r)
       Nothing -> Right unit
-    ctx' <- lmap TermNarrowing (narrowMetas ctx (typeScope within) (metasOf ty) (kindMetasOfType ty))
+    ctx' <- lmap TermNarrowing (narrowMetas ctx (typeScope within) top (metasOf ty) (kindMetasOfType ty))
     pure ctx'
       { termBindings = Map.insert t (TermUnsolved { ty, scope: within }) ctx'.termBindings }
 
@@ -203,6 +204,11 @@ zonkExpr ctx = go
     EWriteCell a name key v -> EWriteCell a name key (go v)
     EOpenEff a row e -> EOpenEff a (ty row) (go e)
     EEta a contractible e -> EEta a contractible (go e)
+    -- one its group's generalization resolved is the ordinary reference it is,
+    -- every node of it taking its annotation
+    ERecursiveRef a id -> case Map.lookup id ctx.recursiveUses of
+      Just { resolution: Just e } -> go (map (const a) e)
+      _ -> ERecursiveRef a id
     -- a decided wrapping fit becomes what it was decided to, a widening by a
     -- row that is empty once solved nothing; one undecided stays, for making
     -- the term Core to report

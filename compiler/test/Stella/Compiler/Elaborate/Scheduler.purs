@@ -55,7 +55,7 @@ metaB = MetaVar 1
 
 -- | A scheduler holding one job, with that job's identifier.
 oneJob :: Tuple PendingId Scheduler
-oneJob = create site goal emptyScheduler
+oneJob = create 0 site goal emptyScheduler
 
 -- | The same, postponed on the metavariables given.
 waitingOn :: Set MetaVar -> Scheduler
@@ -135,8 +135,8 @@ spec = describe "Elaborate.Scheduler" do
   describe "the ready queue is taken from the front" do
     it "attempts a job woken earlier first" do
       let
-        Tuple first s1 = create site goal emptyScheduler
-        Tuple second s2 = create site goal s1
+        Tuple first s1 = create 0 site goal emptyScheduler
+        Tuple second s2 = create 0 site goal s1
         blocked = case Tuple (lookupPending s2 first) (lookupPending s2 second) of
           Tuple (Just p) (Just q) ->
             reblock q (Set.singleton metaA) (reblock p (Set.singleton metaA) s2)

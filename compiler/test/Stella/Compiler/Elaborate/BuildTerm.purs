@@ -103,7 +103,7 @@ site :: Site
 site = { context, origin: InDeclaration (Qualified prim (Ident "decl")) }
 
 frame :: Frame
-frame = { site, goal: Nothing }
+frame = { site, goal: Nothing, level: 0 }
 
 start :: SolverState
 start = initialState (SessionId 0) 10

@@ -78,6 +78,7 @@ rowTypeInfo :: MetaInfo
 rowTypeInfo =
   { kind: XKRow RowType
   , scope: { types: Set.singleton rigidR, kinds: Set.empty, regions: Set.empty }
+  , level: 0
   }
 
 -- | Five metavariables at `Row Type`, and `Ψ` holding all of them unsolved.
@@ -141,7 +142,7 @@ session = sessionWith emptyScheduler
 holdingJob :: EqualityGoal -> Tuple PendingId SolverState
 holdingJob goal = Tuple id (sessionWith scheduler)
   where
-  Tuple id scheduler = create site (JobUnify goal) emptyScheduler
+  Tuple id scheduler = create 0 site (JobUnify goal) emptyScheduler
 
 -- | The job registered under one metavariable, as a postponement leaves it.
 blockedUnder :: MetaVar -> PendingId -> Scheduler -> Scheduler
@@ -285,8 +286,8 @@ spec = describe "Elaborate.Run" do
 
     it "leaves an earlier committed job's assignments out of a later registration" do
       let
-        Tuple first sched1 = create site (JobUnify (solvable metas.x)) emptyScheduler
-        Tuple second sched2 = create site (JobUnify stuck) sched1
+        Tuple first sched1 = create 0 site (JobUnify (solvable metas.x)) emptyScheduler
+        Tuple second sched2 = create 0 site (JobUnify stuck) sched1
         Tuple r1 s1 = attemptPending emptySessionEnv first (sessionWith sched2)
         Tuple r2 _ = attemptPending emptySessionEnv second s1
       r1 `shouldEqual` Committed
@@ -452,7 +453,7 @@ spec = describe "Elaborate.Run" do
     it "halts on a target Ψ does not hold, running nothing and changing nothing" do
       let
         Tuple record _ = newGoal site tB resolver metas.ctx
-        Tuple id scheduler = create site (JobSynthesis record) emptyScheduler
+        Tuple id scheduler = create 0 site (JobSynthesis record) emptyScheduler
         Tuple result s = attemptPending emptySessionEnv id (sessionWith scheduler)
       result `shouldEqual` Halted (MalformedSynthesisJob id (TargetAbsent (goalOf record).target))
       s.tentative.metas `shouldEqual` metas.ctx
@@ -473,7 +474,7 @@ spec = describe "Elaborate.Run" do
       let
         Tuple record ctx = newGoal site tB resolver metas.ctx
         target = (goalOf record).target
-        Tuple id scheduler = create site (JobSynthesis record) emptyScheduler
+        Tuple id scheduler = create 0 site (JobSynthesis record) emptyScheduler
         retyped = rebound target (\info -> info { ty = tA }) ctx
         widened = rebound target (\info -> info { scope { values = Set.singleton (Ident "zz") } }) ctx
         attemptWith c = fst (attemptPending emptySessionEnv id ((sessionWith scheduler) { tentative { metas = c } }))
@@ -485,10 +486,10 @@ spec = describe "Elaborate.Run" do
       -- that substituted its type leaves it. They agree once `?α` is `B`, and
       -- not while it is `A`.
       let
-        Tuple alpha ctx0 = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } } metas.ctx
+        Tuple alpha ctx0 = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty }, level: 0 } metas.ctx
         Tuple record ctx1 = newGoal site (XMeta alpha) resolver ctx0
         target = (goalOf record).target
-        Tuple id scheduler = create site (JobSynthesis record) emptyScheduler
+        Tuple id scheduler = create 0 site (JobSynthesis record) emptyScheduler
         standingAtB = rebound target (\info -> info { ty = tB }) ctx1
         solvedAs ty = standingAtB { bindings = Map.insert alpha (Assigned ty) standingAtB.bindings }
         attemptWith c = fst (attemptPending emptySessionEnv id ((sessionWith scheduler) { tentative { metas = c } }))

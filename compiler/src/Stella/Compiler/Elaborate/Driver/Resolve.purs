@@ -44,7 +44,7 @@ import Stella.Compiler.Elaborate.CorePlus.Row (XRowNormalForm, rebuild)
 import Stella.Compiler.Elaborate.CorePlus.Term (FitId)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType(..), metasOf)
 import Stella.Compiler.Elaborate.Driver.Loop (Attempter, RunResult(..), runAttempting)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), SessionEnv, SolverState, boundaryFits, currentMetas, fitRemainders, formUnion, runElabIn, unify)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), SessionEnv, SolverState, atLevel, boundaryFits, currentMetas, fitRemainders, formUnion, runElabIn, unify)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitRecord, FitState(..))
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Entry, ObligationId, watchedBy)
 import Stella.Compiler.Elaborate.Mechanism.Pending (HandlerGoal, Job(..), Pending, PendingId, Site, goalOf)
@@ -129,19 +129,21 @@ type Assignment =
   }
 
 -- | Resolve every component holding an undecided fit or a waiting boundary,
--- | each by the owner the function given reads off the site of what it holds.
-resolveByDirection :: forall k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> SolverState -> Tuple (Resolution k) SolverState
-resolveByDirection session attempter owner = resolveOwners session attempter owner (const true)
+-- | each by the owner the function given reads off the site of what it holds,
+-- | and at the level of that owner's binding group, which what resolving it
+-- | creates stands at.
+resolveByDirection :: forall k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> (k -> P.Int) -> SolverState -> Tuple (Resolution k) SolverState
+resolveByDirection session attempter owner levelOf = resolveOwners session attempter owner levelOf (const true)
 
 -- | `resolveByDirection`, for the components of the owners the predicate given
 -- | admits alone.
-resolveOwners :: forall k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> (k -> P.Boolean) -> SolverState -> Tuple (Resolution k) SolverState
-resolveOwners session attempter owner admitted s0 = case componentsOf owner s0 of
+resolveOwners :: forall k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> (k -> P.Int) -> (k -> P.Boolean) -> SolverState -> Tuple (Resolution k) SolverState
+resolveOwners session attempter owner levelOf admitted s0 = case componentsOf owner s0 of
   Left defect -> Tuple (ResolutionHalted defect) s0
   Right components -> foldl step (Tuple (Resolution { components: [], warnings: [] }) s0) (Array.filter (admitted <<< _.owner) components)
   where
   step acc component = case acc of
-    Tuple (Resolution r) s -> case resolveComponent session attempter component s of
+    Tuple (Resolution r) s -> case resolveComponent session attempter (levelOf component.owner) component s of
       Tuple (Right done) s' ->
         Tuple (Resolution { components: Array.snoc r.components { owner: component.owner, outcome: done.outcome }, warnings: r.warnings <> done.warnings }) s'
       Tuple (Left defect) s' -> Tuple (ResolutionHalted defect) s'
@@ -230,8 +232,8 @@ connected parts = map (Array.mapMaybe (Array.index parts)) (go Set.empty 0 [])
 
 -- | Resolve one component under a checkpoint of its own, in rounds to a
 -- | fixpoint, each round spending one unit of fuel.
-resolveComponent :: forall k. SessionEnv -> Attempter -> Component k -> SolverState -> Tuple (Either Defect { outcome :: ComponentOutcome, warnings :: P.Array Warning }) SolverState
-resolveComponent session attempter component s0 = round [] s0
+resolveComponent :: forall k. SessionEnv -> Attempter -> P.Int -> Component k -> SolverState -> Tuple (Either Defect { outcome :: ComponentOutcome, warnings :: P.Array Warning }) SolverState
+resolveComponent session attempter level component s0 = round [] s0
   where
   checkpoint = s0.tentative
   ended outcome warnings s = Tuple (Right { outcome, warnings }) (s { tentative { written = Set.empty } })
@@ -247,9 +249,9 @@ resolveComponent session attempter component s0 = round [] s0
   -- until nothing moves.
   round warnings s =
     if s.retained.fuel <= 0 then undecided LeftUndecided warnings s
-    else case runElabIn session s (assignmentsOf component (boundariesOf s)) of
+    else case runElabIn session s (atLevel level (assignmentsOf component (boundariesOf s))) of
       Tuple (Done (Left cause)) s1 -> undecided cause warnings s1
-      Tuple (Done (Right found)) s1 -> case runElabIn session s1 (for_ found.assignments \a -> unify a.site { kind: XKRow RowEffect, left: XMeta a.meta, right: a.solution }) of
+      Tuple (Done (Right found)) s1 -> case runElabIn session s1 (atLevel level (for_ found.assignments \a -> unify a.site { kind: XKRow RowEffect, left: XMeta a.meta, right: a.solution })) of
         Tuple (Done _) s2 ->
           let
             Tuple report s3 = runAttempting attempter (s2 { tentative { written = Set.empty }, retained { fuel = s2.retained.fuel - 1 } })

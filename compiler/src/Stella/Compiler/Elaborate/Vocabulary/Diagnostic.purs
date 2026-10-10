@@ -33,7 +33,7 @@ import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis, Breach)
 import Stella.Compiler.Elaborate.Mechanism.Pending (Job, PendingId, SynthRef)
 import Stella.Compiler.Elaborate.Mechanism.Scheduler (Invariant)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError)
-import Stella.Compiler.Elaborate.CorePlus.Term (FitId, TermMetaVar)
+import Stella.Compiler.Elaborate.CorePlus.Term (FitId, RecRefId, TermMetaVar)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm)
 import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError)
@@ -268,6 +268,11 @@ data Defect
   -- | A fit still undecided where its term is made Core, every fit being
   -- | decided or reported before that.
   | FitLeftUndecided FitId
+  -- | A recursive reference still standing where its term is made Core, every
+  -- | one being made ordinary by its group's generalization before that.
+  | RecursiveReferenceLeft RecRefId
+  -- | `Ψ` holding, once a group is generalized, a metavariable the group retired.
+  | RetiredMetavariableHeld
   -- | A checking boundary whose ambient row `Ψ` does not hold unsolved: only the
   -- | boundary assigns it.
   | BoundaryRowAbsent MetaVar

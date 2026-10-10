@@ -12,6 +12,7 @@ import Test.Stella.Compiler.Elaborate.Equate as ElaborateEquate
 import Test.Stella.Compiler.Elaborate.Fit as ElaborateFit
 import Test.Stella.Compiler.Elaborate.Resolve as ElaborateResolve
 import Test.Stella.Compiler.Elaborate.Close as ElaborateClose
+import Test.Stella.Compiler.Elaborate.Generalize as ElaborateGeneralize
 import Test.Stella.Compiler.Elaborate.SurfaceType as ElaborateSurfaceType
 import Test.Stella.Compiler.Elaborate.Group as ElaborateGroup
 import Test.Stella.Compiler.Build as Build
@@ -132,6 +133,7 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   ElaborateFit.spec
   ElaborateResolve.spec
   ElaborateClose.spec
+  ElaborateGeneralize.spec
   ElaborateSurfaceType.spec
   ElaborateGroup.spec
   Build.spec

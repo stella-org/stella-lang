@@ -32,6 +32,8 @@ module Stella.Compiler.Elaborate.Kernel.Elab
   , runElab
   , runElabIn
   , withFrame
+  , atLevel
+  , currentLevel
   , askEnv
   , currentMetas
   , initialState
@@ -43,6 +45,7 @@ module Stella.Compiler.Elaborate.Kernel.Elab
   , equate
   , freshInstantiationRow
   , placeFit
+  , recursiveRef
   , runFit
   , openBoundary
   , closeBoundary
@@ -103,11 +106,11 @@ import Stella.Compiler.Elaborate.Mechanism.Pending (EqualityGoal, GoalRecord, Ha
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm, rebuild, xnf)
 import Stella.Compiler.Elaborate.Mechanism.Fit (Classified(..), FitRecord, FitState(..), FitUse, classify, remaindersOf, sharedAcross, sharedEntries, unionOf)
 import Stella.Compiler.Elaborate.Mechanism.Scheduler (Scheduler, create, emptyScheduler, enqueueInitial, wake)
-import Stella.Compiler.Elaborate.CorePlus.Term (FitId(..), TermMetaVar, XExpr)
+import Stella.Compiler.Elaborate.CorePlus.Term (FitId(..), RecRefId(..), TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta as TermMeta
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XType(..))
-import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar, RegionName(..), RowElemKind(..), RowKey, TyVar(..))
+import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar, Qualified, RegionName(..), RowElemKind(..), RowKey, TyVar(..))
 import Stella.Compiler.Elaborate.Vocabulary.Trace (TraceEvent, Tracing(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement, MetaBinding(..), MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupMeta, lookupTermMeta, regionScopeOf, substitute, unifyKind, unifyType)
 import Stella.Compiler.Elaborate.Mechanism.Unify as Unify
@@ -252,9 +255,13 @@ newtype Elab a = Elab (ElabEnv -> SolverState -> Tuple (Outcome a) SolverState)
 -- | constructors and of effects. `frame` is the site and
 -- | goal of the attempt running, which the runner sets and nothing inside the
 -- | attempt changes; an action run outside any attempt has none.
+-- | What an action runs under: the session, the frame of the attempt running,
+-- | and the level of the binding group it elaborates, which a fresh
+-- | metavariable is created at and a job it creates is attempted at again.
 type ElabEnv =
   { session :: SessionEnv
   , frame :: Maybe Frame
+  , level :: P.Int
   }
 
 type SessionEnv =
@@ -265,10 +272,12 @@ type SessionEnv =
   , tracing :: Tracing
   }
 
--- | Where the running attempt stands. An equality job has a site and no goal.
+-- | Where the running attempt stands, and the level its job was created at. An
+-- | equality job has a site and no goal.
 type Frame =
   { site :: Site
   , goal :: Maybe GoalObject
+  , level :: P.Int
   }
 
 emptySessionEnv :: SessionEnv
@@ -276,17 +285,27 @@ emptySessionEnv = { catalog: catalogOf [], kinding: emptyKindingEnv, constructor
 
 -- | Run an action outside any attempt, reading the session given.
 runElabIn :: forall a. SessionEnv -> SolverState -> Elab a -> Tuple (Outcome a) SolverState
-runElabIn session s (Elab f) = f { session, frame: Nothing } s
+runElabIn session s (Elab f) = f { session, frame: Nothing, level: 0 } s
 
 -- | Run an action with an empty session and no frame, as the mechanism's own
 -- | operations are run.
 runElab :: forall a. SolverState -> Elab a -> Tuple (Outcome a) SolverState
 runElab = runElabIn emptySessionEnv
 
--- | Run an action under the frame given. The frame is read and never written,
--- | so whatever the action reaches, the frame outside is the one it was.
+-- | Run an action under the frame given, at the level its job was created at.
+-- | The frame is read and never written, so whatever the action reaches, the
+-- | frame outside is the one it was.
 withFrame :: forall a. Frame -> Elab a -> Elab a
-withFrame frame (Elab f) = Elab \env s -> f (env { frame = Just frame }) s
+withFrame frame (Elab f) = Elab \env s -> f (env { frame = Just frame, level = frame.level }) s
+
+-- | Run an action at the level given: what it creates stands at that level,
+-- | and a job it creates is attempted there again.
+atLevel :: forall a. P.Int -> Elab a -> Elab a
+atLevel level (Elab f) = Elab \env s -> f (env { level = level }) s
+
+-- | The level the action runs at.
+currentLevel :: Elab P.Int
+currentLevel = Elab \env s -> Tuple (Done env.level) s
 
 -- | What the action is run under.
 askEnv :: Elab ElabEnv
@@ -578,7 +597,8 @@ fuelRemaining = Elab \_ s -> Tuple (Done s.retained.fuel) s
 unify :: Site -> EqualityGoal -> Elab Unit
 unify site goal = do
   metas <- metaContext
-  case unifyType { kindVars: site.context.kindVars } metas goal.kind goal.left goal.right of
+  level <- currentLevel
+  case unifyType { kindVars: site.context.kindVars, level } metas goal.kind goal.left goal.right of
     Mismatch err
       | misuse err -> break (UnifierMisuse site.origin err)
       | otherwise -> raiseDiagnostic (EquationFailed site.origin err)
@@ -602,7 +622,8 @@ unify site goal = do
 equate :: Site -> EqualityGoal -> Elab Unit
 equate site goal = do
   metas <- metaContext
-  case unifyType { kindVars: site.context.kindVars } metas goal.kind goal.left goal.right of
+  level <- currentLevel
+  case unifyType { kindVars: site.context.kindVars, level } metas goal.kind goal.left goal.right of
     Mismatch err
       | misuse err -> break (UnifierMisuse site.origin err)
       | otherwise -> raiseDiagnostic (EquationFailed site.origin err)
@@ -610,9 +631,9 @@ equate site goal = do
       settle site progress
     Stuck { progress } -> do
       settle site progress
-      Elab \_ s ->
+      Elab \env s ->
         let
-          Tuple id created = create site (JobUnify goal) s.tentative.scheduler
+          Tuple id created = create env.level site (JobUnify goal) s.tentative.scheduler
         in
           Tuple (Done unit) (s { tentative { scheduler = enqueueInitial id created } })
 
@@ -621,9 +642,9 @@ equate site goal = do
 -- | instantiation row, which the resolution of fits may widen to the row
 -- | ambient where it is used.
 freshInstantiationRow :: XContext -> Elab XType
-freshInstantiationRow context = Elab \_ s ->
+freshInstantiationRow context = Elab \env s ->
   let
-    Tuple m metas = freshMeta { kind: XKRow RowEffect, scope: metaScopeOf context } s.tentative.metas
+    Tuple m metas = freshMeta { kind: XKRow RowEffect, scope: metaScopeOf context, level: env.level } s.tentative.metas
   in
     Tuple (Done (XMeta m)) (s { tentative { metas = metas { instantiationRows = Set.insert m metas.instantiationRows } } })
 
@@ -652,9 +673,9 @@ placeFit site use source target = do
       Tuple (Done f) (s { tentative { metas = metas { fits = Map.insert f record metas.fits, nextFit = metas.nextFit + 1 } } })
   decideFit f >>= case _ of
     FitDecided -> pure f
-    FitWaiting _ -> Elab \_ s ->
+    FitWaiting _ -> Elab \env s ->
       let
-        Tuple id created = create site (JobEffectFit f) s.tentative.scheduler
+        Tuple id created = create env.level site (JobEffectFit f) s.tentative.scheduler
       in
         Tuple (Done f) (s { tentative { scheduler = enqueueInitial id created } })
 
@@ -670,9 +691,9 @@ runFit f = decideFit f >>= case _ of
 -- | The ambient row of a checking boundary, opened under the context given: an
 -- | inference row nothing but the boundary decides.
 openBoundary :: XContext -> Elab MetaVar
-openBoundary context = Elab \_ s ->
+openBoundary context = Elab \env s ->
   let
-    Tuple m metas = freshMeta { kind: XKRow RowEffect, scope: metaScopeOf context } s.tentative.metas
+    Tuple m metas = freshMeta { kind: XKRow RowEffect, scope: metaScopeOf context, level: env.level } s.tentative.metas
   in
     Tuple (Done m) (s { tentative { metas = metas { boundaryRows = Set.insert m metas.boundaryRows } } })
 
@@ -680,9 +701,9 @@ openBoundary context = Elab \_ s ->
 -- | `JobImplicitHandler` holding `?σ` and the row expected, queued for a first
 -- | attempt as a job created inside an attempt is.
 closeBoundary :: Site -> MetaVar -> XType -> Elab Unit
-closeBoundary site boundary expected = Elab \_ s ->
+closeBoundary site boundary expected = Elab \env s ->
   let
-    Tuple id created = create site (JobImplicitHandler { boundary, expected }) s.tentative.scheduler
+    Tuple id created = create env.level site (JobImplicitHandler { boundary, expected }) s.tentative.scheduler
   in
     Tuple (Done unit) (s { tentative { scheduler = enqueueInitial id created } })
 
@@ -958,9 +979,9 @@ invariantBreach = case _ of
 -- | binds, which is what a solution may mention. The name it takes comes from the supply in `Ψ`, which
 -- | a rollback restores.
 freshTypeMeta :: XContext -> XKind -> Elab XType
-freshTypeMeta context kind = Elab \_ s ->
+freshTypeMeta context kind = Elab \env s ->
   let
-    Tuple m metas = freshMeta { kind, scope: metaScopeOf context } s.tentative.metas
+    Tuple m metas = freshMeta { kind, scope: metaScopeOf context, level: env.level } s.tentative.metas
   in
     Tuple (Done (XMeta m)) (s { tentative { metas = metas } })
 
@@ -978,9 +999,9 @@ metaScopeOf context =
 -- | unwritten is one: the elaborator creates it, constrains it by `equateKinds`,
 -- | and asks after quiescence that it be solved.
 freshKindMeta :: Set KindVar -> Set KindRequirement -> Elab XKind
-freshKindMeta scope requirements = Elab \_ s ->
+freshKindMeta scope requirements = Elab \env s ->
   let
-    Tuple k metas = Unify.freshKindMeta { scope, requirements } s.tentative.metas
+    Tuple k metas = Unify.freshKindMeta { scope, requirements, level: env.level } s.tentative.metas
   in
     Tuple (Done (XKMeta k)) (s { tentative { metas = metas } })
 
@@ -1018,10 +1039,10 @@ freshTermMeta context ty = Elab \_ s ->
 -- | to what the current attempt owns, so a rollback removes the two together.
 -- | The metavariable is returned for the caller to place as `ETermMeta`.
 createSynthesis :: Site -> XType -> SynthRef -> Elab (Tuple PendingId TermMetaVar)
-createSynthesis site expectedType synthesizer = Elab \_ s ->
+createSynthesis site expectedType synthesizer = Elab \env s ->
   let
     Tuple goal metas = newGoal site expectedType synthesizer s.tentative.metas
-    Tuple id created = create site (JobSynthesis goal) s.tentative.scheduler
+    Tuple id created = create env.level site (JobSynthesis goal) s.tentative.scheduler
   in
     Tuple (Done (Tuple id (goalOf goal).target))
       (s { tentative { metas = metas, scheduler = enqueueInitial id created } })
@@ -1198,3 +1219,24 @@ derive instance Generic (Outcome a) _
 
 instance Show a => Show (Outcome a) where
   show x = genericShow x
+
+-- | Record a reference a member of a binding group makes to the member named,
+-- | at the site given, while the group is elaborated; the term stands as an
+-- | `ERecursiveRef` holding what this returns, and the group's generalization
+-- | makes it an ordinary reference.
+recursiveRef :: Site -> Qualified Ident -> Elab RecRefId
+recursiveRef site callee = Elab \_ s ->
+  let
+    metas = s.tentative.metas
+    id = RecRefId metas.nextRecursive
+  in
+    Tuple (Done id)
+      ( s
+          { tentative
+              { metas = metas
+                  { recursiveUses = Map.insert id { callee, context: site.context, origin: site.origin, resolution: Nothing } metas.recursiveUses
+                  , nextRecursive = metas.nextRecursive + 1
+                  }
+              }
+          }
+      )

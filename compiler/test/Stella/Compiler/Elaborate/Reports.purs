@@ -114,7 +114,7 @@ spec = describe "Elaborate.Report" do
             )
 
     it "is a synthesizer's, and a frame running no goal has none to report on" do
-      case fst (runElabIn session (initialState (SessionId 0) 10) (withFrame { site, goal: Nothing } (throw (text "no") :: Elab Unit))) of
+      case fst (runElabIn session (initialState (SessionId 0) 10) (withFrame { site, goal: Nothing, level: 0 } (throw (text "no") :: Elab Unit))) of
         Broke NoGoal -> pure unit
         other -> fail ("expected a defect: " <> show other)
 

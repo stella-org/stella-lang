@@ -161,14 +161,14 @@ site :: Site
 site = { context, origin: InDeclaration (qualified "decl") }
 
 frame :: Frame
-frame = { site, goal: Nothing }
+frame = { site, goal: Nothing, level: 0 }
 
 -- | Unsolved metavariables a scrutinee's claim may be headed by or end in:
 -- | `?f : Type -> Type`, `?g : Row Type -> Type`, and a row tail `?t`.
 withMetas :: { state :: SolverState, f :: MetaVar, g :: MetaVar, t :: MetaVar, same :: MetaVar, differ :: MetaVar }
 withMetas =
   let
-    fresh kind = freshMeta { kind, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } }
+    fresh kind = freshMeta { kind, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty }, level: 0 }
     Tuple f m1 = fresh (XKFun XKType XKType) emptyContext
     Tuple g m2 = fresh (XKFun (XKRow RowType) XKType) m1
     Tuple t m3 = fresh (XKRow RowType) m2

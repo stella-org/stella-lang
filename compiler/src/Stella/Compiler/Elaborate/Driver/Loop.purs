@@ -118,7 +118,8 @@ type AttempterM m = PendingId -> SolverState -> m (Tuple Attempt SolverState)
 -- |
 -- | Just after `create` is one of the two points at which a job may be
 -- | attempted. A first attempt spends no fuel, fuel bounding the scheduler's
--- | retries alone.
+-- | retries alone. A job submitted from outside every attempt stands outside
+-- | every binding group, at level 0.
 submitAttemptingM :: forall m. Monad m => AttempterM m -> Site -> Job -> SolverState -> m (Tuple Submission SolverState)
 submitAttemptingM attempter site job s0 = attempter id (s0 { tentative { scheduler = scheduler } }) <#> case _ of
   Tuple attempt s -> case attempt of
@@ -127,7 +128,7 @@ submitAttemptingM attempter site job s0 = attempter id (s0 { tentative { schedul
     Run.Committed -> Tuple (Continue { id, attempt }) s
     Run.Registered _ -> Tuple (Continue { id, attempt }) s
   where
-  Tuple id scheduler = create site job s0.tentative.scheduler
+  Tuple id scheduler = create 0 site job s0.tentative.scheduler
   stop result s = case stopped result s of
     Tuple stoppedWith s' -> Tuple (Stop stoppedWith) s'
 

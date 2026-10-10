@@ -59,6 +59,7 @@ rowTypeInfo :: MetaInfo
 rowTypeInfo =
   { kind: XKRow RowType
   , scope: { types: Set.fromFoldable [ rigidT, rigidU ], kinds: Set.empty, regions: Set.empty }
+  , level: 0
   }
 
 -- | `?r`, `?s`, and the context they are unsolved in.

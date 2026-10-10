@@ -102,7 +102,7 @@ resolvingWith runner action k = case runAttempt session action (initialState (Se
     let
       Tuple _ quiet = runWith session runner s
       Tuple _ drained = drainWarnings quiet
-      Tuple resolution after = resolveByDirection session (attemptPendingWith session runner) ownerOf drained
+      Tuple resolution after = resolveByDirection session (attemptPendingWith session runner) ownerOf (const 0) drained
     k a resolution after
   Tuple _ _ -> fail "the attempt did not commit"
 

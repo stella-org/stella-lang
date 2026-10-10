@@ -88,6 +88,7 @@ rowTypeInfo :: MetaInfo
 rowTypeInfo =
   { kind: XKRow RowType
   , scope: { types: Set.singleton rigidR, kinds: Set.empty, regions: Set.empty }
+  , level: 0
   }
 
 -- | Five metavariables at `Row Type`, and `Ψ` holding all of them unsolved.
@@ -252,7 +253,7 @@ spec = describe "Elaborate.Loop" do
 
     it "halts at quiescence on a job no assignment can reach" do
       let
-        Tuple lost scheduler = create site (JobUnify (solvable metas.r)) (sessionWith 0).tentative.scheduler
+        Tuple lost scheduler = create 0 site (JobUnify (solvable metas.r)) (sessionWith 0).tentative.scheduler
         s0 = (sessionWith 0) { tentative { scheduler = scheduler } }
         Tuple result _ = resultOf (run emptySessionEnv s0)
       result `shouldEqual` Halted (UnreachablePending (NonEmptyArray.singleton lost))

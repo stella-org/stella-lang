@@ -135,11 +135,15 @@ type HandlerGoal =
 -- | Waking reads it to remove the job from every metavariable it was registered
 -- | under, then empties it, so that a report at quiescence names what is still
 -- | being waited on.
+-- |
+-- | `level` is the level it was created at, which every attempt of it runs at,
+-- | so what an attempt creates stands where the job does.
 type Pending =
   { id :: PendingId
   , site :: Site
   , awaiting :: Set MetaVar
   , job :: Job
+  , level :: P.Int
   }
 
 derive instance Eq PendingId

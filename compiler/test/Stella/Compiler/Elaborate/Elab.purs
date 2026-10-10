@@ -90,6 +90,7 @@ rowTypeInfo :: MetaInfo
 rowTypeInfo =
   { kind: XKRow RowType
   , scope: { types: Set.singleton rigidR, kinds: Set.empty, regions: Set.empty }
+  , level: 0
   }
 
 -- | Five metavariables at `Row Type`, and `Ψ` holding all of them unsolved.
@@ -156,7 +157,7 @@ blocked m = case lookupPending s0 id of
   Just p -> Tuple id (reblock p (Set.singleton m) s0)
   Nothing -> Tuple id s0
   where
-  Tuple id s0 = create site (JobUnify (solvable m)) emptyScheduler
+  Tuple id s0 = create 0 site (JobUnify (solvable m)) emptyScheduler
 
 -- | A session holding the metavariables above, and whatever else a case needs.
 sessionWith :: ObligationStore -> Scheduler -> SolverState
@@ -219,6 +220,7 @@ spec = describe "Elaborate.Elab" do
         ( Unsolved
             { kind: XKRow RowEffect
             , scope: { types: Set.singleton rigidR, kinds: Set.singleton (KindVar "k"), regions: Set.empty }
+            , level: 0
             }
         )
 

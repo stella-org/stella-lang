@@ -85,7 +85,7 @@ site :: Site
 site = { context, origin: InDeclaration (Qualified prim (Ident "decl")) }
 
 frame :: Frame
-frame = { site, goal: Nothing }
+frame = { site, goal: Nothing, level: 0 }
 
 start :: SolverState
 start = initialState (SessionId 0) 10
@@ -97,7 +97,7 @@ start = initialState (SessionId 0) 10
 withMetas :: { state :: SolverState, f :: MetaVar, m :: MetaVar, g :: MetaVar, h :: MetaVar }
 withMetas =
   let
-    fresh kind = freshMeta { kind, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } }
+    fresh kind = freshMeta { kind, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty }, level: 0 }
     Tuple f metas1 = fresh (XKFun XKType XKType) emptyContext
     Tuple m metas2 = fresh XKType metas1
     Tuple g metas3 = fresh (XKFun (XKRow RowType) XKType) metas2

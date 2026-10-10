@@ -118,7 +118,7 @@ site :: Site
 site = { context, origin: InDeclaration (Qualified prim (Ident "decl")) }
 
 frame :: Frame
-frame = { site, goal: Nothing }
+frame = { site, goal: Nothing, level: 0 }
 
 start :: SolverState
 start = initialState (SessionId 0) 10
@@ -165,7 +165,7 @@ spec = describe "Elaborate.Observe" do
 
     it "is the job's own site where the runner attempts it, whatever the elaboration reached" do
       let
-        Tuple id scheduler = create site (JobUnify { kind: XKType, left: xInt, right: xInt }) start.tentative.scheduler
+        Tuple id scheduler = create 0 site (JobUnify { kind: XKType, left: xInt, right: xInt }) start.tentative.scheduler
         s0 = start { tentative { scheduler = scheduler } }
         reading _ = do
           names <- map (map _.name) localContext
@@ -253,7 +253,7 @@ spec = describe "Elaborate.Observe" do
   describe "a metavariable" do
     it "is shown as a Meta handle, and as its solution once it is solved" do
       let
-        Tuple m metas = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } } emptyContext
+        Tuple m metas = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty }, level: 0 } emptyContext
         s0 = start { tentative { metas = metas } }
       observing s0 (typeHandle (XMeta m) (ExactKind XKType)) \h s1 -> do
         observing s1 (viewType h) \view _ -> case view of
@@ -265,8 +265,8 @@ spec = describe "Elaborate.Observe" do
 
     it "whose kind is not settled is not shown" do
       let
-        Tuple k metas0 = freshKindMeta { scope: Set.empty, requirements: Set.empty } emptyContext
-        Tuple m metas = freshMeta { kind: XKMeta k, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } } metas0
+        Tuple k metas0 = freshKindMeta { scope: Set.empty, requirements: Set.empty, level: 0 } emptyContext
+        Tuple m metas = freshMeta { kind: XKMeta k, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty }, level: 0 } metas0
         s0 = start { tentative { metas = metas } }
         unsettled = frame { site { context = bindVar context (Ident "z") (XMeta m) } }
         action = withFrame unsettled (map (map _.name) localContext)

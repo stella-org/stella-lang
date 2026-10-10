@@ -39,6 +39,7 @@ module Stella.Compiler.Elaborate.Mechanism.Unify
   , TermMetaInfo
   , TermBinding(..)
   , MetaContext
+  , RecursiveUse
   , UnifyEnv
   , UnifyProgress
   , UnifyError(..)
@@ -52,6 +53,7 @@ module Stella.Compiler.Elaborate.Mechanism.Unify
   , lookupKindMeta
   , lookupTermMeta
   , narrowMetas
+  , lowerLevels
   , substitute
   , substituteKind
   , requireQuantifiable
@@ -66,15 +68,16 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitRecord)
+import Stella.Compiler.Elaborate.CorePlus.Context (Origin, XContext)
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar(..), XKind(..), kindMetasOf, kindVarsOf, occursInKind)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm, payloadEquations, rebuild, xnf)
-import Stella.Compiler.Elaborate.CorePlus.Term (FitId, TermMetaVar, XExpr)
+import Stella.Compiler.Elaborate.CorePlus.Term (FitId, RecRefId, TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), Scope, XConstraint(..), XRowEntry(..), XType(..), freeRigids, kindMetasOfType, metasOf, occursIn, outOfScope)
-import Stella.Compiler.TypedCore (Ident, KindVar, RegionName, RowElemKind(..), RowKey(..), TyVar)
+import Stella.Compiler.TypedCore (Ident, KindVar, Qualified, RegionName, RowElemKind(..), RowKey(..), TyVar)
 import Data.Array as Array
 
 import Data.Either (Either(..))
-import Data.Foldable (any, foldM, foldr)
+import Data.Foldable (any, foldM, foldl, foldr)
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
 import Data.Map as Map
@@ -95,10 +98,21 @@ import Data.Tuple (Tuple(..), snd)
 -- | relate two metavariables, so no single one of them owns it, and it has to be
 -- | decided against the facts of the site it came from rather than those of
 -- | whatever equation reaches the metavariable. The obligations carry both.
+-- |
+-- | `level` is the level of the binding group it was created in, lowered to
+-- | the level of any metavariable whose solution comes to hold it: a group
+-- | generalizes only what stands at its own level.
 type MetaInfo =
   { kind :: XKind
   , scope :: Scope
+  , level :: P.Int
   }
+
+-- | A recursive reference while its group is elaborated: the member referred
+-- | to, and the context and place the reference stands at; and, once its group
+-- | is generalized, the ordinary reference it is, which zonking puts where it
+-- | stood.
+type RecursiveUse = { callee :: Qualified Ident, context :: XContext, origin :: Origin, resolution :: Maybe (XExpr Unit) }
 
 data MetaBinding
   = Unsolved MetaInfo
@@ -122,10 +136,12 @@ data KindRequirement
 -- |
 -- | A kind variable enters `Γ` only while a declaration whose scheme binds it is
 -- | being checked (D3), so a solution mentioning one the metavariable was not
--- | created under keeps that variable alive past its declaration.
+-- | created under keeps that variable alive past its declaration. Its `level` is
+-- | as a type metavariable's is.
 type KindMetaInfo =
   { scope :: Set KindVar
   , requirements :: Set KindRequirement
+  , level :: P.Int
   }
 
 data KindMetaBinding
@@ -186,6 +202,11 @@ data TermBinding
 -- |
 -- | `fits` are the fits elaboration has placed, each with what is decided of it
 -- | ([Fit](Fit.purs)), and `nextFit` the supply their identifiers are drawn from.
+-- |
+-- | `recursiveUses` are the references the members of a binding group make to
+-- | one another while it is elaborated, each with the member it refers to and
+-- | the context and place it stands at, and `nextRecursive` the supply their
+-- | identifiers are drawn from.
 type MetaContext =
   { bindings :: Map MetaVar MetaBinding
   , kindBindings :: Map KindMetaVar KindMetaBinding
@@ -198,19 +219,23 @@ type MetaContext =
   , boundaryRows :: Set MetaVar
   , fits :: Map FitId FitRecord
   , nextFit :: P.Int
+  , recursiveUses :: Map RecRefId RecursiveUse
+  , nextRecursive :: P.Int
   }
 
 -- | What a unification reads off the site of the equation it is given.
 -- |
 -- | `kindVars` are the kind variables in scope there, which a kind metavariable
--- | created during the unification may mention. It is read-only: nothing here is
--- | state and nothing is written back.
+-- | created during the unification may mention, and `level` the level such a
+-- | metavariable is created at. It is read-only: nothing here is state and
+-- | nothing is written back.
 -- |
 -- | **`Γ*` is not among it.** Unification decides equality, and the atomic facts
 -- | of a context decide row constraints, which the obligations hold and their own
 -- | sites decide.
 type UnifyEnv =
   { kindVars :: Set KindVar
+  , level :: P.Int
   }
 
 -- | What a unification did: the tentative `Ψ` it reached, and what it assigned
@@ -311,6 +336,8 @@ emptyContext =
   , boundaryRows: Set.empty
   , fits: Map.empty
   , nextFit: 0
+  , recursiveUses: Map.empty
+  , nextRecursive: 0
   }
 
 -- | What a step reached, as its caller reads it. The journal is emptied in the
@@ -452,7 +479,7 @@ assignKind ctx m given = case Map.lookup m ctx.kindBindings of
           -- and the two sets merge.
           required <- foldM (applyRequirement solution) ctx
             (Set.toUnfoldable info.requirements :: P.Array KindRequirement)
-          narrowed <- foldM (narrowKindTo info.scope) required
+          narrowed <- foldM (narrowKindTo info.scope info.level) required
             (Set.toUnfoldable (kindMetasOf solution) :: P.Array KindMetaVar)
           pure narrowed { kindBindings = Map.insert m (KindAssigned solution) narrowed.kindBindings }
 
@@ -557,6 +584,7 @@ unifyType env ctx kind left right
         other -> other
       where
       kindVars = env.kindVars
+      level = env.level
 
       go c bound k t1 t2 = case substitute c t1, substitute c t2 of
         a, b | isRowSyntax a || isRowSyntax b ->
@@ -583,7 +611,7 @@ unifyType env ctx kind left right
         -- stands for it and the head is read at an arrow into the carried kind.
         XApp f1 a1, XApp f2 a2 ->
           let
-            Tuple ka c1 = freshKindMeta { scope: kindVars, requirements: Set.empty } c
+            Tuple ka c1 = freshKindMeta { scope: kindVars, requirements: Set.empty, level } c
           in
             case go c1 bound (XKFun (XKMeta ka) k) f1 f2 of
               Stepped c2 -> go c2 bound (XKMeta ka) a1 a2
@@ -672,7 +700,7 @@ unifyType env ctx kind left right
                 Tuple XKType c
               _ ->
                 let
-                  Tuple ka c' = freshKindMeta { scope: kindVars, requirements: Set.empty } c
+                  Tuple ka c' = freshKindMeta { scope: kindVars, requirements: Set.empty, level } c
                 in
                   Tuple (XKMeta ka) c'
           in
@@ -691,7 +719,7 @@ unifyType env ctx kind left right
         -- Both sides of `#` share one row element kind, so one kind serves the two.
         XDisjoint l1 r1, XDisjoint l2 r2 ->
           let
-            Tuple ka c1 = freshKindMeta { scope: kindVars, requirements: Set.empty } c
+            Tuple ka c1 = freshKindMeta { scope: kindVars, requirements: Set.empty, level } c
           in
             case go c1 bound (XKMeta ka) l1 l2 of
               Stepped c2 -> go c2 bound (XKMeta ka) r1 r2
@@ -709,7 +737,7 @@ unifyType env ctx kind left right
         RegionKey _ -> Tuple (XKRow RowEffect) c
         SymbolKey _ ->
           let
-            Tuple ka c' = freshKindMeta { scope: kindVars, requirements: Set.empty } c
+            Tuple ka c' = freshKindMeta { scope: kindVars, requirements: Set.empty, level } c
           in
             Tuple (XKMeta ka) c'
 
@@ -954,6 +982,7 @@ refine bound ctx r s d1 d2 r1 r2 =
             freshInfo =
               { kind: substituteKind ctxK infoR.kind
               , scope: sharedScope
+              , level: min infoR.level infoS.level
               }
           in
             let
@@ -975,7 +1004,8 @@ refine bound ctx r s d1 d2 r1 r2 =
     _, Nothing -> Broke (MetaUnbound s)
 
 -- | Every substitution performs an occurs check, verifies the kind, and narrows
--- | the scope of what stands in the solution.
+-- | the scope of what stands in the solution, lowering it to the level of the
+-- | metavariable solved.
 -- |
 -- | **What the row constraints of the metavariable allow is not decided here.**
 -- | One is decided against the facts of the site it came from, which this
@@ -996,7 +1026,7 @@ assignMeta ctx m solution =
           Left err ->
             Broke err
           Right ctxK ->
-            case narrowScopes ctxK info.scope solution of
+            case narrowScopes ctxK info.scope info.level solution of
               Left err ->
                 Broke err
               Right ctx' ->
@@ -1049,23 +1079,24 @@ kindAgrees ctx m info solution = case rowKindOf solution of
 -- | hold kind metavariables, so narrowing the scope alone would leave the
 -- | metavariable standing at a kind its new scope excludes. Refusing is why this
 -- | reports rather than returning a context.
-narrowScopes :: MetaContext -> Scope -> XType -> Either UnifyError MetaContext
-narrowScopes ctx scope solution =
+narrowScopes :: MetaContext -> Scope -> P.Int -> XType -> Either UnifyError MetaContext
+narrowScopes ctx scope level solution =
   -- Substituting first leaves only unsolved metavariables to narrow, so the
   -- fold reaches what a solution stands on rather than what it was written with.
-  narrowMetas ctx scope (metasOf substituted) (kindMetasOfType substituted)
+  narrowMetas ctx scope level (metasOf substituted) (kindMetasOfType substituted)
   where
   substituted = substitute ctx solution
 
--- | Narrow the type and kind metavariables given to a scope, as a solution
--- | standing in that scope requires of every metavariable it holds unsolved.
+-- | Narrow the type and kind metavariables given to a scope and lower them to a
+-- | level, as a solution standing in that scope, at that level, requires of
+-- | every metavariable it holds unsolved, the kinds they stand at among them.
 -- |
 -- | The caller substitutes first, so what is given is unsolved; a type
 -- | metavariable solved already is a caller error.
-narrowMetas :: MetaContext -> Scope -> Set MetaVar -> Set KindMetaVar -> Either UnifyError MetaContext
-narrowMetas ctx scope typeMetas kindMetas = do
+narrowMetas :: MetaContext -> Scope -> P.Int -> Set MetaVar -> Set KindMetaVar -> Either UnifyError MetaContext
+narrowMetas ctx scope level typeMetas kindMetas = do
   narrowed <- foldM narrowType ctx types
-  foldM (narrowKindTo scope.kinds) narrowed kinds
+  foldM (narrowKindTo scope.kinds level) narrowed kinds
   where
   types = Set.toUnfoldable typeMetas :: P.Array MetaVar
   kinds = Set.toUnfoldable kindMetas :: P.Array KindMetaVar
@@ -1088,11 +1119,11 @@ narrowMetas ctx scope typeMetas kindMetas = do
           Just escaping ->
             Left (EscapingKindVariable t escaping)
           Nothing -> do
-            acc' <- foldM (narrowKindTo within.kinds) acc
+            acc' <- foldM (narrowKindTo within.kinds level) acc
               (Set.toUnfoldable (kindMetasOf kind) :: P.Array KindMetaVar)
             pure acc'
               { bindings = Map.insert t
-                  (Unsolved (tInfo { kind = kind, scope = within }))
+                  (Unsolved (tInfo { kind = kind, scope = within, level = min tInfo.level level }))
                   acc'.bindings
               }
 
@@ -1107,12 +1138,12 @@ narrowMetas ctx scope typeMetas kindMetas = do
 -- |
 -- | A solved one is closed rather than skipped: its solution is where a rigid
 -- | variable outside the new scope would otherwise sit.
-narrowKindTo :: Set KindVar -> MetaContext -> KindMetaVar -> Either UnifyError MetaContext
-narrowKindTo scope ctx k = case Map.lookup k ctx.kindBindings of
+narrowKindTo :: Set KindVar -> P.Int -> MetaContext -> KindMetaVar -> Either UnifyError MetaContext
+narrowKindTo scope level ctx k = case Map.lookup k ctx.kindBindings of
   Just (KindUnsolved kInfo) ->
     Right ctx
       { kindBindings = Map.insert k
-          (KindUnsolved (kInfo { scope = Set.intersection kInfo.scope scope }))
+          (KindUnsolved (kInfo { scope = Set.intersection kInfo.scope scope, level = min kInfo.level level }))
           ctx.kindBindings
       }
 
@@ -1126,7 +1157,7 @@ narrowKindTo scope ctx k = case Map.lookup k ctx.kindBindings of
         Just escaping ->
           Left (KindEscapingVariable k escaping)
         Nothing ->
-          foldM (narrowKindTo scope) ctx
+          foldM (narrowKindTo scope level) ctx
             (Set.toUnfoldable (kindMetasOf solution) :: P.Array KindMetaVar)
 
   Nothing ->
@@ -1198,3 +1229,23 @@ derive instance Generic UnifyResult _
 
 instance Show UnifyResult where
   show x = genericShow x
+
+-- | Lower the unsolved type and kind metavariables given, and the kind
+-- | metavariables their kinds hold, to the level given where they stand above
+-- | it. A solved one stands for its solution, and is lowered there.
+lowerLevels :: P.Int -> Set MetaVar -> Set KindMetaVar -> MetaContext -> MetaContext
+lowerLevels level types kinds ctx0 = foldl lowerKind (foldl lowerType ctx0 typeRoots) kindRoots
+  where
+  typeRoots = Set.toUnfoldable (Set.unions (map (\m -> metasOf (substitute ctx0 (XMeta m))) (Set.toUnfoldable types :: P.Array MetaVar))) :: P.Array MetaVar
+  kindRoots = Set.toUnfoldable (Set.unions (map (\k -> kindMetasOf (substituteKind ctx0 (XKMeta k))) (Set.toUnfoldable kinds :: P.Array KindMetaVar))) :: P.Array KindMetaVar
+
+  lowerType ctx m = case Map.lookup m ctx.bindings of
+    Just (Unsolved info) ->
+      foldl lowerKind
+        (ctx { bindings = Map.insert m (Unsolved (info { level = min info.level level })) ctx.bindings })
+        (Set.toUnfoldable (kindMetasOf (substituteKind ctx info.kind)) :: P.Array KindMetaVar)
+    _ -> ctx
+
+  lowerKind ctx k = case Map.lookup k ctx.kindBindings of
+    Just (KindUnsolved info) -> ctx { kindBindings = Map.insert k (KindUnsolved (info { level = min info.level level })) ctx.kindBindings }
+    _ -> ctx

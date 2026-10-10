@@ -1209,6 +1209,16 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | `data App f a = App (f a)` | `App : ∀k. (k -> Type) -> k -> Type` |
 | A skolem of a written signature assigned to a metavariable created outside its binder | An escape, reported where the assignment is stated |
 | An undecided fit, a pending synthesis goal, a term metavariable, or a boundary job still seeking a plan when a group is generalized | Never crosses it. Each is reported by its cause, and a declaration with a pending boundary is not committed |
+| A job created at level 2 and attempted later | What its attempt creates stands at level 2, the level its frame carries |
+| `?a := ?f ?x`, `?a` at level 1, and `?f`, `?x`, and the kind `?x` stands at, at level 2 | All lowered to level 1 |
+| A payload equation the resolution of a level-1 group states | The kind metavariable it creates stands at level 1. Resolution and closing run at the owner's level |
+| A synthesis goal of `f` at a metavariable only `g`'s type holds | Attempted again, and no signature asked for. A goal is held to its own member's quantifiers |
+| A member that is no value form, its body writing `h [[?k]]` | `?k` restricted with what the type reaches. A value form leaves `?k` ambiguous where the type does not reach it |
+| `x ∉ ?r` required where `x ∉ ?r` is assumed | No constraint. An atom its own site proves is none |
+| `?t # r` required where `r` is bound inside the member | Refused where it arose. The scheme would leave `r` free |
+| Two members sharing `?a`, each referring to the other | Each quantifies `?a` under a name of its own; each reference gains the callee's kind arguments, type arguments, and a `[•]` per constraint, the constraint raised unless the reference's site assumes it |
+| `?a := ?b`, `?b` quantified | `?a` retired with `?b`, and so are a kind alias and a term metavariable's solution naming it |
+| Another declaration's job waiting on what the group quantifies, its decided fit widening by it, or its obligation's context naming it | The host's defect, and nothing committed |
 
 ### Synthesis goals and generalization (step 7)
 

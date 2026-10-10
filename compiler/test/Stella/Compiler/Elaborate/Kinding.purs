@@ -162,15 +162,15 @@ spec = describe "Elaborate.Kinding" do
   describe "what it reads of Ψ" do
     it "reads an unsolved metavariable's kind, and applies a solved one" do
       let
-        Tuple m ctx = freshMeta { kind: XKRow RowType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } } emptyContext
+        Tuple m ctx = freshMeta { kind: XKRow RowType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty }, level: 0 } emptyContext
         solved = ctx { bindings = Map.insert m (Assigned xInt) ctx.bindings }
       synthKind env scope ctx (XMeta m) `shouldEqual` Right (ExactKind (XKRow RowType))
       synthKind env scope solved (listOf (XMeta m)) `shouldEqual` Right (ExactKind XKType)
 
     it "refuses a kind metavariable wherever it reads one" do
       let
-        Tuple k ctx0 = freshKindMeta { scope: Set.empty, requirements: Set.empty } emptyContext
-        Tuple m ctx = freshMeta { kind: XKMeta k, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } } ctx0
+        Tuple k ctx0 = freshKindMeta { scope: Set.empty, requirements: Set.empty, level: 0 } emptyContext
+        Tuple m ctx = freshMeta { kind: XKMeta k, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty }, level: 0 } ctx0
         settledK = ctx { kindBindings = Map.insert k (KindAssigned XKType) ctx.kindBindings }
       synthKind env scope ctx (XMeta m) `shouldEqual` Left KindNotSettled
       synthKind env scope ctx (con "Proxy" [ XKMeta k ]) `shouldEqual` Left KindNotSettled

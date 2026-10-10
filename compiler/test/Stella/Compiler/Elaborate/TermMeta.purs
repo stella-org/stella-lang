@@ -172,12 +172,12 @@ spec = describe "Elaborate.TermMeta" do
 
     it "narrows a type metavariable in the solution to the scope of the one assigned" do
       let
-        Tuple tm ctx0 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty, regions: Set.empty } } emptyContext
+        Tuple tm ctx0 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty, regions: Set.empty }, level: 0 } emptyContext
         Tuple m ctx1 = TermMeta.freshTermMeta { ty: xInt, scope: narrow } ctx0
         narrowed = case assignTermMeta ctx1 m (ELam 1 y (XMeta tm) (EVar 2 y)) of
           Right ctx2 -> lookupMeta ctx2 tm
           Left _ -> Nothing
-      narrowed `shouldEqual` Just (Unsolved { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } })
+      narrowed `shouldEqual` Just (Unsolved { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty }, level: 0 })
 
   describe "zonking" do
     it "puts a solution where the metavariable stood, under its annotation" do
@@ -201,7 +201,7 @@ spec = describe "Elaborate.TermMeta" do
 
     it "applies solved type metavariables inside a term metavariable's solution" do
       let
-        Tuple tm ctx0 = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } } emptyContext
+        Tuple tm ctx0 = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty }, level: 0 } emptyContext
         Tuple m ctx1 = TermMeta.freshTermMeta { ty: xInt, scope: wide } ctx0
         solvedType = ctx1 { bindings = Map.insert tm (Assigned xInt) ctx1.bindings }
         zonked = map (\c -> zonkExpr c (ETermMeta 4 m)) (hush (assignTermMeta solvedType m (ELam 1 y (XMeta tm) (EVar 2 y))))

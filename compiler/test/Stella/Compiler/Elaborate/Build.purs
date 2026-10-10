@@ -123,7 +123,7 @@ site :: Site
 site = { context, origin: InDeclaration (Qualified prim (Ident "decl")) }
 
 frame :: Frame
-frame = { site, goal: Nothing }
+frame = { site, goal: Nothing, level: 0 }
 
 start :: SolverState
 start = initialState (SessionId 0) 10
@@ -377,8 +377,8 @@ spec = describe "Elaborate.Build" do
     it "waits on a metavariable of the body that may mention the binder" do
       let
         b = TyVar "b"
-        Tuple mentioning metas1 = freshMeta { kind: XKType, scope: { types: Set.fromFoldable [ a, b ], kinds: Set.empty, regions: Set.empty } } emptyContext
-        Tuple outside metas2 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty, regions: Set.empty } } metas1
+        Tuple mentioning metas1 = freshMeta { kind: XKType, scope: { types: Set.fromFoldable [ a, b ], kinds: Set.empty, regions: Set.empty }, level: 0 } emptyContext
+        Tuple outside metas2 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty, regions: Set.empty }, level: 0 } metas1
         s = start { tentative = start.tentative { metas = metas2 } }
         applyTo m = do
           root <- rootScope
@@ -391,7 +391,7 @@ spec = describe "Elaborate.Build" do
 
     it "renames a binder that a solved metavariable of the argument names, the argument being zonked first" do
       let
-        Tuple m metas1 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty, regions: Set.empty } } emptyContext
+        Tuple m metas1 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty, regions: Set.empty }, level: 0 } emptyContext
         s = start { tentative = start.tentative { metas = metas1 { bindings = Map.insert m (Assigned (XVar a)) metas1.bindings } } }
         applied = do
           root <- rootScope
@@ -403,8 +403,8 @@ spec = describe "Elaborate.Build" do
 
     it "waits on an unsolved metavariable of the argument that may mention a binder of the body" do
       let
-        Tuple mentioning metas1 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty, regions: Set.empty } } emptyContext
-        Tuple outside metas2 = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty } } metas1
+        Tuple mentioning metas1 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty, regions: Set.empty }, level: 0 } emptyContext
+        Tuple outside metas2 = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty }, level: 0 } metas1
         s = start { tentative = start.tentative { metas = metas2 } }
         applyTo m = do
           root <- rootScope
@@ -749,7 +749,7 @@ withN scope rest = int scope >>= \i -> extendRow scope keyN (TypePayload i) rest
 
 -- | A flexible row tail `?t : Row Type`, created under the site's variables.
 tailed :: Tuple MetaVar MetaContext
-tailed = freshMeta { kind: XKRow RowType, scope: { types: Set.fromFoldable [ a, r ], kinds: Set.empty, regions: Set.empty } } emptyContext
+tailed = freshMeta { kind: XKRow RowType, scope: { types: Set.fromFoldable [ a, r ], kinds: Set.empty, regions: Set.empty }, level: 0 } emptyContext
 
 tail :: MetaVar
 tail = fst tailed
@@ -777,7 +777,7 @@ rejectsObligation s action basis breach = case outcomeOf s action of
 attemptWith :: (Pending -> Elab Unit) -> Attempt
 attemptWith runner = fst (attemptPendingWith session runner id held)
   where
-  Tuple id scheduler = create site (JobUnify { kind: XKType, left: xInt, right: xInt }) emptyScheduler
+  Tuple id scheduler = create 0 site (JobUnify { kind: XKType, left: xInt, right: xInt }) emptyScheduler
   held = start { tentative = start.tentative { scheduler = scheduler } }
 
 -- | A binder opened in a scope: the scope its body is built in, and how to close

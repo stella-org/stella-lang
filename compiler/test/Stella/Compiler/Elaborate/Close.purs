@@ -79,8 +79,8 @@ closing action k = case runAttempt session action (initialState (SessionId 0) 10
   Tuple (Done r) s -> do
     let
       Tuple _ quiet = run session s
-      Tuple _ resolved = resolveByDirection session (attemptPending session) ownerOf quiet
-    case closeRows session (attemptPending session) ownerOf declaration site r.term resolved of
+      Tuple _ resolved = resolveByDirection session (attemptPending session) ownerOf (const 0) quiet
+    case closeRows session (attemptPending session) ownerOf declaration 0 site r.term resolved of
       Tuple (Right c) after -> k r.keep c after
       Tuple (Left d) _ -> fail (show d)
   Tuple _ _ -> fail "the attempt did not commit"
@@ -200,9 +200,9 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Close" do
       Tuple (Done r) s -> do
         let
           -- an equation of `f` waiting on `?e`, which neither of its sides names
-          Tuple id created = create site (JobUnify { kind: rowEffect, left: XRowUnion r.x r.y, right: row [ console ] XRowEmpty }) s.tentative.scheduler
+          Tuple id created = create 0 site (JobUnify { kind: rowEffect, left: XRowUnion r.x r.y, right: row [ console ] XRowEmpty }) s.tentative.scheduler
           waiting = s { tentative { scheduler = reblock' id created (Set.fromFoldable (Array.mapMaybe metaOf [ r.e ])) } }
-        case closeRows session (attemptPending session) ownerOf declaration site r.term waiting of
+        case closeRows session (attemptPending session) ownerOf declaration 0 site r.term waiting of
           Tuple (Right c) _ -> c `shouldEqual` NothingClosed
           Tuple (Left d) _ -> fail (show d)
       Tuple _ _ -> fail "the attempt did not commit"

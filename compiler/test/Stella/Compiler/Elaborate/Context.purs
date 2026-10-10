@@ -54,6 +54,7 @@ rowTypeInfo :: MetaInfo
 rowTypeInfo =
   { kind: XKRow RowType
   , scope: { types: Set.fromFoldable [ rigidR, rigidS ], kinds: Set.empty, regions: Set.empty }
+  , level: 0
   }
 
 -- | A context assuming what it is given, over no bindings: what `Γ*` is derived

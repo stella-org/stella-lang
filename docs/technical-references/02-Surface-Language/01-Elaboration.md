@@ -522,11 +522,11 @@ A closed row costs nothing: a fit adapts a pure function to any ambient row. `id
 
 **Declarations are inferred in the strongly connected components of the references their bodies write**, read off the Surface AST before elaboration; a reference to a declaration with a signature is no edge, its scheme being known. Inside a group, a member without a signature is referenced at a monomorphic type of its own, from an environment local to the group rather than from the catalog. The order the Core module is emitted in is computed afterwards, from the committed terms.
 
-**A metavariable records the level of the binding group it was created in**, and an assignment lowers every metavariable of its solution to the level of the one assigned. The candidates of a group are the unsolved metavariables of its level.
+**A metavariable records the level of the binding group it was created in**, a kind metavariable as a type metavariable does, and an assignment lowers every metavariable of its solution, and every kind metavariable the kinds of those stand at, to the level of the one assigned. The candidates of a group are the unsolved metavariables of its level. **A job is attempted at the level it was created at**, however late, and the fits of a group are resolved by direction and its rows closed at the group's level, so what any of these creates stands where the group does; what is created outside every group stands at level 0, which no group generalizes.
 
 #### The value restriction
 
-A member whose right-hand side, zonked and after any η-expansion, is no value form — by the predicate the Core checker uses for the body of a `Λ` — is not generalized. The metavariables reachable from its type and its body are lowered at once and recorded as **restricted**. They may still be solved by what the rest of the group's elaboration decides; **one still unsolved when the group is generalized asks for a signature.** A variable is never left monomorphic for a later declaration to fix.
+A member whose right-hand side, zonked and after any η-expansion, is no value form — by the predicate the Core checker uses for the body of a `Λ` — is not generalized. The metavariables reachable from its type and its body — the kind metavariables among them, those the body writes directly too — are lowered at once and recorded as **restricted**, by the group's generalization rather than in `Ψ`: declining to quantify a metavariable is a decision of the group, and nothing of the metavariable once the group is done. They may still be solved by what the rest of the group's elaboration decides; **one still unsolved when the group is generalized asks for a signature.** A variable is never left monomorphic for a later declaration to fix.
 
 A restricted metavariable is unsolved where its zonked representative still holds an unsolved metavariable, whatever its own entry in `Ψ` says.
 
@@ -547,7 +547,7 @@ f's body uses g at ?a, which f's type Unit -> Int does not reach
 
 #### Obligations in atoms
 
-**A required Lacks or Disjoint is kept as the atomic requirements its normal form decomposes into**, and a part proved where it arises is not kept. A site's facts are its context's assumptions decomposed into `Γ*`, together with the scope of the metavariables.
+**A required Lacks or Disjoint is held as the obligation it is, with its basis, context, and origin, and decided by the atomic requirements its normal form decomposes into**: what its known keys and rigid tails need is proved where it arises, and the obligation is watched by the flexible tails what is left holds. A site's facts are its context's assumptions decomposed into `Γ*`, together with the scope of the metavariables.
 
 ```text
 Lacks k ρ, ρ = ⟨F;T⟩:
@@ -563,7 +563,7 @@ Disjoint ρ1 ρ2:
   two flexible tails                          the atom Disjoint ?t1 ?t2
 ```
 
-An atom carries the basis, context, and origin of the obligation it came from. An assignment to an atom's tail decomposes it again at its site, which may add atoms, remove it, or refuse. Every atom holds a flexible tail, so an atom is proved at a site only by scope or by an atomic fact of that site's `Γ*`; otherwise it stays as it is. Core rederives the original Disjoint an `openEff` asks for from the atoms.
+An assignment to a tail an obligation watches decides the obligation again at its own site, which may leave it held of nothing, watched by what is left, or refused. **What generalization reads is the atoms the obligations left at quiescence decompose into**, each by the identity of its obligation and its place among that obligation's atoms, and through that identity with the basis, context, and origin of the obligation it came from. Every atom holds a flexible tail, so an atom is proved at a site only by scope or by an atom of what that site assumes, its assumptions decomposed as a requirement is; otherwise it stays as it is. Core rederives the original Disjoint an `openEff` asks for from the atoms.
 
 `?e # ( region ℓ, Console )`, with `?e` created outside the region, keeps the atom `Console ∉ ?e` alone: `RegionKey ℓ ∉ ?e` holds by scope.
 
@@ -575,17 +575,17 @@ An atom carries the basis, context, and origin of the obligation it came from. A
 Cᵢ = Ownᵢ ∪ ⋃ { residualizeAt(s, Cⱼ) | s a reference in i's body to a member j of the group }
 ```
 
-- `Ownᵢ` are the required atoms left at quiescence whose origin is `i`'s body. Assumptions are no part of it.
+- `Ownᵢ` are the required atoms left at quiescence whose origin is `i`'s body, each identified by its obligation and its place among that obligation's atoms; one the obligation's own site proves is none of it. Assumptions are no part of it.
 - `residualizeAt(s, Cⱼ)` is the requirement a recursive reference raises at `s`, decomposed at `s`'s site: an atom an assumption around the reference proves is gone there, and `i` is not constrained by it.
 - A propagated atom is identified by its call site in `i` and the atom of `Own` it began as, so the identifiers are finitely many, and the union is a monotone least fixpoint: finite and unique. Adding `[•]` to a recursive reference raises no new requirement.
-- **Every atom of `Cᵢ` must mention no metavariable outside `Qᵢ`**; one that does is ambiguous, reported at the reference it came from.
-- At the fixpoint, each `Cᵢ` is rewritten in the member's rigid variables, normalized, deduplicated, and ordered deterministically.
+- **Every atom of `Cᵢ` must mention no metavariable outside `Qᵢ`**, and no kind metavariable outside the member's kind variables; one that does is ambiguous, reported where it arose — its obligation's site, or the reference raising it. **An atom naming a rigid tail bound inside the member is refused there**, the scheme leaving the tail free otherwise.
+- At the fixpoint, each `Cᵢ` is rewritten in the member's rigid variables, deduplicated, and ordered by the identities of its atoms.
 
-**A recursive reference** to a member `g` gains the type arguments of `g`'s final scheme and a `[•]` for each of its constraints, in their final order. A type argument outside the referring member's `Qᵢ` is a candidate of its body alone, and is ambiguous as above.
+**A recursive reference** to a member `g` is marked where it stands while the group is elaborated, with the site it stands at, which decides what its context proves. Once the group is generalized it gains the kind arguments of `g`'s final scheme, its type arguments, and a `[•]` for each of its constraints, in their final order. A type argument outside the referring member's `Qᵢ`, and a kind argument outside its kind variables, are candidates of its body alone, and ambiguous as above.
 
 #### Kinds
 
-**Kind metavariables are generalized into the kind variables of the declaration's scheme, before its type quantifiers are made** (D3), so that no type quantifier is left at an unsolved kind. A kind candidate is an unsolved kind metavariable of the group's level reached from the kind of a type quantifier or from a constructor's kind argument in the type. One carrying `ProducesType` cannot become a kind variable and is reported. A local binding generalizes no kind.
+**Kind metavariables are generalized into the kind variables of the declaration's scheme, before its type quantifiers are made** (D3), so that no type quantifier is left at an unsolved kind. A kind candidate is an unsolved kind metavariable of the group's level reached from the kind of a type quantifier or from a constructor's kind argument in the type. A kind candidate the body alone reaches, directly or through a metavariable it holds, is ambiguous as a type candidate is. One carrying `ProducesType` cannot become a kind variable and is reported. A local binding generalizes no kind.
 
 **A data declaration group** generalizes the kind metavariables its heads leave unsolved into each declaration's kind variables, and a reference inside the group to a member gains its kind arguments, `[[k̄]]`.
 
@@ -599,7 +599,7 @@ data App f a = App (f a)
 
 A generalization introduces rigid variables and `Λ`s, so nothing that would need its scope rebound beneath them crosses it.
 
-- A synthesis goal whose type touches `Qᵢ` asks for a signature. One that does not is attempted again first, and one still waiting after that is reported as undecided synthesis; a goal that fails is a failure.
+- A synthesis goal whose type touches the provisional `Qᵢ` of the member it belongs to asks for a signature. One that does not is attempted again first, and one still waiting after that is reported as undecided synthesis; a goal that fails is a failure.
 - A metavariable an equality job still touches is restricted (above).
 - No term metavariable, no undecided fit, and no pending boundary job crosses — a boundary whose plan is still being sought among them.
 
@@ -620,12 +620,12 @@ For each top-level group, in the dependency order above:
 11. Compute the final `Qᵢ`; report candidates of a body alone as ambiguous.
 12. Compute `Cᵢ` and check it against `Qᵢ`.
 13. Generalize the kinds.
-14. Assign the members' `Qᵢ` to fresh rigid variables, all at once, and build `TForall` and `ETyLam`.
-15. Rewrite `Cᵢ` in those variables and wrap each body in `EConstraintLam`, removing the atoms from the store.
-16. Complete the recursive references.
-17. Make each member's scheme final in the catalog.
+14. Rewrite each member in fresh rigid variables for its `Qᵢ` and kind variables for its kind candidates, and build `TForall` and `ETyLam`.
+15. Rewrite `Cᵢ` in those variables and wrap each body in `EConstraintLam`.
+16. Complete the recursive references, retire what was generalized from `Ψ`, and release the group's obligations, required and assumed, its fits, and its recursive references.
+17. Make every member's scheme final in the catalog, the group's at once.
 
-**The assignment of step 14 is the mechanism's own**, made outside every attempt, and takes no scope check: the rigid variables are bound at the root of each declaration and nowhere else, so nothing escapes. Each is bound outside every region a scope check has used to discharge `RegionKey ℓ ∉ ?m`, which is why no such discharge is undone by it; generalizing only the metavariables of a group's own level keeps that true.
+**The rewriting of steps 14 to 16 is the mechanism's own**, made outside every attempt, for the whole group or not at all, and takes no scope check: the rigid variables are bound at the root of each declaration and nowhere else, so nothing escapes. **Each member is rewritten apart, and nothing is assigned in `Ψ`**: a metavariable two members share may be quantified by each, under a name of its own. What was generalized is then retired from `Ψ` with every solution naming it, and what the group owned — its obligations, required and assumed, its fits, and its recursive references — is released; `Ψ` still naming a retired metavariable afterwards is the host's defect. Each is bound outside every region a scope check has used to discharge `RegionKey ℓ ∉ ?m`, which is why no such discharge is undone by it; generalizing only the metavariables of a group's own level keeps that true.
 
 ### Signatures
 

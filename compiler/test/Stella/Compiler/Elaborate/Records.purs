@@ -81,7 +81,7 @@ field key ty rest = XRowExtend (XRowTypeEntry key ty) rest
 tailed :: Tuple MetaVar SolverState
 tailed =
   let
-    Tuple t metas = freshMeta { kind: XKRow RowType, scope: { types: Set.singleton r, kinds: Set.empty, regions: Set.empty } } emptyContext
+    Tuple t metas = freshMeta { kind: XKRow RowType, scope: { types: Set.singleton r, kinds: Set.empty, regions: Set.empty }, level: 0 } emptyContext
     initial = initialState (SessionId 0) 10
   in
     Tuple t (initial { tentative = initial.tentative { metas = metas } })
@@ -108,7 +108,7 @@ site :: Site
 site = { context, origin: InDeclaration (Qualified (ModuleName "Main") (Ident "decl")) }
 
 frame :: Frame
-frame = { site, goal: Nothing }
+frame = { site, goal: Nothing, level: 0 }
 
 outcomeOf :: forall a. Elab a -> Outcome a
 outcomeOf action = fst (runElabIn session (snd tailed) (withFrame frame action))

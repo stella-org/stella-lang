@@ -32,7 +32,7 @@ import Stella.Compiler.Elaborate.CorePlus.Term (XExpr, typesOfTerm)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XType(..), metaOccurrences, metasOf)
 import Stella.Compiler.Elaborate.Driver.Loop (Attempter, PendingReport, RunResult(..), runAttempting)
 import Stella.Compiler.Elaborate.Driver.Resolve (ComponentOutcome(..), Resolution(..), resolveOwners)
-import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, runElabIn, unify)
+import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, atLevel, runElabIn, unify)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitState(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (Job(..), Site, goalOf)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
@@ -78,11 +78,12 @@ instance Show Closing where
   show x = genericShow x
 
 -- | Close the rows of the owner given that nothing needs anything of, its term
--- | the one given and the site given where it is reported.
-closeRows :: forall a k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> k -> Site -> XExpr a -> SolverState -> Tuple (Either Defect Closing) SolverState
-closeRows session attempter owner key site term s0 =
+-- | the one given, the site given where it is reported, and the level given its
+-- | binding group's, which closing and resolving again run at.
+closeRows :: forall a k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> k -> P.Int -> Site -> XExpr a -> SolverState -> Tuple (Either Defect Closing) SolverState
+closeRows session attempter owner key level site term s0 =
   if Set.isEmpty closable then Tuple (Right NothingClosed) s0
-  else case runElabIn session s0 (for_ (Set.toUnfoldable closable :: P.Array MetaVar) \m -> unify site { kind: XKRow RowEffect, left: XMeta m, right: XRowEmpty }) of
+  else case runElabIn session s0 (atLevel level (for_ (Set.toUnfoldable closable :: P.Array MetaVar) \m -> unify site { kind: XKRow RowEffect, left: XMeta m, right: XRowEmpty })) of
     Tuple (Done _) s1 ->
       let
         Tuple report s2 = runAttempting attempter (s1 { tentative { written = Set.empty } })
@@ -91,7 +92,7 @@ closeRows session attempter owner key site term s0 =
           Halted defect -> Tuple (Left defect) (undo s2)
           Rejected d -> Tuple (Right (Undone { closed: closable, cause: UndoneBy d })) (undo s2)
           Exhausted p -> Tuple (Right (Undone { closed: closable, cause: UndoneWaiting p })) (undo s2)
-          _ -> case resolveOwners session attempter owner (_ == key) s2 of
+          _ -> case resolveOwners session attempter owner (const level) (_ == key) s2 of
             Tuple (ResolutionHalted defect) s3 -> Tuple (Left defect) (undo s3)
             Tuple (Resolution r) s3 -> case Array.findMap refusal r.components of
               Just d -> Tuple (Right (Undone { closed: closable, cause: UndoneBy d })) (undo s3)

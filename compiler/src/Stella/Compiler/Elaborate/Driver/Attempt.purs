@@ -256,6 +256,7 @@ openAttempt session id s0 = case lookupPending s0.tentative.scheduler id of
   -- inside the attempt changes either.
   frameOf p =
     { site: p.site
+    , level: p.level
     , goal: case p.job of
         JobSynthesis goal -> Just { id: p.id, goal }
         JobUnify _ -> Nothing

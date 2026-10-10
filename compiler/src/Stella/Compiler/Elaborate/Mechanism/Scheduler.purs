@@ -28,6 +28,7 @@ module Stella.Compiler.Elaborate.Mechanism.Scheduler
   , isInitial
   , reblock
   , wake
+  , requeue
   , takeReady
   , complete
   , lookupPending
@@ -104,12 +105,13 @@ emptyScheduler =
 -- | A job the elaborator has just met.
 -- |
 -- | It exists and awaits nothing, which is the state a job is in while it is
--- | being attempted: neither queue holds it, and the frame running it does.
-create :: Site -> Job -> Scheduler -> Tuple PendingId Scheduler
-create site job s =
+-- | being attempted: neither queue holds it, and the frame running it does. It
+-- | is attempted at the level given, the one it was created at.
+create :: P.Int -> Site -> Job -> Scheduler -> Tuple PendingId Scheduler
+create level site job s =
   Tuple id
     s
-      { pending = Map.insert id { id, site, awaiting: Set.empty, job } s.pending
+      { pending = Map.insert id { id, site, awaiting: Set.empty, job, level } s.pending
       , nextId = s.nextId + 1
       }
   where
@@ -172,6 +174,19 @@ wake m s = foldl (\acc id -> wakeOne id acc) s ids
         , pending = Map.insert id (p { awaiting = Set.empty }) acc.pending
         , ready = Array.snoc acc.ready { id, phase: Retry }
         }
+
+-- | Queue a waiting job for a retry whatever it waits on, as a driver step that
+-- | attempts it again does.
+requeue :: PendingId -> Scheduler -> Scheduler
+requeue id s = case Map.lookup id s.pending of
+  Nothing -> s
+  Just p ->
+    s
+      { blocked = foldr (unregister id) s.blocked
+          (Set.toUnfoldable p.awaiting :: P.Array MetaVar)
+      , pending = Map.insert id (p { awaiting = Set.empty }) s.pending
+      , ready = Array.snoc (Array.filter (\q -> q.id /= id) s.ready) { id, phase: Retry }
+      }
 
 -- | The next job to attempt.
 -- |

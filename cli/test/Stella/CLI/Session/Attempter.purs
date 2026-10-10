@@ -159,7 +159,7 @@ spec = describe "Stella.CLI.Session.Broker.Attempter" do
       Left err -> fail err
       Right { a, state } -> do
         let
-          Tuple id created = create site (equating a) state.tentative.scheduler
+          Tuple id created = create 0 site (equating a) state.tentative.scheduler
           queued = state { tentative { scheduler = enqueueInitial id created } }
         running <- guestsOn session
         node (runGuests running queued) >>= case _ of

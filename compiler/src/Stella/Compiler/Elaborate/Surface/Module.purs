@@ -507,7 +507,7 @@ settleBodies session attempter state bodies =
   -- undone is the declaration's report, the rows decided again without it
   -- need not fail as it did
   closing acc b = case acc of
-    { defect: Nothing, state: s, undone } -> case closeRows session attempter declarationOf b.name { context: emptyXContext, origin: InDeclaration b.name } b.body s of
+    { defect: Nothing, state: s, undone } -> case closeRows session attempter declarationOf b.name 0 { context: emptyXContext, origin: InDeclaration b.name } b.body s of
       Tuple (Left d) s' -> { defect: Just d, state: s', undone }
       Tuple (Right (Undone u)) s' -> { defect: Nothing, state: s', undone: Map.insert b.name u.cause undone }
       Tuple (Right _) s' -> { defect: Nothing, state: s', undone }
@@ -527,13 +527,13 @@ settleBodies session attempter state bodies =
     Loop.Blocked _ -> settling
     _ -> Tuple Nothing quiet
     where
-    settling = case resolveByDirection session attempter declarationOf quiet of
+    settling = case resolveByDirection session attempter declarationOf (const 0) quiet of
       Tuple (ResolutionHalted d) s1 -> Tuple (Just (Left d)) s1
       Tuple (Resolution _) s1 -> case foldl closing { defect: Nothing, state: s1, undone: Map.empty } bodies of
         { defect: Just d, state: s2 } -> Tuple (Just (Left d)) s2
         { state: s2, undone } ->
           let
-            Tuple resolution s3 = resolveByDirection session attempter declarationOf s2
+            Tuple resolution s3 = resolveByDirection session attempter declarationOf (const 0) s2
             Tuple left s4 = runAttempting attempter s3
           in
             Tuple (Just (Right { resolution, left, undone })) s4
@@ -601,9 +601,10 @@ settleBodies session attempter state bodies =
         Right body
           | Array.null reported -> Tuple [] (Just { name: b.name, origin: b.origin, ordinal: b.ordinal, attributes: b.attributes, scheme: b.scheme, spine: b.spine, body })
           | otherwise -> Tuple reported Nothing
-        Left residues -> case Array.findMap fitOf (NonEmptyArray.toArray residues) of
-          -- every fit is decided or reported before a body is made Core
-          Just f -> Tuple [ Broken (FitLeftUndecided f) ] Nothing
+        Left residues -> case Array.findMap defectOf (NonEmptyArray.toArray residues) of
+          -- every fit is decided or reported, and every recursive reference made
+          -- ordinary, before a body is made Core
+          Just defect -> Tuple [ Broken defect ] Nothing
           -- a place is reported once, however many undecided types stand there
           Nothing -> Tuple (reported <> map TypeUndetermined (Array.nubEq (map residueOrigin (Array.filter (not <<< covered) (NonEmptyArray.toArray residues))))) Nothing
 
@@ -613,9 +614,11 @@ settleBodies session attempter state bodies =
     ResidualTermMeta o _ -> o
     ResidualHole o _ -> o
     ResidualFit o _ -> o
+    ResidualRecursiveRef o _ -> o
 
-  fitOf = case _ of
-    ResidualFit _ f -> Just f
+  defectOf = case _ of
+    ResidualFit _ f -> Just (FitLeftUndecided f)
+    ResidualRecursiveRef _ id -> Just (RecursiveReferenceLeft id)
     _ -> Nothing
 
 -- | The declaration a site stands in.

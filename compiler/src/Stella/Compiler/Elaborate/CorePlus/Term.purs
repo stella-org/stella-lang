@@ -16,6 +16,7 @@
 module Stella.Compiler.Elaborate.CorePlus.Term
   ( TermMetaVar(..)
   , FitId(..)
+  , RecRefId(..)
   , XExpr(..)
   , XParam
   , XBinding
@@ -37,6 +38,8 @@ module Stella.Compiler.Elaborate.CorePlus.Term
   , freeVarsOf
   , metasOfTerm
   , typesOfTerm
+  , typeVarsOfTerm
+  , typeVarsOfType
   , isValueForm
   , termMetasUnderRegions
   ) where
@@ -66,6 +69,9 @@ newtype TermMetaVar = TermMetaVar P.Int
 -- | A fit of `Ψ`. What it is placed for and what is decided of it live in the
 -- | metavariable context, not here.
 newtype FitId = FitId P.Int
+
+-- | Names a recursive reference while its group is elaborated.
+newtype RecRefId = RecRefId P.Int
 
 -- | A Core⁺ term. Each constructor but the last three mirrors the Core form of
 -- | the same name ([Term](../TypedCore/Term.purs)).
@@ -107,6 +113,11 @@ data XExpr a
   -- | is `f` where `f` is still one and is applied to `x` alone, and the λ
   -- | otherwise.
   | EEta a P.Boolean (XExpr a)
+  -- | A reference a member of a binding group makes to one of the group while
+  -- | the group is elaborated, at the member's type in the group: the use
+  -- | `Ψ` records under the identifier, with the site it stands at, which the
+  -- | group's generalization makes an ordinary reference.
+  | ERecursiveRef a RecRefId
   -- | `?m`, a term to be supplied later.
   | ETermMeta a TermMetaVar
   -- | `hole τ`, a place the author left open. It is reported, never filled.
@@ -196,6 +207,8 @@ data Residue a
   -- | A fit nothing decided, which every fit is before its declaration is made
   -- | Core: one left is the host's defect rather than the program's.
   | ResidualFit a FitId
+  -- | A recursive reference no generalization made ordinary, the host's defect.
+  | ResidualRecursiveRef a RecRefId
 
 -- | The variables a term mentions free, one set per class.
 -- |
@@ -251,6 +264,7 @@ xExprAnnotation = case _ of
   EOpenEff a _ _ -> a
   EFit a _ _ -> a
   EEta a _ _ -> a
+  ERecursiveRef a _ -> a
   ETermMeta a _ -> a
   EHole a _ -> a
 
@@ -395,6 +409,7 @@ convExpr = case _ of
   EWriteCell a name key value -> WriteCell a name key <$> convExpr value
   EOpenEff a row e -> OpenEff a <$> convType a row <*> convExpr e
   EFit a f e -> convExpr e *> residue (ResidualFit a f)
+  ERecursiveRef a id -> residue (ResidualRecursiveRef a id)
   EEta _ contractible lambda -> case lambda of
     ELam _ x _ (EApp _ f (EVar _ x')) | contractible && x == x' && isValueForm (const true) f -> convExpr f
     _ -> convExpr lambda
@@ -536,6 +551,7 @@ freeVarsOf = case _ of
   EOpenEff _ row e -> typeVars row <> freeVarsOf e
   EFit _ _ e -> freeVarsOf e
   EEta _ _ e -> freeVarsOf e
+  ERecursiveRef _ _ -> none
   ETermMeta _ _ -> none
   EHole _ ty -> typeVars ty
   where
@@ -641,6 +657,7 @@ metasOfTerm = case _ of
   EOpenEff _ row e -> typeMetas row <> metasOfTerm e
   EFit _ _ e -> metasOfTerm e
   EEta _ _ e -> metasOfTerm e
+  ERecursiveRef _ _ -> noMetas
   ETermMeta _ m -> noMetas { terms = Set.singleton m }
   EHole _ ty -> typeMetas ty
   where
@@ -703,6 +720,7 @@ typesOfTerm = case _ of
   EOpenEff _ row e -> [ row ] <> typesOfTerm e
   EFit _ _ e -> typesOfTerm e
   EEta _ _ e -> typesOfTerm e
+  ERecursiveRef _ _ -> []
   ETermMeta _ _ -> []
   EHole _ ty -> [ ty ]
   where
@@ -763,6 +781,7 @@ termMetasUnderRegions = go Set.empty
     EOpenEff _ _ e -> go bound e
     EFit _ _ e -> go bound e
     EEta _ _ e -> go bound e
+    ERecursiveRef _ _ -> []
     ETermMeta _ m -> [ { meta: m, bound } ]
     EHole _ _ -> []
 
@@ -794,6 +813,10 @@ derive newtype instance Show TermMetaVar
 derive instance Eq FitId
 derive instance Ord FitId
 derive newtype instance Show FitId
+
+derive instance Eq RecRefId
+derive instance Ord RecRefId
+derive newtype instance Show RecRefId
 
 derive instance Eq a => Eq (XExpr a)
 derive instance Functor XExpr
@@ -846,3 +869,71 @@ isValueForm isConstructor = value
     ETyApp _ e _ -> spine e
     EConstraintApp _ e -> spine e
     _ -> false
+
+-- | Every type variable a term writes or binds: in the types it writes, free or
+-- | bound by a `forall` there, and those its type abstractions and its
+-- | operation clauses bind. A name apart from all of them captures nothing
+-- | wherever in the term it is bound around.
+typeVarsOfTerm :: forall a. XExpr a -> Set TyVar
+typeVarsOfTerm term = Set.unions (map typeVarsOfType (typesOfTerm term)) <> binders term
+  where
+  binders = case _ of
+    ETyLam _ name _ body -> Set.insert name (binders body)
+    ELam _ _ _ body -> binders body
+    EApp _ f x -> binders f <> binders x
+    ETyApp _ e _ -> binders e
+    EConstraintLam _ _ body -> binders body
+    EConstraintApp _ e -> binders e
+    ELet _ _ _ v body -> binders v <> binders body
+    ELetRec _ bindings body -> foldMap (binders <<< _.value) bindings <> binders body
+    ECase _ scrutinees dt -> foldMap binders scrutinees <> tree dt
+    ELetJoin _ _ _ _ v body -> binders v <> binders body
+    EJump _ _ args -> foldMap binders args
+    ERecordExtend _ _ v rest -> binders v <> binders rest
+    ERecordSelect _ _ e -> binders e
+    ERecordRestrict _ _ e -> binders e
+    ERecordUpdate _ _ rec v -> binders rec <> binders v
+    ERecordMerge _ l r -> binders l <> binders r
+    EVariantInject _ _ v -> binders v
+    EVariantWeaken _ _ _ e -> binders e
+    EVariantAbsurd _ _ e -> binders e
+    EPerform _ _ _ _ arg -> binders arg
+    EHandle _ body h -> binders body <> binders h.returnClause.body <> foldMap clause h.opClauses
+    ERegion _ _ _ initial body -> foldMap binders initial <> binders body
+    EWriteCell _ _ _ v -> binders v
+    EOpenEff _ _ e -> binders e
+    EFit _ _ e -> binders e
+    EEta _ _ e -> binders e
+    _ -> Set.empty
+
+  tree = case _ of
+    XLeaf e -> binders e
+    XBind _ _ dt -> tree dt
+    XSwitchCtor _ branches d -> foldMap (tree <<< _.tree) branches <> foldMap tree d
+    XSwitchLit _ branches d -> foldMap (tree <<< _.tree) branches <> tree d
+    XSwitchKey _ branches d -> foldMap (tree <<< _.tree) branches <> foldMap tree d
+    XGuard e yes no -> binders e <> tree yes <> tree no
+
+  clause = case _ of
+    XFullClause c -> Set.fromFoldable (map _.name c.tyBinders) <> binders c.body
+    XFastClause c -> Set.fromFoldable (map _.name c.tyBinders) <> binders c.body
+
+-- | Every type variable a type writes, free or bound by a `forall` in it.
+typeVarsOfType :: XType -> Set TyVar
+typeVarsOfType ty = freeRigids ty <> forallBinders ty
+  where
+  forallBinders = case _ of
+    XForall b _ body -> Set.insert b (forallBinders body)
+    XApp g x -> forallBinders g <> forallBinders x
+    XConstrained c body -> constraintBinders c <> forallBinders body
+    XRowExtend entry rest -> entryBinders entry <> forallBinders rest
+    XRowUnion l r -> forallBinders l <> forallBinders r
+    _ -> Set.empty
+  constraintBinders = case _ of
+    XLacks _ row -> forallBinders row
+    XDisjoint l r -> forallBinders l <> forallBinders r
+  entryBinders = case _ of
+    XRowTypeEntry _ t -> forallBinders t
+    XRowEffectEntry _ args -> foldMap forallBinders args
+    XRowLabelledEffectEntry _ _ args -> foldMap forallBinders args
+    XRowRegionEntry _ -> Set.empty

@@ -540,7 +540,7 @@ spec = describe "Elaborate.Facade" do
         Tuple (Done (XMeta a)) s0 ->
           let
             Tuple goal metas = newGoal site (XMeta a) resolver s0.tentative.metas
-            Tuple id scheduler = create wide (JobSynthesis goal) s0.tentative.scheduler
+            Tuple id scheduler = create 0 wide (JobSynthesis goal) s0.tentative.scheduler
             start = s0 { tentative { metas = metas, scheduler = scheduler } }
             mentioning _ = F.rootScope >>= \root -> F.localVariable root x
           in
@@ -656,7 +656,7 @@ spec = describe "Elaborate.Facade" do
     it "with no goal gives a synthesizer nothing, and is a defect" do
       let
         start = initialState (SessionId 0) 10
-        Tuple id scheduler = create site (JobUnify { kind: XKType, left: xInt, right: xInt }) start.tentative.scheduler
+        Tuple id scheduler = create 0 site (JobUnify { kind: XKType, left: xInt, right: xInt }) start.tentative.scheduler
       fst (runSynthesizer session answerOne id (start { tentative { scheduler = scheduler } })) `shouldEqual` Halted NoGoal
 
 showStep :: forall a. Show a => Step a -> P.String

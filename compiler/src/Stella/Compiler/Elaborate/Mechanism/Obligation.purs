@@ -48,6 +48,10 @@ module Stella.Compiler.Elaborate.Mechanism.Obligation
   , watchedBy
   , standing
   , recheck
+  , ResidualAtom(..)
+  , atomConstraint
+  , residualAtoms
+  , release
   ) where
 
 import Prelude
@@ -55,13 +59,13 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Context (FactsError, Origin, XContext, Zonk, facts)
-import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, knownKeys, rigidTails, sharedKey, xnf)
-import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..))
+import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm, knownKeys, rigidTails, sharedKey, xnf)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XType(..))
 import Stella.Compiler.TypedCore (RegionName, RowKey(..), TyVar)
 import Stella.Compiler.TypedCore.Entailment (AtomicFacts, knownDisjoint, knownToLack, noFacts)
 import Data.Array as Array
 import Data.Either (Either(..))
-import Data.Foldable (foldM, foldr)
+import Data.Foldable (foldM, foldl, foldr)
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
 import Data.Map as Map
@@ -277,16 +281,8 @@ standing basis sitefacts zonk regions = case _ of
         Right (watchingOf (Set.union (meeting l r) (meeting r l)))
 
   where
-  normalize row = case xnf (zonk row) of
-    Left err -> Left (ObligationNotARow err)
-    Right n -> Right n
-
-  -- Whether a tail's scope keeps the key out of whatever solves it.
-  lacksByScope key m = case key of
-    RegionKey name -> case regions m of
-      Just scope -> not (Set.member name scope)
-      Nothing -> false
-    _ -> false
+  normalize = normalizeRow zonk
+  lacksByScope = lacksByScopeOf regions
 
   -- The flexible tails of one side the other can still meet: all of them, but
   -- for those the other side reaches only through keys, each of a region their
@@ -316,6 +312,68 @@ standing basis sitefacts zonk regions = case _ of
       )
       unit
       (rigidTails l)
+
+-- | A constraint's row, zonked and normalized.
+normalizeRow :: Zonk -> XType -> Either Breach XRowNormalForm
+normalizeRow zonk row = case xnf (zonk row) of
+  Left err -> Left (ObligationNotARow err)
+  Right n -> Right n
+
+-- | Whether a tail's scope keeps the key out of whatever solves it.
+lacksByScopeOf :: RegionScopes -> RowKey -> MetaVar -> P.Boolean
+lacksByScopeOf regions key m = case key of
+  RegionKey name -> case regions m of
+    Just scope -> not (Set.member name scope)
+    Nothing -> false
+  _ -> false
+
+-- | An atomic requirement a constraint comes to once what it says of known keys
+-- | and rigid tails is decided: `k ∉ ?t`, `?t # r` for a rigid `r`, or
+-- | `?t1 # ?t2`. Each names a flexible tail, and is proved only by what a site
+-- | assumes of that tail.
+data ResidualAtom
+  = LacksAtom RowKey MetaVar
+  | DisjointRigid MetaVar TyVar
+  | DisjointFlexible MetaVar MetaVar
+
+-- | The atom as the constraint it is.
+atomConstraint :: ResidualAtom -> XConstraint
+atomConstraint = case _ of
+  LacksAtom key t -> XLacks key (XMeta t)
+  DisjointRigid t r -> XDisjoint (XMeta t) (XVar r)
+  DisjointFlexible t1 t2 -> XDisjoint (XMeta t1) (XMeta t2)
+
+-- | **The atoms an obligation leaves, decided as it is decided** (`decide`): what
+-- | its known keys and its rigid tails need is proved, or the obligation is
+-- | breached; what is left is each known key against each flexible tail of the
+-- | other side its scope does not settle, and each flexible tail against each
+-- | tail of the other side, in the order the normal forms give them and each
+-- | once. A `Lacks` is the keys of its row's other side, which is empty.
+residualAtoms :: Zonk -> RegionScopes -> Obligation -> Either Breach (P.Array ResidualAtom)
+residualAtoms zonk regions obligation = do
+  _ <- decide zonk regions obligation
+  case obligation.constraint of
+    XLacks key row -> do
+      n <- normalizeRow zonk row
+      pure (lacking key n)
+    XDisjoint left right -> do
+      l <- normalizeRow zonk left
+      r <- normalizeRow zonk right
+      pure (Array.nub (keysAgainst l r <> keysAgainst r l <> tailsAgainst l r))
+  where
+  lacking key n = map (LacksAtom key) (Array.filter (not <<< lacksByScopeOf regions key) (Set.toUnfoldable n.flexible))
+  keysAgainst a b = Array.concatMap (\key -> lacking key b) (knownKeys a)
+  tailsAgainst l r =
+    (DisjointRigid <$> Set.toUnfoldable l.flexible <*> rigidTails r)
+      <> (DisjointRigid <$> Set.toUnfoldable r.flexible <*> rigidTails l)
+      <> (apart <$> Set.toUnfoldable l.flexible <*> Set.toUnfoldable r.flexible)
+  apart t1 t2 = if t1 <= t2 then DisjointFlexible t1 t2 else DisjointFlexible t2 t1
+
+derive instance Eq ResidualAtom
+derive instance Ord ResidualAtom
+derive instance Generic ResidualAtom _
+instance Show ResidualAtom where
+  show x = genericShow x
 
 -- | Re-decide every obligation the metavariables given are watched by.
 -- |
@@ -355,6 +413,11 @@ recheck zonk regions assigned store =
       Left breach -> Left (Tuple entry.obligation breach)
       Right Discharged -> Right (forget id entry acc)
       Right (Watching ms) -> Right (rewatch id entry ms acc)
+
+-- | The store without the obligations the predicate given holds of, and what
+-- | indexed them: those of a binding group its generalization has taken up.
+release :: (Obligation -> P.Boolean) -> ObligationStore -> ObligationStore
+release released store = foldl (\acc (Tuple id entry) -> if released entry.obligation then forget id entry acc else acc) store (Map.toUnfoldable store.entries :: P.Array (Tuple ObligationId Entry))
 
 -- | An obligation nothing can break again is dropped, together with what
 -- | indexed it.

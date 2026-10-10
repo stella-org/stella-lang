@@ -76,6 +76,7 @@ rowTypeInfo :: MetaInfo
 rowTypeInfo =
   { kind: XKRow RowType
   , scope: { types: Set.singleton rigidR, kinds: Set.empty, regions: Set.empty }
+  , level: 0
   }
 
 effectRowInfo :: MetaInfo
@@ -113,7 +114,7 @@ tailOf ctx m = case solutionOf ctx m of
 
 -- | A kind metavariable created where no kind variable is in scope.
 closedKindInfo :: KindMetaInfo
-closedKindInfo = { scope: Set.empty, requirements: Set.empty }
+closedKindInfo = { scope: Set.empty, requirements: Set.empty, level: 0 }
 
 -- | A kind metavariable created under one kind variable.
 kindInfoUnder :: KindVar -> KindMetaInfo
@@ -173,7 +174,7 @@ recordOf row = XApp (XCon (Qualified prim (TyName "Record")) []) row
 -- | What a unification reads off the site of an equation. No kind variable is in
 -- | scope in any case here, so a kind metavariable one creates may mention none.
 env :: UnifyEnv
-env = { kindVars: Set.empty }
+env = { kindVars: Set.empty, level: 0 }
 
 -- | Whether two closed types unify, which is what the cases carrying no
 -- | metavariable assert.
