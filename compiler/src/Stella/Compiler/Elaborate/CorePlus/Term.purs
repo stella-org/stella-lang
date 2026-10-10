@@ -37,6 +37,7 @@ module Stella.Compiler.Elaborate.CorePlus.Term
   , freeVarsOf
   , metasOfTerm
   , typesOfTerm
+  , isValueForm
   , termMetasUnderRegions
   ) where
 
@@ -101,6 +102,11 @@ data XExpr a
   -- | The expression a wrapping fit holds: `openEff [w]` around it where the fit
   -- | is decided `Widen w`, and the expression alone where it is decided equal.
   | EFit a FitId (XExpr a)
+  -- | The λ an η-expansion made, `λ (x : A). f x`, and whether `f` is a value
+  -- | form wherever its fits are decided equal: once every fit is decided, it
+  -- | is `f` where `f` is still one and is applied to `x` alone, and the λ
+  -- | otherwise.
+  | EEta a P.Boolean (XExpr a)
   -- | `?m`, a term to be supplied later.
   | ETermMeta a TermMetaVar
   -- | `hole τ`, a place the author left open. It is reported, never filled.
@@ -244,6 +250,7 @@ xExprAnnotation = case _ of
   EWriteCell a _ _ _ -> a
   EOpenEff a _ _ -> a
   EFit a _ _ -> a
+  EEta a _ _ -> a
   ETermMeta a _ -> a
   EHole a _ -> a
 
@@ -388,6 +395,9 @@ convExpr = case _ of
   EWriteCell a name key value -> WriteCell a name key <$> convExpr value
   EOpenEff a row e -> OpenEff a <$> convType a row <*> convExpr e
   EFit a f e -> convExpr e *> residue (ResidualFit a f)
+  EEta _ contractible lambda -> case lambda of
+    ELam _ x _ (EApp _ f (EVar _ x')) | contractible && x == x' && isValueForm (const true) f -> convExpr f
+    _ -> convExpr lambda
   ETermMeta a m -> residue (ResidualTermMeta a m)
   EHole a ty -> convType a ty *> residue (ResidualHole a ty)
 
@@ -525,6 +535,7 @@ freeVarsOf = case _ of
   EWriteCell _ name _ v -> regionVar name <> freeVarsOf v
   EOpenEff _ row e -> typeVars row <> freeVarsOf e
   EFit _ _ e -> freeVarsOf e
+  EEta _ _ e -> freeVarsOf e
   ETermMeta _ _ -> none
   EHole _ ty -> typeVars ty
   where
@@ -629,6 +640,7 @@ metasOfTerm = case _ of
   EWriteCell _ _ _ v -> metasOfTerm v
   EOpenEff _ row e -> typeMetas row <> metasOfTerm e
   EFit _ _ e -> metasOfTerm e
+  EEta _ _ e -> metasOfTerm e
   ETermMeta _ m -> noMetas { terms = Set.singleton m }
   EHole _ ty -> typeMetas ty
   where
@@ -690,6 +702,7 @@ typesOfTerm = case _ of
   EWriteCell _ _ _ v -> typesOfTerm v
   EOpenEff _ row e -> [ row ] <> typesOfTerm e
   EFit _ _ e -> typesOfTerm e
+  EEta _ _ e -> typesOfTerm e
   ETermMeta _ _ -> []
   EHole _ ty -> [ ty ]
   where
@@ -749,6 +762,7 @@ termMetasUnderRegions = go Set.empty
     EWriteCell _ _ _ v -> go bound v
     EOpenEff _ _ e -> go bound e
     EFit _ _ e -> go bound e
+    EEta _ _ e -> go bound e
     ETermMeta _ m -> [ { meta: m, bound } ]
     EHole _ _ -> []
 
@@ -807,3 +821,28 @@ derive instance Generic (Residue a) _
 
 instance Show a => Show (Residue a) where
   show x = genericShow x
+
+-- | Whether a term is a value form by Core's rule (`Stella.Compiler.TypedCore.Check`),
+-- | the predicate given telling a constructor, a wrapping fit judged by what it
+-- | holds: what it is once it is decided equal. An η-expansion's λ is one.
+isValueForm :: forall a. (Qualified Ident -> P.Boolean) -> XExpr a -> P.Boolean
+isValueForm isConstructor = value
+  where
+  value = case _ of
+    ELit _ _ -> true
+    ELam _ _ _ _ -> true
+    EEta _ _ _ -> true
+    EFit _ _ e -> value e
+    ETyLam _ _ _ body -> value body
+    EConstraintLam _ _ body -> value body
+    ERecordEmpty _ -> true
+    ERecordExtend _ _ v rest -> value v && value rest
+    EVariantInject _ _ v -> value v
+    other -> spine other
+  spine = case _ of
+    EGlobal _ name _ -> isConstructor name
+    EFit _ _ e -> spine e
+    EApp _ f x -> spine f && value x
+    ETyApp _ e _ -> spine e
+    EConstraintApp _ e -> spine e
+    _ -> false

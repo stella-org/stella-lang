@@ -507,6 +507,26 @@ spec = describe "Stella.Compiler.Build" do
           Left err -> map _.message (NonEmptyArray.toArray (buildMessages err)) `shouldEqual` [ "This version of the compiler does not elaborate a reference to a value taking a synthesized argument yet" ]
           Right _ -> fail "built"
 
+  describe "a definition a quantifier encloses" do
+    let
+      rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors
+      identity = [ "ident :: forall a. a -> a", "ident x = x", "pick :: forall a. a -> Int -> a", "pick x n = x" ]
+
+    it "is η-expanded where it is a function and no value form, through to the module's bytecode" do
+      compiling (identity <> [ "f :: forall a. a -> a", "f = ident" ]) case _ of
+        Left errors -> fail (joinWith "; " (rendered errors))
+        Right r -> r.handed `shouldEqual` [ "core ident pick f", "mid M", "bytecode M" ]
+
+    it "asks for an implicit handler at the λ it makes where what it applies performs what the row expected cannot hold" do
+      compilingUnder [ "module M where", "import Effects" ] [ "loud :: forall a. a -> a / {| Console |}", "loud x = x", "quiet :: forall a. a -> a", "quiet = loud" ] case _ of
+        Left errors -> rendered errors `shouldEqual` [ "6:9 This version of the compiler does not elaborate implicit-handler resolution at this checking boundary yet" ]
+        Right _ -> fail "compiled"
+
+    it "is reported where it is no value form and cannot be expanded, as the author's" do
+      compiling (identity <> [ "bad :: forall a. a -> a", "bad = pick ident 1" ]) case _ of
+        Left errors -> rendered errors `shouldEqual` [ "7:1 This stands under a `forall` or a constraint, where only a value form may stand; where it is a function, writing its parameter makes it one" ]
+        Right _ -> fail "compiled"
+
   describe "a computation declaration" do
     let
       consoleRow = TRowExtend (RowEffectEntry consoleName []) TRowEmpty

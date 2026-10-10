@@ -607,27 +607,25 @@ A generalization introduces rigid variables and `Λ`s, so nothing that would nee
 
 For each top-level group, in the dependency order above:
 
-1. Elaborate every member's body, each as an attempt.
+1. Elaborate every member's body, each as an attempt, η-expanding where [η-expansion](#η-expansion) allows: the wrapping fits of an expanded body are placed against its new ambient row as it is built.
 2. Run the loop to quiescence and resolve the fits.
-3. η-expand where [Signatures](#signatures) allows, rebuilding the wrapping fits of the expanded body against its new ambient row.
-4. Run the loop and resolve the fits again.
-5. Apply the value restriction: lower and record the restricted metavariables.
-6. Compute a provisional `Qᵢ` for every member.
-7. Ask for a signature where a synthesis goal touches a provisional `Qᵢ`; attempt every other goal again.
-8. Run the loop to quiescence; report a goal still waiting as undecided synthesis.
-9. Snapshot the candidates for closing.
-10. Close.
-11. Run the loop to quiescence and resolve the fits again; where either fails, undo the closing and report the failure by its cause.
-12. Confirm that no synthesis goal, term metavariable, undecided fit, or pending boundary job remains; restrict what an equality job still touches; ask for a signature where a restricted metavariable is unsolved.
-13. Compute the final `Qᵢ`; report candidates of a body alone as ambiguous.
-14. Compute `Cᵢ` and check it against `Qᵢ`.
-15. Generalize the kinds.
-16. Assign the members' `Qᵢ` to fresh rigid variables, all at once, and build `TForall` and `ETyLam`.
-17. Rewrite `Cᵢ` in those variables and wrap each body in `EConstraintLam`, removing the atoms from the store.
-18. Complete the recursive references.
-19. Make each member's scheme final in the catalog.
+3. Apply the value restriction: lower and record the restricted metavariables.
+4. Compute a provisional `Qᵢ` for every member.
+5. Ask for a signature where a synthesis goal touches a provisional `Qᵢ`; attempt every other goal again.
+6. Run the loop to quiescence; report a goal still waiting as undecided synthesis.
+7. Snapshot the candidates for closing.
+8. Close.
+9. Run the loop to quiescence and resolve the fits again; where either fails, undo the closing and report the failure by its cause.
+10. Confirm that no synthesis goal, term metavariable, undecided fit, or pending boundary job remains; restrict what an equality job still touches; ask for a signature where a restricted metavariable is unsolved.
+11. Compute the final `Qᵢ`; report candidates of a body alone as ambiguous.
+12. Compute `Cᵢ` and check it against `Qᵢ`.
+13. Generalize the kinds.
+14. Assign the members' `Qᵢ` to fresh rigid variables, all at once, and build `TForall` and `ETyLam`.
+15. Rewrite `Cᵢ` in those variables and wrap each body in `EConstraintLam`, removing the atoms from the store.
+16. Complete the recursive references.
+17. Make each member's scheme final in the catalog.
 
-**The assignment of step 16 is the mechanism's own**, made outside every attempt, and takes no scope check: the rigid variables are bound at the root of each declaration and nowhere else, so nothing escapes. Each is bound outside every region a scope check has used to discharge `RegionKey ℓ ∉ ?m`, which is why no such discharge is undone by it; generalizing only the metavariables of a group's own level keeps that true.
+**The assignment of step 14 is the mechanism's own**, made outside every attempt, and takes no scope check: the rigid variables are bound at the root of each declaration and nowhere else, so nothing escapes. Each is bound outside every region a scope check has used to discharge `RegionKey ℓ ∉ ?m`, which is why no such discharge is undone by it; generalizing only the metavariables of a group's own level keeps that true.
 
 ### Signatures
 
@@ -644,17 +642,19 @@ Higher-rank types follow from these rules where they are written; inference itse
 
 #### η-expansion
 
-The body of a `Λ` must be a value form, and a reference to a global that is no constructor is none: `f :: forall a. a -> a; f = id` is `Λ a. id [a]`, which Core refuses. **A body whose evaluation can move under a λ without any observable difference, and whose type is a function, is η-expanded once**:
+What a `Λ` or a constraint abstraction encloses must be a value form, and a reference to a global that is no constructor is none: `f :: forall a. a -> a; f = id` is `Λ a. id [a]`, which Core refuses. **A body whose evaluation can move under a λ without any observable difference, and whose type is a function, is η-expanded once**:
 
 ```text
-Λ ā. e   ⟹   Λ ā. λ (x : A). e x
+Λ ā. e   ⟹   Λ ā. λ (x : A). e x        and likewise under a constraint abstraction
 ```
 
-- The forms that may move are value forms, variables, globals, their type and constraint applications, constructor spines whose arguments all may move, and such a form under a wrapping fit. None performs, faults, diverges, or reads a cell.
+- The forms that may move are value forms, variables, globals, their type and constraint applications, constructor spines whose arguments all may move, an annotation of such a form, and such a form under a wrapping fit. None performs, faults, diverges, or reads a cell.
 - Only the wrapping fits of `e` are rebuilt, against the ambient row of the new λ. A cell reference is no form that may move, so no demanding fit is moved.
 - **The initialization dependencies of `e` are judged before it is expanded and kept after it.** A reference that `e` makes immediately to a member of the group being initialized stays immediate after the expansion, and is judged by the rule for recursive bindings: `f :: forall a. a -> a; f = f` is not made a recursive function by being expanded.
-- A body that is no such form is not expanded; a parameter is asked for, since moving an application under a λ would change when it faults or diverges.
+- A body that is no such form is not expanded; a parameter is asked for, since moving an application under a λ would change when it faults or diverges. One that is no value form is reported where the `Λ` or the constraint abstraction enclosing it stands, by the predicate the Core checker uses, as the author's ([The Core module](#the-core-module)).
 - A top-level declaration without a signature is expanded by the same rule, so that `g = id` is generalized.
+
+**The expansion is made where the body is built, and undone where it was not needed.** Wherever a `∀` or a constraint expected is opened — a signature's, an annotation's, or a higher-rank argument's, `f :: Int -> (forall b. b -> b); f x = id` becoming `λ x. Λ b. λ y. id [b] y` — a body that may move, at a function type, is built under the new λ and the λ marked as an expansion. Once every fit is decided, where the body is made Core, the λ is contracted again where its body applies a value form to its parameter alone, no widening left between them: `f :: forall a. a -> Tuple Int a; f = Tuple 1` stays the constructor spine it is written as. Deciding it then rather than where the body is built keeps a fit the resolution or the closing decides empty from expanding a value form, and leaves a row the body performs and the arrow does not hold to the boundary of the new λ ([Explicit checking boundaries](#explicit-checking-boundaries)) rather than to a fit refused outside it: `quiet :: forall a. a -> a; quiet = loudId`, `loudId` performing `Console`, asks for an implicit handler there.
 
 ### Computation declarations
 
@@ -778,7 +778,7 @@ f d x = x                                         λ d. Λ a. λ (x : a). x
 
 **Every signature is read before any body.** A declaration's scheme is what every other declaration refers to it at, so each signature is read as an attempt of its own and its kinds settled ([A signature's type](#a-signatures-type)); the schemes are then entered into the catalog beside what the imports publish, each value, each computation, and each foreign with the attributes written on it. A body may refer to any value, computation, or foreign of the module, itself and those declared after it among them. **A value declaration needs a signature in this version**, as a computation declaration always does, a fixity gives Core nothing, and a handler is reported as outside what it elaborates.
 
-**Each body is elaborated as an attempt of its own.** A body that fails, or holds a form this version does not read, leaves nothing behind. What the bodies leave undecided stands as jobs, which the loop runs once every body has been elaborated, so an equation one body states may be decided by what another does. **Once the loop is quiescent, the fits left undecided are resolved by direction**, each declaration's apart ([Resolving fits by direction](#resolving-fits-by-direction)): a declaration whose effect rows nothing decides is reported where its undecided fits stand, an annotation asked for, and one the resolution refuses by its cause — a checking boundary its body cannot meet as outside the subset, as the boundary is wherever it is decided ([A value declaration's body](#a-value-declarations-body)). Then each body is zonked and made a Core term, and each place a type nothing decided stands is reported once.
+**Each body is elaborated as an attempt of its own.** A body that fails, or holds a form this version does not read, leaves nothing behind. What the bodies leave undecided stands as jobs, which the loop runs once every body has been elaborated, so an equation one body states may be decided by what another does. **Once the loop is quiescent, the fits left undecided are resolved by direction**, each declaration's apart ([Resolving fits by direction](#resolving-fits-by-direction)): a declaration whose effect rows nothing decides is reported where its undecided fits stand, an annotation asked for, and one the resolution refuses by its cause — a checking boundary its body cannot meet as outside the subset, as the boundary is wherever it is decided ([A value declaration's body](#a-value-declarations-body)). Then each body is zonked and made a Core term, each η-expansion contracted where it can be ([η-expansion](#η-expansion)), and each place a type nothing decided stands is reported once.
 
 **A body is a value only once everything stated for it holds.** The loop stops at the first failure ([Elaborator API](03-Elaborator-API.md#the-loop)), so where it stops is read per declaration, through the site of each job:
 
@@ -798,7 +798,7 @@ f d x = x                                         λ d. Λ a. λ (x : a). x
 
 **A Core module is made only of a module with no error.** A module missing a declaration would refer to what it does not bind. The Core module imports what the module imports, in the order written, a module imported twice once, and exports each value it declares that is reached from outside — by its name, as a macro, or through an operator it exports — which is the rule its interface's arities are checked by ([Interface](../05-Backend/03-Interface.md#which-values-have-one)); a re-export reaches what another module declares and is no export of its Core. It declares the module's data types, its effects, its attribute declarations, and its foreigns before its values — a foreign at its scheme with its attributes, in no group of values — and exports each foreign reached from outside as a value is, each data type the module exports, with the constructors exported of it — `List` exports the type alone, and `List(..)` its constructors besides — and each effect it exports. A synonym and a foreign type have no Core declaration: their elaborated form is recorded in the Core part of the interface rather than in a Core declaration. The Core part holds a foreign's scheme as it holds a value's, and an attribute declaration at its parameters' types, their labels and defaults being the surface part's. Each binding carries the attributes written on its declaration. What the Core module is annotated with is where the module stands, a `DeclNonRec` where its declaration does, and a `DeclRec` where its first member does.
 
-**The Core checker refusing the module is the elaborator's fault**, and reported as such, with one exception: an attribute's arguments are checked against its declaration by the Core checker alone ([Core Type Checker](../03-Typed-Core/07-Core-Type-Checker.md#what-it-verifies)), so an attribute whose arguments do not check is the author's, reported where its declaration stands — for a recursive group, where the group's first member does.
+**The Core checker refusing the module is the elaborator's fault**, and reported as such, with two exceptions. An attribute's arguments are checked against its declaration by the Core checker alone ([Core Type Checker](../03-Typed-Core/07-Core-Type-Checker.md#what-it-verifies)), so an attribute whose arguments do not check is the author's, reported where its declaration stands — for a recursive group, where the group's first member does. And what a `Λ` or a constraint abstraction encloses is judged a value form by the Core checker alone, so one that is none, and was not η-expanded ([η-expansion](#η-expansion)), is the author's, reported where the abstraction stands.
 
 ## What an elaborator may and may not do
 

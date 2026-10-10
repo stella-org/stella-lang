@@ -24,6 +24,12 @@
 -- | signature writes, and a reference to it is forced, applied to `Prim.Unit`
 -- | as any function is applied.
 -- |
+-- | **What a `Λ` or a constraint abstraction encloses is built at `()` as a
+-- | value form**, wherever a quantifier or a constraint expected is opened: a
+-- | function whose evaluation may move under a λ is η-expanded, and contracted
+-- | again once its fits are decided where it was one already; anything else
+-- | no value form is the Core checker's to refuse, as the author's.
+-- |
 -- | **A scheme's constraints are assumed where its declaration's body opens
 -- | it**, under a constraint abstraction, **and required where a global is
 -- | instantiated**, under a constraint application.
@@ -39,6 +45,7 @@ module Stella.Compiler.Elaborate.Surface.Expr
   , runSurf
   , elaborateValue
   , elaborateComputation
+  , immediateReferences
   ) where
 
 import Prelude
@@ -47,15 +54,17 @@ import Prim hiding (Type)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), isJust, maybe)
+import Data.Set (Set)
 import Data.Set as Set
 import Data.Traversable (traverse)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext, lookupVar)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
-import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..))
+import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..), isValueForm)
 import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), fromCore)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal)
 import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
+import Stella.Compiler.Elaborate.Environment.Constructors (lookupConstructor)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceEnv)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, closeBoundary, currentMetas, equate, freshIdent, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, require)
@@ -151,7 +160,7 @@ elaborateComputation internal surface declaration origin scheme =
 
 definition :: Internal -> SurfaceEnv -> Qualified Ident -> Surface.Origin -> TypeScheme -> Array Parameter -> Expr -> Surf (XExpr Surface.Origin)
 definition internal surface declaration origin scheme params body =
-  boundary scope0 origin XRowEmpty \scope -> abstractions origin true Written scope params body (fromCore scheme.body)
+  boundary scope0 origin XRowEmpty \scope -> abstractions origin true false Written scope params body (fromCore scheme.body)
   where
   scope0 = { declaration, context: bindKindVars emptyXContext scheme.kindVars, ambient: XRowEmpty, internal, surface }
 
@@ -178,25 +187,21 @@ boundary scope origin expected inside = do
 -- | wherever variables remain, so a `forall` following a parameter, a
 -- | synthesized argument's among them, is opened where it stands; one left
 -- | once every variable is bound is the body's to meet. A `λ` at an arrow that
--- | is written is a checking boundary at the arrow's row.
-abstractions :: Surface.Origin -> Boolean -> Expected -> Scope -> Array Parameter -> Expr -> XType -> Surf (XExpr Surface.Origin)
-abstractions origin front expected scope params body ty = case ty, Array.uncons params of
-  XForall a k rest, _ | opening -> ETyLam origin a k <$> abstractions origin front expected (scope { context = bindTyVar scope.context a k }) params body rest
+-- | is written is a checking boundary at the arrow's row. What a `Λ` or a
+-- | constraint abstraction encloses is built at `()`, as a value form.
+abstractions :: Surface.Origin -> Boolean -> Boolean -> Expected -> Scope -> Array Parameter -> Expr -> XType -> Surf (XExpr Surface.Origin)
+abstractions origin front quantified expected scope params body ty = case ty, Array.uncons params of
+  XForall a k rest, _ | opening -> ETyLam origin a k <$> abstractions origin front true expected (scope { context = bindTyVar scope.context a k, ambient = XRowEmpty }) params body rest
   XConstrained c rest, _ | opening -> do
     context <- lift (assume (siteAt scope origin) c)
-    EConstraintLam origin c <$> abstractions origin front expected (scope { context = context }) params body rest
-  _, Nothing -> check scope body expected ty
+    EConstraintLam origin c <$> abstractions origin front true expected (scope { context = context, ambient = XRowEmpty }) params body rest
+  _, Nothing
+    | quantified -> quantifiedBody scope body expected ty
+    | otherwise -> check scope body expected ty
   _, Just { head, tail } -> do
     let at = parameterOrigin head
     parts <- arrow scope at ty
-    let
-      bound o name = do
-        let
-          inner = scope { context = bindVar scope.context name parts.argument }
-          rest s = abstractions origin false expected s tail body parts.result
-        ELam o name parts.argument <$> case expected of
-          Written -> boundary inner o parts.row rest
-          Derived -> rest (inner { ambient = parts.row })
+    let bound o name = lambdaAt scope o expected name parts \s -> abstractions origin false false expected s tail body parts.result
     case head of
       Named (BinderVar o (LocalVar v)) -> bound o v.name
       Named (BinderInvalid o) -> outside (ReportedAlready o)
@@ -207,6 +212,83 @@ abstractions origin front expected scope params body ty = case ty, Array.uncons 
   parameterOrigin = case _ of
     Named b -> binderOrigin b
     Thunk -> origin
+
+-- | A `λ` binding the name given at the arrow's argument, its body built by the
+-- | action given: under a checking boundary at the arrow's row where the arrow
+-- | is written, and under the row as it is otherwise.
+lambdaAt :: Scope -> Surface.Origin -> Expected -> Ident -> { argument :: XType, row :: XType, result :: XType } -> (Scope -> Surf (XExpr Surface.Origin)) -> Surf (XExpr Surface.Origin)
+lambdaAt scope origin expected name parts body =
+  ELam origin name parts.argument <$> case expected of
+    Written -> boundary inner origin parts.row body
+    Derived -> body (inner { ambient = parts.row })
+  where
+  inner = scope { context = bindVar scope.context name parts.argument }
+
+-- | What a `Λ` or a constraint abstraction encloses, which Core takes only as a
+-- | value form. **Where its type is a function and its evaluation may move
+-- | under a λ, it is η-expanded**, built under the new λ so each wrapping fit in
+-- | it is fitted into that λ's row, and contracted again once every fit is
+-- | decided where what the λ applies is a value form as it stands. Anything
+-- | else is built as it is, the Core checker refusing it where it is no value
+-- | form.
+quantifiedBody :: Scope -> Expr -> Expected -> XType -> Surf (XExpr Surface.Origin)
+quantifiedBody scope body expected ty = do
+  metas <- lift currentMetas
+  case body, asArrow (substitute metas ty) of
+    ExprLambda _ _ _, _ -> check scope body expected ty
+    _, Just _ | delayable body -> do
+      env <- lift askEnv
+      parts <- arrow scope origin ty
+      x <- lift (freshIdent (Map.keys scope.context.vars) "x")
+      lambda <- lambdaAt scope origin expected x parts \s -> do
+        f <- infer s body
+        applied <- applyTo s origin origin f \argument -> subsume s origin { expr: EVar origin x, type: parts.argument } argument
+        subsume s origin applied parts.result
+      let
+        isConstructor = isJust <<< lookupConstructor env.session.constructors
+        -- what the λ applies, under the fits around the application
+        applies = case _ of
+          EFit _ _ e -> applies e
+          EApp _ f _ -> Just f
+          _ -> Nothing
+        contractible = case lambda of
+          ELam _ _ _ inner -> maybe false (isValueForm isConstructor) (applies inner)
+          _ -> false
+      pure (EEta origin contractible lambda)
+    _, _ -> check scope body expected ty
+  where
+  origin = exprOrigin body
+
+-- | Whether the evaluation of an expression may move under a λ with no
+-- | observable difference: a variable, a global, a constructor, a literal, a
+-- | λ, an annotation of such a form, and a constructor applied to such forms.
+-- | None performs, faults, diverges, or reads a cell.
+delayable :: Expr -> Boolean
+delayable = case _ of
+  ExprLocal _ _ -> true
+  ExprValue _ _ -> true
+  ExprConstructor _ _ -> true
+  ExprLiteral _ _ -> true
+  ExprLambda _ _ _ -> true
+  ExprTyped _ inner _ -> delayable inner
+  ExprApp _ f x -> constructorSpine f && delayable x
+  _ -> false
+  where
+  constructorSpine = case _ of
+    ExprConstructor _ _ -> true
+    ExprApp _ f x -> constructorSpine f && delayable x
+    _ -> false
+
+-- | The globals the evaluation of an expression refers to before it enters
+-- | any λ, among the forms this version elaborates: what a definition with no
+-- | parameter needs initialized when it is, whether or not it is η-expanded.
+immediateReferences :: Expr -> Set (Qualified Ident)
+immediateReferences = case _ of
+  ExprValue _ name -> Set.singleton name
+  ExprComputation _ name -> Set.singleton name
+  ExprApp _ f x -> Set.union (immediateReferences f) (immediateReferences x)
+  ExprTyped _ inner _ -> immediateReferences inner
+  _ -> Set.empty
 
 -- | The argument, the row, and the result of the arrow the type must be: its
 -- | own where it is one, and otherwise an arrow of fresh metavariables it is
@@ -225,11 +307,17 @@ arrow scope origin ty = do
 
 check :: Scope -> Expr -> Expected -> XType -> Surf (XExpr Surface.Origin)
 check scope expr expected ty = case expr of
-  ExprLambda o binders body -> abstractions o false expected scope (map Named binders) body ty
+  ExprLambda o binders body -> abstractions o false false expected scope (map Named binders) body ty
   ExprInvalid o -> outside (ReportedAlready o)
   _ -> do
-    inferred <- infer scope expr
-    subsume scope (exprOrigin expr) inferred ty
+    metas <- lift currentMetas
+    case substitute metas ty of
+      -- a quantifier or a constraint expected is opened where the form stands
+      opened@(XForall _ _ _) -> abstractions (exprOrigin expr) true false expected scope [] expr opened
+      opened@(XConstrained _ _) -> abstractions (exprOrigin expr) true false expected scope [] expr opened
+      _ -> do
+        inferred <- infer scope expr
+        subsume scope (exprOrigin expr) inferred ty
 
 -- | An expression inferred at one type where another is expected. **Where both
 -- | are arrows, the outermost row alone is contained**, a wrapping fit around
@@ -249,9 +337,11 @@ subsume scope origin inferred expected = do
       pure inferred.expr
   where
   site = siteAt scope origin
-  asArrow = case _ of
-    XApp (XApp (XApp (XCon name []) argument) row) result | name == functionTy -> Just { argument, row, result }
-    _ -> Nothing
+
+asArrow :: XType -> Maybe { argument :: XType, row :: XType, result :: XType }
+asArrow = case _ of
+  XApp (XApp (XApp (XCon name []) argument) row) result | name == functionTy -> Just { argument, row, result }
+  _ -> Nothing
 
 infer :: Scope -> Expr -> Surf { expr :: XExpr Surface.Origin, type :: XType }
 infer scope expr = case expr of
@@ -263,11 +353,11 @@ infer scope expr = case expr of
   -- a computation is forced, applied to `Prim.Unit` where it is referred to
   ExprComputation o name -> do
     thunk <- global o name
-    applied o thunk \argument -> subsume scope o { expr: EGlobal o unitCtor [], type: XCon unitTy [] } argument
+    applyTo scope o o thunk \argument -> subsume scope o { expr: EGlobal o unitCtor [], type: XCon unitTy [] } argument
   ExprLiteral o literal -> pure { expr: ELit o literal, type: fromCore (litType literal) }
   ExprApp _ f x -> do
     f' <- infer scope f
-    applied (exprOrigin f) f' \argument -> check scope x Derived argument
+    applyTo scope (exprOrigin f) (exprOrigin expr) f' \argument -> check scope x Derived argument
   ExprTyped _ inner t -> do
     annotation <- lift (elaborateType scope.surface.synonyms scope.declaration scope.context t)
     case Array.head annotation.unsupported of
@@ -281,14 +371,6 @@ infer scope expr = case expr of
   ExprInvalid o -> outside (ReportedAlready o)
   _ -> outside (OutsideSubset (exprOrigin expr) "this form")
   where
-  -- a function inferred where it stands, applied to the argument built at the
-  -- type it takes, and fitted there into the row ambient
-  applied at f argument = do
-    parts <- arrow scope at f.type
-    x <- argument parts.argument
-    fit <- lift (placeFit (siteAt scope at) Wrapping parts.row scope.ambient)
-    pure { expr: EApp (exprOrigin expr) (EFit at fit f.expr) x, type: parts.result }
-
   lambda binders body = case Array.uncons binders of
     Nothing -> infer scope body
     Just { head: BinderVar o (LocalVar v), tail } -> do
@@ -333,6 +415,16 @@ infer scope expr = case expr of
       lift (require (siteAt scope o) c)
       instantiated o (EConstraintApp o e) rest
     ty -> pure { expr: e, type: ty }
+
+-- | A function inferred where it stands, applied to the argument built at the
+-- | type it takes, and fitted there into the row ambient: the function's place,
+-- | then the application's.
+applyTo :: Scope -> Surface.Origin -> Surface.Origin -> { expr :: XExpr Surface.Origin, type :: XType } -> (XType -> Surf (XExpr Surface.Origin)) -> Surf { expr :: XExpr Surface.Origin, type :: XType }
+applyTo scope at whole f argument = do
+  parts <- arrow scope at f.type
+  x <- argument parts.argument
+  fit <- lift (placeFit (siteAt scope at) Wrapping parts.row scope.ambient)
+  pure { expr: EApp whole (EFit at fit f.expr) x, type: parts.result }
 
 binderOrigin :: Binder -> Surface.Origin
 binderOrigin = case _ of

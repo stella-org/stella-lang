@@ -202,6 +202,7 @@ zonkExpr ctx = go
     EReadCell a name key -> EReadCell a name key
     EWriteCell a name key v -> EWriteCell a name key (go v)
     EOpenEff a row e -> EOpenEff a (ty row) (go e)
+    EEta a contractible e -> EEta a contractible (go e)
     -- a decided wrapping fit becomes what it was decided to, a widening by a
     -- row that is empty once solved nothing; one undecided stays, for making
     -- the term Core to report

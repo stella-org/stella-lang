@@ -32,7 +32,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.TypedCore (Expr(..), Literal(..), primSignature)
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), TyVar(..))
-import Stella.Compiler.TypedCore.Prim (intTy, stringTy)
+import Stella.Compiler.TypedCore.Prim (intTy, stringTy, unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Type (RowKey(..), Type(..), RowEntry(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -223,6 +223,32 @@ spec = describe "Stella.Compiler.Elaborate.Mechanism.Fit" do
         \(Tuple outcome s) _ _ -> case outcome of
           Done f -> map _.use (Map.lookup f s.tentative.metas.fits) `shouldEqual` Just Demanding
           _ -> fail "not done"
+
+  describe "the λ of an η-expansion" do
+    let
+      -- `λ (x : Unit). f x`, `f` a constructor under a fit of `()` into `?m`:
+      -- decided `Widen ?m` where it is placed, and empty only once `?m` is
+      expansion = do
+        m <- freshTypeMeta emptyXContext (XKRow RowEffect)
+        f <- placeFit site Wrapping XRowEmpty m
+        pure { m, term: EEta unit true (ELam unit (Ident "x") (XCon unitTy []) (EApp unit (EFit unit f (EGlobal unit unitCtor [])) (EVar unit (Ident "x")))) }
+      made s term = map (map (const unit)) (toCoreExpr (zonkExpr s.tentative.metas term))
+      decided to built s = case runAttempt session (equate site { kind: XKRow RowEffect, left: built.m, right: to }) s of
+        Tuple (Done _) after -> pure after
+        _ -> fail "not decided" *> pure s
+    it "is contracted by what its fit is once decided, not where it is built, and kept where the fit widens" do
+      case runAttempt session expansion (initialState (SessionId 0) 10) of
+        Tuple (Done built) s -> do
+          case made s built.term of
+            Left _ -> pure unit
+            Right early -> fail ("made Core where it is built: " <> show early)
+          empty <- decided XRowEmpty built s
+          made empty built.term `shouldEqual` Right (Global unit unitCtor [])
+          widened <- decided (closed [ console ]) built s
+          case made widened built.term of
+            Right (Lam _ _ _ (App _ (OpenEff _ _ (Global _ c _)) (Var _ _))) | c == unitCtor -> pure unit
+            other -> fail ("not kept: " <> show other)
+        _ -> fail "not done"
 
   describe "a row metavariable's provenance" do
     it "is an instantiation row where instantiation made it, and the tail two are identified through is one only if both were" do

@@ -62,8 +62,10 @@ import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..), either)
 import Data.Foldable (foldl)
 import Data.Traversable (traverse)
+import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), maybe)
+import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
@@ -82,7 +84,7 @@ import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceEnv, takesSynthesized)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, initialState)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
-import Stella.Compiler.Elaborate.Surface.Expr (elaborateComputation, elaborateValue, runSurf)
+import Stella.Compiler.Elaborate.Surface.Expr (elaborateComputation, elaborateValue, immediateReferences, runSurf)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..), elaborateComputationSignature, elaborateSignature, schemeOf, settledScheme)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
@@ -99,7 +101,7 @@ import Stella.Compiler.TypedCore (Decl(DeclAttribute, DeclData, DeclEffect, Decl
 import Stella.Compiler.TypedCore (Attribute, AttributeDecl, DataDecl, DeclError(..), DeclFailure, Decl(DeclNonRec, DeclRec), Declared, EffectDecl, Export(..), ForeignDecl, declareAnnotated)
 import Stella.Compiler.TypedCore.Declare (ctorInfo, dataEntry)
 import Stella.Compiler.TypedCore.AttributeCheck (AttributeError, checkAttribute)
-import Stella.Compiler.TypedCore.Check (isFunVal)
+import Stella.Compiler.TypedCore.Check (CheckError(NotAValueForm), isFunVal)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName, OpName(..), Qualified(..), TyName(..), unqualified)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
@@ -131,6 +133,10 @@ data ElaborationError
   | AttributeRejected Surface.Origin AttributeError
   -- | A foreign whose type does not cross to the host, where it is declared.
   | ForeignRefused Surface.Origin (Qualified Ident) Refused
+  -- | What a `Λ` or a constraint abstraction encloses that is no value form,
+  -- | where the abstraction stands: the Core checker's refusal, and the
+  -- | author's.
+  | ValueFormNeeded Surface.Origin
   -- | A Core module the Core checker refused, which is the elaborator's fault.
   | CoreRefused (DeclFailure Surface.Origin)
   -- | An entry a desugaring of the compiler's refers to, which a signature
@@ -198,7 +204,7 @@ elaborateValues
   -> SurfaceEnv
   -> Array CatalogEntry
   -> Surface.Module
-  -> { data :: Array ElaboratedData, synonyms :: Array ElaboratedSynonym, foreignTypes :: Array ElaboratedForeignType, effects :: Array ElaboratedEffect, foreigns :: Array ElaboratedForeign, attributes :: Array ElaboratedAttribute, values :: Array ElaboratedValue, errors :: Array ElaborationError }
+  -> { data :: Array ElaboratedData, synonyms :: Array ElaboratedSynonym, foreignTypes :: Array ElaboratedForeignType, effects :: Array ElaboratedEffect, foreigns :: Array ElaboratedForeign, attributes :: Array ElaboratedAttribute, values :: Array ElaboratedValue, immediate :: Map (Qualified Ident) (Set (Qualified Ident)), errors :: Array ElaborationError }
 elaborateValues imports surface importedEntries m =
   if Array.null dataErrors then
     { data: elaboratedData
@@ -208,9 +214,10 @@ elaborateValues imports surface importedEntries m =
     , foreigns: crossing.foreigns
     , attributes: attributesRead.declared
     , values: settled'.values
+    , immediate
     , errors: internalErrors <> unsupported <> signatureErrors <> crossing.errors <> attributesRead.errors <> attributeErrors <> bodyErrors <> settled'.errors
     }
-  else { data: [], synonyms: [], foreignTypes: [], effects: [], foreigns: [], attributes: [], values: [], errors: dataErrors <> unsupported }
+  else { data: [], synonyms: [], foreignTypes: [], effects: [], foreigns: [], attributes: [], values: [], immediate: Map.empty, errors: dataErrors <> unsupported }
   where
   initial0 = initialState (SessionId 0) 1_000_000
 
@@ -402,6 +409,15 @@ elaborateValues imports surface importedEntries m =
       Tuple (Done (Left problem)) _ -> acc { errors = Array.snoc acc.errors (Unsupported problem) }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
   bodyErrors = bodies.errors
+  -- what each value with no parameter refers to before entering any λ
+  immediate = Map.fromFoldable
+    ( Array.mapMaybe
+        ( \v -> case v.definition of
+            ValueBody [] body -> Just (Tuple v.declared.name (immediateReferences body))
+            _ -> Nothing
+        )
+        defined
+    )
 
   settled' = settleBodies session (attemptPending session) bodies.state bodies.bodies
 
@@ -639,10 +655,17 @@ elaborateModule signature surface imported m exports =
   members g = Array.mapMaybe (Array.index values) g.members
 
   -- Core binds only function values recursively: a member that is none is
-  -- outside what this version lowers, whether or not the surface admits it
+  -- outside what this version lowers, whether or not the surface admits it,
+  -- and so is one whose evaluation refers to a member before entering any λ,
+  -- which an η-expansion does not make a function
   recursiveValues = Array.concatMap
     ( \g ->
-        if g.recursive then map (\v -> Unsupported (OutsideSubset v.origin "a recursive value that is no function")) (Array.filter (not <<< isFunVal <<< _.body) (members g))
+        if g.recursive then
+          let
+            names = Set.fromFoldable (map _.name (members g))
+            immediate v = maybe false (not <<< Set.isEmpty <<< Set.intersection names) (Map.lookup v.name elaborated.immediate)
+          in
+            map (\v -> Unsupported (OutsideSubset v.origin "a recursive value that is no function")) (Array.filter (\v -> not (isFunVal v.body) || immediate v) (members g))
         else []
     )
     grouped
@@ -686,6 +709,9 @@ elaborateModule signature surface imported m exports =
       Right declared -> Right { core, declared, interface }
       -- an attribute's arguments are checked by Core alone
       Left { at, error: AttributeIllTyped err } -> Left (NonEmptyArray.singleton (AttributeRejected at err))
+      -- and so is the value form a `Λ` encloses, what was not η-expanded
+      -- being the author's to give a parameter
+      Left { at, error: IllTyped NotAValueForm } -> Left (NonEmptyArray.singleton (ValueFormNeeded at))
       Left refusal -> Left (NonEmptyArray.singleton (CoreRefused refusal))
 
   -- a data type exported, abstractly or with the constructors exported of it

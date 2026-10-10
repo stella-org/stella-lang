@@ -1157,6 +1157,12 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | A computation with a non-empty row referenced at a top-level value without a signature | A row mismatch. A computation at `()` is forced as it stands |
 | `f :: forall a. a -> a; f = id` | η-expanded to `Λ a. λ x. id [a] x`, which Core accepts. Without the expansion Core refuses `Λ a. id [a]` |
 | `f :: forall a. a -> a; f = f` | Judged as an immediate self-reference before any expansion, and refused. Expanding first turns it into a recursive function |
+| `g :: Int -> (forall b. b -> b); g x = id`, and `Poly id` at `data Poly = Poly (forall a. a -> a)` | `λ x. Λ b. λ y. id [b] y`, and the field's `∀` opened where the argument stands. Every `∀` and constraint expected is opened where the form stands, a signature's, an annotation's, or an argument's |
+| `t :: forall a. a -> Tuple Int a; t = Tuple 1` | The constructor spine as written. Expanded where it is built, and contracted once its fit is decided equal |
+| `spread :: forall e a. a -> Tuple Int a / {\| ...e \|}; spread = Tuple 1` | Left expanded, with `openEff [e]` under the λ. The fit widens, and the spine is no value form without the λ |
+| `quiet :: forall a. a -> a; quiet = loudId`, `loudId` at `( Console )` | Outside the subset where the expansion's λ stands, its boundary asking for an implicit handler. Not refused by a fit placed outside the λ |
+| `bad :: forall a. a -> a; bad = const id 1` | Reported where the `Λ` stands as no value form, the author's to give a parameter; likewise under a constraint abstraction. Not the Core checker's refusal reported as the compiler's |
+| `k :: Int -> (forall a. Tuple Int (a -> a)) / {\| Console \|}; k x = Tuple 1 (\y -> y)` | Accepted as written. What a `Λ` or a constraint abstraction encloses is at `()`, whatever the λ around it performs |
 | A local function in a clause reading a cell | Its row is the region's element alone; applied in the clause, it is widened by the rest of the clause's row |
 | `x!` with no enclosing handling expression declaring `x`, under an open ambient row | Refused by name resolution. An open row is no evidence a cell exists |
 | `use k = k ()` at `(Unit -> Int / {\| Console \|}) -> Int` | Outside the subset in this version, where the boundary stands: the row expected cannot hold `Console`, and no implicit handler is sought. A row mismatch would refuse what a handler may resolve |

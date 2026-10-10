@@ -197,6 +197,7 @@ at = case _ of
   LeftUnchecked o _ -> located o <> " left unchecked"
   AttributeRejected o _ -> located o <> " attribute rejected"
   ForeignRefused o _ r -> located o <> " foreign refused " <> show r.position <> " " <> show r.refusal
+  ValueFormNeeded o -> located o <> " value form needed"
   EffectRowAmbiguous _ os -> joinWith " " (map located os) <> " effect row ambiguous"
   CoreRefused _ -> "the Core checker refused it"
   InternalEntryMismatch _ -> "an internal entry mismatched"
@@ -330,6 +331,121 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
 
     it "rejects a field at a kind other than Type where it stands" do
       elaborating [ "data Bad = Bad (Int Int)" ] \r -> map at r.errors `shouldEqual` [ "3:17 rejected" ]
+
+  describe "what a quantifier encloses" do
+    let
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == Qualified (ModuleName "M") (Ident name)) values)
+      idOf = Qualified lib (Ident "id")
+      tupleOf = Qualified lib (Ident "Tuple")
+      -- `Λ a. λ x. id [a] x`, whatever the names
+      expanded = case _ of
+        Just (TyLam _ a _ (Lam _ x _ (App _ (TyApp _ (Global _ g _) (TVar a')) (Var _ x')))) -> g == idOf && a == a' && x == x'
+        _ -> false
+    it "is built as it is where it is a value form, and η-expanded once where it is a function and may move" do
+      elaborating
+        [ "data Poly = Poly (forall a. a -> a)"
+        , "f :: forall a. a -> a"
+        , "f = id"
+        , "g :: Int -> (forall b. b -> b)"
+        , "g x = id"
+        , "t :: forall a. a -> Tuple Int a"
+        , "t = Tuple 1"
+        , "annotated :: forall a. a -> a"
+        , "annotated = (id :: a -> a)"
+        , "p :: Poly"
+        , "p = Poly id"
+        ]
+        \r -> do
+          map at r.errors `shouldEqual` []
+          expanded (bodyOf "f" r.values) `shouldEqual` true
+          expanded (bodyOf "annotated" r.values) `shouldEqual` true
+          case bodyOf "g" r.values of
+            Just (Lam _ _ _ inner) -> expanded (Just inner) `shouldEqual` true
+            other -> fail ("not a λ: " <> show other)
+          -- a constructor spine is a value form, and is left as it is: the
+          -- expansion's fit is decided equal only once its boundary is, after
+          -- the loop, and the λ is contracted then
+          case bodyOf "t" r.values of
+            Just (TyLam _ a _ (App _ (TyApp _ (TyApp _ (Global _ c _) _) (TVar a')) (Lit _ (LitInt 1)))) | c == tupleOf && a == a' -> pure unit
+            other -> fail ("not the spine: " <> show other)
+          -- a field's quantifier is opened where the argument stands
+          case bodyOf "p" r.values of
+            Just (App _ (Global _ _ _) argument) -> expanded (Just argument) `shouldEqual` true
+            other -> fail ("not the constructor applied: " <> show other)
+          checked r \core -> shapes core `shouldEqual` [ "nonrec f", "nonrec g", "nonrec t", "nonrec annotated", "nonrec p" ]
+
+    it "rebuilds a wrapping fit against the row of the λ the expansion makes" do
+      elaborating
+        [ "effect Console where"
+        , "  log :: Int ->* Unit"
+        , "loudId :: forall a. a -> a / {| Console |}"
+        , "loudId = id"
+        ]
+        \r -> do
+          map at r.errors `shouldEqual` []
+          case bodyOf "loudId" r.values of
+            Just (TyLam _ _ _ (Lam _ _ _ (App _ (OpenEff _ _ (TyApp _ (Global _ g _) _)) _))) | g == idOf -> pure unit
+            other -> fail ("not widened under the λ: " <> show other)
+          checked r \core -> shapes core `shouldEqual` [ "nonrec loudId" ]
+      -- what a `Λ` encloses is at `()` whatever the λ around it performs, so the
+      -- spine is a value form there
+      elaborating
+        [ "effect Console where"
+        , "  log :: Int ->* Unit"
+        , "h :: Int -> (forall a. a -> Tuple Int a) / {| Console |}"
+        , "h x = Tuple 1"
+        ]
+        \r -> do
+          map at r.errors `shouldEqual` []
+          case bodyOf "h" r.values of
+            Just (Lam _ _ _ (TyLam _ _ _ (App _ (TyApp _ (TyApp _ (Global _ c _) _) _) (Lit _ (LitInt 1))))) | c == tupleOf -> pure unit
+            other -> fail ("not the spine under the Λ: " <> show other)
+          checked r \core -> shapes core `shouldEqual` [ "nonrec h" ]
+      -- and a spine that is no function is built there as it is, a value form
+      elaborating
+        [ "effect Console where"
+        , "  log :: Int ->* Unit"
+        , "k :: Int -> (forall a. Tuple Int (a -> a)) / {| Console |}"
+        , "k x = Tuple 1 (\\y -> y)"
+        ]
+        \r -> do
+          map at r.errors `shouldEqual` []
+          checked r \core -> shapes core `shouldEqual` [ "nonrec k" ]
+
+    it "reaches the boundary of the λ it makes where the fit the form would need fails, and hides no mismatch of types" do
+      -- `fit(Console, ())` would refuse `quiet = loudId` as it stands; under
+      -- the expansion's λ it is the boundary's to decide
+      elaborating
+        [ "effect Console where"
+        , "  log :: Int ->* Unit"
+        , "loudId :: forall a. a -> a / {| Console |}"
+        , "loudId = id"
+        , "quiet :: forall a. a -> a"
+        , "quiet = loudId"
+        ]
+        \r -> map at r.errors `shouldEqual` [ "8:9 outside: implicit-handler resolution at this checking boundary" ]
+      elaborating [ "wrong :: forall a. a -> a", "wrong = inc" ] \r ->
+        map at r.errors `shouldEqual` [ "4:9 rejected" ]
+
+    it "stays expanded where the row the λ's boundary decides widens what it applies" do
+      elaborating [ "spread :: forall e a. a -> Tuple Int a / {| ...e |}", "spread = Tuple 1" ] \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "spread" r.values of
+          Just (TyLam _ _ _ (TyLam _ _ _ (Lam _ _ _ (App _ (OpenEff _ _ _) _)))) -> pure unit
+          other -> fail ("not widened under the λ: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec spread" ]
+
+    it "is reported where it is no value form and is not expanded, a function's parameter asked for" do
+      elaborating [ "bad :: forall a. a -> a", "bad = const id 1" ] \r ->
+        map at r.errors `shouldEqual` [ "4:1 value form needed" ]
+      elaborating [ "pair :: forall a. Tuple Int (a -> a)", "pair = Tuple (inc 1) id" ] \r ->
+        map at r.errors `shouldEqual` [ "4:1 value form needed" ]
+
+    it "keeps a reference made before any λ immediate once expanded, a recursive value no function" do
+      elaborating [ "loop :: forall a. a -> a", "loop = loop" ] \r ->
+        map at r.errors `shouldEqual` [ "4:1 outside: a recursive value that is no function" ]
+      elaborating [ "p :: forall a. a -> a", "p = q", "q :: forall a. a -> a", "q = p" ] \r ->
+        map at r.errors `shouldEqual` [ "4:1 outside: a recursive value that is no function", "6:1 outside: a recursive value that is no function" ]
 
   describe "a computation declaration" do
     let

@@ -304,6 +304,7 @@ forms = case _ of
   EWriteCell _ _ _ v -> [ "EWriteCell" ] <> forms v
   EOpenEff _ _ e -> [ "EOpenEff" ] <> forms e
   EFit _ _ e -> [ "EFit" ] <> forms e
+  EEta _ _ e -> [ "EEta" ] <> forms e
   ETermMeta _ _ -> [ "ETermMeta" ]
   EHole _ _ -> [ "EHole" ]
   where
@@ -374,7 +375,7 @@ reachable =
 
 spec :: Spec Unit
 spec = describe "Elaborate, the kernel's reach over Core⁺" do
-  it "builds every form but the typed hole and the fit by its requests alone" do
+  it "builds every form but the typed hole, the fit, and the λ of an η-expansion by its requests alone" do
     case fst (runElabIn session (initialState (SessionId 0) 10) (withFrame frame (everyForm >>= traverse resolveExpr))) of
       Done objects -> do
         let

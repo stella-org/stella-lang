@@ -64,6 +64,7 @@ elaborationOrigins = case _ of
   LeftUnchecked o _ -> [ o ]
   AttributeRejected o _ -> [ o ]
   ForeignRefused o _ _ -> [ o ]
+  ValueFormNeeded o -> [ o ]
   EffectRowAmbiguous _ os -> os
   CoreRefused failure -> [ failure.at ]
   InternalEntryMismatch _ -> []
@@ -109,6 +110,7 @@ printElaborationError = case _ of
   LeftUnchecked _ name -> fmt @"`{name}` was not checked, as checking stopped at an error elsewhere" { name: nameOf name }
   AttributeRejected _ err -> "The arguments of this attribute do not match its declaration: " <> show err
   ForeignRefused _ name refused -> printRefused (nameOf name) refused
+  ValueFormNeeded _ -> "This stands under a `forall` or a constraint, where only a value form may stand; where it is a function, writing its parameter makes it one"
   EffectRowAmbiguous _ _ -> "Nothing here determines which effects this performs; an annotation of its type decides them"
   CoreRefused failure -> internal ("the Core checker refused what was elaborated: " <> show failure.error)
   InternalEntryMismatch name -> internal ("an entry the compiler refers to is missing or at another scheme than listed: " <> show name)
