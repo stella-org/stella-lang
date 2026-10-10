@@ -766,6 +766,13 @@ What a signature, a field, and an annotation write, read into Core⁺ ([Elaborat
 | `f :: {{ d :: D Int by make }} -> (forall a. {{ e :: D a by make }} -> a -> a)`, `f d e x = x` | `λ d. Λ a. λ e. λ x. x`, accepted by Core. The spine is opened again after each parameter, a synthesized one's included |
 | A reference to a value taking a synthesized argument, of the module or of an import | Outside the subset, where the reference stands. Nothing yet creates the goal that supplies the argument |
 | `WithConsole e` where `type WithConsole e = {\| Console, ...e \|}`, and `Shadowing e` where `type Shadowing e = forall e. Unit -> Unit / {\| Console, ...e \|}` | Outside the subset, and expanded. The first needs a condition of what it is given; in the second the row is the `forall`'s, which carries it |
+| `(inc :: _ -> Int)`, `(k :: Unit -> Int / _)`, and `(t :: _ Int Int)` | Accepted. Each wildcard is a metavariable at the kind its place asks for — `Type`, and `Row Effect` as an inference row — and the head of `_ Int Int` one at a kind metavariable of its own |
+| `(id :: _)`, nothing deciding the `?t` of the `?t -> ?t` it becomes | Reported once, where `_` is written. Not where the term's type applications hold `?t`, and not generalized |
+| `(inc :: ?a -> ?a)`, and `(inc :: ?_ -> ?_)` | `?a` reported once as standing for `Int`, and each `?_` where it is; the body no value. A hole is reported decided or not |
+| `(inc :: ?a -> ?a) ((inc :: ?a -> ?a) x)` | Two holes, each reported. A name is shared within one annotation alone |
+| `?a -> (forall b. b -> ?a)`, and its two occurrences the other way about | `?a` cannot become `b` either way: one metavariable, its scope what every occurrence may mention, whichever is read first |
+| A hole in a body the loop refuses, or leaves unchecked | Not reported. The body is reported by that, what the hole stands for unsettled |
+| `_` or `?a` in a signature | Outside the subset in this version |
 
 ### Kind and type unification (step 7, division 2)
 

@@ -30,6 +30,7 @@ import Stella.Compiler.Elaborate.Environment.Surface (importedSurface)
 import Stella.Compiler.Elaborate.Kernel.Elab (closeBoundary, createSynthesis, equate, freshTypeMeta, initialState, openBoundary, placeFit)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), elaborateModule, settleBodies)
+import Stella.Compiler.Elaborate.Surface.Report (printType)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
@@ -197,6 +198,7 @@ at = case _ of
   LeftUnchecked o _ -> located o <> " left unchecked"
   AttributeRejected o _ -> located o <> " attribute rejected"
   ForeignRefused o _ r -> located o <> " foreign refused " <> show r.position <> " " <> show r.refusal
+  TypeHoleStands o name t -> located o <> " hole " <> name <> " " <> printType t
   ValueFormNeeded o -> located o <> " value form needed"
   EffectRowAmbiguous _ os -> joinWith " " (map located os) <> " effect row ambiguous"
   CoreRefused _ -> "the Core checker refused it"
@@ -331,6 +333,45 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
 
     it "rejects a field at a kind other than Type where it stands" do
       elaborating [ "data Bad = Bad (Int Int)" ] \r -> map at r.errors `shouldEqual` [ "3:17 rejected" ]
+
+  describe "a wildcard and a typed hole in an annotation" do
+    it "stand for what elaboration decides, a wildcard at the kind where it stands" do
+      elaborating
+        [ "effect Console where"
+        , "  log :: Int ->* Unit"
+        , "f :: Int -> Int"
+        , "f x = (inc :: _ -> Int) x"
+        , "g :: (Unit -> Int / {| Console |}) -> Unit -> Int / {| Console |}"
+        , "g k u = (k :: Unit -> Int / _) u"
+        , "p :: Tuple Int Int -> Tuple Int Int"
+        , "p t = (t :: _ Int Int)"
+        ]
+        \r -> do
+          map at r.errors `shouldEqual` []
+          checked r \core -> shapes core `shouldEqual` [ "nonrec f", "nonrec g", "nonrec p" ]
+
+    it "report a hole with what it stands for, one of a name once and `?_` each time, the body no value" do
+      elaborating [ "h :: Int -> Int", "h x = (inc :: ?a -> ?a) x", "u :: Int -> Int", "u x = (inc :: ?_ -> ?_) x", "ok :: Int", "ok = 1" ] \r -> do
+        map at r.errors `shouldEqual`
+          [ "4:15 hole a Int", "6:15 hole _ Int", "6:21 hole _ Int" ]
+        map _.name r.values `shouldEqual` [ Qualified (ModuleName "M") (Ident "ok") ]
+
+    it "report a hole nothing decides, and a wildcard nothing decides where it is written, once" do
+      -- nothing a hole or a wildcard stands for is reported again where the term
+      -- holds it
+      elaborating [ "h :: Int", "h = const 1 (id :: ?a -> ?a)" ] \r ->
+        map at r.errors `shouldEqual` [ "4:20 hole a ?" ]
+      elaborating [ "w :: Int", "w = const 1 (id :: _ -> _)" ] \r ->
+        map at r.errors `shouldEqual` [ "4:20 type undetermined", "4:25 type undetermined" ]
+      -- what is undecided inside a type decided in part is undecided as well
+      elaborating [ "w :: Int", "w = const 1 (id :: _)" ] \r ->
+        map at r.errors `shouldEqual` [ "4:20 type undetermined" ]
+      elaborating [ "h :: Int", "h = const 1 (id :: ?f)" ] \r ->
+        map at r.errors `shouldEqual` [ "4:20 hole f ? -> ?" ]
+
+    it "share a hole's name within one annotation alone" do
+      elaborating [ "h :: Int -> Int", "h x = (inc :: ?a -> ?a) ((inc :: ?a -> ?a) x)" ] \r ->
+        map at r.errors `shouldEqual` [ "4:15 hole a Int", "4:34 hole a Int" ]
 
   describe "what a quantifier encloses" do
     let
@@ -572,6 +613,16 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       map at r.errors `shouldEqual` [ "1:1 rejected", "2:1 left unchecked" ]
       map _.name r.values `shouldEqual` [ inM "h" ]
 
+    it "report a hole only in a body that settled, one refused or left unchecked reported by that" do
+      let
+        -- as above, each body holding a hole that stands for `Int`
+        afterF = stated "f" 1 "b" (initialState (SessionId 0) 10)
+        afterG = stated "g" 2 "a" (snd afterF)
+        holding t = (body t) { holes = [ { origin: origin (snd t), name: "a", type: XCon intTy [], kind: XKType } ] }
+        r = settleBodies primSession (attemptPending primSession) (snd afterG) (map holding [ Tuple "f" 1, Tuple "g" 2, Tuple "h" 3 ])
+      map at r.errors `shouldEqual` [ "1:1 rejected", "2:1 left unchecked", "3:1 hole a Int" ]
+      map _.name r.values `shouldEqual` []
+
     it "leave a value every declaration a failed synthesis does not belong to" do
       let
         -- `f` asks a synthesizer that fails; `g` states an equation the loop
@@ -620,4 +671,4 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     )
   inM = Qualified (ModuleName "M") <<< Ident
   siteIn name line = { context: emptyXContext, origin: AtSource { declaration: inM name, origin: origin line } }
-  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, spine: plainScheme { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1) }
+  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, spine: plainScheme { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1), holes: [], wildcards: [] }

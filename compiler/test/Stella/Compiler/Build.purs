@@ -453,8 +453,8 @@ spec = describe "Stella.Compiler.Build" do
       refused [ "f :: { a :: Int, ...r } -> { a :: Int, ...r }", "f x = (x :: { a :: Int, ... })" ]
         [ "3:25 `...` alone stands for a row a signature quantifies, and nothing quantifies one here; name the row" ]
       -- what is not read is reported, and nothing is required of it
-      refused [ "f :: { ...r } -> { ...r }", "f x = (x :: { a :: Int, ...r, b :: _ })" ]
-        [ "3:36 This version of the compiler does not elaborate a wildcard yet" ]
+      refused [ "effect Clock where", "  tick :: Unit ->* Unit", "infixr 5 type Clock as &&&", "f :: { ...r } -> { ...r }", "f x = (x :: { a :: Int, ...r, b :: Int &&& Int })" ]
+        [ "6:40 This names the effect `Clock`, which stands as an element of an effect row and is no type" ]
 
     it "makes an arrow pure where it spreads only empty rows, as its normal form says" do
       compiles [ "f :: Int -> Int / {| ...{||}, ...{||} |}", "f x = x" ]
@@ -506,6 +506,12 @@ spec = describe "Stella.Compiler.Build" do
         \r -> case r.result of
           Left err -> map _.message (NonEmptyArray.toArray (buildMessages err)) `shouldEqual` [ "This version of the compiler does not elaborate a reference to a value taking a synthesized argument yet" ]
           Right _ -> fail "built"
+
+  describe "a typed hole in an annotation" do
+    it "is reported with what it stands for, and the module is not compiled" do
+      compiling [ "ident :: forall a. a -> a", "ident x = x", "h :: Int -> Int", "h x = (ident :: ?a -> ?a) x" ] case _ of
+        Left errors -> map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors `shouldEqual` [ "5:17 The hole `?a` stands for `Int`" ]
+        Right _ -> fail "compiled"
 
   describe "a definition a quantifier encloses" do
     let

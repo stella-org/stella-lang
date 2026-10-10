@@ -12,24 +12,24 @@ import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
 import Stella.Compiler.CST.Types (inSource)
-import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
+import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), bindTyVar, emptyXContext)
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEnv)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), emptySessionEnv, equateKinds, freshKindMeta, initialState, runElabIn)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), currentMetas, emptySessionEnv, equate, equateKinds, freshKindMeta, initialState, runElabIn)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
-import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), UnifyError(..))
+import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), UnifyError(..), isInstantiationRow)
 import Data.Set as Set
 import Data.Array as Array
 import Data.Map as Map
 import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..))
 import Stella.Compiler.Elaborate.Surface.Report (printType)
-import Stella.Compiler.Elaborate.Surface.Type (Atom(..), Elaborated, Unsupported(..), elaborateComputationSignature, elaborateSignature, readTypeAt, schemeOf, settledScheme, xFunction)
+import Stella.Compiler.Elaborate.Surface.Type (Atom(..), Elaborated, Unsupported(..), elaborateComputationSignature, elaborateSignature, elaborateType, readTypeAt, schemeOf, settledScheme, xFunction)
 import Stella.Compiler.Interface.Scheme (Scheme, SchemeBody(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Surface.Name (BindingId(..), TypeVar(..))
 import Stella.Compiler.Surface.Origin as Surface
-import Data.Foldable (foldr)
+import Data.Foldable (for_, foldr)
 import Stella.Compiler.Surface.Type (EffectApplication, EffectRowItem(..), Kind(..), RecordRowItem(..), SignaturePrefix(..), Type(..), TypeOperatorTarget(..), VariantRowItem(..))
 import Stella.Compiler.TypedCore (Decl(..), Module, declare, primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..)) as Core
@@ -246,6 +246,50 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Type" do
         Done e -> e.unsupported `shouldEqual` [ OutsideSubset (at 12) "a constraint", OutsideSubset (at 10) "a type synonym the module declares" ]
         _ -> fail "not elaborated"
 
+  describe "a typed hole in an annotation" do
+    let
+      hole n = TypeHole (at n) "a"
+      -- `forall b. b -> ?a`, the hole at the place given
+      inside n = TypeForall (at 20) [ { origin: at 21, var: b, kind: Nothing } ] (arrow (v b) (hole n))
+      -- whether the hole may stand for the `b` bound around its occurrence at 23,
+      -- every occurrence one metavariable
+      takesB t = case declare primSignature libCore of
+        Left err -> fail (show err.error) *> pure false
+        Right sig -> case runElabIn (sessionEnvOf sig []) (initialState (SessionId 0) 10) (tryB t) of
+          Tuple (Done _) _ -> pure true
+          Tuple (Failed _) _ -> pure false
+          Tuple other _ -> fail (show other) *> pure false
+      tryB t = do
+        r <- elaborateType libSynonyms declaration emptyXContext t
+        for_ (Array.head r.holes) \h ->
+          equate { context: bindTyVar emptyXContext (TyVar "b") XKType, origin: InDeclaration declaration } { kind: XKType, left: h.type, right: XVar (TyVar "b") }
+    it "of one name is one metavariable, whose scope is what every occurrence may mention, whichever comes first" do
+      takesB (inside 23) >>= (_ `shouldEqual` true)
+      takesB (arrow (hole 22) (inside 23)) >>= (_ `shouldEqual` false)
+      takesB (arrow (inside 23) (hole 22)) >>= (_ `shouldEqual` false)
+
+    it "stands at the kind where it is written where that is known, a row after `/` an inference row" do
+      case declare primSignature libCore of
+        Left err -> fail (show err.error)
+        Right sig -> do
+          let
+            row = TypeFunction (at 24) int int (Just (TypeHole (at 25) "r"))
+            headed = TypeApp (at 26) (TypeHole (at 27) "f") int
+            read t = do
+              r <- elaborateType libSynonyms declaration emptyXContext t
+              metas <- currentMetas
+              pure { r, metas }
+          case runElabIn (sessionEnvOf sig []) (initialState (SessionId 0) 10) (read row) of
+            Tuple (Done { r, metas }) _ -> case map _.kind r.holes, map _.type r.holes of
+              [ XKRow RowEffect ], [ XMeta m ] -> isInstantiationRow metas m `shouldEqual` false
+              other, _ -> fail ("not at `Row Effect`: " <> show other)
+            _ -> fail "not read"
+          case runElabIn (sessionEnvOf sig []) (initialState (SessionId 0) 10) (read headed) of
+            Tuple (Done { r }) _ -> case map _.kind r.holes of
+              [ XKMeta _ ] -> pure unit
+              other -> fail ("not at a kind of its own: " <> show other)
+            _ -> fail "not read"
+
   describe "a spread" do
     let
       tyVar = Core.TVar <<< TyVar
@@ -302,7 +346,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Type" do
         Left err -> fail (show err.error)
         Right sig -> do
           let
-            scope = { declaration, kindVars: Set.empty, tyVars: Map.singleton (TyVar "e") (XKRow RowEffect), localTypes: Map.empty, anonymous: Map.empty, synonyms: libSynonyms, localSynonyms: Map.empty, localEffects: Map.empty }
+            scope = { declaration, kindVars: Set.empty, tyVars: Map.singleton (TyVar "e") (XKRow RowEffect), localTypes: Map.empty, anonymous: Map.empty, synonyms: libSynonyms, localSynonyms: Map.empty, localEffects: Map.empty, annotation: Nothing }
             nested = TypeEffectRow (at 12) [ EffectElement (console 12), EffectSpread (at 13) (Just (v rowVar)) ]
             row = TypeEffectRow (at 9) [ EffectElement (state 9 [ int ]), EffectSpread (at 10) (Just nested) ]
           case runElabIn (sessionEnvOf sig []) (initialState (SessionId 0) 10) (readTypeAt scope (XKRow RowEffect) row) of

@@ -70,7 +70,8 @@ import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), XExpr, toCoreExpr)
-import Stella.Compiler.Elaborate.CorePlus.Type (fromCore)
+import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind, kindMetasOf)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType, fromCore, kindMetasOfType, metasOf)
 import Stella.Compiler.Elaborate.Surface.Types (readAttributeDeclaration, readTypes, settledTypes)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEntry)
 import Stella.Compiler.Elaborate.Surface.Internal (internalEntries)
@@ -84,8 +85,9 @@ import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceEnv, takesSynthesized)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, initialState)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
+import Stella.Compiler.Elaborate.Mechanism.Unify (substitute, substituteKind)
 import Stella.Compiler.Elaborate.Surface.Expr (elaborateComputation, elaborateValue, immediateReferences, runSurf)
-import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..), elaborateComputationSignature, elaborateSignature, schemeOf, settledScheme)
+import Stella.Compiler.Elaborate.Surface.Type (TypeHole, Unsupported(..), Wildcard, elaborateComputationSignature, elaborateSignature, schemeOf, settledScheme)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Surface.Group (groups)
@@ -133,6 +135,9 @@ data ElaborationError
   | AttributeRejected Surface.Origin AttributeError
   -- | A foreign whose type does not cross to the host, where it is declared.
   | ForeignRefused Surface.Origin (Qualified Ident) Refused
+  -- | A typed hole an annotation holds, where it is written, by its name and
+  -- | the type standing for it as far as it is decided.
+  | TypeHoleStands Surface.Origin String XType
   -- | What a `Λ` or a constraint abstraction encloses that is no value form,
   -- | where the abstraction stands: the Core checker's refusal, and the
   -- | author's.
@@ -163,7 +168,8 @@ type ElaboratedValue =
   }
 
 -- | A value declaration whose body is elaborated, its equations not yet all
--- | decided: those left are jobs of the state it was elaborated into.
+-- | decided: those left are jobs of the state it was elaborated into. Its
+-- | annotations' typed holes and wildcards are reported once it is settled.
 type Elaborating =
   { name :: Qualified Ident
   , origin :: Surface.Origin
@@ -172,6 +178,8 @@ type Elaborating =
   , scheme :: TypeScheme
   , spine :: Scheme
   , body :: XExpr Surface.Origin
+  , holes :: Array TypeHole
+  , wildcards :: Array Wildcard
   }
 
 -- | A data declaration elaborated, and where it stands.
@@ -405,7 +413,7 @@ elaborateValues imports surface importedEntries m =
     ComputationBody body -> attemptBody acc v (elaborateComputation internal withOwn v.declared.name v.declared.origin v.scheme body)
   attemptBody acc v elaborating =
     case runAttempt session (runSurf elaborating) acc.state of
-      Tuple (Done (Right body)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, spine: v.spine, body } }
+      Tuple (Done (Right built)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, spine: v.spine, body: built.value, holes: built.holes, wildcards: built.wildcards } }
       Tuple (Done (Left problem)) _ -> acc { errors = Array.snoc acc.errors (Unsupported problem) }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
   bodyErrors = bodies.errors
@@ -562,13 +570,42 @@ settleBodies session attempter state bodies =
     Just names
       | Set.member b.name names -> Tuple [] Nothing
       | Set.member b.name waiting -> Tuple [ LeftUnchecked b.origin b.name ] Nothing
-      | otherwise -> case toCoreExpr (zonkExpr after.tentative.metas b.body) of
-          Right body -> Tuple [] (Just { name: b.name, origin: b.origin, ordinal: b.ordinal, attributes: b.attributes, scheme: b.scheme, spine: b.spine, body })
+      | otherwise -> settled b
+
+  -- a settled body holding a typed hole, or a wildcard not wholly decided, is
+  -- no value: each hole an annotation holds is reported, and each such
+  -- wildcard where it is written, and nothing these stand for undecided is
+  -- reported again where the term holds it
+  settled b =
+    let
+      metas = after.tentative.metas
+      open = Array.filter (\w -> not (Set.isEmpty (typeMetas w) && Set.isEmpty (kindMetas w))) b.wildcards
+      reported = map (\h -> TypeHoleStands h.origin h.name (substitute metas h.type)) b.holes
+        <> map TypeUndetermined (Array.nubEq (map _.origin open))
+      written = map (\h -> { type: h.type, kind: h.kind }) b.holes <> map (\w -> { type: w.type, kind: w.kind }) b.wildcards
+      types = Set.unions (map typeMetas written)
+      kinds = Set.unions (map kindMetas written)
+      covered = case _ of
+        ResidualTypeMeta _ m -> Set.member m types
+        ResidualKindMeta _ k -> Set.member k kinds
+        _ -> false
+
+      -- what is undecided in a type an annotation writes, however deep
+      typeMetas :: forall r. { type :: XType | r } -> Set MetaVar
+      typeMetas w = metasOf (substitute metas w.type)
+
+      kindMetas :: forall r. { type :: XType, kind :: XKind | r } -> Set KindMetaVar
+      kindMetas w = Set.union (kindMetasOfType (substitute metas w.type)) (kindMetasOf (substituteKind metas w.kind))
+    in
+      case toCoreExpr (zonkExpr metas b.body) of
+        Right body
+          | Array.null reported -> Tuple [] (Just { name: b.name, origin: b.origin, ordinal: b.ordinal, attributes: b.attributes, scheme: b.scheme, spine: b.spine, body })
+          | otherwise -> Tuple reported Nothing
+        Left residues -> case Array.findMap fitOf (NonEmptyArray.toArray residues) of
+          -- every fit is decided or reported before a body is made Core
+          Just f -> Tuple [ Broken (FitLeftUndecided f) ] Nothing
           -- a place is reported once, however many undecided types stand there
-          Left residues -> case Array.findMap fitOf (NonEmptyArray.toArray residues) of
-            -- every fit is decided or reported before a body is made Core
-            Just f -> Tuple [ Broken (FitLeftUndecided f) ] Nothing
-            Nothing -> Tuple (map TypeUndetermined (Array.nubEq (map residueOrigin (NonEmptyArray.toArray residues)))) Nothing
+          Nothing -> Tuple (reported <> map TypeUndetermined (Array.nubEq (map residueOrigin (Array.filter (not <<< covered) (NonEmptyArray.toArray residues))))) Nothing
 
   residueOrigin = case _ of
     ResidualTypeMeta o _ -> o

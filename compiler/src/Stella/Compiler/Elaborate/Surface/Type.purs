@@ -48,6 +48,8 @@ module Stella.Compiler.Elaborate.Surface.Type
   , atomConstraint
   , Elaborated
   , Read
+  , TypeHole
+  , Wildcard
   , Scope
   , LocalHead
   , SynonymShape
@@ -90,7 +92,7 @@ import Data.Monoid.Disj (Disj(..))
 import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..), freeRigids, fromCore, toCore, xRowEntryKey)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEntry, SynonymEnv, lookupSynonym)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (foldChildren, substituteKindVars, substituteTyVars)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, equateKinds, freshBinderName, freshKindMeta, freshTypeMeta, raiseDiagnostic, require)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, equate, equateKinds, freshBinderName, freshKindMeta, freshTypeMeta, raiseDiagnostic, require)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Elaborate.Mechanism.Kinding (instantiate)
 import Stella.Compiler.Elaborate.Mechanism.Kinding (quantifiable) as Kinding
@@ -211,6 +213,8 @@ type SynthesizedMark = { name :: Maybe Ident, synthesizer :: Qualified Ident }
 -- | at its shape, or at nothing where it could not be read; and the kinds of
 -- | the parameters of each effect the module declares, while its declarations
 -- | are read, or nothing for one whose head is refused.
+-- | Where the type is an annotation, the context it stands in, which a wildcard
+-- | or a typed hole is a metavariable of; neither stands anywhere else.
 type Scope =
   { declaration :: Qualified Ident
   , kindVars :: Set KindVar
@@ -220,6 +224,7 @@ type Scope =
   , synonyms :: SynonymEnv
   , localSynonyms :: Map (Qualified TyName) (Maybe SynonymShape)
   , localEffects :: Map (Qualified EffName) (Maybe (Array XKind))
+  , annotation :: Maybe XContext
   }
 
 -- | The kind a type constructor of the module is read at while its declaration
@@ -232,14 +237,27 @@ type LocalHead = { kindVars :: Array KindVar, body :: XKind }
 type ReadBinder = { var :: TypeVar, kind :: XKind, unwritten :: Array { origin :: Surface.Origin, kind :: XKind }, unsupported :: Array Unsupported }
 
 -- | What reading one type gave. `implied` are the atoms its rows require that
--- | no binder in it took: they are about variables bound around it.
+-- | no binder in it took: they are about variables bound around it. `holes` are
+-- | the typed holes it holds, and `wildcards` its wildcards, each where it is
+-- | written.
 type Read =
   { type :: XType
   , kind :: XKind
   , unwritten :: Array { origin :: Surface.Origin, kind :: XKind }
   , unsupported :: Array Unsupported
   , implied :: Array Implied
+  , holes :: Array TypeHole
+  , wildcards :: Array Wildcard
   }
+
+-- | A typed hole `?name` where it is written, `?_` named `_`, and the type
+-- | standing for it, at its kind.
+type TypeHole = { origin :: Surface.Origin, name :: String, type :: XType, kind :: XKind }
+
+-- | A wildcard `_` where it is written, and the metavariable standing for it,
+-- | at its kind: an error where nothing decides it, never a variable to
+-- | generalize.
+type Wildcard = { origin :: Surface.Origin, type :: XType, kind :: XKind }
 
 -- | `forall ā. C̄ => τ`, at `Type`: `ā` the variables the signature quantifies
 -- | implicitly, in the order they are first mentioned, and `C̄` what the rows
@@ -283,6 +301,7 @@ elaborateSpine computation synonyms declaration signature = do
       , synonyms
       , localSynonyms: Map.empty
       , localEffects: Map.empty
+      , annotation: Nothing
       }
   body <- checkAt scope XKType spine.type
   let taken = quantify quantified body.implied body.type
@@ -309,13 +328,29 @@ elaborateSpine computation synonyms declaration signature = do
 -- | those of the signature around it. What its rows require of those is
 -- | required where the annotation stands, from what the context assumes, once
 -- | every part of it is read.
+-- |
+-- | **A wildcard and a typed hole are metavariables of the context**, each of
+-- | the type variables the annotation binds around it, at the kind where it
+-- | stands where that is known. Every `?name` of one name in the annotation is
+-- | one metavariable, the occurrences equated, so its scope is what every one of
+-- | them may mention; `?_` is one of its own wherever it stands. What is read
+-- | holds each hole of a name once, where it is first written.
 elaborateType :: SynonymEnv -> Qualified Ident -> XContext -> Type -> Elab Read
 elaborateType synonyms declaration context t = do
-  r <- checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars, localTypes: Map.empty, anonymous: Map.empty, synonyms, localSynonyms: Map.empty, localEffects: Map.empty } XKType t
+  r <- checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars, localTypes: Map.empty, anonymous: Map.empty, synonyms, localSynonyms: Map.empty, localEffects: Map.empty, annotation: Just context } XKType t
   -- a form not read is reported before anything is required of what it stands in
   when (Array.null r.unsupported) do
     for_ r.implied \i -> require { context, origin: AtSource { declaration, origin: i.origin } } (atomConstraint i.atom)
-  pure r { implied = [] }
+    for_ (Array.groupAllBy (comparing _.name) (Array.filter (\h -> h.name /= "_") r.holes)) \occurrences ->
+      let
+        first = NonEmptyArray.head occurrences
+      in
+        for_ (NonEmptyArray.tail occurrences) \other -> do
+          let site = { context, origin: AtSource { declaration, origin: other.origin } }
+          equateKinds site first.kind other.kind
+          equate site { kind: first.kind, left: first.type, right: other.type }
+  -- a hole of a name once, where it is first written, and each `?_`
+  pure r { implied = [], holes = Array.nubByEq (\x y -> x.name == y.name && x.name /= "_") r.holes }
 
 -- | A type at the kind given, under the scope given.
 readTypeAt :: Scope -> XKind -> Type -> Elab Read
@@ -331,10 +366,26 @@ xFunction argument row result = XApp (XApp (XApp (XCon functionTy []) argument) 
 
 -- | A type at the kind given.
 checkAt :: Scope -> XKind -> Type -> Elab Read
-checkAt scope expected t = do
-  r <- readType scope t
-  equateKinds (siteOf scope (typeOrigin t)) r.kind expected
-  pure r
+checkAt scope expected t = case t, scope.annotation of
+  TypeWildcard o, Just context -> wildcard scope context o expected
+  TypeHole o name, Just context -> hole scope context o name expected
+  _, _ -> do
+    r <- readType scope t
+    equateKinds (siteOf scope (typeOrigin t)) r.kind expected
+    pure r
+
+-- | `_` in an annotation: a metavariable at the kind given, of the context
+-- | given with the type variables the annotation binds around it.
+wildcard :: Scope -> XContext -> Surface.Origin -> XKind -> Elab Read
+wildcard scope context origin kind = do
+  meta <- freshTypeMeta (context { tyVars = scope.tyVars }) kind
+  pure { type: meta, kind, unwritten: [], unsupported: [], implied: [], holes: [], wildcards: [ { origin, type: meta, kind } ] }
+
+-- | `?name` in an annotation: a wildcard, and a hole to report.
+hole :: Scope -> XContext -> Surface.Origin -> String -> XKind -> Elab Read
+hole scope context origin name kind = do
+  r <- wildcard scope context origin kind
+  pure r { holes = [ { origin, name, type: r.type, kind } ], wildcards = [] }
 
 readType :: Scope -> Type -> Elab Read
 readType scope t = case t of
@@ -350,6 +401,8 @@ readType scope t = case t of
       , unwritten: map (\kind -> { origin: o, kind }) args
       , unsupported: []
       , implied: []
+      , holes: []
+      , wildcards: []
       }
   TypeConstructor o name -> do
     env <- askEnv
@@ -362,6 +415,8 @@ readType scope t = case t of
           , unwritten: map (\kind -> { origin: o, kind }) args
           , unsupported: []
           , implied: []
+          , holes: []
+          , wildcards: []
           }
       Nothing -> unsupported (OutsideSubset o "a type constructor the signature does not hold")
   TypeApp _ _ _ | Just use <- synonymSpine t -> expandSynonym scope use
@@ -407,6 +462,8 @@ readType scope t = case t of
       , unwritten: Array.concatMap _.unwritten bound <> body'.unwritten
       , unsupported: Array.concatMap _.unsupported bound <> body'.unsupported
       , implied: taken.rest
+      , holes: body'.holes
+      , wildcards: body'.wildcards
       }
   TypeKinded _ inner k -> do
     kind <- readKind k
@@ -417,10 +474,14 @@ readType scope t = case t of
   TypeSynonym o name -> expandSynonym scope { origin: o, name, arguments: [] }
   TypeConstrained o _ _ -> unsupported (OutsideSubset o "a constraint")
   TypeSynthesized o _ _ _ -> unsupported (OutsideSubset o "a synthesized argument")
-  TypeWildcard o -> unsupported (OutsideSubset o "a wildcard")
-  TypeHole o _ -> unsupported (OutsideSubset o "a typed hole")
+  TypeWildcard o -> case scope.annotation of
+    Just context -> wildcard scope context o =<< freshKindMeta scope.kindVars Set.empty
+    Nothing -> unsupported (OutsideSubset o "a wildcard")
+  TypeHole o name -> case scope.annotation of
+    Just context -> hole scope context o name =<< freshKindMeta scope.kindVars Set.empty
+    Nothing -> unsupported (OutsideSubset o "a typed hole")
   where
-  plain ty kind = { type: ty, kind, unwritten: [], unsupported: [], implied: [] }
+  plain ty kind = { type: ty, kind, unwritten: [], unsupported: [], implied: [], holes: [], wildcards: [] }
 
   unsupported = unreadType scope
 
@@ -545,7 +606,7 @@ unreadType :: Scope -> Unsupported -> Elab Read
 unreadType scope problem = do
   kind <- freshKindMeta scope.kindVars Set.empty
   meta <- freshTypeMeta (emptyXContext { kindVars = scope.kindVars }) kind
-  pure { type: meta, kind, unwritten: [], unsupported: [ problem ], implied: [] }
+  pure { type: meta, kind, unwritten: [], unsupported: [ problem ], implied: [], holes: [], wildcards: [] }
 
 joined :: Array Read -> XType -> XKind -> Read
 joined parts ty kind =
@@ -554,6 +615,8 @@ joined parts ty kind =
   , unwritten: Array.concatMap _.unwritten parts
   , unsupported: Array.concatMap _.unsupported parts
   , implied: distinctAtoms (Array.concatMap _.implied parts)
+  , holes: Array.concatMap _.holes parts
+  , wildcards: Array.concatMap _.wildcards parts
   }
 
 -- | An item of a row as written: an element, read by the action given, or a
@@ -607,7 +670,7 @@ rowOf scope origin elementKind items = do
         Element element -> (\e -> { entry: Just e.entry, read: e.read }) <$> element scope
         Spread _ (Just t) -> { entry: Nothing, read: _ } <$> checkAt scope (XKRow elementKind) t
         Spread o Nothing -> case Map.lookup elementKind scope.anonymous of
-          Just v -> pure { entry: Nothing, read: { type: XVar v, kind: XKRow elementKind, unwritten: [], unsupported: [], implied: [] } }
+          Just v -> pure { entry: Nothing, read: { type: XVar v, kind: XKRow elementKind, unwritten: [], unsupported: [], implied: [], holes: [], wildcards: [] } }
           Nothing -> { entry: Nothing, read: _ } <$> unreadRow o
     )
     items
@@ -636,7 +699,7 @@ rowOf scope origin elementKind items = do
   where
   -- a pair of row variables apart, the same condition however they are ordered
   disjoint a b = if a <= b then DisjointAtom a b else DisjointAtom b a
-  unreadRow o = pure { type: XRowEmpty, kind: XKRow elementKind, unwritten: [], unsupported: [ AnonymousSpread o ], implied: [] }
+  unreadRow o = pure { type: XRowEmpty, kind: XKRow elementKind, unwritten: [], unsupported: [ AnonymousSpread o ], implied: [], holes: [], wildcards: [] }
 
   twice :: forall a. Eq a => Array a -> Array a
   twice xs = Array.filter (\x -> Array.length (Array.filter (_ == x) xs) > 1) xs
@@ -701,6 +764,8 @@ effectApplication scope application = do
     , unwritten: []
     , unsupported: [ OutsideSubset application.origin "an effect the signature does not hold" ]
     , implied: []
+    , holes: []
+    , wildcards: []
     }
 
 -- | A kind with the kind variables given replaced.

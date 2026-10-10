@@ -536,6 +536,7 @@ scopeOf imported declaration kindVars =
   , synonyms: imported
   , localSynonyms: Map.empty
   , localEffects: Map.empty
+  , annotation: Nothing
   }
 
 declarationIdent :: Qualified TyName -> Qualified Ident

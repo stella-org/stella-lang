@@ -64,6 +64,7 @@ elaborationOrigins = case _ of
   LeftUnchecked o _ -> [ o ]
   AttributeRejected o _ -> [ o ]
   ForeignRefused o _ _ -> [ o ]
+  TypeHoleStands o _ _ -> [ o ]
   ValueFormNeeded o -> [ o ]
   EffectRowAmbiguous _ os -> os
   CoreRefused failure -> [ failure.at ]
@@ -110,6 +111,8 @@ printElaborationError = case _ of
   LeftUnchecked _ name -> fmt @"`{name}` was not checked, as checking stopped at an error elsewhere" { name: nameOf name }
   AttributeRejected _ err -> "The arguments of this attribute do not match its declaration: " <> show err
   ForeignRefused _ name refused -> printRefused (nameOf name) refused
+  TypeHoleStands _ "_" t -> fmt @"This hole stands for `{t}`" { t: printType t }
+  TypeHoleStands _ name t -> fmt @"The hole `?{name}` stands for `{t}`" { name, t: printType t }
   ValueFormNeeded _ -> "This stands under a `forall` or a constraint, where only a value form may stand; where it is a function, writing its parameter makes it one"
   EffectRowAmbiguous _ _ -> "Nothing here determines which effects this performs; an annotation of its type decides them"
   CoreRefused failure -> internal ("the Core checker refused what was elaborated: " <> show failure.error)

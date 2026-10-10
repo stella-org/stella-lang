@@ -36,12 +36,13 @@
 -- |
 -- | **This version elaborates a subset**: variables, globals, computations,
 -- | constructors, literals, application, λ over variables, and type
--- | annotations. A synthesized argument of the declaration's own is a parameter
+-- | annotations, a wildcard or a typed hole among what they write. A synthesized argument of the declaration's own is a parameter
 -- | like any other; a reference to a value taking one is outside the subset, a
 -- | goal being what supplies the argument. Anything else is reported where it
 -- | stands, and the declaration holding it is not elaborated further.
 module Stella.Compiler.Elaborate.Surface.Expr
   ( Surf
+  , Noted
   , runSurf
   , elaborateValue
   , elaborateComputation
@@ -71,7 +72,7 @@ import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, closeBoundar
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), substitute)
-import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..), elaborateType, xFunction)
+import Stella.Compiler.Elaborate.Surface.Type (TypeHole, Unsupported(..), Wildcard, elaborateType, xFunction)
 import Stella.Compiler.Surface.Expr (Binder(..), Expr(..), exprOrigin)
 import Stella.Compiler.Surface.Name (LocalVar(..))
 import Stella.Compiler.Surface.Origin as Surface
@@ -80,35 +81,45 @@ import Stella.Compiler.TypedCore.Prim (functionTy, litType, unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
 import Stella.Compiler.TypedCore.Type (TypeScheme)
 
--- | Elaboration that stops at the first form this version does not read.
-newtype Surf a = Surf (Elab (Either Unsupported a))
+-- | Elaboration that stops at the first form this version does not read, and
+-- | notes the typed holes and the wildcards its annotations hold, to be
+-- | reported once the body is settled.
+newtype Surf a = Surf (Elab (Either Unsupported (Noted a)))
 
-runSurf :: forall a. Surf a -> Elab (Either Unsupported a)
+-- | What was built, and the typed holes and the wildcards noted on the way, in
+-- | the order met.
+type Noted a = { value :: a, holes :: Array TypeHole, wildcards :: Array Wildcard }
+
+runSurf :: forall a. Surf a -> Elab (Either Unsupported (Noted a))
 runSurf (Surf e) = e
 
 instance Functor Surf where
-  map f (Surf e) = Surf (map (map f) e)
+  map f (Surf e) = Surf (map (map (\n -> n { value = f n.value })) e)
 
 instance Apply Surf where
   apply = ap
 
 instance Applicative Surf where
-  pure = Surf <<< pure <<< Right
+  pure a = Surf (pure (Right { value: a, holes: [], wildcards: [] }))
 
 instance Bind Surf where
   bind (Surf e) k = Surf
     ( e >>= case _ of
         Left problem -> pure (Left problem)
-        Right a -> runSurf (k a)
+        Right a -> map (map (\b -> b { holes = a.holes <> b.holes, wildcards = a.wildcards <> b.wildcards })) (runSurf (k a.value))
     )
 
 instance Monad Surf
 
 lift :: forall a. Elab a -> Surf a
-lift = Surf <<< map Right
+lift = Surf <<< map (\a -> Right { value: a, holes: [], wildcards: [] })
 
 outside :: forall a. Unsupported -> Surf a
 outside = Surf <<< pure <<< Left
+
+-- | Note the typed holes and the wildcards an annotation holds.
+note :: forall r. { holes :: Array TypeHole, wildcards :: Array Wildcard | r } -> Surf Unit
+note read = Surf (pure (Right { value: unit, holes: read.holes, wildcards: read.wildcards }))
 
 -- | What an expression is elaborated under: the declaration it belongs to, the
 -- | context its node stands in, the row its evaluation may perform, the entries
@@ -363,6 +374,7 @@ infer scope expr = case expr of
     case Array.head annotation.unsupported of
       Just problem -> outside problem
       Nothing -> do
+        note annotation
         inner' <- check scope inner Written annotation.type
         pure { expr: inner', type: annotation.type }
   -- a λ whose type is not known: each parameter at a fresh type, its body
