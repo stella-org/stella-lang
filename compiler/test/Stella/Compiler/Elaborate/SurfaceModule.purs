@@ -782,6 +782,76 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "s :: Int", "s = let unused x = x in 1" ] \r ->
         map at r.errors `shouldEqual` [ "4:9 type undetermined", "4:16 type undetermined" ]
 
+  describe "a local binding with a signature" do
+    let
+      inM' = Qualified (ModuleName "M") <<< Ident
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM' name) values)
+    it "is checked against its signature, and instantiated where it is referred to, at two types among them" do
+      elaborating [ "f :: Tuple Int String", "f = let", "      ident :: forall a. a -> a", "      ident x = x", "    in Tuple (ident 1) (ident \"s\")" ] \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "reads the type variables of the signature around it as they are, quantifying only those it mentions beyond them" do
+      elaborating [ "g :: forall a. a -> a", "g x = let", "      h :: a -> a", "      h y = y", "    in h x" ] \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec g" ]
+      elaborating [ "k :: Int", "k = let", "      j :: forall b. b -> Int", "      j y = y", "    in j 1" ] \r ->
+        map at r.errors `shouldEqual` [ "6:13 rejected" ]
+
+    it "instantiates a local at a scheme however it came to be one, a parameter's and an annotation's among them, whatever order the block is written in" do
+      elaborating [ "apply :: (forall a. a -> a) -> Tuple Int String", "apply g = Tuple (g 1) (g \"s\")" ] \r ->
+        map at r.errors `shouldEqual` []
+      elaborating [ "p :: Tuple Int String", "p = let ident = ((\\x -> x) :: forall a. a -> a) in Tuple (ident 1) (ident \"s\")" ] \r ->
+        map at r.errors `shouldEqual` []
+      -- `g` is elaborated first, so `f = g` instantiates it, and `f`, without a
+      -- signature, has one type: a mismatch, whichever order the block is
+      -- written in
+      elaborating [ "q :: Tuple Int String", "q = let", "      f = g", "      g = ((\\x -> x) :: forall a. a -> a)", "    in Tuple (f 1) (f \"s\")" ] \r ->
+        map at r.errors `shouldEqual` [ "7:23 rejected" ]
+      elaborating [ "r :: Int", "r = let", "      f = g 1", "      g = ((\\x -> x) :: forall a. a -> a)", "    in f" ] \r ->
+        map at r.errors `shouldEqual` []
+
+    it "is a function value under the abstractions its signature makes, recursive among them" do
+      elaborating [ "c :: Int", "c = let", "      go :: forall a. a -> a", "      go x = go x", "    in go 1" ] \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "c" r.values of
+          Just (LetRec _ [ { value: TyLam _ _ _ (Lam _ _ _ _) } ] _) -> pure unit
+          other -> fail ("not a letrec of an abstraction: " <> show other)
+
+    it "may be partial, what it holds undecided reported once its declaration is settled" do
+      elaborating [ "w :: Int", "w = let", "      p :: _ -> Int", "      p y = inc y", "    in p 1" ] \r ->
+        map at r.errors `shouldEqual` []
+      elaborating [ "h :: Int", "h = let", "      p :: ?t -> Int", "      p y = inc y", "    in p 1" ] \r ->
+        map at r.errors `shouldEqual` [ "5:12 hole t Int" ]
+      elaborating [ "u :: Int", "u = let", "      q :: forall f. Int", "      q = 1", "    in q" ] \r ->
+        map at r.errors `shouldEqual` [ "5:19 kind undetermined", "7:8 type undetermined" ]
+
+    it "is evaluated where its block stands, under the ambient row there, where it is no function" do
+      let effects = [ "effect Console where", "  log :: Int ->* Unit", "shout :: Int -> Unit / {| Console |}", "shout x = shout x" ]
+      elaborating (effects <> [ "run :: Unit -> Int / {| Console |}", "run u = let", "      n :: Unit", "      n = shout 1", "    in 1" ]) \r ->
+        map at r.errors `shouldEqual` []
+      elaborating (effects <> [ "quiet :: Unit -> Int", "quiet u = let", "      n :: Unit", "      n = shout 1", "    in 1" ]) \r ->
+        map at r.errors `shouldEqual` [ "8:7 outside: implicit-handler resolution at this checking boundary", "6:1 left unchecked" ]
+
+    it "requires of the variables around it what its rows need, where it stands" do
+
+      let effects = [ "effect Console where", "  log :: Int ->* Unit" ]
+      elaborating (effects <> [ "o1 :: forall r. Unit -> Unit / {| Console, ...r |}", "o1 u = let", "      h :: Unit -> Unit / {| Console, ...r |}", "      h v = v", "    in h u" ]) \r ->
+        map at r.errors `shouldEqual` []
+      elaborating (effects <> [ "o2 :: forall r. Unit -> Unit / {| ...r |}", "o2 u = let", "      h :: Unit -> Unit / {| Console, ...r |}", "      h v = v", "    in u" ]) \r ->
+        map at r.errors `shouldEqual` [ "rejected" ]
+
+    it "is outside this version where it binds a kind variable of its own or takes a synthesized argument" do
+      elaborating [ "kv :: Int", "kv = let", "      q :: forall (f :: k -> Type). Int", "      q = 1", "    in q" ] \r ->
+        map at r.errors `shouldEqual` [ "5:20 outside: a kind variable a local signature binds" ]
+      -- reported before anything of the type is read, a kind it would equate
+      -- the variable with among it
+      elaborating [ "kq :: Int", "kq = let", "      q :: forall (a :: k). a", "      q = q", "    in 1" ] \r ->
+        map at r.errors `shouldEqual` [ "5:20 outside: a kind variable a local signature binds" ]
+
+      elaborating [ "data Dict a = Dict a", "make :: Int", "make = 1", "sy :: Int", "sy = let", "      s :: {{ d :: Dict Int by make }} -> Int", "      s d = 1", "    in 1" ] \r ->
+        map at r.errors `shouldEqual` [ "9:7 outside: a local signature taking a synthesized argument" ]
+
   describe "a computation declaration" do
     let
       computations =
@@ -965,4 +1035,4 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     )
   inM = Qualified (ModuleName "M") <<< Ident
   siteIn name line = { context: emptyXContext, origin: AtSource { declaration: inM name, origin: origin line } }
-  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, spine: plainScheme { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1), holes: [], wildcards: [] }
+  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, spine: plainScheme { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1), holes: [], wildcards: [], unwritten: [] }

@@ -1216,6 +1216,15 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | `let m = inc m in m` | Outside this version where `m` is bound: a recursive binding that is no function value |
 | A recursive local binding an annotation abstracts over a type or a constraint, `go = ((\x -> const x go) :: forall a. a -> a)` | A `letrec`. Core's `FunVal` admits a type or a constraint abstraction of a `λ` |
 | `u x = let unused y = y in x` | Ambiguous where `unused` and `y` stand. A type only a local term holds is quantified by nothing |
+| `ident :: forall a. a -> a` bound locally, and used at `Int` and at `String` | Accepted. A local signature's scheme is instantiated where it is referred to |
+| `h :: a -> a` in `g :: forall a. a -> a`, and `j :: forall b. b -> Int; j y = y` | `a` the one `g` binds, not quantified again; `j` refused, `b` rigid |
+| `apply g = Tuple (g 1) (g "s")` with `g : forall a. a -> a`, and `let ident = ((\x -> x) :: forall a. a -> a)` | Accepted. A local at a scheme is instantiated at the root `Ψ` gives its type, whatever made it one |
+| `let f = g; g = ((\x -> x) :: forall a. a -> a)`, `f` used at two types | A mismatch: `g` is elaborated first, `f = g` instantiates it, and `f` has one type. `f = g 1` is accepted |
+| `go :: forall a. a -> a; go x = go x` bound locally | A `letrec` of `Λ a. λ x. go [a] x` |
+| `p :: ?t -> Int; p y = inc y`, and `q :: forall f. Int` bound locally | The hole reported standing for `Int`; `f`'s kind reported where it is left unwritten |
+| `h :: Unit -> Unit / {\| Console, ...r \|}` bound locally under `forall r` | Accepted where the signature around it assumes `Console ∉ r`, refused where it does not |
+| `q :: forall (a :: k). a` bound locally, `k` bound by nothing around it | Outside this version where the signature stands, read no further |
+| `n :: Unit; n = shout 1` bound locally in `Unit -> Int / {\| Console \|}`, and in `Unit -> Int` | Accepted, performed under the λ's row; the λ's boundary asks for an implicit handler |
 | A top-level declaration whose right-hand side is an application leaving its type undetermined | A signature asked for. Not left monomorphic for a later declaration to fix |
 | A non-value right-hand side whose metavariables a later goal of the same group solves | Accepted. A restricted metavariable is reported only if it is unsolved at the end |
 | Two mutually recursive declarations without signatures, used at two types afterwards | Each generalized over what its own type reaches; the recursive references carry the type arguments of the callee's final scheme |

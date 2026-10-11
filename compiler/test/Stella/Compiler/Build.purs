@@ -618,6 +618,11 @@ spec = describe "Stella.Compiler.Build" do
         Left errors -> fail (joinWith "; " (map printCompileError errors))
         Right r -> r.handed `shouldEqual` [ "core f g", "mid M", "bytecode M" ]
 
+    it "is checked against its signature and instantiated where it is referred to, through to the module's bytecode" do
+      compilingUnder [ "module M (f) where" ] [ "f :: Int -> Int", "f n = let", "      ident :: forall a. a -> a", "      ident x = x", "      go :: forall a. a -> a", "      go x = go x", "      _ = ident ()", "    in go (ident n)" ] case _ of
+        Left errors -> fail (joinWith "; " (map printCompileError errors))
+        Right r -> r.handed `shouldEqual` [ "core f", "mid M", "bytecode M" ]
+
   describe "a module's type declarations" do
     let
       rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors

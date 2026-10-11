@@ -41,7 +41,7 @@
 -- | **This version elaborates a subset**: variables, globals, computations,
 -- | constructors, literals, application, λ over variables, type annotations,
 -- | a wildcard or a typed hole among what they write, and `let` blocks and
--- | `where`s binding variables and `_` without a signature. A synthesized
+-- | `where`s binding variables and `_`, with a signature or without. A synthesized
 -- | argument of the declaration's own is a parameter like any other; a
 -- | reference to a value taking one is outside the subset, a goal being what
 -- | supplies the argument. Anything else is reported where it stands, and the
@@ -87,7 +87,7 @@ import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, closeBoundar
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), substitute)
-import Stella.Compiler.Elaborate.Surface.Type (TypeHole, Unsupported(..), Wildcard, elaborateType, xFunction)
+import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported(..), Wildcard, elaborateLocalSignature, elaborateType, xFunction)
 import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder(..), Expr(..), GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..), exprOrigin)
 import Stella.Compiler.Surface.Name (BindingId, LocalVar(..))
 import Stella.Compiler.Surface.Origin as Surface
@@ -101,9 +101,9 @@ import Stella.Compiler.TypedCore.Type (TypeScheme)
 -- | reported once the body is settled.
 newtype Surf a = Surf (Elab (Either Unsupported (Noted a)))
 
--- | What was built, and the typed holes and the wildcards noted on the way, in
--- | the order met.
-type Noted a = { value :: a, holes :: Array TypeHole, wildcards :: Array Wildcard }
+-- | What was built, and the typed holes, the wildcards, and the kinds a local
+-- | signature leaves unwritten noted on the way, in the order met.
+type Noted a = { value :: a, holes :: Array TypeHole, wildcards :: Array Wildcard, unwritten :: Array { origin :: Surface.Origin, kind :: XKind } }
 
 runSurf :: forall a. Surf a -> Elab (Either Unsupported (Noted a))
 runSurf (Surf e) = e
@@ -115,26 +115,31 @@ instance Apply Surf where
   apply = ap
 
 instance Applicative Surf where
-  pure a = Surf (pure (Right { value: a, holes: [], wildcards: [] }))
+  pure a = Surf (pure (Right { value: a, holes: [], wildcards: [], unwritten: [] }))
 
 instance Bind Surf where
   bind (Surf e) k = Surf
     ( e >>= case _ of
         Left problem -> pure (Left problem)
-        Right a -> map (map (\b -> b { holes = a.holes <> b.holes, wildcards = a.wildcards <> b.wildcards })) (runSurf (k a.value))
+        Right a -> map (map (\b -> b { holes = a.holes <> b.holes, wildcards = a.wildcards <> b.wildcards, unwritten = a.unwritten <> b.unwritten })) (runSurf (k a.value))
     )
 
 instance Monad Surf
 
 lift :: forall a. Elab a -> Surf a
-lift = Surf <<< map (\a -> Right { value: a, holes: [], wildcards: [] })
+lift = Surf <<< map (\a -> Right { value: a, holes: [], wildcards: [], unwritten: [] })
 
 outside :: forall a. Unsupported -> Surf a
 outside = Surf <<< pure <<< Left
 
 -- | Note the typed holes and the wildcards an annotation holds.
 note :: forall r. { holes :: Array TypeHole, wildcards :: Array Wildcard | r } -> Surf Unit
-note read = Surf (pure (Right { value: unit, holes: read.holes, wildcards: read.wildcards }))
+note read = Surf (pure (Right { value: unit, holes: read.holes, wildcards: read.wildcards, unwritten: [] }))
+
+-- | Note what a local signature holds: its typed holes and wildcards, and the
+-- | kinds it leaves unwritten, which nothing local generalizes.
+noteSignature :: Elaborated -> Surf Unit
+noteSignature e = Surf (pure (Right { value: unit, holes: e.holes, wildcards: e.wildcards, unwritten: e.unwritten }))
 
 -- | What an expression is elaborated under: the declaration it belongs to, the
 -- | context its node stands in, the row its evaluation may perform, the entries
@@ -431,11 +436,14 @@ mentioned leaf = go
 -- | A `let` block or a `where`, its bindings elaborated: the scope its body is
 -- | elaborated under, and what wraps that body in them.
 -- |
--- | **A local binding without a signature is monomorphic** (D48): every name the
--- | block binds is in scope in every right-hand side and in the body, each at
--- | a type metavariable of the level it stands at, which its right-hand side's
--- | type is equated with — a parameter's binding inferred as a `λ` is. A
--- | right-hand side is evaluated where the block stands, under its ambient row.
+-- | **A local binding without a signature is monomorphic** (D48), and one with
+-- | a signature is checked against it: every name the block binds is in scope
+-- | in every right-hand side and in the body, at its signature's type or else
+-- | at a type metavariable of the level it stands at, which its right-hand
+-- | side's type is equated with — a parameter's binding inferred as a `λ` is.
+-- | A right-hand side is evaluated where the block stands, under its ambient
+-- | row, and elaborated in the order its group stands in, so that a reference
+-- | finds the type of what it refers to as far as it is decided.
 -- |
 -- | **The bindings are grouped by the references they make to one another**,
 -- | each a node — a `_` among them, named apart from every name source can
@@ -447,16 +455,30 @@ mentioned leaf = go
 letBlock :: Scope -> Surface.Origin -> Array LetBinding -> Surf { scope :: Scope, wrap :: XExpr Surface.Origin -> XExpr Surface.Origin }
 letBlock scope origin bindings = do
   heads <- traverse head bindings
-  let inner = scope { context = foldl (\c h -> bindVar c h.name h.type) scope.context heads }
-  built <- traverse (rhs inner) heads
   let
+    inner = scope { context = foldl (\c h -> bindVar c h.name h.type) scope.context heads }
     indexOf = Map.fromFoldable (Array.catMaybes (Array.mapWithIndex (\i h -> map (\v -> Tuple v i) h.binding) heads))
     refers = map (\h -> Set.fromFoldable (Array.mapMaybe (\v -> Map.lookup v indexOf) (Array.fromFoldable (localReferences h.body)))) heads
-  wraps <- traverse (wrapping built) (groups refers)
+    grouped = groups refers
+  -- each right-hand side in the order its group stands, what it refers to
+  -- elaborated before it
+  built <- traverse (\g -> traverse (rhs inner) (Array.mapMaybe (Array.index heads) g.members)) grouped
+  wraps <- traverse (\(Tuple g members) -> wrapping g members) (Array.zip grouped built)
   pure { scope: inner, wrap: \e -> foldr (\w acc -> w acc) e wraps }
   where
   head = case _ of
-    LetValue v | Just _ <- v.signature -> outside (OutsideSubset v.origin "a local binding with a signature")
+    -- a local signature is read under the context the block stands in, and
+    -- what it holds undecided reported once the declaration is settled
+    LetValue v | Just signature <- v.signature -> do
+      let LocalVar l = v.var
+      e <- lift (elaborateLocalSignature scope.surface.synonyms scope.declaration scope.context signature)
+      case Array.head e.unsupported of
+        Just problem -> outside problem
+        Nothing
+          | not (Array.null e.synthesized) -> outside (OutsideSubset v.origin "a local signature taking a synthesized argument")
+          | otherwise -> do
+              noteSignature e
+              pure { origin: v.origin, binding: Just l.id, name: l.name, params: v.params, body: v.body, type: e.type, signed: true }
     LetValue v -> let LocalVar l = v.var in fresh v.origin (Just l.id) l.name v.params v.body
     LetPattern p -> case p.binder of
       BinderVar _ (LocalVar l) -> fresh p.origin (Just l.id) l.name [] p.body
@@ -468,8 +490,13 @@ letBlock scope origin bindings = do
 
   fresh o binding name params body = do
     ty <- lift (freshTypeMeta scope.context XKType)
-    pure { origin: o, binding, name, params, body, type: ty }
+    pure { origin: o, binding, name, params, body, type: ty, signed: false }
 
+  -- a binding with a signature is checked against it, as a definition is,
+  -- under the ambient row where the block stands
+  rhs inner h | h.signed = do
+    expr <- abstractions h.origin true false Written inner (map Named h.params) h.body h.type
+    pure { head: h, expr }
   rhs inner h = do
     inferred <- case h.params of
       [] -> infer inner h.body
@@ -477,7 +504,7 @@ letBlock scope origin bindings = do
     lift (equate (siteAt inner h.origin) { kind: XKType, left: inferred.type, right: h.type })
     pure { head: h, expr: inferred.expr }
 
-  wrapping built g = case g.recursive, Array.mapMaybe (Array.index built) g.members of
+  wrapping g members' = case g.recursive, members' of
     false, [ b ] -> pure \e -> ELet b.head.origin b.head.name b.head.type b.expr e
     _, members -> case Array.find (not <<< isFunVal <<< _.expr) members of
       Just b -> outside (OutsideSubset b.head.origin "a recursive value that is no function")
@@ -541,8 +568,12 @@ asArrow = case _ of
 
 infer :: Scope -> Expr -> Surf { expr :: XExpr Surface.Origin, type :: XType }
 infer scope expr = case expr of
+  -- a local at a scheme, however it came to be one, is instantiated where it
+  -- is referred to, as a global is
   ExprLocal o (LocalVar v) -> case lookupVar scope.context v.name of
-    Just ty -> pure { expr: EVar o v.name, type: ty }
+    Just ty -> do
+      metas <- lift currentMetas
+      instantiated o (EVar o v.name) (substitute metas ty)
     Nothing -> outside (OutsideSubset o "a variable bound outside what this version elaborates")
   ExprValue o name -> global o name
   ExprConstructor o name -> global o name

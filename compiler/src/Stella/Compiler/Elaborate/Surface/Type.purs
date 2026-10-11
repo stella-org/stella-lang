@@ -56,6 +56,7 @@ module Stella.Compiler.Elaborate.Surface.Type
   , ReadBinder
   , elaborateSignature
   , elaborateValueSignature
+  , elaborateLocalSignature
   , elaborateType
   , readTypeAt
   , readBinder
@@ -271,31 +272,66 @@ type Wildcard = { origin :: Surface.Origin, type :: XType, kind :: XKind }
 -- | per row kind, so every `...` of one kind in the signature is the same row;
 -- | it is named apart from every name source can write.
 elaborateSignature :: SynonymEnv -> Qualified Ident -> Signature Type -> Elab Elaborated
-elaborateSignature = elaborateSpine { computation: false, partial: false }
+elaborateSignature = elaborateSpine { computation: false, partial: false, around: Nothing }
+
+-- | A local binding's signature, read under the context it stands in: the type
+-- | and kind variables bound around it are the ones they are, and it quantifies
+-- | only the variables it mentions beyond those. What its rows need of the
+-- | variables around it is required where it stands, and a wildcard or a typed
+-- | hole in it stands for what elaboration decides, as in an annotation.
+elaborateLocalSignature :: SynonymEnv -> Qualified Ident -> XContext -> Signature Type -> Elab Elaborated
+elaborateLocalSignature synonyms declaration context = elaborateSpine { computation: false, partial: true, around: Just context } synonyms declaration
 
 -- | A value declaration's signature, as `elaborateSignature` reads one, a
 -- | wildcard and a typed hole in it standing for what its body decides, as in
 -- | an annotation: a signature holding either is partial.
 elaborateValueSignature :: SynonymEnv -> Qualified Ident -> Signature Type -> Elab Elaborated
-elaborateValueSignature = elaborateSpine { computation: false, partial: true }
+elaborateValueSignature = elaborateSpine { computation: false, partial: true, around: Nothing }
 
 -- | The signature of a computation declaration, `forall ā. C => {{ … }} -> τ / ρ`,
 -- | read as its Core type is, `∀ā. C => … -> Unit -{ρ}-> τ`, the computation
 -- | marked on its spine.
 elaborateComputationSignature :: SynonymEnv -> Qualified Ident -> Signature ComputationType -> Elab Elaborated
 elaborateComputationSignature synonyms declaration signature =
-  elaborateSpine { computation: true, partial: true } synonyms declaration { implicit: signature.implicit, body: computationAsType signature.body }
+  elaborateSpine { computation: true, partial: true, around: Nothing } synonyms declaration { implicit: signature.implicit, body: computationAsType signature.body }
 
 -- | A signature read, a computation's where the flags say it is one, each
 -- | synthesized argument on its spine read as the type of its dictionary, and
 -- | a wildcard and a typed hole read where they say it may be partial.
-elaborateSpine :: { computation :: Boolean, partial :: Boolean } -> SynonymEnv -> Qualified Ident -> Signature Type -> Elab Elaborated
-elaborateSpine { computation, partial } synonyms declaration signature = do
+elaborateSpine :: { computation :: Boolean, partial :: Boolean, around :: Maybe XContext } -> SynonymEnv -> Qualified Ident -> Signature Type -> Elab Elaborated
+elaborateSpine { computation, partial, around } synonyms declaration signature =
+  case around of
+    -- a local signature binds no kind variable of its own, a local scheme
+    -- having no kind quantifier: one writing such a variable is not read, so
+    -- that no equation of the variable stands in the way of saying so
+    Just context | not (Set.subset written context.kindVars) ->
+      pure
+        { origin: typeOrigin signature.body
+        , kindVars: []
+        , type: XRowEmpty
+        , unwritten: []
+        , unsupported: [ OutsideSubset (typeOrigin signature.body) "a kind variable a local signature binds" ]
+        , synthesized: []
+        , computation
+        , holes: []
+        , wildcards: []
+        }
+    _ -> readSpine { computation, partial, around } synonyms declaration signature
+  where
+  written = foldr Set.insert Set.empty (typeKindVars signature.body)
+
+readSpine :: { computation :: Boolean, partial :: Boolean, around :: Maybe XContext } -> SynonymEnv -> Qualified Ident -> Signature Type -> Elab Elaborated
+readSpine { computation, partial, around } synonyms declaration signature = do
   let spine = synthesizedOnSpine signature.body
-  let kindVars = foldr Set.insert Set.empty (typeKindVars signature.body)
+  let written = foldr Set.insert Set.empty (typeKindVars signature.body)
+  -- the kind variables in scope: a local signature's are those around it,
+  -- and it binds none of its own
+  let kindVars = maybe written _.kindVars around
+  let bound = maybe written (const Set.empty) around
+  let outer = maybe Map.empty _.tyVars around
   named <- traverse (\v -> { var: v, kind: _ } <$> freshKindMeta kindVars quantifiable) signature.implicit
   spreads <- traverse
-    (\k -> { kind: k, var: _ } <$> freshBinderName (writtenTyVars signature.body) (hintOf k))
+    (\k -> { kind: k, var: _ } <$> freshBinderName (Set.union (writtenTyVars signature.body) (Map.keys outer)) (hintOf k))
     (Array.nub (Array.mapMaybe spreadKind (mentions signature.body)))
   let
     quantified = Array.nub (Array.mapMaybe quantifier (mentions signature.body))
@@ -306,24 +342,33 @@ elaborateSpine { computation, partial } synonyms declaration signature = do
     scope =
       { declaration
       , kindVars
-      , tyVars: Map.fromFoldable (map (\q -> Tuple q.var q.kind) quantified)
+      , tyVars: Map.union (Map.fromFoldable (map (\q -> Tuple q.var q.kind) quantified)) outer
       , localTypes: Map.empty
       , anonymous: Map.fromFoldable (map (\s -> Tuple s.kind s.var) spreads)
       , synonyms
       , localSynonyms: Map.empty
       , localEffects: Map.empty
-      , annotation: if partial then Just (emptyXContext { kindVars = kindVars }) else Nothing
+      , annotation: if partial then Just (fromMaybe (emptyXContext { kindVars = kindVars }) around) else Nothing
       }
+    context = (fromMaybe emptyXContext around) { kindVars = kindVars, tyVars = scope.tyVars }
   body <- checkAt scope XKType spine.type
-  when (Array.null body.unsupported) (shareHoles declaration (emptyXContext { kindVars = kindVars, tyVars = scope.tyVars }) body.holes)
+  when (Array.null body.unsupported) (shareHoles declaration context body.holes)
   let taken = quantify quantified body.implied body.type
+  -- what a local signature's rows need of the variables bound around it is
+  -- required where it stands, from what its context assumes
+  rest <- case around of
+    Just outside | Array.null body.unsupported -> do
+      for_ taken.rest \i -> require { context: outside, origin: AtSource { declaration, origin: i.origin } } (atomConstraint i.atom)
+      pure []
+    Just _ -> pure []
+    Nothing -> pure (map (\i -> UnheldConstraint i.origin i.atom) taken.rest)
   pure
     { origin: typeOrigin signature.body
-    , kindVars: Array.fromFoldable kindVars
+    , kindVars: Array.fromFoldable bound
     , type: taken.type
     -- an implicit variable is written first where it is first mentioned
     , unwritten: map (\i -> { origin: fromMaybe (typeOrigin signature.body) (firstMention i.var signature.body), kind: i.kind }) named <> body.unwritten
-    , unsupported: body.unsupported <> map (\i -> UnheldConstraint i.origin i.atom) taken.rest
+    , unsupported: body.unsupported <> rest
     , synthesized: spine.marks
     , computation
     , holes: distinctHoles body.holes
