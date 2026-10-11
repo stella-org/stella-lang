@@ -77,7 +77,7 @@ import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Environment.Constructors (lookupConstructor)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, closeBoundary, currentMetas, equate, freshIdent, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, require)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, closeBoundary, currentMetas, equate, freshIdent, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, recursiveRef, require)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), substitute)
@@ -503,20 +503,27 @@ infer scope expr = case expr of
   -- compiler's refers to
   global o name = do
     env <- lift askEnv
-    case lookupScheme env.session.catalog name of
-      Nothing -> outside (OutsideSubset o "a global the catalog does not hold")
-      -- a synthesized argument is supplied by a goal, which this version does
-      -- not create
-      Just _ | Set.member name scope.surface.synthesizing -> outside (OutsideSubset o "a reference to a value taking a synthesized argument")
-      Just scheme -> do
-        kinds <- lift (traverse (\_ -> freshKindMeta scope.context.kindVars (Set.singleton Quantifiable)) scheme.kindVars)
-        let ty = substituteKindVars (Map.fromFoldable (Array.zip scheme.kindVars kinds)) scheme.body
-        instantiated o (EGlobal o name kinds) ty
+    case Map.lookup name scope.surface.bindings of
+      -- a member of the group being elaborated is referred to at the one type
+      -- it has there, the reference made ordinary once the group is
+      -- generalized
+      Just (Provisional ty) -> do
+        id <- lift (recursiveRef (siteAt scope o) name)
+        pure { expr: ERecursiveRef o id, type: ty }
+      _ -> case lookupScheme env.session.catalog name of
+        Nothing -> outside (OutsideSubset o "a global the catalog does not hold")
+        -- a synthesized argument is supplied by a goal, which this version
+        -- does not create
+        Just _ | Set.member name scope.surface.synthesizing -> outside (OutsideSubset o "a reference to a value taking a synthesized argument")
+        Just scheme -> do
+          kinds <- lift (traverse (\_ -> freshKindMeta scope.context.kindVars (Set.singleton Quantifiable)) scheme.kindVars)
+          let ty = substituteKindVars (Map.fromFoldable (Array.zip scheme.kindVars kinds)) scheme.body
+          instantiated o (EGlobal o name kinds) ty
 
   lookupScheme catalog name = case lookupEntry catalog name, Map.lookup name scope.surface.bindings of
     Just entry, _ -> Just entry.scheme
     Nothing, Just (Final scheme) -> Just { kindVars: scheme.kindVars, body: fromCore scheme.body }
-    Nothing, Nothing -> Map.lookup name scope.internal
+    Nothing, _ -> Map.lookup name scope.internal
 
   instantiated o e = case _ of
     XForall a k rest -> do

@@ -43,9 +43,10 @@ import Stella.Compiler.TypedCore (RowElemKind(..))
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (for_)
+import Data.Traversable (traverse)
 import Data.Generic.Rep (class Generic)
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), isNothing)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
@@ -78,14 +79,23 @@ derive instance Generic Closing _
 instance Show Closing where
   show x = genericShow x
 
--- | Close the rows of the owner given that nothing needs anything of, its term
--- | the one given and the types its members are given those given, the site given where it is reported, and the level given its
--- | binding group's, which closing and resolving again run at; with what the
--- | jobs run again warned of where the closing is kept.
-closeRows :: forall a k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> k -> P.Int -> Site -> XExpr a -> P.Array XType -> SolverState -> Tuple (Either Defect { closing :: Closing, warnings :: P.Array Warning }) SolverState
-closeRows session attempter owner key level site term types s0 =
+-- | Close the rows of the owner given that nothing needs anything of, at the
+-- | level given its binding group's, which closing and resolving again run at:
+-- | its members, each the site it is reported at, its term, and the types it is
+-- | given. With what the jobs run again warned of where the closing is kept.
+-- |
+-- | **A candidate is closed at the site of the member it belongs to**: the
+-- | first whose term or types write it, or else the fit or the obligation that
+-- | found it, so that what closing it breaks is that member's.
+closeRows :: forall a k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> k -> P.Int -> P.Array { site :: Site, term :: XExpr a, types :: P.Array XType } -> SolverState -> Tuple (Either Defect { closing :: Closing, warnings :: P.Array Warning }) SolverState
+closeRows session attempter owner key level members s0 =
   if Set.isEmpty closable then Tuple (Right { closing: NothingClosed, warnings: [] }) s0
-  else case runElabIn session s0 (atLevel level (for_ (Set.toUnfoldable closable :: P.Array MetaVar) \m -> unify site { kind: XKRow RowEffect, left: XMeta m, right: XRowEmpty })) of
+  else case traverse (\m -> map (Tuple m) (siteOf m)) (Set.toUnfoldable closable :: P.Array MetaVar) of
+    -- every candidate was found where some member, fit, or obligation stands
+    Nothing -> Tuple (Left (ClosingSiteAbsent (Set.toUnfoldable (Set.filter (isNothing <<< siteOf) closable)))) s0
+    Just sited -> closeAt sited
+  where
+  closeAt sited = case runElabIn session s0 (atLevel level (for_ sited \(Tuple m site) -> unify site { kind: XKRow RowEffect, left: XMeta m, right: XRowEmpty })) of
     Tuple (Done _) s1 ->
       let
         Tuple report s2 = runAttempting attempter (s1 { tentative { written = Set.empty } })
@@ -102,7 +112,7 @@ closeRows session attempter owner key level site term types s0 =
     Tuple (Broke defect) s1 -> Tuple (Left defect) (undo s1)
     Tuple (Postponed _) s1 -> Tuple (Left ResolutionPostponed) (undo s1)
     Tuple (Failed d) s1 -> Tuple (Right { closing: Undone { closed: closable, cause: UndoneBy d }, warnings: [] }) (undo s1)
-  where
+
   undo s = s { tentative = s0.tentative }
 
   refusal c = case c.outcome of
@@ -112,17 +122,26 @@ closeRows session attempter owner key level site term types s0 =
   metas = s0.tentative.metas
   zonked = substitute metas
 
-  -- the types the owner's term writes and its members are given, where a
-  -- candidate is counted: every fit kept a fit, so that the row a decided
-  -- widening carries counts no more than an undecided fit's does
-  occurrences = Array.concatMap (metaOccurrences <<< zonked) (typesOfTerm (zonkExpr (metas { fits = Map.empty }) term) <> types)
+  -- the types each member's term writes and it is given, where a candidate is
+  -- counted: every fit kept a fit, so that the row a decided widening carries
+  -- counts no more than an undecided fit's does
+  written = map
+    (\m -> { site: m.site, metas: Array.concatMap (metaOccurrences <<< zonked) (typesOfTerm (zonkExpr (metas { fits = Map.empty }) m.term) <> m.types) })
+    members
+  occurrences = Array.concatMap _.metas written
+
+  siteOf m = case Array.find (Array.elem m <<< _.metas) written of
+    Just w -> Just w.site
+    Nothing -> case Array.find (\f -> Set.member m (Set.union (metasOf f.source) (metasOf f.target))) fits of
+      Just f -> Just f.site
+      Nothing -> map _.site (Array.find (Set.member m <<< _.metas) atoms)
 
   owned :: forall r. { origin :: Origin | r } -> P.Boolean
   owned at = owner at.origin == key
 
   fits = Array.mapMaybe
     ( \record -> case record.state of
-        Undecided u | owned record.site -> Just { source: zonked u.source, target: zonked u.target }
+        Undecided u | owned record.site -> Just { site: record.site, source: zonked u.source, target: zonked u.target }
         _ -> Nothing
     )
     (Array.fromFoldable (Map.values metas.fits))
@@ -130,8 +149,8 @@ closeRows session attempter owner key level site term types s0 =
   -- it holds; one that no longer holds keeps every row it names open
   atoms = Array.concatMap
     ( \entry -> case residualAtoms zonked (regionScopeOf metas) entry.obligation of
-        Right left -> map atomMetas left
-        Left _ -> [ { metas: constraintMetas entry.obligation.constraint, disjoint: true } ]
+        Right left -> map (atomMetas (siteOfObligation entry.obligation)) left
+        Left _ -> [ { site: siteOfObligation entry.obligation, metas: constraintMetas entry.obligation.constraint, disjoint: true } ]
     )
     (Array.filter (\entry -> owned entry.obligation) (Array.fromFoldable (Map.values s0.tentative.obligations.entries)))
   -- what a waiting equation or goal could still assign, what it waits on
@@ -144,10 +163,12 @@ closeRows session attempter owner key level site term types s0 =
     )
     (Array.fromFoldable (Map.values s0.tentative.scheduler.pending))
 
-  atomMetas = case _ of
-    LacksAtom _ t -> { metas: Set.singleton t, disjoint: false }
-    DisjointRigid t _ -> { metas: Set.singleton t, disjoint: true }
-    DisjointFlexible t1 t2 -> { metas: Set.fromFoldable [ t1, t2 ], disjoint: true }
+  siteOfObligation o = { context: o.context, origin: o.origin }
+
+  atomMetas site = case _ of
+    LacksAtom _ t -> { site, metas: Set.singleton t, disjoint: false }
+    DisjointRigid t _ -> { site, metas: Set.singleton t, disjoint: true }
+    DisjointFlexible t1 t2 -> { site, metas: Set.fromFoldable [ t1, t2 ], disjoint: true }
 
   constraintMetas = case _ of
     XLacks _ row -> metasOf (zonked row)

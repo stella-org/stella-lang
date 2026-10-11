@@ -1135,7 +1135,13 @@ A fit decided, waited on, resolved by direction, and made Core, and a checking b
 | `?i ≡ ?n` and `?n ≡ ?i`, `?i` an instantiation row and `?n` an inference one | An inference row either way. The row left is an instantiation row only where both were, so the direction decides nothing |
 | `( Console ) ⊆ ?e` and `( Clock ) ⊆ ?e`, `?e` an inference row, at quiescence | Rule 1: `?e := ( Console, Clock )`, the fits `Widen ( Clock )` and `Widen ( Console )`. Taking the first fit as an equation fixes `?e` at `( Console )` and refuses the second |
 | `( Console \| ?t ) ⊆ ( Console, Clock \| e )`, `?t` an instantiation row; the same with an inference row | `?t := ( Clock \| e )`; left undecided and rolled back. Rule 2 maximizes an instantiation tail only |
-| `?t ⊆ ?m`, `?t` an instantiation row | Ambiguous. Rule 1's `?m := ?t` and rule 2's `?t := ?m` depend on one another, and neither is made |
+| `?t ⊆ ?m`, `?t` an instantiation row | Ambiguous. Rule 1's `?m := ?t` and rule 2's `?t := ?m` wait on one another, and nothing else is ready |
+| `?a ⊆ ?b` and `?b ⊆ ?a`, and a cycle of three | Each identified, with the least of its cycle, in a round of its own. Containment both ways is equality in every solution |
+| `?a ⊆ ?b`, `?b ⊆ ?a`, and `( Console ) ⊆ ?a` | `?a ≡ ?b` in one round, `?a := ( Console )` in the next |
+| `?a ⊆ ?b` beside `( Console ) ⊆ ?b`; `( Console \| ?a ) ⊆ ?b` beside `?b ⊆ ?a`; a boundary's ambient row on such a cycle | Nothing identified: a containment one way, a remainder holding a key, and a row only its boundary decides |
+| `( Console ) ⊆ ?i` and `?i ⊆ ?o`, and a chain of three, its fits in either order | `?i := ( Console )`, then `?o := ( Console )` in the next round. Only the assignments ready are made |
+| `?t ⊆ ( Console \| ?p )`, `?t ⊆ ( Console \| ?q )`, and `?q ⊆ ?p` | `?p := ?q` first, then `?t := ( Console \| ?q )`, its two solutions one. Two nothing makes one leave the component ambiguous |
+| `( StateR ?t ) ⊆ ?x`, `( StateR ?m ) ⊆ ?x`, and `?t ⊆ ( Console )`, `?t` an instantiation row and `?m` an inference one | No rule 2. The union identifies `?t` with `?m` in a round of its own, the rows read again, and the fit is left undecided |
 | `( Console \| ?a ) ⊆ ?m` and `( Clock \| ?b ) ⊆ ?m`, beside `e ⊆ ?a` and `e ⊆ ?b` | `?m := ( Console, Clock \| e )` in the second round. A union not formed is waited on while the component's other assignments are made |
 | `( Console \| ?a ) ⊆ ?m` and `( Clock \| ?b ) ⊆ ?m` alone | Ambiguous, rolled back. Two distinct flexible tails form no union, and nothing else moves |
 | `( StateR ?a \| ?a )` and `( StateR ?b \| ?b )` joined | `( StateR ?a \| ?a )`, once `?a ≡ ?b`. A shared key's payloads are equated before the tails are counted |
@@ -1207,6 +1213,9 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | A top-level declaration whose right-hand side is an application leaving its type undetermined | A signature asked for. Not left monomorphic for a later declaration to fix |
 | A non-value right-hand side whose metavariables a later goal of the same group solves | Accepted. A restricted metavariable is reported only if it is unsolved at the end |
 | Two mutually recursive declarations without signatures, used at two types afterwards | Each generalized over what its own type reaches; the recursive references carry the type arguments of the callee's final scheme |
+| `p x = q x; q x = p x`, and `loop x = loop x` | The rows of `p` and `q` identified and quantified by each, occurring in both types; `loop`'s closed |
+| A member raising what the member it refers to needs | The constraint in both schemes, and the reference given its `[•]` in Core |
+| A group one member of which fails, or refers to a value with no scheme | Reported at what the failure names, every other member left unchecked; every member left unchecked |
 | A member whose body uses another member at a type its own type does not reach | Ambiguous, an annotation asked for. Not quantified |
 | A constraint relating a quantified variable to one the type does not reach | Ambiguous. Constraints do not extend the quantifiers |
 | A recursive reference standing under an assumption that proves the callee's constraint | The caller carries no copy of that constraint |

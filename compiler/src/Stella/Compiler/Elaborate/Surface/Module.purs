@@ -44,11 +44,12 @@
 -- | **A value without a signature is generalized**, each strongly connected
 -- | component of the references such values make to one another a group, the
 -- | groups in dependency order and before any body with a signature; its scheme
--- | is read by the module's bodies and is in no catalog. A recursive group is
--- | outside what this version elaborates, and a declaration referring to a value
--- | with no scheme — one its group did not generalize, or one whose signature
--- | gave none — is left unchecked. A fixity gives Core nothing, and a handler
--- | is outside what it elaborates.
+-- | is read by the module's bodies and is in no catalog. Inside its group, a
+-- | member is referred to at the one type it has there. A declaration referring
+-- | to a value with no scheme — one its group did not generalize, or one whose
+-- | signature gave none — is left unchecked, and so is every member of a group
+-- | one of which does. A fixity gives Core nothing, and a handler is outside
+-- | what it elaborates.
 module Stella.Compiler.Elaborate.Surface.Module
   ( ElaborationError(..)
   , ElaboratedValue
@@ -69,7 +70,7 @@ import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..), either)
-import Data.Foldable (foldl)
+import Data.Foldable (foldl, for_)
 import Data.Traversable (traverse)
 import Data.Map (Map)
 import Data.Map as Map
@@ -79,7 +80,7 @@ import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), XExpr, isSettledValueForm, toCoreExpr)
-import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind, kindMetasOf)
+import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind(..), kindMetasOf)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType, fromCore, kindMetasOfType, metasOf, toCore)
 import Stella.Compiler.Elaborate.Surface.Types (readAttributeDeclaration, readTypes, settledTypes)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEntry)
@@ -94,7 +95,7 @@ import Stella.Compiler.Elaborate.Driver.Close (Closing(..), Undoing(..), closeRo
 import Stella.Compiler.Elaborate.Environment.Catalog (CatalogEntry, EntrySort(..))
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv, takesSynthesized)
-import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, atLevel, initialState)
+import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, atLevel, equate, freshTypeMeta, initialState)
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..))
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, substitute, substituteKind)
@@ -465,21 +466,29 @@ elaborateValues imports surface importedEntries m =
     , warnings: []
     }
     (groups (map (\u -> Set.fromFoldable (Array.mapMaybe (\n -> Map.lookup n unsignedIndex) (Array.fromFoldable (references u.body)))) unsigned))
-  generalizeOne acc g = case g.recursive, Array.mapMaybe (Array.index unsigned) g.members of
-    false, [ u ]
-      | meets (references u.body) acc.unavailable -> acc { unavailable = Set.insert u.name acc.unavailable, errors = Array.snoc acc.errors (LeftUnchecked u.origin u.name) }
-      | otherwise ->
+  generalizeOne acc g =
+    let
+      members = Array.mapMaybe (Array.index unsigned) g.members
+      named = Set.fromFoldable (map _.name members)
+    in
+      -- a group a member of which refers to what has no scheme is not
+      -- elaborated, none of its members being generalizable without it
+      case NonEmptyArray.fromArray members of
+        Nothing -> acc
+        Just _ | Array.any (\u -> meets (references u.body) acc.unavailable) members ->
+          acc { unavailable = Set.union acc.unavailable named, errors = acc.errors <> map (\u -> LeftUnchecked u.origin u.name) members }
+        Just group ->
           let
-            done = generalizeValue session (attemptPending session) internal (withOwn { bindings = acc.bindings }) (\n -> Map.member n signature.ctors) u acc.state
+            done = generalizeGroup session (attemptPending session) internal (withOwn { bindings = acc.bindings }) (\n -> Map.member n signature.ctors) group acc.state
           in
             case done.result of
-              Left errors -> acc { state = done.state, unavailable = Set.insert u.name acc.unavailable, errors = acc.errors <> errors }
-              Right r -> acc { state = done.state, bindings = Map.insert u.name (Final r.value.scheme) acc.bindings, values = Array.snoc acc.values r.value, warnings = acc.warnings <> r.warnings }
-    _, members ->
-      acc
-        { unavailable = Set.union acc.unavailable (Set.fromFoldable (map _.name members))
-        , errors = acc.errors <> map (\u -> Unsupported (OutsideSubset u.origin "a recursive declaration without a signature")) members
-        }
+              Left errors -> acc { state = done.state, unavailable = Set.union acc.unavailable named, errors = acc.errors <> errors }
+              Right r -> acc
+                { state = done.state
+                , bindings = foldl (\b v -> Map.insert v.name (Final v.scheme) b) acc.bindings r.values
+                , values = acc.values <> r.values
+                , warnings = acc.warnings <> r.warnings
+                }
 
   -- every body, as one attempt each, a body that does not elaborate leaving
   -- nothing behind; one referring to a value with no scheme is left unchecked
@@ -581,7 +590,7 @@ settleBodies session attempter state bodies =
   -- undone is the declaration's report, the rows decided again without it
   -- need not fail as it did
   closing acc b = case acc of
-    { defect: Nothing, state: s, undone } -> case closeRows session attempter declarationOf b.name 0 { context: emptyXContext, origin: InDeclaration b.name } b.body [] s of
+    { defect: Nothing, state: s, undone } -> case closeRows session attempter declarationOf b.name 0 [ { site: { context: emptyXContext, origin: InDeclaration b.name }, term: b.body, types: [] } ] s of
       Tuple (Left d) s' -> { defect: Just d, state: s', undone }
       Tuple (Right { closing: Undone u }) s' -> { defect: Nothing, state: s', undone: Map.insert b.name u.cause undone }
       Tuple (Right _) s' -> { defect: Nothing, state: s', undone }
@@ -737,125 +746,195 @@ type Unsigned =
 topLevel :: Int
 topLevel = 1
 
+-- | What keeps a group from being generalized, each with the members it names.
+type Failure = { error :: ElaborationError, names :: Array (Qualified Ident) }
+
 -- | Generalizing one group: what keeps it from being generalized, over the
 -- | solver state.
-type Generalizing = ExceptT (Array ElaborationError) (State SolverState)
+type Generalizing = ExceptT (Array Failure) (State SolverState)
 
--- | A value without a signature, generalized as a group of its own
+-- | A group of values without a signature, generalized
 -- | ([Elaboration](../../../../../docs/technical-references/02-Surface-Language/01-Elaboration.md#the-procedure)):
--- | its body inferred at the top level, the loop run to quiescence and its
--- | fits resolved by direction, the value restriction and the provisional
--- | quantifiers, its rows closed, its annotations' holes and wildcards judged,
--- | and its quantifiers made final and committed. With what the jobs it ran
--- | warned of.
+-- | each member's body inferred at the top level, each reference to a member
+-- | at the one type the member has in the group, the loop run to quiescence and
+-- | the fits resolved by direction, the value restriction and the provisional
+-- | quantifiers, the rows closed, the annotations' holes and wildcards judged,
+-- | and each member's quantifiers made final, the group committed whole. With
+-- | what the jobs it ran warned of.
+-- |
+-- | **The fits are resolved and the rows closed for the group as one owner**,
+-- | its members sharing the metavariables of the types they have in it; each
+-- | member is generalized, and reported, as its own.
 -- |
 -- | **A group that is not generalized leaves nothing behind**: its tentative
--- | state is rolled back to where it began, its warnings with it, and what the
--- | rollback leaves alone — the fuel spent and what identifiers are drawn from
--- | — is kept.
+-- | state is rolled back to where it began, its warnings with it, and what no
+-- | rollback restores is kept. It is reported by what failed, each member that
+-- | names; a member nothing names is left unchecked.
 -- |
--- | **A body η-expansion may move is built again under its `λ` once its type
--- | is known to be a function** and it is no value form: where it is known as
--- | the body is built, or else once the loop is quiescent, the group starts
--- | over once with the body expanded, nothing of the first build kept.
-generalizeValue
+-- | **A body η-expansion may move is built again under its `λ` where its type
+-- | is a function** and it is no value form once the loop is quiescent: the
+-- | group starts over once, every such body expanded and nothing of the first
+-- | build kept. One that asks for it the second time round is a defect.
+generalizeGroup
   :: SessionEnv
   -> Attempter
   -> Internal
   -> SurfaceEnv
   -> (Qualified Ident -> Boolean)
-  -> Unsigned
+  -> NonEmptyArray Unsigned
   -> SolverState
-  -> { result :: Either (Array ElaborationError) { value :: ElaboratedValue, warnings :: Array Warning }, state :: SolverState }
-generalizeValue session attempter internal surface isConstructor u s0 =
-  case runState (runExceptT (attempt false)) s0 of
-    Tuple (Left errors) s -> { result: Left errors, state: { tentative: s0.tentative, retained: s.retained } }
+  -> { result :: Either (Array ElaborationError) { values :: Array ElaboratedValue, warnings :: Array Warning }, state :: SolverState }
+generalizeGroup session attempter internal surface isConstructor group s0 =
+  case runState (runExceptT (attempt Set.empty)) s0 of
+    Tuple (Left failures) s ->
+      let
+        named = Set.fromFoldable (Array.concatMap _.names failures)
+      in
+        { result: Left (map _.error failures <> map (\u -> LeftUnchecked u.origin u.name) (Array.filter (\u -> not (Set.member u.name named)) members))
+        , state: { tentative: s0.tentative, retained: s.retained }
+        }
     Tuple (Right r) s -> { result: Right r, state: s }
   where
-  site = { context: emptyXContext, origin: InDeclaration u.name }
+  members = NonEmptyArray.toArray group
+  names = map _.name members
+  -- the group's key, its first member's name
+  key = (NonEmptyArray.head group).name
+  -- the owner fits and boundaries are resolved and rows closed for
+  groupOwner o = let d = declarationOf o in if Array.elem d names then key else d
+  -- the owner each member is generalized as
+  memberOwner = declarationOf
+  -- what fails where the mechanism does names every member
+  defect d = { error: Broken d, names }
 
-  attempt :: Boolean -> Generalizing { value :: ElaboratedValue, warnings :: Array Warning }
+  attempt :: Set (Qualified Ident) -> Generalizing { values :: Array ElaboratedValue, warnings :: Array Warning }
   attempt expanded = do
-    built <- elaborated expanded
-    asked <- gets (expansionAsked expanded built.value)
-    if asked then again
-    else do
-      report <- step (runAttempting attempter)
-      throwIfAny (stoppedErrors report.result)
-      asked' <- gets (expansionAsked expanded built.value)
-      if asked' then again else settle built report.warnings
+    types <- monomorphic
+    let
+      inGroup = surface { bindings = foldl (\b (Tuple u t) -> Map.insert u.name (Provisional t) b) surface.bindings (Array.zip members types) }
+    built <- traverse (\(Tuple u t) -> elaborated inGroup expanded u t) (Array.zip members types)
+    report <- step (runAttempting attempter)
+    throwIfAny (stoppedAt report.result)
+    asked <- gets \s -> Set.fromFoldable (map _.unsigned.name (Array.filter (expansionAsked expanded s) built))
+    if Set.isEmpty asked then settle built report.warnings
+    else if Set.isEmpty expanded then do
+      -- the group started over with every such body expanded
+      modify_ \s -> { tentative: s0.tentative, retained: s.retained }
+      attempt asked
+    else throwError (map (\name -> defect (ExpansionUnsettled name)) (Set.toUnfoldable asked))
 
-  -- the group started over with its body expanded
-  again = do
-    modify_ \s -> { tentative: s0.tentative, retained: s.retained }
-    attempt true
+  -- the one type each member has in the group
+  monomorphic = do
+    s <- get
+    case runAttempt session (atLevel topLevel (traverse (\_ -> freshTypeMeta emptyXContext XKType) members)) s of
+      Tuple (Done types) s' -> put s' $> types
+      Tuple outcome s' -> put s' *> throwError [ attemptFailure names outcome ]
 
-  expansionAsked expanded built s =
+  expansionAsked expanded s b =
     let
       metas = s.tentative.metas
     in
-      not expanded && expandable u.params u.body
-        && not (isSettledValueForm isConstructor (zonkExpr metas built.expr))
-        && isJust (asArrow (substitute metas built.type))
+      not (Set.member b.unsigned.name expanded) && expandable b.unsigned.params b.unsigned.body
+        && not (isSettledValueForm isConstructor (zonkExpr metas b.expr))
+        && isJust (asArrow (substitute metas b.type))
 
-  elaborated expanded = do
+  elaborated inGroup expanded u t = do
     s <- get
-    case runAttempt session (atLevel topLevel (runSurf (inferDefinition internal surface u.name u.origin u.params u.body expanded))) s of
-      Tuple (Done (Right built)) s' -> put s' $> built
-      Tuple (Done (Left problem)) s' -> put s' *> throwError [ Unsupported problem ]
-      Tuple outcome s' -> put s' *> throwError [ failure outcome ]
+    let
+      site = { context: emptyXContext, origin: AtSource { declaration: u.name, origin: u.origin } }
+      body = do
+        noted <- runSurf (inferDefinition internal inGroup u.name u.origin u.params u.body (Set.member u.name expanded))
+        for_ noted \n -> equate site { kind: XKType, left: n.value.type, right: t }
+        pure noted
+    case runAttempt session (atLevel topLevel body) s of
+      Tuple (Done (Right n)) s' -> put s' $> { unsigned: u, expr: n.value.expr, type: t, holes: n.holes, wildcards: n.wildcards }
+      Tuple (Done (Left problem)) s' -> put s' *> throwError [ { error: Unsupported problem, names: [ u.name ] } ]
+      Tuple outcome s' -> put s' *> throwError [ attemptFailure [ u.name ] outcome ]
 
   settle built loopWarnings = do
-    let typed = built.value
-    resolution <- step (resolveOwners session attempter declarationOf (const topLevel) (_ == u.name))
+    resolution <- step (resolveOwners session attempter groupOwner (const topLevel) (_ == key))
     resolutionWarnings <- case resolution of
-      ResolutionHalted d -> throwError [ Broken d ]
+      ResolutionHalted d -> throwError [ defect d ]
       Resolution r -> case Array.findMap refusal r.components of
-        Just d -> throwError [ rejected d ]
+        Just d -> throwError [ diagnosed d ]
         Nothing -> pure r.warnings
-    member <- gets \s -> { key: u.name, name: u.name, type: typed.type, body: typed.expr, valueForm: isSettledValueForm isConstructor (zonkExpr s.tentative.metas typed.expr) }
-    prepared <- step (prepareGeneralization attempter declarationOf topLevel [ member ])
+    generalizing <- gets \s -> map (\b -> { key: b.unsigned.name, name: b.unsigned.name, type: b.type, body: b.expr, valueForm: isSettledValueForm isConstructor (zonkExpr s.tentative.metas b.expr) }) built
+    prepared <- step (prepareGeneralization attempter memberOwner topLevel generalizing)
     draft <- case prepared.preparation of
       Drafted d -> pure d
-      Hindered hindrances -> hindered member hindrances
-      PreparationStopped result -> throwError (stoppedErrors result)
-    closed <- step (closeRows session attempter declarationOf u.name topLevel site typed.expr [ typed.type ])
+      Hindered hindrances -> hindered built hindrances
+      PreparationStopped result -> throwError (stoppedAt result)
+    closed <- step (closeRows session attempter groupOwner key topLevel (map (\b -> { site: { context: emptyXContext, origin: InDeclaration b.unsigned.name }, term: b.expr, types: [ b.type ] }) built))
     closingWarnings <- case closed of
-      Left d -> throwError [ Broken d ]
-      Right { closing: Undone c } -> throwError [ undoneError c.cause ]
+      Left d -> throwError [ defect d ]
+      Right { closing: Undone c } -> throwError [ undone c.cause ]
       Right c -> pure c.warnings
     -- a hole or a wildcard is reported before what it stands for is
     -- quantified or found ambiguous
-    noted <- gets \s -> annotated s.tentative.metas built.holes built.wildcards
-    throwIfAny noted.reported
-    planned <- step (finalizeGeneralization declarationOf draft [ member ])
+    noted <- gets \s -> Array.concatMap (\b -> map (\error -> { error, names: [ b.unsigned.name ] }) (annotated s.tentative.metas b.holes b.wildcards).reported) built
+    throwIfAny noted
+    planned <- step (finalizeGeneralization memberOwner draft generalizing)
     plan <- case planned of
       Planned p -> pure p
-      FinalizationHindered hindrances -> hindered member hindrances
-    committed <- step (commitGeneralization declarationOf plan [ member ])
+      FinalizationHindered hindrances -> hindered built hindrances
+    committed <- step (commitGeneralization memberOwner plan generalizing)
     finalized <- case committed of
-      Generalized { members: [ f ] } -> pure f
-      Generalized _ -> throwError [ Broken (CommitmentAmiss u.name) ]
-      GeneralizationHindered hindrances -> hindered member hindrances
-      GeneralizationHalted d -> throwError [ Broken d ]
+      Generalized g | map _.name g.members == names -> pure g.members
+      Generalized _ -> throwError [ defect (CommitmentAmiss key) ]
+      GeneralizationHindered hindrances -> hindered built hindrances
+      GeneralizationHalted d -> throwError [ defect d ]
     metas <- gets _.tentative.metas
-    scheme <- case toCore finalized.scheme.body of
-      Just body -> pure { kindVars: finalized.scheme.kindVars, body }
-      Nothing -> throwError [ Broken (CommitmentAmiss u.name) ]
-    body <- case toCoreExpr (zonkExpr metas finalized.body) of
+    values <- traverse (made metas) (Array.zip members finalized)
+    pure { values, warnings: loopWarnings <> resolutionWarnings <> prepared.warnings <> closingWarnings }
+
+  -- a member as Core: its scheme and its definition
+  made metas (Tuple u f) = do
+    scheme <- case toCore f.scheme.body of
+      Just body -> pure { kindVars: f.scheme.kindVars, body }
+      Nothing -> throwError [ defect (CommitmentAmiss u.name) ]
+    body <- case toCoreExpr (zonkExpr metas f.body) of
       Right body -> pure body
       Left residues -> throwError case Array.findMap defectOf (NonEmptyArray.toArray residues) of
-        Just defect -> [ Broken defect ]
-        Nothing -> map TypeUndetermined (Array.nubEq (map residueOrigin (NonEmptyArray.toArray residues)))
-    pure
-      { value: { name: u.name, origin: u.origin, ordinal: u.ordinal, attributes: u.attributes, scheme, spine: plainScheme scheme, body }
-      , warnings: loopWarnings <> resolutionWarnings <> prepared.warnings <> closingWarnings
-      }
+        Just d -> [ defect d ]
+        Nothing -> map (\o -> { error: TypeUndetermined o, names: [ u.name ] }) (Array.nubEq (map residueOrigin (NonEmptyArray.toArray residues)))
+    pure { name: u.name, origin: u.origin, ordinal: u.ordinal, attributes: u.attributes, scheme, spine: plainScheme scheme, body }
 
-  hindered :: forall r x. { body :: XExpr Surface.Origin | r } -> Array (Hindrance (Qualified Ident)) -> Generalizing x
-  hindered member hindrances = do
+  -- each member's hindrances, where the residues of its body place them
+  hindered :: forall r x. Array { unsigned :: Unsigned, expr :: XExpr Surface.Origin | r } -> Array (Hindrance (Qualified Ident)) -> Generalizing x
+  hindered built hindrances = do
     metas <- gets _.tentative.metas
-    throwError (hindranceErrors u (either NonEmptyArray.toArray (const []) (toCoreExpr (zonkExpr metas member.body))) hindrances)
+    throwError
+      ( Array.concatMap
+          ( \b ->
+              let
+                own = Array.filter (\h -> hindranceKey h == b.unsigned.name) hindrances
+                residues = either NonEmptyArray.toArray (const []) (toCoreExpr (zonkExpr metas b.expr))
+              in
+                if Array.null own then [] else map (\error -> { error, names: [ b.unsigned.name ] }) (hindranceErrors b.unsigned residues own)
+          )
+          built
+      )
+
+  stoppedAt = case _ of
+    Loop.Rejected d -> [ diagnosed d ]
+    Loop.Exhausted p -> [ { error: EquationUndecided p.origin, names: [ declarationOf p.origin ] } ]
+    Loop.Halted d -> [ defect d ]
+    Loop.Completed -> []
+    Loop.Blocked _ -> []
+
+  diagnosed d = { error: rejected d, names: diagnosticDeclarations d }
+
+  -- an attempt that did not commit, by what it came to: a refusal names what
+  -- its diagnostic is about, a defect every member, and anything else the
+  -- members given
+  attemptFailure :: forall x. Array (Qualified Ident) -> Outcome x -> Failure
+  attemptFailure given = case _ of
+    Failed d -> { error: Rejected d, names: diagnosticDeclarations d }
+    Broke d -> defect d
+    outcome -> { error: failure outcome, names: given }
+
+  undone = case _ of
+    UndoneBy d -> diagnosed d
+    UndoneWaiting p -> { error: EquationUndecided p.origin, names: [ declarationOf p.origin ] }
 
   refusal c = case c.outcome of
     Refused d -> Just d
@@ -866,14 +945,22 @@ generalizeValue session attempter internal surface isConstructor u s0 =
 
   throwIfAny errors = unless (Array.null errors) (throwError errors)
 
--- | What the loop stopping short of quiescence reports.
-stoppedErrors :: Loop.RunResult -> Array ElaborationError
-stoppedErrors = case _ of
-  Loop.Rejected d -> [ rejected d ]
-  Loop.Exhausted p -> [ EquationUndecided p.origin ]
-  Loop.Halted d -> [ Broken d ]
-  Loop.Completed -> []
-  Loop.Blocked _ -> []
+-- | The member a hindrance is about.
+hindranceKey :: forall k. Hindrance k -> k
+hindranceKey = case _ of
+  Hindrance.GoalTouchesQuantifier k _ _ -> k
+  Hindrance.SynthesisUndecided k _ _ -> k
+  Hindrance.RestrictedUnsolved k -> k
+  Hindrance.AmbiguousCandidates k _ -> k
+  Hindrance.AmbiguousKindCandidates k _ -> k
+  Hindrance.KindNotQuantifiable k _ -> k
+  Hindrance.FitLeft k _ _ -> k
+  Hindrance.BoundaryLeft k _ _ -> k
+  Hindrance.TermMetaLeft k _ -> k
+  Hindrance.ConstraintRefused k _ _ -> k
+  Hindrance.AmbiguousConstraint k _ -> k
+  Hindrance.RecursiveArgumentAmbiguous k _ -> k
+  Hindrance.ConstraintEscapes k _ _ -> k
 
 -- | What keeps a value without a signature from being generalized, as its
 -- | author is told it, each where the residues of its body place it, and where

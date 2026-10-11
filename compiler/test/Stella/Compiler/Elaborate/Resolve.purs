@@ -5,7 +5,7 @@ module Test.Stella.Compiler.Elaborate.Resolve (spec) where
 import Prelude
 
 import Data.Array as Array
-import Data.Foldable (foldr)
+import Data.Foldable (foldr, for_)
 import Data.Map as Map
 import Data.Set as Set
 import Data.Maybe (Maybe(..))
@@ -24,7 +24,7 @@ import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), SessionEnv, SolverState, closeBoundary, drainWarnings, equate, formUnion, freshInstantiationRow, freshTypeMeta, initialState, openBoundary, placeFit, recordWarning, require)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitState(..), FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
-import Stella.Compiler.Elaborate.Mechanism.Unify (substitute)
+import Stella.Compiler.Elaborate.Mechanism.Unify (isInstantiationRow, substitute)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.TypedCore (primSignature)
@@ -181,6 +181,77 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Resolve" do
           map ambiguityOf (outcomes resolution) `shouldEqual` [ Just "depend" ]
           substitute after.tentative.metas r.m `shouldEqual` r.m
 
+    it "that wait on another's are made in a round after it, a chain of two or of three, whatever order its fits come in" do
+      let
+        chain order = do
+          a <- freshTypeMeta emptyXContext rowEffect
+          b <- freshTypeMeta emptyXContext rowEffect
+          c <- freshTypeMeta emptyXContext rowEffect
+          let fits = [ Tuple (closed [ console ]) a, Tuple a b, Tuple b c ]
+          _ <- traverse (\(Tuple source target) -> placeFit site Wrapping source target) (order fits)
+          pure { a, b, c }
+      resolving
+        ( do
+            inner <- freshTypeMeta emptyXContext rowEffect
+            outer <- freshTypeMeta emptyXContext rowEffect
+            _ <- placeFit site Wrapping inner outer
+            _ <- placeFit site Wrapping (closed [ console ]) inner
+            pure { inner, outer }
+        )
+        \r resolution after -> do
+          outcomes resolution `shouldEqual` [ Settled ]
+          sameRow after r.outer (closed [ console ])
+      for_ [ identity, Array.reverse ] \order ->
+        resolving (chain order) \r resolution after -> do
+          outcomes resolution `shouldEqual` [ Settled ]
+          for_ [ r.a, r.b, r.c ] \m -> sameRow after m (closed [ console ])
+
+    it "giving one metavariable two solutions wait until what is made first makes them one" do
+      resolving
+        ( do
+            t <- freshInstantiationRow emptyXContext
+            p <- freshTypeMeta emptyXContext rowEffect
+            q <- freshTypeMeta emptyXContext rowEffect
+            -- `?p := ?q` is ready, and makes the two solutions of `?t` one
+            _ <- placeFit site Wrapping q p
+            _ <- placeFit site Wrapping t (row [ console ] p)
+            _ <- placeFit site Wrapping t (row [ console ] q)
+            pure { t, q }
+        )
+        \r resolution after -> do
+          outcomes resolution `shouldEqual` [ Settled ]
+          sameRow after r.t (row [ console ] r.q)
+
+    it "giving one metavariable two solutions nothing makes one leave the component" do
+      resolving
+        ( do
+            t <- freshInstantiationRow emptyXContext
+            p <- freshTypeMeta emptyXContext rowEffect
+            q <- freshTypeMeta emptyXContext rowEffect
+            _ <- placeFit site Wrapping t (row [ console ] p)
+            _ <- placeFit site Wrapping t (row [ clock ] q)
+            pure t
+        )
+        \t resolution after -> do
+          map ambiguityOf (outcomes resolution) `shouldEqual` [ Just "depend" ]
+          substitute after.tentative.metas t `shouldEqual` t
+
+    it "are read again once a union identifies the rows they are about, an instantiation row made an inference row maximized no more" do
+      resolving
+        ( do
+            t <- freshInstantiationRow emptyXContext
+            m <- freshTypeMeta emptyXContext rowEffect
+            target <- freshTypeMeta emptyXContext rowEffect
+            -- the union equates `?t` with `?m`, an inference row
+            _ <- placeFit site Wrapping (closed [ stateR t ]) target
+            _ <- placeFit site Wrapping (closed [ stateR m ]) target
+            _ <- placeFit site Wrapping t (closed [ console ])
+            pure { t, m }
+        )
+        \r resolution after -> do
+          map ambiguityOf (outcomes resolution) `shouldEqual` [ Just "undecided" ]
+          map (substitute after.tentative.metas) [ r.t, r.m ] `shouldEqual` [ r.t, r.m ]
+
     it "that break an obligation refuse the component, and roll it back" do
       resolving
         ( do
@@ -194,6 +265,123 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Resolve" do
             [ Refused (ObligationBroken _) ] -> pure unit
             other -> fail ("not refused: " <> show other)
           substitute after.tentative.metas m `shouldEqual` m
+
+  describe "tails on a cycle of fits" do
+    let fresh = freshTypeMeta emptyXContext rowEffect
+    it "are identified, a cycle of two or of three, each with one of them" do
+      resolving
+        ( do
+            a <- fresh
+            b <- fresh
+            _ <- placeFit site Wrapping a b
+            _ <- placeFit site Wrapping b a
+            x <- fresh
+            y <- fresh
+            z <- fresh
+            _ <- placeFit site Wrapping x y
+            _ <- placeFit site Wrapping y z
+            _ <- placeFit site Wrapping z x
+            pure { a, b, x, y, z }
+        )
+        \r resolution after -> do
+          outcomes resolution `shouldEqual` [ Settled, Settled ]
+          substitute after.tentative.metas r.b `shouldEqual` r.a
+          map (substitute after.tentative.metas) [ r.y, r.z ] `shouldEqual` [ r.x, r.x ]
+
+    it "are identified in a round of their own, what the cycle needs decided in the next" do
+      resolving
+        ( do
+            a <- fresh
+            b <- fresh
+            _ <- placeFit site Wrapping a b
+            _ <- placeFit site Wrapping b a
+            _ <- placeFit site Wrapping (closed [ console ]) a
+            pure { a, b }
+        )
+        \r resolution after -> do
+          outcomes resolution `shouldEqual` [ Settled ]
+          sameRow after r.a (closed [ console ])
+          sameRow after r.b (closed [ console ])
+
+    it "are not identified by a containment one way" do
+      resolving
+        ( do
+            a <- fresh
+            b <- fresh
+            _ <- placeFit site Wrapping a b
+            _ <- placeFit site Wrapping (closed [ console ]) b
+            pure { a, b }
+        )
+        \r resolution after -> do
+          outcomes resolution `shouldEqual` [ Settled ]
+          sameRow after r.b (row [ console ] r.a)
+          (xnf (substitute after.tentative.metas r.a) == xnf (substitute after.tentative.metas r.b)) `shouldEqual` false
+
+    it "are not identified through a fit whose remainder holds a known key or a rigid tail" do
+      resolving
+        ( do
+            a <- fresh
+            b <- fresh
+            _ <- placeFit site Wrapping (row [ console ] a) b
+            _ <- placeFit site Wrapping b a
+            pure a
+        )
+        \a resolution after -> do
+          map ambiguityOf (outcomes resolution) `shouldEqual` [ Just "depend" ]
+          substitute after.tentative.metas a `shouldEqual` a
+      resolving
+        ( do
+            a <- freshTypeMeta withE rowEffect
+            b <- freshTypeMeta withE rowEffect
+            _ <- placeFit (siteIn "f" withE) Wrapping (XRowUnion e a) b
+            _ <- placeFit (siteIn "f" withE) Wrapping b a
+            pure a
+        )
+        \a resolution after -> do
+          map ambiguityOf (outcomes resolution) `shouldEqual` [ Just "depend" ]
+          substitute after.tentative.metas a `shouldEqual` a
+
+    it "are not identified with a checking boundary's ambient row" do
+      resolving
+        ( do
+            a <- fresh
+            r <- boundaryWith (closed [ console ]) (\sigma -> [ Tuple a sigma ])
+            _ <- placeFit site Wrapping (XMeta r.sigma) a
+            pure { a, sigma: r.sigma }
+        )
+        \r resolution after -> do
+          outcomes resolution `shouldEqual` []
+          substitute after.tentative.metas r.a `shouldEqual` r.a
+
+    it "are an inference row once identified where an inference row is among them" do
+      resolving
+        ( do
+            t <- freshInstantiationRow emptyXContext
+            m <- fresh
+            _ <- placeFit site Wrapping t m
+            _ <- placeFit site Wrapping m t
+            pure { t, m }
+        )
+        \r resolution after -> do
+          outcomes resolution `shouldEqual` [ Settled ]
+          case substitute after.tentative.metas r.t, substitute after.tentative.metas r.m of
+            XMeta one, XMeta other | one == other -> isInstantiationRow after.tentative.metas one `shouldEqual` false
+            one, other -> fail ("not identified: " <> show one <> ", " <> show other)
+
+    it "are rolled back with their component where what is decided of them later breaks an obligation" do
+      resolving
+        ( do
+            a <- fresh
+            b <- fresh
+            require site (XLacks (EffectKey (effect "Console")) b)
+            _ <- placeFit site Wrapping a b
+            _ <- placeFit site Wrapping b a
+            _ <- placeFit site Wrapping (closed [ console ]) a
+            pure { a, b }
+        )
+        \r resolution after -> do
+          map ambiguityOf (outcomes resolution) `shouldEqual` [ Just "refused" ]
+          map (substitute after.tentative.metas) [ r.a, r.b ] `shouldEqual` [ r.a, r.b ]
 
   describe "components" do
     it "are resolved apart by their owners, one left and another settled" do

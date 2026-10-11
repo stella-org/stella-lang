@@ -276,6 +276,12 @@ data Defect
   -- | A group committed other than as it was planned: its members not those
   -- | given, or a scheme holding what no generalization made rigid.
   | CommitmentAmiss (Qualified Ident)
+  -- | A body asking to be η-expanded once its group was built again with every
+  -- | body the first build asked for expanded.
+  | ExpansionUnsettled (Qualified Ident)
+  -- | Rows closing would close that no member, fit, or obligation it was found
+  -- | in stands at, so none could be reported where it is.
+  | ClosingSiteAbsent (P.Array MetaVar)
   -- | A checking boundary whose ambient row `Ψ` does not hold unsolved: only the
   -- | boundary assigns it.
   | BoundaryRowAbsent MetaVar

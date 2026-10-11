@@ -29,6 +29,7 @@ import Stella.Compiler.Interface.Environment (BuildEnvironment, ModuleView, look
 import Stella.Compiler.Interface.Scheme (Scheme, SchemeBody(..))
 import Stella.Compiler.TypedCore.Name (Ident, Qualified(..))
 import Stella.Compiler.TypedCore.Type (TypeScheme)
+import Stella.Compiler.Elaborate.CorePlus.Type (XType)
 
 -- | The synonyms, the values taking a synthesized argument, and the module's
 -- | values without a signature, each by the qualified name of its declaration.
@@ -39,8 +40,11 @@ type SurfaceEnv =
   }
 
 -- | A value without a signature, as a reference to it reads it: at the scheme
--- | its group's generalization made final.
-data SurfaceBinding = Final TypeScheme
+-- | its group's generalization made final, or, from inside its group while
+-- | the group is elaborated, at the one type it has there.
+data SurfaceBinding
+  = Final TypeScheme
+  | Provisional XType
 
 emptySurface :: SurfaceEnv
 emptySurface = { synonyms: emptySynonyms, synthesizing: Set.empty, bindings: Map.empty }

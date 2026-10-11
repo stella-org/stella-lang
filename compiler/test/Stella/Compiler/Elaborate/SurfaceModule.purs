@@ -561,14 +561,64 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "effect Console where", "  log :: Int ->* Unit", "loud :: Int / {| Console |}", "loud = 1", "w = loud" ] \r ->
         map at r.errors `shouldEqual` [ "rejected" ]
 
-    it "is outside this version where it is recursive" do
+    it "is generalized with the group of declarations it refers to, each member at a scheme of its own" do
       elaborating [ "loop x = loop x", "p x = q x", "q x = p x", "ok = 1" ] \r -> do
-        map at r.errors `shouldEqual`
-          [ "3:1 outside: a recursive declaration without a signature"
-          , "4:1 outside: a recursive declaration without a signature"
-          , "5:1 outside: a recursive declaration without a signature"
+        map at r.errors `shouldEqual` []
+        map (\name -> schemeOf name r.values) [ "loop", "p", "q", "ok" ] `shouldEqual` map Just
+          [ "forall a. forall b. a -> b"
+          , "forall a. forall b. forall c. a -> c / b"
+          , "forall a. forall b. forall c. a -> c / b"
+          , "Int"
           ]
-        map _.name r.values `shouldEqual` [ inM "ok" ]
+        checked r \core -> shapes core `shouldEqual` [ "rec loop", "rec p q", "nonrec ok" ]
+
+    it "is used at two types by a body with a signature, its group generalized first" do
+      elaborating [ "ev n = od n", "od n = ev n", "m :: Tuple Int String", "m = Tuple (ev 1) (od \"s\")" ] \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "rec ev od", "nonrec m" ]
+
+    it "decides the row its group shares once the cycle of its fits is one row" do
+      elaborating (shouting <> [ "p x = const (shout x) (q x)", "q x = p x" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "p" r.values `shouldEqual` Just "Int -> Unit / {| Console |}"
+        schemeOf "q" r.values `shouldEqual` Just "Int -> Unit / {| Console |}"
+
+    it "raises what a member it refers to needs where the reference stands, through to Core" do
+      elaborating (shouting <> [ "r k n = const (k (shout n)) (s k)", "s k n = r k n" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        map (\name -> schemeOf name r.values) [ "r", "s" ] `shouldEqual` map Just
+          [ "forall a. forall b. … => (Unit -> b / {| ...a |}) -> Int -> b / {| Console, ...a |}"
+          , "forall a. forall b. … => (Unit -> b / {| ...a |}) -> Int -> b / {| Console, ...a |}"
+          ]
+        -- `s` refers to `r` at its own variables, the constraint `r` needs given
+        let
+          refersConstrained = case _ of
+            ConstraintApp _ (TyApp _ (TyApp _ (Global _ g _) _) _) -> g == inM "r"
+            TyLam _ _ _ e -> refersConstrained e
+            ConstraintLam _ _ e -> refersConstrained e
+            Lam _ _ _ e -> refersConstrained e
+            App _ f x -> refersConstrained f || refersConstrained x
+            OpenEff _ _ e -> refersConstrained e
+            _ -> false
+        map refersConstrained (bodyOf "s" r.values) `shouldEqual` Just true
+        checked r \core -> shapes core `shouldEqual` [ "rec shout", "rec r s" ]
+
+    it "reports a member using another at a type its own does not reach, the other left unchecked" do
+      elaborating [ "data List a = Nil | Cons a (List a)", "f x = const 0 (g Nil)", "g xs = f ()" ] \r ->
+        map at r.errors `shouldEqual` [ "4:18 type undetermined", "5:1 left unchecked" ]
+
+    it "reports what fails at the member it names, the others left unchecked, and leaves nothing to what follows" do
+      elaborating [ "p x = q x", "q x = const (p x) (inc ())", "user = p", "ok = \\x -> x" ] \r -> do
+        map at r.errors `shouldEqual` [ "4:24 rejected", "3:1 left unchecked", "5:1 left unchecked" ]
+        schemeOf "ok" r.values `shouldEqual` Just "forall a. a -> a"
+      elaborating [ "bad :: _", "bad = 1", "p x = q bad", "q x = p x" ] \r ->
+        map at r.errors `shouldEqual` [ "3:8 outside: a wildcard", "5:1 left unchecked", "6:1 left unchecked" ]
+
+    it "is a recursive value that is no function where it refers to its group before any λ, generalized or not" do
+      elaborating [ "f = g", "g x = f x" ] \r ->
+        map at r.errors `shouldEqual` [ "3:1 outside: a recursive value that is no function" ]
+      elaborating [ "data List a = Nil | Cons a (List a)", "xs = Cons 1 xs" ] \r ->
+        map at r.errors `shouldEqual` [ "4:1 outside: a recursive value that is no function" ]
 
     it "leaves a declaration referring to one with no scheme unchecked, and one referring to a body with a signature that failed checked" do
       elaborating

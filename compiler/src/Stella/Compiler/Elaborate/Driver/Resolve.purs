@@ -8,19 +8,27 @@
 -- | group of them — and two owners share no metavariable. Each component is
 -- | resolved under a checkpoint of its own, in rounds, to a fixpoint:
 -- |
+-- | 0. Tails a cycle of fits between lone tails passes through are one row in
+-- |    every solution, and are identified, each with the least of its cycle;
+-- |    a round that identifies any makes no other assignment.
 -- | 1. A target whose remainder is one flexible tail `?m` takes the compatible
 -- |    union of the sources of every fit whose target's remainder is `?m`.
 -- | 2. A source whose remainder is one instantiation row `?t` takes its target's
 -- |    remainder.
 -- |
 -- | **Each round's assignments are read off the state as it stands and made
--- | together**, rule 1's before rule 2's; ones that depend on one another — one
--- | metavariable reached twice, or one standing in another's solution — are not
--- | made. Each goes through `unify`, and the loop runs the jobs they wake before
--- | the next round. A checking boundary's own fits are taken by neither rule:
--- | a boundary still waiting stands in for them with `fit(U, ρ)`, or `fit(Sᵢ, ρ)`
--- | for each source where the union is not formed, and its ambient row is
--- | never solved here.
+-- | together**, rule 1's before rule 2's; one that depends on another — its
+-- | metavariable given two solutions, or its solution holding a metavariable
+-- | another assigns — waits, read again in the next round, and the component
+-- | is ambiguous only where none is ready. A round whose unions, equating the
+-- | payloads they share, solve a type metavariable that was unsolved makes no
+-- | assignment: the rules read the rows again in the next round, their
+-- | remainders and provenance among them. Each assignment goes through
+-- | `unify`, and the loop runs the jobs they wake before the next round. A
+-- | checking boundary's own fits are taken by neither rule: a boundary still
+-- | waiting stands in for them with `fit(U, ρ)`, or `fit(Sᵢ, ρ)` for each
+-- | source where the union is not formed, and its ambient row is never solved
+-- | here.
 -- |
 -- | **A component that ends with a fit or a boundary undecided, or in a
 -- | failure, is rolled back to its checkpoint**, and what it came to is the
@@ -326,33 +334,90 @@ assignmentsOf component boundaries = do
       _ -> Nothing
 
     targets = Array.nub (Array.mapMaybe (lone <<< _.target) fits)
-  rule1 <- for targets \m -> case Array.filter (\f -> lone f.target == Just m) fits of
-    into | Just first <- Array.head into ->
-      map (map (\u -> [ { meta: m, solution: rebuild u, site: first.site } ])) (formUnion (map (\f -> { site: f.site, row: f.source }) into))
-    _ -> pure (Right [])
-  let
-    rule2 = Array.mapMaybe
-      ( \f -> case lone f.source of
-          Just t | isInstantiationRow metas t -> Just { meta: t, solution: rebuild f.target, site: f.site }
-          _ -> Nothing
-      )
-      fits
-  let
-    formed = Array.concat (Array.mapMaybe (either (const Nothing) Just) rule1)
-    unformed = Set.unions (Array.mapMaybe (either Just (const Nothing)) rule1)
-  pure (map (\assignments -> { assignments, unformed }) (independent metas (formed <> rule2)))
 
--- | The assignments given, where none depends on another: one metavariable
--- | given one solution, and no solution holding a metavariable assigned
--- | beside it.
+    -- the containments the component's own fits state between lone tails;
+    -- the tails a cycle of them passes through are one row in every solution
+    edges = Array.mapMaybe
+      ( \f -> case lone f.source, lone f.target of
+          Just from, Just to | from /= to -> Just { from, to, site: f.site }
+          _, _ -> Nothing
+      )
+      owned
+    -- each tail identified at the site of a fit of its cycle it stands in
+    identified = Array.concatMap
+      ( \cycle ->
+          let
+            inCycle = Array.filter (\edge -> Set.member edge.from cycle && Set.member edge.to cycle) edges
+            identify representative m =
+              map (\edge -> { meta: m, solution: XMeta representative, site: edge.site }) (Array.find (\edge -> edge.from == m || edge.to == m) inCycle)
+          in
+            case Set.findMin cycle of
+              Just representative -> Array.mapMaybe (identify representative) (Array.filter (_ /= representative) (Set.toUnfoldable cycle))
+              Nothing -> []
+      )
+      (cyclesOf edges)
+  -- a round identifying tails on a cycle makes no other assignment, the
+  -- rules reading the rows again once it is done
+  if not (Array.null identified) then pure (Right { assignments: identified, unformed: Set.empty })
+  else do
+    rule1 <- for targets \m -> case Array.filter (\f -> lone f.target == Just m) fits of
+      into | Just first <- Array.head into ->
+        map (map (\u -> [ { meta: m, solution: rebuild u, site: first.site } ])) (formUnion (map (\f -> { site: f.site, row: f.source }) into))
+      _ -> pure (Right [])
+    after <- currentMetas
+    let
+      rule2 = Array.mapMaybe
+        ( \f -> case lone f.source of
+            Just t | isInstantiationRow metas t -> Just { meta: t, solution: rebuild f.target, site: f.site }
+            _ -> Nothing
+        )
+        fits
+      formed = Array.concat (Array.mapMaybe (either (const Nothing) Just) rule1)
+      unformed = Set.unions (Array.mapMaybe (either Just (const Nothing)) rule1)
+    -- a union whose payloads were equated may have solved a row the rules
+    -- read, its remainders and its provenance among what they read: the round
+    -- makes nothing else, the rules reading the rows again once it is done
+    pure
+      if Array.any (\m -> isUnsolved metas m && not (isUnsolved after m)) (Array.fromFoldable (Map.keys metas.bindings)) then Right { assignments: [], unformed: Set.empty }
+      else map (\assignments -> { assignments, unformed }) (independent metas (formed <> rule2))
+
+-- | Whether `Ψ` holds a metavariable unsolved.
+isUnsolved :: MetaContext -> MetaVar -> P.Boolean
+isUnsolved metas m = case lookupMeta metas m of
+  Just (Unsolved _) -> true
+  _ -> false
+
+-- | The tails each cycle of the containments given passes through, each cycle
+-- | holding more than one.
+cyclesOf :: forall r. P.Array { from :: MetaVar, to :: MetaVar | r } -> P.Array (Set MetaVar)
+cyclesOf edges = Array.nub (Array.filter (\c -> Set.size c > 1) (map componentOf nodes))
+  where
+  nodes = Array.nub (Array.concatMap (\edge -> [ edge.from, edge.to ]) edges)
+  successors m = map _.to (Array.filter (\edge -> edge.from == m) edges)
+  reached m = go (Set.singleton m) [ m ]
+  go seen frontier = case Array.uncons frontier of
+    Nothing -> seen
+    Just { head, tail } ->
+      let
+        new = Array.filter (\n -> not (Set.member n seen)) (successors head)
+      in
+        go (Set.union seen (Set.fromFoldable new)) (tail <> new)
+  componentOf m = Set.filter (\n -> Set.member m (reached n)) (reached m)
+
+-- | The assignments of the given that are ready, none depending on another:
+-- | each of a metavariable given one solution, holding no metavariable any of
+-- | them assigns. The rest wait for the round after, read again once these
+-- | are made; where none is ready and some are given, they depend on one
+-- | another.
 independent :: MetaContext -> P.Array Assignment -> Either Ambiguity (P.Array Assignment)
 independent metas assignments =
-  if not (Set.isEmpty conflicting) then Left (AssignmentsDepend conflicting)
-  else Right distinct
+  if Array.null ready && not (Array.null distinct) then Left (AssignmentsDepend conflicting)
+  else Right ready
   where
   solved a = substitute metas a.solution
   distinct = Array.nubByEq (\a b -> a.meta == b.meta && solved a == solved b) assignments
   assigned = Set.fromFoldable (map _.meta distinct)
   twice = Set.fromFoldable (map _.meta (Array.filter (\a -> Array.length (Array.filter (\b -> b.meta == a.meta) distinct) > 1) distinct))
-  standing = Set.unions (map (\a -> Set.intersection assigned (metasOf (solved a))) distinct)
-  conflicting = Set.union twice standing
+  standing a = Set.intersection assigned (metasOf (solved a))
+  ready = Array.filter (\a -> not (Set.member a.meta twice) && Set.isEmpty (standing a)) distinct
+  conflicting = Set.union twice (Set.unions (map standing distinct))

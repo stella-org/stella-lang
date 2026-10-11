@@ -594,6 +594,15 @@ spec = describe "Stella.Compiler.Build" do
           Right built -> built `shouldEqual` [ "A", "B" ]
           Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
 
+    it "is generalized with the group it refers to, a `rec` of its module that another uses at two types" do
+      building
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "n :: Int", "n = ev 1", "s :: String", "s = od \"s\"" ])
+        , Tuple "src/A.stel" (moduleOf "A" [] [ "ev x = od x", "od x = ev x" ])
+        ]
+        \r -> case r.result of
+          Right built -> built `shouldEqual` [ "A", "B" ]
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+
   describe "a module's type declarations" do
     let
       rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors
