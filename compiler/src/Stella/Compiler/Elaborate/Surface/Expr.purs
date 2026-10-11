@@ -39,11 +39,13 @@
 -- | instantiated**, under a constraint application.
 -- |
 -- | **This version elaborates a subset**: variables, globals, computations,
--- | constructors, literals, application, λ over variables, and type
--- | annotations, a wildcard or a typed hole among what they write. A synthesized argument of the declaration's own is a parameter
--- | like any other; a reference to a value taking one is outside the subset, a
--- | goal being what supplies the argument. Anything else is reported where it
--- | stands, and the declaration holding it is not elaborated further.
+-- | constructors, literals, application, λ over variables, type annotations,
+-- | a wildcard or a typed hole among what they write, and `let` blocks and
+-- | `where`s binding variables and `_` without a signature. A synthesized
+-- | argument of the declaration's own is a parameter like any other; a
+-- | reference to a value taking one is outside the subset, a goal being what
+-- | supplies the argument. Anything else is reported where it stands, and the
+-- | declaration holding it is not elaborated further.
 module Stella.Compiler.Elaborate.Surface.Expr
   ( Surf
   , Noted
@@ -64,17 +66,19 @@ import Prim hiding (Type)
 
 import Data.Array as Array
 import Data.Either (Either(..))
-import Data.Foldable (foldMap)
+import Data.Foldable (foldMap, foldl, foldr)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Traversable (traverse)
+import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext, lookupVar)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
-import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..), isValueForm)
+import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..), isFunVal, isValueForm)
 import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), fromCore)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal)
+import Stella.Compiler.Elaborate.Surface.Group (groups)
 import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Environment.Constructors (lookupConstructor)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv)
@@ -85,7 +89,7 @@ import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), substitute)
 import Stella.Compiler.Elaborate.Surface.Type (TypeHole, Unsupported(..), Wildcard, elaborateType, xFunction)
 import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder(..), Expr(..), GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..), exprOrigin)
-import Stella.Compiler.Surface.Name (LocalVar(..))
+import Stella.Compiler.Surface.Name (BindingId, LocalVar(..))
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Name (Ident, KindVar, Qualified)
 import Stella.Compiler.TypedCore.Prim (functionTy, litType, unitCtor, unitTy)
@@ -361,54 +365,123 @@ immediateReferences = case _ of
   ExprComputation _ name -> Set.singleton name
   ExprApp _ f x -> Set.union (immediateReferences f) (immediateReferences x)
   ExprTyped _ inner _ -> immediateReferences inner
+  -- a binding with no parameter is evaluated where its block stands, and a
+  -- function's body only once it is applied
+  ExprLet _ bindings body -> foldMap evaluated bindings <> immediateReferences body
   _ -> Set.empty
+  where
+  evaluated = case _ of
+    LetValue b | Array.null b.params -> immediateReferences b.body
+    LetValue _ -> Set.empty
+    LetPattern b -> immediateReferences b.body
 
 -- | The top-level values and computations an expression refers to anywhere in
 -- | it, read off every form, whether or not this version elaborates it. A
 -- | local is no reference, being bound where it is used.
 references :: Expr -> Set (Qualified Ident)
-references = case _ of
-  ExprLocal _ _ -> Set.empty
-  ExprValue _ name -> Set.singleton name
-  ExprComputation _ name -> Set.singleton name
-  ExprConstructor _ _ -> Set.empty
-  ExprOperation _ _ _ -> Set.empty
-  ExprDiscriminator _ _ -> Set.empty
-  ExprTag _ _ -> Set.empty
-  ExprLiteral _ _ -> Set.empty
-  ExprHole _ _ -> Set.empty
-  ExprApp _ f x -> references f <> references x
-  ExprOperator _ op l r -> references op <> references l <> references r
-  ExprTyped _ inner _ -> references inner
-  ExprSelect _ inner _ -> references inner
-  ExprTuple _ es -> foldMap references es
-  ExprRecord _ fields -> foldMap field fields
-  ExprLambda _ _ body -> references body
-  ExprLet _ bindings body -> foldMap binding bindings <> references body
-  ExprCase _ scrutinees alternatives -> foldMap references scrutinees <> foldMap (alternative <<< _.body) alternatives
-  ExprHandle _ cells items body -> foldMap (references <<< _.initial) cells <> foldMap item items <> references body
-  ExprCellRead _ _ -> Set.empty
-  ExprCellWrite _ _ value -> references value
-  ExprResume _ -> Set.empty
-  ExprInvalid _ -> Set.empty
+references = mentioned case _ of
+  ExprValue _ name -> Just (Set.singleton name)
+  ExprComputation _ name -> Just (Set.singleton name)
+  _ -> Nothing
+
+-- | The locals an expression refers to anywhere in it, by their bindings.
+localReferences :: Expr -> Set BindingId
+localReferences = mentioned case _ of
+  ExprLocal _ (LocalVar v) -> Just (Set.singleton v.id)
+  _ -> Nothing
+
+-- | What the leaf given reads off each form of an expression where it reads
+-- | anything, every form traversed whether or not this version elaborates it.
+mentioned :: forall x. Ord x => (Expr -> Maybe (Set x)) -> Expr -> Set x
+mentioned leaf = go
   where
+  go e = case leaf e of
+    Just found -> found
+    Nothing -> case e of
+      ExprApp _ f x -> go f <> go x
+      ExprOperator _ op l r -> go op <> go l <> go r
+      ExprTyped _ inner _ -> go inner
+      ExprSelect _ inner _ -> go inner
+      ExprTuple _ es -> foldMap go es
+      ExprRecord _ fields -> foldMap field fields
+      ExprLambda _ _ body -> go body
+      ExprLet _ bindings body -> foldMap binding bindings <> go body
+      ExprCase _ scrutinees alternatives -> foldMap go scrutinees <> foldMap (alternative <<< _.body) alternatives
+      ExprHandle _ cells items body -> foldMap (go <<< _.initial) cells <> foldMap item items <> go body
+      ExprCellWrite _ _ value -> go value
+      _ -> Set.empty
   field = case _ of
-    FieldValue _ _ e -> references e
-    FieldUpdate _ _ e -> references e
-    FieldSpread _ e -> references e
+    FieldValue _ _ e -> go e
+    FieldUpdate _ _ e -> go e
+    FieldSpread _ e -> go e
   binding = case _ of
-    LetValue b -> references b.body
-    LetPattern b -> references b.body
+    LetValue b -> go b.body
+    LetPattern b -> go b.body
   alternative = case _ of
-    Unconditional e -> references e
+    Unconditional e -> go e
     Guarded lines -> foldMap guardLine lines
   guardLine = case _ of
-    GuardBinding _ _ e -> references e
-    GuardWhen _ condition e -> references condition <> references e
-    GuardOtherwise _ e -> references e
+    GuardBinding _ _ e -> go e
+    GuardWhen _ condition e -> go condition <> go e
+    GuardOtherwise _ e -> go e
   item = case _ of
-    HandlerApplied e -> references e
-    HandlerGroup g -> foldMap (references <<< _.body) g.body.operations <> foldMap (references <<< _.body) g.body.return
+    HandlerApplied e -> go e
+    HandlerGroup g -> foldMap (go <<< _.body) g.body.operations <> foldMap (go <<< _.body) g.body.return
+
+-- | A `let` block or a `where`, its bindings elaborated: the scope its body is
+-- | elaborated under, and what wraps that body in them.
+-- |
+-- | **A local binding without a signature is monomorphic** (D48): every name the
+-- | block binds is in scope in every right-hand side and in the body, each at
+-- | a type metavariable of the level it stands at, which its right-hand side's
+-- | type is equated with — a parameter's binding inferred as a `λ` is. A
+-- | right-hand side is evaluated where the block stands, under its ambient row.
+-- |
+-- | **The bindings are grouped by the references they make to one another**,
+-- | each a node — a `_` among them, named apart from every name source can
+-- | write, its right-hand side kept — and the groups stand in a stable
+-- | dependency order, the one depended on outside: one that does not refer to
+-- | itself is a `let`, and a recursive one a `letrec`, which binds functions
+-- | alone, so a member of one that is no function value — a `λ`, or a type or
+-- | a constraint abstraction of one — is outside what this version elaborates.
+letBlock :: Scope -> Surface.Origin -> Array LetBinding -> Surf { scope :: Scope, wrap :: XExpr Surface.Origin -> XExpr Surface.Origin }
+letBlock scope origin bindings = do
+  heads <- traverse head bindings
+  let inner = scope { context = foldl (\c h -> bindVar c h.name h.type) scope.context heads }
+  built <- traverse (rhs inner) heads
+  let
+    indexOf = Map.fromFoldable (Array.catMaybes (Array.mapWithIndex (\i h -> map (\v -> Tuple v i) h.binding) heads))
+    refers = map (\h -> Set.fromFoldable (Array.mapMaybe (\v -> Map.lookup v indexOf) (Array.fromFoldable (localReferences h.body)))) heads
+  wraps <- traverse (wrapping built) (groups refers)
+  pure { scope: inner, wrap: \e -> foldr (\w acc -> w acc) e wraps }
+  where
+  head = case _ of
+    LetValue v | Just _ <- v.signature -> outside (OutsideSubset v.origin "a local binding with a signature")
+    LetValue v -> let LocalVar l = v.var in fresh v.origin (Just l.id) l.name v.params v.body
+    LetPattern p -> case p.binder of
+      BinderVar _ (LocalVar l) -> fresh p.origin (Just l.id) l.name [] p.body
+      BinderWildcard _ -> do
+        name <- lift (freshIdent (Map.keys scope.context.vars) "_")
+        fresh p.origin Nothing name [] p.body
+      BinderInvalid o -> outside (ReportedAlready o)
+      other -> outside (OutsideSubset (binderOrigin other) "a pattern that is no variable")
+
+  fresh o binding name params body = do
+    ty <- lift (freshTypeMeta scope.context XKType)
+    pure { origin: o, binding, name, params, body, type: ty }
+
+  rhs inner h = do
+    inferred <- case h.params of
+      [] -> infer inner h.body
+      params -> infer inner (ExprLambda h.origin params h.body)
+    lift (equate (siteAt inner h.origin) { kind: XKType, left: inferred.type, right: h.type })
+    pure { head: h, expr: inferred.expr }
+
+  wrapping built g = case g.recursive, Array.mapMaybe (Array.index built) g.members of
+    false, [ b ] -> pure \e -> ELet b.head.origin b.head.name b.head.type b.expr e
+    _, members -> case Array.find (not <<< isFunVal <<< _.expr) members of
+      Just b -> outside (OutsideSubset b.head.origin "a recursive value that is no function")
+      Nothing -> pure \e -> ELetRec (maybe origin _.head.origin (Array.head members)) (map (\b -> { name: b.head.name, ty: b.head.type, value: b.expr }) members) e
 
 -- | The argument, the row, and the result of the arrow the type must be: its
 -- | own where it is one, and otherwise an arrow of fresh metavariables it is
@@ -428,6 +501,9 @@ arrow scope origin ty = do
 check :: Scope -> Expr -> Expected -> XType -> Surf (XExpr Surface.Origin)
 check scope expr expected ty = case expr of
   ExprLambda o binders body -> abstractions o false false expected scope (map Named binders) body ty
+  ExprLet o bindings body -> do
+    block <- letBlock scope o bindings
+    block.wrap <$> check block.scope body expected ty
   ExprInvalid o -> outside (ReportedAlready o)
   _ -> do
     metas <- lift currentMetas
@@ -489,6 +565,10 @@ infer scope expr = case expr of
   -- a λ whose type is not known: each parameter at a fresh type, its body
   -- under a fresh inference row
   ExprLambda _ binders body -> lambda binders body
+  ExprLet o bindings body -> do
+    block <- letBlock scope o bindings
+    inner <- infer block.scope body
+    pure { expr: block.wrap inner.expr, type: inner.type }
   ExprInvalid o -> outside (ReportedAlready o)
   _ -> outside (OutsideSubset (exprOrigin expr) "this form")
   where

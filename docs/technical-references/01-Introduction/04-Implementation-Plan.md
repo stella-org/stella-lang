@@ -1210,6 +1210,12 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | A value without a signature an interface publishes | Instantiated at each use by a module importing it, as a written scheme is |
 | A row metavariable two members of a group share, occurring once in each | Not closed: occurrences are counted over the group |
 | A local `let` whose right-hand side is a value and whose type is polymorphic | Monomorphic (D48). Using it at two types is a mismatch |
+| `f n = let go x = go x in go n`, and `g n = h n` with `where h x = x` | A `letrec` of `go`; a `let` of `h` around `g`'s body |
+| `let a = inc b; b = 1; c = 2 in a` | `let b` outside `let a`, and `let c` after it. The groups stand in a stable dependency order, the independent ones as written |
+| `loud x = let _ = shout 1 in x` | `∀a. a -> a / {\| Console \|}`. The `_` binding a `let` of a name source cannot write, its right-hand side evaluated where the block stands |
+| `let m = inc m in m` | Outside this version where `m` is bound: a recursive binding that is no function value |
+| A recursive local binding an annotation abstracts over a type or a constraint, `go = ((\x -> const x go) :: forall a. a -> a)` | A `letrec`. Core's `FunVal` admits a type or a constraint abstraction of a `λ` |
+| `u x = let unused y = y in x` | Ambiguous where `unused` and `y` stand. A type only a local term holds is quantified by nothing |
 | A top-level declaration whose right-hand side is an application leaving its type undetermined | A signature asked for. Not left monomorphic for a later declaration to fix |
 | A non-value right-hand side whose metavariables a later goal of the same group solves | Accepted. A restricted metavariable is reported only if it is unsolved at the end |
 | Two mutually recursive declarations without signatures, used at two types afterwards | Each generalized over what its own type reaches; the recursive references carry the type arguments of the callee's final scheme |

@@ -612,6 +612,12 @@ spec = describe "Stella.Compiler.Build" do
           Right built -> built `shouldEqual` [ "A", "B" ]
           Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
 
+  describe "a local binding" do
+    it "is a `let` or a `letrec` of the module's Core, through to its bytecode" do
+      compilingUnder [ "module M (f, g) where" ] [ "f :: Int -> Int", "f n = let", "      go x = go x", "      m = n", "    in go m", "g :: Int -> Int", "g n = h n", "  where", "  h x = x" ] case _ of
+        Left errors -> fail (joinWith "; " (map printCompileError errors))
+        Right r -> r.handed `shouldEqual` [ "core f g", "mid M", "bytecode M" ]
+
   describe "a module's type declarations" do
     let
       rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors

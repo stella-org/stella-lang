@@ -711,6 +711,77 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "foreign blob :: _ -> Int" ] \r ->
         map at r.errors `shouldEqual` [ "3:17 outside: a wildcard" ]
 
+  describe "a local binding without a signature" do
+    let
+      inM' = Qualified (ModuleName "M") <<< Ident
+      schemeOf name values = map (\v -> printType (fromCore v.scheme.body)) (Array.find (\x -> x.name == inM' name) values)
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM' name) values)
+      shouting =
+        [ "effect Console where"
+        , "  log :: Int ->* Unit"
+        , "shout :: Int -> Unit / {| Console |}"
+        , "shout x = shout x"
+        ]
+    it "is monomorphic, so that using it at two types is a mismatch" do
+      elaborating [ "f :: Int", "f = let i = \\x -> x in const (i 1) (i \"s\")" ] \r ->
+        map at r.errors `shouldEqual` [ "4:39 rejected" ]
+
+    it "is in scope in every right-hand side of its block and in its body, a recursive function a `letrec`, and a `where` a `let`" do
+      elaborating [ "f :: Int -> Int", "f n = let go x = go x in go n", "g :: Int -> Int", "g n = h n", "  where", "  h x = inc x" ] \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ (LetRec _ [ _ ] (App _ (Var _ _) (Var _ _)))) -> pure unit
+          other -> fail ("not a letrec: " <> show other)
+        case bodyOf "g" r.values of
+          Just (Lam _ _ _ (Let _ _ _ (Lam _ _ _ _) (App _ (Var _ _) (Var _ _)))) -> pure unit
+          other -> fail ("not a let: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f", "nonrec g" ]
+
+    it "stands in the order of what it refers to, what it depends on outside, and the rest as written" do
+      elaborating [ "k :: Int", "k = let", "      a = inc b", "      b = 1", "      c = 2", "    in a" ] \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "k" r.values of
+          Just (Let _ b _ (Lit _ (LitInt 1)) (Let _ a _ (App _ _ (Var _ b')) (Let _ c _ (Lit _ (LitInt 2)) (Var _ a')))) | b == b' && a == a' && c /= a -> pure unit
+          other -> fail ("not in order: " <> show other)
+
+    it "keeps a `_` binding's right-hand side, evaluated where the block stands, and what it performs in the row there" do
+      elaborating (shouting <> [ "loud x = let _ = shout 1 in x" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "loud" r.values `shouldEqual` Just "forall a. a -> a / {| Console |}"
+        case bodyOf "loud" r.values of
+          Just (TyLam _ _ _ (Lam _ _ _ (Let _ _ _ (App _ _ (Lit _ (LitInt 1))) (Var _ _)))) -> pure unit
+          other -> fail ("not kept: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "rec shout", "nonrec loud" ]
+
+    it "is a recursive value that is no function where it reads its own group, and refers to one initialized before it as it likes" do
+      elaborating [ "n :: Int", "n = let m = inc m in m" ] \r ->
+        map at r.errors `shouldEqual` [ "4:9 outside: a recursive value that is no function" ]
+      elaborating [ "n :: Int", "n = let m = n in m" ] \r ->
+        map at r.errors `shouldEqual` [ "4:1 outside: a recursive value that is no function" ]
+      elaborating [ "p :: Int", "p = let", "      a = inc 1", "      go x = go a", "    in go 0" ] \r ->
+        map at r.errors `shouldEqual` []
+
+    it "is a function value where an annotation abstracts it over a type or a constraint, as Core's `letrec` admits" do
+      elaborating [ "f :: Int", "f = let go = ((\\x -> const x go) :: forall a. a -> a) in 1" ] \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (LetRec _ [ { value: TyLam _ _ _ (Lam _ _ _ _) } ] _) -> pure unit
+          other -> fail ("not a letrec of an abstraction: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+      elaborating [ "effect Console where", "  log :: Int ->* Unit", "g :: Int", "g = let go = ((\\u -> const u go) :: forall r. Unit -> Unit / {| Console, ...r |}) in 1" ] \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "g" r.values of
+          Just (LetRec _ [ { value: TyLam _ _ _ (ConstraintLam _ _ (Lam _ _ _ _)) } ] _) -> pure unit
+          other -> fail ("not a letrec of an abstraction: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec g" ]
+
+    it "leaves a type only it holds ambiguous, no quantifier of the declaration around it" do
+      elaborating [ "u x = let unused y = y in x" ] \r -> do
+        map at r.errors `shouldEqual` [ "3:11 type undetermined", "3:18 type undetermined" ]
+        map _.name r.values `shouldEqual` []
+      elaborating [ "s :: Int", "s = let unused x = x in 1" ] \r ->
+        map at r.errors `shouldEqual` [ "4:9 type undetermined", "4:16 type undetermined" ]
+
   describe "a computation declaration" do
     let
       computations =
