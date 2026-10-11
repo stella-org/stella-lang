@@ -219,7 +219,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
 
   describe "a group's generalization" do
     let
-      member type' = { key: f, name: f, type: type', body, valueForm: true }
+      member type' = { key: f, name: f, type: type', body, valueForm: true, written: false }
 
     it "quantifies the candidates of each member's type where each first stands, named apart from what the type writes" do
       prepared
@@ -274,7 +274,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
 
     it "asks of a candidate its body alone reaches an annotation" do
       prepared ((\a c -> { a, c }) <$> freshTypeMeta emptyXContext XKType <*> freshTypeMeta emptyXContext XKType)
-        { members: \r -> [ { key: f, name: f, type: pure' r.a r.a, body: ELam unit (Ident "y") r.c (EVar unit (Ident "y")), valueForm: true } ]
+        { members: \r -> [ { key: f, name: f, type: pure' r.a r.a, body: ELam unit (Ident "y") r.c (EVar unit (Ident "y")), valueForm: true, written: false } ]
         , then: \r _ outcome -> outcome `shouldEqual` FinalizationHindered [ AmbiguousCandidates f [ metaOf r.c ] ]
         }
 
@@ -284,11 +284,11 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
       inGroup ((\k a -> { k, a }) <$> freshKindMeta Set.empty Set.empty <*> freshTypeMeta emptyXContext XKType) \r s -> do
         let
           writing = EGlobal unit (decl "h") [ r.k ]
-        case prepareGeneralization (attemptJob session registry) ownerOf 1 [ { key: f, name: f, type: pure' r.a r.a, body: writing, valueForm: false } ] s of
+        case prepareGeneralization (attemptJob session registry) ownerOf 1 [ { key: f, name: f, type: pure' r.a r.a, body: writing, valueForm: false, written: false } ] s of
           Tuple { preparation: Drafted draft } _ -> map _.kinds draft.restricted `shouldEqual` [ Set.singleton (kindMetaOf r.k) ]
           Tuple other _ -> fail ("not drafted: " <> show other.preparation)
-        case prepareGeneralization (attemptJob session registry) ownerOf 1 [ { key: f, name: f, type: pure' r.a r.a, body: writing, valueForm: true } ] s of
-          Tuple { preparation: Drafted draft } s' -> case finalizeGeneralization ownerOf draft [ { key: f, name: f, type: pure' r.a r.a, body: writing, valueForm: true } ] s' of
+        case prepareGeneralization (attemptJob session registry) ownerOf 1 [ { key: f, name: f, type: pure' r.a r.a, body: writing, valueForm: true, written: false } ] s of
+          Tuple { preparation: Drafted draft } s' -> case finalizeGeneralization ownerOf draft [ { key: f, name: f, type: pure' r.a r.a, body: writing, valueForm: true, written: false } ] s' of
             Tuple outcome _ -> outcome `shouldEqual` FinalizationHindered [ AmbiguousKindCandidates f [ kindMetaOf r.k ] ]
           Tuple other _ -> fail ("not drafted: " <> show other.preparation)
       prepared
@@ -298,14 +298,14 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             x <- freshTypeMeta emptyXContext k
             pure { k, g, x }
         )
-        { members: \r -> [ { key: f, name: f, type: pure' (XApp r.g r.x) int, body: EGlobal unit (decl "h") [ XKVar (KindVar "k") ], valueForm: true } ]
+        { members: \r -> [ { key: f, name: f, type: pure' (XApp r.g r.x) int, body: EGlobal unit (decl "h") [ XKVar (KindVar "k") ], valueForm: true, written: false } ]
         , then: \_ _ outcome -> case outcome of
             Planned plan -> map (map _.name <<< _.kindVars) plan.members `shouldEqual` [ [ KindVar "k1" ] ]
             other -> fail ("not planned: " <> show other)
         }
 
     let
-      restrictedMember type' = { key: f, name: f, type: type', body, valueForm: false }
+      restrictedMember type' = { key: f, name: f, type: type', body, valueForm: false, written: false }
     it "keeps what a member that is no value form reaches monomorphic, a signature asked for where nothing solves it" do
       inGroup ((\k a -> { k, a }) <$> freshKindMeta Set.empty Set.empty <*> freshTypeMeta emptyXContext XKType) \r s ->
         case prepareGeneralization (attemptJob session registry) ownerOf 1 [ restrictedMember (pure' r.a r.a) ] s of
@@ -336,7 +336,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
 
   describe "a synthesis goal of the group" do
     let
-      goalMember r = [ { key: f, name: f, type: pure' r.a r.a, body, valueForm: true } ]
+      goalMember r = [ { key: f, name: f, type: pure' r.a r.a, body, valueForm: true, written: false } ]
       preparing synthesizer goalType k = inGroup
         ( do
             a <- freshTypeMeta emptyXContext XKType
@@ -369,13 +369,13 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             Tuple id _ <- createSynthesis (siteIn f) b (decl "one")
             pure { a, b, id }
         )
-        \r s -> case prepareGeneralization (attemptJob session registry) ownerOf 1 [ { key: f, name: f, type: pure' r.a r.a, body, valueForm: true }, { key: decl "g", name: decl "g", type: pure' r.b r.b, body, valueForm: true } ] s of
+        \r s -> case prepareGeneralization (attemptJob session registry) ownerOf 1 [ { key: f, name: f, type: pure' r.a r.a, body, valueForm: true, written: false }, { key: decl "g", name: decl "g", type: pure' r.b r.b, body, valueForm: true, written: false } ] s of
           Tuple { preparation: Drafted _ } s' -> Map.member r.id s'.tentative.scheduler.pending `shouldEqual` false
           Tuple other _ -> fail ("not drafted: " <> show other.preparation)
 
     it "attempted again gives what it warned of with what preparing came to" do
       inGroup (createSynthesis (siteIn f) int (decl "warning")) \_ s ->
-        case prepareGeneralization (attemptJob session registry) ownerOf 1 [ { key: f, name: f, type: int, body, valueForm: true } ] s of
+        case prepareGeneralization (attemptJob session registry) ownerOf 1 [ { key: f, name: f, type: int, body, valueForm: true, written: false } ] s of
           Tuple { preparation: Drafted _, warnings } _ -> Array.length warnings `shouldEqual` 1
           Tuple other _ -> fail ("not drafted: " <> show other.preparation)
 
@@ -435,7 +435,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
       record r = XApp (XCon recordTy []) r
     it "makes each member's quantifiers rigid, wraps its body in their abstractions, and retires what it quantified" do
       committing (freshTypeMeta emptyXContext XKType)
-        (\a -> [ { key: f, name: f, type: pure' a a, body: ELam unit (Ident "y") a (EVar unit (Ident "y")), valueForm: true } ])
+        (\a -> [ { key: f, name: f, type: pure' a a, body: ELam unit (Ident "y") a (EVar unit (Ident "y")), valueForm: true, written: false } ])
         \a outcome after -> case outcome of
           Generalized group -> do
             map _.scheme group.members `shouldEqual` [ { kindVars: [], body: XForall (TyVar "a") XKType (pure' (XVar (TyVar "a")) (XVar (TyVar "a"))) } ]
@@ -451,7 +451,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             require (siteIn f) (XLacks key r)
             pure r
         )
-        (\r -> [ { key: f, name: f, type: pure' (record r) int, body, valueForm: true } ])
+        (\r -> [ { key: f, name: f, type: pure' (record r) int, body, valueForm: true, written: false } ])
         \_ outcome after -> case outcome of
           Generalized group -> do
             map _.scheme group.members `shouldEqual`
@@ -467,7 +467,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             require { context: emptyXContext { assumed = [ XLacks key r ] }, origin: InDeclaration f } (XLacks key r)
             pure r
         )
-        (\r -> [ { key: f, name: f, type: pure' (record r) int, body, valueForm: true } ])
+        (\r -> [ { key: f, name: f, type: pure' (record r) int, body, valueForm: true, written: false } ])
         \_ outcome _ -> case outcome of
           Generalized group -> map _.scheme group.members `shouldEqual` [ { kindVars: [], body: XForall (TyVar "a") rowType (pure' (record (XVar (TyVar "a"))) int) } ]
           GeneralizationHindered hs -> fail ("hindered: " <> show hs)
@@ -480,7 +480,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             require { context: bindTyVar emptyXContext (TyVar "r") rowType, origin: InDeclaration f } (XDisjoint t (XVar (TyVar "r")))
             pure t
         )
-        (\t -> [ { key: f, name: f, type: pure' (record t) int, body, valueForm: true } ])
+        (\t -> [ { key: f, name: f, type: pure' (record t) int, body, valueForm: true, written: false } ])
         \_ outcome _ -> case outcome of
           GeneralizationHindered hs -> hs `shouldEqual` [ ConstraintEscapes f (InDeclaration f) (TyVar "r") ]
           Generalized _ -> fail "committed"
@@ -501,7 +501,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             assignTerm (siteIn f) m (ELam unit (Ident "y") b (EVar unit (Ident "y")))
             pure { k1, k2, g, x, a, b, m }
         )
-        (\r -> [ { key: f, name: f, type: pure' (XApp r.g r.x) (pure' r.a r.a), body, valueForm: true } ])
+        (\r -> [ { key: f, name: f, type: pure' (XApp r.g r.x) (pure' r.a r.a), body, valueForm: true, written: false } ])
         \r outcome after -> case outcome of
           Generalized _ -> do
             map (isRetired after <<< metaOf) [ r.a, r.b, r.g, r.x ] `shouldEqual` [ true, true, true, true ]
@@ -521,7 +521,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             equate (siteIn h) { kind: rowType, left: XRowUnion r s', right: XRowExtend (field "a") XRowEmpty }
             pure r
         )
-        (\r -> [ { key: f, name: f, type: pure' (record r) int, body, valueForm: true } ])
+        (\r -> [ { key: f, name: f, type: pure' (record r) int, body, valueForm: true, written: false } ])
         \_ outcome _ -> case outcome of
           GeneralizationHalted d -> d `shouldEqual` RetiredMetavariableHeld
           Generalized _ -> fail "committed"
@@ -532,7 +532,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
       inGroup (freshTypeMeta emptyXContext (XKRow RowEffect)) \r s0 -> do
         let
           s = s0 { tentative { metas { fits = Map.insert (FitId 99) { use: Wrapping, site: siteIn (decl "h"), state: Widen r } s0.tentative.metas.fits } } }
-          members = [ { key: f, name: f, type: xFunction int r int, body, valueForm: true } ]
+          members = [ { key: f, name: f, type: xFunction int r int, body, valueForm: true, written: false } ]
         case prepareGeneralization (attemptJob session registry) ownerOf 1 members s of
           Tuple { preparation: Drafted draft } s1 -> case finalizeGeneralization ownerOf draft members s1 of
             Tuple (Planned plan) s2 -> case commitGeneralization ownerOf plan members s2 of
@@ -555,7 +555,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
                     Nothing -> created
                 }
             }
-          members = [ { key: f, name: f, type: pure' (record r.r) int, body, valueForm: true } ]
+          members = [ { key: f, name: f, type: pure' (record r.r) int, body, valueForm: true, written: false } ]
         case prepareGeneralization (attemptJob session registry) ownerOf 1 members s of
           Tuple { preparation: Drafted draft } s1 -> case finalizeGeneralization ownerOf draft members s1 of
             Tuple (Planned plan) s2 -> case commitGeneralization ownerOf plan members s2 of
@@ -574,7 +574,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             require { context: emptyXContext { assumed = [ XLacks key r ] }, origin: InDeclaration h } (XLacks key q)
             pure r
         )
-        (\r -> [ { key: f, name: f, type: pure' (record r) int, body, valueForm: true } ])
+        (\r -> [ { key: f, name: f, type: pure' (record r) int, body, valueForm: true, written: false } ])
         \_ outcome _ -> case outcome of
           GeneralizationHalted d -> d `shouldEqual` RetiredMetavariableHeld
           Generalized _ -> fail "committed"
@@ -588,7 +588,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             require (siteIn f) (XLacks key r)
             pure a
         )
-        (\a -> [ { key: f, name: f, type: pure' a a, body, valueForm: true } ])
+        (\a -> [ { key: f, name: f, type: pure' a a, body, valueForm: true, written: false } ])
         \_ outcome _ -> case outcome of
           GeneralizationHindered hs -> hs `shouldEqual` [ AmbiguousConstraint f (InDeclaration f) ]
           Generalized _ -> fail "committed"
@@ -606,8 +606,8 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             pure { a, toG, toF }
         )
         ( \r ->
-            [ { key: f, name: f, type: pure' (record r.a) int, body: ERecursiveRef unit r.toG, valueForm: true }
-            , { key: g, name: g, type: pure' (record r.a) int, body: ERecursiveRef unit r.toF, valueForm: true }
+            [ { key: f, name: f, type: pure' (record r.a) int, body: ERecursiveRef unit r.toG, valueForm: true, written: false }
+            , { key: g, name: g, type: pure' (record r.a) int, body: ERecursiveRef unit r.toF, valueForm: true, written: false }
             ]
         )
         \_ outcome after -> case outcome of
@@ -640,8 +640,8 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             pure { a, b, toG }
         )
         ( \r ->
-            [ { key: f, name: f, type: pure' (record r.a) r.b, body: ERecursiveRef unit r.toG, valueForm: true }
-            , { key: g, name: g, type: pure' (record r.a) int, body, valueForm: true }
+            [ { key: f, name: f, type: pure' (record r.a) r.b, body: ERecursiveRef unit r.toG, valueForm: true, written: false }
+            , { key: g, name: g, type: pure' (record r.a) int, body, valueForm: true, written: false }
             ]
         )
         \_ outcome _ -> case outcome of
@@ -668,8 +668,8 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             pure { h, y, toG }
         )
         ( \r ->
-            [ { key: f, name: f, type: pure' int int, body: ERecursiveRef unit r.toG, valueForm: true }
-            , { key: g, name: g, type: pure' (XApp r.h r.y) int, body, valueForm: true }
+            [ { key: f, name: f, type: pure' int int, body: ERecursiveRef unit r.toG, valueForm: true, written: false }
+            , { key: g, name: g, type: pure' (XApp r.h r.y) int, body, valueForm: true, written: false }
             ]
         )
         \_ outcome _ -> case outcome of
@@ -684,8 +684,8 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             pure { k, toG }
         )
         ( \r ->
-            [ { key: f, name: f, type: pure' int int, body: ERecursiveRef unit r.toG, valueForm: true }
-            , { key: g, name: g, type: pure' (XCon (Qualified (ModuleName "M") (TyName "Proxy")) [ r.k ]) int, body, valueForm: true }
+            [ { key: f, name: f, type: pure' int int, body: ERecursiveRef unit r.toG, valueForm: true, written: false }
+            , { key: g, name: g, type: pure' (XCon (Qualified (ModuleName "M") (TyName "Proxy")) [ r.k ]) int, body, valueForm: true, written: false }
             ]
         )
         \_ outcome _ -> case outcome of
@@ -705,8 +705,8 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             pure { h, y, toG }
         )
         ( \r ->
-            [ { key: f, name: f, type: pure' (XApp r.h r.y) int, body: ERecursiveRef unit r.toG, valueForm: true }
-            , { key: g, name: g, type: pure' (XApp r.h r.y) int, body, valueForm: true }
+            [ { key: f, name: f, type: pure' (XApp r.h r.y) int, body: ERecursiveRef unit r.toG, valueForm: true, written: false }
+            , { key: g, name: g, type: pure' (XApp r.h r.y) int, body, valueForm: true, written: false }
             ]
         )
         \_ outcome _ -> case outcome of
@@ -717,6 +717,60 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
               ]
             Nothing -> fail "no member"
           GeneralizationHindered hs -> fail ("hindered: " <> show hs)
+          GeneralizationHalted d -> fail ("halted: " <> show d)
+
+  describe "a member whose signature writes its scheme" do
+    let
+      rowType = XKRow RowType
+      key = SymbolKey (Symbol "x")
+      record r = XApp (XCon recordTy []) r
+      written type' = [ { key: f, name: f, type: type', body, valueForm: false, written: true } ]
+    it "is restricted by nothing, and leaves no equation of its own waiting beyond its generalization, whatever the equation is about" do
+      inGroup
+        ( do
+            -- an equation about what neither the member's type nor its body
+            -- holds
+            x <- freshTypeMeta emptyXContext rowType
+            y <- freshTypeMeta emptyXContext rowType
+            equate (siteIn f) { kind: rowType, left: XRowUnion x y, right: XRowExtend (XRowTypeEntry key int) XRowEmpty }
+        )
+        \_ s -> case prepareGeneralization (attemptJob session registry) ownerOf 1 (written (pure' int int)) s of
+          Tuple { preparation: Drafted draft } s' -> do
+            draft.restricted `shouldEqual` []
+            case finalizeGeneralization ownerOf draft (written (pure' int int)) s' of
+              Tuple (FinalizationHindered [ EquationLeft g (InDeclaration g') _ ]) _ | g == f && g' == f -> pure unit
+              Tuple other _ -> fail ("not hindered by the equation: " <> show other)
+          Tuple other _ -> fail ("not drafted: " <> show other.preparation)
+
+    it "quantifies nothing, a candidate its type holds ambiguous" do
+      inGroup (freshTypeMeta emptyXContext XKType) \a s -> case prepareGeneralization (attemptJob session registry) ownerOf 1 (written (pure' a a)) s of
+        Tuple { preparation: Drafted draft } s' -> case finalizeGeneralization ownerOf draft (written (pure' a a)) s' of
+          Tuple outcome _ -> outcome `shouldEqual` FinalizationHindered [ AmbiguousCandidates f [ metaOf a ] ]
+        Tuple other _ -> fail ("not drafted: " <> show other.preparation)
+
+    it "binds no kind variable, a kind candidate its type writes ambiguous" do
+      inGroup (freshKindMeta Set.empty Set.empty) \k s ->
+        let
+          proxy = XCon (Qualified (ModuleName "M") (TyName "Proxy")) [ k ]
+        in
+          case prepareGeneralization (attemptJob session registry) ownerOf 1 (written (pure' proxy int)) s of
+            Tuple { preparation: Drafted draft } s' -> case finalizeGeneralization ownerOf draft (written (pure' proxy int)) s' of
+              Tuple outcome _ -> outcome `shouldEqual` FinalizationHindered [ AmbiguousKindCandidates f [ kindMetaOf k ] ]
+            Tuple other _ -> fail ("not drafted: " <> show other.preparation)
+
+    it "gains no constraint, one its obligations leave refused where it arose" do
+      committing
+        ( do
+            -- outside the group, so that nothing would quantify it
+            r <- atLevel 0 (freshTypeMeta emptyXContext rowType)
+            require (siteIn f) (XLacks key r)
+            pure r
+        )
+        (\r -> written (pure' (record r) int))
+        \_ outcome _ -> case outcome of
+          GeneralizationHindered [ ConstraintUnwritten g (InDeclaration g') ] | g == f && g' == f -> pure unit
+          GeneralizationHindered hs -> fail ("hindered otherwise: " <> show hs)
+          Generalized _ -> fail "generalized"
           GeneralizationHalted d -> fail ("halted: " <> show d)
 
   describe "what does not cross a generalization" do
@@ -740,8 +794,8 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             equate (siteIn f) { kind: rowType, left: XRowUnion x y, right: XRowExtend (field "a") XRowEmpty }
             pure { a, fit }
         )
-        \r s -> case prepareGeneralization (attemptJob session registry) ownerOf 1 [ { key: f, name: f, type: pure' r.a r.a, body, valueForm: true } ] s of
-          Tuple { preparation: Drafted draft } s' -> case finalizeGeneralization ownerOf draft [ { key: f, name: f, type: pure' r.a r.a, body, valueForm: true } ] s' of
+        \r s -> case prepareGeneralization (attemptJob session registry) ownerOf 1 [ { key: f, name: f, type: pure' r.a r.a, body, valueForm: true, written: false } ] s of
+          Tuple { preparation: Drafted draft } s' -> case finalizeGeneralization ownerOf draft [ { key: f, name: f, type: pure' r.a r.a, body, valueForm: true, written: false } ] s' of
             Tuple (FinalizationHindered hindrances) _ -> do
               Array.length (Array.filter isFitLeft hindrances) `shouldEqual` 2
               Array.length (Array.filter isBoundaryLeft hindrances) `shouldEqual` 1

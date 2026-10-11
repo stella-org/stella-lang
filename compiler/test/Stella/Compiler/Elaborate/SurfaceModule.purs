@@ -191,6 +191,7 @@ at = case _ of
   SignatureNeeded o _ -> located o <> " signature needed"
   ConstraintEscapes o _ -> located o <> " constraint escapes"
   SynthesisUndecided o -> located o <> " synthesis undecided"
+  ConstraintUnwritten o -> located o <> " constraint unwritten"
   KindUndetermined o -> located o <> " kind undetermined"
   Rejected (EquationFailed (AtSource s) _) -> located s.origin <> " rejected"
   Rejected (SynthesisFailed { goal: { origin: AtSource s } }) -> located s.origin <> " synthesis failed"
@@ -611,8 +612,8 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "p x = q x", "q x = const (p x) (inc ())", "user = p", "ok = \\x -> x" ] \r -> do
         map at r.errors `shouldEqual` [ "4:24 rejected", "3:1 left unchecked", "5:1 left unchecked" ]
         schemeOf "ok" r.values `shouldEqual` Just "forall a. a -> a"
-      elaborating [ "bad :: _", "bad = 1", "p x = q bad", "q x = p x" ] \r ->
-        map at r.errors `shouldEqual` [ "3:8 outside: a wildcard", "5:1 left unchecked", "6:1 left unchecked" ]
+      elaborating [ "bad :: forall a. Int", "bad = 1", "p x = q bad", "q x = p x" ] \r ->
+        map at r.errors `shouldEqual` [ "3:15 kind undetermined", "5:1 left unchecked", "6:1 left unchecked" ]
 
     it "is a recursive value that is no function where it refers to its group before any λ, generalized or not" do
       elaborating [ "f = g", "g x = f x" ] \r ->
@@ -634,9 +635,81 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
           map at r.errors `shouldEqual` [ "3:1 signature needed", "4:1 left unchecked", "6:1 left unchecked", "8:13 rejected" ]
           schemeOf "fine" r.values `shouldEqual` Just "Int"
       -- a signature that gave no scheme leaves what refers to the value unchecked
-      elaborating [ "bad :: _", "bad = 1", "user = bad", "signed :: Int", "signed = bad", "ok = user" ] \r -> do
-        map at r.errors `shouldEqual` [ "3:8 outside: a wildcard", "5:1 left unchecked", "8:1 left unchecked", "7:1 left unchecked" ]
+      elaborating [ "bad :: forall a. Int", "bad = 1", "user = bad", "signed :: Int", "signed = bad", "ok = user" ] \r -> do
+        map at r.errors `shouldEqual` [ "3:15 kind undetermined", "5:1 left unchecked", "8:1 left unchecked", "7:1 left unchecked" ]
         map _.name r.values `shouldEqual` []
+
+  describe "a partial signature" do
+    let
+      inM' = Qualified (ModuleName "M") <<< Ident
+      schemeOf name values = map (\v -> printType (fromCore v.scheme.body)) (Array.find (\x -> x.name == inM' name) values)
+      shouting =
+        [ "effect Console where"
+        , "  log :: Int ->* Unit"
+        , "shout :: Int -> Unit / {| Console |}"
+        , "shout x = shout x"
+        ]
+    it "has what it leaves unwritten decided by its body, and nothing generalized" do
+      elaborating (shouting <> [ "f :: _ -> Int", "f x = inc x", "g :: forall a. a -> _", "g x = x", "h :: Int -> Int / _", "h x = x", "say :: Int -> _ / _", "say x = shout x" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        map (\name -> schemeOf name r.values) [ "f", "g", "h", "say" ] `shouldEqual` map Just
+          [ "Int -> Int", "forall a. a -> a", "Int -> Int", "Int -> Unit / {| Console |}" ]
+        checked r \core -> shapes core `shouldEqual` [ "rec shout", "nonrec f", "nonrec g", "nonrec h", "nonrec say" ]
+
+    it "reports a wildcard its body does not decide where it is written, generalizing nothing, and every hole with what it stands for" do
+      elaborating [ "k :: _ -> Int", "k x = 1", "p :: Int -> ?r", "p x = x", "q :: ?a -> ?a", "q x = inc x" ] \r -> do
+        map at r.errors `shouldEqual` [ "3:6 type undetermined", "5:13 hole r Int", "7:6 hole a Int" ]
+        map _.name r.values `shouldEqual` []
+
+    it "reports a wildcard whose kind is another's it leaves unwritten once, where the wildcard is written" do
+      elaborating [ "w :: forall f. f _ -> Int", "w x = 1" ] \r ->
+        map at r.errors `shouldEqual` [ "3:18 type undetermined" ]
+
+    it "asks for no signature where its body is no value form, a type the body alone holds ambiguous" do
+      elaborating [ "nv :: _", "nv = const 1 (id id)" ] \r ->
+        map at r.errors `shouldEqual` [ "4:6 type undetermined", "4:15 type undetermined", "4:18 type undetermined" ]
+
+    it "is read by what refers to it once it is decided, wherever it is written" do
+      elaborating [ "m :: Int", "m = f 1", "user = f 2", "f :: _ -> Int", "f x = inc x" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "user" r.values `shouldEqual` Just "Int"
+
+    it "is referred to inside its group at its one type, and not where its signature is a scheme" do
+      elaborating [ "count :: _ -> Int", "count x = count (inc x)", "a :: _ -> Int", "a x = b (inc x)", "b y = a y" ] \r -> do
+        map at r.errors `shouldEqual` []
+        map (\name -> schemeOf name r.values) [ "count", "a", "b" ] `shouldEqual` map Just [ "Int -> Int", "Int -> Int", "Int -> Int" ]
+      elaborating [ "poly :: forall a. a -> _", "poly x = poly x" ] \r ->
+        map at r.errors `shouldEqual` [ "4:10 outside: a recursive reference to a value whose partial signature is a scheme" ]
+
+    it "may be a computation's" do
+      elaborating [ "c :: _ / {||}", "c = 1", "v :: Int", "v = c" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "c" r.values `shouldEqual` Just "Unit -> Int"
+
+    it "keeps the conditions it writes, and gains none it does not" do
+      let
+        applying =
+          [ "effect Console where"
+          , "  log :: Int ->* Unit"
+          , "apply :: forall s. (Unit -> Unit / {| Console, ...s |}) -> Unit"
+          , "apply k = ()"
+          , "both :: forall s. (Unit -> Unit / {| ...s |}) -> (Unit -> Unit / {| Console, ...s |}) -> Unit"
+          , "both k l = ()"
+          ]
+      elaborating (applying <> [ "kept :: forall r. (Unit -> Unit / {| Console, ...r |}) -> _", "kept k = apply k" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "kept" r.values `shouldEqual` Just "forall r. … => (Unit -> Unit / {| Console, ...r |}) -> Unit"
+      elaborating (applying <> [ "short :: forall r. (Unit -> Unit / {| ...r |}) -> _", "short k = both k k" ]) \r -> do
+        -- `Console ∉ r`, which `short`'s signature does not write, is refused
+        -- where `both` asks for it
+        map at r.errors `shouldEqual` [ "rejected" ]
+        map _.name r.values `shouldEqual` [ inM' "apply", inM' "both" ]
+
+    it "is outside this version where its spine takes a synthesized argument, and in a foreign's" do
+      elaborating [ "data Dict a = Dict a", "make :: Int", "make = 1", "sd :: {{ d :: Dict Int by make }} -> _", "sd d = 1" ] \r ->
+        map at r.errors `shouldEqual` [ "7:1 outside: a partial signature taking a synthesized argument" ]
+      elaborating [ "foreign blob :: _ -> Int" ] \r ->
+        map at r.errors `shouldEqual` [ "3:17 outside: a wildcard" ]
 
   describe "a computation declaration" do
     let

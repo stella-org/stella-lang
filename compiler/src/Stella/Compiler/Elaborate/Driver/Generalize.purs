@@ -63,15 +63,17 @@ import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Warning)
 import Stella.Compiler.TypedCore.Name (Ident, KindVar(..), Qualified, TyVar(..))
 
 -- | A member of the group: its key, the name it is declared by, the type it was
--- | elaborated at, its body,
--- | and whether that body is a value form, which the caller judges of the
--- | zonked term once every fit of it is decided.
+-- | elaborated at, its body, whether that body is a value form, which the
+-- | caller judges of the zonked term once every fit of it is decided, and
+-- | whether a signature writes its scheme, in part: such a member is
+-- | restricted by nothing, and gains no quantifier and no constraint.
 type Member k a =
   { key :: k
   , name :: Qualified Ident
   , type :: XType
   , body :: XExpr a
   , valueForm :: P.Boolean
+  , written :: P.Boolean
   }
 
 -- | What a member's generalization does not quantify: the metavariables its
@@ -131,6 +133,12 @@ data Hindrance k
   -- | A constraint naming a rigid variable bound inside the member, which its
   -- | scheme would leave free, where the constraint arose.
   | ConstraintEscapes k Origin TyVar
+  -- | A constraint a member whose signature writes its scheme needs and the
+  -- | signature does not write, where it arose.
+  | ConstraintUnwritten k Origin
+  -- | An equation of a member whose signature writes its scheme still waiting,
+  -- | which nothing the member's generalization restricts, where it was stated.
+  | EquationLeft k Origin PendingId
 
 -- | What preparing came to: a draft, what keeps the group from being
 -- | generalized, or the loop stopping short of quiescence.
@@ -180,7 +188,7 @@ prepareGeneralization attempter owner level members s0 =
   -- a member that is no value form keeps what it reaches monomorphic
   restricted = Array.mapMaybe
     ( \m ->
-        if m.valueForm then Nothing
+        if m.valueForm || m.written then Nothing
         else
           let
             zonked = substitute ctx0 m.type
@@ -197,7 +205,7 @@ prepareGeneralization attempter owner level members s0 =
   lowered = foldl (\c r -> lowerLevels (level - 1) r.types r.kinds c) ctx0 restricted
   restrictedState = s0 { tentative { metas = lowered } }
 
-  provisional = map (\m -> { key: m.key, quantifiers: quantifiersOf lowered level m.type }) members
+  provisional = map (\m -> { key: m.key, quantifiers: if m.written then [] else quantifiersOf lowered level m.type }) members
   -- a goal is held to the quantifiers of the member it belongs to
   quantifiedOf key = Set.fromFoldable (Array.concatMap _.quantifiers (Array.filter (\p -> p.key == key) provisional))
 
@@ -242,6 +250,9 @@ finalizeGeneralization owner draft members s0 =
       ( \p -> case p.job of
           JobSynthesis _ -> Just (SynthesisUndecided (owner p.site.origin) p.site.origin p.id)
           JobImplicitHandler _ -> Just (BoundaryLeft (owner p.site.origin) p.site.origin p.id)
+          -- a member whose signature writes its scheme restricts nothing, so
+          -- its equations cannot be left to wait beyond it
+          JobUnify _ | Set.member (owner p.site.origin) writtenKeys -> Just (EquationLeft (owner p.site.origin) p.site.origin p.id)
           _ -> Nothing
       )
       pendings
@@ -257,10 +268,12 @@ finalizeGeneralization owner draft members s0 =
         )
         members
 
-  -- what an equation still waiting may yet assign is restricted
+  -- what an equation still waiting may yet assign is restricted, but for a
+  -- member whose signature writes its scheme
+  writtenKeys = Set.fromFoldable (map _.key (Array.filter _.written members))
   touched = Array.mapMaybe
     ( \p -> case p.job of
-        JobUnify goal ->
+        JobUnify goal | not (Set.member (owner p.site.origin) writtenKeys) ->
           let
             sides = [ substitute ctx0 goal.left, substitute ctx0 goal.right ] <> map (substitute ctx0 <<< XMeta) (Set.toUnfoldable p.awaiting)
           in
@@ -281,13 +294,16 @@ finalizeGeneralization owner draft members s0 =
     Array.any (\m -> not (Set.isEmpty (Set.filter (unsolvedType ctx) (metasOf (substitute ctx (XMeta m)))))) (Set.toUnfoldable r.types)
       || Array.any (\k -> not (Set.isEmpty (Set.filter (unsolvedKind ctx) (kindMetasOf (substituteKind ctx (XKMeta k)))))) (Set.toUnfoldable r.kinds)
 
-  -- a candidate the body reaches and the type does not is ambiguous
-  quantifiersOfMember m = quantifiersOf ctx level m.type
+  -- a candidate the body reaches and the type does not is ambiguous, and so
+  -- is one the type of a member whose signature writes its scheme reaches,
+  -- nothing quantifying it
+  quantifiersOfMember m = if m.written then [] else quantifiersOf ctx level m.type
   ambiguous = Array.mapMaybe
     ( \m ->
         let
           own = Set.fromFoldable (quantifiersOfMember m)
-          reached = Array.nub (Array.filter (\v -> candidate ctx level v && not (Set.member v own)) (Array.concatMap (metaOccurrences <<< substitute ctx) (typesOfTerm (zonkExpr ctx m.body))))
+          written = if m.written then [ m.type ] else []
+          reached = Array.nub (Array.filter (\v -> candidate ctx level v && not (Set.member v own)) (Array.concatMap (metaOccurrences <<< substitute ctx) (written <> typesOfTerm (zonkExpr ctx m.body))))
         in
           if Array.null reached then Nothing else Just (AmbiguousCandidates m.key reached)
     )
@@ -298,9 +314,16 @@ finalizeGeneralization owner draft members s0 =
   ambiguousKinds = Array.mapMaybe
     ( \m ->
         let
-          own = Set.fromFoldable (kindCandidatesOf m) <> kindsReached ctx (substitute ctx m.type)
+          zonkedType = substitute ctx m.type
+          -- a member whose signature writes its scheme binds no kind variable:
+          -- a kind its type writes is ambiguous, and one it reaches through a
+          -- type candidate is that candidate's, reported as the candidate is
+          own =
+            if m.written then kindsOfMetas ctx (metasOf zonkedType)
+            else Set.fromFoldable (kindCandidatesOf m) <> kindsReached ctx zonkedType
+          writes = if m.written then kindMetasOfType zonkedType else Set.empty
           inBody = metasOfTerm (zonkExpr ctx m.body)
-          reached = Set.filter (\k -> kindCandidate ctx level k && not (Set.member k own)) (inBody.kinds <> kindsOfMetas ctx inBody.types)
+          reached = Set.filter (\k -> kindCandidate ctx level k && not (Set.member k own)) (writes <> inBody.kinds <> kindsOfMetas ctx inBody.types)
         in
           if Set.isEmpty reached then Nothing else Just (AmbiguousKindCandidates m.key (Set.toUnfoldable reached))
     )
@@ -309,10 +332,12 @@ finalizeGeneralization owner draft members s0 =
   -- the kind candidates of a member: those its quantifiers stand at, then those
   -- its type's constructors are applied at
   kindCandidatesOf m =
-    Array.nub
-      ( Array.concatMap (\v -> Set.toUnfoldable (Set.filter (kindCandidate ctx level) (kindMetasOf (substituteKind ctx (kindOf ctx v))))) (quantifiersOfMember m)
-          <> Set.toUnfoldable (Set.filter (kindCandidate ctx level) (kindMetasOfType (substitute ctx m.type)))
-      )
+    if m.written then []
+    else
+      Array.nub
+        ( Array.concatMap (\v -> Set.toUnfoldable (Set.filter (kindCandidate ctx level) (kindMetasOf (substituteKind ctx (kindOf ctx v))))) (quantifiersOfMember m)
+            <> Set.toUnfoldable (Set.filter (kindCandidate ctx level) (kindMetasOfType (substitute ctx m.type)))
+        )
   unquantifiable = Array.concatMap
     (\m -> map (KindNotQuantifiable m.key) (Array.filter (producesType ctx) (kindCandidatesOf m)))
     members
@@ -428,7 +453,7 @@ lettered hint i = if i == 0 then hint else hint <> show i
 -- | from `Ψ`, and its obligations, fits, and recursive references released.
 commitGeneralization :: forall k a. Ord k => (Origin -> k) -> GeneralizationPlan k -> P.Array (Member k a) -> SolverState -> Tuple (Commitment k a) SolverState
 commitGeneralization owner plan members s0 =
-  case breached <> ambiguousAtoms <> escaping <> ambiguousReferences of
+  case breached <> unwritten <> ambiguousAtoms <> escaping <> ambiguousReferences of
     []
       | danglingIn -> Tuple (GeneralizationHalted RetiredMetavariableHeld) s0
       | otherwise -> Tuple (Generalized { members: map finalized members }) retired
@@ -521,6 +546,13 @@ commitGeneralization owner plan members s0 =
     in
       Set.subset typeMetas q.types && Set.subset kindMetas q.kinds
 
+  -- a member whose signature writes its scheme gains no constraint
+  unwritten = Array.concatMap
+    (\m -> map (\id -> ConstraintUnwritten m.key (originOf m id)) (Set.toUnfoldable (constraintsOf constraints m.key)))
+    writtenMembers
+  writtenMembers = Array.filter _.written members
+  inferredMembers = Array.filter (not <<< _.written) members
+
   ambiguousAtoms = Array.concatMap
     ( \m -> Array.mapMaybe
         ( \id -> case atomOf (rootOf id) of
@@ -529,7 +561,7 @@ commitGeneralization owner plan members s0 =
         )
         (Set.toUnfoldable (constraintsOf constraints m.key))
     )
-    members
+    inferredMembers
   -- where an atom arose: its obligation's site, or the reference raising it
   originOf m = case _ of
     Local root -> maybe (InDeclaration m.name) _.origin (Array.find (\o -> o.root == root) own)
@@ -556,7 +588,7 @@ commitGeneralization owner plan members s0 =
             )
             (Set.toUnfoldable (constraintsOf constraints m.key))
     )
-    members
+    inferredMembers
 
   -- the final constraints of a member, in the order their atoms are held, each
   -- once once it is written in the member's variables

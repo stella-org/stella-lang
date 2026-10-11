@@ -59,6 +59,7 @@ elaborationOrigins = case _ of
   SignatureNeeded o _ -> [ o ]
   ConstraintEscapes o _ -> [ o ]
   SynthesisUndecided o -> [ o ]
+  ConstraintUnwritten o -> [ o ]
   KindUndetermined o -> [ o ]
   Rejected d -> diagnosticOrigins d
   EquationUndecided o -> sourceOf o
@@ -108,6 +109,7 @@ printElaborationError = case _ of
   SignatureNeeded _ name -> fmt @"`{name}` needs a type signature: its type is left undecided where it cannot be generalized" { name: nameOf name }
   ConstraintEscapes _ (TyVar v) -> fmt @"This needs a condition of `{v}`, which a `forall` inside the value binds, and the value's type cannot carry it outside that `forall`" { v }
   SynthesisUndecided _ -> "Nothing determines what is synthesized here"
+  ConstraintUnwritten _ -> "This needs a condition the declaration's partial signature does not write, and a partial signature gains none; writing it in the signature gives it"
   KindUndetermined _ -> "Nothing here determines the kind of this type"
   Rejected d -> printDiagnostic d
   EquationUndecided _ -> "Nothing determines the types this equation is about"

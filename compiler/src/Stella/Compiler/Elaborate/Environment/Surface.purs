@@ -45,6 +45,10 @@ type SurfaceEnv =
 data SurfaceBinding
   = Final TypeScheme
   | Provisional XType
+  -- | A member of the group being elaborated whose partial signature is a
+  -- | scheme, its quantifiers or its constraints instantiated where it is
+  -- | referred to, which a reference inside the group cannot be.
+  | ProvisionalScheme
 
 emptySurface :: SurfaceEnv
 emptySurface = { synonyms: emptySynonyms, synthesizing: Set.empty, bindings: Map.empty }

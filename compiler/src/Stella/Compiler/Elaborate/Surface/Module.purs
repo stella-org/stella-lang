@@ -44,12 +44,14 @@
 -- | **A value without a signature is generalized**, each strongly connected
 -- | component of the references such values make to one another a group, the
 -- | groups in dependency order and before any body with a signature; its scheme
--- | is read by the module's bodies and is in no catalog. Inside its group, a
--- | member is referred to at the one type it has there. A declaration referring
--- | to a value with no scheme — one its group did not generalize, or one whose
--- | signature gave none — is left unchecked, and so is every member of a group
--- | one of which does. A fixity gives Core nothing, and a handler is outside
--- | what it elaborates.
+-- | is read by the module's bodies and is in no catalog. **A declaration whose
+-- | signature is partial** is a member of such a group, its body deciding what
+-- | the signature leaves unwritten and its scheme gaining nothing else. Inside
+-- | its group, a member is referred to at the one type it has there. A
+-- | declaration referring to a value with no scheme — one its group did not
+-- | generalize, or one whose signature gave none — is left unchecked, and so is
+-- | every member of a group one of which does. A fixity gives Core nothing, and
+-- | a handler is outside what it elaborates.
 module Stella.Compiler.Elaborate.Surface.Module
   ( ElaborationError(..)
   , ElaboratedValue
@@ -74,14 +76,14 @@ import Data.Foldable (foldl, for_)
 import Data.Traversable (traverse)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), XExpr, isSettledValueForm, toCoreExpr)
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind(..), kindMetasOf)
-import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType, fromCore, kindMetasOfType, metasOf, toCore)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType(..), fromCore, kindMetasOfType, metasOf, toCore)
 import Stella.Compiler.Elaborate.Surface.Types (readAttributeDeclaration, readTypes, settledTypes)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEntry)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal, internalEntries)
@@ -99,8 +101,8 @@ import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverSta
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..))
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, substitute, substituteKind)
-import Stella.Compiler.Elaborate.Surface.Expr (asArrow, elaborateComputation, elaborateValue, expandable, immediateReferences, inferDefinition, references, runSurf)
-import Stella.Compiler.Elaborate.Surface.Type (TypeHole, Unsupported(..), Wildcard, elaborateComputationSignature, elaborateSignature, schemeOf, settledScheme)
+import Stella.Compiler.Elaborate.Surface.Expr (Parameter(..), asArrow, checkDefinition, elaborateComputation, elaborateValue, expandable, immediateReferences, inferDefinition, references, runSurf)
+import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported(..), Wildcard, elaborateComputationSignature, elaborateSignature, elaborateValueSignature, schemeOf, settledScheme)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..), Warning)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Elaborate.Surface.Group (groups)
@@ -137,6 +139,9 @@ data ElaborationError
   | ConstraintEscapes Surface.Origin TyVar
   -- | A synthesis nothing decided, where it is asked for.
   | SynthesisUndecided Surface.Origin
+  -- | A condition a declaration whose signature is partial needs, which the
+  -- | signature does not write, where it arose: a partial signature gains none.
+  | ConstraintUnwritten Surface.Origin
   -- | A kind nothing decided, where it was left unwritten: a binder, or a
   -- | constructor instantiated at fresh kinds.
   | KindUndetermined Surface.Origin
@@ -244,7 +249,7 @@ elaborateValues imports surface importedEntries m =
     , attributes: attributesRead.declared
     , values: Array.sortWith _.ordinal (generalized.values <> settled'.values)
     , immediate
-    , errors: internalErrors <> unsupported <> signatureErrors <> crossing.errors <> attributesRead.errors <> generalized.errors <> attributeErrors <> bodyErrors <> settled'.errors
+    , errors: internalErrors <> unsupported <> signatureErrors <> partialErrors <> crossing.errors <> attributesRead.errors <> generalized.errors <> attributeErrors <> bodyErrors <> settled'.errors
     , warnings: generalized.warnings
     }
   else { data: [], synonyms: [], foreignTypes: [], effects: [], foreigns: [], attributes: [], values: [], immediate: Map.empty, errors: dataErrors <> unsupported, warnings: [] }
@@ -310,7 +315,7 @@ elaborateValues imports surface importedEntries m =
       Left o -> Left (Unsupported (ReportedAlready o))
       Right attributes -> Right
         { declared: { name: d.name, origin: d.origin, ordinal, attributes, definition: Right (ValueBody d.params d.body) }
-        , read: \synonyms -> elaborateSignature synonyms d.name signature'
+        , read: \synonyms -> elaborateValueSignature synonyms d.name signature'
         }
     -- a foreign is read as a value's signature is, and has no body
     DeclForeign d -> Just case traverse coreAttribute d.attributes of
@@ -359,8 +364,25 @@ elaborateValues imports surface importedEntries m =
         | otherwise -> acc { errors = acc.errors <> map Unsupported e.unsupported }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
 
-  -- their schemes, once every kind is decided
-  settled = map (\(Tuple d e) -> Tuple d (map (\scheme -> { scheme, spine: schemeOf e scheme }) (settledScheme read.state.tentative.metas e))) read.read
+  -- their schemes, once every kind is decided; a partial signature's is
+  -- complete only once its body decides what it holds
+  isPartial e = not (Array.null e.holes && Array.null e.wildcards)
+  settled = map (\(Tuple d e) -> Tuple d (map (\scheme -> { scheme, spine: schemeOf e scheme }) (settledScheme read.state.tentative.metas e))) (Array.filter (not <<< isPartial <<< snd) read.read)
+  -- a declaration whose signature is partial is inferred with the values
+  -- without one, its scheme published once its group is committed; a
+  -- synthesized argument on its spine is supplied by a goal, which this
+  -- version does not create
+  partialRead = Array.filter (isPartial <<< snd) read.read
+  partialErrors = Array.mapMaybe
+    (\(Tuple d e) -> if Array.null e.synthesized then Nothing else Just (Unsupported (OutsideSubset d.origin "a partial signature taking a synthesized argument")))
+    partialRead
+  partials = Array.mapMaybe
+    ( \(Tuple d e) -> case d.definition of
+        Right (ValueBody params body) | Array.null e.synthesized -> Just { name: d.name, origin: d.origin, ordinal: d.ordinal, attributes: d.attributes, params, body, signature: Just e }
+        Right (ComputationBody body) | Array.null e.synthesized -> Just { name: d.name, origin: d.origin, ordinal: d.ordinal, attributes: d.attributes, params: [], body, signature: Just e }
+        _ -> Nothing
+    )
+    partialRead
   schemes = Array.mapMaybe
     ( \(Tuple d s) -> case s of
         Right r -> Just { declared: d, scheme: r.scheme, spine: r.spine }
@@ -432,7 +454,7 @@ elaborateValues imports surface importedEntries m =
   unsignedOf ordinal = case _ of
     DeclValue d | Nothing <- d.signature -> Just case traverse coreAttribute d.attributes of
       Left o -> Left { name: d.name, error: Unsupported (ReportedAlready o) }
-      Right attributes -> Right { name: d.name, origin: d.origin, ordinal, attributes, params: d.params, body: d.body }
+      Right attributes -> Right { name: d.name, origin: d.origin, ordinal, attributes, params: d.params, body: d.body, signature: Nothing }
     _ -> Nothing
   -- the values, computations, and foreigns with a signature that gave no
   -- scheme, which a reference to them cannot be checked against
@@ -448,8 +470,8 @@ elaborateValues imports surface importedEntries m =
             m.declarations
         )
     )
-    (Set.fromFoldable (map _.declared.name schemes))
-  unsigned = Array.mapMaybe (either (const Nothing) Just) unsignedRead
+    (Set.fromFoldable (map _.declared.name schemes <> map _.name partials))
+  unsigned = Array.sortWith _.ordinal (Array.mapMaybe (either (const Nothing) Just) unsignedRead <> partials)
   unsignedIndex = Map.fromFoldable (Array.mapWithIndex (\i u -> Tuple u.name i) unsigned)
 
   -- each strongly connected component of the references they make to one
@@ -517,7 +539,7 @@ elaborateValues imports surface importedEntries m =
             _ -> Nothing
         )
         defined
-        <> map (\u -> Tuple u.name (immediateReferences u.body)) (Array.filter (Array.null <<< _.params) unsigned)
+        <> map (\u -> Tuple u.name (immediateReferences u.body)) (Array.filter (\u -> Array.null u.params && not (maybe false _.computation u.signature)) unsigned)
     )
 
   settled' = settleBodies session (attemptPending session) bodies.state bodies.bodies
@@ -674,8 +696,8 @@ settleBodies session attempter state bodies =
 -- | The typed holes and the wildcards an annotation holds, settled: each hole
 -- | reported, each wildcard not wholly decided reported where it is written,
 -- | and the residues of what they stand for, which are not reported again.
-annotated :: MetaContext -> Array TypeHole -> Array Wildcard -> { reported :: Array ElaborationError, covered :: Residue Surface.Origin -> Boolean }
-annotated metas holes wildcards = { reported, covered }
+annotated :: MetaContext -> Array TypeHole -> Array Wildcard -> { reported :: Array ElaborationError, covered :: Residue Surface.Origin -> Boolean, kinds :: Set KindMetaVar }
+annotated metas holes wildcards = { reported, covered, kinds }
   where
   open = Array.filter (\w -> not (Set.isEmpty (typeMetas w) && Set.isEmpty (kindMetas w))) wildcards
   reported = map (\h -> TypeHoleStands h.origin h.name (substitute metas h.type)) holes
@@ -730,8 +752,10 @@ sourceOrigin = case _ of
   AtSource o -> Just o.origin
   InDeclaration _ -> Nothing
 
--- | A value declaration without a signature: its name, where it was declared
--- | and its ordinal, its attributes, its parameters, and its body.
+-- | A declaration whose scheme its body decides: a value without a signature,
+-- | or a value or a computation whose signature is partial. Its name, where it
+-- | was declared and its ordinal, its attributes, its parameters, its body,
+-- | and its partial signature where it has one.
 type Unsigned =
   { name :: Qualified Ident
   , origin :: Surface.Origin
@@ -739,6 +763,7 @@ type Unsigned =
   , attributes :: Array Attribute
   , params :: Array Surface.Binder
   , body :: Surface.Expr
+  , signature :: Maybe Elaborated
   }
 
 -- | The level a top-level group is generalized at, every one of them: a group
@@ -810,7 +835,7 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
   attempt expanded = do
     types <- monomorphic
     let
-      inGroup = surface { bindings = foldl (\b (Tuple u t) -> Map.insert u.name (Provisional t) b) surface.bindings (Array.zip members types) }
+      inGroup = surface { bindings = foldl (\b (Tuple u t) -> Map.insert u.name (provisional u t) b) surface.bindings (Array.zip members types) }
     built <- traverse (\(Tuple u t) -> elaborated inGroup expanded u t) (Array.zip members types)
     report <- step (runAttempting attempter)
     throwIfAny (stoppedAt report.result)
@@ -822,10 +847,11 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
       attempt asked
     else throwError (map (\name -> defect (ExpansionUnsettled name)) (Set.toUnfoldable asked))
 
-  -- the one type each member has in the group
+  -- the one type each member has in the group: its partial signature's, or a
+  -- metavariable
   monomorphic = do
     s <- get
-    case runAttempt session (atLevel topLevel (traverse (\_ -> freshTypeMeta emptyXContext XKType) members)) s of
+    case runAttempt session (atLevel topLevel (traverse (\u -> maybe (freshTypeMeta emptyXContext XKType) (pure <<< _.type) u.signature) members)) s of
       Tuple (Done types) s' -> put s' $> types
       Tuple outcome s' -> put s' *> throwError [ attemptFailure names outcome ]
 
@@ -833,7 +859,7 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
     let
       metas = s.tentative.metas
     in
-      not (Set.member b.unsigned.name expanded) && expandable b.unsigned.params b.unsigned.body
+      isNothing b.unsigned.signature && not (Set.member b.unsigned.name expanded) && expandable b.unsigned.params b.unsigned.body
         && not (isSettledValueForm isConstructor (zonkExpr metas b.expr))
         && isJust (asArrow (substitute metas b.type))
 
@@ -841,12 +867,17 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
     s <- get
     let
       site = { context: emptyXContext, origin: AtSource { declaration: u.name, origin: u.origin } }
-      body = do
-        noted <- runSurf (inferDefinition internal inGroup u.name u.origin u.params u.body (Set.member u.name expanded))
-        for_ noted \n -> equate site { kind: XKType, left: n.value.type, right: t }
-        pure noted
+      body = case u.signature of
+        -- checked against its partial signature, as a body with a signature is
+        Just e -> do
+          noted <- runSurf (checkDefinition internal inGroup u.name u.origin { kindVars: e.kindVars, body: e.type } (if e.computation then [ Thunk ] else map Named u.params) u.body)
+          pure (map (\n -> n { holes = e.holes <> n.holes, wildcards = e.wildcards <> n.wildcards }) noted)
+        Nothing -> do
+          noted <- runSurf (inferDefinition internal inGroup u.name u.origin u.params u.body (Set.member u.name expanded))
+          for_ noted \n -> equate site { kind: XKType, left: n.value.type, right: t }
+          pure (map (\n -> n { value = n.value.expr }) noted)
     case runAttempt session (atLevel topLevel body) s of
-      Tuple (Done (Right n)) s' -> put s' $> { unsigned: u, expr: n.value.expr, type: t, holes: n.holes, wildcards: n.wildcards }
+      Tuple (Done (Right n)) s' -> put s' $> { unsigned: u, expr: n.value, type: t, holes: n.holes, wildcards: n.wildcards }
       Tuple (Done (Left problem)) s' -> put s' *> throwError [ { error: Unsupported problem, names: [ u.name ] } ]
       Tuple outcome s' -> put s' *> throwError [ attemptFailure [ u.name ] outcome ]
 
@@ -857,7 +888,7 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
       Resolution r -> case Array.findMap refusal r.components of
         Just d -> throwError [ diagnosed d ]
         Nothing -> pure r.warnings
-    generalizing <- gets \s -> map (\b -> { key: b.unsigned.name, name: b.unsigned.name, type: b.type, body: b.expr, valueForm: isSettledValueForm isConstructor (zonkExpr s.tentative.metas b.expr) }) built
+    generalizing <- gets \s -> map (\b -> { key: b.unsigned.name, name: b.unsigned.name, type: b.type, body: b.expr, valueForm: isSettledValueForm isConstructor (zonkExpr s.tentative.metas b.expr), written: isJust b.unsigned.signature }) built
     prepared <- step (prepareGeneralization attempter memberOwner topLevel generalizing)
     draft <- case prepared.preparation of
       Drafted d -> pure d
@@ -870,7 +901,7 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
       Right c -> pure c.warnings
     -- a hole or a wildcard is reported before what it stands for is
     -- quantified or found ambiguous
-    noted <- gets \s -> Array.concatMap (\b -> map (\error -> { error, names: [ b.unsigned.name ] }) (annotated s.tentative.metas b.holes b.wildcards).reported) built
+    noted <- gets \s -> Array.concatMap (\b -> map (\error -> { error, names: [ b.unsigned.name ] }) (judged s.tentative.metas b)) built
     throwIfAny noted
     planned <- step (finalizeGeneralization memberOwner draft generalizing)
     plan <- case planned of
@@ -889,14 +920,43 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
   -- a member as Core: its scheme and its definition
   made metas (Tuple u f) = do
     scheme <- case toCore f.scheme.body of
-      Just body -> pure { kindVars: f.scheme.kindVars, body }
+      Just body -> pure { kindVars: maybe [] _.kindVars u.signature <> f.scheme.kindVars, body }
       Nothing -> throwError [ defect (CommitmentAmiss u.name) ]
     body <- case toCoreExpr (zonkExpr metas f.body) of
       Right body -> pure body
       Left residues -> throwError case Array.findMap defectOf (NonEmptyArray.toArray residues) of
         Just d -> [ defect d ]
         Nothing -> map (\o -> { error: TypeUndetermined o, names: [ u.name ] }) (Array.nubEq (map residueOrigin (NonEmptyArray.toArray residues)))
-    pure { name: u.name, origin: u.origin, ordinal: u.ordinal, attributes: u.attributes, scheme, spine: plainScheme scheme, body }
+    pure { name: u.name, origin: u.origin, ordinal: u.ordinal, attributes: u.attributes, scheme, spine: maybe (plainScheme scheme) (\e -> schemeOf e scheme) u.signature, body }
+
+  -- a member as a reference inside its group reads it: at the one type it has
+  -- there, unless its partial signature is a scheme, which such a reference
+  -- cannot instantiate
+  provisional u t = case u.signature of
+    Just e | not (Array.null e.kindVars) || schematic e.type -> ProvisionalScheme
+    _ -> Provisional t
+  schematic = case _ of
+    XForall _ _ _ -> true
+    XConstrained _ _ -> true
+    _ -> false
+
+  -- a member's holes and wildcards, and the kinds its partial signature
+  -- leaves unwritten that nothing decided, each where it is left so; a kind a
+  -- wildcard reported stands at is not reported again
+  judged metas b =
+    let
+      noted = annotated metas b.holes b.wildcards
+      unwritten = case b.unsigned.signature of
+        Just e -> Array.nubEq
+          ( map _.origin
+              ( Array.filter
+                  (\u -> let ks = kindMetasOf (substituteKind metas u.kind) in not (Set.isEmpty ks) && Set.isEmpty (Set.intersection ks noted.kinds))
+                  e.unwritten
+              )
+          )
+        Nothing -> []
+    in
+      noted.reported <> map KindUndetermined unwritten
 
   -- each member's hindrances, where the residues of its body place them
   hindered :: forall r x. Array { unsigned :: Unsigned, expr :: XExpr Surface.Origin | r } -> Array (Hindrance (Qualified Ident)) -> Generalizing x
@@ -961,6 +1021,8 @@ hindranceKey = case _ of
   Hindrance.AmbiguousConstraint k _ -> k
   Hindrance.RecursiveArgumentAmbiguous k _ -> k
   Hindrance.ConstraintEscapes k _ _ -> k
+  Hindrance.ConstraintUnwritten k _ -> k
+  Hindrance.EquationLeft k _ _ -> k
 
 -- | What keeps a value without a signature from being generalized, as its
 -- | author is told it, each where the residues of its body place it, and where
@@ -1004,6 +1066,8 @@ hindranceErrors u residues hindrances =
     Hindrance.AmbiguousConstraint _ o -> [ TypeUndetermined (at o) ]
     Hindrance.RecursiveArgumentAmbiguous _ o -> [ TypeUndetermined (at o) ]
     Hindrance.ConstraintEscapes _ o v -> [ ConstraintEscapes (at o) v ]
+    Hindrance.ConstraintUnwritten _ o -> [ ConstraintUnwritten (at o) ]
+    Hindrance.EquationLeft _ o _ -> [ EquationUndecided o ]
     Hindrance.RestrictedUnsolved _ -> []
     Hindrance.GoalTouchesQuantifier _ _ _ -> []
     Hindrance.FitLeft _ _ _ -> []

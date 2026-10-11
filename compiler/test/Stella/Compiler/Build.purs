@@ -594,6 +594,15 @@ spec = describe "Stella.Compiler.Build" do
           Right built -> built `shouldEqual` [ "A", "B" ]
           Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
 
+    it "is published at the scheme its partial signature is completed to, which a module importing it reads" do
+      building
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "n :: Int", "n = ident 1", "s :: String", "s = ident \"s\"" ])
+        , Tuple "src/A.stel" (moduleOf "A" [] [ "ident :: forall a. a -> _", "ident x = x" ])
+        ]
+        \r -> case r.result of
+          Right built -> built `shouldEqual` [ "A", "B" ]
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+
     it "is generalized with the group it refers to, a `rec` of its module that another uses at two types" do
       building
         [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "n :: Int", "n = ev 1", "s :: String", "s = od \"s\"" ])

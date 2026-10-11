@@ -1216,6 +1216,13 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | `p x = q x; q x = p x`, and `loop x = loop x` | The rows of `p` and `q` identified and quantified by each, occurring in both types; `loop`'s closed |
 | A member raising what the member it refers to needs | The constraint in both schemes, and the reference given its `[•]` in Core |
 | A group one member of which fails, or refers to a value with no scheme | Reported at what the failure names, every other member left unchecked; every member left unchecked |
+| `g :: forall a. a -> _; g x = x`, and `h :: Int -> Int / _; h x = x` | `∀a. a -> a`, `_` the rigid `a`; `Int -> Int`, the row closed. A partial signature's declaration is inferred with its group and published once it is committed |
+| `k :: _ -> Int; k x = 1`, and `p :: Int -> ?r; p x = x` | Reported where `_` is written, nothing generalized; the hole reported standing for `Int` |
+| `w :: forall f. f _ -> Int`, nothing deciding the kind | Reported once, where `_` is written. Not again at `f`, whose kind holds the wildcard's |
+| `nv :: _; nv = const 1 (id id)` | No signature asked for: a partial signature is restricted by nothing, and what the body alone holds is ambiguous where it stands |
+| `poly :: forall a. a -> _; poly x = poly x`, and `count :: _ -> Int; count x = count (inc x)` | Outside this version at the reference, which would instantiate a scheme the group has not completed; `count : Int -> Int` |
+| A partial signature writing `Console ∉ r` through its row, and one leaving it unwritten that its body needs | The condition kept in the scheme and assumed by the body; refused where the body needs it |
+| A member whose signature writes its scheme, with an equation of it waiting, a candidate in its type, or a constraint its obligations leave | Finalizing or committing stopped by each. Nothing crosses the generalization, and nothing is gained |
 | A member whose body uses another member at a type its own type does not reach | Ambiguous, an annotation asked for. Not quantified |
 | A constraint relating a quantified variable to one the type does not reach | Ambiguous. Constraints do not extend the quantifiers |
 | A recursive reference standing under an assumption that proves the callee's constraint | The caller carries no copy of that constraint |

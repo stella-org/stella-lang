@@ -51,6 +51,8 @@ module Stella.Compiler.Elaborate.Surface.Expr
   , elaborateValue
   , elaborateComputation
   , inferDefinition
+  , checkDefinition
+  , Parameter(..)
   , expandable
   , immediateReferences
   , references
@@ -85,7 +87,7 @@ import Stella.Compiler.Elaborate.Surface.Type (TypeHole, Unsupported(..), Wildca
 import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder(..), Expr(..), GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..), exprOrigin)
 import Stella.Compiler.Surface.Name (LocalVar(..))
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.TypedCore.Name (Ident, Qualified)
+import Stella.Compiler.TypedCore.Name (Ident, KindVar, Qualified)
 import Stella.Compiler.TypedCore.Prim (functionTy, litType, unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
 import Stella.Compiler.TypedCore.Type (TypeScheme)
@@ -217,8 +219,15 @@ expandable params body = Array.null params && delayable body && case body of
   _ -> true
 
 definition :: Internal -> SurfaceEnv -> Qualified Ident -> Surface.Origin -> TypeScheme -> Array Parameter -> Expr -> Surf (XExpr Surface.Origin)
-definition internal surface declaration origin scheme params body =
-  boundary scope0 origin XRowEmpty \scope -> abstractions origin true false Written scope params body (fromCore scheme.body)
+definition internal surface declaration origin scheme =
+  checkDefinition internal surface declaration origin { kindVars: scheme.kindVars, body: fromCore scheme.body }
+
+-- | A definition checked against the scheme given, as a declaration with a
+-- | signature is: a partial signature's, holding what its body decides, among
+-- | them.
+checkDefinition :: Internal -> SurfaceEnv -> Qualified Ident -> Surface.Origin -> { kindVars :: Array KindVar, body :: XType } -> Array Parameter -> Expr -> Surf (XExpr Surface.Origin)
+checkDefinition internal surface declaration origin scheme params body =
+  boundary scope0 origin XRowEmpty \scope -> abstractions origin true false Written scope params body scheme.body
   where
   scope0 = { declaration, context: bindKindVars emptyXContext scheme.kindVars, ambient: XRowEmpty, internal, surface }
 
@@ -510,6 +519,7 @@ infer scope expr = case expr of
       Just (Provisional ty) -> do
         id <- lift (recursiveRef (siteAt scope o) name)
         pure { expr: ERecursiveRef o id, type: ty }
+      Just ProvisionalScheme -> outside (OutsideSubset o "a recursive reference to a value whose partial signature is a scheme")
       _ -> case lookupScheme env.session.catalog name of
         Nothing -> outside (OutsideSubset o "a global the catalog does not hold")
         -- a synthesized argument is supplied by a goal, which this version

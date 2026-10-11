@@ -55,6 +55,7 @@ module Stella.Compiler.Elaborate.Surface.Type
   , SynonymShape
   , ReadBinder
   , elaborateSignature
+  , elaborateValueSignature
   , elaborateType
   , readTypeAt
   , readBinder
@@ -198,6 +199,8 @@ type Elaborated =
   , unsupported :: Array Unsupported
   , synthesized :: Array SynthesizedMark
   , computation :: Boolean
+  , holes :: Array TypeHole
+  , wildcards :: Array Wildcard
   }
 
 -- | A synthesized argument on a signature's spine, its dictionary's type read
@@ -213,8 +216,9 @@ type SynthesizedMark = { name :: Maybe Ident, synthesizer :: Qualified Ident }
 -- | at its shape, or at nothing where it could not be read; and the kinds of
 -- | the parameters of each effect the module declares, while its declarations
 -- | are read, or nothing for one whose head is refused.
--- | Where the type is an annotation, the context it stands in, which a wildcard
--- | or a typed hole is a metavariable of; neither stands anywhere else.
+-- | Where the type is an annotation or a signature that may be partial, the
+-- | context it stands in, which a wildcard or a typed hole is a metavariable
+-- | of; neither stands anywhere else.
 type Scope =
   { declaration :: Qualified Ident
   , kindVars :: Set KindVar
@@ -267,19 +271,26 @@ type Wildcard = { origin :: Surface.Origin, type :: XType, kind :: XKind }
 -- | per row kind, so every `...` of one kind in the signature is the same row;
 -- | it is named apart from every name source can write.
 elaborateSignature :: SynonymEnv -> Qualified Ident -> Signature Type -> Elab Elaborated
-elaborateSignature = elaborateSpine false
+elaborateSignature = elaborateSpine { computation: false, partial: false }
+
+-- | A value declaration's signature, as `elaborateSignature` reads one, a
+-- | wildcard and a typed hole in it standing for what its body decides, as in
+-- | an annotation: a signature holding either is partial.
+elaborateValueSignature :: SynonymEnv -> Qualified Ident -> Signature Type -> Elab Elaborated
+elaborateValueSignature = elaborateSpine { computation: false, partial: true }
 
 -- | The signature of a computation declaration, `forall ā. C => {{ … }} -> τ / ρ`,
 -- | read as its Core type is, `∀ā. C => … -> Unit -{ρ}-> τ`, the computation
 -- | marked on its spine.
 elaborateComputationSignature :: SynonymEnv -> Qualified Ident -> Signature ComputationType -> Elab Elaborated
 elaborateComputationSignature synonyms declaration signature =
-  elaborateSpine true synonyms declaration { implicit: signature.implicit, body: computationAsType signature.body }
+  elaborateSpine { computation: true, partial: true } synonyms declaration { implicit: signature.implicit, body: computationAsType signature.body }
 
--- | A signature read, a computation's where the flag says it is one, each
--- | synthesized argument on its spine read as the type of its dictionary.
-elaborateSpine :: Boolean -> SynonymEnv -> Qualified Ident -> Signature Type -> Elab Elaborated
-elaborateSpine computation synonyms declaration signature = do
+-- | A signature read, a computation's where the flags say it is one, each
+-- | synthesized argument on its spine read as the type of its dictionary, and
+-- | a wildcard and a typed hole read where they say it may be partial.
+elaborateSpine :: { computation :: Boolean, partial :: Boolean } -> SynonymEnv -> Qualified Ident -> Signature Type -> Elab Elaborated
+elaborateSpine { computation, partial } synonyms declaration signature = do
   let spine = synthesizedOnSpine signature.body
   let kindVars = foldr Set.insert Set.empty (typeKindVars signature.body)
   named <- traverse (\v -> { var: v, kind: _ } <$> freshKindMeta kindVars quantifiable) signature.implicit
@@ -301,9 +312,10 @@ elaborateSpine computation synonyms declaration signature = do
       , synonyms
       , localSynonyms: Map.empty
       , localEffects: Map.empty
-      , annotation: Nothing
+      , annotation: if partial then Just (emptyXContext { kindVars = kindVars }) else Nothing
       }
   body <- checkAt scope XKType spine.type
+  when (Array.null body.unsupported) (shareHoles declaration (emptyXContext { kindVars = kindVars, tyVars = scope.tyVars }) body.holes)
   let taken = quantify quantified body.implied body.type
   pure
     { origin: typeOrigin signature.body
@@ -314,6 +326,8 @@ elaborateSpine computation synonyms declaration signature = do
     , unsupported: body.unsupported <> map (\i -> UnheldConstraint i.origin i.atom) taken.rest
     , synthesized: spine.marks
     , computation
+    , holes: distinctHoles body.holes
+    , wildcards: body.wildcards
     }
   where
   spreadKind = case _ of
@@ -341,16 +355,25 @@ elaborateType synonyms declaration context t = do
   -- a form not read is reported before anything is required of what it stands in
   when (Array.null r.unsupported) do
     for_ r.implied \i -> require { context, origin: AtSource { declaration, origin: i.origin } } (atomConstraint i.atom)
-    for_ (Array.groupAllBy (comparing _.name) (Array.filter (\h -> h.name /= "_") r.holes)) \occurrences ->
-      let
-        first = NonEmptyArray.head occurrences
-      in
-        for_ (NonEmptyArray.tail occurrences) \other -> do
-          let site = { context, origin: AtSource { declaration, origin: other.origin } }
-          equateKinds site first.kind other.kind
-          equate site { kind: first.kind, left: first.type, right: other.type }
-  -- a hole of a name once, where it is first written, and each `?_`
-  pure r { implied = [], holes = Array.nubByEq (\x y -> x.name == y.name && x.name /= "_") r.holes }
+    shareHoles declaration context r.holes
+  pure r { implied = [], holes = distinctHoles r.holes }
+
+-- | Every `?name` of one name one metavariable, each occurrence after the
+-- | first equated with the first where it is written.
+shareHoles :: Qualified Ident -> XContext -> Array TypeHole -> Elab Unit
+shareHoles declaration context holes =
+  for_ (Array.groupAllBy (comparing _.name) (Array.filter (\h -> h.name /= "_") holes)) \occurrences ->
+    let
+      first = NonEmptyArray.head occurrences
+    in
+      for_ (NonEmptyArray.tail occurrences) \other -> do
+        let site = { context, origin: AtSource { declaration, origin: other.origin } }
+        equateKinds site first.kind other.kind
+        equate site { kind: first.kind, left: first.type, right: other.type }
+
+-- | A hole of a name once, where it is first written, and each `?_`.
+distinctHoles :: Array TypeHole -> Array TypeHole
+distinctHoles = Array.nubByEq (\x y -> x.name == y.name && x.name /= "_")
 
 -- | A type at the kind given, under the scope given.
 readTypeAt :: Scope -> XKind -> Type -> Elab Read
