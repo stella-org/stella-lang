@@ -145,6 +145,10 @@ data Unsupported
   -- | An effect's parameter, or an operation's own type variable, whose kind
   -- | nothing decided: an effect has no kind scheme to generalize it into.
   | EffectKindUndetermined Surface.Origin
+  -- | A kind a data type's fields hold that nothing decided and its head does
+  -- | not reach, so that no generalization of it can either, where the
+  -- | constructor holding it stands.
+  | KindNotDecided Surface.Origin
 
 -- | A condition the sharpness of a row written in a type puts on its tails:
 -- | that a tail lacks a key the row holds beside it, or that two of its tails
@@ -217,6 +221,8 @@ type SynthesizedMark = { name :: Maybe Ident, synthesizer :: Qualified Ident }
 -- | at its shape, or at nothing where it could not be read; and the kinds of
 -- | the parameters of each effect the module declares, while its declarations
 -- | are read, or nothing for one whose head is refused.
+-- | The module's type constructors and synonyms whose group was not read, a
+-- | use of which is reported where the group is.
 -- | Where the type is an annotation or a signature that may be partial, the
 -- | context it stands in, which a wildcard or a typed hole is a metavariable
 -- | of; neither stands anywhere else.
@@ -229,6 +235,7 @@ type Scope =
   , synonyms :: SynonymEnv
   , localSynonyms :: Map (Qualified TyName) (Maybe SynonymShape)
   , localEffects :: Map (Qualified EffName) (Maybe (Array XKind))
+  , unread :: Set (Qualified TyName)
   , annotation :: Maybe XContext
   }
 
@@ -348,6 +355,7 @@ readSpine { computation, partial, around } synonyms declaration signature = do
       , synonyms
       , localSynonyms: Map.empty
       , localEffects: Map.empty
+      , unread: Set.empty
       , annotation: if partial then Just (fromMaybe (emptyXContext { kindVars = kindVars }) around) else Nothing
       }
     context = (fromMaybe emptyXContext around) { kindVars = kindVars, tyVars = scope.tyVars }
@@ -396,7 +404,7 @@ readSpine { computation, partial, around } synonyms declaration signature = do
 -- | holds each hole of a name once, where it is first written.
 elaborateType :: SynonymEnv -> Qualified Ident -> XContext -> Type -> Elab Read
 elaborateType synonyms declaration context t = do
-  r <- checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars, localTypes: Map.empty, anonymous: Map.empty, synonyms, localSynonyms: Map.empty, localEffects: Map.empty, annotation: Just context } XKType t
+  r <- checkAt { declaration, kindVars: context.kindVars, tyVars: context.tyVars, localTypes: Map.empty, anonymous: Map.empty, synonyms, localSynonyms: Map.empty, localEffects: Map.empty, unread: Set.empty, annotation: Just context } XKType t
   -- a form not read is reported before anything is required of what it stands in
   when (Array.null r.unsupported) do
     for_ r.implied \i -> require { context, origin: AtSource { declaration, origin: i.origin } } (atomConstraint i.atom)
@@ -457,6 +465,7 @@ hole scope context origin name kind = do
 
 readType :: Scope -> Type -> Elab Read
 readType scope t = case t of
+  TypeConstructor o name | Set.member name scope.unread -> unsupported (ReportedAlready o)
   TypeVariable o v -> case Map.lookup (nameOf v) scope.tyVars of
     Just kind -> pure (plain (XVar (nameOf v)) kind)
     Nothing -> unsupported (OutsideSubset o "a type variable bound outside the signature")

@@ -1243,6 +1243,14 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | A recursive reference standing under an assumption that proves the callee's constraint | The caller carries no copy of that constraint |
 | `?e # ( region ℓ, Console )` with `?e` created outside the region | The atom `Console ∉ ?e` alone is kept; no scheme mentions `ℓ` |
 | `data App f a = App (f a)` | `App : ∀k. (k -> Type) -> k -> Type` |
+| `data Proxy a = Proxy`, used later at `Int` and at `List` | `Proxy : ∀k. k -> Type`, its `k` instantiated afresh at each use. A group is generalized before a later one reads it |
+| `data T f = T (U f)` and `data U f = U (T f)` | One group, each at `∀k. k -> Type`; `T`'s field `U [k] f` and `U`'s `T [k] f` |
+| `data Poly (a :: k) = Poly (Poly Int) (Poly List)`, and the same with `k` left unwritten | Admitted, a written kind variable instantiated at each use inside the group; refused, an inferred kind one kind inside it |
+| `data Q = Q Phantom` with `Phantom : forall k. Type`, and `data H f a = H (P (f a))` | Reported where the constructor stands: a kind only the fields hold, and a candidate that must produce `Type` |
+| `type S a = D a; data D a = D (S a); data Use = Use (D Int)` | `S` and `D` reported, the group rolled back; `Use`'s `D` reported as reported already. A synonym's kinds are not generalized in this version, and no later group completes the group |
+| `data P a = P; type S a = D; data D = D (S P)` | `S` reported, and `D` where it is declared, by the group it stands in. Every member of a group not read is reported |
+| `type S = L D` and `data D = D S` | One group, read; a cycle of synonyms alone is refused at each member |
+| A group's kind metavariables once it is generalized | Retired from `Ψ`; none is left unsolved for a later part to decide |
 | A skolem of a written signature assigned to a metavariable created outside its binder | An escape, reported where the assignment is stated |
 | An undecided fit, a pending synthesis goal, a term metavariable, or a boundary job still seeking a plan when a group is generalized | Never crosses it. Each is reported by its cause, and a declaration with a pending boundary is not committed |
 | A job created at level 2 and attempted later | What its attempt creates stands at level 2, the level its frame carries |

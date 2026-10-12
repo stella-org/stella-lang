@@ -56,6 +56,7 @@ elaborationOrigins = case _ of
   Unsupported (ForeignKindInvalid o _) -> [ o ]
   Unsupported (EffectKindVariable o) -> [ o ]
   Unsupported (EffectKindUndetermined o) -> [ o ]
+  Unsupported (KindNotDecided o) -> [ o ]
   SignatureNeeded o _ -> [ o ]
   ConstraintEscapes o _ -> [ o ]
   SynthesisUndecided o -> [ o ]
@@ -106,6 +107,7 @@ printElaborationError = case _ of
   Unsupported (ForeignKindInvalid _ k) -> fmt @"A foreign type takes types at kinds a type variable may stand at and produces `Type`, and `{k}` is no such kind" { k: printKind k }
   Unsupported (EffectKindVariable _) -> "An effect has no kind scheme, so a parameter of it, or a type variable of an operation, stands at a kind with no kind variable"
   Unsupported (EffectKindUndetermined _) -> "Nothing here determines the kind of this parameter, and an effect has no kind scheme to leave it open in; write its kind"
+  Unsupported (KindNotDecided _) -> "Nothing here determines a kind this constructor's fields hold"
   SignatureNeeded _ name -> fmt @"`{name}` needs a type signature: its type is left undecided where it cannot be generalized" { name: nameOf name }
   ConstraintEscapes _ (TyVar v) -> fmt @"This needs a condition of `{v}`, which a `forall` inside the value binds, and the value's type cannot carry it outside that `forall`" { v }
   SynthesisUndecided _ -> "Nothing determines what is synthesized here"

@@ -259,7 +259,15 @@ elaborateValues imports surface importedEntries m =
 
   -- the type declarations, every head before anything a head names
   typeDeclarations =
-    { data: Array.mapMaybe
+    { order: Array.mapMaybe
+        ( case _ of
+            DeclData d -> Just d.name
+            DeclNewtype d -> Just d.name
+            DeclSynonym d -> Just d.name
+            _ -> Nothing
+        )
+        m.declarations
+    , data: Array.mapMaybe
         ( case _ of
             DeclData d -> Just { origin: d.origin, attributes: d.attributes, name: d.name, kind: d.kind, params: d.params, constructors: d.constructors, isNewtype: false }
             DeclNewtype d -> Just { origin: d.origin, attributes: d.attributes, name: d.name, kind: d.kind, params: d.params, constructors: [ { origin: d.constructor.origin, name: d.constructor.name, fields: [ d.constructor.field ] } ], isNewtype: true }
@@ -285,7 +293,7 @@ elaborateValues imports surface importedEntries m =
         )
         m.declarations
     }
-  typesRead = case runAttempt (sessionEnvOf imports importedEntries) (readTypes surface.synonyms typeDeclarations) initial0 of
+  typesRead = case readTypes (sessionEnvOf imports importedEntries) surface.synonyms typeDeclarations initial0 of
     Tuple (Done reads) s -> { types: settledTypes s.tentative.metas reads, errors: [], state: s }
     Tuple outcome _ -> { types: { data: [], synonyms: [], foreignTypes: [], effects: [], unsupported: [] }, errors: [ failure outcome ], state: initial0 }
   initial = typesRead.state

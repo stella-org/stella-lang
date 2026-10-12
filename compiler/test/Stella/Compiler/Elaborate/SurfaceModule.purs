@@ -17,6 +17,7 @@ import Effect.Aff (Aff)
 import Stella.Compiler.CST (parseModule, printSyntaxError)
 import Stella.Compiler.CST.Types (inSource)
 import Stella.Compiler.Surface.Decl (Observation(..))
+import Stella.Compiler.Surface.Decl (Declaration(..)) as SurfaceDecl
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..))
@@ -27,7 +28,9 @@ import Stella.Compiler.Elaborate.Protocol.Facade as F
 import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Environment.Imported (importedCatalog, importedSignature, sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Surface (importedSurface)
-import Stella.Compiler.Elaborate.Kernel.Elab (closeBoundary, createSynthesis, equate, freshTypeMeta, initialState, openBoundary, placeFit)
+import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), closeBoundary, createSynthesis, equate, freshTypeMeta, initialState, openBoundary, placeFit)
+import Stella.Compiler.Elaborate.Mechanism.Unify (KindMetaBinding(..))
+import Stella.Compiler.Elaborate.Surface.Types (readTypes)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), elaborateModule, settleBodies)
 import Stella.Compiler.Elaborate.Surface.Report (printType)
@@ -188,6 +191,7 @@ at = case _ of
   Unsupported (ForeignKindInvalid o _) -> located o <> " foreign kind"
   Unsupported (EffectKindVariable o) -> located o <> " effect kind variable"
   Unsupported (EffectKindUndetermined o) -> located o <> " effect kind undetermined"
+  Unsupported (KindNotDecided o) -> located o <> " kind not decided"
   SignatureNeeded o _ -> located o <> " signature needed"
   ConstraintEscapes o _ -> located o <> " constraint escapes"
   SynthesisUndecided o -> located o <> " synthesis undecided"
@@ -299,16 +303,102 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "data App f (a :: Type) = App (f a)" ] \r -> checked r \core ->
         map (map _.kind <<< _.params) (dataOf core) `shouldEqual` [ [ KFun KType KType, KType ] ]
 
-    it "is outside what this version elaborates where only generalizing would decide a parameter's kind" do
-      elaborating [ "data App f a = App (f a)", "ok :: Int", "ok = 1" ] \r -> do
-        map at r.errors `shouldEqual`
-          [ "3:10 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written"
-          , "3:12 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written"
+    it "is generalized over the kinds its head leaves undecided, a kind variable in place of each" do
+      elaborating [ "data App f a = App (f a)", "data Proxy a = Proxy" ] \r -> checked r \core ->
+        map dataShape (dataOf core) `shouldEqual`
+          [ { name: TyName "App", kindVars: [ KindVar "k" ], params: [ { name: TyVar "f", kind: KFun (KVar (KindVar "k")) KType }, { name: TyVar "a", kind: KVar (KindVar "k") } ], constructors: [ { name: Ident "App", tag: 0, fields: [ TApp (TVar (TyVar "f")) (TVar (TyVar "a")) ] } ] }
+          , { name: TyName "Proxy", kindVars: [ KindVar "k" ], params: [ { name: TyVar "a", kind: KVar (KindVar "k") } ], constructors: [ { name: Ident "Proxy", tag: 0, fields: [] } ] }
           ]
-        -- a data declaration that does not elaborate leaves the values unread
-        r.values `shouldEqual` []
-      elaborating [ "data Proxy a = Proxy" ] \r ->
-        map at r.errors `shouldEqual` [ "3:12 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written" ]
+
+    it "is instantiated afresh by a later group, at as many kinds as it is used at" do
+      elaborating [ "data App f a = App (f a)", "data Proxy a = Proxy", "data L (a :: Type) = L", "data Uses = Uses (App L Int) (App Proxy L)" ] \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> map _.name (dataOf core) `shouldEqual` [ TyName "App", TyName "Proxy", TyName "L", TyName "Uses" ]
+
+    it "gives a reference inside its group the kinds its member is generalized over" do
+      elaborating [ "data T f = T (U f)", "data U f = U (T f)" ] \r -> checked r \core ->
+        map dataShape (dataOf core) `shouldEqual`
+          [ { name: TyName "T", kindVars: [ KindVar "k" ], params: [ { name: TyVar "f", kind: KVar (KindVar "k") } ], constructors: [ { name: Ident "T", tag: 0, fields: [ TApp (TCon (Qualified (ModuleName "M") (TyName "U")) [ KVar (KindVar "k") ]) (TVar (TyVar "f")) ] } ] }
+          , { name: TyName "U", kindVars: [ KindVar "k" ], params: [ { name: TyVar "f", kind: KVar (KindVar "k") } ], constructors: [ { name: Ident "U", tag: 0, fields: [ TApp (TCon (Qualified (ModuleName "M") (TyName "T")) [ KVar (KindVar "k") ]) (TVar (TyVar "f")) ] } ] }
+          ]
+
+    it "is used inside its group at the kind it writes afresh at each use, and at the one kind it is being given otherwise" do
+      elaborating [ "data L (a :: Type) = L", "data Poly (a :: k) = Poly (Poly Int) (Poly L)" ] \r ->
+        map at r.errors `shouldEqual` []
+      elaborating [ "data L (a :: Type) = L", "data Mono a = Mono (Mono Int) (Mono L)" ] \r ->
+        map at r.errors `shouldEqual` [ "4:32 rejected" ]
+
+    it "is read with a synonym it refers to through, one group, a cycle of synonyms alone refused" do
+      elaborating [ "data L (a :: Type) = L", "type S = L D", "data D = D S" ] \r ->
+        map at r.errors `shouldEqual` []
+      elaborating [ "data D = D S", "type S = T", "type T = S" ] \r ->
+        map at r.errors `shouldEqual` [ "3:12 unexpandable", "4:6 cycle", "5:6 cycle" ]
+
+    it "is read by no later group where its group is not generalized, a use of it reported as reported already" do
+      elaborating [ "type S a = D a", "data D a = D (S a)", "data Use = Use (D Int)" ] \r ->
+        map at r.errors `shouldEqual`
+          [ "4:8 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written"
+          , "5:17 reported"
+          , "3:8 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written"
+          ]
+
+    it "reports every member of a group not read, one that would have been a declaration by the group it stands in" do
+      elaborating [ "data P a = P", "type S a = D", "data D = D (S P)" ] \r ->
+        map at r.errors `shouldEqual` [ "5:6 outside: a type declaration whose group holds a type synonym only generalizing would decide the kinds of", "4:8 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written" ]
+
+    it "reports a kind that must produce `Type`, which no kind variable is, where the constructor holding it stands" do
+
+      elaborating [ "data P a = P", "data H f a = H (P (f a))" ] \r ->
+        map at r.errors `shouldEqual` [ "4:14 kind not decided" ]
+
+    it "retires from `Ψ` the kinds it generalizes, none left unsolved for a later part to decide" do
+      case environment, parseModule (joinWith "\n" [ "module M where", "import Lib", "data App f a = App (f a)", "data T f = T (U f)", "data U f = U (T f)" ]) of
+        Right env, Right cst -> case viewFor [ lib ] env of
+          Right view -> case importedSignature env view of
+            Right signature -> do
+              let
+                resolved = resolveModule env cst
+                declarations =
+                  { order: Array.mapMaybe
+                      ( case _ of
+                          SurfaceDecl.DeclData d -> Just d.name
+                          _ -> Nothing
+                      )
+                      resolved.module.declarations
+                  , data: Array.mapMaybe
+                      ( case _ of
+                          SurfaceDecl.DeclData d -> Just { origin: d.origin, attributes: d.attributes, name: d.name, kind: d.kind, params: d.params, constructors: d.constructors, isNewtype: false }
+                          _ -> Nothing
+                      )
+                      resolved.module.declarations
+                  , synonyms: []
+                  , foreignTypes: []
+                  , effects: []
+                  }
+              case readTypes (sessionEnvOf signature (importedCatalog env view)) (importedSurface env view).synonyms declarations (initialState (SessionId 0) 1000) of
+                Tuple (Done _) s ->
+                  Array.filter
+                    ( case _ of
+                        KindUnsolved info -> info.level >= 1
+                        KindAssigned _ -> false
+                    )
+                    (Array.fromFoldable (Map.values s.tentative.metas.kindBindings))
+                    `shouldEqual` []
+                Tuple (Failed d) _ -> fail ("not read: " <> show d)
+                Tuple (Broke d) _ -> fail ("broken: " <> show d)
+                Tuple _ _ -> fail "postponed"
+            Left err -> fail (show err)
+          Left err -> fail (show err)
+        _, _ -> fail "no module"
+
+    it "reports a kind only its fields hold, which no generalization of its head reaches" do
+
+      elaborating [ "data Q = Q Phantom" ] \r ->
+        map at r.errors `shouldEqual` [ "3:10 kind not decided" ]
+
+    it "is not generalized where its group holds a synonym its generalization would generalize too" do
+      elaborating [ "type S a = D a", "data D a = D (S a)" ] \r ->
+        map at r.errors `shouldEqual` [ "4:8 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written", "3:8 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written" ]
 
     it "has the kind variables it writes, each use of the type instantiating them afresh" do
       elaborating [ "data Proxy (a :: k) = Proxy", "data IntProxy = IntProxy (Proxy Int)", "data Both = Both (Proxy Int) (Proxy List)", "data List (a :: Type) = Nil" ] \r -> checked r \core ->
