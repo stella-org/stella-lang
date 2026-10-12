@@ -629,6 +629,31 @@ spec = describe "Stella.Compiler.Build" do
           Right built -> built `shouldEqual` [ "A", "B" ]
           Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
 
+  describe "a type synonym's kind" do
+    it "is generalized, published at its kind scheme, and instantiated by a module importing it at as many kinds as it is used at" do
+      compilingUnder [ "module M (I, C, W, S, D(..)) where" ] [ "type I a = a", "type C a b = a", "type W (b :: k) a = a", "type S a = D a", "data D a = D (S a)" ] case _ of
+        Left errors -> fail (joinWith "; " (map printCompileError errors))
+        Right r -> do
+          let
+            k = KindVar "k"
+            k1 = KindVar "k1"
+            a = TyVar "a"
+            typeOf n = Map.lookup (TyName n) r.interface.declarations.types
+          map _.kind (typeOf "I") `shouldEqual` Just { kindVars: [ k ], body: KFun (KVar k) (KVar k) }
+          map _.kind (typeOf "C") `shouldEqual` Just { kindVars: [ k, k1 ], body: KFun (KVar k) (KFun (KVar k1) (KVar k)) }
+          map _.kind (typeOf "W") `shouldEqual` Just { kindVars: [ k, k1 ], body: KFun (KVar k) (KFun (KVar k1) (KVar k1)) }
+          map (\t -> Tuple t.kind t.sort) (typeOf "S") `shouldEqual` Just (Tuple { kindVars: [ k ], body: KFun (KVar k) KType } (Synonym { params: [ { name: a, kind: KVar k } ], body: TApp (TCon (Qualified (ModuleName "M") (TyName "D")) [ KVar k ]) (TVar a) }))
+          case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
+            Right stored -> stored.interface `shouldEqual` r.interface
+            Left problem -> fail problem
+      building
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "data L (a :: Type) = L", "data P a = P", "data Uses = Uses (P (I L)) (I Int) (S L) (S Int)", "f :: C Int L -> C (P L) Int -> I Int", "f x y = x" ])
+        , Tuple "src/A.stel" (moduleOf "A" [] [ "type I a = a", "type C a b = a", "type S a = D a", "data D a = D (S a)" ])
+        ]
+        \r -> case r.result of
+          Right built -> built `shouldEqual` [ "A", "B" ]
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+
   describe "a local binding" do
     it "is a `let` or a `letrec` of the module's Core, through to its bytecode" do
       compilingUnder [ "module M (f, g) where" ] [ "f :: Int -> Int", "f n = let", "      go x = go x", "      m = n", "    in go m", "g :: Int -> Int", "g n = h n", "  where", "  h x = x" ] case _ of
@@ -710,11 +735,10 @@ spec = describe "Stella.Compiler.Build" do
         Left errors -> map stageOf errors `shouldEqual` [ "elaboration" ]
         Right _ -> fail "compiled"
 
-    it "refuse a synonym extending a row it is given, and one whose parameter's kind nothing decides" do
-      compiling [ "type W r = { a :: Int, ...r }", "type K f = f" ] case _ of
+    it "refuse a synonym extending a row it is given" do
+      compiling [ "type W r = { a :: Int, ...r }" ] case _ of
         Left errors -> rendered errors `shouldEqual`
           [ "2:6 This version of the compiler does not elaborate a type synonym extending a row it is given yet"
-          , "3:8 This version of the compiler does not elaborate a type parameter whose kind is decided only by generalizing it; its kind must be written yet"
           ]
         Right _ -> fail "compiled"
 

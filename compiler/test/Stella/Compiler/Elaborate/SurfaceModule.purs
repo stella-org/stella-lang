@@ -192,6 +192,7 @@ at = case _ of
   Unsupported (EffectKindVariable o) -> located o <> " effect kind variable"
   Unsupported (EffectKindUndetermined o) -> located o <> " effect kind undetermined"
   Unsupported (KindNotDecided o) -> located o <> " kind not decided"
+  Unsupported (SynonymKindNotDecided o _) -> located o <> " synonym kind not decided"
   SignatureNeeded o _ -> located o <> " signature needed"
   ConstraintEscapes o _ -> located o <> " constraint escapes"
   SynthesisUndecided o -> located o <> " synthesis undecided"
@@ -334,25 +335,33 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "data D = D S", "type S = T", "type T = S" ] \r ->
         map at r.errors `shouldEqual` [ "3:12 unexpandable", "4:6 cycle", "5:6 cycle" ]
 
-    it "is read by no later group where its group is not generalized, a use of it reported as reported already" do
-      elaborating [ "type S a = D a", "data D a = D (S a)", "data Use = Use (D Int)" ] \r ->
-        map at r.errors `shouldEqual`
-          [ "4:8 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written"
-          , "5:17 reported"
-          , "3:8 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written"
+    it "is generalized with a synonym of its group, a reference to it in the synonym given its kind arguments, both instantiated afresh by a later group" do
+      elaborating [ "type S a = D a", "data D a = D (S a)", "data L (a :: Type) = L", "data Use = Use (D Int) (S L)" ] \r -> checked r \core ->
+        map dataShape (dataOf core) `shouldEqual`
+          [ { name: TyName "D", kindVars: [ KindVar "k" ], params: [ { name: a, kind: KVar (KindVar "k") } ], constructors: [ { name: Ident "D", tag: 0, fields: [ TApp (own "D" [ KVar (KindVar "k") ]) (TVar a) ] } ] }
+          , { name: TyName "L", kindVars: [], params: [ { name: a, kind: KType } ], constructors: [ { name: Ident "L", tag: 0, fields: [] } ] }
+          , { name: TyName "Use", kindVars: [], params: [], constructors: [ { name: Ident "Use", tag: 0, fields: [ TApp (own "D" [ KType ]) int, TApp (own "D" [ KFun KType KType ]) (own "L" []) ] } ] }
           ]
 
-    it "reports every member of a group not read, one that would have been a declaration by the group it stands in" do
+    it "is used inside its group through a synonym at the kind the synonym writes afresh at each use, and at the one kind it is being given otherwise" do
       elaborating [ "data P a = P", "type S a = D", "data D = D (S P)" ] \r ->
-        map at r.errors `shouldEqual` [ "5:6 outside: a type declaration whose group holds a type synonym only generalizing would decide the kinds of", "4:8 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written" ]
+        map at r.errors `shouldEqual` []
+      elaborating [ "data L (a :: Type) = L", "data K (a :: k) b = K b", "type S (a :: k) = K a D", "data D = D (S Int) (S L)" ] \r ->
+        map at r.errors `shouldEqual` []
+      elaborating [ "data L (a :: Type) = L", "data K (a :: k) b = K b", "type S a = K a D", "data D = D (S Int) (S L)" ] \r ->
+        map at r.errors `shouldEqual` [ "6:23 rejected" ]
+
+    it "reports a kind a synonym of its group leaves in its fields, which no generalization of its head reaches, where the constructor stands" do
+      elaborating [ "data P a = P", "type S a = (D, P a)", "data D = D (S P)" ] \r ->
+        map at r.errors `shouldEqual` [ "5:10 kind not decided" ]
 
     it "reports a kind that must produce `Type`, which no kind variable is, where the constructor holding it stands" do
 
       elaborating [ "data P a = P", "data H f a = H (P (f a))" ] \r ->
         map at r.errors `shouldEqual` [ "4:14 kind not decided" ]
 
-    it "retires from `Ψ` the kinds it generalizes, none left unsolved for a later part to decide" do
-      case environment, parseModule (joinWith "\n" [ "module M where", "import Lib", "data App f a = App (f a)", "data T f = T (U f)", "data U f = U (T f)" ]) of
+    it "retires from `Ψ` the kinds it generalizes and those it reports a synonym for, none left unsolved for a later part to decide" do
+      case environment, parseModule (joinWith "\n" [ "module M where", "import Lib", "data App f a = App (f a)", "data T f = T (U f)", "data U f = U (T f)", "data P a = P", "type I a = a", "type S = P P", "type F f a = f a" ]) of
         Right env, Right cst -> case viewFor [ lib ] env of
           Right view -> case importedSignature env view of
             Right signature -> do
@@ -362,6 +371,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
                   { order: Array.mapMaybe
                       ( case _ of
                           SurfaceDecl.DeclData d -> Just d.name
+                          SurfaceDecl.DeclSynonym d -> Just d.name
                           _ -> Nothing
                       )
                       resolved.module.declarations
@@ -371,7 +381,12 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
                           _ -> Nothing
                       )
                       resolved.module.declarations
-                  , synonyms: []
+                  , synonyms: Array.mapMaybe
+                      ( case _ of
+                          SurfaceDecl.DeclSynonym d -> Just d
+                          _ -> Nothing
+                      )
+                      resolved.module.declarations
                   , foreignTypes: []
                   , effects: []
                   }
@@ -395,10 +410,6 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
 
       elaborating [ "data Q = Q Phantom" ] \r ->
         map at r.errors `shouldEqual` [ "3:10 kind not decided" ]
-
-    it "is not generalized where its group holds a synonym its generalization would generalize too" do
-      elaborating [ "type S a = D a", "data D a = D (S a)" ] \r ->
-        map at r.errors `shouldEqual` [ "4:8 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written", "3:8 outside: a type parameter whose kind is decided only by generalizing it; its kind must be written" ]
 
     it "has the kind variables it writes, each use of the type instantiating them afresh" do
       elaborating [ "data Proxy (a :: k) = Proxy", "data IntProxy = IntProxy (Proxy Int)", "data Both = Both (Proxy Int) (Proxy List)", "data List (a :: Type) = Nil" ] \r -> checked r \core ->
@@ -425,6 +436,23 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
 
     it "rejects a field at a kind other than Type where it stands" do
       elaborating [ "data Bad = Bad (Int Int)" ] \r -> map at r.errors `shouldEqual` [ "3:17 rejected" ]
+
+  describe "a type synonym's kind" do
+    let
+      m = ModuleName "M"
+      own n = TCon (Qualified m (TyName n))
+
+    it "is generalized, and instantiated afresh by a later group, a signature, and an operation, at as many kinds as it is used at" do
+      elaborating [ "type I a = a", "data L (a :: Type) = L", "data P a = P", "data U = U (P (I L)) (I Int)", "effect E where", "  op :: I Int ->* I Int", "f :: P (I L) -> I Int", "f p = 1" ] \r -> checked r \core ->
+        map (map _.fields <<< _.constructors) (Array.filter (\d -> d.name == TyName "U") (dataOf core)) `shouldEqual` [ [ [ TApp (own "P" [ KFun KType KType ]) (own "L" []), int ] ] ]
+
+    it "is reported where the synonym is declared where it holds a kind only its body holds, or one that must produce `Type`, and a use of the synonym as one that cannot be expanded" do
+      elaborating [ "data P a = P", "type S = P P", "data U = U S" ] \r ->
+        map at r.errors `shouldEqual` [ "5:12 unexpandable", "4:6 synonym kind not decided" ]
+      elaborating [ "data L (a :: Type) = L", "type App f a = f a", "data U = U (App L Int)" ] \r ->
+        map at r.errors `shouldEqual` [ "5:13 unexpandable", "4:6 synonym kind not decided" ]
+      elaborating [ "data L (a :: Type) = L", "type App (f :: k -> Type) a = f a", "data U = U (App L Int)" ] \r ->
+        map at r.errors `shouldEqual` []
 
   describe "a wildcard and a typed hole in an annotation" do
     it "stand for what elaboration decides, a wildcard at the kind where it stands" do

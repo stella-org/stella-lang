@@ -22,15 +22,15 @@
 -- | condition for, is not read either, and a use of one is reported where it
 -- | stands.
 -- |
--- | **A kind a data type's head leaves undecided is generalized** once its
--- | group is read, into a kind variable of the declaration's own besides those
--- | it writes, and a use of the type instantiates both afresh; a reference
--- | inside the group gains the kind arguments of the member it names. A kind
--- | only the fields hold is reported, no generalization of the head reaching
--- | it. A synonym's kinds are decided by what the declarations say of them: a
--- | group holding one its generalization would have to generalize is not
--- | read — rolled back, its members reported, and read by no later group —
--- | and a parameter whose kind nothing decided must be written.
+-- | **A kind a data type's head or a synonym's kind leaves undecided is
+-- | generalized** once its group is read, into a kind variable of the
+-- | declaration's own besides those it writes, and a use of the type or the
+-- | synonym instantiates both afresh; a reference inside the group to a data
+-- | type gains the kind arguments of the member it names. A kind only the
+-- | fields hold is reported where the constructor holding it stands, and one
+-- | only a synonym's body holds, or one its kind holds that must produce
+-- | `Type`, where the synonym is declared, a later use of that synonym
+-- | reported as one that cannot be expanded.
 -- |
 -- | **A field's rows are sharp under no condition on a parameter.** A row
 -- | spreading a parameter needs it to lack the keys the row holds beside it,
@@ -79,7 +79,7 @@ import Data.Set as Set
 import Data.Traversable (for, traverse)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind(..), fromCoreKind, kindMetasOf, toCoreKind)
-import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), kindMetasOfType, toCore)
+import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), kindMetasOfType, toCore)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEntry, SynonymEnv)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), SessionEnv, SolverState, atLevel, currentMetas, equateKinds, freshKindMeta)
 import Stella.Compiler.Elaborate.Driver.Attempt (runAttempt)
@@ -153,11 +153,10 @@ type SynonymRead =
 type ForeignTypeRead = { declaration :: ForeignTypeDeclaration, kind :: Either Unsupported KindScheme }
 
 -- | What reading the type declarations gave, the data types and the synonyms
--- | in the order declared: each read, or, where its group was not read, what
--- | keeps it from being a declaration.
+-- | in the order declared.
 type TypesRead =
-  { data :: Array (Either (Array Unsupported) DataRead)
-  , synonyms :: Array (Either (Array Unsupported) SynonymRead)
+  { data :: Array DataRead
+  , synonyms :: Array SynonymRead
   , foreignTypes :: Array ForeignTypeRead
   , effects :: Array EffectRead
   }
@@ -185,11 +184,9 @@ type OperationRead =
 -- | fields, its kinds generalized before a later group uses it — and then the
 -- | operations.
 -- |
--- | **A group is generalized whole or not at all.** One holding a synonym its
--- | generalization would have to generalize too is rolled back to where it
--- | began, and a later group reads none of it: a use of one of its types is
--- | reported where it stands as reported already. What a group generalizes is
--- | retired from `Ψ`, and `Ψ` naming it afterwards is the host's defect.
+-- | **What a group settles is retired from `Ψ`**: each kind it generalizes,
+-- | and each it reports a synonym for, nothing a later group reads naming one;
+-- | `Ψ` naming one afterwards is the host's defect.
 readTypes :: SessionEnv -> SynonymEnv -> TypeDeclarations -> SolverState -> Tuple (Outcome TypesRead) SolverState
 readTypes session imported declarations s0 = case runAttempt session (traverse (readEffectHead imported) declarations.effects) s0 of
   Tuple (Done effectHeads) s1 ->
@@ -203,10 +200,9 @@ readTypes session imported declarations s0 = case runAttempt session (traverse (
         { tyVars = Map.fromFoldable (map (\p -> Tuple (nameOf p.var) p.kind) params)
         , localTypes = acc.heads
         , localEffects = effects
-        , unread = acc.unread
         , localSynonyms = acc.shapes
         }
-      start = { heads: fixed, shapes: Map.empty, data: Map.empty, synonyms: Map.empty, unread: Set.empty, refused: Map.empty }
+      start = { heads: fixed, shapes: Map.empty, data: Map.empty, synonyms: Map.empty }
     in
       case readGroups session imported inScope (typeGroups declarations) start s1 of
         Tuple (Left stopped) s2 -> Tuple stopped s2
@@ -214,8 +210,8 @@ readTypes session imported declarations s0 = case runAttempt session (traverse (
           Tuple (Done effects') s3 ->
             Tuple
               ( Done
-                  { data: Array.mapMaybe (\d -> readOrRefused read d.name read.data) declarations.data
-                  , synonyms: Array.mapMaybe (\s -> readOrRefused read s.name read.synonyms) declarations.synonyms
+                  { data: Array.mapMaybe (\d -> Map.lookup d.name read.data) declarations.data
+                  , synonyms: Array.mapMaybe (\s -> Map.lookup s.name read.synonyms) declarations.synonyms
                   , foreignTypes
                   , effects: effects'
                   }
@@ -228,11 +224,6 @@ readTypes session imported declarations s0 = case runAttempt session (traverse (
     Right x -> Just x
     Left _ -> Nothing
 
-  readOrRefused :: forall x. GroupsRead -> Qualified TyName -> Map.Map (Qualified TyName) x -> Maybe (Either (Array Unsupported) x)
-  readOrRefused read name reads = case Map.lookup name read.refused of
-    Just problems -> Just (Left problems)
-    Nothing -> map Right (Map.lookup name reads)
-
 -- | An outcome that is no result, as one of another type.
 abandoned :: forall a b. Outcome a -> Outcome b
 abandoned = case _ of
@@ -243,21 +234,18 @@ abandoned = case _ of
   Done _ -> Broke ResolutionPostponed
 
 -- | What reading the groups so far gave: the head each type constructor of the
--- | module is read at, the synonyms' shapes, each declaration read, the types
--- | of the groups not read, and what keeps those from being declarations.
+-- | module is read at, the synonyms' shapes, and each declaration read.
 type GroupsRead =
   { heads :: Map.Map (Qualified TyName) LocalHead
   , shapes :: Map.Map (Qualified TyName) (Maybe SynonymShape)
   , data :: Map.Map (Qualified TyName) DataRead
   , synonyms :: Map.Map (Qualified TyName) SynonymRead
-  , unread :: Set (Qualified TyName)
-  , refused :: Map.Map (Qualified TyName) (Array Unsupported)
   }
 
 type InScope = GroupsRead -> Qualified Ident -> Array KindVar -> Array Param -> Scope
 
--- | The groups given read, each as an attempt at level 1, and generalized or
--- | rolled back before the next is read.
+-- | The groups given read, each as an attempt at level 1, and generalized
+-- | before the next is read.
 readGroups :: SessionEnv -> SynonymEnv -> InScope -> Array { data :: Array DataDeclaration, synonyms :: Array SynonymDeclaration } -> GroupsRead -> SolverState -> Tuple (Either (Outcome TypesRead) GroupsRead) SolverState
 readGroups session imported inScope groups' acc s = case Array.uncons groups' of
   Nothing -> Tuple (Right acc) s
@@ -265,41 +253,19 @@ readGroups session imported inScope groups' acc s = case Array.uncons groups' of
     Tuple (Done read) s' ->
       let
         metas = s'.tentative.metas
+        generalized = generalizeKinds metas read.data read.synonyms
       in
-        case generalizeKinds metas read.data read.synonyms of
-          -- rolled back, and read by no later group: what keeps each member
-          -- from being a declaration is read off `Ψ` before the rollback, what
-          -- it holds being gone after it
-          Nothing ->
+        case retire metas generalized.settled of
+          Nothing -> Tuple (Left (Broke RetiredMetavariableHeld)) s'
+          Just released ->
             readGroups session imported inScope tail
-              acc
-                { shapes = foldl (\m r -> Map.insert r.declaration.name Nothing m) acc.shapes read.synonyms
-                , unread = Set.union acc.unread (Set.fromFoldable (map _.declaration.name read.data))
-                , refused = foldl (\m r -> Map.insert r.declaration.name (refusal r.declaration.origin (settledSynonym metas r)) m)
-                    (foldl (\m d -> Map.insert d.declaration.name (refusal d.declaration.origin (settledData metas d)) m) acc.refused read.data)
-                    read.synonyms
-                }
-              { tentative: s.tentative, retained: s'.retained }
-          Just generalized -> case retire metas (Set.fromFoldable (Array.concatMap _.generalized generalized)) of
-            Nothing -> Tuple (Left (Broke RetiredMetavariableHeld)) s'
-            Just released ->
-              readGroups session imported inScope tail
-                { heads: foldl (\m g -> Map.insert g.read.declaration.name g.head m) acc.heads generalized
-                , shapes: read.shapes
-                , data: foldl (\m g -> Map.insert g.read.declaration.name g.read m) acc.data generalized
-                , synonyms: foldl (\m r -> Map.insert r.declaration.name r m) acc.synonyms read.synonyms
-                , unread: acc.unread
-                , refused: acc.refused
-                }
-                (s' { tentative { metas = released } })
+              { heads: foldl (\m g -> Map.insert g.read.declaration.name g.head m) acc.heads generalized.data
+              , shapes: foldl (\m g -> Map.insert g.read.declaration.name g.shape m) acc.shapes generalized.synonyms
+              , data: foldl (\m g -> Map.insert g.read.declaration.name g.read m) acc.data generalized.data
+              , synonyms: foldl (\m g -> Map.insert g.read.declaration.name g.read m) acc.synonyms generalized.synonyms
+              }
+              (s' { tentative { metas = released } })
     Tuple stopped s' -> Tuple (Left (abandoned stopped)) s'
-
--- | Why a member of a group not read is no declaration: what it is refused for,
--- | or, where it would have been one, the group it stands in.
-refusal :: forall a. Surface.Origin -> Either (Array Unsupported) a -> Array Unsupported
-refusal origin = case _ of
-  Left problems | not (Array.null problems) -> problems
-  _ -> [ OutsideSubset origin "a type declaration whose group holds a type synonym only generalizing would decide the kinds of" ]
 
 -- | `Ψ` with the kind metavariables given retired, and every one whose solution
 -- | names one of them; or nothing where what is left still names one.
@@ -393,7 +359,7 @@ readGroup
   -> InScope
   -> GroupsRead
   -> { data :: Array DataDeclaration, synonyms :: Array SynonymDeclaration }
-  -> Elab { data :: Array DataRead, synonyms :: Array SynonymRead, shapes :: Map.Map (Qualified TyName) (Maybe SynonymShape) }
+  -> Elab { data :: Array DataRead, synonyms :: Array SynonymRead }
 readGroup imported inScope acc group = do
   dataHeads <- traverse (readDataHead imported) group.data
   synonymHeads <- traverse (readSynonymHead imported) group.synonyms
@@ -411,56 +377,100 @@ readGroup imported inScope acc group = do
       let unheld = map (\i -> UnheldConstraint i.origin i.atom) (Array.concatMap _.implied fields)
       pure { constructor: { origin: c.origin, name: c.name, fields: map _.type fields }, unsupported: Array.concatMap _.unsupported fields <> unheld }
     pure h { constructors = map _.constructor constructors, unsupported = h.unsupported <> Array.concatMap _.unsupported constructors }
-  pure { data: data', synonyms: Array.mapMaybe (\s -> Map.lookup s.name synonyms.read) group.synonyms, shapes: synonyms.shapes }
+  pure { data: data', synonyms: Array.mapMaybe (\s -> Map.lookup s.name synonyms.read) group.synonyms }
 
--- | A group's data types, the kind metavariables of the group its heads leave
--- | unsolved made kind variables of each, named apart from those it writes in
--- | the order they first appear, and each reference inside the group to a
--- | member given the member's kind arguments; with the head a later group
--- | reads each at, its kind variables instantiated at each use, and what it
--- | generalized. Nothing where the group holds a synonym its generalization
--- | would have to generalize too.
-generalizeKinds :: MetaContext -> Array DataRead -> Array SynonymRead -> Maybe (Array { read :: DataRead, head :: LocalHead, generalized :: Array KindMetaVar })
-generalizeKinds metas data' synonyms =
-  if Array.any synonymOpen synonyms then Nothing else Just (map generalized data')
+-- | A group's data types and synonyms, the kind metavariables of the group
+-- | each one's kind leaves unsolved made kind variables of its own, named apart
+-- | from those it writes in the order they first appear, and each reference
+-- | inside the group to a data type given the member's kind arguments; with the
+-- | head or the shape a later group reads each at, its kind variables
+-- | instantiated at each use, and every kind metavariable the group settles.
+-- | A synonym holding a kind no kind variable of it stands for is reported,
+-- | and has no shape.
+generalizeKinds
+  :: MetaContext
+  -> Array DataRead
+  -> Array SynonymRead
+  -> { data :: Array { read :: DataRead, head :: LocalHead }, synonyms :: Array { read :: SynonymRead, shape :: Maybe SynonymShape }, settled :: Set KindMetaVar }
+generalizeKinds metas data' synonyms' =
+  { data: map _.member data''
+  , synonyms: map _.member synonyms''
+  , settled: Set.fromFoldable (Array.concatMap _.settles data'' <> Array.concatMap _.settles synonyms'')
+  }
   where
   open k = case Map.lookup k metas.kindBindings of
     Just (KindUnsolved info) -> info.level >= 1
     _ -> false
-  candidatesOf d = Array.nub (Array.filter open (kindMetaOrder (substituteKind metas (headKind d.params))))
-  candidates = Map.fromFoldable (map (\d -> Tuple d.declaration.name (candidatesOf d)) data')
-  generalizing name = maybe false (not <<< Array.null) (Map.lookup name candidates)
+  candidatesOf kind = Array.nub (Array.filter open (kindMetaOrder (substituteKind metas kind)))
+  candidates = Map.fromFoldable
+    ( map (\d -> Tuple d.declaration.name (candidatesOf (headKind d.params))) data'
+        <> map (\s -> Tuple s.declaration.name (candidatesOf (synonymKind s))) synonyms'
+    )
+  candidatesFor name = fromMaybe [] (Map.lookup name candidates)
 
-  -- a synonym whose kinds are left to decide, or that names a member whose
-  -- kinds are generalized, would be generalized with them
-  synonymOpen s =
-    Array.any open (Array.concatMap (kindMetaOrder <<< substituteKind metas) (Array.snoc (map _.kind s.params) s.result))
-      || maybe false (\b -> Array.any open (Set.toUnfoldable (kindMetasOfType (substitute metas b))) || Array.any generalizing (Set.toUnfoldable (constructorsIn (substitute metas b)))) s.body
-
-  generalized d =
+  -- a member's candidates made the kind variables it gains, and a type it
+  -- holds rewritten in them, a data type referred to given its kind arguments
+  -- written in this member's
+  generalizing name written =
     let
-      own = fromMaybe [] (Map.lookup d.declaration.name candidates)
-      fresh = kindNames (Set.fromFoldable d.kindVars) (Array.length own)
+      own = candidatesFor name
+      fresh = kindNames (Set.fromFoldable written) (Array.length own)
       ctx = metas { kindBindings = foldl (\b (Tuple m n) -> Map.insert m (KindAssigned (XKVar n)) b) metas.kindBindings (Array.zip own fresh) }
       kind = substituteKind ctx
-      -- a member referred to gains its kind arguments, written in this one's
-      extra name = map (kind <<< XKMeta) (fromMaybe [] (Map.lookup name candidates))
-      kindVars = d.kindVars <> fresh
+      extra callee = map (kind <<< XKMeta) (candidatesFor callee)
+    in
+      { own, kindVars: written <> fresh, kind, type: withKindArguments kind extra <<< substitute ctx }
+
+  data'' = map generalizedData data'
+  synonyms'' = map generalizedSynonym synonyms'
+
+  generalizedData d =
+    let
+      g = generalizing d.declaration.name d.kindVars
       -- a candidate that must produce `Type` is no kind variable, and is
       -- reported where a constructor's fields hold it
-      producing = Array.filter (producesTypeIn metas) own
+      producing = Array.filter (producesTypeIn metas) g.own
       holding k = Array.find (\c -> Array.any (Set.member k <<< kindMetasOfType <<< substitute metas) c.fields) d.constructors
       undecided = Array.nubEq (map (\k -> maybe d.declaration.origin _.origin (holding k)) producing)
     in
-      { read: d
-          { kindVars = kindVars
-          , params = map (\p -> p { kind = kind p.kind }) d.params
-          , constructors = map (\c -> c { fields = map (withKindArguments kind extra <<< substitute ctx) c.fields }) d.constructors
-          , unsupported = d.unsupported <> map KindNotDecided undecided
+      { member:
+          { read: d
+              { kindVars = g.kindVars
+              , params = map (\p -> p { kind = g.kind p.kind }) d.params
+              , constructors = map (\c -> c { fields = map g.type c.fields }) d.constructors
+              , unsupported = d.unsupported <> map KindNotDecided undecided
+              }
+          , head: { kindVars: g.kindVars, body: g.kind (headKind d.params) }
           }
-      , head: { kindVars, body: kind (headKind d.params) }
-      , generalized: own
+      , settles: g.own
       }
+
+  generalizedSynonym s =
+    let
+      g = generalizing s.declaration.name s.kindVars
+      params = map (\p -> p { kind = g.kind p.kind }) s.params
+      result = g.kind s.result
+      body = map g.type s.body
+      -- a kind only the body holds, and a candidate that must produce `Type`,
+      -- are no kind variables of the synonym
+      bodyOnly = maybe [] (Array.filter open <<< Set.toUnfoldable <<< kindMetasOfType) body
+      producing = Array.filter (producesTypeIn metas) g.own
+      undecided = if Array.null bodyOnly && Array.null producing then [] else [ SynonymKindNotDecided s.declaration.origin s.declaration.name ]
+      read = s { kindVars = g.kindVars, params = params, result = result, body = body, unsupported = s.unsupported <> undecided }
+    in
+      { member:
+          { read
+          , shape: case body of
+              Just b | Array.null read.unsupported -> Just { kindVars: g.kindVars, params: map (\p -> { name: nameOf p.var, kind: p.kind }) params, result, body: b }
+              _ -> Nothing
+          }
+      , settles: g.own <> bodyOnly
+      }
+
+-- | The kind a synonym is at: its parameters' kinds to the kind of what it
+-- | stands for.
+synonymKind :: SynonymRead -> XKind
+synonymKind s = foldr (\p k -> XKFun p.kind k) s.result s.params
 
 -- | Whether a kind metavariable must produce `Type`, which no kind variable is.
 producesTypeIn :: MetaContext -> KindMetaVar -> Boolean
@@ -477,23 +487,6 @@ withKindArguments kind extra = go
     XCon name kinds -> XCon name (map kind kinds <> extra name)
     XForall b k body -> XForall b (kind k) (go body)
     other -> mapChildren go other
-
--- | The type constructors a type names.
-constructorsIn :: XType -> Set (Qualified TyName)
-constructorsIn = case _ of
-  XCon name _ -> Set.singleton name
-  XApp f a -> constructorsIn f <> constructorsIn a
-  XForall _ _ body -> constructorsIn body
-  XConstrained _ body -> constructorsIn body
-  XRowExtend e rest -> entry e <> constructorsIn rest
-  XRowUnion l r -> constructorsIn l <> constructorsIn r
-  _ -> Set.empty
-  where
-  entry = case _ of
-    XRowTypeEntry _ t -> constructorsIn t
-    XRowEffectEntry _ ts -> Array.foldMap constructorsIn ts
-    XRowLabelledEffectEntry _ _ ts -> Array.foldMap constructorsIn ts
-    XRowRegionEntry _ -> Set.empty
 
 -- | The kind metavariables a kind holds, left to right.
 kindMetaOrder :: XKind -> Array KindMetaVar
@@ -563,12 +556,15 @@ readSynonymGroup inScope heads acc group = case group.recursive, Array.head grou
   false, Just d | Just h <- Array.find (\s -> s.declaration.name == d.name) heads -> do
     let scope = (inScope (declarationIdent h.declaration.name) h.kindVars h.params) { localSynonyms = acc.shapes }
     body <- readTypeAt scope h.result d.body
+    metas <- currentMetas
     let
       -- what a row of the body needs of a parameter, a synonym has no way to ask
       extending = if Array.null body.implied then [] else [ OutsideSubset d.origin "a type synonym extending a row it is given" ]
       problems = h.unsupported <> body.unsupported <> extending
       read = h { body = if Array.null problems then Just body.type else Nothing, unsupported = problems }
-      shape = if Array.null problems then Just { kindVars: h.kindVars, params: map (\p -> { name: nameOf p.var, kind: p.kind }) h.params, result: h.result, body: body.type } else Nothing
+      -- the kind variables it writes stand in the shape where a solution put
+      -- them, so a use instantiating them reaches each
+      shape = if Array.null problems then Just { kindVars: h.kindVars, params: map (\p -> { name: nameOf p.var, kind: substituteKind metas p.kind }) h.params, result: substituteKind metas h.result, body: substitute metas body.type } else Nothing
     pure { read: Map.insert d.name read acc.read, shapes: Map.insert d.name shape acc.shapes }
   _, _ -> pure acc
   where
@@ -709,9 +705,8 @@ settledTypes metas r =
         r.foreignTypes
   }
   where
-  -- a declaration of a group not read is what kept it from being one
-  data' = map (\entry -> { settled: entry >>= \read -> map { origin: read.declaration.origin, decl: _ } (settledData metas read) }) r.data
-  synonyms = map (\entry -> { settled: entry >>= \read -> map (\e -> { origin: read.declaration.origin, attributes: read.declaration.attributes, name: read.declaration.name, entry: e }) (settledSynonym metas read) }) r.synonyms
+  data' = map (\read -> { settled: map { origin: read.declaration.origin, decl: _ } (settledData metas read) }) r.data
+  synonyms = map (\read -> { settled: map (\e -> { origin: read.declaration.origin, attributes: read.declaration.attributes, name: read.declaration.name, entry: e }) (settledSynonym metas read) }) r.synonyms
   effects = map (\read -> { read, settled: settledEffect metas read }) r.effects
 
   hush :: forall e a. Either e a -> Maybe a
@@ -827,7 +822,6 @@ scopeOf imported declaration kindVars =
   , synonyms: imported
   , localSynonyms: Map.empty
   , localEffects: Map.empty
-  , unread: Set.empty
   , annotation: Nothing
   }
 

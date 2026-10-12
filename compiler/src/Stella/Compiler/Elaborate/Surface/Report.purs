@@ -57,6 +57,7 @@ elaborationOrigins = case _ of
   Unsupported (EffectKindVariable o) -> [ o ]
   Unsupported (EffectKindUndetermined o) -> [ o ]
   Unsupported (KindNotDecided o) -> [ o ]
+  Unsupported (SynonymKindNotDecided o _) -> [ o ]
   SignatureNeeded o _ -> [ o ]
   ConstraintEscapes o _ -> [ o ]
   SynthesisUndecided o -> [ o ]
@@ -108,6 +109,7 @@ printElaborationError = case _ of
   Unsupported (EffectKindVariable _) -> "An effect has no kind scheme, so a parameter of it, or a type variable of an operation, stands at a kind with no kind variable"
   Unsupported (EffectKindUndetermined _) -> "Nothing here determines the kind of this parameter, and an effect has no kind scheme to leave it open in; write its kind"
   Unsupported (KindNotDecided _) -> "Nothing here determines a kind this constructor's fields hold"
+  Unsupported (SynonymKindNotDecided _ (Qualified _ (TyName n))) -> fmt @"Nothing here determines a kind the type synonym `{n}` holds, and no kind variable of it can stand for that kind; write it" { n }
   SignatureNeeded _ name -> fmt @"`{name}` needs a type signature: its type is left undecided where it cannot be generalized" { name: nameOf name }
   ConstraintEscapes _ (TyVar v) -> fmt @"This needs a condition of `{v}`, which a `forall` inside the value binds, and the value's type cannot carry it outside that `forall`" { v }
   SynthesisUndecided _ -> "Nothing determines what is synthesized here"
