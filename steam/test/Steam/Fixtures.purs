@@ -18,7 +18,9 @@
 -- | told apart here as the manifest writes them.
 module Test.Steam.Fixtures
   ( fixtureNames
+  , deepFixtures
   , spec
+  , deepSpec
   ) where
 
 import Prelude
@@ -344,20 +346,33 @@ fixtureMismatches name = do
 fixtureNames :: Effect (P.Array P.String)
 fixtureNames = caseNames fixturesRoot
 
--- | One test per fixture, given the fixtures there are.
+-- | The fixtures whose programs run at the depths stack safety is tested at,
+-- | which the stress suite alone runs.
+deepFixtures :: P.Array P.String
+deepFixtures = [ "io-deep", "programs-deep" ]
+
+-- | One test per fixture, given the fixtures there are, but for the deep ones.
 spec :: P.Array P.String -> Spec Unit
 spec names = describe "Steam, over the bytecode fixtures" do
   it "finds the fixtures" do
     when (Array.null names) (fail "no fixtures found")
 
   describe "runs each fixture as its manifest says" do
-    for_ names \name -> it name do
+    for_ (Array.filter (\name -> not (Array.elem name deepFixtures)) names) \name -> it name do
       mismatches <- fixtureMismatches name
       mismatches `shouldEqual` []
 
   -- a name left behind when its fixture is renamed or removed would check nothing
   it "lists only fixtures that exist as refused for a given reason" do
     Array.filter (\n -> not (Array.elem n names)) (map _.name loadRefusals) `shouldEqual` []
+
+-- | One test per deep fixture, given the fixtures there are.
+deepSpec :: P.Array P.String -> Spec Unit
+deepSpec names = describe "Steam, over the deep bytecode fixtures" do
+  for_ deepFixtures \name -> it name do
+    unless (Array.elem name names) (fail (name <> " is no fixture"))
+    mismatches <- fixtureMismatches name
+    mismatches `shouldEqual` []
 
 -- | The refusal each of these fixtures must be refused with, which a manifest's
 -- | `mentions` does not pin down: every shape refusal of a handler names the same

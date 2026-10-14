@@ -1,0 +1,47 @@
+name: Stress
+
+# The tests over inputs as deep and as long as stack safety is tested at: each the
+# counterpart of one CI runs at a size every change affords. They run on main,
+# nightly, and by hand.
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: experimental-features = nix-command flakes
+      - uses: cachix/cachix-action@v17
+        with:
+          name: katsujukou-github
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+      - uses: nicknovitski/nix-develop@v1
+
+      # the workspace packages, @stella-lang/runtime among them, which Steam and the
+      # implementations its tests load both import
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: |
+          for package in steam cli; do
+            spago build -p "$package" --strict --pure --pedantic-packages
+          done
+
+      - name: Stress
+        run: |
+          spago test -p steam -m Test.Steam.Stress --pure
+          spago test -p cli -m Test.Stella.CLI.Stress --pure

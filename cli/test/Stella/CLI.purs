@@ -1,3 +1,6 @@
+-- | The tests every change runs. Those over inputs as deep and as long as
+-- | stack safety is tested at are `Test.Stella.CLI.Stress`'s. Run with
+-- | `spago test -p cli`.
 module Test.Stella.CLI where
 
 import Prelude

@@ -7,17 +7,17 @@
 -- | | Value of `Main` | What it exercises |
 -- | | --- | --- |
 -- | | `summed` | a recursive function, a constructor dispatch, a field, an operation |
--- | | `deepSum` | a non-tail recursion 100 000 deep |
--- | | `counted` | a self tail call a million times over |
+-- | | `deepSum` | a non-tail recursion as deep as its scale's list, 100 000 deep in `programs-deep` |
+-- | | `counted` | a self tail call, a million times over in `programs-deep` |
 -- | | `listValue` | a list built by tail calls, observed as a structure |
 -- | | `overApplied` | a known call of the callee's arity, then an application of the partial application it returns |
 -- | | `overAppliedU` | an unknown call supplying two arguments to a function of arity one |
 -- | | `papApplied` | a partial application of a global, then saturated |
 -- | | `ctorPap` | a partial application of a constructor |
 -- | | `captured` | a closure over a computed local |
--- | | `evenOdd` | a recursive group of closures capturing each other, tail calling 100 001 deep |
+-- | | `evenOdd` | a recursive group of closures capturing each other, tail calling 100 001 deep in `programs-deep` |
 -- | | `joined` | a join point two leaves share |
--- | | `looped` | a join point jumping to itself 100 000 times |
+-- | | `looped` | a join point jumping to itself, 100 000 times in `programs-deep` |
 -- | | `recordShape`, `recordArith` | the record operations |
 -- | | `variantCase` | an injection and a dispatch on its key |
 -- | | `negZero`, `posZero`, `nanCase` | a `Number` dispatch by literal identity |
@@ -26,6 +26,11 @@
 -- | | `unboxed`, `boxMatched`, `addCalled`, `addPartial` | a known call, a constructor, a dispatch, and a partial application reaching into another module |
 -- | | `dictTwice`, `mutualPair` | recursive groups of records whose closures read the group, one member and two |
 -- | | `localDict`, `localPair`, `localMixed` | the same groups bound locally, by-need cells, and a function and a cell capturing each other |
+-- |
+-- | **`Main` is written at a scale**: how far the four values that recurse, loop,
+-- | and jump go. `programs` holds it at a scale every suite affords, and
+-- | `programs-deep` at the depths stack safety is tested at, observing those four
+-- | alone.
 module Test.Stella.Compiler.Fixtures.Programs
   ( intName
   , libName
@@ -39,6 +44,8 @@ module Test.Stella.Compiler.Fixtures.Programs
   , libUnexported
   , libRenamed
   , mainModule
+  , deepMainModule
+  , deepExpected
   , without
   , refsOnly
   , expected
@@ -247,8 +254,38 @@ tested =
   , "localMixed"
   ]
 
+-- | How far the values that recurse, loop, and jump go, and what each comes to.
+type Scale =
+  { list :: P.Int
+  , listSum :: P.Int
+  , count :: P.Int
+  , parity :: P.Int
+  , loop :: P.Int
+  , loopSum :: P.Int
+  }
+
+-- | The scale every suite runs `programs` at.
+usual :: Scale
+usual = { list: 100, listSum: 5050, count: 1000, parity: 101, loop: 100, loopSum: 5050 }
+
+-- | The scale stack safety is tested at, `programs-deep`'s. 1 + … + 100000 is
+-- | 5000050000, which wraps modulo 2³² to 705082704.
+deep :: Scale
+deep = { list: 100000, listSum: 705082704, count: 1000000, parity: 100001, loop: 100000, loopSum: 705082704 }
+
+-- | The values a scale reaches.
+scaled :: P.Array P.String
+scaled = [ "deepSum", "counted", "evenOdd", "looped" ]
+
 mainModule :: Module P.Int
-mainModule =
+mainModule = mainModuleAt usual
+
+-- | `Main` at the depths stack safety is tested at.
+deepMainModule :: Module P.Int
+deepMainModule = mainModuleAt deep
+
+mainModuleAt :: Scale -> Module P.Int
+mainModuleAt scale =
   { annotation: 0
   , name: mainName
   , imports: [ intName, libName ]
@@ -271,8 +308,8 @@ mainModule =
       , nonrec 5 "subtract" (pureFn int (pureFn int int)) $ lam "n" int $ lam "y" int $ intOp "sub" (var "y") (var "n")
       , nonrec 6 "curried" (pureFn int (pureFn int int)) $ lam "n" int $ app (global (inMain "subtract")) [ var "n" ]
       , nonrec 7 "summed" int $ app (global (inMain "sum")) [ consOf (lit 1) (consOf (lit 2) (consOf (lit 3) nilOf)) ]
-      , nonrec 8 "deepSum" int $ app (global (inMain "sum")) [ app (global (inMain "build")) [ lit 100000, nilOf ] ]
-      , nonrec 9 "counted" int $ app (global (inMain "count")) [ lit 1000000, lit 0 ]
+      , nonrec 8 "deepSum" int $ app (global (inMain "sum")) [ app (global (inMain "build")) [ lit scale.list, nilOf ] ]
+      , nonrec 9 "counted" int $ app (global (inMain "count")) [ lit scale.count, lit 0 ]
       , nonrec 10 "listValue" (listOf int) $ app (global (inMain "build")) [ lit 3, nilOf ]
       , nonrec 11 "overApplied" int $ app (global (inMain "curried")) [ lit 10, lit 3 ]
       , nonrec 12 "papApplied" int $ let' "p" (pureFn int int) (app (global (inMain "subtract")) [ lit 1 ]) (app (var "p") [ lit 10 ])
@@ -281,9 +318,9 @@ mainModule =
       -- `k` is computed rather than a literal, so the lambda captures it: a literal
       -- would be an atom the lifted body names directly, and no capture would be made
       , nonrec 14 "captured" int $ let' "k" int (intOp "add" (lit 2) (lit 3)) $ let' "add5" (pureFn int int) (lam "x" int (intOp "add" (var "x") (var "k"))) (app (var "add5") [ lit 3 ])
-      , nonrec 15 "evenOdd" bool evenOddBody
+      , nonrec 15 "evenOdd" bool (evenOddBody scale.parity)
       , nonrec 16 "joined" int joinedBody
-      , nonrec 17 "looped" int loopedBody
+      , nonrec 17 "looped" int (loopedBody scale.loop)
       , nonrec 18 "recordShape" (recordOf [ Tuple (symbolKey "y") bool ]) $
           RecordRestrict 0 (symbolKey "x")
             (RecordMerge 0 (RecordExtend 0 (symbolKey "x") (lit 1) (RecordEmpty 0)) (RecordExtend 0 (symbolKey "y") (Lit 0 (LitBoolean true)) (RecordEmpty 0)))
@@ -404,14 +441,14 @@ countBody = lam "n" int $ lam "acc" int $
   litCase (var "n") [ Tuple (LitInt 0) (var "acc") ]
     (app (global (inMain "count")) [ intOp "sub" (var "n") (lit 1), intOp "add" (var "acc") (lit 1) ])
 
--- | `letrec { even = λn. …odd…, odd = λn. …even… } in even 100001`.
-evenOddBody :: Expr P.Int
-evenOddBody =
+-- | `letrec { even = λn. …odd…, odd = λn. …even… } in even n`.
+evenOddBody :: P.Int -> Expr P.Int
+evenOddBody n =
   LetRec 0
     [ { name: Ident "even", ty: pureFn int bool, value: step true "odd" }
     , { name: Ident "odd", ty: pureFn int bool, value: step false "even" }
     ]
-    (app (var "even") [ lit 100001 ])
+    (app (var "even") [ lit n ])
   where
   step atZero other = lam "n" int $
     litCase (var "n") [ Tuple (LitInt 0) (Lit 0 (LitBoolean atZero)) ]
@@ -424,14 +461,14 @@ joinedBody =
     (litCase (Lit 0 (LitBoolean true)) [ Tuple (LitBoolean true) (Jump 0 (JoinName "j") [ lit 1 ]) ] (Jump 0 (JoinName "j") [ lit 2 ]))
 
 -- | `letjoin loop (i, acc) = case (i) of 0 -> acc ; _ -> jump loop (i - 1) (acc + i)
--- | in jump loop 100000 0`.
-loopedBody :: Expr P.Int
-loopedBody =
+-- | in jump loop n 0`.
+loopedBody :: P.Int -> Expr P.Int
+loopedBody n =
   LetJoin 0 (JoinName "loop") [ { name: Ident "i", ty: int }, { name: Ident "acc", ty: int } ] int
     ( litCase (var "i") [ Tuple (LitInt 0) (var "acc") ]
         (Jump 0 (JoinName "loop") [ intOp "sub" (var "i") (lit 1), intOp "add" (var "acc") (var "i") ])
     )
-    (Jump 0 (JoinName "loop") [ lit 100000, lit 0 ])
+    (Jump 0 (JoinName "loop") [ lit n, lit 0 ])
 
 -- | `let v : Variant ( #Ok : Int, #Err : Int ) = inject #Ok 5 in
 -- | case (v) of #Ok -> p + 1 ; #Err -> q`.
@@ -732,21 +769,27 @@ libRenamed =
 
 -- | What each value of `Main` holds, fixed from the program by hand.
 expected :: P.Array (Tuple P.String Expected)
-expected =
+expected = expectedAt usual
+
+-- | What the values a scale reaches hold at the depths stack safety is tested at.
+deepExpected :: P.Array (Tuple P.String Expected)
+deepExpected = Array.filter (\(Tuple name _) -> Array.elem name scaled) (expectedAt deep)
+
+expectedAt :: Scale -> P.Array (Tuple P.String Expected)
+expectedAt scale =
   [ Tuple "summed" (EInt 6)
-  -- 1 + … + 100000 is 5000050000, which wraps modulo 2³² to 705082704
-  , Tuple "deepSum" (EInt 705082704)
-  , Tuple "counted" (EInt 1000000)
+  , Tuple "deepSum" (EInt scale.listSum)
+  , Tuple "counted" (EInt scale.count)
   , Tuple "listValue" (cons 1 (cons 2 (cons 3 nil)))
   -- curried 10 3 = subtract 10 3 = 3 - 10
   , Tuple "overApplied" (EInt (-7))
   , Tuple "papApplied" (EInt 9)
   , Tuple "ctorPap" (EInt 1)
   , Tuple "captured" (EInt 8)
-  -- 100001 is odd
+  -- each scale's parity is odd
   , Tuple "evenOdd" (EBoolean false)
   , Tuple "joined" (EInt 101)
-  , Tuple "looped" (EInt 705082704)
+  , Tuple "looped" (EInt scale.loopSum)
   , Tuple "recordShape" (ERecord [ { key: KField "y", value: EBoolean true } ])
   , Tuple "recordArith" (EInt 6)
   , Tuple "variantCase" (EInt 6)

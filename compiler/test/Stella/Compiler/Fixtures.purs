@@ -46,8 +46,8 @@ import Stella.Compiler.Bytecode.Module (CalleeEntry(..), HandlerEntry, RegionEnt
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
 import Test.Stella.Compiler.Fixtures.Effects (effectsExpected, effectsModule, meterModule)
 import Test.Stella.Compiler.Fixtures.Regions (regionsExpected, regionsModule)
-import Test.Stella.Compiler.Fixtures.Foreigns (ManifestModule, Result(..), RunCase, RunFault(..), addCallMain, addHostModule, addInnerCallMain, opCallMain, addHostShrunk, addPartialMain, addShrunkManifest, addShrunkSource, greetHostModule, greetMainModule, greetManifest, greetSource, ioEffects, ioHostModule, ioHostSource, ioMainModule, ioManifest, ioModule, ioName, hostName, ioModuleBindArity, ioModulePureArity, ioResult, pureMainModule, runCases, runEffects, runHostModule, runHostSource, runMainModule, runManifest, startMainModule)
-import Test.Stella.Compiler.Fixtures.Programs (abiSignature, baseModules, expected, faultCases, faultModule, inInt, intModule, libModule, libRenamed, libShrunk, libUnexported, mainModule, mainName, opsExpected, opsModule, refsOnly, without)
+import Test.Stella.Compiler.Fixtures.Foreigns (ManifestModule, Result(..), RunCase, RunFault(..), addCallMain, addHostModule, addInnerCallMain, opCallMain, addHostShrunk, addPartialMain, addShrunkManifest, addShrunkSource, greetHostModule, greetMainModule, greetManifest, greetSource, deepIoMainModule, deepIoResult, ioEffects, ioHostModule, ioHostSource, ioMainModule, ioManifest, ioModule, ioName, hostName, ioModuleBindArity, ioModulePureArity, ioResult, pureMainModule, runCases, runEffects, runHostModule, runHostSource, runMainModule, runManifest, startMainModule)
+import Test.Stella.Compiler.Fixtures.Programs (abiSignature, baseModules, deepExpected, deepMainModule, expected, faultCases, faultModule, inInt, intModule, libModule, libRenamed, libShrunk, libUnexported, mainModule, mainName, opsExpected, opsModule, refsOnly, without)
 import Test.Stella.Compiler.Fixtures.Value (Expected(..), jsonString, toJson)
 
 -- Reading and writing --------------------------------------------------------------
@@ -155,6 +155,13 @@ fixtures =
       , observe: expected
       }
   , plain
+      { name: "programs-deep"
+      , description: "The programs at the depths stack safety is tested at: a non-tail recursion 100000 deep, a self tail call a million times over, a group of closures tail calling 100001 deep, and a join point jumping to itself 100000 times"
+      , modules: map (map _.dmo) (compileAll [ intModule, libModule, deepMainModule ])
+      , outcome: Loads
+      , observe: deepExpected
+      }
+  , plain
       { name: "stale-arity-call"
       , description: "Main calls Lib.addTo with the two arguments Lib's interface gave it, and is loaded beside a Lib whose addTo takes one"
       , modules: against (without "addPartial") libShrunk
@@ -259,9 +266,17 @@ against main lib = do
 foreignFixtures :: P.Array Fixture
 foreignFixtures =
   [ { name: "io"
-    , description: "An entry point run to the value it produces: actions a foreign returns, performed in order; a left-nested chain of bind 20000 deep; every value kind crossing in and out, and an action of each kind; an opaque value handed back; a partial application of a foreign another module declares, and a foreign the entry module declares"
+    , description: "An entry point run to the value it produces: actions a foreign returns, performed in order; a left-nested chain of bind 200 deep; every value kind crossing in and out, and an action of each kind; an opaque value handed back; a partial application of a foreign another module declares, and a foreign the entry module declares"
     , modules: map (map _.dmo) (compileAll [ intModule, ioModule, ioHostModule, ioMainModule ])
     , outcome: Runs { entry: "Main.main", result: ioResult, effects: ioEffects }
+    , observe: []
+    , foreignManifest: Just (Checked ioManifest)
+    , host: Just ioHostSource
+    }
+  , { name: "io-deep"
+    , description: "The entry point of io with its left-nested chain of bind 20000 deep, the depth stack safety is tested at"
+    , modules: map (map _.dmo) (compileAll [ intModule, ioModule, ioHostModule, deepIoMainModule ])
+    , outcome: Runs { entry: "Main.main", result: deepIoResult, effects: ioEffects }
     , observe: []
     , foreignManifest: Just (Checked ioManifest)
     , host: Just ioHostSource

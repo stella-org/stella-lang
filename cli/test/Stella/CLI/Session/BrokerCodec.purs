@@ -1,5 +1,5 @@
 -- | The kernel's vocabulary read from and written as generic values.
-module Test.Stella.CLI.Session.BrokerCodec (spec) where
+module Test.Stella.CLI.Session.BrokerCodec (spec, atSize) where
 
 import Prelude
 
@@ -170,12 +170,23 @@ spec = describe "Stella.CLI.Session.Broker.Codec" do
         Right _ -> fail "a token that is no handle was read"
 
   describe "a value as deep as it is" do
-    it "converts a kind nested 100,000 deep without running out of stack" do
-      sameAfterRoundTrip (deepKind 100000) `shouldEqual` true
+    atSize 1000
 
-    it "converts attributes nested 100,000 deep without running out of stack" do
-      sameAfterRoundTrip (deepConstant 100000) `shouldEqual` true
+-- | A kind and an attribute argument nested as deep, and a list of names as
+-- | long, as the size given, each converted and back. The stress suite runs
+-- | these at a size beyond the host's call stack. Each input is built as its
+-- | test runs, not as the tree is.
+atSize :: Int -> Spec Unit
+atSize n = do
+  it ("converts a kind nested " <> show n <> " deep") do
+    pure unit
+    sameAfterRoundTrip (deepKind n) `shouldEqual` true
 
-    it "converts a list of 100,000 names without running out of stack" do
-      let names = map (\i -> qualified "M" ("x" <> show i)) (Array.range 1 100000)
-      sameAfterRoundTrip (NamesAnswer names) `shouldEqual` true
+  it ("converts attributes nested " <> show n <> " deep") do
+    pure unit
+    sameAfterRoundTrip (deepConstant n) `shouldEqual` true
+
+  it ("converts a list of " <> show n <> " names") do
+    pure unit
+    let names = map (\i -> qualified "M" ("x" <> show i)) (Array.range 1 n)
+    sameAfterRoundTrip (NamesAnswer names) `shouldEqual` true

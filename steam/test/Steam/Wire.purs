@@ -1,6 +1,6 @@
 -- | Interpreter values to and from a session's generic values, over a store holding
 -- | the trusted `Stella.Elab`.
-module Test.Steam.Wire (spec) where
+module Test.Steam.Wire (spec, longListCarried) where
 
 import Prelude
 
@@ -140,6 +140,15 @@ unencodable = case _ of
   NotEncodable class' -> "not encodable: " <> show class'
   Unaccounted _ -> "unaccounted"
 
+-- | A list of the length given carried in and back out, under the name given:
+-- | the stress suite carries one as long as a frame allows.
+longListCarried :: P.String -> P.Int -> Spec Unit
+longListCarried name n = it name do
+  store <- withElab
+  let v = elab "Returned" [ elab "NamesAnswer" [ longList n ] ]
+  result <- roundTrip store v
+  result `shouldEqual` Right v
+
 spec :: Spec Unit
 spec = describe "Steam.CLI.Wire" do
   describe "bringing a value in and taking it back out" do
@@ -156,11 +165,7 @@ spec = describe "Steam.CLI.Wire" do
       after <- liftEffect (namesOf store)
       Array.elem (KSymbol (Symbol "residual")) (Array.fromFoldable (Map.values after.keys)) `shouldEqual` true
 
-    it "carries a list as long as a frame allows" do
-      store <- withElab
-      let v = elab "Returned" [ elab "NamesAnswer" [ longList 100000 ] ]
-      result <- roundTrip store v
-      result `shouldEqual` Right v
+    longListCarried "carries a long list" 1000
 
   describe "bringing a value in" do
     it "refuses a constructor no loaded module has, and one of another arity, naming where" do

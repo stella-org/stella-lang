@@ -1,5 +1,5 @@
 -- | The generic value encoding and the descriptor check over it.
-module Test.Stella.CLI.Session.Value (spec) where
+module Test.Stella.CLI.Session.Value (spec, atSize) where
 
 import Prelude
 
@@ -315,11 +315,6 @@ spec = describe "Stella.CLI.Session.Value" do
         ]
         \(Tuple source path) -> Tuple source (refusedAt source) `shouldEqual` Tuple source (Right path)
 
-  describe "a value as deep as it is long" do
-    it "is written, rendered, parsed, read, and compared without running out of stack" do
-      let v = longList 100000
-      decodeText (encodeText v) `shouldEqual` Right v
-
   describe "rendering JSON" do
     it "writes what the host's serializer writes" do
       let
@@ -330,10 +325,6 @@ spec = describe "Stella.CLI.Session.Value" do
           , Tuple "key \"quoted\"" (fromObject (Object.singleton "1" (fromString "x")))
           ]
       renderJson sample `shouldEqual` stringify sample
-
-    it "renders nesting far deeper than the host's serializer can" do
-      let rendered = renderJson (deep 100000 jsonNull)
-      rendered `shouldEqual` (power "[" 100000 <> "null" <> power "]" 100000)
 
   describe "the descriptor check" do
     it "accepts an answer of the kernel's shape" do
@@ -353,9 +344,6 @@ spec = describe "Stella.CLI.Session.Value" do
                 ]
             ]
         ) `shouldEqual` Left "accepted"
-
-    it "accepts a list as long as a frame allows" do
-      answerRefusedAt (elab "Returned" [ elab "NamesAnswer" [ longList 100000 ] ]) `shouldEqual` Left "accepted"
 
     it "refuses a canonical value of another shape, naming where" do
       for_
@@ -390,6 +378,32 @@ spec = describe "Stella.CLI.Session.Value" do
             (Tuple (elab "Returned" [ elab "LetRecAnswer" [ record [ Tuple "binder" (token "b"), Tuple "bodyScope" (token "s"), Tuple "variables" (list [ token "a", WInt 1 ]) ] ] ]) ".fields[0].fields[0].record[2].value.fields[1].fields[0]")
         ]
         \(Tuple what (Tuple v path)) -> Tuple what (answerRefusedAt v) `shouldEqual` Tuple what (Right path)
+
+  atSize 1000
+
+-- | A value as long, and JSON as deep, as the size given: written, rendered,
+-- | parsed, read, and compared; rendered; and checked against a descriptor.
+-- | The stress suite runs these at the size a frame allows, beyond the host's
+-- | call stack and its serializer. Each input is built as its test runs, not as
+-- | the tree is.
+atSize :: Int -> Spec Unit
+atSize n = do
+  describe "a value as deep as it is long" do
+    it ("is written, rendered, parsed, read, and compared, " <> show n <> " long") do
+      pure unit
+      let v = longList n
+      decodeText (encodeText v) `shouldEqual` Right v
+
+  describe "rendering JSON" do
+    it ("renders arrays nested " <> show n <> " deep") do
+      pure unit
+      let rendered = renderJson (deep n jsonNull)
+      rendered `shouldEqual` (power "[" n <> "null" <> power "]" n)
+
+  describe "the descriptor check" do
+    it ("accepts a list " <> show n <> " long") do
+      pure unit
+      answerRefusedAt (elab "Returned" [ elab "NamesAnswer" [ longList n ] ]) `shouldEqual` Left "accepted"
 
 deep :: Int -> Json -> Json
 deep 0 acc = acc

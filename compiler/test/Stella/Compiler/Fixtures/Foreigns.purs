@@ -10,7 +10,7 @@
 -- | | --- | --- |
 -- | | `say "start"` | an action a foreign returns, performed where the chain reaches it |
 -- | | `say (toString (tick ()))` | an argument evaluated before the function, a `unit` parameter the host sees as `undefined` |
--- | | `chain 20000 (pure 0)` | a left-nested chain of `bind` 20 000 deep, executed within a bounded host stack |
+-- | | `chain n (pure 0)` | a left-nested chain of `bind` `n` deep, executed within a bounded host stack: 200 in `io`, and 20 000 in `io-deep`, the depth stack safety is tested at |
 -- | | `readInt (parse "7")` … `readHandle ()` | an action of each kind, its result crossing by that kind |
 -- | | `open 3`, `same` | an opaque value handed back to the host as the same object, whether it came from a call or an action |
 -- | | `add 1`, then applied to 2 | a partial application of a foreign another module declares |
@@ -30,9 +30,11 @@ module Test.Stella.Compiler.Fixtures.Foreigns
   , ioModuleBindArity
   , ioHostModule
   , ioMainModule
+  , deepIoMainModule
   , ioManifest
   , ioHostSource
   , ioResult
+  , deepIoResult
   , ioEffects
   , pureMainModule
   , runCases
@@ -380,8 +382,11 @@ export const twice = (n) => {
 
 -- | The fields of what `io`'s `main` produces, in the order it builds them.
 ioFields :: P.Array { name :: P.String, ty :: Type, holds :: Expected }
-ioFields =
-  [ field "deep" int (EInt 20000)
+ioFields = ioFieldsAt usualDepth
+
+ioFieldsAt :: P.Int -> P.Array { name :: P.String, ty :: Type, holds :: Expected }
+ioFieldsAt depth =
+  [ field "deep" int (EInt depth)
   , field "read" int (EInt 70)
   -- the host returned 2, a whole number owed as a `number`
   , field "number" number (ENumber 2.0)
@@ -410,8 +415,21 @@ smile = "\x1F600"
 ioRecord :: Type
 ioRecord = recordOf (map (\f -> Tuple f.name f.ty) ioFields)
 
+-- | How deep `io`'s chain of `bind` goes, and `io-deep`'s.
+usualDepth :: P.Int
+usualDepth = 200
+
+deepDepth :: P.Int
+deepDepth = 20000
+
 ioMainModule :: Module P.Int
-ioMainModule =
+ioMainModule = ioMainModuleAt usualDepth
+
+deepIoMainModule :: Module P.Int
+deepIoMainModule = ioMainModuleAt deepDepth
+
+ioMainModuleAt :: P.Int -> Module P.Int
+ioMainModuleAt depth =
   { annotation: 0
   , name: mainName
   , imports: [ intName, ioName, hostName ]
@@ -448,7 +466,7 @@ ioMainModule =
   mainBody = chainOf ioRecord
     [ Do "u0" unit' (app (host "say") [ text "start" ])
     , Do "u1" unit' (app (host "say") [ app (global (inInt "toString")) [ app (host "tick") [ unitValue ] ] ])
-    , Do "deep" int (app (global (inMain "chain")) [ lit 20000, pureAt int (lit 0) ])
+    , Do "deep" int (app (global (inMain "chain")) [ lit depth, pureAt int (lit 0) ])
     , Do "read" int (app (host "readInt") [ app (host "parse") [ text "7" ] ])
     , Do "number" number (app (host "readNumber") [ unitValue ])
     , Do "char" char (app (host "readChar") [ unitValue ])
@@ -473,7 +491,13 @@ ioMainModule =
     )
 
 ioResult :: Expected
-ioResult = ERecord (map (\f -> { key: KField f.name, value: f.holds }) ioFields)
+ioResult = ioResultAt usualDepth
+
+deepIoResult :: Expected
+deepIoResult = ioResultAt deepDepth
+
+ioResultAt :: P.Int -> Expected
+ioResultAt depth = ERecord (map (\f -> { key: KField f.name, value: f.holds }) (ioFieldsAt depth))
 
 -- | What the host saw, in order. Nothing is logged while `main` is initialized: the
 -- | first call builds an action, and the log is written when that action runs.
