@@ -246,6 +246,9 @@ data ResolveReason
   -- | A constructor pattern with other than one pattern per field: the
   -- | constructor, its fields, and the patterns written.
   | ConstructorArity String Int Int
+  -- | A row of a `case` alternative with other than one pattern per scrutinee:
+  -- | the patterns written, and the scrutinees.
+  | PatternCount Int Int
   -- | A tag pattern with more than one pattern after it.
   | TagPayloadMany
   -- | A `Number` literal as a pattern.
@@ -425,6 +428,8 @@ printResolveReason = case _ of
   NotAConstructor n -> "`" <> n <> "` is not a constructor"
   ConstructorArity n fields written ->
     "The constructor `" <> n <> "` has " <> show fields <> " field(s), and is matched here with " <> show written <> " pattern(s)"
+  PatternCount written scrutinees ->
+    "This row has " <> show written <> " pattern(s), and the `case` matches " <> show scrutinees <> " value(s): one pattern is written per value"
   TagPayloadMany -> "A tag carries one value; match several with a tuple, `'T (a, b)`"
   NumberPattern -> "A `Number` cannot be matched by a literal; compare it in a guard"
   OrPatternBinds -> "The choices of an or-pattern cannot bind variables"

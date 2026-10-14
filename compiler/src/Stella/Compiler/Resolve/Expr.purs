@@ -46,7 +46,7 @@ import Prim hiding (Type)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Enum (fromEnum)
-import Data.Foldable (foldM, foldl, traverse_)
+import Data.Foldable (foldM, foldl, for_, traverse_)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.CodeUnits as CodeUnits
 import Data.String.CodePoints (toCodePointArray)
@@ -116,7 +116,7 @@ resolveExpr e = case e of
   CST.ExprLet items body -> resolveLet o items (resolveExpr body)
   CST.ExprCase scrutinees alternatives -> do
     scrutinees' <- traverse scrutinee scrutinees
-    ExprCase o scrutinees' <$> traverse alternative alternatives
+    ExprCase o scrutinees' <$> traverse (alternative (Array.length scrutinees)) alternatives
   CST.ExprHandle inner items -> blockResume InsideHandling (handling items inner)
   CST.ExprUsing items inner -> blockResume InsideHandling (handling items inner)
   CST.ExprLocalOpen alias inner -> open alias inner
@@ -254,8 +254,14 @@ recordFields fields = do
     CST.FieldUpdate n v -> FieldUpdate (originOf (covering n.range (exprRange v))) (Symbol n.name) <$> resolveExpr v
     CST.FieldSpread v -> FieldSpread (originOf (exprRange v)) <$> resolveExpr v
 
-alternative :: CST.CaseAlternative -> Resolve { origin :: Origin, patterns :: Array (Array Binder), body :: AlternativeBody }
-alternative alt = do
+-- | An alternative of a `case` matching the number of values given: each row of
+-- | it writes one pattern per value.
+alternative :: Int -> CST.CaseAlternative -> Resolve { origin :: Origin, patterns :: Array (Array Binder), body :: AlternativeBody }
+alternative scrutinees alt = do
+  for_ alt.patterns \row -> case Array.uncons row of
+    Just { head } | Array.length row /= scrutinees ->
+      report (covering (binderRange head) (maybe (binderRange head) binderRange (Array.last row))) (PatternCount (Array.length row) scrutinees)
+    _ -> pure unit
   r <- resolveAlternative alt.patterns
   body <- withValues r.bound case alt.body of
     CST.Unconditional b -> Unconditional <$> resolveExpr b

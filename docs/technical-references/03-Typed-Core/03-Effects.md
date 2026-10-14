@@ -308,6 +308,8 @@ fail τ   ≡   perform Partial.abort [τ] Prim.Unit
 
 A partial function therefore carries `( Partial | e )` in its type. The effect of PureScript's `Partial` class is obtained without a class mechanism and without a dedicated language feature. A handler converting abortion into an exception or a `Maybe` is an ordinary handler.
 
+**The surface elaborator of this version reports a non-exhaustive match instead**, `Prelude` not being supplied, at the place the match leaves uncovered that would stand as `fail` ([Elaboration](../02-Surface-Language/01-Elaboration.md#a-case)).
+
 ## Surface syntax
 
 ### Set notation

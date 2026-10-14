@@ -100,7 +100,8 @@ import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverSta
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..))
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, substitute, substituteKind)
-import Stella.Compiler.Elaborate.Surface.Expr (ExpressionHole, Parameter(..), asArrow, checkDefinition, elaborateComputation, elaborateValue, expandable, inferDefinition, references, runSurf)
+import Stella.Compiler.Elaborate.Surface.Match (Witness)
+import Stella.Compiler.Elaborate.Surface.Expr (ExpressionHole, UncoveredMatch, Parameter(..), asArrow, checkDefinition, elaborateComputation, elaborateValue, expandable, inferDefinition, references, runSurf)
 import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported(..), Wildcard, elaborateComputationSignature, elaborateSignature, elaborateValueSignature, schemeOf, settledScheme)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..), Warning)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
@@ -164,6 +165,10 @@ data ElaborationError
   -- | A typed hole an annotation holds, where it is written, by its name and
   -- | the type standing for it as far as it is decided.
   | TypeHoleStands Surface.Origin String XType
+  -- | A `case` that leaves values uncovered, where it is written, and a
+  -- | vector of values it does not match. This version reports such a match,
+  -- | `Prelude.Partial` not being supplied.
+  | NonExhaustiveMatch Surface.Origin (Array Witness)
   -- | An expression hole, where it is written, by its name, the type it
   -- | stands for as far as it is decided, and the locals in scope there that
   -- | source can name, each at its type.
@@ -224,6 +229,7 @@ type Elaborating =
   , wildcards :: Array Wildcard
   , unwritten :: Array { origin :: Surface.Origin, kind :: XKind }
   , expressionHoles :: Array ExpressionHole
+  , uncovered :: Array UncoveredMatch
   }
 
 -- | A data declaration elaborated, and where it stands.
@@ -551,7 +557,7 @@ elaborateValues imports surface importedEntries m =
     ComputationBody body -> attemptBody acc v (elaborateComputation internal withFinal v.declared.name v.declared.origin v.scheme body)
   attemptBody acc v elaborating =
     case runAttempt session (runSurf elaborating) acc.state of
-      Tuple (Done (Right built)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, spine: v.spine, body: built.value, holes: built.holes, wildcards: built.wildcards, unwritten: built.unwritten, expressionHoles: built.expressionHoles } }
+      Tuple (Done (Right built)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, spine: v.spine, body: built.value, holes: built.holes, wildcards: built.wildcards, unwritten: built.unwritten, expressionHoles: built.expressionHoles, uncovered: built.uncovered } }
       Tuple (Done (Left problem)) _ -> acc { errors = Array.snoc acc.errors (Unsupported problem) }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
   unchecked acc v = acc { errors = Array.snoc acc.errors (LeftUnchecked v.declared.origin v.declared.name) }
@@ -695,15 +701,16 @@ settleBodies session attempter state bodies =
   settled b =
     let
       metas = after.tentative.metas
-      { reported, covered } = annotated metas b.holes b.wildcards b.unwritten b.expressionHoles
+      { reported, covered } = annotated metas b.holes b.wildcards b.unwritten b.expressionHoles b.uncovered
     in
       case asCore (zonkExpr metas b.body) of
         Right core
           | Array.null reported -> Tuple [] (Just { name: b.name, origin: b.origin, ordinal: b.ordinal, attributes: b.attributes, scheme: b.scheme, spine: b.spine, body: core.body, initialization: core.initialization })
           | otherwise -> Tuple reported Nothing
-        Left residues -> case Array.findMap defectOf (NonEmptyArray.toArray residues) of
-          -- every fit is decided or reported, and every recursive reference made
-          -- ordinary, before a body is made Core
+        Left residues -> case Array.findMap defectOf (Array.filter (not <<< covered) (NonEmptyArray.toArray residues)) of
+          -- every fit is decided or reported, every recursive reference made
+          -- ordinary, and every place a match leaves uncovered noted, before a
+          -- body is made Core
           Just defect -> Tuple [ Broken defect ] Nothing
           -- a place is reported once, however many undecided types stand there
           Nothing -> Tuple (reported <> map TypeUndetermined (Array.nubEq (map residueOrigin (Array.filter (not <<< covered) (NonEmptyArray.toArray residues))))) Nothing
@@ -712,8 +719,8 @@ settleBodies session attempter state bodies =
 -- | holes a body holds, settled: each hole reported, whatever is decided of
 -- | it, each wildcard not wholly decided reported where it is written, and the
 -- | residues of what they stand for, which are not reported again.
-annotated :: MetaContext -> Array TypeHole -> Array Wildcard -> Array { origin :: Surface.Origin, kind :: XKind } -> Array ExpressionHole -> { reported :: Array ElaborationError, covered :: Residue Surface.Origin -> Boolean }
-annotated metas holes wildcards unwritten expressionHoles = { reported, covered }
+annotated :: MetaContext -> Array TypeHole -> Array Wildcard -> Array { origin :: Surface.Origin, kind :: XKind } -> Array ExpressionHole -> Array UncoveredMatch -> { reported :: Array ElaborationError, covered :: Residue Surface.Origin -> Boolean }
+annotated metas holes wildcards unwritten expressionHoles uncovered = { reported, covered }
   where
   open = Array.filter (\w -> not (Set.isEmpty (typeMetas w) && Set.isEmpty (kindMetas w))) wildcards
   -- a kind a signature leaves unwritten that nothing decided, where it is
@@ -723,6 +730,7 @@ annotated metas holes wildcards unwritten expressionHoles = { reported, covered 
     <> map TypeUndetermined (Array.nubEq (map _.origin open))
     <> map KindUndetermined (Array.nubEq (map _.origin undecided))
     <> map (\h -> ExpressionHoleStands h.origin h.name (substitute metas h.type) (map (\x -> x { type = substitute metas x.type }) h.context)) expressionHoles
+    <> map (\m -> NonExhaustiveMatch m.origin m.witness) uncovered
   written = map (\h -> { type: h.type, kind: h.kind }) holes <> map (\w -> { type: w.type, kind: w.kind }) wildcards <> map (\h -> { type: h.type, kind: XKType }) expressionHoles
   types = Set.unions (map typeMetas written)
   kinds = Set.unions (map kindMetas written)
@@ -733,6 +741,9 @@ annotated metas holes wildcards unwritten expressionHoles = { reported, covered 
     -- an expression hole reported, where it is written and at what it stands
     -- for: one nothing noted is reported as what it is
     ResidualHole o t -> Array.any (\h -> h.origin == o && substitute metas h.type == t) expressionHoles
+    -- a place a match noted as uncovered leaves, which the match is reported
+    -- for; one nothing noted is the host's defect
+    ResidualUncovered _ id -> Array.any (\m -> m.id == id) uncovered
     _ -> false
 
   unwrittenMetas u = kindMetasOf (substituteKind metas u.kind)
@@ -753,6 +764,7 @@ residueOrigin = case _ of
   ResidualFit o _ -> o
   ResidualRecursiveRef o _ -> o
   ResidualEta o -> o
+  ResidualUncovered o _ -> o
 
 -- | A settled body as Core, and as its initialization is judged.
 asCore :: forall a. XExpr a -> Either (NonEmptyArray (Residue a)) { body :: Core.Expr a, initialization :: Core.Expr a }
@@ -764,6 +776,7 @@ defectOf = case _ of
   ResidualFit _ f -> Just (FitLeftUndecided f)
   ResidualRecursiveRef _ id -> Just (RecursiveReferenceLeft id)
   ResidualEta _ -> Just EtaExpansionMalformed
+  ResidualUncovered _ id -> Just (UncoveredUnrecorded id)
   _ -> Nothing
 
 -- | A diagnostic as the author is told it: a boundary no row expected of it
@@ -910,7 +923,7 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
           for_ noted \n -> equate site { kind: XKType, left: n.value.type, right: t }
           pure (map (\n -> n { value = n.value.expr }) noted)
     case runAttempt session (atLevel topLevel body) s of
-      Tuple (Done (Right n)) s' -> put s' $> { unsigned: u, expr: n.value, type: t, holes: n.holes, wildcards: n.wildcards, unwritten: n.unwritten, expressionHoles: n.expressionHoles }
+      Tuple (Done (Right n)) s' -> put s' $> { unsigned: u, expr: n.value, type: t, holes: n.holes, wildcards: n.wildcards, unwritten: n.unwritten, expressionHoles: n.expressionHoles, uncovered: n.uncovered }
       Tuple (Done (Left problem)) s' -> put s' *> throwError [ { error: Unsupported problem, names: [ u.name ] } ]
       Tuple outcome s' -> put s' *> throwError [ attemptFailure [ u.name ] outcome ]
 
@@ -976,7 +989,7 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
   -- a member's holes and wildcards, the kinds its partial signature and the
   -- local ones in its body leave unwritten that nothing decided, and its
   -- expression holes
-  judged metas b = (annotated metas b.holes b.wildcards (maybe [] _.unwritten b.unsigned.signature <> b.unwritten) b.expressionHoles).reported
+  judged metas b = (annotated metas b.holes b.wildcards (maybe [] _.unwritten b.unsigned.signature <> b.unwritten) b.expressionHoles b.uncovered).reported
 
   -- each member's hindrances, where the residues of its body place them
   hindered :: forall r x. Array { unsigned :: Unsigned, expr :: XExpr Surface.Origin | r } -> Array (Hindrance (Qualified Ident)) -> Generalizing x

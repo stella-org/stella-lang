@@ -689,6 +689,45 @@ spec = describe "Stella.Compiler.Build" do
           `shouldEqual` [ "3:7 The expression hole `?todo` stands for `Int`\nIn scope:\n  x : Int" ]
         Right _ -> fail "accepted"
 
+  describe "a `case`" do
+    it "is compiled through to the module's bytecode" do
+      compilingUnder [ "module M (rank, second) where" ]
+        [ "data Color = Red | Green | Blue"
+        , "data List a = Nil | Cons a (List a)"
+        , "rank :: Color -> Int"
+        , "rank c = case c of"
+        , "  Red -> 1"
+        , "  Green | Blue -> 2"
+        , "second :: forall a. a -> List a -> a"
+        , "second d xs = case xs of"
+        , "  Cons _ (Cons y _) -> y"
+        , "  _ -> d"
+        ]
+        case _ of
+          Left errors -> fail (joinWith "; " (map printCompileError errors))
+          Right r -> r.handed `shouldEqual` [ "core rank second", "mid M", "bytecode M" ]
+
+    it "that leaves a value unmatched is reported where it stands, with such a value as source writes it" do
+      let
+        reported errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors
+      compilingUnder [ "module M (f) where" ] [ "f :: Int -> Boolean -> Int", "f n b = case n, b of", "  0, true -> 1" ] case _ of
+        Left errors -> reported errors `shouldEqual` [ "3:14 This `case` does not match every value: it does not match `0, false`" ]
+        Right _ -> fail "accepted"
+      compilingUnder [ "module M (g, h) where" ]
+        [ "g :: String -> Boolean -> Int"
+        , "g s b = case s, b of"
+        , "  \"a\\\"\\n\", true -> 1"
+        , "h :: Char -> Boolean -> Int"
+        , "h x b = case x, b of"
+        , "  '\\'', true -> 1"
+        ]
+        case _ of
+          Left errors -> reported errors `shouldEqual`
+            [ "3:14 This `case` does not match every value: it does not match `\"a\\\"\\n\", false`"
+            , "6:14 This `case` does not match every value: it does not match `'\\'', false`"
+            ]
+          Right _ -> fail "accepted"
+
   describe "a module's type declarations" do
     let
       rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors

@@ -298,6 +298,16 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
         "(case p#0 of (A.Just y#1) where z#2 = y#1 | <A.eq z#2 y#1> -> z#2 | otherwise -> y#1 ; A.Nothing -> 0)"
         []
 
+    it "of a `case` alternative report a row whose patterns are other than one per value matched" do
+      shows
+        [ "f p q = case p, q of"
+        , "  Just y -> y"
+        , "  a, b, c -> a"
+        , "  _, _ -> 0"
+        ]
+        "(case p#0, q#1 of (A.Just y#2) -> y#2 ; a#3, b#4, c#5 -> a#3 ; _, _ -> 0)"
+        [ PatternCount 1 2, PatternCount 3 2 ]
+
     it "of an open bring an alias's names, a lazy one's among them, ahead of everything outside it" do
       shows [ "f = (L.( len ), import L in len, M.( x ))" ] "(B.len, B.len, A.x)" []
       shows [ "f = (len, L.len, Q.( 1 ))" ] "(!, !, !)" [ UnknownValue "len", UnknownValue "L.len", UnknownAlias "Q" ]

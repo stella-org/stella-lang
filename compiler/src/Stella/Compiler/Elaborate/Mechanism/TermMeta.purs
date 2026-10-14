@@ -238,6 +238,7 @@ zonkExpr ctx = go
     XSwitchLit o branches d -> XSwitchLit o (map (\b -> b { tree = tree b.tree }) branches) (tree d)
     XSwitchKey o branches d -> XSwitchKey o (map (\b -> b { tree = tree b.tree }) branches) (map tree d)
     XGuard e yes no -> XGuard (go e) (tree yes) (tree no)
+    XUncovered id -> XUncovered id
 
   handler :: XHandler a -> XHandler a
   handler h =

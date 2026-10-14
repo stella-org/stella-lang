@@ -40,10 +40,11 @@
 -- |
 -- | **This version elaborates a subset**: variables, globals, computations,
 -- | constructors, literals, application, λ over variables, type annotations,
--- | a wildcard or a typed hole among what they write, expression holes, and
+-- | a wildcard or a typed hole among what they write, expression holes,
 -- | `let` blocks and `where`s binding variables and `_`, with a signature or
--- | without. A synthesized
--- | argument of the declaration's own is a parameter like any other; a
+-- | without, and `case` over variables, `_`, as-patterns, constructors,
+-- | literals, or-patterns, and annotated patterns, its alternatives
+-- | unguarded. A synthesized argument of the declaration's own is a parameter like any other; a
 -- | reference to a value taking one is outside the subset, a goal being what
 -- | supplies the argument. Anything else is reported where it stands, and the
 -- | declaration holding it is not elaborated further.
@@ -51,6 +52,7 @@ module Stella.Compiler.Elaborate.Surface.Expr
   ( Surf
   , Noted
   , ExpressionHole
+  , UncoveredMatch
   , runSurf
   , elaborateValue
   , elaborateComputation
@@ -78,7 +80,7 @@ import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext, lookupVar)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
-import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..), isValueForm)
+import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId, XDecisionTree(..), XExpr(..), isValueForm)
 import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), fromCore)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal)
 import Stella.Compiler.Elaborate.Surface.Group (groups)
@@ -86,12 +88,14 @@ import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Environment.Constructors (lookupConstructor)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, closeBoundary, currentMetas, equate, freshIdent, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, recursiveRef, require)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, break, closeBoundary, currentMetas, equate, freshCoverage, freshIdent, freshJoin, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, recursiveRef, require)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), substitute)
+import Stella.Compiler.Elaborate.Surface.Match as Match
+import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..))
 import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported(..), Wildcard, elaborateLocalSignature, elaborateType, xFunction)
-import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder(..), Expr(..), GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..), exprOrigin)
+import Stella.Compiler.Surface.Expr (Alternative, AlternativeBody(..), Binder(..), Expr(..), GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..), exprOrigin)
 import Stella.Compiler.Surface.Name (BindingId, LocalVar(..))
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Name (Ident(..), KindVar, Qualified)
@@ -105,19 +109,24 @@ import Stella.Compiler.TypedCore.Type (TypeScheme)
 newtype Surf a = Surf (Elab (Either Unsupported (Noted a)))
 
 -- | What was built, and the typed holes, the wildcards, the kinds a local
--- | signature leaves unwritten, and the expression holes noted on the way, in
--- | the order met.
+-- | signature leaves unwritten, the expression holes, and the matches that
+-- | leave values uncovered, noted on the way, in the order met.
 type Noted a =
   { value :: a
   , holes :: Array TypeHole
   , wildcards :: Array Wildcard
   , unwritten :: Array { origin :: Surface.Origin, kind :: XKind }
   , expressionHoles :: Array ExpressionHole
+  , uncovered :: Array UncoveredMatch
   }
 
 -- | An expression hole where it is written, by its name, the type it stands
 -- | at, and the locals in scope there that source can name, each at its type.
 type ExpressionHole = { origin :: Surface.Origin, name :: String, type :: XType, context :: Array { name :: Ident, type :: XType } }
+
+-- | A `case` that leaves values uncovered, where it is written: the number its
+-- | uncovered places carry, and a vector of values it does not match.
+type UncoveredMatch = { id :: CoverageId, origin :: Surface.Origin, witness :: Array Match.Witness }
 
 runSurf :: forall a. Surf a -> Elab (Either Unsupported (Noted a))
 runSurf (Surf e) = e
@@ -129,37 +138,37 @@ instance Apply Surf where
   apply = ap
 
 instance Applicative Surf where
-  pure a = Surf (pure (Right { value: a, holes: [], wildcards: [], unwritten: [], expressionHoles: [] }))
+  pure a = Surf (pure (Right { value: a, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [] }))
 
 instance Bind Surf where
   bind (Surf e) k = Surf
     ( e >>= case _ of
         Left problem -> pure (Left problem)
-        Right a -> map (map (\b -> b { holes = a.holes <> b.holes, wildcards = a.wildcards <> b.wildcards, unwritten = a.unwritten <> b.unwritten, expressionHoles = a.expressionHoles <> b.expressionHoles })) (runSurf (k a.value))
+        Right a -> map (map (\b -> b { holes = a.holes <> b.holes, wildcards = a.wildcards <> b.wildcards, unwritten = a.unwritten <> b.unwritten, expressionHoles = a.expressionHoles <> b.expressionHoles, uncovered = a.uncovered <> b.uncovered })) (runSurf (k a.value))
     )
 
 instance Monad Surf
 
 lift :: forall a. Elab a -> Surf a
-lift = Surf <<< map (\a -> Right { value: a, holes: [], wildcards: [], unwritten: [], expressionHoles: [] })
+lift = Surf <<< map (\a -> Right { value: a, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [] })
 
 outside :: forall a. Unsupported -> Surf a
 outside = Surf <<< pure <<< Left
 
 -- | Note the typed holes and the wildcards an annotation holds.
 note :: forall r. { holes :: Array TypeHole, wildcards :: Array Wildcard | r } -> Surf Unit
-note read = Surf (pure (Right { value: unit, holes: read.holes, wildcards: read.wildcards, unwritten: [], expressionHoles: [] }))
+note read = Surf (pure (Right { value: unit, holes: read.holes, wildcards: read.wildcards, unwritten: [], expressionHoles: [], uncovered: [] }))
 
 -- | Note what a local signature holds: its typed holes and wildcards, and the
 -- | kinds it leaves unwritten, which nothing local generalizes.
 noteSignature :: Elaborated -> Surf Unit
-noteSignature e = Surf (pure (Right { value: unit, holes: e.holes, wildcards: e.wildcards, unwritten: e.unwritten, expressionHoles: [] }))
+noteSignature e = Surf (pure (Right { value: unit, holes: e.holes, wildcards: e.wildcards, unwritten: e.unwritten, expressionHoles: [], uncovered: [] }))
 
 -- | An expression hole at the type given, noted with the locals in scope where
 -- | it stands: a value form that performs nothing. Every occurrence is a hole
 -- | of its own, its name a label of what is reported.
 hole :: Scope -> Surface.Origin -> String -> XType -> Surf (XExpr Surface.Origin)
-hole scope origin name ty = Surf (pure (Right { value: EHole origin ty, holes: [], wildcards: [], unwritten: [], expressionHoles: [ { origin, name, type: ty, context } ] }))
+hole scope origin name ty = Surf (pure (Right { value: EHole origin ty, holes: [], wildcards: [], unwritten: [], expressionHoles: [ { origin, name, type: ty, context } ], uncovered: [] }))
   where
   -- a name with `#` is one the elaborator made
   context = Array.mapMaybe
@@ -544,9 +553,11 @@ check scope expr expected ty = case expr of
       -- a quantifier or a constraint expected is opened where the form stands
       opened@(XForall _ _ _) -> abstractions (exprOrigin expr) true false expected scope [] expr opened
       opened@(XConstrained _ _) -> abstractions (exprOrigin expr) true false expected scope [] expr opened
-      _ -> do
-        inferred <- infer scope expr
-        subsume scope (exprOrigin expr) inferred ty
+      _ -> case expr of
+        ExprCase o scrutinees alternatives -> caseOf scope o scrutinees alternatives expected ty
+        _ -> do
+          inferred <- infer scope expr
+          subsume scope (exprOrigin expr) inferred ty
 
 -- | An expression inferred at one type where another is expected. **Where both
 -- | are arrows, the outermost row alone is contained**, a wrapping fit around
@@ -610,6 +621,9 @@ infer scope expr = case expr of
   ExprHole o name -> do
     ty <- lift (freshTypeMeta scope.context XKType)
     { expr: _, type: ty } <$> hole scope o name ty
+  ExprCase o scrutinees alternatives -> do
+    ty <- lift (freshTypeMeta scope.context XKType)
+    { expr: _, type: ty } <$> caseOf scope o scrutinees alternatives Derived ty
   _ -> outside (OutsideSubset (exprOrigin expr) "this form")
   where
   lambda binders body = case Array.uncons binders of
@@ -675,6 +689,158 @@ applyTo scope at whole f argument = do
   x <- argument parts.argument
   fit <- lift (placeFit (siteAt scope at) Wrapping parts.row scope.ambient)
   pure { expr: EApp whole (EFit at fit f.expr) x, type: parts.result }
+
+-- | A `case`, at the type given. Its scrutinees are inferred from the left
+-- | under the ambient row; each alternative's patterns are checked against
+-- | their types, and its body is elaborated once, under the variables they
+-- | bind, against the type given; and the match is compiled into a decision
+-- | tree (`Stella.Compiler.Elaborate.Surface.Match`).
+-- |
+-- | **No body is copied.** An alternative one leaf takes stands in that leaf;
+-- | any other, one no leaf takes among them, is a join point around the `case`
+-- | whose parameters are the variables its patterns bind, each leaf binding
+-- | them and jumping to it. A match leaving values uncovered is noted with a
+-- | vector of values it does not match, and each place it leaves uncovered
+-- | stands in the tree under the number of that note.
+caseOf :: Scope -> Surface.Origin -> Array Expr -> Array Alternative -> Expected -> XType -> Surf (XExpr Surface.Origin)
+caseOf scope origin scrutinees alternatives expected result = do
+  inferred <- traverse (infer scope) scrutinees
+  typed <- traverse (alternative (map _.type inferred)) (Array.mapWithIndex Tuple alternatives)
+  env <- lift askEnv
+  let
+    table = map (\c -> { owner: c.owner, tag: c.tag, arity: Array.length c.fields }) env.session.constructors
+    rows = Array.concatMap _.rows typed
+    width = Array.length scrutinees
+  compiled <- matched (Match.compile table width rows)
+  uncovered <-
+    if uncovers compiled.plan then do
+      found <- matched (Match.witness table width rows)
+      case found of
+        Just witness -> do
+          id <- lift freshCoverage
+          noteUncovered { id, origin, witness }
+          pure (Just id)
+        Nothing -> malformed
+    else pure Nothing
+  placed <- traverse (place compiled.references) typed
+  tree <- built uncovered placed compiled.plan
+  pure (foldr wrap (ECase origin (map _.expr inferred) tree) placed)
+  where
+  -- an alternative's rows, one per choice written at its top, the variables
+  -- they bind, and its body
+  alternative types (Tuple index alt) = case alt.body of
+    Guarded _ -> outside (OutsideSubset alt.origin "a guard block")
+    Unconditional body -> do
+      rows <- traverse (\written -> traverse (\(Tuple b t) -> pattern scope b t) (Array.zip written types)) alt.patterns
+      let
+        vars = Array.concatMap _.vars (Array.concat rows)
+        several = Array.length alt.patterns > 1
+        choice written = case Array.head written, Array.last written of
+          Just first, Just last | several -> Just (Surface.spanning (binderOrigin first) (binderOrigin last))
+          _, _ -> Nothing
+      body' <- check (scope { context = foldl (\c v -> bindVar c v.name v.type) scope.context vars }) body expected result
+      pure
+        { index
+        , vars
+        , body: body'
+        , rows: Array.zipWith (\written typedRow -> { alternative: index, choice: choice written, patterns: map _.pattern typedRow }) alt.patterns rows
+        }
+
+  place counts t = case Map.lookup t.index counts of
+    Just 1 -> pure { alternative: t, join: Nothing }
+    _ -> do
+      j <- lift (freshJoin Set.empty "alt")
+      pure { alternative: t, join: Just j }
+
+  built uncovered placed = case _ of
+    Match.Leaf i bindings -> case Array.find (\p -> p.alternative.index == i) placed of
+      Just p -> pure (foldr (\b t -> XBind b.name b.occurrence t) (XLeaf (leafOf p)) bindings)
+      Nothing -> malformed
+    Match.Uncovered -> maybe malformed (pure <<< XUncovered) uncovered
+    Match.SwitchCtor o branches fallback ->
+      XSwitchCtor o
+        <$> traverse (\b -> { ctor: b.ctor, tree: _ } <$> built uncovered placed b.plan) branches
+        <*> traverse (built uncovered placed) fallback
+    Match.SwitchLit o branches fallback ->
+      XSwitchLit o
+        <$> traverse (\b -> { lit: b.lit, tree: _ } <$> built uncovered placed b.plan) branches
+        <*> built uncovered placed fallback
+
+  leafOf p = case p.join of
+    Nothing -> p.alternative.body
+    Just j -> EJump origin j (map (\v -> EVar origin v.name) p.alternative.vars)
+
+  wrap p e = case p.join of
+    Nothing -> e
+    Just j -> ELetJoin origin j (map (\v -> { name: v.name, ty: v.type }) p.alternative.vars) result p.alternative.body e
+
+  matched :: forall x. Either Match.MatchError x -> Surf x
+  matched = case _ of
+    Right x -> pure x
+    Left _ -> malformed
+
+  malformed :: forall x. Surf x
+  malformed = lift (break (MatchMalformed (AtSource { declaration: scope.declaration, origin })))
+
+  uncovers = case _ of
+    Match.Leaf _ _ -> false
+    Match.Uncovered -> true
+    Match.SwitchCtor _ branches fallback -> Array.any (uncovers <<< _.plan) branches || maybe false uncovers fallback
+    Match.SwitchLit _ branches fallback -> Array.any (uncovers <<< _.plan) branches || uncovers fallback
+
+-- | Note a match that leaves values uncovered.
+noteUncovered :: UncoveredMatch -> Surf Unit
+noteUncovered m = Surf (pure (Right { value: unit, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [ m ] }))
+
+-- | A pattern checked against the type of the value it matches, as the
+-- | compiler of matches reads it, and the variables it binds, each at its
+-- | type, in the order written. A constructor is instantiated as a reference
+-- | to it is, its fields read off its arrows and what it builds equated with
+-- | the type given; a literal's type is equated with it, and so is an
+-- | annotation's.
+pattern :: Scope -> Binder -> XType -> Surf { pattern :: Match.Pattern Surface.Origin, vars :: Array { name :: Ident, type :: XType } }
+pattern scope binder ty = case binder of
+  BinderWildcard _ -> pure { pattern: Match.PAny, vars: [] }
+  BinderVar _ (LocalVar v) -> pure { pattern: Match.PVar v.name, vars: [ { name: v.name, type: ty } ] }
+  BinderAs _ (LocalVar v) inner -> do
+    p <- pattern scope inner ty
+    pure { pattern: Match.PAs v.name p.pattern, vars: Array.cons { name: v.name, type: ty } p.vars }
+  BinderConstructor o name args -> do
+    instantiated <- infer scope (ExprConstructor o name)
+    fields <- fieldsOf o (Array.length args) instantiated.type
+    lift (equate (siteAt scope o) { kind: XKType, left: fields.result, right: ty })
+    parts <- traverse (\(Tuple b t) -> pattern scope b t) (Array.zip args fields.arguments)
+    pure { pattern: Match.PCtor name (map _.pattern parts), vars: Array.concatMap _.vars parts }
+  BinderLiteral o literal -> do
+    lift (equate (siteAt scope o) { kind: XKType, left: fromCore (litType literal), right: ty })
+    pure { pattern: Match.PLit literal, vars: [] }
+  BinderOr _ choices -> do
+    parts <- traverse (\b -> pattern scope b ty) choices
+    pure
+      { pattern: Match.POr (Array.zipWith (\b p -> { label: binderOrigin b, pattern: p.pattern }) choices parts)
+      , vars: Array.concatMap _.vars parts
+      }
+  BinderTyped o inner t -> do
+    annotation <- lift (elaborateType scope.surface.synonyms scope.declaration scope.context t)
+    case Array.head annotation.unsupported of
+      Just problem -> outside problem
+      Nothing -> do
+        note annotation
+        lift (equate (siteAt scope o) { kind: XKType, left: annotation.type, right: ty })
+        pattern scope inner ty
+  BinderTag o _ _ -> outside (OutsideSubset o "a tag pattern")
+  BinderTuple o _ -> outside (OutsideSubset o "a tuple pattern")
+  BinderRecord o _ _ -> outside (OutsideSubset o "a record pattern")
+  BinderInvalid o -> outside (ReportedAlready o)
+  where
+  -- the argument of each of a constructor's arrows, one per field, and what
+  -- is left
+  fieldsOf o n t
+    | n <= 0 = pure { arguments: [], result: t }
+    | otherwise = do
+        parts <- arrow scope o t
+        rest <- fieldsOf o (n - 1) parts.result
+        pure (rest { arguments = Array.cons parts.argument rest.arguments })
 
 binderOrigin :: Binder -> Surface.Origin
 binderOrigin = case _ of

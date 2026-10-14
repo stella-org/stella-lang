@@ -2,9 +2,10 @@
 -- | reached by the kernel's requests alone.
 -- |
 -- | What this case is for is that **no form of Core⁺ is out of a synthesizer's
--- | reach except the two that are so by design**: a typed hole, which is the
--- | Surface elaborator's for reporting and recovery, and a fit, which the
--- | Surface elaborator places where it infers an effect row. A term metavariable is
+-- | reach except those that are so by design**: a typed hole, which is the
+-- | Surface elaborator's for reporting and recovery, a fit, which the Surface
+-- | elaborator places where it infers an effect row, and a place a `case`
+-- | leaves uncovered, which the Surface elaborator reports. A term metavariable is
 -- | reached too, by `subgoal` alone, which makes it together with the job that
 -- | fills it. The forms are named by a function that matches every constructor,
 -- | so a form added to Core⁺ does not compile here until it is named, and is not
@@ -316,6 +317,7 @@ forms = case _ of
     XSwitchLit o branches d -> [ "XSwitchLit" ] <> occurrenceForms o <> foldMap (treeForms <<< _.tree) branches <> treeForms d
     XSwitchKey o branches d -> [ "XSwitchKey" ] <> occurrenceForms o <> foldMap (treeForms <<< _.tree) branches <> foldMap treeForms d
     XGuard e yes no -> [ "XGuard" ] <> forms e <> treeForms yes <> treeForms no
+    XUncovered _ -> [ "XUncovered" ]
 
   clauseForms = case _ of
     XFullClause c -> [ "XFullClause" ] <> forms c.body
@@ -376,7 +378,7 @@ reachable =
 
 spec :: Spec Unit
 spec = describe "Elaborate, the kernel's reach over Core⁺" do
-  it "builds every form but the typed hole, the fit, the λ of an η-expansion, and a recursive reference by its requests alone" do
+  it "builds every form but the typed hole, the fit, the λ of an η-expansion, a recursive reference, and a place a `case` leaves uncovered by its requests alone" do
     case fst (runElabIn session (initialState (SessionId 0) 10) (withFrame frame (everyForm >>= traverse resolveExpr))) of
       Done objects -> do
         let

@@ -1245,6 +1245,23 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | A computation whose spine takes a synthesized argument | Outside the subset where it is declared, its scheme still entered into the module-local catalog before every body. The thunk's λ would otherwise take the dictionary's arrow |
 | `again :: Int / {\| Console \|}; again = again` | A `DeclRec`, the reference standing under the thunk's λ |
 
+### Pattern matching (step 7)
+
+A `case` compiled into a decision tree by the surface elaborator ([Elaboration](../02-Surface-Language/01-Elaboration.md#a-case)).
+
+| Input | Required outcome |
+| --- | --- |
+| `case o of None -> d; Some x -> x` | Each body in the one leaf that takes it, `x` bound by a `bind`. No join point is made for a body one leaf takes |
+| An alternative several leaves take, `_, Some n -> n` beside `Red, Some 0 -> 0` | A join point around the `case`, its parameter `n`, each leaf binding `n` and jumping to it. Copying the body into each leaf puts its fits and holes in the term twice |
+| An alternative no leaf takes, `Some x -> x` after `_ -> 0` | A join point nothing jumps to, its body checked as any other is, and what it holds reported. Dropping it loses its type errors and its holes |
+| `case b of true -> …; false -> …` | A `switchLit` on `false` whose default is `true`'s tree. A `switchLit` without a default is refused by Core |
+| `case n of 0 -> …` | A `switchLit` whose default is uncovered, reported with `_` |
+| `case c, b of Red, true -> …; _, false -> …` | Reported with `Green, true`, read from the patterns leftmost first and the constructors in declaration order. Reading a witness off the tree makes it depend on which column the tree dispatches on first |
+| A non-exhaustive `case` whose body fails to typecheck | The failure reported, and the match not |
+| A place left uncovered that no report of its match names | A defect of the host. Suppressing every such place drops the declaration without a word, and matching a report by origin confuses two `case`s an expansion gave one origin |
+| A row of an alternative writing other than one pattern per scrutinee | Refused by resolution, where the row stands |
+| Two heads of different domains in one column reaching the compiler of matches | A defect of the host, not a non-exhaustive match: typing refuses such patterns first |
+
 ### Binding groups and generalization (step 7)
 
 [Elaboration](../02-Surface-Language/01-Elaboration.md#generalization) and the state of [Elaborator API](../02-Surface-Language/03-Elaborator-API.md#inference-state).

@@ -33,7 +33,7 @@ import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis, Breach)
 import Stella.Compiler.Elaborate.Mechanism.Pending (Job, PendingId, SynthRef)
 import Stella.Compiler.Elaborate.Mechanism.Scheduler (Invariant)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError)
-import Stella.Compiler.Elaborate.CorePlus.Term (FitId, RecRefId, TermMetaVar)
+import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId, FitId, RecRefId, TermMetaVar)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm)
 import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError)
@@ -274,6 +274,13 @@ data Defect
   -- | An η-expansion that is no λ applying what it expands to its parameter,
   -- | where its term is judged for initialization: no elaboration builds one.
   | EtaExpansionMalformed
+  -- | A place a `case` leaves uncovered, standing where its term is made Core
+  -- | with no record of the match it belongs to.
+  | UncoveredUnrecorded CoverageId
+  -- | A `case` whose patterns its typing admitted and the compiler of matches
+  -- | refused: a column of heads of different domains, a constructor the
+  -- | table lacks, or one matched with other than one pattern per field.
+  | MatchMalformed Origin
   -- | `Ψ` holding, once a group is generalized, a metavariable the group retired.
   | RetiredMetavariableHeld
   -- | A group committed other than as it was planned: its members not those

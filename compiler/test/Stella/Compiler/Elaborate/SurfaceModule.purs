@@ -20,7 +20,7 @@ import Stella.Compiler.Surface.Decl (Observation(..))
 import Stella.Compiler.Surface.Decl (Declaration(..)) as SurfaceDecl
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
-import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..))
+import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId(..), XDecisionTree(..), XExpr(..))
 import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
 import Stella.Compiler.Elaborate.Driver.Synthesis (attemptJob)
@@ -35,7 +35,8 @@ import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), elaborateModule, settleBodies)
 import Stella.Compiler.Elaborate.Surface.Report (elaborationOrigins, printElaborationError, printType)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..))
-import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
+import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
+import Stella.Compiler.Elaborate.Surface.Match (Witness(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment, viewFor)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
@@ -43,7 +44,7 @@ import Stella.Compiler.Interface.Scheme (plainScheme)
 import Stella.Compiler.Resolve.Module (resolveModule)
 import Stella.Compiler.Surface.Origin (rangeOf)
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, Export(..), Expr(..), Module, primSignature)
+import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, DecisionTree(..), Export(..), Expr(..), Module, primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy, unitCtor, unitTy)
@@ -208,6 +209,7 @@ at = case _ of
   ForeignRefused o _ r -> located o <> " foreign refused " <> show r.position <> " " <> show r.refusal
   TypeHoleStands o name t -> located o <> " hole " <> name <> " " <> printType t
   ExpressionHoleStands o name t context -> located o <> " expression hole " <> name <> " " <> printType t <> " [" <> joinWith ", " (map (\x -> let Ident n = x.name in n <> " : " <> printType x.type) context) <> "]"
+  NonExhaustiveMatch o _ -> located o <> " non-exhaustive"
   ValueFormNeeded o -> located o <> " value form needed"
   ReadWhileInitializing o through _ (Qualified _ (Ident read)) -> located o <> " reads " <> read <> " early" <> maybe "" (\p -> " through " <> located p) through
   LocalReadWhileInitializing o through (Ident reader) (Ident read) -> located o <> " " <> reader <> " reads local " <> read <> " early" <> maybe "" (\p -> " through " <> located p) through
@@ -534,6 +536,124 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     it "keeps what only a local in scope leaves undecided reported where the local's term holds it" do
       elaborating [ "u :: Int", "u = let w = \\y -> y in ?h" ] \r ->
         map at r.errors `shouldEqual` [ "4:24 expression hole h Int [w : ? -> ?]", "4:9 type undetermined", "4:14 type undetermined" ]
+
+  describe "a `case`" do
+    let
+      schemeOf name values = map (\v -> printType (fromCore v.scheme.body)) (Array.find (\x -> x.name == inM name) values)
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+      types = [ "data Color = Red | Green | Blue", "data Opt a = None | Some a" ]
+    it "is checked against the type expected, and the Core checker accepts what it becomes" do
+      elaborating (types <> [ "fromOpt :: forall a. a -> Opt a -> a", "fromOpt d o = case o of", "  None -> d", "  Some x -> x" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        map _.name r.values `shouldEqual` [ inM "fromOpt" ]
+        checked r \core -> shapes core `shouldEqual` [ "nonrec fromOpt" ]
+
+    it "is inferred where nothing gives its type" do
+      elaborating (types <> [ "isRed c = case c of", "  Red -> true", "  _ -> false", "swap p = case p of", "  Tuple a b -> Tuple b a" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        map (\name -> schemeOf name r.values) [ "isRed", "swap" ] `shouldEqual` map Just [ "Color -> Boolean", "forall a. forall b. Tuple a b -> Tuple b a" ]
+        checked r \core -> shapes core `shouldEqual` [ "nonrec isRed", "nonrec swap" ]
+
+    it "matches several values, an or-pattern, a nested pattern, and a `Boolean` its alternatives exhaust" do
+      elaborating
+        ( types <>
+            [ "level :: Color -> Opt Color -> Int"
+            , "level c o = case c, o of"
+            , "  (Red | Blue), _ -> 1"
+            , "  Green, Some Red -> 2"
+            , "  Green, _ -> 3"
+            , "flip :: Boolean -> Boolean"
+            , "flip b = case b of"
+            , "  true -> false"
+            , "  false -> true"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          checked r \core -> shapes core `shouldEqual` [ "nonrec level", "nonrec flip" ]
+
+    it "makes an alternative several leaves take a join point, its parameters the variables its patterns bind" do
+      elaborating (types <> [ "f :: Color -> Opt Int -> Int", "f c o = case c, o of", "  Red, Some 0 -> 0", "  _, Some n -> n", "  _, None -> 9" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ (Lam _ _ _ (LetJoin _ _ [ { name: Ident "n" } ] _ (Var _ (Ident "n")) (Case _ _ _)))) -> pure unit
+          other -> fail ("no join point: " <> show other)
+
+    it "puts an alternative one leaf takes in that leaf, and keeps one no leaf takes once, as a join point nothing jumps to" do
+      elaborating (types <> [ "fromInt :: Int -> Opt Int -> Int", "fromInt d o = case o of", "  None -> d", "  Some x -> x", "k :: Opt Int -> Int", "k o = case o of", "  _ -> 0", "  Some x -> x" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "fromInt" r.values of
+          Just (Lam _ _ _ (Lam _ _ _ (Case _ _ (SwitchCtor _ [ { tree: Leaf (Var _ (Ident "d")) }, { tree: Bind (Ident "x") _ (Leaf (Var _ (Ident "x"))) } ] Nothing)))) -> pure unit
+          other -> fail ("not in the leaves: " <> show other)
+        case bodyOf "k" r.values of
+          Just (Lam _ _ _ (LetJoin _ _ [ { name: Ident "x" } ] _ (Var _ (Ident "x")) (Case _ _ (Leaf (Lit _ (LitInt 0)))))) -> pure unit
+          other -> fail ("not kept once: " <> show other)
+
+    it "reports a pattern of another type than what it matches where the pattern stands" do
+      elaborating (types <> [ "f :: Int -> Int", "f n = case n of", "  true -> 1", "  _ -> 0", "g :: Int -> Int", "g n = case n of", "  Some x -> x", "  _ -> 0" ]) \r ->
+        map at r.errors `shouldEqual` [ "7:3 rejected", "11:3 rejected" ]
+
+    it "that leaves a value unmatched is reported with one such value, the body no value" do
+      elaborating (types <> [ "g :: Opt Int -> Int", "g o = case o of", "  Some x -> x", "ok :: Int", "ok = 1" ]) \r -> do
+        map at r.errors `shouldEqual` [ "6:12 non-exhaustive" ]
+        map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `None`" ]
+        map _.name r.values `shouldEqual` [ inM "ok" ]
+      elaborating (types <> [ "pick :: Color -> Boolean -> Int", "pick c b = case c, b of", "  Red, true -> 1", "  _, false -> 2" ]) \r ->
+        map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `Green, true`" ]
+      elaborating (types <> [ "deep :: Opt (Opt Int) -> Int", "deep o = case o of", "  None -> 0", "  Some None -> 1", "  Some (Some 0) -> 2" ]) \r ->
+        map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `Some (Some _)`" ]
+
+    it "that leaves a value unmatched is not reported where its body fails first" do
+      elaborating (types <> [ "h :: Opt Int -> Int", "h o = case o of", "  Some x -> true" ]) \r ->
+        map at r.errors `shouldEqual` [ "7:13 rejected" ]
+
+    it "checks the body of an alternative no value reaches" do
+      elaborating (types <> [ "k :: Opt Int -> Int", "k o = case o of", "  _ -> 0", "  Some x -> true" ]) \r ->
+        map at r.errors `shouldEqual` [ "8:13 rejected" ]
+      elaborating (types <> [ "k :: Opt Int -> Int", "k o = case o of", "  _ -> 0", "  Some x -> ?unreached" ]) \r ->
+        map at r.errors `shouldEqual` [ "8:13 expression hole unreached Int [o : Opt Int, x : Int]" ]
+      elaborating (types <> [ "k :: Opt Int -> Int", "k o = case o of", "  _ -> 0", "  Some x -> x" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec k" ]
+
+    it "performs what its scrutinees and its bodies perform, in the row ambient where it stands" do
+      elaborating
+        ( types <>
+            [ "effect Ask where"
+            , "  ask :: Unit ->* Int"
+            , "asked :: Unit -> Int / {| Ask |}"
+            , "asked u = asked u"
+            , "inBody :: Opt Int -> Int / {| Ask |}"
+            , "inBody o = case o of"
+            , "  None -> asked ()"
+            , "  Some x -> x"
+            , "inScrutinee :: Unit -> Int / {| Ask |}"
+            , "inScrutinee u = case asked u of"
+            , "  0 -> 1"
+            , "  n -> n"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          map _.name r.values `shouldEqual` map inM [ "asked", "inBody", "inScrutinee" ]
+      -- a row its signature does not write reaches the boundary of its
+      -- definition, as any application's does
+      elaborating (types <> [ "effect Ask where", "  ask :: Unit ->* Int", "asked :: Unit -> Int / {| Ask |}", "asked u = asked u", "quiet :: Opt Int -> Int", "quiet o = case o of", "  None -> asked ()", "  Some x -> x" ]) \r ->
+        map at r.errors `shouldEqual` [ "10:7 outside: implicit-handler resolution at this checking boundary", "8:1 left unchecked" ]
+
+    it "under a λ reads nothing while a recursive group is initialized, and its scrutinee is read where it stands" do
+      elaborating
+        [ "data Stored = Stored (Int -> Int)"
+        , "keep :: Stored -> Int -> Int"
+        , "keep s n = n"
+        , "stored :: Stored"
+        , "stored = Stored (\\n -> case n of"
+        , "  0 -> keep stored n"
+        , "  _ -> n)"
+        ]
+        \r -> map at r.errors `shouldEqual` []
+      elaborating (types <> [ "x :: Opt Int", "x = case x of", "  _ -> None" ]) \r ->
+        map at r.errors `shouldEqual` [ "6:10 reads x early" ]
 
   describe "what a quantifier encloses" do
     let
@@ -1229,6 +1349,25 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       let apart = settleBodies primSession (attemptPending primSession) (initialState (SessionId 0) 10) [ (noted (Tuple "f" 1)) { expressionHoles = [ { origin: origin 2, name: "a", type: XCon intTy [], context: [] } ] } ]
       map at apart.errors `shouldEqual` [ "2:1 expression hole a Int []", "1:1 type undetermined" ]
 
+    it "report a place a match leaves uncovered by the record of that match alone, one no record names being the host's defect" do
+      let
+        uncovered id t = (body t) { body = ECase (origin (snd t)) [ ELit (origin (snd t)) (LitInt 1) ] (XUncovered (CoverageId id)) }
+        noted id recorded t = (uncovered id t) { uncovered = [ { id: CoverageId recorded, origin: origin (snd t), witness: [ WitnessAny ] } ] }
+        settled bodies = settleBodies primSession (attemptPending primSession) (initialState (SessionId 0) 10) bodies
+        reported = settled [ noted 0 0 (Tuple "f" 1) ]
+        unrecorded = settled [ uncovered 0 (Tuple "f" 1) ]
+        apart = settled [ noted 0 1 (Tuple "f" 1) ]
+        defectOf r = case r.errors of
+          [ Broken (UncoveredUnrecorded (CoverageId id)) ] -> Just id
+          _ -> Nothing
+      map at reported.errors `shouldEqual` [ "1:1 non-exhaustive" ]
+      map _.name reported.values `shouldEqual` []
+      -- a node no record names, and one a record of another match is beside
+      defectOf unrecorded `shouldEqual` Just 0
+      map _.name unrecorded.values `shouldEqual` []
+      defectOf apart `shouldEqual` Just 0
+      map _.name apart.values `shouldEqual` []
+
     it "leave a value every declaration a failed synthesis does not belong to" do
       let
         -- `f` asks a synthesizer that fails; `g` states an equation the loop
@@ -1277,4 +1416,4 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     )
   inM = Qualified (ModuleName "M") <<< Ident
   siteIn name line = { context: emptyXContext, origin: AtSource { declaration: inM name, origin: origin line } }
-  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, spine: plainScheme { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1), holes: [], wildcards: [], unwritten: [], expressionHoles: [] }
+  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, spine: plainScheme { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1), holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [] }

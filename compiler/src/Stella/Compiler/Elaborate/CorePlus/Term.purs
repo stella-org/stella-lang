@@ -4,7 +4,9 @@
 -- | widening of `Stella.Compiler.TypedCore.Term`: every position Core writes a
 -- | type or a kind in holds an `XType` or an `XKind` here, and three forms exist
 -- | that Core has none of — a fit, which becomes an `openEff` or nothing once
--- | it is decided, a term metavariable `?m`, and a typed hole.
+-- | it is decided, a term metavariable `?m`, and a typed hole. A decision tree
+-- | may also hold a place no alternative of its `case` covers, which is
+-- | reported rather than made Core.
 -- |
 -- | A synthesis goal `⟨ τ by f ⟩` is not among them. It is what elaboration is
 -- | handed, and it is taken apart where it is met into a term metavariable in
@@ -17,6 +19,7 @@ module Stella.Compiler.Elaborate.CorePlus.Term
   ( TermMetaVar(..)
   , FitId(..)
   , RecRefId(..)
+  , CoverageId(..)
   , XExpr(..)
   , XParam
   , XBinding
@@ -74,6 +77,10 @@ newtype FitId = FitId P.Int
 
 -- | Names a recursive reference while its group is elaborated.
 newtype RecRefId = RecRefId P.Int
+
+-- | Names a place a `case` leaves uncovered, the same number standing on the
+-- | node and on the record the elaborator keeps of the match.
+newtype CoverageId = CoverageId P.Int
 
 -- | A Core⁺ term. Each constructor but the last three mirrors the Core form of
 -- | the same name ([Term](../TypedCore/Term.purs)).
@@ -180,6 +187,9 @@ data XDecisionTree a
   | XSwitchLit Occurrence (P.Array (XLitBranch a)) (XDecisionTree a)
   | XSwitchKey Occurrence (P.Array (XKeyBranch a)) (Maybe (XDecisionTree a))
   | XGuard (XExpr a) (XDecisionTree a) (XDecisionTree a)
+  -- | Where no alternative of a `case` matches. It is reported where the match
+  -- | stands and never made Core.
+  | XUncovered CoverageId
 
 type XCtorBranch a =
   { ctor :: Qualified Ident
@@ -214,6 +224,8 @@ data Residue a
   -- | An η-expansion that is no λ applying what it expands to its parameter,
   -- | which no elaboration builds: the host's defect.
   | ResidualEta a
+  -- | A place a `case` leaves uncovered.
+  | ResidualUncovered a CoverageId
 
 -- | The variables a term mentions free, one set per class.
 -- |
@@ -500,6 +512,7 @@ convTree view at = case _ of
   XSwitchKey o branches d ->
     SwitchKey o <$> traverse (\b -> { key: b.key, tree: _ } <$> convTree view at b.tree) branches <*> traverse (convTree view at) d
   XGuard e yes no -> Guard <$> convExpr view e <*> convTree view at yes <*> convTree view at no
+  XUncovered id -> residue (ResidualUncovered at id)
 
 convType :: forall a. a -> XType -> Conv (Residue a) Type
 convType at = case _ of
@@ -599,6 +612,7 @@ freeVarsOf = case _ of
     XSwitchLit _ branches d -> foldMap (treeVars <<< _.tree) branches <> treeVars d
     XSwitchKey _ branches d -> foldMap (treeVars <<< _.tree) branches <> foldMap treeVars d
     XGuard e yes no -> freeVarsOf e <> treeVars yes <> treeVars no
+    XUncovered _ -> none
 
   handlerVars h =
     entryVars h.element
@@ -705,6 +719,7 @@ metasOfTerm = case _ of
     XSwitchLit _ branches d -> foldMap (treeMetas <<< _.tree) branches <> treeMetas d
     XSwitchKey _ branches d -> foldMap (treeMetas <<< _.tree) branches <> foldMap treeMetas d
     XGuard e yes no -> metasOfTerm e <> treeMetas yes <> treeMetas no
+    XUncovered _ -> noMetas
 
   handlerMetas h =
     typeMetas (XRowExtend h.element XRowEmpty)
@@ -768,6 +783,7 @@ typesOfTerm = case _ of
     XSwitchLit _ branches d -> foldMap (treeTypes <<< _.tree) branches <> treeTypes d
     XSwitchKey _ branches d -> foldMap (treeTypes <<< _.tree) branches <> foldMap treeTypes d
     XGuard e yes no -> typesOfTerm e <> treeTypes yes <> treeTypes no
+    XUncovered _ -> []
 
   clauseTypes = case _ of
     XFullClause c -> [ c.argBinder.ty, c.contBinder.ty ] <> typesOfTerm c.body
@@ -829,6 +845,7 @@ termMetasUnderRegions = go Set.empty
     XSwitchLit _ branches d -> foldMap (tree bound <<< _.tree) branches <> tree bound d
     XSwitchKey _ branches d -> foldMap (tree bound <<< _.tree) branches <> foldMap (tree bound) d
     XGuard e yes no -> go bound e <> tree bound yes <> tree bound no
+    XUncovered _ -> []
 
   clauseBody = case _ of
     XFullClause c -> c.body
@@ -854,6 +871,10 @@ derive newtype instance Show FitId
 derive instance Eq RecRefId
 derive instance Ord RecRefId
 derive newtype instance Show RecRefId
+
+derive instance Eq CoverageId
+derive instance Ord CoverageId
+derive newtype instance Show CoverageId
 
 derive instance Eq a => Eq (XExpr a)
 derive instance Functor XExpr
@@ -960,6 +981,7 @@ typeVarsOfTerm term = Set.unions (map typeVarsOfType (typesOfTerm term)) <> bind
     XSwitchLit _ branches d -> foldMap (tree <<< _.tree) branches <> tree d
     XSwitchKey _ branches d -> foldMap (tree <<< _.tree) branches <> foldMap tree d
     XGuard e yes no -> binders e <> tree yes <> tree no
+    XUncovered _ -> Set.empty
 
   clause = case _ of
     XFullClause c -> Set.fromFoldable (map _.name c.tyBinders) <> binders c.body

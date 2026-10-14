@@ -27,6 +27,7 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | an or-pattern binding a variable | a binding or-pattern |
 | any literal as a pattern | a `Number` literal |
 | a constructor followed by any patterns | other than one pattern per field |
+| any number of patterns in a row of a `case` alternative | other than one per value the `case` matches |
 | a tag followed by any patterns | more than one |
 | `import lazy M` without `as`, or with a list | a lazy import that is not qualified and implicit |
 | `hiding ( … )` after any import | `hiding` on an import with a list, an alias, or `lazy` (`Check`); a name hidden that the module does not export |

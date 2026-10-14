@@ -21,8 +21,12 @@ import Prim hiding (Type)
 import Data.Array as Array
 import Data.Foldable (foldMap, foldl, foldr)
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
 import Data.String (joinWith)
+import Data.String.CodePoints as CodePoints
+import Data.Char (toCharCode)
+import Data.Enum (fromEnum, toEnum)
+import Data.Int as Int
 import Fmt (fmt)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
@@ -32,6 +36,9 @@ import Stella.Compiler.Elaborate.Mechanism.Obligation (Breach(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError(..))
 import Stella.Compiler.Elaborate.Surface.Module (ElaborationError(..))
 import Stella.Compiler.Elaborate.Surface.Type (Atom(..), Unsupported(..))
+import Stella.Compiler.Elaborate.Surface.Match (Witness(..))
+import Stella.Compiler.TypedCore.Domain (codePointOf, textOf)
+import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
 import Stella.Compiler.ForeignBoundary (Position(..), Refusal(..), Refused)
 import Stella.Compiler.Surface.Origin as Surface
@@ -71,6 +78,7 @@ elaborationOrigins = case _ of
   ForeignRefused o _ _ -> [ o ]
   TypeHoleStands o _ _ -> [ o ]
   ExpressionHoleStands o _ _ _ -> [ o ]
+  NonExhaustiveMatch o _ -> [ o ]
   ValueFormNeeded o -> [ o ]
   ReadWhileInitializing o through _ _ -> Array.cons o (Array.fromFoldable through)
   LocalReadWhileInitializing o through _ _ -> Array.cons o (Array.fromFoldable through)
@@ -129,6 +137,7 @@ printElaborationError = case _ of
   ExpressionHoleStands _ name t context ->
     fmt @"The expression hole `?{name}` stands for `{t}`" { name, t: printType t }
       <> if Array.null context then "" else "\nIn scope:" <> foldMap (\x -> fmt @"\n  {x} : {t}" { x: localName x.name, t: printType x.type }) context
+  NonExhaustiveMatch _ witness -> fmt @"This `case` does not match every value: it does not match `{w}`" { w: joinWith ", " (map (printWitness false) witness) }
   ValueFormNeeded _ -> "This stands under a `forall` or a constraint, where only a value form may stand; where it is a function, writing its parameter makes it one"
   ReadWhileInitializing _ _ reader read
     | reader == read -> fmt @"`{x}` is read here while it is being initialized" { x: nameOf read }
@@ -147,6 +156,38 @@ printElaborationError = case _ of
   internal what = "Internal compiler error: " <> what
   nameOf (Qualified _ (Ident n)) = n
   localName (Ident n) = n
+
+-- | A value a `case` does not match, written as a pattern: a constructor by its
+-- | name, parenthesized where it takes fields and stands as a field itself.
+printWitness :: Boolean -> Witness -> String
+printWitness nested = case _ of
+  WitnessAny -> "_"
+  WitnessLiteral literal -> printLiteral literal
+  WitnessConstructor (Qualified _ (Ident n)) [] -> n
+  WitnessConstructor (Qualified _ (Ident n)) fields ->
+    let applied = n <> foldMap (\f -> " " <> printWitness true f) fields in if nested then "(" <> applied <> ")" else applied
+
+-- | A literal as source writes it, a character that cannot stand in a literal
+-- | as written escaped.
+printLiteral :: Literal -> String
+printLiteral = case _ of
+  LitInt i -> show i
+  LitNumber n -> show n
+  LitString s -> "\"" <> foldMap (escaped '"' <<< fromEnum) (CodePoints.toCodePointArray (textOf s)) <> "\""
+  LitChar c -> "'" <> escaped '\'' (codePointOf c) <> "'"
+  LitBoolean b -> if b then "true" else "false"
+  where
+  escaped quote code = case code of
+    0x5C -> "\\\\"
+    0x0A -> "\\n"
+    0x0D -> "\\r"
+    0x09 -> "\\t"
+    _
+      | code == toCharCode quote -> "\\" <> written
+      | code < 0x20 -> "\\u{" <> Int.toStringAs Int.hexadecimal code <> "}"
+      | otherwise -> written
+    where
+    written = maybe "" CodePoints.singleton (toEnum code)
 
 -- | Why a foreign's type does not cross to the host, and what does.
 printRefused :: String -> Refused -> String

@@ -28,10 +28,12 @@ import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe)
 
--- | What a constructor carries: the data type it builds, that type's kind and
--- | type parameters, and its fields in terms of them.
+-- | What a constructor carries: the data type it builds, its position among
+-- | that type's constructors, that type's kind and type parameters, and its
+-- | fields in terms of them.
 type ConstructorShape =
   { owner :: Qualified TyName
+  , tag :: P.Int
   , kindVars :: P.Array KindVar
   , params :: P.Array XTyBinder
   , fields :: P.Array XType
@@ -48,6 +50,7 @@ constructorsOf sig = map shape sig.ctors
   where
   shape info =
     { owner: info.owner
+    , tag: info.tag
     , kindVars: info.scheme.kindVars
     , params: map (\p -> { name: p.name, kind: fromCoreKind p.kind }) info.params
     , fields: map fromCore info.fields
