@@ -42,24 +42,74 @@ Specifically, what sets Stella apart from PureScript comes down to three main pi
 The third pillar is a vital and powerful feature. It ensures we don't over-minimize the core, but it also stops the language from becoming bloated.
 Interestingly, Stella's compiler doesn't actually have built-in support for Typeclasses!
 Instead, they are just dictionary records passed as arguments with method field access.
-The dedicated syntax for them is implemented as macros **at the library level** (planned)!
+The dedicated syntax for them is implemented as macros **at the library level**!
 This particular idea was inspired by F*.
+
+## A Little Taste of Stella
+
+```purs
+module Main where
+
+import Prelude
+
+import Effect.Console (Console, log)
+
+-- Define new effect with two operations
+effect Talker where
+  say :: String ->* Unit
+  listen :: Unit ->* String
+
+-- A program carrying  `Talker` effect. In Stella, effect performing
+-- is direct-style; there is no monadic do-notation or `<-` arrow.
+program :: Unit / {| Talker |}
+program = 
+  say "Hi";
+  say "What's your name?";
+  let name = listen () in
+  say $ fmt%"Nice to meet you, {name}"
+
+-- handling `Talker`-carrying program with handler performing
+-- another effect `Console`, which can be implicitly lowered down
+-- and reified as `IO`, so we can mark this declaration as `@[entrypoint]`. 
+@[entrypoint]
+main :: Unit / {| Console |}
+main = handle program
+  with
+    Talker 
+      | say msg -> Console.log msg; resume ()
+      | listen _ -> resume "Alice"
+```
 
 ## Roadmap
 
 - ✅️ `TypedCore`, the central representation with explicit types and kinds
 - ✅️ Bytecode compiler
 - ✅️ STEAM, the bytecode interpreter with multi-shot continuation over explicit stack
-- ✅️ Elaborator API
 - ✅️ Surface Language Concrete Syntax and parser
-- ☑️ Surface Language AST, Macro Expander and `Syntax` API ... *WIP*
-- ☑️ Hindley-Milner Type Inference
+- ✅️ Surface Language AST, Macro Expander, and `Syntax` API
+- ✅️ Elaborator API
+- ✅️ Demonstration of macro within minimal sublanguage: list syntax `ls%[1,2,3]`
+- 🎯 Hindley-Milner Type Inference ... *WIP*
+- ☑️ More macro demo: array syntax `ar%[1,2,3]` and format string with `fmt%"..."`
+- ☑️ Macro at declaration position: `m%{ ... }`
+- ☑️ Implicit handlers insertion
+- ☑️ E2E testing on whole set of language features
+- ☑️ Typeclasses over macro
 - ☑️ MiddleEnd: IR design and optimization
-- ☑️ The first two backends: JavaScript and WebAssembly ... *WIP*
-- ☑️ Typeclasses over syntax macro system
+- ☑️ The first two backends: JavaScript and WebAssembly ... Prototype JS backend is done
 - ☑️ Suspension and concurrent primitives, `Async` effect
-- ☑️ First-class Parser API
 - ☑️ The standard library `Prelude`
 - ☑️ portable libraries on top of `Prelude`
-- ☑️ Build system: the Lazuli package manager
+- ☑️ Build system: [the Lazuli package manager](https://github.com/stella-org/lazuli)
 - ☑️ Ecosystem: LSP, IDE support, Formatter and Coding Agent Plugins
+- ☑️ New comprehensive language reference ... *WIP*
+- ☑️ Official textbook: *Functional and Effect-Oriented Programming in Stella*
+
+Possible future enhancement, but not in the current roadmap:
+
+- First-class Parser API
+- Termination analysis and `Div` effect
+- Context refinement with Discriminators
+- Scoped effect
+- General higher-order effects
+- Native backend
