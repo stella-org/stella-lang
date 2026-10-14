@@ -19,6 +19,11 @@
 -- | **What a column covers is its domain** (`coverageDomain`): the constructors
 -- | of a data type, the finite literals of `Boolean`, or an open set of
 -- | literals. A dispatch that exhausts its domain has no default.
+-- |
+-- | **An alternative may fail once its patterns match**, where a guard block
+-- | falls through. Its row is taken where it matches as any other's is, and
+-- | where it fails the alternatives after it are matched afresh, by a plan of
+-- | their own; it covers nothing the rows after it would otherwise take.
 module Stella.Compiler.Elaborate.Surface.Match
   ( Pattern(..)
   , Row
@@ -40,7 +45,7 @@ import Prim hiding (Row)
 
 import Data.Array as Array
 import Data.Either (Either(..))
-import Data.Foldable (foldl, sum)
+import Data.Foldable (foldM, foldl, sum)
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
 import Data.Map as Map
@@ -64,11 +69,14 @@ data Pattern c
   | POr (Array { label :: c, pattern :: Pattern c })
 
 -- | A row of the matrix: the alternative it belongs to, the label of the
--- | choice it is where its alternative writes several rows, and its patterns.
+-- | choice it is where its alternative writes several rows, its patterns, and
+-- | whether its alternative may fail once they match — a guard block that may
+-- | fall through to the alternatives after it.
 type Row c =
   { alternative :: Int
   , choice :: Maybe c
   , patterns :: Array (Pattern c)
+  , fallible :: Boolean
   }
 
 -- | Every constructor the patterns may name: the data type it builds, its
@@ -114,11 +122,14 @@ data Plan
 -- | A variable a pattern binds, and the occurrence of the value it is bound to.
 type Binding = { name :: Ident, occurrence :: Occurrence }
 
--- | The plan, how many leaves take each alternative, and what no value reaches:
--- | the alternatives no leaf takes, and the choices of an or-pattern no leaf
--- | takes in an alternative some leaf does.
+-- | The plan; for each alternative that may fail and that some leaf takes, the
+-- | plan of the alternatives after it, matched afresh where it fails; how many
+-- | leaves of these take each alternative; and what no value reaches: the
+-- | alternatives no leaf takes, and the choices of an or-pattern no leaf takes
+-- | in an alternative some leaf does.
 type Compiled c =
   { plan :: Plan
+  , falls :: Map Int Plan
   , references :: Map Int Int
   , redundant :: { alternatives :: Array Int, choices :: Array c }
   }
@@ -151,23 +162,35 @@ type Column =
 
 compile :: forall c. Eq c => Constructors -> Int -> Array (Row c) -> Either MatchError (Compiled c)
 compile table width rows = do
-  built <- go occurrences (Array.concatMap (normalize occurrences <<< start) rows)
+  main <- go occurrences (started rows)
+  -- an alternative that may fail falls through to a plan of those after it,
+  -- which a leaf of an earlier plan taking it makes reachable
+  falling <- foldM fall { plans: Map.empty, selected: main.selected } (Array.sort (Array.nub (map _.alternative (Array.filter _.fallible rows))))
   let
-    live = map _.alternative built.selected
-    taken = Array.concatMap _.labels built.selected
+    live = map _.alternative falling.selected
+    taken = Array.concatMap _.labels falling.selected
     alternatives = Array.nub (map _.alternative rows)
     choices = Array.nubEq do
       r <- rows
       if Array.elem r.alternative live then Array.filter (\l -> not (Array.elem l taken)) (rowLabels r) else []
   pure
-    { plan: built.plan
-    , references: leaves built.plan
+    { plan: main.plan
+    , falls: falling.plans
+    , references: foldl (\m p -> Map.unionWith (+) m (leaves p)) (leaves main.plan) (Map.values falling.plans)
     , redundant: { alternatives: Array.filter (\a -> not (Array.elem a live)) alternatives, choices }
     }
   where
   occurrences = Array.mapWithIndex (\i _ -> OccScrutinee i) (Array.replicate width unit)
 
+  started = Array.concatMap (normalize occurrences <<< start)
+
   start r = { alternative: r.alternative, patterns: r.patterns, bindings: [], labels: maybe [] pure r.choice }
+
+  fall acc i
+    | Array.elem i (map _.alternative acc.selected) = do
+        built <- go occurrences (started (Array.filter (\r -> r.alternative > i) rows))
+        pure { plans: Map.insert i built.plan acc.plans, selected: acc.selected <> built.selected }
+    | otherwise = pure acc
 
   go :: Array Occurrence -> Array (Work c) -> Either MatchError (Built c)
   go occs work = case Array.head work of
@@ -376,13 +399,13 @@ data Witness
   | WitnessConstructor (Qualified Ident) (Array Witness)
   | WitnessLiteral Literal
 
--- | One vector of values no row matches, where there is one, found by a fixed
--- | rule: the leftmost column first, the constructors of a data type in the
+-- | One vector of values no row matches, where there is one, a row that may
+-- | fail once its patterns match covering nothing, found by a fixed rule: the leftmost column first, the constructors of a data type in the
 -- | order the declaration writes them, a finite set of literals in its order
 -- | (`false` before `true`), and of an open set the literals the rows write, in
 -- | the fixed order of literals, before anything else, written `_`.
 witness :: forall c. Constructors -> Int -> Array (Row c) -> Either MatchError (Maybe (Array Witness))
-witness table width rows = search occurrences (Array.concatMap (\r -> plain r.patterns) rows)
+witness table width rows = search occurrences (Array.concatMap (\r -> plain r.patterns) (Array.filter (not <<< _.fallible) rows))
   where
   occurrences = Array.mapWithIndex (\i _ -> OccScrutinee i) (Array.replicate width unit)
 

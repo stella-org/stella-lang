@@ -43,8 +43,8 @@
 -- | a wildcard or a typed hole among what they write, expression holes,
 -- | `let` blocks and `where`s binding variables and `_`, with a signature or
 -- | without, and `case` over variables, `_`, as-patterns, constructors,
--- | literals, or-patterns, and annotated patterns, its alternatives
--- | unguarded. A synthesized argument of the declaration's own is a parameter like any other; a
+-- | literals, or-patterns, and annotated patterns, a guard block binding
+-- | variables and `_`. A synthesized argument of the declaration's own is a parameter like any other; a
 -- | reference to a value taking one is outside the subset, a goal being what
 -- | supplies the argument. Anything else is reported where it stands, and the
 -- | declaration holding it is not elaborated further.
@@ -99,7 +99,8 @@ import Stella.Compiler.Surface.Expr (Alternative, AlternativeBody(..), Binder(..
 import Stella.Compiler.Surface.Name (BindingId, LocalVar(..))
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Name (Ident(..), KindVar, Qualified)
-import Stella.Compiler.TypedCore.Prim (functionTy, litType, unitCtor, unitTy)
+import Stella.Compiler.TypedCore.Prim (booleanTy, functionTy, litType, unitCtor, unitTy)
+import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
 import Stella.Compiler.TypedCore.Type (TypeScheme)
 
@@ -696,12 +697,24 @@ applyTo scope at whole f argument = do
 -- | bind, against the type given; and the match is compiled into a decision
 -- | tree (`Stella.Compiler.Elaborate.Surface.Match`).
 -- |
+-- | **A guard block is an expression of its own**: a binding a `let`, a guard
+-- | a `case` of no scrutinee dispatching on its condition, and where every
+-- | guard fails a jump to the alternative's fall-through point, a join point
+-- | matching the alternatives after it afresh. Where a block may fall through,
+-- | the scrutinees are bound to variables first, in order, so that a
+-- | fall-through point matches the same values again. A fall-through point
+-- | nothing can reach — of an alternative no leaf takes, or after a guard that
+-- | always succeeds — jumps to itself, and never runs.
+-- |
 -- | **No body is copied.** An alternative one leaf takes stands in that leaf;
 -- | any other, one no leaf takes among them, is a join point around the `case`
 -- | whose parameters are the variables its patterns bind, each leaf binding
--- | them and jumping to it. A match leaving values uncovered is noted with a
--- | vector of values it does not match, and each place it leaves uncovered
--- | stands in the tree under the number of that note.
+-- | them and jumping to it. The join points of alternatives with no guard block
+-- | stand outermost, then, from the last alternative to the first, each
+-- | fall-through point and the join point of its block, each reaching only
+-- | those around it. A match leaving values uncovered is noted with a vector of
+-- | values it does not match, and each place it leaves uncovered stands in the
+-- | tree under the number of that note.
 caseOf :: Scope -> Surface.Origin -> Array Expr -> Array Alternative -> Expected -> XType -> Surf (XExpr Surface.Origin)
 caseOf scope origin scrutinees alternatives expected result = do
   inferred <- traverse (infer scope) scrutinees
@@ -712,39 +725,98 @@ caseOf scope origin scrutinees alternatives expected result = do
     rows = Array.concatMap _.rows typed
     width = Array.length scrutinees
   compiled <- matched (Match.compile table width rows)
-  uncovered <-
-    if uncovers compiled.plan then do
-      found <- matched (Match.witness table width rows)
-      case found of
-        Just witness -> do
-          id <- lift freshCoverage
-          noteUncovered { id, origin, witness }
-          pure (Just id)
-        Nothing -> malformed
-    else pure Nothing
+  found <- matched (Match.witness table width rows)
+  uncovered <- case found, uncovers compiled.plan || Array.any uncovers (Array.fromFoldable (Map.values compiled.falls)) of
+    Just witness, true -> do
+      id <- lift freshCoverage
+      noteUncovered { id, origin, witness }
+      pure (Just id)
+    Nothing, false -> pure Nothing
+    _, _ -> malformed
   placed <- traverse (place compiled.references) typed
+  -- the scrutinees bound to variables where a fall-through point matches them
+  -- again
+  bound <-
+    if Array.any (isJust <<< _.fall) typed then traverse (\s -> { scrutinee: s, name: _ } <$> lift (freshIdent (Map.keys scope.context.vars) "s")) inferred
+    else pure []
+  let
+    matchedValues = if Array.null bound then map _.expr inferred else map (\b -> EVar origin b.name) bound
+    fallsThrough p = case p.alternative.fall of
+      Just j -> do
+        body <- case Map.lookup p.alternative.index compiled.falls of
+          Just plan -> ECase origin matchedValues <$> built uncovered placed plan
+          Nothing -> pure (EJump origin j [])
+        pure [ \e -> ELetJoin origin j [] result body e ]
+      Nothing -> pure []
   tree <- built uncovered placed compiled.plan
-  pure (foldr wrap (ECase origin (map _.expr inferred) tree) placed)
+  falls <- traverse (\p -> (_ <> joined p) <$> fallsThrough p) (Array.reverse (Array.filter _.alternative.guarded placed))
+  let
+    wraps = Array.concatMap joined (Array.filter (not <<< _.alternative.guarded) placed) <> Array.concat falls
+    matching = foldr (\w e -> w e) (ECase origin matchedValues tree) wraps
+  pure (foldr (\b e -> ELet origin b.name b.scrutinee.type b.scrutinee.expr e) matching bound)
   where
   -- an alternative's rows, one per choice written at its top, the variables
-  -- they bind, and its body
-  alternative types (Tuple index alt) = case alt.body of
-    Guarded _ -> outside (OutsideSubset alt.origin "a guard block")
-    Unconditional body -> do
-      rows <- traverse (\written -> traverse (\(Tuple b t) -> pattern scope b t) (Array.zip written types)) alt.patterns
-      let
-        vars = Array.concatMap _.vars (Array.concat rows)
-        several = Array.length alt.patterns > 1
-        choice written = case Array.head written, Array.last written of
-          Just first, Just last | several -> Just (Surface.spanning (binderOrigin first) (binderOrigin last))
-          _, _ -> Nothing
-      body' <- check (scope { context = foldl (\c v -> bindVar c v.name v.type) scope.context vars }) body expected result
-      pure
-        { index
-        , vars
-        , body: body'
-        , rows: Array.zipWith (\written typedRow -> { alternative: index, choice: choice written, patterns: map _.pattern typedRow }) alt.patterns rows
-        }
+  -- they bind, its body, and the fall-through point of its guard block where
+  -- the block may fall through
+  alternative types (Tuple index alt) = do
+    rows <- traverse (\written -> traverse (\(Tuple b t) -> pattern scope b t) (Array.zip written types)) alt.patterns
+    let
+      vars = Array.concatMap _.vars (Array.concat rows)
+      several = Array.length alt.patterns > 1
+      choice written = case Array.head written, Array.last written of
+        Just first, Just last | several -> Just (Surface.spanning (binderOrigin first) (binderOrigin last))
+        _, _ -> Nothing
+      inner = scope { context = foldl (\c v -> bindVar c v.name v.type) scope.context vars }
+      rowsOf fallible = Array.zipWith (\written typedRow -> { alternative: index, choice: choice written, patterns: map _.pattern typedRow, fallible }) alt.patterns rows
+    case alt.body of
+      Unconditional body -> do
+        body' <- check inner body expected result
+        pure { index, vars, body: body', rows: rowsOf false, guarded: false, fall: Nothing }
+      Guarded lines -> do
+        fall <- if fallsAtEnd lines then Just <$> lift (freshJoin Set.empty "fall") else pure Nothing
+        body' <- block inner lines fall
+        pure { index, vars, body: body', rows: rowsOf (not (Array.any total lines)), guarded: true, fall }
+
+  -- a guard block's lines from the one given: a binding a `let` over the
+  -- lines after it, a guard a dispatch on its condition, the lines after it
+  -- where it fails, and a jump to the fall-through point past the last
+  block inner lines fall = case Array.uncons lines of
+    Nothing -> case fall of
+      Just j -> pure (EJump origin j [])
+      Nothing -> malformed
+    Just { head: line, tail } -> case line of
+      GuardBinding o b e -> do
+        name <- case b of
+          BinderVar _ (LocalVar v) -> pure v.name
+          BinderWildcard _ -> lift (freshIdent (Map.keys inner.context.vars) "_")
+          BinderInvalid at -> outside (ReportedAlready at)
+          other -> outside (OutsideSubset (binderOrigin other) "a pattern that is no variable")
+        value <- infer inner e
+        rest <- block (inner { context = bindVar inner.context name value.type }) tail fall
+        pure (ELet o name value.type value.expr rest)
+      GuardWhen o condition body
+        | Array.null tail && total line -> check inner body expected result
+        | otherwise -> do
+            condition' <- check inner condition Derived (XCon booleanTy [])
+            guarded o condition' body tail
+      GuardOtherwise o body
+        | Array.null tail -> check inner body expected result
+        | otherwise -> guarded o (ELit o (LitBoolean true)) body tail
+    where
+    guarded o condition body tail = do
+      body' <- check inner body expected result
+      rest <- block inner tail fall
+      pure (ECase o [] (XGuard condition (XLeaf body') (XLeaf rest)))
+
+  -- whether a guard always succeeds: `otherwise`, and the literal `true`
+  total = case _ of
+    GuardOtherwise _ _ -> true
+    GuardWhen _ (ExprLiteral _ (LitBoolean true)) _ -> true
+    _ -> false
+
+  -- whether control can reach past a block's last line: it is no guard that
+  -- always succeeds
+  fallsAtEnd lines = maybe true (not <<< total) (Array.last lines)
 
   place counts t = case Map.lookup t.index counts of
     Just 1 -> pure { alternative: t, join: Nothing }
@@ -770,9 +842,9 @@ caseOf scope origin scrutinees alternatives expected result = do
     Nothing -> p.alternative.body
     Just j -> EJump origin j (map (\v -> EVar origin v.name) p.alternative.vars)
 
-  wrap p e = case p.join of
-    Nothing -> e
-    Just j -> ELetJoin origin j (map (\v -> { name: v.name, ty: v.type }) p.alternative.vars) result p.alternative.body e
+  joined p = case p.join of
+    Nothing -> []
+    Just j -> [ \e -> ELetJoin origin j (map (\v -> { name: v.name, ty: v.type }) p.alternative.vars) result p.alternative.body e ]
 
   matched :: forall x. Either Match.MatchError x -> Surf x
   matched = case _ of

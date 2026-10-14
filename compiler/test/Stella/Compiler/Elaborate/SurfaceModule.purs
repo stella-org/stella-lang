@@ -655,6 +655,79 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (types <> [ "x :: Opt Int", "x = case x of", "  _ -> None" ]) \r ->
         map at r.errors `shouldEqual` [ "6:10 reads x early" ]
 
+  describe "a guard block" do
+    let
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+      -- `isZero` and `types` take lines 3 to 8, so a declaration after them
+      -- starts at line 9
+      prelude = [ "data Color = Red | Green | Blue", "data Opt a = None | Some a", "isZero :: Int -> Boolean", "isZero n = case n of", "  0 -> true", "  _ -> false" ]
+    it "binds a name over the lines after it and tries its guards in order, and the Core checker accepts what it becomes" do
+      elaborating (prelude <> [ "classify :: Int -> Int", "classify n = case n of", "  m where", "      z = isZero m", "      z -> 0", "      otherwise -> m" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec isZero", "nonrec classify" ]
+
+    it "binds a name at the type of what it is bound to" do
+      elaborating (prelude <> [ "f :: Int -> Int", "f n = case n of", "  m where", "      k = m", "      k -> 0", "      otherwise -> m" ]) \r ->
+        map at r.errors `shouldEqual` [ "13:7 rejected" ]
+
+    it "falls through to the alternatives after it where every guard fails" do
+      elaborating (prelude <> [ "pick :: Opt Int -> Int", "pick o = case o of", "  Some x where", "      isZero x -> 0", "  Some x -> x", "  None -> 1" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec isZero", "nonrec pick" ]
+
+    it "binds its scrutinees once where a block may fall through, the main match and the fall-through point reading the same variables" do
+      elaborating (prelude <> [ "wrap :: Int -> Opt Int", "wrap n = Some n", "pick :: Int -> Int", "pick n = case wrap n of", "  Some x where", "      isZero x -> 0", "  Some x -> x", "  None -> 1" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "pick" r.values of
+          Just (Lam _ _ _ (Let _ s _ (App _ (Global _ _ _) (Var _ _)) (LetJoin _ _ [] _ _ (LetJoin _ _ [] _ (Case _ [ Var _ s' ] _) (Case _ [ Var _ s'' ] _)))))
+            | s == s' && s == s'' -> pure unit
+          other -> fail ("not bound once: " <> show other)
+
+    it "of several alternatives falls through each to the next, every join point in scope where it is jumped to" do
+      elaborating (prelude <> [ "isOne :: Int -> Boolean", "isOne n = case n of", "  1 -> true", "  _ -> false", "layered :: Opt Int -> Int", "layered o = case o of", "  Some x where", "      isZero x -> 0", "  Some x where", "      isOne x -> 1", "  _ -> 2" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec isZero", "nonrec isOne", "nonrec layered" ]
+
+    it "that may fail covers nothing, and one ending in `otherwise` covers what its patterns match" do
+      elaborating (prelude <> [ "pick :: Opt Int -> Int", "pick o = case o of", "  Some x where", "      isZero x -> 0", "  None -> 1" ]) \r ->
+        map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `Some _`" ]
+      elaborating (prelude <> [ "pick :: Opt Int -> Int", "pick o = case o of", "  Some x where", "      isZero x -> 0", "      otherwise -> x", "  None -> 1" ]) \r ->
+        map at r.errors `shouldEqual` []
+      elaborating (prelude <> [ "pick :: Opt Int -> Int", "pick o = case o of", "  Some x where", "      true -> x", "  None -> 1" ]) \r ->
+        map at r.errors `shouldEqual` []
+
+    it "of an alternative no leaf takes is kept, its fall-through point jumping to itself" do
+      elaborating (prelude <> [ "k :: Opt Int -> Int", "k o = case o of", "  _ -> 0", "  Some x where", "      isZero x -> 1" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "k" r.values of
+          Just (Lam _ _ _ (Let _ _ _ (Var _ _) (LetJoin _ fall [] _ (Jump _ fall' []) (LetJoin _ _ [ { name: Ident "x" } ] _ _ (Case _ [ Var _ _ ] (Leaf (Lit _ (LitInt 0)))))))) | fall == fall' -> pure unit
+          other -> fail ("not kept: " <> show other)
+
+    it "keeps the lines after a guard that always succeeds, checked, their fall-through point jumping to itself" do
+      elaborating (prelude <> [ "t :: Int -> Int", "t n = case n of", "  m where", "      otherwise -> 0", "      isZero m -> 1" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "t" r.values of
+          Just (Lam _ _ _ (Let _ _ _ (Var _ _) (LetJoin _ fall [] _ (Jump _ fall' []) (Case _ _ _)))) | fall == fall' -> pure unit
+          other -> fail ("not kept: " <> show other)
+      elaborating (prelude <> [ "t :: Int -> Int", "t n = case n of", "  m where", "      otherwise -> 0", "      isZero m -> true" ]) \r ->
+        map at r.errors `shouldEqual` [ "13:19 rejected" ]
+      elaborating (prelude <> [ "t :: Int -> Int", "t n = case n of", "  m where", "      otherwise -> 0", "      isZero m -> ?after" ]) \r ->
+        map at r.errors `shouldEqual` [ "13:19 expression hole after Int [m : Int, n : Int]" ]
+
+    it "performs what its guards and its bindings' right-hand sides perform, in the row ambient where the `case` stands" do
+      let
+        effects = [ "effect Ask where", "  ask :: Unit ->* Int", "asked :: Unit -> Int / {| Ask |}", "asked u = asked u", "asks :: Unit -> Boolean / {| Ask |}", "asks u = asks u" ]
+      elaborating (prelude <> effects <> [ "g :: Int -> Int / {| Ask |}", "g n = case n of", "  m where", "      a = asked ()", "      asks () -> a", "      otherwise -> m" ]) \r ->
+        map at r.errors `shouldEqual` []
+      elaborating (prelude <> effects <> [ "h :: Int -> Int", "h n = case n of", "  m where", "      a = asked ()", "      otherwise -> m" ]) \r ->
+        map at r.errors `shouldEqual` [ "16:3 outside: implicit-handler resolution at this checking boundary", "12:1 left unchecked", "14:1 left unchecked" ]
+      elaborating (prelude <> effects <> [ "h :: Int -> Int", "h n = case n of", "  m where", "      asks () -> 1", "      otherwise -> m" ]) \r ->
+        map at r.errors `shouldEqual` [ "16:3 outside: implicit-handler resolution at this checking boundary", "12:1 left unchecked", "14:1 left unchecked" ]
+
+    it "binds a variable or `_` in this version, and reports any other pattern bound as outside it" do
+      elaborating (prelude <> [ "f :: Int -> Int", "f n = case n of", "  m where", "      _ = isZero m", "      Tuple a b = Tuple m m", "      otherwise -> a" ]) \r ->
+        map at r.errors `shouldEqual` [ "13:7 outside: a pattern that is no variable" ]
+
   describe "what a quantifier encloses" do
     let
       bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == Qualified (ModuleName "M") (Ident name)) values)

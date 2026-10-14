@@ -10,13 +10,14 @@
 module Test.Stella.Compiler.Elaborate.Match (spec) where
 
 import Prelude
+import Prim hiding (Row)
 
 import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
-import Stella.Compiler.Elaborate.Surface.Match (Compiled, Domain(..), Head(..), MatchError(..), Pattern(..), Plan(..), Witness(..), compile, coverageDomain, witness)
+import Stella.Compiler.Elaborate.Surface.Match (Compiled, Row, Domain(..), Head(..), MatchError(..), Pattern(..), Plan(..), Witness(..), compile, coverageDomain, witness)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), TyName(..))
 import Stella.Compiler.TypedCore.Prim (unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
@@ -62,12 +63,16 @@ table = Map.fromFoldable
   ]
 
 -- | A row of the alternative given, written as one row.
-row :: Int -> Array (Pattern String) -> { alternative :: Int, choice :: Maybe String, patterns :: Array (Pattern String) }
-row alternative patterns = { alternative, choice: Nothing, patterns }
+row :: Int -> Array (Pattern String) -> Row String
+row alternative patterns = { alternative, choice: Nothing, patterns, fallible: false }
 
 -- | A row of the alternative given, written as the choice labelled.
-choice :: Int -> String -> Array (Pattern String) -> { alternative :: Int, choice :: Maybe String, patterns :: Array (Pattern String) }
-choice alternative label patterns = { alternative, choice: Just label, patterns }
+choice :: Int -> String -> Array (Pattern String) -> Row String
+choice alternative label patterns = { alternative, choice: Just label, patterns, fallible: false }
+
+-- | A row of the alternative given whose guard block may fall through.
+fallible :: Int -> Array (Pattern String) -> Row String
+fallible alternative patterns = { alternative, choice: Nothing, patterns, fallible: true }
 
 c :: Qualified Ident -> Array (Pattern String) -> Pattern String
 c = PCtor
@@ -94,7 +99,7 @@ bound :: String -> Occurrence -> { name :: Ident, occurrence :: Occurrence }
 bound name occurrence = { name: Ident name, occurrence }
 
 -- | The plan a matrix of the width given compiles to.
-planned :: Int -> Array { alternative :: Int, choice :: Maybe String, patterns :: Array (Pattern String) } -> (Plan -> Compiled String -> Aff Unit) -> Aff Unit
+planned :: Int -> Array (Row String) -> (Plan -> Compiled String -> Aff Unit) -> Aff Unit
 planned width rows k = case compile table width rows of
   Right compiled -> k compiled.plan compiled
   Left err -> fail (show err)
@@ -203,6 +208,38 @@ spec = describe "Elaborate.Surface.Match" do
     it "is an alternative no leaf takes, its choices not named apart" do
       planned 1 [ row 0 [ PAny ], row 1 [ or [ Tuple "red" (c red []), Tuple "nested" (c some [ or [ Tuple "zero" (int 0) ] ]) ] ] ] \_ compiled ->
         compiled.redundant `shouldEqual` { alternatives: [ 1 ], choices: [] }
+
+  describe "an alternative that may fail" do
+    it "is taken where its patterns match, and where it fails the alternatives after it are matched afresh" do
+      planned 1 [ fallible 0 [ c some [ v "x" ] ], row 1 [ c none [] ], row 2 [ PAny ] ] \plan compiled -> do
+        plan `shouldEqual`
+          SwitchCtor (s 0)
+            [ { ctor: none, plan: Leaf 1 [] }, { ctor: some, plan: Leaf 0 [ bound "x" (field (s 0) some 0) ] } ]
+            Nothing
+        compiled.falls `shouldEqual` Map.singleton 0 (SwitchCtor (s 0) [ { ctor: none, plan: Leaf 1 [] } ] (Just (Leaf 2 [])))
+        compiled.references `shouldEqual` Map.fromFoldable [ Tuple 0 1, Tuple 1 2, Tuple 2 1 ]
+        compiled.redundant `shouldEqual` { alternatives: [], choices: [] }
+
+    it "covers nothing the rows after it would otherwise take" do
+      planned 1 [ row 0 [ c some [ v "x" ] ], row 1 [ c none [] ], row 2 [ PAny ] ] \_ compiled ->
+        compiled.redundant.alternatives `shouldEqual` [ 2 ]
+      planned 1 [ fallible 0 [ PAny ], fallible 1 [ PAny ], row 2 [ PAny ] ] \plan compiled -> do
+        plan `shouldEqual` Leaf 0 []
+        compiled.falls `shouldEqual` Map.fromFoldable [ Tuple 0 (Leaf 1 []), Tuple 1 (Leaf 2 []) ]
+        compiled.references `shouldEqual` Map.fromFoldable [ Tuple 0 1, Tuple 1 1, Tuple 2 1 ]
+
+    it "that no leaf takes falls through to no plan, nor makes the alternatives after it reachable" do
+      planned 1 [ row 0 [ PAny ], fallible 1 [ c some [ v "x" ] ], row 2 [ c none [] ] ] \_ compiled -> do
+        compiled.falls `shouldEqual` Map.empty
+        compiled.redundant.alternatives `shouldEqual` [ 1, 2 ]
+
+    it "leaves uncovered what it would have matched, where nothing after it does, and a witness passes over it" do
+      planned 1 [ fallible 0 [ PAny ] ] \plan compiled -> do
+        plan `shouldEqual` Leaf 0 []
+        compiled.falls `shouldEqual` Map.singleton 0 Uncovered
+      witness table 1 [ fallible 0 [ PAny ] ] `shouldEqual` Right (Just [ WitnessAny ])
+      witness table 1 [ fallible 0 [ c some [ v "x" ] ], row 1 [ c none [] ] ] `shouldEqual` Right (Just [ WitnessConstructor some [ WitnessAny ] ])
+      witness table 1 [ fallible 0 [ c some [ v "x" ] ], row 1 [ PAny ] ] `shouldEqual` Right Nothing
 
   describe "a matrix no typing admits" do
     it "is refused, not compiled" do

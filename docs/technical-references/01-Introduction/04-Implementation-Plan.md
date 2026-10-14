@@ -1261,6 +1261,13 @@ A `case` compiled into a decision tree by the surface elaborator ([Elaboration](
 | A place left uncovered that no report of its match names | A defect of the host. Suppressing every such place drops the declaration without a word, and matching a report by origin confuses two `case`s an expansion gave one origin |
 | A row of an alternative writing other than one pattern per scrutinee | Refused by resolution, where the row stands |
 | Two heads of different domains in one column reaching the compiler of matches | A defect of the host, not a non-exhaustive match: typing refuses such patterns first |
+| `Some x where isZero x -> 0` before `Some x -> x` and `None -> 1` | Exhaustive: where the guard fails, a fall-through point matches the alternatives after it afresh, and `Some x -> x` takes the value |
+| The same without `Some x -> x` | Reported with `Some _`. Taking a block that may fail as covering what its patterns match accepts a `case` that can run out of alternatives |
+| `case wrap n of …` where a block may fall through | `wrap n` bound once by a `let`, the `case` and the fall-through point reading the variable. Matching the scrutinee again evaluates it twice |
+| Two blocks that may fail, then `_ -> 2` | Each fall-through point and block join point stands outside those of the alternatives before it. Placed in the order written, a fall-through point jumps to one not in scope, which Core refuses |
+| A guard block that may fail, of an alternative no leaf takes | Kept and checked, its fall-through point jumping to itself. Compiling a match for that point leaves an uncovered place no report names |
+| Lines after `otherwise` that can pass their end | Kept and checked, their type errors and holes reported, their fall-through point jumping to itself. Dropping them loses what they hold |
+| A binding whose right-hand side performs, or a guard whose condition does | Its row in the row ambient where the `case` stands, so a signature writing none is not met |
 
 ### Binding groups and generalization (step 7)
 

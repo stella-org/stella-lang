@@ -6,7 +6,10 @@
 -- | constructor with a default; `classify` on two values, a literal among
 -- | them, its second alternative taken by two leaves and so a join point
 -- | binding `n`; `named` on an open domain of strings; and `flip` on a
--- | `Boolean` its alternatives exhaust.
+-- | `Boolean` its alternatives exhaust. `guarded` binds a name in a guard block
+-- | and falls through to the alternative after it where its guard fails, and
+-- | `sizeOf` ends its block with `otherwise`; `layered` falls through two
+-- | guard blocks in turn.
 module Test.Steam.Matches (spec) where
 
 import Prelude
@@ -65,6 +68,33 @@ source =
   , "flip b = case b of"
   , "  true -> false"
   , "  false -> true"
+  , "isZero :: Int -> Boolean"
+  , "isZero n = case n of"
+  , "  0 -> true"
+  , "  _ -> false"
+  , "guarded :: Opt Int -> Int"
+  , "guarded o = case o of"
+  , "  Some x where"
+  , "      z = isZero x"
+  , "      z -> 100"
+  , "  Some x -> x"
+  , "  None -> 7"
+  , "isOne :: Int -> Boolean"
+  , "isOne n = case n of"
+  , "  1 -> true"
+  , "  _ -> false"
+  , "layered :: Opt Int -> Int"
+  , "layered o = case o of"
+  , "  Some x where"
+  , "      isZero x -> 0"
+  , "  Some x where"
+  , "      isOne x -> 1"
+  , "  _ -> 2"
+  , "sizeOf :: Int -> Int"
+  , "sizeOf n = case n of"
+  , "  m where"
+  , "      isZero m -> 0"
+  , "      otherwise -> 1"
   , "rankRed = rank Red"
   , "rankBlue = rank Blue"
   , "secondOfTwo = second (Cons 1 (Cons 2 Nil))"
@@ -76,6 +106,15 @@ source =
   , "two = named \"two\""
   , "other = named \"three\""
   , "flipped = flip true"
+  , "guardZero = guarded (Some 0)"
+  , "guardFive = guarded (Some 5)"
+  , "guardNone = guarded None"
+  , "sizeZero = sizeOf 0"
+  , "sizeTwo = sizeOf 2"
+  , "layeredZero = layered (Some 0)"
+  , "layeredOne = layered (Some 1)"
+  , "layeredFive = layered (Some 5)"
+  , "layeredNone = layered None"
   ]
 
 -- | `Main` compiled, loaded, and each of its globals named rendered.
@@ -129,6 +168,25 @@ render names = go
 
 spec :: Spec Unit
 spec = describe "Steam, a `case` compiled from source" do
+  it "tries a guard block's guards in order, falling through to the alternatives after it where every one fails" do
+    running [ "guardZero", "guardFive", "guardNone", "sizeZero", "sizeTwo" ] \values ->
+      values `shouldEqual` Map.fromFoldable
+        [ Tuple "guardZero" "100"
+        , Tuple "guardFive" "5"
+        , Tuple "guardNone" "7"
+        , Tuple "sizeZero" "0"
+        , Tuple "sizeTwo" "1"
+        ]
+
+  it "falls through two guard blocks in turn to the alternative after both" do
+    running [ "layeredZero", "layeredOne", "layeredFive", "layeredNone" ] \values ->
+      values `shouldEqual` Map.fromFoldable
+        [ Tuple "layeredZero" "0"
+        , Tuple "layeredOne" "1"
+        , Tuple "layeredFive" "2"
+        , Tuple "layeredNone" "2"
+        ]
+
   it "takes the alternative its value matches, through an or-pattern, a nested constructor, a join point, and a literal" do
     running [ "rankRed", "rankBlue", "secondOfTwo", "secondOfOne", "redZero", "redFour", "blueFour", "greenNone", "two", "other", "flipped" ] \values ->
       values `shouldEqual` Map.fromFoldable
