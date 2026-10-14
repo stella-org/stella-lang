@@ -8,10 +8,6 @@ An effect-oriented functional programming language with first-class macro
 
 [![CI](https://github.com/katsujukou/stella-lang/actions/workflows/ci.yaml/badge.svg)](https://github.com/katsujukou/stella-lang/actions/workflows/ci.yaml)
 
-> Stella was originally called *Dawn*. However, since several languages
-> already use that name and the corresponding domain is already taken,
-> I decided to rename it to *Stella*.
-
 ## Motivation
 
 Stella is a functional programming language inspired by PureScript.
@@ -105,7 +101,7 @@ main = handle program
 - ☑️ New comprehensive language reference ... *WIP*
 - ☑️ Official textbook: *Functional and Effect-Oriented Programming in Stella*
 
-Possible future enhancement, but not in the current roadmap:
+Possible future enhancement, but not in the current roadmap (CONTRIBUTIONS ARE HIGHLY WELCOME!!):
 
 - First-class Parser API
 - Termination analysis and `Div` effect
