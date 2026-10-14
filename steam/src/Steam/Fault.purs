@@ -65,6 +65,10 @@ data Fault
   -- | A native action that produced a host value the kind it was declared with
   -- | cannot be, as the entry that returned the action and what was wrong.
   | NativeBreached (Qualified Ident) P.String
+  -- | A by-need cell forced while its own initializer is running. A module the
+  -- | compiler accepted never reaches one: its recursive groups are
+  -- | initialization-safe.
+  | InitializationFault
 
 derive instance Eq Fault
 derive instance Generic Fault _

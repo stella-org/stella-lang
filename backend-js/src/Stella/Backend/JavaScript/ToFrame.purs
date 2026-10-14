@@ -354,6 +354,7 @@ cutNode scope next0 node = go [] 0
       RGN (B.Reg d) g body initial -> do
         region <- regionAt scope g
         cutAt acc i \resume -> Open { region, operands: openOperands body initial, dest: d, resume }
+      FORCE (B.Reg d) (B.Reg s) -> cutAt acc i \resume -> Force { cell: s, dest: d, resume }
       _ -> do
         stmt <- instrStmt scope instr
         go (Array.snoc acc stmt) (i + 1)
@@ -490,11 +491,13 @@ instrStmt scope = case _ of
     pure (Set d (CallForeign ref (regs args)))
   CGET (B.Reg d) (B.Reg g) i -> pure (Set d (CellGet g i))
   CSET (B.Reg d) (B.Reg g) i (B.Reg s) -> pure (Set d (CellSet g i s))
+  NEED (B.Reg d) (B.Reg s) -> pure (Set d (NewCell s))
   CALLK _ _ _ -> Left (Unsupported "a call standing where no segment can be cut")
   CALLU _ _ _ -> Left (Unsupported "a call standing where no segment can be cut")
   PERF _ _ _ _ -> Left (Unsupported "a perform standing where no segment can be cut")
   HNDL _ _ _ _ _ -> Left (Unsupported "a handler standing where no segment can be cut")
   RGN _ _ _ _ -> Left (Unsupported "a region standing where no segment can be cut")
+  FORCE _ _ -> Left (Unsupported "a force standing where no segment can be cut")
 
 handleOperands :: B.Reg -> B.Reg -> P.Array B.Reg -> HandleOperands
 handleOperands body ret clauses =

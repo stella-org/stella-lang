@@ -31,6 +31,8 @@ import Stella.Compiler.Bytecode.Module (Dmo, GlobalInit(..), Key(..))
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (traverse_)
+import Data.Maybe (Maybe(..))
+import Stella.Compiler.MiddleEnd.Rep (Rep(..))
 
 validate :: Dmo -> Either Fault Unit
 validate dmo = do
@@ -92,6 +94,7 @@ validate dmo = do
     where
     scope =
       { registers: Array.length f.regs
+      , reps: f.regs
       , captures: Array.length f.captures
       , joins: map _.name f.joins
       }
@@ -107,6 +110,13 @@ validate dmo = do
   -- | here bounds its index.
   capture scope i =
     if i >= 0 && i < scope.captures then Right unit else Left (CaptureOutOfRange i)
+
+  -- | A register holding a by-need cell is at `Val`, the one class a cell is
+  -- | sound at; checked against what the function's file says of it, nothing
+  -- | derived.
+  cellRegister scope (Reg i) = case Array.index scope.reps i of
+    Just RepVal -> Right unit
+    _ -> Left (CellRegisterNotVal i)
 
   joinNamed scope name =
     if Array.elem name scope.joins then Right unit
@@ -152,6 +162,8 @@ validate dmo = do
       register scope d *> regionIx g *> register scope b *> traverse_ (register scope) vs
     CGET d g i -> register scope d *> register scope g *> nonNegative i
     CSET d g i s -> register scope d *> register scope g *> nonNegative i *> register scope s
+    NEED d s -> register scope d *> register scope s *> cellRegister scope d
+    FORCE d s -> register scope d *> register scope s *> cellRegister scope s
 
   tail scope = case _ of
     RET s -> register scope s

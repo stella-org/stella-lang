@@ -14,7 +14,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Bytecode (Bytes, Constant(..), DecodeError(..), Dmo, EncodeError(..), Fault(..), Function, Instr(..), JoinName(..), Key(..), Node, Reg(..), Tail(..), abiVersion, decode, encode, formatVersion, lower, validate)
+import Stella.Compiler.Bytecode (Bytes, Constant(..), DecodeError(..), Dmo, EncodeError(..), Fault(..), FuncIx(..), Function, Instr(..), JoinName(..), Key(..), Node, Reg(..), Tail(..), abiVersion, decode, encode, formatVersion, lower, validate)
 import Stella.Compiler.Bytecode.Bytes (byte, runR, skipR, structuralR, svar, svarR, utf8, utf8R, uvar, uvarR, vecR)
 import Stella.Compiler.Interface (noImports)
 import Stella.Compiler.MiddleEnd (Rep(..), translate)
@@ -164,6 +164,9 @@ spec = describe "Stella.Compiler.Bytecode.Serialize" do
       roundTrip (withConstants [ CNumber notANumber ])
         `shouldEqual` Right (withConstants [ CNumber notANumber ])
 
+    it "carries a by-need cell built and forced" do
+      roundTrip (withFunction cellForced) `shouldEqual` Right (withFunction cellForced)
+
     it "carries an astral character in a name" do
       roundTrip (bare { name = ModuleName "Main.😀" })
         `shouldEqual` Right (bare { name = ModuleName "Main.😀" })
@@ -239,6 +242,17 @@ spec = describe "Stella.Compiler.Bytecode.Serialize" do
         `shouldEqual` Left (Unwritable (CaptureOutOfRange 0))
       validate (withFunction (withBody { code: [ CAPT (Reg 0) 0 ], tail: RET (Reg 0) }))
         `shouldEqual` Left (CaptureOutOfRange 0)
+
+    it "a register a by-need cell is put in or forced from that is not at `Val`" do
+      -- a cell is no class of value a `Rep` describes; what a force gives is
+      encode (withFunction cellForced { regs = [ RepVal, RepInt, RepVal ] })
+        `shouldEqual` Left (Unwritable (CellRegisterNotVal 1))
+      validate (withFunction (withBody { code: [ CLOS (Reg 0) (FuncIx 0) [], NEED (Reg 1) (Reg 0) ], tail: RET (Reg 1) }) { regs = [ RepVal, RepInt ] })
+        `shouldEqual` Left (CellRegisterNotVal 1)
+      validate (withFunction (withBody { code: [ FORCE (Reg 1) (Reg 0) ], tail: RET (Reg 1) }) { regs = [ RepInt, RepVal ] })
+        `shouldEqual` Left (CellRegisterNotVal 0)
+      validate (withFunction (withBody { code: [ FORCE (Reg 1) (Reg 0) ], tail: RET (Reg 1) }) { regs = [ RepVal, RepInt ] })
+        `shouldEqual` Right unit
 
     it "a jump naming a join point the function does not declare" do
       encode (withFunction (withBody { code: [], tail: JMP (JoinName 0) [] }))
@@ -330,6 +344,13 @@ returning =
   , captures: []
   , joins: []
   , body: { code: [], tail: RET (Reg 0) }
+  }
+
+-- | A function building a by-need cell over a closure of itself and forcing it.
+cellForced :: Function
+cellForced = returning
+  { regs = [ RepVal, RepVal, RepVal ]
+  , body = { code: [ CLOS (Reg 0) (FuncIx 0) [], NEED (Reg 1) (Reg 0), FORCE (Reg 2) (Reg 1) ], tail: RET (Reg 2) }
   }
 
 -- | The same function with another body.

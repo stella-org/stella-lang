@@ -130,6 +130,8 @@ data Expr
   -- | Replace what that cell holds with the last register's value, giving
   -- | `Prim.Unit`.
   | CellSet P.Int P.Int P.Int
+  -- | A by-need cell, suspended over the closure the register holds.
+  | NewCell P.Int
 
 data Stmt
   = Set P.Int Expr
@@ -175,6 +177,10 @@ data Exit
   | Open { region :: P.Int, operands :: OpenOperands, dest :: P.Int, resume :: SegmentId }
   -- | The same in tail position, replacing the frame.
   | TailOpen { region :: P.Int, operands :: OpenOperands }
+  -- | Force the by-need cell in register `cell`. What it holds reaches register
+  -- | `dest`, and what follows is segment `resume`, as after a call: a cell whose
+  -- | initializer has to run is entered as a call is.
+  | Force { cell :: P.Int, dest :: P.Int, resume :: SegmentId }
 
 -- | What installing a handler takes: the body, the return clause, and a clause per
 -- | operation in the order the handler table lists them.

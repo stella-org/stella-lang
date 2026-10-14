@@ -152,6 +152,32 @@ export const runtimeRefusals = await (async () => {
   ];
 })();
 
+// What the run loop gives for a force a segment leaves to it of a cell already
+// `READY`: the value the cell holds, as text, the frame going on at the segment after. A
+// generated segment reads such a cell itself, so only the run loop alone reaches
+// this.
+export const readyForcedByRunLoop = await (async () => {
+  const rt = await import(runtimeSpecifier);
+  const cell = new rt.Cell(null);
+  cell.state = rt.READY;
+  cell.value = 7;
+  const after = (m, f) => {
+    m.value = f.r[0];
+    return rt.RET;
+  };
+  const entry = (m) => {
+    m.value = cell;
+    m.dest = 0;
+    m.resume = after;
+    return rt.FORCE;
+  };
+  try {
+    return String(rt.applyFunction(new rt.Closure({ arity: 0, nregs: 1, entry }, []), []));
+  } catch (e) {
+    return String(e && e.message);
+  }
+})();
+
 // The fixture directory, reached from this file's place in the build output.
 export const fixturesRoot = fileURLToPath(new URL("../../fixtures/bytecode/", import.meta.url));
 

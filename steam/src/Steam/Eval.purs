@@ -66,7 +66,7 @@ import Steam.Fault (Fault(..))
 import Steam.Module (CalleeTarget(..), CtorRef, ForeignRef, GlobalSlot, HandlerRef, Loaded, Prepared, RegionRef, Registry)
 import Steam.Op as Op
 import Steam.Region as Region
-import Steam.Value (Activation, Callee(..), Clause, Closure, Continuation(..), CtorId, Foreign(..), ForeignOutcome(..), IOEntry(..), IOValue(..), KeyId, Marker, ModuleId, OpId, Root, StackEntry(..), Value(..), matchesConstant, reinstate, valueOfConstant)
+import Steam.Value (Activation, Callee(..), CellState(..), Clause, Closure, Continuation(..), CtorId, Foreign(..), ForeignOutcome(..), IOEntry(..), IOValue(..), KeyId, Marker, ModuleId, OpId, Root, StackEntry(..), Value(..), matchesConstant, reinstate, valueOfConstant)
 import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName, KeyIx(..), OpIx(..), PrimIx(..), Reg(..), RegionIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Constant)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
@@ -88,6 +88,8 @@ data Class
   | ACallable
   -- | An `IO` value, which `Base.IO.bind` takes as its first argument.
   | AnIO
+  -- | A by-need cell, which a `FORCE` reads.
+  | ACell
 
 -- | A state no `.dmo` admits. Reaching one is a defect in the interpreter, in
 -- | lowering, or in a check a loader owes.
@@ -699,6 +701,11 @@ step machine = case _ of
       -- the bottom of an invocation, which the value passes on its way out
       Just (RootBoundary _) -> pure (Returning value)
       Just ClosedBoundary -> pure (Returning value)
+      -- an initializer has returned, and its value fills the cell and goes on
+      -- to the `FORCE` below
+      Just (Fill cell) -> do
+        liftEffect (Ref.write (Ready value) cell)
+        pure (Returning value)
 
   -- an activation runs against the tables of its own module, which is the one its
   -- function belongs to
@@ -1210,6 +1217,23 @@ exec machine loaded activation = case _ of
     value <- readReg activation s
     liftEffect (Ref.write value cell)
     advance (writeReg activation d loaded.unit)
+
+  NEED d s -> do
+    initializer <- readReg activation s
+    cell <- liftEffect (Ref.new (Suspended initializer))
+    advance (writeReg activation d (VCell cell))
+
+  -- a suspended cell is entered as a call is, the `Fill` beneath its
+  -- initializer making it `Ready` on the way back
+  FORCE d s -> do
+    cell <- readCell activation s
+    state <- liftEffect (Ref.read cell)
+    case state of
+      Ready value -> advance (writeReg activation d value)
+      Evaluating -> fault InitializationFault
+      Suspended initializer -> do
+        liftEffect (Ref.write Evaluating cell)
+        pure (Install d [ Fill cell ] initializer [])
   where
   advance = map (const Advance)
 
@@ -1329,6 +1353,13 @@ readRecord activation reg = do
   case value of
     VRecord record -> pure record
     _ -> bug (NotOfClass ARecord)
+
+readCell :: forall r. Activation -> Reg -> Run (EVAL r) (Ref CellState)
+readCell activation reg = do
+  value <- readReg activation reg
+  case value of
+    VCell cell -> pure cell
+    _ -> bug (NotOfClass ACell)
 
 readClosure :: forall r. Activation -> Reg -> Run (EVAL r) Closure
 readClosure activation reg = do

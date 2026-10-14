@@ -32,7 +32,8 @@ import Effect.Exception (throw)
 import Effect.Ref as Ref
 import Run (runBaseEffect)
 import Run.Except as Except
-import Steam.Eval (Bug(..), Failure(..), Outcome(..), Pause, Slice, Suspension, applyFunction, invoke, resumePaused, resumeWith)
+import Steam.Eval (Bug(..), Class(..), Failure(..), Outcome(..), Pause, Slice, Suspension, applyFunction, invoke, resumePaused, resumeWith)
+import Steam.Fault (Fault(..))
 import Steam.Module (Loaded, Registry, prepare)
 import Steam.Value (CtorId(..), KeyId(..), ModuleId(..), OpId(..), Root, Value(..))
 import Stella.Compiler.Bytecode.Instr (ConstIx(..), FuncIx(..), Function, HandlerIx(..), Instr(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg(..), Tail(..))
@@ -136,6 +137,33 @@ functions =
   , plain 2 (returning [ LOADK (Reg 0) (ConstIx 0), PERF (Reg 1) (KeyIx 1) (OpIx 1) (Reg 0) ] (Reg 1))
   -- 11
   , plain 1 (returning [ LOADK (Reg 0) (ConstIx 2) ] (Reg 0))
+  -- 12: an initializer performing once, so a run shows how often it was entered
+  , plain 2 (returning [ LOADK (Reg 0) (ConstIx 0), PERF (Reg 1) (KeyIx 0) (OpIx 0) (Reg 0) ] (Reg 1))
+  -- 13: a by-need cell over 12, forced twice and the two values added
+  , plain 5
+      ( returning
+          [ CLOS (Reg 0) (FuncIx 12) []
+          , NEED (Reg 1) (Reg 0)
+          , FORCE (Reg 2) (Reg 1)
+          , FORCE (Reg 3) (Reg 1)
+          , PRIM (Reg 4) (PrimIx 0) [ Reg 2, Reg 3 ]
+          ]
+          (Reg 4)
+      )
+  -- 14: an initializer forcing the cell it fills, its one capture
+  , { nparams: 0, regs: [ RepVal, RepVal ], captures: [ RepVal ], joins: [], body: returning [ CAPT (Reg 0) 0, FORCE (Reg 1) (Reg 0) ] (Reg 1) }
+  -- 15: a by-need cell over 14, which captures the cell itself
+  , plain 3
+      ( returning
+          [ CLOSN (Reg 0) (FuncIx 14) 1
+          , NEED (Reg 1) (Reg 0)
+          , SETCAP (Reg 0) 0 (Reg 1)
+          , FORCE (Reg 2) (Reg 1)
+          ]
+          (Reg 2)
+      )
+  -- 16: a force of a value that is no cell
+  , plain 2 (returning [ LOADK (Reg 0) (ConstIx 0), FORCE (Reg 1) (Reg 0) ] (Reg 1))
   ]
 
 -- | The module, with its two handlers: 0 answers the root's key with one `fast`
@@ -315,7 +343,27 @@ spec = describe "Steam.Eval, an invocation's root boundary" do
           seen (map _.outcome again) `shouldEqual` Failed (Bug SuspensionAlreadyResumed)
         _ -> fail "the first stretch did not pause"
 
+  describe "a by-need cell" do
+    it "enters its initializer once, the value it returns filling the cell for every later force" do
+      whole <- stretched plenty 13
+      whole.asked `shouldEqual` [ 1 ]
+      whole.value `shouldEqual` DoneWith 22
+
+    it "is filled by the initializer it entered when the run pauses inside it, once the run is resumed" do
+      -- one step at a time, so every step the initializer takes ends a stretch
+      stepwise <- stretched 1 13
+      stepwise.asked `shouldEqual` [ 1 ]
+      stepwise.value `shouldEqual` DoneWith 22
+
+    it "is an initialization fault where it is forced while its own initializer runs" do
+      result <- invoking 15
+      seen result `shouldEqual` Failed (Faults InitializationFault)
+
   describe "what no .dmo admits" do
+    it "a force of a value that is no by-need cell" do
+      result <- invoking 16
+      seen result `shouldEqual` Failed (Bug (NotOfClass ACell))
+
     it "an operation of the root's key the root does not answer" do
       result <- invoking 9
       seen result `shouldEqual` Failed (Bug (NoClauseForOperation (OpIx 2)))

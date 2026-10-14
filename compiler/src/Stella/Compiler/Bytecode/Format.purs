@@ -87,6 +87,8 @@ module Stella.Compiler.Bytecode.Format
   , opCGet
   , opCSet
   , opRgn
+  , opNeed
+  , opForce
   , tailFrom
   , tailRet
   , tailTailK
@@ -395,6 +397,12 @@ opCSet = 0x23
 
 opRgn :: P.Int
 opRgn = 0x24
+
+opNeed :: P.Int
+opNeed = 0x25
+
+opForce :: P.Int
+opForce = 0x26
 
 tailRet :: P.Int
 tailRet = 0x80

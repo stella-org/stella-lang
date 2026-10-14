@@ -80,6 +80,9 @@ data Fault
   | CaptureOutOfRange P.Int
   -- | A `JMP` naming a join point the function does not declare.
   | JoinNotDeclared P.Int
+  -- | A register a by-need cell is put in or forced from whose `Rep` is not
+  -- | `Val`: a cell is no class of value a `Rep` describes.
+  | CellRegisterNotVal P.Int
 
 -- | What an encoder refuses.
 data EncodeError

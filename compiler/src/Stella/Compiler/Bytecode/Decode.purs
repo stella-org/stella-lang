@@ -310,6 +310,8 @@ instrR opcode
   | opcode == F.opRgn = RGN <$> regR <*> regionIxR <*> regR <*> vecR regR
   | opcode == F.opCGet = CGET <$> regR <*> regR <*> structuralR
   | opcode == F.opCSet = CSET <$> regR <*> regR <*> structuralR <*> regR
+  | opcode == F.opNeed = NEED <$> regR <*> regR
+  | opcode == F.opForce = FORCE <$> regR <*> regR
   | otherwise = throwR (UnknownTag InstrOpcode opcode)
 
 tailR :: P.Int -> R Tail

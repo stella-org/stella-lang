@@ -203,6 +203,9 @@ classOf = case _ of
   VCont _ -> ClassContinuation
   VIO _ -> ClassIO
   VOpaque _ -> ClassOpaque
+  -- a by-need cell is held by a capture slot or by a register a `FORCE` reads,
+  -- and is never a value a guest is handed
+  VCell _ -> ClassOpaque
 
 -- | The last `n` values built, in the order they were built, and what is below them.
 pop :: forall a. P.Int -> List a -> { values :: P.Array a, left :: List a }

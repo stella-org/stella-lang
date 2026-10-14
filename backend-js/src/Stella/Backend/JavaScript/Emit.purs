@@ -428,6 +428,25 @@ exit fm = case _ of
         ]
   TailOpen o ->
     pure $ opening o.region o.operands <> [ S.Return (rtMember "TAILRGN") ]
+  -- a `Ready` cell gives its value here and the frame goes on, and any other
+  -- leaves it to the run loop, which enters the initializer where the cell is
+  -- `Suspended`
+  Force f ->
+    pure
+      [ S.Block
+          [ S.Const "c" (reg f.cell)
+          , S.If (S.Binary "&&" (S.Binary "instanceof" (S.Ident "c") (rtMember "Cell")) (S.Binary "===" (S.Member (S.Ident "c") "state") (rtMember "READY")))
+              [ S.Assign (reg f.dest) (S.Member (S.Ident "c") "value")
+              , S.Assign (mField "seg") (S.Ident (segmentName f.resume))
+              , S.Return (rtMember "RUN")
+              ]
+              []
+          ]
+      , S.Assign (mField "value") (reg f.cell)
+      , S.Assign (mField "dest") (S.Number (show f.dest))
+      , S.Assign (mField "resume") (S.Ident (segmentName f.resume))
+      , S.Return (rtMember "FORCE")
+      ]
   -- the arguments are read before any parameter is written, since an argument
   -- register may be a parameter of the join point too
   Jump j ->
@@ -509,6 +528,7 @@ expr fm = case _ of
   Prim op args -> operation op (map reg args)
   CallForeign ref args -> foreignCall fm ref (map reg args)
   CellGet g i -> rtCall "cget" [ S.Ident "m", reg g, S.Number (show i) ]
+  NewCell s -> S.New (rtMember "Cell") [ reg s ]
   CellSet g i s -> rtCall "cset" [ S.Ident "m", reg g, S.Number (show i), reg s ]
 
 operation :: PrimOp -> P.Array S.Expr -> S.Expr

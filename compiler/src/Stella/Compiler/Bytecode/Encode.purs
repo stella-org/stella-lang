@@ -266,6 +266,8 @@ instr = case _ of
   RGN d g b vs -> u8 F.opRgn <> reg d <> regionIx g <> reg b <> vecOf reg vs
   CGET d g i -> u8 F.opCGet <> reg d <> reg g <> uvar i
   CSET d g i s -> u8 F.opCSet <> reg d <> reg g <> uvar i <> reg s
+  NEED d s -> u8 F.opNeed <> reg d <> reg s
+  FORCE d s -> u8 F.opForce <> reg d <> reg s
 
 tail :: Tail -> Bytes
 tail = case _ of

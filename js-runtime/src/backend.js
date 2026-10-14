@@ -54,6 +54,10 @@ export const TAILHNDL = 6;
 export const RGN = 7;
 // The same in tail position, pushing nothing for the current frame.
 export const TAILRGN = 8;
+// Force the by-need cell `m.value`; what it holds goes into register `m.dest`,
+// and the frame continues at `m.resume`. A suspended cell's initializer is
+// entered as a call is.
+export const FORCE = 9;
 
 // Values ------------------------------------------------------------------------
 
@@ -61,6 +65,22 @@ export class Closure {
   constructor(fn, caps) {
     this.fn = fn;
     this.caps = caps;
+  }
+}
+
+// A by-need cell: a member of a local recursive group that is no function value,
+// filled once, by the force its group's sequence performs. Its `state` is
+// `SUSPENDED`, `init` the closure of its initializer; `EVALUATING` while that
+// runs; or `READY`, `value` what it returned.
+export const SUSPENDED = 0;
+export const EVALUATING = 1;
+export const READY = 2;
+
+export class Cell {
+  constructor(init) {
+    this.state = SUSPENDED;
+    this.init = init;
+    this.value = undefined;
   }
 }
 
@@ -126,7 +146,8 @@ const bug = (message) => {
 // `kind` says where it arose: `operation` for an operation of the ABI, and for the
 // boundary one of `refused`, `threw`, `breached` (a foreign) or `actionRefused`,
 // `actionThrew`, `actionBreached` (an action a foreign returned, as it is
-// performed). `foreign` names the foreign, where the kind carries one, and `detail`
+// performed), and `initialization` for a by-need cell forced while its own
+// initializer runs. `foreign` names the foreign, where the kind carries one, and `detail`
 // is the reason a refusal gave, the message a throw carried, or what a breach was.
 export class Fault extends Error {
   constructor(message, kind = "operation", foreign = undefined, detail = undefined) {
@@ -485,6 +506,14 @@ class Boundary {
   }
 }
 
+// The initializer of a by-need cell running above it. The value reaching it makes
+// the cell `READY` and passes down to the `Resume` of the force below.
+class Fill {
+  constructor(cell) {
+    this.cell = cell;
+  }
+}
+
 // The machine ---------------------------------------------------------------------
 
 // One run: its stack, the frame running, and the registers segments talk to the run
@@ -716,6 +745,26 @@ const run = (m, code) => {
       case TAILRGN:
         code = open(m);
         break;
+      case FORCE: {
+        const cell = m.value;
+        if (!(cell instanceof Cell)) bug("forcing what is no by-need cell");
+        if (cell.state === READY) {
+          m.frame.r[m.dest] = cell.value;
+          m.seg = m.resume;
+          code = RUN;
+          break;
+        }
+        if (cell.state === EVALUATING) {
+          throw new Fault("a by-need cell forced while its initializer runs", "initialization");
+        }
+        const init = cell.init;
+        cell.state = EVALUATING;
+        cell.init = undefined;
+        m.stack.push(new Resume(m.frame, m.dest, m.resume));
+        m.stack.push(new Fill(cell));
+        code = apply(m, init, []);
+        break;
+      }
       case RET: {
         const entry = m.stack.pop();
         if (entry === undefined) return m.value;
@@ -728,6 +777,11 @@ const run = (m, code) => {
           code = apply(m, m.value, entry.args);
         } else if (entry instanceof Marker) {
           code = apply(m, entry.ret, [m.value]);
+        } else if (entry instanceof Fill) {
+          // an initializer has returned: its value fills the cell and goes on to
+          // the force below
+          entry.cell.state = READY;
+          entry.cell.value = m.value;
         }
         // a region closes as the value passes it, and a `fast` clause's value passes
         // its boundary on to the perform below

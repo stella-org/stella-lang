@@ -121,6 +121,16 @@ data Instr
   -- | Replace what that cell holds. The destination receives `Prim.Unit`, a
   -- | write having no result of its own; reading back what was set takes a `CGET`.
   | CSET Reg Reg P.Int Reg
+  -- | A by-need cell, `Suspended` over the closure the second register holds,
+  -- | its initializer a function of no parameter: a member of a local recursive
+  -- | group that is no function value.
+  | NEED Reg Reg
+  -- | The value the cell in the second register holds. A `Ready` cell gives its
+  -- | value; a `Suspended` one is marked `Evaluating`, its initializer entered,
+  -- | and what that returns makes the cell `Ready` and arrives in the
+  -- | destination as a call's value does. Forcing a cell that is `Evaluating` is
+  -- | an initialization fault.
+  | FORCE Reg Reg
 
 -- | What ends a `Node`. A `Node` held inline is what keeps a decision tree a
 -- | tree; a `JoinName` is what a shared branch is reached by.

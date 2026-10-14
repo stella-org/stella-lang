@@ -40,6 +40,7 @@ import Stella.Backend.JavaScript (JsError(..), Options, fileName, generate)
 import Stella.Compiler.ForeignManifest as ForeignManifest
 import Stella.Compiler.Bytecode (Dmo, EncodeError(..), FuncIx(..), GlobalInit(..), Instr(..), decode, encode)
 import Stella.Compiler.Bytecode as B
+import Stella.Compiler.MiddleEnd.Rep (Rep(..))
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), TyName(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -47,6 +48,7 @@ import Test.Spec.Assertions (fail, shouldEqual)
 -- Reading the fixtures -------------------------------------------------------------------
 
 foreign import fixturesRoot :: P.String
+foreign import readyForcedByRunLoop :: P.String
 foreign import caseNames :: P.String -> Effect (P.Array P.String)
 foreign import readText :: P.String -> Effect P.String
 foreign import exists :: P.String -> Effect P.Boolean
@@ -449,6 +451,54 @@ spec = describe "the JavaScript backend" do
     it "refuses, as a bug, each structural operation handed what its precondition excludes" do
       map _.name (Array.filter (not <<< _.refused) runtimeRefusals) `shouldEqual` []
 
+  describe "a by-need cell" do
+    let
+      fn nparams nregs ncaptures code result =
+        { nparams, regs: Array.replicate nregs RepVal, captures: Array.replicate ncaptures RepVal, joins: [], body: { code, tail: B.RET (B.Reg result) } }
+      -- an initializer building a record, and a run forcing its cell twice
+      forcedTwice base =
+        [ fn 0 1 0 [ RNEW (B.Reg 0) ] 0
+        , fn 0 4 0 [ CLOS (B.Reg 0) (FuncIx base) [], NEED (B.Reg 1) (B.Reg 0), FORCE (B.Reg 2) (B.Reg 1), FORCE (B.Reg 3) (B.Reg 1) ] 3
+        ]
+      -- an initializer forcing the cell it fills, its one capture
+      selfForced base =
+        [ fn 0 2 1 [ CAPT (B.Reg 0) 0, FORCE (B.Reg 1) (B.Reg 0) ] 1
+        , fn 0 3 0 [ CLOSN (B.Reg 0) (FuncIx base) 1, NEED (B.Reg 1) (B.Reg 0), SETCAP (B.Reg 0) 0 (B.Reg 1), FORCE (B.Reg 2) (B.Reg 1) ] 2
+        ]
+      noCell _ = [ fn 0 2 0 [ RNEW (B.Reg 0), FORCE (B.Reg 1) (B.Reg 0) ] 1 ]
+      programsRunning added = do
+        programs <- fixtureModules "programs"
+        pure case programs of
+          Right [ int, lib, main ] -> generated [ int, lib, runningAppended "summed" added main ]
+          Right _ -> Left "not three modules"
+          Left err -> Left err
+
+    it "gives what its initializer returns, a later force reading the cell filled" do
+      programsRunning forcedTwice >>= case _ of
+        Left err -> fail err
+        Right files -> do
+          namespace <- fromEffectFnAff (importGeneratedImpl files "Main.js")
+          jsShape namespace "summed" `shouldEqual` SRec []
+
+    it "is an initialization fault where it is forced while its own initializer runs" do
+      programsRunning selfForced >>= case _ of
+        Left err -> fail err
+        Right files -> do
+          ended <- fromEffectFnAff (importFailureImpl files "Main.js")
+          { fault: ended.fault, global: ended.global, named: String.contains (String.Pattern "by-need cell") ended.message }
+            `shouldEqual` { fault: true, global: "Main.summed", named: true }
+
+    it "is read by the run loop where a segment leaves a force of a ready cell to it" do
+      readyForcedByRunLoop `shouldEqual` "7"
+
+    it "refuses, as a bug, a force of a value that is no by-need cell" do
+      programsRunning noCell >>= case _ of
+        Left err -> fail err
+        Right files -> do
+          ended <- fromEffectFnAff (importFailureImpl files "Main.js")
+          { fault: ended.fault, named: String.contains (String.Pattern "no by-need cell") ended.message }
+            `shouldEqual` { fault: false, named: true }
+
   describe "what the encoder refuses" do
     it "refuses a module whose name the encoder would not write, as the encoder does" do
       programs <- fixtureModules "programs"
@@ -584,6 +634,20 @@ loaderRefusals =
         _ -> false
     }
   ]
+
+-- | The module with the functions given appended, and the named global installed
+-- | as a run of the last of them. They name one another from the first, whose
+-- | index is handed to them.
+runningAppended :: P.String -> (P.Int -> P.Array B.Function) -> Dmo -> Dmo
+runningAppended name functions dmo =
+  let
+    base = Array.length dmo.functions
+    added = functions base
+  in
+    dmo
+      { functions = dmo.functions <> added
+      , globals = map (\g -> if g.name == inMain name then g { init = GRun (FuncIx (base + Array.length added - 1)) } else g) dmo.globals
+      }
 
 -- | The module with the named global installed over the first function `which`
 -- | admits, as `how` installs one.

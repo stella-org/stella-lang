@@ -207,6 +207,9 @@ inspect given names value = case go limits.maxDepth limits.maxNodes value of
         VCont _ -> paying nodes \_ -> leaf SContinuation nodes
         VIO _ -> paying nodes \_ -> leaf SIO nodes
         VOpaque _ -> paying nodes \_ -> leaf SOpaque nodes
+        -- a by-need cell is held by a capture slot or by a register a `FORCE`
+        -- reads, and by no value a snapshot reaches
+        VCell _ -> marker nodes
 
         VData ctor fields -> case Map.lookup ctor names.ctors of
           Nothing -> marker nodes

@@ -34,6 +34,7 @@ module Steam.Value
   , arityOfIO
   , ioEntries
   , Closure
+  , CellState(..)
   , Callee(..)
   , Pap
   , Continuation(..)
@@ -227,6 +228,10 @@ data Value
   -- | it apart.
   | VIO IOValue
   | VOpaque Opaque
+  -- | A by-need cell: a member of a local recursive group that is no function
+  -- | value. **It is filled once**, by the force its group's sequence performs,
+  -- | and read through after.
+  | VCell (Ref CellState)
 
 -- | What an `IO` value holds, which is what the runtime ABI builds: `Base.IO.pure`
 -- | and `Base.IO.bind` construct the first two and a target entry the third.
@@ -254,6 +259,13 @@ type Closure =
   { func :: FuncRef
   , captures :: Ref (Map P.Int Value)
   }
+
+-- | Where a by-need cell stands: its initializer not yet entered, entered and
+-- | not yet returned, or what it returned.
+data CellState
+  = Suspended Value
+  | Evaluating
+  | Ready Value
 
 -- | What a partial application is waiting to apply. A constructor and a foreign
 -- | are callable only through one, and an operation likewise: each takes a fixed
@@ -349,6 +361,10 @@ data StackEntry
   -- | ([Eval](Eval.purs)). Like a root boundary it is no handler, and a value
   -- | reaching it passes down unchanged and is what the run produces.
   | ClosedBoundary
+  -- | The initializer of a by-need cell running above it. The value reaching it
+  -- | makes the cell `Ready`, and passes down unchanged to the `Resume` of the
+  -- | `FORCE` below.
+  | Fill (Ref CellState)
 
 -- | The key a root boundary answers, and the one operation of it.
 type Root =
