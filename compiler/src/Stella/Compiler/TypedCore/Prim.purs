@@ -21,6 +21,7 @@ module Stella.Compiler.TypedCore.Prim
   , fn
   , pureFn
   , asFunction
+  , foreignArity
   , litType
   , primSignature
   ) where
@@ -33,7 +34,7 @@ import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), TyName(..))
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..), emptySignature)
 import Stella.Compiler.TypedCore.Term (Literal(..))
-import Stella.Compiler.TypedCore.Type (Type(..))
+import Stella.Compiler.TypedCore.Type (Type(..), TypeScheme)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
@@ -99,6 +100,20 @@ asFunction = case _ of
   TApp (TApp (TApp (TCon name []) argument) row) result
     | name == functionTy -> Just { argument, row, result }
   _ -> Nothing
+
+-- | The number of arrows on a declared type's spine, which is what a `foreign`
+-- | takes. Arity is a static property of the declaration: substitution can
+-- | introduce arrows the declaration never called for, and those are not
+-- | argument positions.
+foreignArity :: TypeScheme -> P.Int
+foreignArity scheme = walk scheme.body
+  where
+  walk ty = case ty of
+    TForall _ _ body -> walk body
+    TConstrained _ body -> walk body
+    _ -> case asFunction ty of
+      Just parts -> 1 + walk parts.result
+      Nothing -> 0
 
 -- | The type of a literal. A literal produces no effect, so it is typeable
 -- | under any ambient row.

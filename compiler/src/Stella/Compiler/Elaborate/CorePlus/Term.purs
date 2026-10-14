@@ -35,6 +35,7 @@ module Stella.Compiler.Elaborate.CorePlus.Term
   , xExprAnnotation
   , fromCoreExpr
   , toCoreExpr
+  , toInitializationExpr
   , freeVarsOf
   , metasOfTerm
   , typesOfTerm
@@ -58,7 +59,7 @@ import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
 import Data.Foldable (foldMap)
 import Data.Generic.Rep (class Generic)
-import Data.Maybe (Maybe)
+import Data.Maybe (Maybe(..))
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
@@ -211,6 +212,9 @@ data Residue a
   | ResidualFit a FitId
   -- | A recursive reference no generalization made ordinary, the host's defect.
   | ResidualRecursiveRef a RecRefId
+  -- | An η-expansion that is no λ applying what it expands to its parameter,
+  -- | which no elaboration builds: the host's defect.
+  | ResidualEta a
 
 -- | The variables a term mentions free, one set per class.
 -- |
@@ -350,8 +354,36 @@ fromCoreExpr = case _ of
 -- | zonks first, so a metavariable that is solved but not substituted is a
 -- | residue like any other.
 toCoreExpr :: forall a. XExpr a -> Either (NonEmptyArray (Residue a)) (Expr a)
-toCoreExpr e = case convExpr e of
+toCoreExpr e = case convExpr AsBuilt e of
   Conv result -> result
+
+-- | A term with nothing unresolved, as Core, **an η-expansion elaboration made
+-- | taken as the expression it expands**, whatever became of the expansion:
+-- | what the initialization of a recursive group is judged on, the expansion
+-- | making no read the source makes later ([Elaboration](../../../../../docs/technical-references/02-Surface-Language/01-Elaboration.md)).
+-- | Its types are those of the expression, which the judgement does not read.
+toInitializationExpr :: forall a. XExpr a -> Either (NonEmptyArray (Residue a)) (Expr a)
+toInitializationExpr e = case convExpr AsWritten e of
+  Conv result -> result
+
+-- | How an η-expansion is made Core: as it was built, contracted where its
+-- | contraction was decided, or as the expression it expands.
+data EtaView = AsBuilt | AsWritten
+
+-- | What an η-expansion `λx. f x` applies to its parameter, through the fits
+-- | and the widenings elaboration put around the application and the
+-- | parameter; nothing where it is no such λ.
+expanded :: forall a. XExpr a -> Maybe (XExpr a)
+expanded term = case through term of
+  ELam _ x _ inner -> case through inner of
+    EApp _ f argument | EVar _ x' <- through argument, x == x' -> Just f
+    _ -> Nothing
+  _ -> Nothing
+  where
+  through = case _ of
+    EFit _ _ e -> through e
+    EOpenEff _ _ e -> through e
+    other -> other
 
 -- | A conversion that keeps every residue it meets, as an applicative: where
 -- | both sides met some, the residues are concatenated left to right, and a
@@ -374,70 +406,74 @@ instance Applicative (Conv r) where
 residue :: forall r b. r -> Conv r b
 residue r = Conv (Left (NonEmptyArray.singleton r))
 
-convExpr :: forall a. XExpr a -> Conv (Residue a) (Expr a)
-convExpr = case _ of
+convExpr :: forall a. EtaView -> XExpr a -> Conv (Residue a) (Expr a)
+convExpr view = case _ of
   EVar a x -> pure (Var a x)
   EGlobal a name kinds -> Global a name <$> traverse (convKind a) kinds
   ELit a literal -> pure (Lit a literal)
-  ELam a x ty body -> Lam a x <$> convType a ty <*> convExpr body
-  EApp a f x -> App a <$> convExpr f <*> convExpr x
-  ETyLam a name kind body -> TyLam a name <$> convKind a kind <*> convExpr body
-  ETyApp a e ty -> (\t e' -> TyApp a e' t) <$> convType a ty <*> convExpr e
-  EConstraintLam a c body -> ConstraintLam a <$> convConstraint a c <*> convExpr body
-  EConstraintApp a e -> ConstraintApp a <$> convExpr e
-  ELet a x ty value body -> Let a x <$> convType a ty <*> convExpr value <*> convExpr body
-  ELetRec a bindings body -> LetRec a <$> traverse (convBinding a) bindings <*> convExpr body
-  ECase a scrutinees dt -> Case a <$> traverse convExpr scrutinees <*> convTree a dt
+  ELam a x ty body -> Lam a x <$> convType a ty <*> convExpr view body
+  EApp a f x -> App a <$> convExpr view f <*> convExpr view x
+  ETyLam a name kind body -> TyLam a name <$> convKind a kind <*> convExpr view body
+  ETyApp a e ty -> (\t e' -> TyApp a e' t) <$> convType a ty <*> convExpr view e
+  EConstraintLam a c body -> ConstraintLam a <$> convConstraint a c <*> convExpr view body
+  EConstraintApp a e -> ConstraintApp a <$> convExpr view e
+  ELet a x ty value body -> Let a x <$> convType a ty <*> convExpr view value <*> convExpr view body
+  ELetRec a bindings body -> LetRec a <$> traverse (convBinding view a) bindings <*> convExpr view body
+  ECase a scrutinees dt -> Case a <$> traverse (convExpr view) scrutinees <*> convTree view a dt
   ELetJoin a j params result value body ->
-    LetJoin a j <$> traverse (convParam a) params <*> convType a result <*> convExpr value <*> convExpr body
-  EJump a j args -> Jump a j <$> traverse convExpr args
+    LetJoin a j <$> traverse (convParam a) params <*> convType a result <*> convExpr view value <*> convExpr view body
+  EJump a j args -> Jump a j <$> traverse (convExpr view) args
   ERecordEmpty a -> pure (RecordEmpty a)
-  ERecordExtend a key value rest -> RecordExtend a key <$> convExpr value <*> convExpr rest
-  ERecordSelect a key e -> RecordSelect a key <$> convExpr e
-  ERecordRestrict a key e -> RecordRestrict a key <$> convExpr e
-  ERecordUpdate a key rec value -> RecordUpdate a key <$> convExpr rec <*> convExpr value
-  ERecordMerge a left right -> RecordMerge a <$> convExpr left <*> convExpr right
-  EVariantInject a key value -> VariantInject a key <$> convExpr value
-  EVariantWeaken a key ty e -> VariantWeaken a key <$> convType a ty <*> convExpr e
-  EVariantAbsurd a ty e -> VariantAbsurd a <$> convType a ty <*> convExpr e
-  EPerform a key op tyArgs arg -> Perform a key op <$> traverse (convType a) tyArgs <*> convExpr arg
-  EHandle a body handler -> convHandle a body handler
+  ERecordExtend a key value rest -> RecordExtend a key <$> convExpr view value <*> convExpr view rest
+  ERecordSelect a key e -> RecordSelect a key <$> convExpr view e
+  ERecordRestrict a key e -> RecordRestrict a key <$> convExpr view e
+  ERecordUpdate a key rec value -> RecordUpdate a key <$> convExpr view rec <*> convExpr view value
+  ERecordMerge a left right -> RecordMerge a <$> convExpr view left <*> convExpr view right
+  EVariantInject a key value -> VariantInject a key <$> convExpr view value
+  EVariantWeaken a key ty e -> VariantWeaken a key <$> convType a ty <*> convExpr view e
+  EVariantAbsurd a ty e -> VariantAbsurd a <$> convType a ty <*> convExpr view e
+  EPerform a key op tyArgs arg -> Perform a key op <$> traverse (convType a) tyArgs <*> convExpr view arg
+  EHandle a body handler -> convHandle view a body handler
   ERegion a name cells initial body ->
     Region a name
       <$> traverse (\c -> { key: c.key, ty: _ } <$> convType a c.ty) cells
-      <*> traverse convExpr initial
-      <*> convExpr body
+      <*> traverse (convExpr view) initial
+      <*> convExpr view body
   EReadCell a name key -> pure (ReadCell a name key)
-  EWriteCell a name key value -> WriteCell a name key <$> convExpr value
-  EOpenEff a row e -> OpenEff a <$> convType a row <*> convExpr e
-  EFit a f e -> convExpr e *> residue (ResidualFit a f)
+  EWriteCell a name key value -> WriteCell a name key <$> convExpr view value
+  EOpenEff a row e -> OpenEff a <$> convType a row <*> convExpr view e
+  EFit a f e -> convExpr view e *> residue (ResidualFit a f)
   ERecursiveRef a id -> residue (ResidualRecursiveRef a id)
-  EEta _ contractible lambda -> case lambda of
-    ELam _ x _ (EApp _ f (EVar _ x')) | contractible && x == x' && isValueForm (const true) f -> convExpr f
-    _ -> convExpr lambda
+  EEta a contractible lambda -> case view of
+    AsBuilt -> case lambda of
+      ELam _ x _ (EApp _ f (EVar _ x')) | contractible && x == x' && isValueForm (const true) f -> convExpr view f
+      _ -> convExpr view lambda
+    AsWritten -> case expanded lambda of
+      Just f -> convExpr view f
+      Nothing -> residue (ResidualEta a)
   ETermMeta a m -> residue (ResidualTermMeta a m)
   EHole a ty -> convType a ty *> residue (ResidualHole a ty)
 
 convParam :: forall a. a -> XParam -> Conv (Residue a) { name :: Ident, ty :: Type }
 convParam at p = { name: p.name, ty: _ } <$> convType at p.ty
 
-convBinding :: forall a. a -> XBinding a -> Conv (Residue a) { name :: Ident, ty :: Type, value :: Expr a }
-convBinding at b = { name: b.name, ty: _, value: _ } <$> convType at b.ty <*> convExpr b.value
+convBinding :: forall a. EtaView -> a -> XBinding a -> Conv (Residue a) { name :: Ident, ty :: Type, value :: Expr a }
+convBinding view at b = { name: b.name, ty: _, value: _ } <$> convType at b.ty <*> convExpr view b.value
 
 -- | The element is the node's own type, so it comes before the handled
 -- | computation; the clauses are subterms of the handler and come after it.
-convHandle :: forall a. a -> XExpr a -> XHandler a -> Conv (Residue a) (Expr a)
-convHandle at handled h =
+convHandle :: forall a. EtaView -> a -> XExpr a -> XHandler a -> Conv (Residue a) (Expr a)
+convHandle view at handled h =
   ( \element computation ret opClauses ->
       Handle at computation { element, returnClause: ret, opClauses }
   )
     <$> convEntry at h.element
-    <*> convExpr handled
+    <*> convExpr view handled
     <*> returnClause h.returnClause
     <*> traverse clause h.opClauses
   where
 
-  returnClause r = { binder: r.binder, ty: _, body: _ } <$> convType at r.ty <*> convExpr r.body
+  returnClause r = { binder: r.binder, ty: _, body: _ } <$> convType at r.ty <*> convExpr view r.body
 
   clause = case _ of
     XFullClause c ->
@@ -445,26 +481,26 @@ convHandle at handled h =
         <$> traverse tyBinder c.tyBinders
         <*> convParam at c.argBinder
         <*> convParam at c.contBinder
-        <*> convExpr c.body
+        <*> convExpr view c.body
     XFastClause c ->
       (\tyBinders argBinder body -> FastClause { op: c.op, tyBinders, argBinder, body })
         <$> traverse tyBinder c.tyBinders
         <*> convParam at c.argBinder
-        <*> convExpr c.body
+        <*> convExpr view c.body
 
   tyBinder b = { name: b.name, kind: _ } <$> convKind at b.kind
 
-convTree :: forall a. a -> XDecisionTree a -> Conv (Residue a) (DecisionTree a)
-convTree at = case _ of
-  XLeaf e -> Leaf <$> convExpr e
-  XBind x o dt -> Bind x o <$> convTree at dt
+convTree :: forall a. EtaView -> a -> XDecisionTree a -> Conv (Residue a) (DecisionTree a)
+convTree view at = case _ of
+  XLeaf e -> Leaf <$> convExpr view e
+  XBind x o dt -> Bind x o <$> convTree view at dt
   XSwitchCtor o branches d ->
-    SwitchCtor o <$> traverse (\b -> { ctor: b.ctor, tree: _ } <$> convTree at b.tree) branches <*> traverse (convTree at) d
+    SwitchCtor o <$> traverse (\b -> { ctor: b.ctor, tree: _ } <$> convTree view at b.tree) branches <*> traverse (convTree view at) d
   XSwitchLit o branches d ->
-    SwitchLit o <$> traverse (\b -> { lit: b.lit, tree: _ } <$> convTree at b.tree) branches <*> convTree at d
+    SwitchLit o <$> traverse (\b -> { lit: b.lit, tree: _ } <$> convTree view at b.tree) branches <*> convTree view at d
   XSwitchKey o branches d ->
-    SwitchKey o <$> traverse (\b -> { key: b.key, tree: _ } <$> convTree at b.tree) branches <*> traverse (convTree at) d
-  XGuard e yes no -> Guard <$> convExpr e <*> convTree at yes <*> convTree at no
+    SwitchKey o <$> traverse (\b -> { key: b.key, tree: _ } <$> convTree view at b.tree) branches <*> traverse (convTree view at) d
+  XGuard e yes no -> Guard <$> convExpr view e <*> convTree view at yes <*> convTree view at no
 
 convType :: forall a. a -> XType -> Conv (Residue a) Type
 convType at = case _ of

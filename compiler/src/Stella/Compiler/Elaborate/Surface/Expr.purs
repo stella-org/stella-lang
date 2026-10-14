@@ -56,7 +56,6 @@ module Stella.Compiler.Elaborate.Surface.Expr
   , checkDefinition
   , Parameter(..)
   , expandable
-  , immediateReferences
   , references
   , asArrow
   ) where
@@ -360,25 +359,6 @@ delayable = case _ of
     ExprConstructor _ _ -> true
     ExprApp _ f x -> constructorSpine f && delayable x
     _ -> false
-
--- | The globals the evaluation of an expression refers to before it enters
--- | any λ, among the forms this version elaborates: what a definition with no
--- | parameter needs initialized when it is, whether or not it is η-expanded.
-immediateReferences :: Expr -> Set (Qualified Ident)
-immediateReferences = case _ of
-  ExprValue _ name -> Set.singleton name
-  ExprComputation _ name -> Set.singleton name
-  ExprApp _ f x -> Set.union (immediateReferences f) (immediateReferences x)
-  ExprTyped _ inner _ -> immediateReferences inner
-  -- a binding with no parameter is evaluated where its block stands, and a
-  -- function's body only once it is applied
-  ExprLet _ bindings body -> foldMap evaluated bindings <> immediateReferences body
-  _ -> Set.empty
-  where
-  evaluated = case _ of
-    LetValue b | Array.null b.params -> immediateReferences b.body
-    LetValue _ -> Set.empty
-    LetPattern b -> immediateReferences b.body
 
 -- | The top-level values and computations an expression refers to anywhere in
 -- | it, read off every form, whether or not this version elaborates it. A

@@ -485,8 +485,8 @@ long as it picks one and uses it on both sides.
 A lambda nested inside a run's body lifts in turn, an inner one's free variables
 becoming captures of the outer as well where it needs them.
 
-`LetRec` produces a group of closures. Each right-hand side is guarded and so is
-syntactically a function value (D14), which is what allows every closure of the
+`LetRec` produces a group of closures. Each right-hand side is a function value,
+as a local `letrec` binds alone (D14), which is what allows every closure of the
 group to be allocated before any capture list is filled.
 
 ## Declarations and module initialization
@@ -507,8 +507,9 @@ evaluate. Anything else becomes a function of no parameters that initialization
 evaluates once, in declaration order
 ([Semantics](../03-Typed-Core/06-Semantics.md)).
 
-A `rec` group's members are function values already (D14), so each is a `func`.
-A `nonrec` is one or the other according to what it holds.
+A `rec` group's member is one or the other as a `nonrec` is, according to what
+it holds: a member that is no function is a `run`, evaluated at its place in
+the order the group is written ([Initialization Safety](../03-Typed-Core/10-Initialization.md)).
 
 **This is the same test the definitional arity is read by**, and the two have to
 agree: a `nonrec` holding a lambda has a definitional arity, so a call to it is

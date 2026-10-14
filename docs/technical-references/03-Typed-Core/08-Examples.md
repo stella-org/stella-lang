@@ -53,11 +53,32 @@ Points to observe.
 
 - **No type class appears.** The addition is a direct call to `Base.Int.add : Int -> Int -> Int`, which is why the surface writes it out and imports `Base.Int` to reach it. `+` becomes available once `Prelude` provides a `Semiring` class and an operator alias for its method; this position then holds `select add` applied to a dictionary, and the shape of Core is unchanged.
 - Every effect row is `()`. Since `switchCtor` exhausts the constructors there is no `fail`, and no `Partial` effect.
-- The right-hand side of the `rec` group is a `λ`, satisfying guardedness.
+- The right-hand side of the `rec` group is a `λ`, which reads nothing as it is initialized, so the group is initialization-safe ([Initialization Safety](10-Initialization.md)).
 - Type abstraction and application appear in `Main.Cons [Int]`. CoreFn has no counterpart.
 - The decision tree makes the order explicit: dispatch on the tag, bind the fields, then the body. CoreFn's `Case` does not carry that order.
 - Kind schemes are empty everywhere, so no `[[κ̄]]` appears.
 - **`Main.result` is not an entry point.** A module is executable only when it provides `main : IO Unit`. This slice has no effects, so its top-level value is an ordinary pure value that a test harness evaluates.
+
+## A recursive record
+
+A record of closures referring to itself, the shape a dictionary takes:
+
+```text
+rec {
+  Main.dict : Record ( twice : Int -> Int, once : Int -> Int )
+    = extend twice (λ (n : Int). (select once Main.dict) ((select once Main.dict) n))
+        (extend once (λ (n : Int). Base.Int.add n 1) {})
+}
+
+nonrec Main.twice : Int
+  = (select twice Main.dict) 5
+```
+
+Points to observe.
+
+- **`Main.dict` is no `FunVal`**, and the group is admitted all the same: it reads `Main.dict` only under its λs, which nothing applies while the group is initialized ([Initialization Safety](10-Initialization.md)).
+- It is installed as a `run`, evaluated at its place in the order written, and `Main.twice` is 7 ([Translation](../04-MiddleEnd/02-Translation.md)).
+- `rec { Main.xs = Main.Cons [Int] 1 Main.xs }` is refused: the constructor's field reads `Main.xs` as it is built.
 
 ## Rows
 

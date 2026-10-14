@@ -31,7 +31,8 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore.Check (CheckError, Typed, check, envOf, isFunVal)
+import Stella.Compiler.TypedCore.Check (CheckError, Typed, check, envOf)
+import Stella.Compiler.TypedCore.Initialization (topLevelViolations)
 import Stella.Compiler.TypedCore.Context (Context, bindKindVars, bindTyVar, emptyContext)
 import Stella.Compiler.TypedCore.Decl (CtorDecl, DataDecl, Decl(..), EffectDecl, Export(..), Module, OpDecl, ValueBinding)
 import Stella.Compiler.TypedCore.Kind (Kind(..))
@@ -86,9 +87,10 @@ data DeclError
   -- | declaration, naming what it refers to.
   | ForwardReference (Qualified Ident)
   | MissingExport Export
-  -- | The right-hand side of a recursive declaration that is not a function
-  -- | value (D14).
-  | RecursiveNotFunctionValue (Qualified Ident)
+  -- | A right-hand side of a recursive group reading, while the group is
+  -- | initialized, a member not written before it: the member whose right-hand
+  -- | side it is, and the member read.
+  | ReadBeforeInitialized (Qualified Ident) (Qualified Ident)
   | IllTyped CheckError
   -- | A malformed type constructor entry, which no declaration produces.
   | TyConEntryError (Qualified TyName) KindError
@@ -387,7 +389,7 @@ addValue' m sigTy acc = case _ of
   -- checked, which is what lets its members carry different kind schemes.
   DeclRec at bindings -> do
     registered <- foldM (flip (addBinding at m.name sigTy)) acc.signature bindings
-    traverse_ (guarded at m.name) bindings
+    initialized registered m.name bindings
     checked <- traverse (checkedBinding registered) bindings
     pure { signature: registered, values: acc.values <> [ { recursive: true, bindings: checked } ] }
 
@@ -418,10 +420,18 @@ checkBody sig binding =
   where
   ctx = bindKindVars emptyContext binding.scheme.kindVars
 
-guarded :: forall a. a -> ModuleName -> ValueBinding a -> Either (DeclFailure a) Unit
-guarded at moduleName binding =
-  when (not (isFunVal binding.value))
-    (Left { at, error: RecursiveNotFunctionValue (Qualified moduleName binding.name) })
+-- | A recursive group initialized in the order written, each right-hand side
+-- | reading only the members written before it; the first that does not is
+-- | refused where the reference stands.
+initialized :: forall a. Signature -> ModuleName -> P.Array (ValueBinding a) -> Either (DeclFailure a) Unit
+initialized sig moduleName bindings =
+  case Array.head (topLevelViolations sig (map (\b -> { name: named b, value: b.value }) bindings)) of
+    Just v
+      | Just reader <- Array.index bindings v.initializer
+      , Just read <- Array.index bindings v.read -> Left { at: v.at, error: ReadBeforeInitialized (named reader) (named read) }
+    _ -> Right unit
+  where
+  named b = Qualified moduleName b.name
 
 -- | `Ctor : forall k̄. forall (ā : κ̄). τ1 -> … -> τn -> T [[k̄]] ā`, with pure
 -- | arrows throughout.

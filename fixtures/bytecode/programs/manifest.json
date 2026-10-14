@@ -27,6 +27,8 @@
     {"global": "Main.boxMatched", "value": {"int": 9}},
     {"global": "Main.addPartial", "value": {"int": 42}},
     {"global": "Main.addCalled", "value": {"int": 3}},
-    {"global": "Main.overAppliedU", "value": {"int": -7}}
+    {"global": "Main.overAppliedU", "value": {"int": -7}},
+    {"global": "Main.dictTwice", "value": {"int": 7}},
+    {"global": "Main.mutualPair", "value": {"int": 33}}
   ]
 }

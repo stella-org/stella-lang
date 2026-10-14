@@ -87,6 +87,7 @@ import Test.Stella.Compiler.Elaborate.Unify as Unify
 import Test.Stella.Compiler.TypedCore.RowProperties as RowProperties
 import Test.Stella.Compiler.TypedCore.EffectSlice as EffectSlice
 import Test.Stella.Compiler.TypedCore.HandlerSlice as HandlerSlice
+import Test.Stella.Compiler.TypedCore.Initialization as TypedCoreInitialization
 import Test.Stella.Compiler.TypedCore.Reference as TypedCoreReference
 import Test.Stella.Compiler.TypedCore.VerticalSlice as VerticalSlice
 import Test.Spec.Reporter (consoleReporter)
@@ -145,6 +146,7 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   InterfaceFile.spec
   InterfaceAssemble.spec
   VerticalSlice.spec
+  TypedCoreInitialization.spec
   TypedCoreReference.spec
   EffectSlice.spec
   HandlerSlice.spec

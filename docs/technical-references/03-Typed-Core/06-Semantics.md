@@ -67,7 +67,7 @@ A number of forms carry no run-time content and are removed before evaluation on
 
 ## Recursive bindings
 
-`letrec { x̄ = v̄ }` allocates an uninitialized location for each `x_i`, evaluates each `v_i`, and writes the result back. Guardedness (D14) makes each `v_i` a function value whose evaluation does not read any `x_j`, so an uninitialized reference cannot occur.
+`letrec { x̄ = v̄ }` allocates an uninitialized location for each `x_i`, evaluates each `v_i`, and writes the result back. A local `letrec` binds function values alone (D14): evaluating each `v_i` reads no `x_j`, so an uninitialized reference cannot occur.
 
 ## Handlers and continuations
 
@@ -183,14 +183,18 @@ The order mirrors the three stages of declaration checking ([Modules](../06-Modu
                           if c = v:        G_{i+1} = G_i, M.x : σκ = v
                           if c = fault φ:  initialization fails with φ
 
-    rec { x̄ : σ̄ = v̄ }     G_{i+1} = G_i, M.x_1 : σκ_1 = v_1, …, M.x_n : σκ_n = v_n
+    rec { x̄ : σ̄ = ē }     for j = 1 … n, in the order written:
+                          G_i, M.x_1 : σκ_1 = v_1, …, M.x_{j-1} : σκ_{j-1} = v_{j-1} ⊢ e_j →* c
+                          if c = v_j:      M.x_j : σκ_j = v_j is installed
+                          if c = fault φ:  initialization fails with φ
+                          G_{i+1} = G_i, M.x_1 : σκ_1 = v_1, …, M.x_n : σκ_n = v_n
 ```
 
 `G_Prim` mirrors `Σ_Prim` on the value side ([Prim and Base](../06-Modules/02-Prim-and-Base.md)). `Prim` is not among the imports — a header's `import Prim` selects names and adds none — so without it a `Prim.Unit` occurring in the module would have nothing to unfold to, and condition (1) of `Σ ⊨ G` would fail. The implementations the runtime ABI is obliged to supply arrive with the imports, since the module that declares them is imported like any other.
 
-A `rec` group installs **every entry at once, with the right-hand sides themselves**. Guardedness makes each `v_i` a value already, so nothing is evaluated, and a recursive reference inside `v_i` is `M.x_j [[κ̄]]`, an ordinary global name resolved by the lookup rule. No local recursive closure is involved, and each `v_i` keeps the kind binder `k̄_i` under which it was checked.
+A `rec` group installs **its members one by one, in the order written**, each right-hand side evaluated as a `nonrec`'s is, under the members installed before it; a function value evaluates to itself. A member written after it is not yet in `G`, and **initialization safety is what keeps every lookup during initialization off such a member** ([Initialization Safety](10-Initialization.md)): a right-hand side reads only members written before it, installed already, and one written after it only from inside a closure, which is applied after the group is installed. A recursive reference inside `e_j` is `M.x_k [[κ̄]]`, an ordinary global name resolved by the lookup rule. No local recursive closure is involved, and each member keeps the kind binder `k̄_j` under which it was checked.
 
-The fold over value declarations is well defined because they are in dependency order and cycles are confined to `rec` groups.
+The fold over value declarations is well defined because they are in dependency order, cycles are confined to `rec` groups, and a `rec` group is initialization-safe.
 
 Evaluating eagerly rather than on first reference is the choice consistent with strict evaluation, and it is observable: **a top-level declaration whose right-hand side diverges hangs initialization even if nothing refers to it.** Lazy global lookup would leave such a declaration harmless. Stella takes the strict reading.
 
@@ -467,7 +471,7 @@ The last is the only one a `δ_f` produces, and the only one that is a value rat
 
 `openEffC [ρ] e` widens the **ambient row of a computation**, where `openEff` widens the **effect row inside a function's type**. Both are needed and neither subsumes the other: `openEff` is what allows a pure function to be passed where a wider arrow type is expected, and `openEffC` is what allows the result of applying such a function to sit in a context whose ambient row is the wider one.
 
-`rec_i` carries the type annotations of the group it came from, which is what makes its typing rule derivable and hence what makes preservation hold for `letrec`. It is a **local** form only. A top-level `rec` group installs its right-hand sides into `G` directly, and its recursive references are global names.
+`rec_i` carries the type annotations of the group it came from, which is what makes its typing rule derivable and hence what makes preservation hold for `letrec`. It is a **local** form only. A top-level `rec` group installs its members into `G` in the order written, and its recursive references are global names.
 
 `region⟨ℓ⟩ θ in e` is a region whose initial values have been evaluated. **It binds nothing**: its rule is the source rule ([Typing Rules](05-Typing-Rules.md)) with `ℓ ∈ Γ_R` in place of the binder and `θ` in place of the initial values. It carries `θ` — **the cells themselves, by value** — together with the name the opening allocated, which is what makes its rule derivable and hence what makes preservation hold across a write (D36). The values live here and nowhere else: there is no store, no address, and no two ways to reach one cell of one frame.
 
@@ -687,7 +691,7 @@ The whole term is typed at ambient row `( E )`, and the rule for `let` requires 
   rec_i(x̄ : σ̄. v̄) [•]                →  (v_i[ x̄ := rec̄ ]) [•]
 ```
 
-Unfolding is confined to elimination position, so the rules do not overlap and no term steps to itself. Guardedness (D14) makes each `v_i` a function value, which is what allows initialization to install `rec_i` without evaluating anything; it does **not** claim that a recursive computation terminates, and Core makes no such claim anywhere.
+Unfolding is confined to elimination position, so the rules do not overlap and no term steps to itself. A local `letrec` binding function values alone (D14) makes each `v_i` a function value, which is what allows initialization to install `rec_i` without evaluating anything; it does **not** claim that a recursive computation terminates, and Core makes no such claim anywhere.
 
 An implementation allocates locations and back-patches rather than duplicating the binding group. The two agree because no `v_i` reads an `x_j` while it is itself being installed.
 

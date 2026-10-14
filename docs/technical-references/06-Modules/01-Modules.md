@@ -12,7 +12,7 @@ decl ::= data    T forall k̄. (ā : κ̄) = Ctor_1 τ̄1 | … | Ctor_n τ̄n  
        | effect  E (ā : κ̄) where op1 : σ1 ; …
        | foreign [#observ(none)] f : σκ
        | nonrec  x : σκ = e
-       | rec     { x1 : σκ1 = v1 ; … }
+       | rec     { x1 : σκ1 = e1 ; … }
        | attribute a τ̄ (ℓ1 : τ1 [= c1]) …
        | @[ attr ] decl
 
@@ -486,11 +486,11 @@ Declarations extend the signature, so the judgement makes `Σ` explicit.
 
   each i: σκ_i = forall k̄_i. σ_i
   Σ' = Σ, M.x_1 : σκ_1, …, M.x_n : σκ_n            ← register every scheme first
-  each i: v_i is a FunVal (D14)
-          ·, k̄_i ⊢ σ_i : Type
-          Σ' ; ·, k̄_i ; · ⊢ v_i : σ_i ! ()          ← each v_i under its own k̄_i
+  { x̄ = ē } is initialization-safe (D14)          ← each e_i reads only x_1 … x_{i-1}
+  each i: ·, k̄_i ⊢ σ_i : Type
+          Σ' ; ·, k̄_i ; · ⊢ e_i : σ_i ! ()          ← each e_i under its own k̄_i
   ──────────────────────────────────────────────────────────────────
-  Σ ⊢ rec { x_i : σκ_i = v_i }  ⊣  Σ'
+  Σ ⊢ rec { x_i : σκ_i = e_i }  ⊣  Σ'
 
   σκ = forall k̄. σ    ·, k̄ ⊢ σ : Type    every arrow of σ is pure (D23)
   ──────────────────────────────────────────────────────────────────
@@ -509,7 +509,7 @@ Declarations extend the signature, so the judgement makes `Σ` explicit.
 
 **An attribute declaration adds an entry to `Σ` and declares no value**: no term refers to one. Declaring it registers it and checks nothing, and neither does carrying one: both are checked once the whole module's signature is complete ([below](#the-module-rule)), so a declaration may carry an attribute declared after it, and a default or an argument may name a value declared after it.
 
-**The local context `Γ` cannot hold kind schemes**, so mutual recursion in a `rec` group cannot be supplied through `Γ`. Since Core's top-level names are fully qualified, every scheme is registered in `Σ` first and each `v_i` is then checked under its own `k̄_i`.
+**The local context `Γ` cannot hold kind schemes**, so mutual recursion in a `rec` group cannot be supplied through `Γ`. Since Core's top-level names are fully qualified, every scheme is registered in `Σ` first and each `e_i` is then checked under its own `k̄_i`.
 
 This lets mutually recursive declarations **carry different kind schemes**. A recursive reference is an ordinary global name reference `M.x_j [[κ̄]]`, and kind instantiation is handled by the existing rule.
 

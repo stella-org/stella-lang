@@ -295,5 +295,5 @@ spec = describe "Stella.Compiler.TypedCore.VerticalSlice" do
     it "refuses a nonrec referring to a value declared after it" do
       verdict withResultBeforeSum `shouldEqual` Left (ForwardReference sumName)
 
-    it "refuses a recursive right-hand side that is not a function value" do
-      verdict withUnguardedSum `shouldEqual` Left (RecursiveNotFunctionValue sumName)
+    it "refuses a recursive right-hand side reading itself while it is initialized" do
+      verdict withUnguardedSum `shouldEqual` Left (ReadBeforeInitialized sumName sumName)

@@ -462,14 +462,26 @@ spec = describe "TypedCore.Declare" do
           ]
       verdict m `shouldEqual` Right unit
 
-    it "refuses a recursive right-hand side that is not a function value" do
-      -- under strict evaluation such a binding has no meaning
+    it "admits a recursive right-hand side that is no function value and reads nothing too early" do
       let
         m = moduleOf
           [ DeclRec unit
               [ { name: Ident "f", scheme: monoScheme int, value: Lit unit (LitInt 1), attributes: [] } ]
           ]
-      verdict m `shouldEqual` Left (RecursiveNotFunctionValue (value "f"))
+      verdict m `shouldEqual` Right unit
+
+    it "refuses a recursive right-hand side reading itself, or a member written after it" do
+      let
+        self = moduleOf
+          [ DeclRec unit
+              [ { name: Ident "f", scheme: monoScheme int, value: globalRef "f", attributes: [] } ]
+          ]
+        group first second = moduleOf [ DeclRec unit [ first, second ] ]
+        f = { name: Ident "f", scheme: monoScheme (pureFn int int), value: globalRef "g", attributes: [] }
+        g = { name: Ident "g", scheme: monoScheme (pureFn int int), value: lam "n" int (App unit (globalRef "f") (Var unit (Ident "n"))), attributes: [] }
+      verdict self `shouldEqual` Left (ReadBeforeInitialized (value "f") (value "f"))
+      verdict (group f g) `shouldEqual` Left (ReadBeforeInitialized (value "f") (value "g"))
+      verdict (group g f) `shouldEqual` Right unit
 
     it "accepts a rec group whose members have different kind schemes" do
       -- every scheme is registered before any right-hand side is checked

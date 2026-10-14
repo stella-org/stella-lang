@@ -153,7 +153,7 @@ Reading the graph from the committed right-hand sides dissolves the question ins
 
 **A synthesizer adds edges and never nodes.** What it produces is a term for `?m` and not a declaration, so the catalog's domain is settled while the graph does not yet exist. That is what lets the environment a woken goal reads be immutable even though the order the module is emitted in is not yet known.
 
-**Stage 3 is what owes Core its condition**, that a `nonrec` refer to no later declaration and that every cycle sit in a `rec` group ([Modules](../06-Modules/01-Modules.md)). A cycle a generated reference closes is subject to it exactly as a written one is, and guardedness is what decides whether such a group is admissible (D14); two dictionaries referring to one another are the case recorded with the open questions ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
+**Stage 3 is what owes Core its condition**, that a `nonrec` refer to no later declaration and that every cycle sit in a `rec` group ([Modules](../06-Modules/01-Modules.md)). A cycle a generated reference closes is subject to it exactly as a written one is, and initialization safety is what decides whether such a group is admissible (D14): two dictionaries referring to one another at the top level are admitted where neither reads the other before it is initialized ([Initialization Safety](../03-Typed-Core/10-Initialization.md)).
 
 **Stage 3 runs only where elaboration reaches quiescence with everything solved.** Where a pending job remains, or one has failed, there is no committed term to scan and no order to compute, and what is reported is the diagnostic the scheduler's quiescence rule below gives.
 
@@ -1123,7 +1123,7 @@ Each is a case where a plausible implementation gives the wrong answer, and each
 | A goal created under one binding group and woken while a later one is being elaborated | `declsWithAttr` answers with what the first attempt saw. A catalog that grew with the fold would have a resolver's candidates, and so coherence, turn on the schedule |
 | A synthesizer inserting a reference to a declaration standing later in the text | The groups are ordered over the final graph, so that reference is backwards in the Core emitted. An order computed before elaboration leaves a `nonrec` referring forwards, which the Core type checker rejects |
 | A candidate that builds a dictionary reference and is then discarded | Contributes no edge. The graph is read off the committed right-hand sides, so a reference a rollback removed is in none of them; an edge recorded as elaboration went would survive, none of D40's list covering one |
-| A generated reference closing a cycle between two declarations | Treated as any other cycle: one `rec` group, admissible only under guardedness (D14) |
+| A generated reference closing a cycle between two declarations | Treated as any other cycle: one `rec` group, admissible only where it is initialization-safe (D14) |
 | A reference to an imported global | A sink, and no edge. Treating one as a node puts a module's imports into its own dependency order |
 | Quiescence, with a job woken and not yet postponed again | Its `awaiting` is empty and it names nothing. A set left standing from before the wake names a metavariable that is no longer why anything waits |
 | An assignment reaching a blocked goal | The goal is on the ready queue and has not run. Running it inside `assign` opens an attempt within an attempt |

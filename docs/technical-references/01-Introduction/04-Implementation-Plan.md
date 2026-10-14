@@ -264,6 +264,14 @@ The heading of each group names the step of the plan that the group belongs to.
 | A `nonrec` whose right-hand side refers to a `foreign` declared later in the text | Initializes. Constructors and foreign implementations enter the environment before any value declaration is evaluated |
 | A `nonrec` referring to a later `nonrec` | Rejected. Value declarations are in dependency order |
 | A top-level `rec` group whose members have different kind schemes | Accepted. Every scheme is registered before any right-hand side is checked |
+| A top-level `rec` group whose member is no function and reads the group only under a λ, `fibAnd = Tuple "fib" (λn. … snd fibAnd …)`, and two records of closures referring to each other | Accepted. A group is initialization-safe where each right-hand side reads only the members written before it |
+| `x = x`, `x = Tuple 1 x`, `xs = Cons 1 ys` beside `ys = Cons 2 xs`, and `x = (λ_. x) ()` in a `rec` group | Rejected where the first reference read too early stands. A constructor's field is read as it is built, and an application runs the closure it is given |
+| A member calling an earlier member function whose body reads a later member | Rejected. What a call runs is read where the call stands, through the callee's summary |
+| A closure stored in a field, taken out of an earlier member by a `select` and applied | Rejected where its read of a later member stands, and at the application. A selection passes on what the record may read later |
+| A `foreign` given a closure reading the group, at its arity and beyond it | Accepted; rejected at the application beyond the arity. A foreign may carry a function but not apply one |
+| A `letjoin` whose body reads a member, not jumped to; jumped to; and jumping to itself with a closure its body applies | Accepted; rejected; rejected through the application. A join point is read where it is jumped to |
+| `region … in x`, and a closure reading `x` applied inside the region | Both rejected, the first where `x` stands, the second also at the region. A handling expression and a region count everything they hold as read through them, and what a part reads as it stands is kept as it is |
+| A nested `letrec` whose member reads the outer group under a λ, one reading it at once, and one reading a later member of its own group | Accepted; rejected for the outer group; judged by its own group alone. Each group's maps hold its own members |
 | A `Σ` entry `T : forall k. k` | Rejected where the signature is built. Every use site instantiating it at `Type` would pass, so an occurrence check alone lets it in |
 | A `Σ` entry `T : k -> Type` with nothing binding `k`, or `T : Effect -> Type` | Rejected there too. The whole scheme is checked under the kind variables it binds, not only its result |
 | One entry reaching a name through two import paths | Accepted. A name belongs to the module that declares it, so the two are one entry |
@@ -328,7 +336,9 @@ The heading of each group names the step of the plan that the group belongs to.
 | A `Case` in argument position | A join point binding the continuation, not the continuation duplicated into each branch. A `Handle` needs none of this, being a computation |
 | A `Bind` of an occurrence already materialized | An alias in the translator's environment; no instruction is emitted |
 | A handler clause body | A function with an explicit capture list. No join point of the enclosing scope is in scope in it, nor in the body of the `handle` |
-| A member of a top-level `rec` group | A closure over an **empty** capture list. Its recursive references are global names, so nothing is evaluated to install it |
+| A function member of a top-level `rec` group | A closure over an **empty** capture list. Its recursive references are global names, so nothing is evaluated to install it |
+| A member of a top-level `rec` group that is no function | A `run`, evaluated at its place in the order the group is written. Initialization safety keeps every `LOADG` it performs off a member installed after it |
+| A member of a top-level `rec` group nothing refers to, its initializer faulting | Initialization fails as that member is initialized. A group is initialized where it stands, every member of it |
 | A `nonrec` whose right-hand side diverges, referred to by nothing | Initialization hangs. Evaluation is eager and in declaration order |
 | A binding whose Core type is a type variable | `Rep Val`. Sound wherever a type is not to hand, and the cost is precision |
 | `f (perform A.x Prim.Unit) (perform B.y Prim.Unit)` | `B.y` is performed first. An application evaluates its argument before its function, so a spine runs right to left (D35) |
@@ -1169,7 +1179,10 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | A computation referenced under a wider ambient row | Instantiated, applied to `Prim.Unit`, and widened on its function side |
 | A computation with a non-empty row referenced at a top-level value without a signature | A row mismatch. A computation at `()` is forced as it stands |
 | `f :: forall a. a -> a; f = id` | η-expanded to `Λ a. λ x. id [a] x`, which Core accepts. Without the expansion Core refuses `Λ a. id [a]` |
-| `f :: forall a. a -> a; f = f` | Judged as an immediate self-reference before any expansion, and refused. Expanding first turns it into a recursive function |
+| `f :: forall a. a -> a; f = f` | Judged as an immediate self-reference before any expansion, and refused where `f` is read. Expanding first turns it into a recursive function |
+| `typed :: Int -> Int; typed = (typed :: Int -> Int)` | Refused where `typed` is read. An expansion left a λ is judged as the expression it expands, whatever became of it |
+| `g x = f x; f = g`, and `f = g; g x = f x` | Admitted; refused where `g` stands in `f`. A recursive group is initialized in the order written, a function member as any other |
+| `a = Tuple 1 (λn. snd b n); b = Tuple (snd a 0) (λn. n)` | Refused where `b` stands inside `a`'s λ, and where `snd a 0` stands: the application runs the closure `a` holds |
 | `g :: Int -> (forall b. b -> b); g x = id`, and `Poly id` at `data Poly = Poly (forall a. a -> a)` | `λ x. Λ b. λ y. id [b] y`, and the field's `∀` opened where the argument stands. Every `∀` and constraint expected is opened where the form stands, a signature's, an annotation's, or an argument's |
 | `t :: forall a. a -> Tuple Int a; t = Tuple 1` | The constructor spine as written. Expanded where it is built, and contracted once its fit is decided equal |
 | `spread :: forall e a. a -> Tuple Int a / {\| ...e \|}; spread = Tuple 1` | Left expanded, with `openEff [e]` under the λ. The fit widens, and the spine is no value form without the λ |

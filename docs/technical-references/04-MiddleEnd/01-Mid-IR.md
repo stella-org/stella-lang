@@ -383,9 +383,9 @@ host close over the variables; the list stays correct either way.
 
 `letrec` binds a group of closures that may capture one another. A backend
 allocates every closure of the group before filling any capture list, which is
-what a mutually recursive group requires. Guardedness (D14) is what makes this
-safe: each right-hand side is a function value, so no capture is read while the
-group is still being built.
+what a mutually recursive group requires. That a local `letrec` binds function
+values alone (D14) is what makes this safe: each right-hand side is a function
+value, so no capture is read while the group is still being built.
 
 **A top-level recursive group captures nothing.** Its members refer to one
 another by global name, so each is a closure over an empty capture list
@@ -598,8 +598,10 @@ not by the form of its declaration.** A right-hand side that is a lambda once
 erasure has looked through the wrappers becomes that function, installed as a
 `func`: at the top level every free name is a global, so there is nothing to
 capture and nothing to evaluate. Anything else becomes a `run`, evaluated once.
-A member of a top-level `rec` group is a function value and therefore always a
-`func`; a `nonrec` is one or the other according to what it holds.
+A member of a top-level `rec` group is one or the other as a `nonrec` is: a
+function value is a `func`, and a member that is none a `run`, evaluated at its
+place in the order the group is written, which its initialization safety makes
+sufficient ([Initialization Safety](../03-Typed-Core/10-Initialization.md)).
 
 This is the same test the **definitional arity** is read by, and the two have to
 agree. A `nonrec` holding a lambda has a definitional arity, so a call to it is

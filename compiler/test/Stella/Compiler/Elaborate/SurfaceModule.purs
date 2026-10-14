@@ -9,7 +9,7 @@ import Data.Array as Array
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
 import Data.Map as Map
-import Data.Maybe (Maybe(..), isNothing)
+import Data.Maybe (Maybe(..), isNothing, maybe)
 import Data.Set as Set
 import Data.String (joinWith)
 import Data.Tuple (Tuple(..), snd)
@@ -208,6 +208,7 @@ at = case _ of
   ForeignRefused o _ r -> located o <> " foreign refused " <> show r.position <> " " <> show r.refusal
   TypeHoleStands o name t -> located o <> " hole " <> name <> " " <> printType t
   ValueFormNeeded o -> located o <> " value form needed"
+  ReadWhileInitializing o through _ (Qualified _ (Ident read)) -> located o <> " reads " <> read <> " early" <> maybe "" (\p -> " through " <> located p) through
   EffectRowAmbiguous _ os -> joinWith " " (map located os) <> " effect row ambiguous"
   CoreRefused _ -> "the Core checker refused it"
   InternalEntryMismatch _ -> "an internal entry mismatched"
@@ -602,11 +603,13 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "pair :: forall a. Tuple Int (a -> a)", "pair = Tuple (inc 1) id" ] \r ->
         map at r.errors `shouldEqual` [ "4:1 value form needed" ]
 
-    it "keeps a reference made before any λ immediate once expanded, a recursive value no function" do
+    it "keeps a reference made before any λ immediate once expanded, judged as it stands before the expansion" do
       elaborating [ "loop :: forall a. a -> a", "loop = loop" ] \r ->
-        map at r.errors `shouldEqual` [ "4:1 outside: a recursive value that is no function" ]
+        map at r.errors `shouldEqual` [ "4:8 reads loop early" ]
       elaborating [ "p :: forall a. a -> a", "p = q", "q :: forall a. a -> a", "q = p" ] \r ->
-        map at r.errors `shouldEqual` [ "4:1 outside: a recursive value that is no function", "6:1 outside: a recursive value that is no function" ]
+        map at r.errors `shouldEqual` [ "4:5 reads q early" ]
+      elaborating [ "typed :: Int -> Int", "typed = (typed :: Int -> Int)" ] \r ->
+        map at r.errors `shouldEqual` [ "4:10 reads typed early" ]
 
   describe "a value declaration without a signature" do
     let
@@ -733,11 +736,13 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "bad :: forall a. Int", "bad = 1", "p x = q bad", "q x = p x" ] \r ->
         map at r.errors `shouldEqual` [ "3:15 kind undetermined", "5:1 left unchecked", "6:1 left unchecked" ]
 
-    it "is a recursive value that is no function where it refers to its group before any λ, generalized or not" do
+    it "reads, in a recursive group, only the members written before it, generalized or not" do
       elaborating [ "f = g", "g x = f x" ] \r ->
-        map at r.errors `shouldEqual` [ "3:1 outside: a recursive value that is no function" ]
+        map at r.errors `shouldEqual` [ "3:5 reads g early" ]
+      elaborating [ "g x = f x", "f = g" ] \r ->
+        map at r.errors `shouldEqual` []
       elaborating [ "data List a = Nil | Cons a (List a)", "xs = Cons 1 xs" ] \r ->
-        map at r.errors `shouldEqual` [ "4:1 outside: a recursive value that is no function" ]
+        map at r.errors `shouldEqual` [ "4:13 reads xs early" ]
 
     it "leaves a declaration referring to one with no scheme unchecked, and one referring to a body with a signature that failed checked" do
       elaborating
@@ -874,8 +879,9 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     it "is a recursive value that is no function where it reads its own group, and refers to one initialized before it as it likes" do
       elaborating [ "n :: Int", "n = let m = inc m in m" ] \r ->
         map at r.errors `shouldEqual` [ "4:9 outside: a recursive value that is no function" ]
+      -- a top-level member read inside a block it initializes is read by it
       elaborating [ "n :: Int", "n = let m = n in m" ] \r ->
-        map at r.errors `shouldEqual` [ "4:1 outside: a recursive value that is no function" ]
+        map at r.errors `shouldEqual` [ "4:13 reads n early" ]
       elaborating [ "p :: Int", "p = let", "      a = inc 1", "      go x = go a", "    in go 0" ] \r ->
         map at r.errors `shouldEqual` []
 
@@ -1044,14 +1050,23 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
           shapes core `shouldEqual` [ "nonrec y", "nonrec x", "rec even odd", "rec loop", "nonrec pair" ]
           core.imports `shouldEqual` [ lib ]
 
-    it "is not made of a recursive value that is no function, which this version does not elaborate" do
+    it "is made of a recursive group initialized in the order written, and of none reading itself" do
       elaborating [ "n :: Int", "n = n", "ok :: Int", "ok = 1" ] \r -> do
-        map at r.errors `shouldEqual` [ "4:1 outside: a recursive value that is no function" ]
+        map at r.errors `shouldEqual` [ "4:5 reads n early" ]
         isNothing r.module `shouldEqual` true
-      -- a recursive function stored in data is no different yet
-      elaborating [ "fibAnd :: Tuple Int (Int -> Int)", "fibAnd = Tuple 0 (\\n -> snd fibAnd n)" ] \r -> do
-        map at r.errors `shouldEqual` [ "4:1 outside: a recursive value that is no function" ]
-        isNothing r.module `shouldEqual` true
+      -- a recursive function stored in data, read only under its λ
+      elaborating [ "fibAnd :: Tuple Int (Int -> Int)", "fibAnd = Tuple 0 (\\n -> snd fibAnd n)" ] \r -> checked r \core ->
+        shapes core `shouldEqual` [ "rec fibAnd" ]
+
+    it "is made of records of closures referring to one another, in any order" do
+      elaborating
+        [ "a :: Tuple Int (Int -> Int)", "a = Tuple 1 (\\n -> snd b n)", "b :: Tuple Int (Int -> Int)", "b = Tuple 2 (\\n -> snd a n)" ]
+        \r -> checked r \core -> shapes core `shouldEqual` [ "rec a b" ]
+
+    it "reports a read an application makes immediate where the reference stands and where the application does" do
+      elaborating
+        [ "a :: Tuple Int (Int -> Int)", "a = Tuple 1 (\\n -> snd b n)", "b :: Tuple Int (Int -> Int)", "b = Tuple (snd a 0) (\\n -> n)" ]
+        \r -> map at r.errors `shouldEqual` [ "4:24 reads b early through 6:12" ]
 
     it "exports each value reached from outside, and carries every attribute" do
       elaboratingUnder "module M (macro mac, (+++), shown) where"

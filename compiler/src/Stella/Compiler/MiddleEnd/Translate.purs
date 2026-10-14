@@ -30,10 +30,10 @@ import Stella.Compiler.TypedCore.Check (Typed)
 import Stella.Compiler.TypedCore.Decl as D
 import Stella.Compiler.TypedCore.Declare (CheckedGroup, Declared)
 import Stella.Compiler.TypedCore.Name (Ident, JoinName, ModuleName, Qualified(..), RegionName)
-import Stella.Compiler.TypedCore.Prim (asFunction)
+import Stella.Compiler.TypedCore.Prim (foreignArity)
 import Stella.Compiler.TypedCore.Signature (Signature, lookupCtor, lookupValue)
 import Stella.Compiler.TypedCore.Term as C
-import Stella.Compiler.TypedCore.Type (RowKey, Type(..), TypeScheme, rowEntryKey)
+import Stella.Compiler.TypedCore.Type (RowKey, Type, rowEntryKey)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (foldMap, foldl, traverse_)
@@ -247,20 +247,6 @@ classify ctx name = case lookupValue ctx.signature name of
   Nothing -> case lookupCtor ctx.signature name of
     Just info -> Just (HCtor (Array.length info.fields))
     Nothing -> Nothing
-
--- | The number of arrows on a declared type's spine, which is what a `foreign`
--- | takes. Arity is a static property of the declaration: substitution can
--- | introduce arrows the declaration never called for, and those are not
--- | argument positions.
-foreignArity :: TypeScheme -> P.Int
-foreignArity scheme = walk scheme.body
-  where
-  walk ty = case ty of
-    TForall _ _ body -> walk body
-    TConstrained _ body -> walk body
-    _ -> case asFunction ty of
-      Just parts -> 1 + walk parts.result
-      Nothing -> 0
 
 bindLocal :: Ctx -> Ident -> Bound -> Ctx
 bindLocal ctx name bound = ctx { locals = Map.insert name bound ctx.locals }

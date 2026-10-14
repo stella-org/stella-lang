@@ -74,14 +74,13 @@ import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..), either)
 import Data.Foldable (foldl, for_)
 import Data.Traversable (traverse)
-import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
-import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), XExpr, isSettledValueForm, toCoreExpr)
+import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), XExpr, isSettledValueForm, toCoreExpr, toInitializationExpr)
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind(..), kindMetasOf)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType(..), fromCore, kindMetasOfType, metasOf, toCore)
 import Stella.Compiler.Elaborate.Surface.Types (readAttributeDeclaration, readTypes, settledTypes)
@@ -101,7 +100,7 @@ import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverSta
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..))
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, substitute, substituteKind)
-import Stella.Compiler.Elaborate.Surface.Expr (Parameter(..), asArrow, checkDefinition, elaborateComputation, elaborateValue, expandable, immediateReferences, inferDefinition, references, runSurf)
+import Stella.Compiler.Elaborate.Surface.Expr (Parameter(..), asArrow, checkDefinition, elaborateComputation, elaborateValue, expandable, inferDefinition, references, runSurf)
 import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported(..), Wildcard, elaborateComputationSignature, elaborateSignature, elaborateValueSignature, schemeOf, settledScheme)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..), Warning)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
@@ -118,7 +117,8 @@ import Stella.Compiler.TypedCore (Decl(DeclAttribute, DeclData, DeclEffect, Decl
 import Stella.Compiler.TypedCore (Attribute, AttributeDecl, DataDecl, DeclError(..), DeclFailure, Decl(DeclNonRec, DeclRec), Declared, EffectDecl, Export(..), ForeignDecl, declareAnnotated)
 import Stella.Compiler.TypedCore.Declare (ctorInfo, dataEntry)
 import Stella.Compiler.TypedCore.AttributeCheck (AttributeError, checkAttribute)
-import Stella.Compiler.TypedCore.Check (CheckError(NotAValueForm), isFunVal)
+import Stella.Compiler.TypedCore.Check (CheckError(NotAValueForm))
+import Stella.Compiler.TypedCore.Initialization (topLevelViolations)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName, OpName(..), Qualified(..), TyName(..), TyVar, unqualified)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
@@ -168,6 +168,11 @@ data ElaborationError
   -- | where the abstraction stands: the Core checker's refusal, and the
   -- | author's.
   | ValueFormNeeded Surface.Origin
+  -- | A right-hand side of a recursive group reading, while the group is
+  -- | initialized, a member not written before it: where the reference stands,
+  -- | where the form that made the read immediate stands, if one did, the
+  -- | member whose right-hand side it is, and the member read.
+  | ReadWhileInitializing Surface.Origin (Maybe Surface.Origin) (Qualified Ident) (Qualified Ident)
   -- | A Core module the Core checker refused, which is the elaborator's fault.
   | CoreRefused (DeclFailure Surface.Origin)
   -- | An entry a desugaring of the compiler's refers to, which a signature
@@ -182,7 +187,8 @@ data ElaborationError
 
 -- | A value declaration elaborated: its name, where it was declared and its
 -- | ordinal among the module's declarations, its attributes, its scheme, and
--- | its definition as a Core term, located by the Surface AST.
+-- | its definition as a Core term, located by the Surface AST, and as the
+-- | initialization of a recursive group is judged on it.
 type ElaboratedValue =
   { name :: Qualified Ident
   , origin :: Surface.Origin
@@ -191,6 +197,7 @@ type ElaboratedValue =
   , scheme :: TypeScheme
   , spine :: Scheme
   , body :: Core.Expr Surface.Origin
+  , initialization :: Core.Expr Surface.Origin
   }
 
 -- | A value declaration whose body is elaborated, its equations not yet all
@@ -239,7 +246,7 @@ elaborateValues
   -> SurfaceEnv
   -> Array CatalogEntry
   -> Surface.Module
-  -> { data :: Array ElaboratedData, synonyms :: Array ElaboratedSynonym, foreignTypes :: Array ElaboratedForeignType, effects :: Array ElaboratedEffect, foreigns :: Array ElaboratedForeign, attributes :: Array ElaboratedAttribute, values :: Array ElaboratedValue, immediate :: Map (Qualified Ident) (Set (Qualified Ident)), errors :: Array ElaborationError, warnings :: Array Warning }
+  -> { data :: Array ElaboratedData, synonyms :: Array ElaboratedSynonym, foreignTypes :: Array ElaboratedForeignType, effects :: Array ElaboratedEffect, foreigns :: Array ElaboratedForeign, attributes :: Array ElaboratedAttribute, values :: Array ElaboratedValue, errors :: Array ElaborationError, warnings :: Array Warning }
 elaborateValues imports surface importedEntries m =
   if Array.null dataErrors then
     { data: elaboratedData
@@ -249,11 +256,10 @@ elaborateValues imports surface importedEntries m =
     , foreigns: crossing.foreigns
     , attributes: attributesRead.declared
     , values: Array.sortWith _.ordinal (generalized.values <> settled'.values)
-    , immediate
     , errors: internalErrors <> unsupported <> signatureErrors <> partialErrors <> crossing.errors <> attributesRead.errors <> generalized.errors <> attributeErrors <> bodyErrors <> settled'.errors
     , warnings: generalized.warnings
     }
-  else { data: [], synonyms: [], foreignTypes: [], effects: [], foreigns: [], attributes: [], values: [], immediate: Map.empty, errors: dataErrors <> unsupported, warnings: [] }
+  else { data: [], synonyms: [], foreignTypes: [], effects: [], foreigns: [], attributes: [], values: [], errors: dataErrors <> unsupported, warnings: [] }
   where
   initial0 = initialState (SessionId 0) 1_000_000
 
@@ -540,16 +546,6 @@ elaborateValues imports surface importedEntries m =
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
   unchecked acc v = acc { errors = Array.snoc acc.errors (LeftUnchecked v.declared.origin v.declared.name) }
   bodyErrors = bodies.errors
-  -- what each value with no parameter refers to before entering any λ
-  immediate = Map.fromFoldable
-    ( Array.mapMaybe
-        ( \v -> case v.definition of
-            ValueBody [] body -> Just (Tuple v.declared.name (immediateReferences body))
-            _ -> Nothing
-        )
-        defined
-        <> map (\u -> Tuple u.name (immediateReferences u.body)) (Array.filter (\u -> Array.null u.params && not (maybe false _.computation u.signature)) unsigned)
-    )
 
   settled' = settleBodies session (attemptPending session) bodies.state bodies.bodies
 
@@ -691,9 +687,9 @@ settleBodies session attempter state bodies =
       metas = after.tentative.metas
       { reported, covered } = annotated metas b.holes b.wildcards b.unwritten
     in
-      case toCoreExpr (zonkExpr metas b.body) of
-        Right body
-          | Array.null reported -> Tuple [] (Just { name: b.name, origin: b.origin, ordinal: b.ordinal, attributes: b.attributes, scheme: b.scheme, spine: b.spine, body })
+      case asCore (zonkExpr metas b.body) of
+        Right core
+          | Array.null reported -> Tuple [] (Just { name: b.name, origin: b.origin, ordinal: b.ordinal, attributes: b.attributes, scheme: b.scheme, spine: b.spine, body: core.body, initialization: core.initialization })
           | otherwise -> Tuple reported Nothing
         Left residues -> case Array.findMap defectOf (NonEmptyArray.toArray residues) of
           -- every fit is decided or reported, and every recursive reference made
@@ -741,12 +737,18 @@ residueOrigin = case _ of
   ResidualHole o _ -> o
   ResidualFit o _ -> o
   ResidualRecursiveRef o _ -> o
+  ResidualEta o -> o
+
+-- | A settled body as Core, and as its initialization is judged.
+asCore :: forall a. XExpr a -> Either (NonEmptyArray (Residue a)) { body :: Core.Expr a, initialization :: Core.Expr a }
+asCore e = { body: _, initialization: _ } <$> toCoreExpr e <*> toInitializationExpr e
 
 -- | A residue no body made Core may hold, which is the host's defect.
 defectOf :: forall a. Residue a -> Maybe Defect
 defectOf = case _ of
   ResidualFit _ f -> Just (FitLeftUndecided f)
   ResidualRecursiveRef _ id -> Just (RecursiveReferenceLeft id)
+  ResidualEta _ -> Just EtaExpansionMalformed
   _ -> Nothing
 
 -- | A diagnostic as the author is told it: a boundary no row expected of it
@@ -938,12 +940,12 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
     scheme <- case toCore f.scheme.body of
       Just body -> pure { kindVars: maybe [] _.kindVars u.signature <> f.scheme.kindVars, body }
       Nothing -> throwError [ defect (CommitmentAmiss u.name) ]
-    body <- case toCoreExpr (zonkExpr metas f.body) of
-      Right body -> pure body
+    core <- case asCore (zonkExpr metas f.body) of
+      Right core -> pure core
       Left residues -> throwError case Array.findMap defectOf (NonEmptyArray.toArray residues) of
         Just d -> [ defect d ]
         Nothing -> map (\o -> { error: TypeUndetermined o, names: [ u.name ] }) (Array.nubEq (map residueOrigin (NonEmptyArray.toArray residues)))
-    pure { name: u.name, origin: u.origin, ordinal: u.ordinal, attributes: u.attributes, scheme, spine: maybe (plainScheme scheme) (\e -> schemeOf e scheme) u.signature, body }
+    pure { name: u.name, origin: u.origin, ordinal: u.ordinal, attributes: u.attributes, scheme, spine: maybe (plainScheme scheme) (\e -> schemeOf e scheme) u.signature, body: core.body, initialization: core.initialization }
 
   -- a member as a reference inside its group reads it: at the one type it has
   -- there, unless its partial signature is a scheme, which such a reference
@@ -1119,9 +1121,11 @@ type ElaboratedModule =
 -- |
 -- | **Its values are grouped by what they refer to**, in a stable dependency
 -- | order: a recursive group becomes a `DeclRec`, any other value a
--- | `DeclNonRec`. Core binds only function values recursively, so a recursive
--- | group with a member that is none is reported at that member as a form this
--- | version does not elaborate. **A Core module is made only of a module with
+-- | `DeclNonRec`. **A recursive group is initialized in the order written**,
+-- | each member reading only the members written before it, judged on what the
+-- | source writes, an η-expansion making no read later; a read that is not is
+-- | reported where the reference stands and where what made it immediate does.
+-- | **A Core module is made only of a module with
 -- | no error**: one missing a declaration would refer to what it does not bind. It imports what
 -- | the module imports, and exports each value it declares that is reached from
 -- | outside — by its name, as a macro, or through an operator it exports —
@@ -1152,21 +1156,25 @@ elaborateModule signature surface imported m exports =
   grouped = groups (map (\v -> Set.fromFoldable (Array.mapMaybe (\g -> Map.lookup g ordinalOf) (Array.fromFoldable (globalsOf v.body)))) values)
   members g = Array.mapMaybe (Array.index values) g.members
 
-  -- Core binds only function values recursively: a member that is none is
-  -- outside what this version lowers, whether or not the surface admits it,
-  -- and so is one whose evaluation refers to a member before entering any λ,
-  -- which an η-expansion does not make a function
+  -- a recursive group initialized in the order written, judged on its
+  -- members as the source writes them, an η-expansion making no read later
   recursiveValues = Array.concatMap
     ( \g ->
         if g.recursive then
           let
-            names = Set.fromFoldable (map _.name (members g))
-            immediate v = maybe false (not <<< Set.isEmpty <<< Set.intersection names) (Map.lookup v.name elaborated.immediate)
+            group = members g
+            nameAt i = _.name <$> Array.index group i
           in
-            map (\v -> Unsupported (OutsideSubset v.origin "a recursive value that is no function")) (Array.filter (\v -> not (isFunVal v.body) || immediate v) (members g))
+            Array.mapMaybe (\v -> ReadWhileInitializing v.at v.through <$> nameAt v.initializer <*> nameAt v.read)
+              (topLevelViolations initializing (map (\v -> { name: v.name, value: v.initialization }) group))
         else []
     )
     grouped
+  -- what a group is judged against: the imports' signature, with the
+  -- constructors and the foreigns the module declares
+  initializing = foldl (\s f -> s { values = Map.insert f.name { scheme: f.decl.scheme, isForeign: true } s.values })
+    (foldl (addData m.name) signature (map _.decl elaborated.data))
+    elaborated.foreigns
   errors = elaborated.errors <> recursiveValues
 
   decls = map (\d -> Core.DeclData d.origin d.decl) elaborated.data

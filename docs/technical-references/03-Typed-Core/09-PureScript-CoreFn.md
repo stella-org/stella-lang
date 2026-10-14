@@ -43,8 +43,8 @@ Conversely, some things CoreFn has do not appear in Stella's Core.
 | `CaseAlternative { binders, result }` | `switch*`, `bind`, `guard` in the tree | Branch order is readable from the term |
 | `Binder` (five constructors) | occurrences `o` and `switch*` | `NullBinder` is "do not bind"; `NamedBinder` is an additional `bind` |
 | `Guard { guard, expression }` | `guard e dt1 dt2` | Fall-through is explicit via `jump` |
-| `Let Ann [Bind] Expr` | `let` / `letrec` | `Rec` gains a guardedness requirement |
-| `Bind = NonRec \| Rec` | `nonrec` / `rec` | The same |
+| `Let Ann [Bind] Expr` | `let` / `letrec` | `Rec` gains a guardedness requirement in this version |
+| `Bind = NonRec \| Rec` | `nonrec` / `rec` | `Rec` gains an initialization-safety requirement ([Initialization Safety](10-Initialization.md)) |
 | (absent) | `letjoin` / `jump` | New. Body sharing in decision trees, and the bridge to Mid IR |
 | (absent) | `perform` / `handle` / `openEff` | New |
 | (absent) | `fail`, derived | New. Non-exhaustiveness surfaced as a `Partial` effect |

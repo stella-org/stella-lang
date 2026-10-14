@@ -24,6 +24,7 @@
 -- | | `stringCase`, `charCase` | a `String` and a `Char` dispatch |
 -- | | `unitValue` | `Prim.Unit`, which no module declares |
 -- | | `unboxed`, `boxMatched`, `addCalled`, `addPartial` | a known call, a constructor, a dispatch, and a partial application reaching into another module |
+-- | | `dictTwice`, `mutualPair` | recursive groups of records whose closures read the group, one member and two |
 module Test.Stella.Compiler.Fixtures.Programs
   ( intName
   , libName
@@ -59,7 +60,7 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String.CodePoints as CodePoints
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Primitive (arrayTy, baseModule, withBaseTypes)
-import Stella.Compiler.TypedCore (CtorBranch, Decl(..), DecisionTree(..), Export(..), Expr(..), Ident(..), JoinName(..), Kind(..), LitBranch, Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), monoScheme, primSignature, scalarString, scalarStringOf, scalarValue)
+import Stella.Compiler.TypedCore (CtorBranch, Decl(..), DecisionTree(..), Export(..), Expr(..), Ident(..), JoinName(..), Kind(..), LitBranch, Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), ValueBinding, monoScheme, primSignature, scalarString, scalarStringOf, scalarValue)
 import Stella.Compiler.TypedCore.Prim (booleanTy, charTy, intTy, numberTy, pureFn, recordTy, stringTy, unitCtor, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Signature (Signature)
 import Test.Stella.Compiler.Fixtures.Value (Expected(..), ExpectedKey(..))
@@ -238,6 +239,8 @@ tested =
   , "addCalled"
   , "overAppliedU"
   , "addPartial"
+  , "dictTwice"
+  , "mutualPair"
   ]
 
 mainModule :: Module P.Int
@@ -307,8 +310,39 @@ mainModule =
       -- `apply2` hands both arguments to whatever it is given at once, and `curried`
       -- takes one: 10 enters it, and 3 waits on the partial application it returns
       , nonrec 32 "overAppliedU" int $ app (global (inMain "apply2")) [ global (inMain "curried") ]
+      -- a recursive group of records whose closures read the group, which
+      -- initializing them does not
+      , rec1 33 "dict" dictTy dictBody
+      , nonrec 34 "dictTwice" int $ app (RecordSelect 0 (symbolKey "twice") (global (inMain "dict"))) [ lit 5 ]
+      , DeclRec 35 [ pairMember "first" 1 "second", pairMember "second" 2 "first" ]
+      , nonrec 36 "mutualPair" int $ intOp "add" (app (RecordSelect 0 (symbolKey "other") (global (inMain "first"))) [ lit 10 ]) (app (RecordSelect 0 (symbolKey "other") (global (inMain "second"))) [ lit 20 ])
       ]
   }
+
+-- | `{ twice: λn. dict.once (dict.once n), once: λn. n + 1 }`.
+dictTy :: Type
+dictTy = recordOf [ Tuple (symbolKey "twice") (pureFn int int), Tuple (symbolKey "once") (pureFn int int) ]
+
+dictBody :: Expr P.Int
+dictBody =
+  RecordExtend 0 (symbolKey "twice") (lam "n" int (app once [ app once [ var "n" ] ]))
+    (RecordExtend 0 (symbolKey "once") (lam "n" int (intOp "add" (var "n") (lit 1))) (RecordEmpty 0))
+  where
+  once = RecordSelect 0 (symbolKey "once") (global (inMain "dict"))
+
+-- | `{ k: k, other: λn. n + peer.k }`, a member of a group of two reading the
+-- | other only under its λ.
+pairMember :: P.String -> P.Int -> P.String -> ValueBinding P.Int
+pairMember name k peer =
+  { name: Ident name
+  , scheme: monoScheme pairTy
+  , value: RecordExtend 0 (symbolKey "k") (lit k)
+      (RecordExtend 0 (symbolKey "other") (lam "n" int (intOp "add" (var "n") (RecordSelect 0 (symbolKey "k") (global (inMain peer))))) (RecordEmpty 0))
+  , attributes: []
+  }
+
+pairTy :: Type
+pairTy = recordOf [ Tuple (symbolKey "k") int, Tuple (symbolKey "other") (pureFn int int) ]
 
 -- | `λxs. case (xs) of Nil -> 0 ; Cons -> x + sum ys`.
 sumBody :: Expr P.Int
@@ -579,7 +613,7 @@ opsExpected = map (\o -> Tuple o.name o.holds) opValues
 -- | One way an operation faults: a `Main` whose one global carries it out on
 -- | inputs the ABI says it faults on, so initializing that global is where the
 -- | fault must end loading.
-type FaultCase = { name :: P.String, description :: P.String, ty :: Type, value :: Expr P.Int }
+type FaultCase = { name :: P.String, description :: P.String, recursive :: P.Boolean, ty :: Type, value :: Expr P.Int }
 
 faultCases :: P.Array FaultCase
 faultCases =
@@ -601,18 +635,25 @@ faultCases =
           $ let' "w" unitType (arrayCall "unsafeSet" [ lit 0, lit 5, var "xs" ])
           $ arrayCall "unsafeIndex" [ var "xs", lit 1 ]
       )
+  -- a recursive group is initialized where it stands, a member nothing refers
+  -- to among it
+  , ( f "fault-recursive-initializer" "Base.Int.quot by zero initializing a recursive group nothing refers to" selfTy
+        (let' "z" int (call intName "quot" [ lit 1, lit 0 ]) (RecordExtend 0 (symbolKey "self") (lam "n" int (app (RecordSelect 0 (symbolKey "self") (global (inMain "faulted"))) [ var "n" ])) (RecordEmpty 0)))
+    ) { recursive = true }
   ]
   where
-  f name description ty value = { name, description, ty, value }
+  f name description ty value = { name, description, recursive: false, ty, value }
+  selfTy = recordOf [ Tuple (symbolKey "self") (pureFn int int) ]
 
--- | The `Main` of a fault case: the one global, called `faulted`.
+-- | The `Main` of a fault case: the one global, called `faulted`, a recursive
+-- | group of it where the case says so.
 faultModule :: FaultCase -> Module P.Int
 faultModule c =
   { annotation: 0
   , name: mainName
   , imports: map _.name baseModules
   , exports: []
-  , decls: [ nonrec 1 "faulted" c.ty c.value ]
+  , decls: [ (if c.recursive then rec1 else nonrec) 1 "faulted" c.ty c.value ]
   }
 
 -- | `Lib` exporting everything but `unbox`.
@@ -678,6 +719,10 @@ expected =
   , Tuple "addCalled" (EInt 3)
   -- subtract 10 3 = 3 - 10; the pending argument applied first would give 10 - 3
   , Tuple "overAppliedU" (EInt (-7))
+  -- once (once 5)
+  , Tuple "dictTwice" (EInt 7)
+  -- (10 + 2) + (20 + 1)
+  , Tuple "mutualPair" (EInt 33)
   ]
   where
   cons x xs = EData "Main.Cons" [ EInt x, xs ]

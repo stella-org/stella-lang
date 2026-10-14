@@ -71,6 +71,7 @@ elaborationOrigins = case _ of
   ForeignRefused o _ _ -> [ o ]
   TypeHoleStands o _ _ -> [ o ]
   ValueFormNeeded o -> [ o ]
+  ReadWhileInitializing o through _ _ -> Array.cons o (Array.fromFoldable through)
   EffectRowAmbiguous _ os -> os
   CoreRefused failure -> [ failure.at ]
   InternalEntryMismatch _ -> []
@@ -124,6 +125,9 @@ printElaborationError = case _ of
   TypeHoleStands _ "_" t -> fmt @"This hole stands for `{t}`" { t: printType t }
   TypeHoleStands _ name t -> fmt @"The hole `?{name}` stands for `{t}`" { name, t: printType t }
   ValueFormNeeded _ -> "This stands under a `forall` or a constraint, where only a value form may stand; where it is a function, writing its parameter makes it one"
+  ReadWhileInitializing _ _ reader read
+    | reader == read -> fmt @"`{x}` is read here while it is being initialized" { x: nameOf read }
+    | otherwise -> fmt @"`{y}` is read here while its recursive group is being initialized, before `{y}` is: it is written after `{x}`" { x: nameOf reader, y: nameOf read }
   EffectRowAmbiguous _ _ -> "Nothing here determines which effects this performs; an annotation of its type decides them"
   CoreRefused failure -> internal ("the Core checker refused what was elaborated: " <> show failure.error)
   InternalEntryMismatch name -> internal ("an entry the compiler refers to is missing or at another scheme than listed: " <> show name)

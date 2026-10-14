@@ -161,6 +161,7 @@ These serve as architecture tests as well as demonstrations.
 | [§3.7 Core Type Checker](../03-Typed-Core/07-Core-Type-Checker.md) | What the checker verifies, and what it does not |
 | [§3.8 Examples](../03-Typed-Core/08-Examples.md) | Worked examples in Core |
 | [§3.9 PureScript CoreFn](../03-Typed-Core/09-PureScript-CoreFn.md) | Correspondence with PureScript's CoreFn |
+| [§3.10 Initialization Safety](../03-Typed-Core/10-Initialization.md) | What a recursive group reads while it is initialized, judged statically |
 | **§4. Middle-end** | |
 | [§4.1 Mid IR](../04-MiddleEnd/01-Mid-IR.md) | A-normal form, representation types, closures, join points, handlers |
 | [§4.2 Translation](../04-MiddleEnd/02-Translation.md) | Typed Core to Mid IR: erasure, spines, decision trees, closure conversion |

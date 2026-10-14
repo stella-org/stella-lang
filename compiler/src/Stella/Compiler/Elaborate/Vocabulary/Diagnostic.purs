@@ -271,6 +271,9 @@ data Defect
   -- | A recursive reference still standing where its term is made Core, every
   -- | one being made ordinary by its group's generalization before that.
   | RecursiveReferenceLeft RecRefId
+  -- | An η-expansion that is no λ applying what it expands to its parameter,
+  -- | where its term is judged for initialization: no elaboration builds one.
+  | EtaExpansionMalformed
   -- | `Ψ` holding, once a group is generalized, a metavariable the group retired.
   | RetiredMetavariableHeld
   -- | A group committed other than as it was planned: its members not those

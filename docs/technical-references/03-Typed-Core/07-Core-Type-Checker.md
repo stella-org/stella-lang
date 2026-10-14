@@ -9,7 +9,7 @@ The Core type checker is independent of the surface language, macros, elaborator
 3. Kinding of types, including the side conditions `k ∉ ρ` for row extension and `ρ1 # ρ2` for row union
 4. Re-derivation of `Γ ⊨ C` ([Rows](02-Rows.md)). No proof term is accepted; the checker derives it
 5. Term typing ([Typing Rules](05-Typing-Rules.md))
-6. Guardedness of `letrec` ([Terms](04-Terms-and-Matching.md))
+6. Guardedness of `letrec` ([Terms](04-Terms-and-Matching.md)), and that every top-level `rec` group is initialization-safe, each right-hand side reading only the members written before it ([Initialization Safety](10-Initialization.md))
 7. That the body of a `Λ` is a value form, the value restriction
 8. That `jump` occurs in tail position with matching arity and types, and that join points are out of scope under `λ`, `Λ`, `handle`, and the body of a `region`
 9. That occurrences agree with their types
