@@ -304,6 +304,36 @@ cell at position `i` of that frame. A write replaces what the cell holds and has
 no result of its own, so `d` takes the machine's `Prim.Unit`; reading back what was
 just set takes a `CGET`.
 
+### By-need cells
+
+| Instruction | Effect |
+| --- | --- |
+| `NEED d, s` | A by-need cell, `Suspended` over the closure in `s`, a function of no parameter: its initializer |
+| `FORCE d, s` | The value the cell in `s` holds, into `d`. **May fault** |
+
+A by-need cell holds a member of a local recursive group that is no function
+value, and is filled once, in the order the group is written
+([Initialization Safety](../03-Typed-Core/10-Initialization.md),
+[Initialization-Safe Recursion](../../proposals/11-Initialization-Safe-Recursion.md)).
+It is in one of three states, `Suspended` over its initializer, `Evaluating` while
+that runs, and `Ready` holding what it returned. Its initializer is an ordinary
+closure, allocated by `CLOSN` and filled by `SETCAP` with the rest of its group, a
+capture of the cell being the cell. **A register a cell is put in or forced from
+is at `Val`**: a cell is no class of value a `Rep` describes, and a reader refuses
+a `NEED` or a `FORCE` that says otherwise ([Encoding](02-Encoding.md)). The
+destination of a `FORCE` is at whatever class the value it receives is.
+
+**A `FORCE` of a `Suspended` cell is a call.** It marks the cell `Evaluating`,
+pushes the entry that receives a call's value and, above it, one that fills the
+cell, and enters the initializer with no argument. What the initializer returns
+passes the filling entry, which makes the cell `Ready` with it, and arrives in `d`
+as a call's value does. So the initializer runs on the machine's own stack, as
+anything else does, and a run that pauses inside it fills the cell once resumed. A
+`Ready` cell gives its value in place. **A cell forced while it is `Evaluating` is
+an initialization fault** ([Faults](#faults)): its initializer reads it, which no
+module the compiler accepts does, its recursive groups being initialization-safe.
+A `FORCE` of what is no cell is a state no `.dmo` admits.
+
 ### Tails
 
 A `Tail` ends a `Node`. `node` below stands for a `Node` held **inline**, which
@@ -590,7 +620,9 @@ and distinct from the `Partial` effect
 
 A fault discards the whole continuation, handler markers included, and ends
 execution. The machine reports it; nothing in the bytecode catches it, and the
-instructions that produce one are `FFI`, `TAILFFI`, and `PRIM`.
+instructions that produce one are `FFI`, `TAILFFI`, `PRIM`, and `FORCE`, the last
+of a cell its own initializer is running for: the initialization fault, which no
+module the compiler accepts reaches.
 
 **Which entries fault, and on which inputs, belongs to the ABI specification**
 and is not something a lowering decides ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
@@ -748,7 +780,7 @@ nothing now and is expensive to retrofit.
 - **No optimization.** No inlining, no constant folding, no dead code elimination, no common subexpression elimination. Mid IR is where those would belong, and none of them is in scope
 - **No register allocation.** One slot per Mid IR local, and one more wherever an atom has to reach a register before an instruction can take it
 - **No totality or arity checking.** The Core type checker established the first and Mid IR's invariants the second
-- **No typing.** `Rep` is carried through to the file, and nothing re-derives or checks it. Core's types, rows, and effect rows are gone by the time Mid IR exists
+- **No typing.** `Rep` is carried through to the file, and nothing re-derives it; what is checked is only that a register a `NEED` puts a cell in, or a `FORCE` reads one from, is at `Val`, against the function's own table. Core's types, rows, and effect rows are gone by the time Mid IR exists
 
 What it does do first is **verify the invariants it rests on**. A register is a
 local's number, so lowering a module whose locals are not what Mid IR says they
@@ -771,6 +803,7 @@ one implementation.
 8. Conformance of every foreign implementation it supplies: condition (3) of `Σ ⊨ G` — each returns a value of the instantiated result type or a fault, performs no proper effect and runs no reified computation it constructs, applies no Stella function value, terminates, and has no **observational** effect where its declaration asserts `#observ(none)`, which is why such an entry does not fault. One writing to a mutable array behind a pure interface asserts nothing and is conforming. **What the condition asks is asked of the calls that respect the entry's ABI preconditions**, so a consumer owes nothing for a call that violates one and is not obliged to detect one (D42) ([Semantics](../03-Typed-Core/06-Semantics.md))
 9. The runtime ABI at the profile it claims, including the execution of `main`
 10. One identity per key, per operation name, and per constructor across every module it has loaded, a table index being the file's own
+11. A by-need cell's initializer entered once, as a call is: a `FORCE` of a `Suspended` cell marking it `Evaluating` before the initializer runs, and what the initializer returns making it `Ready` before it reaches the destination; a `FORCE` of an `Evaluating` cell ending the run in an initialization fault
 
 (3) is D18 as a consumer meets it, and it holds of every consumer alike: the
 virtual machine and the JavaScript backend meet it, and how a Wasm backend will

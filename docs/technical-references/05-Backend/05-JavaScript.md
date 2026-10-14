@@ -199,11 +199,11 @@ continuation-passing style. That it is one of them is not a choice.
 
 **An activation is a frame on a stack of the runtime's own, and a function is a set
 of segments.** A function is cut at each non-tail call, each `PERF`, each `HNDL`,
-and each `RGN`: its entry is one segment, what follows each such transfer another,
+each `RGN`, and each `FORCE`: its entry is one segment, what follows each such transfer another,
 and each join point a third kind. A segment runs straight to its next transfer and
 returns to the run loop what to do next — return a value, call, tail call, perform,
-install a handler, open a region, or continue at another segment of the same
-frame — so the host's call stack never holds more than one segment.
+install a handler, open a region, force a by-need cell, or continue at another
+segment of the same frame — so the host's call stack never holds more than one segment.
 
 | What the loop does | Where it comes from |
 | --- | --- |
@@ -213,7 +213,14 @@ frame — so the host's call stack never holds more than one segment.
 | an installation pushes the same entry, then a marker, and calls the body | `HNDL`; `TAILHNDL` pushes no entry for the frame |
 | an opening pushes the same entry, then a region holding a fresh identity and the initial values, and calls the body with the identity | `RGN`; `TAILRGN` pushes no entry for the frame |
 | a cell is read or written where the segment stands, cutting nothing | `CGET`, `CSET` |
-| a value reaching an entry is written and the frame continues, is applied to the arguments an over-application left, or passes a marker, a region, or a clause's boundary as the next section says | `RET` |
+| a by-need cell is built where the segment stands | `NEED` |
+| a force reads a `Ready` cell where the segment stands and goes on at the segment after; any other it leaves to the loop, which for a `Suspended` cell marks it `Evaluating`, pushes the entry a call pushes and above it one that fills the cell, and enters the initializer, and for an `Evaluating` one ends the run in a fault of kind `initialization` | `FORCE` |
+| a value reaching an entry is written and the frame continues, is applied to the arguments an over-application left, makes the cell of a filling entry `Ready` and passes on, or passes a marker, a region, or a clause's boundary as the next section says | `RET` |
+
+**The loop carries out a `FORCE` whole**, a `Ready` cell included; the segment's
+reading of a `Ready` cell is a shortcut that saves a return to the loop, a force
+of a cell that is filled costing a state test and a load. A `FORCE` of what is no
+cell is a defect, never a fault.
 
 **Applying is decided by the count before the kind**, as the machine decides it:
 too few arguments build a partial application whatever the callee, too many call

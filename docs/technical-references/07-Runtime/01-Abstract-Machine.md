@@ -714,12 +714,13 @@ This is the interpreter's internal representation and **not a published ABI**: n
 | closure | `{ function, captures }` |
 | partial application | `{ callee, args }` |
 | continuation | a captured stack segment |
+| a by-need cell | a mutable `Suspended` over its initializer's closure, `Evaluating`, or `Ready` holding a value. A capture slot holds one, and a register a `FORCE` reads, and no value a snapshot or a guest is handed does |
 | a region's identity | an object allocated at each opening and compared by reference, which reaches a register as an opaque value carrying a brand of its own. Typing keeps it inside Stella code, so no foreign is handed one |
 | `IO` | one of `pure v`, `bind io k`, and a native action. **Opaque to the instruction set and not to the interpreter**: no instruction examines one (D25), and the loop that executes one takes it apart |
 | a value only a foreign observes | whatever the foreign gave, which nothing here takes apart |
 
-**Everything the interpreter builds but a closure's capture vector and a region
-cell is immutable**, which is what lets the host's collector be the whole of memory
+**Everything the interpreter builds but a closure's capture vector, a region cell,
+and a by-need cell is immutable**, which is what lets the host's collector be the whole of memory
 management. A value only a foreign observes is not the interpreter's to build, and
 may be written into in place, as an array is by `Base.Array.unsafeSet`.
 
@@ -821,6 +822,12 @@ CGET d, r, i     the cell at i of the innermost visible region frame whose
                  identity is the one r holds
 CSET d, r, i, s  write s there; d takes Prim.Unit
 
+NEED d, s        a by-need cell, Suspended over the closure s holds
+FORCE d, s       the cell s holds: Ready v writes v into d; Suspended marks it
+                 Evaluating, pushes Resume { current activation, d }, then a
+                 Fill of the cell, and enters the initializer with no
+                 argument; Evaluating is an initialization fault
+
 PERF d, key, op, s
                  the innermost visible marker whose key is key
                    fast clause   push Resume { …, d }, then a ClauseBoundary
@@ -851,6 +858,7 @@ StackEntry
   | ClauseBoundary  { distance to the answering marker }
   | RootBoundary    { key, op }
   | ClosedBoundary
+  | Fill            { cell }
 ```
 
 `Resume` is the only entry that carries a destination register. A tail call pushes
@@ -866,6 +874,14 @@ none, which is the whole of what makes it a tail call, and `TAILHNDL` differs fr
 | a `ClauseBoundary` | it pops, and the value — a `fast` clause's — reaches the entry below, the `Resume` of the `PERF` it answers |
 | a `RootBoundary` | it pops, and the value is what the invocation produces |
 | a `ClosedBoundary` | it pops, and the value is what the closed run produces |
+| a `Fill { cell }` | it pops, makes the cell `Ready` with the value, and the value reaches the entry below, the `Resume` of the `FORCE` that entered the initializer |
+
+**An initializer runs on this stack, as a call does**, so a stretch of steps may end
+inside it as anywhere, and the run resumed fills the cell when the initializer
+returns through its `Fill`. An initializer runs at row `()`, so every operation it
+performs is answered by a marker it installed above the `Fill`, and no segment a
+clause captures holds one; a copy would share the cell regardless, a cell being
+state of the heap and not of control.
 
 The rows about a marker and a frame are the reduction rules for a value,
 `handle v with h → e_r[x := v]` and `region⟨ℓ⟩ θ in v → v`
@@ -1840,8 +1856,8 @@ Three kinds, reported differently because they mean different things.
 | | What it is | What it means |
 | --- | --- | --- |
 | **Load error** | an unresolved reference, an arity that does not agree, a missing foreign | the module is not loaded, and nothing of it ran |
-| **Fault** | an operation or a foreign failing as it is specified or defined to; a native action refusing; a native action in breach of its contract, throwing where it is performed; and a foreign or a native action answering with a host value the kind its signature gives cannot be, which names the entry ([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)) | the stack is discarded and the run ends; nothing catches one ([Bytecode](../05-Backend/01-Bytecode.md)). Where a drive loop was executing, its pending continuations are discarded with it |
-| **Interpreter bug** | reaching `VABS`, applying what is not callable, reading a register that holds nothing, a `Bind` over what is not an `IO`, a cell reached through what is no region's identity, of a region no visible frame holds, or at a position the region does not have | a state no `.dmo` admits. Reaching one is a defect in the interpreter, in lowering, in a check a loader owes, or in an adapter that returned what its declaration did not promise |
+| **Fault** | an operation or a foreign failing as it is specified or defined to; a native action refusing; a native action in breach of its contract, throwing where it is performed; a foreign or a native action answering with a host value the kind its signature gives cannot be, which names the entry ([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)); and a by-need cell forced while its own initializer runs, the initialization fault no module the compiler accepted reaches | the stack is discarded and the run ends; nothing catches one ([Bytecode](../05-Backend/01-Bytecode.md)). Where a drive loop was executing, its pending continuations are discarded with it |
+| **Interpreter bug** | reaching `VABS`, applying what is not callable, reading a register that holds nothing, a `Bind` over what is not an `IO`, a cell reached through what is no region's identity, of a region no visible frame holds, or at a position the region does not have, and a `FORCE` of what is no by-need cell | a state no `.dmo` admits. Reaching one is a defect in the interpreter, in lowering, in a check a loader owes, or in an adapter that returned what its declaration did not promise |
 
 The `DEBUG` section is where a report finds a function's name in a file that carries
 one ([Bytecode](../05-Backend/01-Bytecode.md)). How much more a report holds — a

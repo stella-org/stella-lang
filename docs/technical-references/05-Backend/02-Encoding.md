@@ -470,6 +470,8 @@ a table is a `uvar`.
 | `0x22` | `CGET` | `d`, region identity `s`, cell position |
 | `0x23` | `CSET` | `d`, region identity `s`, cell position, `s` |
 | `0x24` | `RGN` | `d`, region, body `s`, initial value `r…` |
+| `0x25` | `NEED` | `d`, initializer `s` |
+| `0x26` | `FORCE` | `d`, cell `s` |
 
 | Opcode | Tail | Operands |
 | --- | --- | --- |
@@ -488,7 +490,7 @@ a table is a `uvar`.
 `BRL` carries a `branchNode` rather than an `optNode`: literals cannot be
 exhausted, so its default is not optional ([Bytecode](01-Bytecode.md)).
 
-The gaps in the numbering — `0x0F`, `0x1A` to `0x1F`, `0x25` onwards — group the
+The gaps in the numbering — `0x0F`, `0x1A` to `0x1F`, `0x27` onwards — group the
 opcodes by what they touch, so that a reader of a hexadecimal dump can see which
 family an unknown opcode was meant to join. A reader rejects one it does not know
 rather than skipping it: an instruction's operands are what say how long it is,
@@ -546,6 +548,7 @@ reader may read.
 | A callee naming an operation the module's `PRIMS` does not hold | The callee is written as an index into that table, so there is nothing to write |
 | A structural value below zero | A `uvar` carries no sign, so it would be written as a 32-bit pattern and read back as a value no module holds |
 | An index no table of the module holds, a register outside a function's file, a capture it does not take, or a jump to a join point it does not declare | None of them would read back as what it was |
+| A `NEED` putting a cell in, or a `FORCE` reading one from, a register its function's table holds at another `Rep` than `Val` | A cell is no class of value a `Rep` describes, and the table is what says what each register holds ([Bytecode](01-Bytecode.md)) |
 | A format version or an ABI version other than the ones it writes | What a byte means is this format's, and what an operation's code means is that version's |
 
 Each is a module the stages before this one should not have produced. Refusing is
@@ -555,8 +558,9 @@ what keeps the file honest where one of them does.
 that a contract rather than a hope: an encoder refuses a module a reader would not
 read back, and a reader refuses to return one the bytes happen to describe.
 
-**A negative structural value and an index or a scope naming nothing are found by
-one walk over the module, which both directions read.** Two walks would disagree
+**A negative structural value, an index or a scope naming nothing, and a cell's
+register at another `Rep` are found by one walk over the module, which both
+directions read.** Two walks would disagree
 about some module and each be satisfied with itself. The version is not among what
 that walk reads: it is read where each direction begins, an encoder writing one
 format and one ABI version and a reader reading the same two.
