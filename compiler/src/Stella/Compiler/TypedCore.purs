@@ -36,7 +36,7 @@ module Stella.Compiler.TypedCore
 -- spellings, so `Prim` is imported qualified here as well.
 import Prim as P
 
-import Stella.Compiler.TypedCore.Check (CheckError(..), CheckFailure, Env, JoinInfo, Typed, check, envOf, infer, isFunVal, isValueForm, typeOf)
+import Stella.Compiler.TypedCore.Check (CheckError(..), CheckFailure, Env, JoinInfo, Typed, check, envOf, infer, isValueForm, typeOf)
 import Stella.Compiler.TypedCore.Context (Context, assume, bindKindVars, bindRegion, bindTyVar, emptyContext, kindVarInScope, lookupRegion, lookupTyVar)
 import Stella.Compiler.TypedCore.Declare (CheckedGroup, DeclError(..), DeclFailure, Declared, checkAttributeEntries, checkEffectEntries, checkTyConEntries, collectTypes, declare, declareAnnotated, initialSignature)
 import Stella.Compiler.TypedCore.Domain (ScalarString, ScalarValue, codePointOf, compareNumber, sameNumber, scalarString, scalarStringOf, scalarValue, textOf)

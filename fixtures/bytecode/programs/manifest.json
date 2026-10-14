@@ -29,6 +29,9 @@
     {"global": "Main.addCalled", "value": {"int": 3}},
     {"global": "Main.overAppliedU", "value": {"int": -7}},
     {"global": "Main.dictTwice", "value": {"int": 7}},
-    {"global": "Main.mutualPair", "value": {"int": 33}}
+    {"global": "Main.mutualPair", "value": {"int": 33}},
+    {"global": "Main.localDict", "value": {"int": 7}},
+    {"global": "Main.localPair", "value": {"int": 33}},
+    {"global": "Main.localMixed", "value": {"int": 42}}
   ]
 }

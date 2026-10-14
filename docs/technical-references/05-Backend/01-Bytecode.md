@@ -334,6 +334,15 @@ an initialization fault** ([Faults](#faults)): its initializer reads it, which n
 module the compiler accepts does, its recursive groups being initialization-safe.
 A `FORCE` of what is no cell is a state no `.dmo` admits.
 
+**A local recursive group is lowered in four runs**, in the order its Mid IR form
+means ([Mid IR](../04-MiddleEnd/01-Mid-IR.md)). Every member is allocated in the
+order written — a closure by `CLOSN` into its own register, and a cell by a
+`CLOSN` of its initializer into a register of its own followed by a `NEED` over it
+— then every capture list is filled by `SETCAP`, an initializer's in its own
+register; then each cell is forced by a `FORCE` in the order written; and only
+then the body runs. A reference to a member that is a cell is a `FORCE` where it
+stands.
+
 ### Tails
 
 A `Tail` ends a `Node`. `node` below stands for a `Node` held **inline**, which

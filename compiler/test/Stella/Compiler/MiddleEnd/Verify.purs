@@ -76,7 +76,7 @@ binder n = { local: M.Local n, rep: RepInt }
 
 -- | One parameter, and a body binding the local the case calls for.
 functionOf :: P.Array M.Binder -> P.Array M.Binder -> M.Expr -> M.Function
-functionOf params captures body = { id: M.FuncId 0, params, captures, body }
+functionOf params captures body = { id: M.FuncId 0, params, captures: map (\c -> { local: c.local, rep: c.rep, holds: Nothing }) captures, body }
 
 ret :: M.Local -> M.Expr
 ret local = M.ERet (M.ALocal local)
@@ -104,6 +104,25 @@ regionWith keys initial inner = (moduleOf site) { functions = [ site, body ] }
 opening :: P.Array RowKey -> P.Array M.Atom -> M.Module
 opening keys initial =
   regionWith keys initial (M.ETail (M.CReadCell (M.ALocal (M.Local 0)) 0))
+
+-- | A module whose function 0 binds a by-need cell over function 1, the cell
+-- | capturing what is given and holding `holds`, and goes on as `rest` says.
+withCell :: Rep -> P.Array M.Atom -> M.Function -> M.Expr -> M.Module
+withCell holds captures initializer rest = (moduleOf site) { functions = [ site, initializer ] }
+  where
+  site = { id: M.FuncId 0, params: [], captures: [], body: M.ELetRec [ M.RecNeed { local: M.Local 0, holds, func: M.FuncId 1, captures } ] rest }
+
+-- | An initializer of no parameter giving 1.
+constant :: M.Function
+constant = { id: M.FuncId 1, params: [], captures: [], body: M.ERet (M.ALit (LitInt 1)) }
+
+-- | The cell in local 0 forced into local 1, at the `Rep` given.
+forcedAt :: Rep -> M.Expr
+forcedAt rep = M.ELet (M.Local 1) rep (M.CForce (M.ALocal (M.Local 0))) (ret (M.Local 1))
+
+-- | An initializer forcing the cell it captures, taking the capture as given.
+selfForcing :: M.Capture -> M.Function
+selfForcing capture = { id: M.FuncId 1, params: [], captures: [ capture ], body: forcedAt RepInt }
 
 spec :: Spec Unit
 spec = describe "Stella.Compiler.MiddleEnd.Verify » modules a lowering must not accept" do
@@ -376,3 +395,30 @@ spec = describe "Stella.Compiler.MiddleEnd.Verify » modules a lowering must not
           )
       )
       `shouldEqual` Left (NegativeCell (M.FuncId 1) (-1))
+
+  describe "a by-need cell" do
+    it "is admitted over an initializer of no parameter, forced at the class it holds or at Val" do
+      verify (withCell RepInt [] constant (forcedAt RepInt)) `shouldEqual` Right unit
+      verify (withCell RepInt [] constant (forcedAt RepVal)) `shouldEqual` Right unit
+      verify (withCell RepInt [] constant (forcedAt RepNumber)) `shouldEqual` Left (ForceAtAnotherRep (M.FuncId 0) (M.Local 1))
+
+    it "is read only by a force or in a capture list" do
+      verify (withCell RepInt [] constant (ret (M.Local 0))) `shouldEqual` Left (CellRead (M.FuncId 0) (M.Local 0))
+
+    it "is the one thing a force reads" do
+      verify (moduleOf (functionOf [] [] (M.ELet (M.Local 0) RepInt (M.CPure (M.ALit (LitInt 1))) (forcedAt RepInt))))
+        `shouldEqual` Left (ForceOfNoCell (M.FuncId 0))
+
+    it "has an initializer taking no parameter" do
+      verify (withCell RepInt [] (constant { params = [ binder 0 ], body = ret (M.Local 0) }) (forcedAt RepInt))
+        `shouldEqual` Left (NeedTakesParameters (M.FuncId 0) (M.FuncId 1))
+
+    it "is captured where the function takes a cell holding the same class, at Val" do
+      let cell = [ M.ALocal (M.Local 0) ]
+      verify (withCell RepInt cell (selfForcing { local: M.Local 0, rep: RepVal, holds: Just RepInt }) (forcedAt RepInt)) `shouldEqual` Right unit
+      verify (withCell RepInt cell (selfForcing { local: M.Local 0, rep: RepVal, holds: Nothing }) (forcedAt RepInt))
+        `shouldEqual` Left (CaptureCellMismatch (M.FuncId 0) (M.FuncId 1) 0)
+      verify (withCell RepInt cell (selfForcing { local: M.Local 0, rep: RepVal, holds: Just RepNumber }) (forcedAt RepInt))
+        `shouldEqual` Left (CaptureCellMismatch (M.FuncId 0) (M.FuncId 1) 0)
+      verify (withCell RepInt cell (selfForcing { local: M.Local 0, rep: RepInt, holds: Just RepInt }) (forcedAt RepInt))
+        `shouldEqual` Left (CellCaptureNotVal (M.FuncId 1) (M.Local 0))

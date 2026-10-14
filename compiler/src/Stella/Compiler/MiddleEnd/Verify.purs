@@ -28,6 +28,7 @@ import Prim as P
 
 import Stella.Compiler.Primitive (PrimOp, arityOfOp)
 import Stella.Compiler.MiddleEnd.IR as M
+import Stella.Compiler.MiddleEnd.Rep (Rep(..))
 import Stella.Compiler.TypedCore.Name (Ident, OpName, Qualified, TyName)
 import Stella.Compiler.TypedCore.Type (RowKey)
 import Data.Array as Array
@@ -84,6 +85,24 @@ data VerifyError
   -- | A closure supplying a number of captures the function does not take, as
   -- | the function's and the site's.
   | CaptureCount M.FuncId M.FuncId P.Int P.Int
+  -- | A by-need cell's local read other than by a force or in a capture list,
+  -- | naming it. A cell is no value, and what it holds is reached by forcing it.
+  | CellRead M.FuncId M.Local
+  -- | A capture list supplying, at that position, a cell where the function takes
+  -- | none, none where it takes one, or a cell holding another class than the one
+  -- | it takes, as the site's function, the function named, and the position.
+  | CaptureCellMismatch M.FuncId M.FuncId P.Int
+  -- | A function taking a cell as a capture at another `Rep` than `Val`, naming
+  -- | the capture.
+  | CellCaptureNotVal M.FuncId M.Local
+  -- | A by-need member whose initializer takes parameters, as the site's
+  -- | function and the initializer. An initializer is entered with nothing.
+  | NeedTakesParameters M.FuncId M.FuncId
+  -- | A force of what is no by-need cell.
+  | ForceOfNoCell M.FuncId
+  -- | A force bound at another `Rep` than the class the cell holds or `Val`,
+  -- | naming the local bound.
+  | ForceAtAnotherRep M.FuncId M.Local
   -- | A function reached at an arity its form does not have, as the form's and
   -- | the function's: no parameters for the body of a `handle`, two for a
   -- | `full` clause, and one for a `fast` clause, for a return clause, and for
@@ -139,9 +158,11 @@ type Ctx =
   }
 
 -- | What is in scope at a point in one function's body.
+-- | `cells` are the locals naming a by-need cell, with the class each holds.
 type Env =
   { func :: M.FuncId
   , locals :: Set P.Int
+  , cells :: Map P.Int Rep
   , joins :: Map M.JoinId P.Int
   }
 
@@ -207,16 +228,21 @@ function ctx f = do
   dense f bound
   placed f
   uniqueJoins f
-  expr ctx { func: f.id, locals: declared, joins: Map.empty } f.body
+  traverse_ cellCapture f.captures
+  expr ctx { func: f.id, locals: declared, cells: capturedCells, joins: Map.empty } f.body
   where
-  declared = Set.fromFoldable (map (number <<< _.local) (f.params <> f.captures))
+  declared = Set.fromFoldable (map (number <<< _.local) f.params <> map (number <<< _.local) f.captures)
+  capturedCells = Map.fromFoldable (Array.mapMaybe (\c -> Tuple (number c.local) <$> c.holds) f.captures)
+  cellCapture c = case c.holds of
+    Just _ | c.rep /= RepVal -> Left (CellCaptureNotVal f.id c.local)
+    _ -> Right unit
 
 -- Layout -----------------------------------------------------------------------
 
 -- | Every local a function binds, rejecting one bound twice.
 collect :: M.Function -> Either VerifyError (P.Array P.Int)
 collect f = do
-  let declared = map (number <<< _.local) (f.params <> f.captures)
+  let declared = map (number <<< _.local) f.params <> map (number <<< _.local) f.captures
   inBody <- body f.body
   let all = declared <> inBody
   case duplicate all of
@@ -227,7 +253,7 @@ collect f = do
     M.ERet _ -> Right []
     M.ELet local _ _ rest -> map (Array.cons (number local)) (body rest)
     M.ELetRec bindings rest ->
-      map (append (map (number <<< _.local) bindings)) (body rest)
+      map (append (map (number <<< M.recLocal) bindings)) (body rest)
     M.ELetJoin _ params definition rest -> do
       a <- body definition
       b <- body rest
@@ -311,9 +337,20 @@ placed f = do
 bindLocal :: Env -> M.Local -> Env
 bindLocal env local = env { locals = Set.insert (number local) env.locals }
 
+bindMember :: Env -> M.RecBinding -> Env
+bindMember env = case _ of
+  M.RecClosure b -> bindLocal env b.local
+  M.RecNeed b -> (bindLocal env b.local) { cells = Map.insert (number b.local) b.holds env.cells }
+
 expr :: Ctx -> Env -> M.Expr -> Either VerifyError Unit
 expr ctx env = case _ of
   M.ERet a -> atom ctx env a
+
+  -- a force gives the class its cell holds, or `Val`, which is sound for any
+  M.ELet local rep (M.CForce a) rest -> do
+    holds <- forced env a
+    unless (rep == holds || rep == RepVal) (Left (ForceAtAnotherRep env.func local))
+    expr ctx (bindLocal env local) rest
 
   M.ELet local _ c rest -> do
     comp ctx env c
@@ -322,8 +359,16 @@ expr ctx env = case _ of
   -- every member of the group is allocated before any capture list is filled,
   -- so a capture may name any of them
   M.ELetRec bindings rest -> do
-    let env' = foldl (\acc b -> bindLocal acc b.local) env bindings
-    traverse_ (\b -> closure ctx env' b.func b.captures) bindings
+    let
+      env' = foldl bindMember env bindings
+      member = case _ of
+        M.RecClosure b -> closure ctx env' b.func b.captures
+        M.RecNeed b -> do
+          closure ctx env' b.func b.captures
+          case Map.lookup b.func ctx.functions of
+            Just f | not (Array.null f.params) -> Left (NeedTakesParameters env.func b.func)
+            _ -> Right unit
+    traverse_ member bindings
     expr ctx env' rest
 
   -- a join point is in scope in its own definition, which is what lets one
@@ -365,6 +410,7 @@ expr ctx env = case _ of
 atom :: Ctx -> Env -> M.Atom -> Either VerifyError Unit
 atom ctx env = case _ of
   M.ALocal local
+    | Map.member (number local) env.cells -> Left (CellRead env.func local)
     | Set.member (number local) env.locals -> Right unit
     | otherwise -> Left (LocalNotInScope env.func local)
   M.ALit _ -> Right unit
@@ -415,6 +461,8 @@ comp ctx env = case _ of
         | otherwise -> Left (PapSaturated env.func n (Array.length args))
 
   M.CClosure func captures -> closure ctx env func captures
+
+  M.CForce a -> void (forced env a)
 
   M.CField a ctorName index -> do
     atom ctx env a
@@ -467,15 +515,34 @@ cellPosition env index
   | index >= 0 = Right unit
   | otherwise = Left (NegativeCell env.func index)
 
+-- | What a force reads is a cell, and gives the class the cell holds.
+forced :: Env -> M.Atom -> Either VerifyError Rep
+forced env = case _ of
+  M.ALocal local | Just holds <- Map.lookup (number local) env.cells -> Right holds
+  _ -> Left (ForceOfNoCell env.func)
+
 -- | The captures a closure supplies are in scope, and the function it names
--- | takes exactly them.
+-- | takes exactly them, a cell where it takes a cell holding the same class.
 closure :: Ctx -> Env -> M.FuncId -> P.Array M.Atom -> Either VerifyError Unit
 closure ctx env func captures = do
-  traverse_ (atom ctx env) captures
+  traverse_ capture captures
   case Map.lookup func ctx.functions of
     Nothing -> Left (UnknownFunction env.func func)
-    Just f -> exactly (Array.length f.captures) (Array.length captures)
-      (CaptureCount env.func func)
+    Just f -> do
+      exactly (Array.length f.captures) (Array.length captures) (CaptureCount env.func func)
+      traverse_
+        ( \(Tuple i (Tuple a c)) ->
+            if cellOf a == c.holds then Right unit else Left (CaptureCellMismatch env.func func i)
+        )
+        (Array.mapWithIndex Tuple (Array.zip captures f.captures))
+  where
+  -- a capture list is where a cell may stand as itself
+  capture = case _ of
+    M.ALocal local | Map.member (number local) env.cells -> Right unit
+    a -> atom ctx env a
+  cellOf = case _ of
+    M.ALocal local -> Map.lookup (number local) env.cells
+    _ -> Nothing
 
 -- | A function a handler reaches, which has the arity its form gives it.
 clause :: Ctx -> Env -> P.Int -> M.FuncId -> P.Array M.Atom -> Either VerifyError Unit

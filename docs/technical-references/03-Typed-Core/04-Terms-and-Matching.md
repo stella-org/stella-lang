@@ -62,7 +62,7 @@ With `|v̄| = arity` it is a completed structure; with `|v̄| < arity` it is a v
 
 **The body of a type or constraint abstraction must be a value form** (the value restriction). This makes `Λ`, `[τ]`, and `[•]` fully erasable and removes any question of evaluation order at type application. The elaborator eta-expands where necessary.
 
-The right-hand side of a local `letrec` is restricted further in this version (D14).
+**A recursive group is judged by what its right-hand sides read, not by their shape** (D14). Under strict evaluation a binding such as `letrec x = f x` has no meaning; PureScript leaves this to an uninitialized reference at run time, and Stella rejects it in the type checker: a `letrec` and a top-level `rec` group are initialization-safe, each right-hand side reading only the members written before it ([Initialization Safety](10-Initialization.md)). A function value reads nothing as it is initialized,
 
 ```text
 FunVal ::= λ (x : τ) . e
@@ -70,7 +70,7 @@ FunVal ::= λ (x : τ) . e
          | Λ (_ : C) . FunVal
 ```
 
-Under strict evaluation a binding such as `letrec x = f x` has no meaning. PureScript leaves this to an uninitialized reference at run time; Stella rejects it in the type checker. **A top-level `rec` group is judged by what its right-hand sides read instead** ([Initialization Safety](10-Initialization.md)): every group of `FunVal`s passes, and so does a member that is none where nothing reads a member before it is initialized.
+so every group of `FunVal`s passes, and so does a member that is none where nothing reads a member before it is initialized — `letrec { fibAnd = Tuple 0 (λn. … snd fibAnd …) } in e` among them.
 
 ## Join points
 

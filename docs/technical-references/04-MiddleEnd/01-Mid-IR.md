@@ -174,6 +174,10 @@ comp ::= pure atom                                 name a value
        | region k̄ f [ā] @ [v̄]                     open a region, call the body with its identity
        | readCell a i                              the cell at position i of the region a identifies
        | writeCell a i a'                          replace what that cell holds
+       | force a                                   the value the by-need cell a names holds
+
+member ::= x : Rep = closure f [ā]                 a function member
+         | x : Val = need Rep f [ā]                 a by-need cell over the initializer f, holding a value of Rep
 
 callee ::= M.x | M.f | M.Ctor | prim op
 ```
@@ -302,7 +306,7 @@ and jumping to it. A `handle` needs none of that, being a computation.
 ```text
 expr ::= ret a                                     the value of the enclosing function
        | let x : Rep = comp in expr
-       | letrec { x_i : Rep = closure f_i [ā_i] } in expr
+       | letrec { member_i } in expr                   a recursive group, its members in the order written
        | letjoin j (x̄ : Rep) = expr in expr
        | jump j [ā]
        | tail comp                                 a computation in tail position
@@ -366,7 +370,7 @@ become an explicit capture list.
 ```text
 Function ::= { id       : FuncId
              , params   : [ (Local, Rep) ]
-             , captures : [ (Local, Rep) ]
+             , captures : [ (Local, Rep, holds : Rep?) ]
              , body     : expr
              }
 ```
@@ -381,11 +385,26 @@ must be handed the capture list rather than have to compute it. A backend with
 nested functions, such as JavaScript, may ignore the capture list and let its
 host close over the variables; the list stays correct either way.
 
-`letrec` binds a group of closures that may capture one another. A backend
-allocates every closure of the group before filling any capture list, which is
-what a mutually recursive group requires. That a local `letrec` binds function
-values alone (D14) is what makes this safe: each right-hand side is a function
-value, so no capture is read while the group is still being built.
+`letrec` binds a recursive group, its members in the order written: a member that
+is a function value is a closure, and any other a **by-need cell** over an
+initializer, a function of no parameter whose body is the member's right-hand
+side ([Semantics](../03-Typed-Core/06-Semantics.md)). **The form means the order
+it is lowered in**: every closure and every cell is allocated, every capture list
+filled, each cell forced in the order written, and only then the body runs, so
+nothing beside the form states that order. Initialization safety (D14) is what
+makes it sufficient: a member reads only the members before it, filled already,
+and a closure reads a later member only when it is applied, after the group
+([Initialization Safety](../03-Typed-Core/10-Initialization.md)).
+
+**A cell is no value.** Its binder is at `Val`, a cell being no class of value a
+`Rep` describes, and the `Rep` a `need` records is the class of the value the cell
+holds once it is `Ready`. A reference to the member is `force x`, the one
+computation that reads a cell, and a closure capturing the member captures the
+cell, at `Val`, its capture marked with the class the cell holds: inside the
+closure the capture is a cell too, and each reference forces it. The class a
+`need` records is the one translation reads off the member's Core type, which the
+Core type checker established; it is descriptive (D31), and is not checked again
+against what the initializer returns.
 
 **A top-level recursive group captures nothing.** Its members refer to one
 another by global name, so each is a closure over an empty capture list
@@ -719,12 +738,19 @@ them, each in declaration order. Every local a term reads is bound at the point
 that reads it: one never bound and one bound in a branch that does not enclose
 the read are both rejected, and the second passes every check of layout alone.
 
-**Functions a term names.** Every `closure`, `letrec` binding, `handle` body,
+**Functions a term names.** Every `closure`, `letrec` member, `handle` body,
 `region` body, and handler clause names a function of the table and supplies
 exactly the captures that function takes. Each function a `handle` or a `region`
 reaches has the arity its form gives it: none for the body of a `handle`, two for
 a `full` clause, and one for a `fast` clause, for the return clause, and for the
 body of a `region`, which takes the identity. A handler names no operation twice.
+
+**By-need cells.** A local naming a cell — a `need` member's, or a capture marked
+as one — is read by a `force` and stands in a capture list, and nowhere else. A
+`force` reads such a local and nothing else, and a `let` it is bound by is at the
+class the cell holds or at `Val`. A capture list supplies a cell exactly where the
+function takes one, holding the same class, and a function takes a cell at `Val`.
+A `need` member's initializer takes no parameter.
 
 **Regions and cells.** A `region` names no key twice and supplies one initial
 value per key — a lowering pairs the two by position, so a count that disagrees

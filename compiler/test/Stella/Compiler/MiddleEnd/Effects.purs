@@ -166,7 +166,7 @@ spec = describe "Stella.Compiler.MiddleEnd.Effects » the handler slice" do
     functionOf handlerSlice 2 `shouldEqual` Right
       { id: M.FuncId 2
       , params: [ { local: M.Local 0, rep: RepVal } ]
-      , captures: [ { local: M.Local 1, rep: RepClos } ]
+      , captures: [ { local: M.Local 1, rep: RepClos, holds: Nothing } ]
       , body:
           M.ETail
             ( M.CHandle (countingHandler 4 5 [ M.ALocal (M.Local 0) ]) (M.FuncId 3)
@@ -180,7 +180,7 @@ spec = describe "Stella.Compiler.MiddleEnd.Effects » the handler slice" do
     functionOf handlerSlice 3 `shouldEqual` Right
       { id: M.FuncId 3
       , params: []
-      , captures: [ { local: M.Local 0, rep: RepClos } ]
+      , captures: [ { local: M.Local 0, rep: RepClos, holds: Nothing } ]
       , body: M.ETail (M.CCallUnknown (M.ALocal (M.Local 0)) [ M.ACtor unitCtor ])
       }
 
@@ -190,7 +190,7 @@ spec = describe "Stella.Compiler.MiddleEnd.Effects » the handler slice" do
     functionOf handlerSlice 5 `shouldEqual` Right
       { id: M.FuncId 5
       , params: [ { local: M.Local 0, rep: unit' } ]
-      , captures: [ { local: M.Local 1, rep: RepVal } ]
+      , captures: [ { local: M.Local 1, rep: RepVal, holds: Nothing } ]
       , body:
           M.ELet (M.Local 2) RepInt (M.CReadCell (M.ALocal (M.Local 1)) 0)
             ( M.ELet (M.Local 3) RepInt
@@ -268,7 +268,7 @@ spec = describe "Stella.Compiler.MiddleEnd.Effects » the handler slice" do
       functionOf regionModule 2 `shouldEqual` Right
         { id: M.FuncId 2
         , params: [ { local: M.Local 0, rep: RepVal } ]
-        , captures: [ { local: M.Local 1, rep: RepVal } ]
+        , captures: [ { local: M.Local 1, rep: RepVal, holds: Nothing } ]
         , body:
             M.ELet (M.Local 2) RepInt (M.CReadCell (M.ALocal (M.Local 0)) 0)
               ( M.ELet (M.Local 3) RepInt (M.CReadCell (M.ALocal (M.Local 1)) 0)
@@ -288,7 +288,7 @@ spec = describe "Stella.Compiler.MiddleEnd.Effects » the handler slice" do
       functionOf regionModule 5 `shouldEqual` Right
         { id: M.FuncId 5
         , params: [ { local: M.Local 0, rep: unit' } ]
-        , captures: [ { local: M.Local 1, rep: RepVal } ]
+        , captures: [ { local: M.Local 1, rep: RepVal, holds: Nothing } ]
         , body: M.ETail (M.CReadCell (M.ALocal (M.Local 1)) 0)
         }
 

@@ -67,7 +67,7 @@ A number of forms carry no run-time content and are removed before evaluation on
 
 ## Recursive bindings
 
-`letrec { x̄ = v̄ }` allocates an uninitialized location for each `x_i`, evaluates each `v_i`, and writes the result back. A local `letrec` binds function values alone (D14): evaluating each `v_i` reads no `x_j`, so an uninitialized reference cannot occur.
+`letrec { x̄ = ē }` allocates a **by-need cell** for each `x_i`, its initializer suspended, forces the cells in the order written, and only then evaluates its body; evaluating a member's name forces its cell. The group is initialization-safe (D14, [Initialization Safety](10-Initialization.md)): each initializer reads only the members written before it, which are filled already, so an uninitialized reference cannot occur, and each initializer runs once, at its place in the order. The cells are no lazy evaluation. A top-level `rec` group is initialized alike, its members installed in the order written ([Module initialization](#module-initialization)).
 
 ## Handlers and continuations
 
@@ -125,16 +125,18 @@ Two relations are distinguished.
 
 | Relation | On | Preserves types |
 | --- | --- | --- |
-| `G ⊢ e → c` | Core terms, to a configuration | yes, whenever c is a term |
-| `⌊e⌋ →ᵤ …` | erased terms | not applicable; types are gone |
+| `G ⊢ N; e → N'; c` | a store and a Core term, to a store and a configuration | yes, whenever c is a term |
+| `⌊N⌋; ⌊e⌋ →ᵤ …` | erased stores and terms | not applicable; types are gone |
 
-A configuration is either a term or a fault.
+A configuration is either a term or a fault, and **reduction threads a store `N` of by-need cells** through it: a step relates a store and a term to a store and a configuration.
 
 ```text
 c ::= e  |  fault φ
+N ::= ·  |  N, ℓ ↦ s
+s ::= Suspended e  |  Evaluating  |  Ready v
 ```
 
-Preservation constrains only the case in which `c` is a term; a fault has no type to preserve.
+A `letrec` allocates the cells, and only the rules of `letrec`, `force`, and `fill` read or write `N` ([Ordinary reduction](#ordinary-reduction)). **Every other rule leaves the store as it stands and is written without it**: `G ⊢ e → c` stands for `G ⊢ N; e → N; c` at every `N`. Preservation constrains only the case in which `c` is a term; a fault has no type to preserve.
 
 Keeping them apart matters because the coercion forms that erasure removes — `openEff`, `weaken`, `[[κ̄]]` — **change a term's type**. Removing them is not a step of typed reduction.
 
@@ -177,18 +179,22 @@ The order mirrors the three stages of declaration checking ([Modules](../06-Modu
          ∪ every constructor declared by M
          ∪ every foreign implementation δ_f declared by M
 
-  then, folding only the value binding groups in declaration order:
+  then, folding only the value binding groups in declaration order, from the
+  empty store N_0 = ·:
 
-    nonrec x : σκ = e     G_i ⊢ e →* c           (at ambient row ())
+    nonrec x : σκ = e     G_i ⊢ N_i; e →* N_{i+1}; c           (at ambient row ())
                           if c = v:        G_{i+1} = G_i, M.x : σκ = v
                           if c = fault φ:  initialization fails with φ
 
     rec { x̄ : σ̄ = ē }     for j = 1 … n, in the order written:
-                          G_i, M.x_1 : σκ_1 = v_1, …, M.x_{j-1} : σκ_{j-1} = v_{j-1} ⊢ e_j →* c
+                          G_i, M.x_1 : σκ_1 = v_1, …, M.x_{j-1} : σκ_{j-1} = v_{j-1} ⊢ N; e_j →* N'; c
+                          the store threaded from member to member, N_i to N_{i+1}
                           if c = v_j:      M.x_j : σκ_j = v_j is installed
                           if c = fault φ:  initialization fails with φ
                           G_{i+1} = G_i, M.x_1 : σκ_1 = v_1, …, M.x_n : σκ_n = v_n
 ```
+
+**One store is threaded through the fold, and on into the run of `main`**: a value installed in `G` may be a closure reading a cell a local `letrec` allocated while it was evaluated, so the cells outlive the right-hand side that allocated them.
 
 `G_Prim` mirrors `Σ_Prim` on the value side ([Prim and Base](../06-Modules/02-Prim-and-Base.md)). `Prim` is not among the imports — a header's `import Prim` selects names and adds none — so without it a `Prim.Unit` occurring in the module would have nothing to unfold to, and condition (1) of `Σ ⊨ G` would fail. The implementations the runtime ABI is obliged to supply arrive with the imports, since the module that declares them is imported like any other.
 
@@ -204,7 +210,9 @@ A pure primitive may fail. Indexing an array out of bounds is the standard examp
 
 A failure of this kind is **not an effect**. It is not intercepted by `handle`, it does not appear in an effect row, and it is not the `Partial` effect, which is an ordinary handleable effect for non-exhaustive matches (D10). It is a fault, in the same category as exhausting the stack.
 
-Reduction therefore relates a term to a configuration, `G ⊢ e → c`, where `c` is a term or a fault. The rule propagating a fault out of an evaluation context appears with the contexts below.
+Reduction therefore relates a store and a term to a store and a configuration, `G ⊢ N; e → N'; c`, where `c` is a term or a fault. The rule propagating a fault out of an evaluation context appears with the contexts below.
+
+**A by-need cell forced while its own initializer runs is a fault too**, `φ_init`, the initialization fault; an initialization-safe group never reaches it ([Initialization Safety](10-Initialization.md)).
 
 **Which entries may fault, and on which inputs, belongs to the `Base` ABI specification** ([Open Questions](../99-Open-Questions/01-Open-Questions.md)) rather than to Core. Core only records that a fault is a possible outcome of applying a `foreign`.
 
@@ -248,14 +256,15 @@ The third class is what a mutable array behind a pure interface is: `Base.Array.
 **What the annotation says nothing about is the reified class.** `#observ(none)` and returning `IO` are independent and compose: `#observ(none) foreign log : String -> IO Unit` performs nothing when it is applied and merely constructs an action, and the output happens where the drive loop runs that action. Whether an entry returns `IO` is read off the result type and is stated nowhere ([Interface](../05-Backend/03-Interface.md)).
 
 ```text
-Σ ⊨ G   holds when
+Σ; Γ_N ⊨ G   holds when
 
   (1) G covers every global name mentioned by the module under evaluation,
       and by the definitions in G itself
 
-  (2) for each (M.x : forall k̄. σ = v) ∈ G,  under Σ:
+  (2) for each (M.x : forall k̄. σ = v) ∈ G,  under Σ and Γ_N:
         ·, k̄ ; · ; · ⊢ v : σ ! ()
-      that is, a global definition is a well-typed value with no effects
+      that is, a global definition is a well-typed value with no effects,
+      reaching only the by-need cells Γ_N types
 
   (3) for each (M.f : σκ = δ_f) ∈ G, and for every spine ς that is saturated
       for M.f with cursorΣ(M.f, ς) = ⟨ σ ; θ ⟩  (see The spine cursor below),
@@ -270,6 +279,19 @@ The third class is what a mutable array behind a pure interface is: `Base.Array.
                rather than a fault,
                where Σ records #observ(none) for M.f
 ```
+
+**Conformance is relative to the store's types** because a value installed in `G` may be a closure whose body forces a cell a local `letrec` allocated while it was evaluated ([Module initialization](#module-initialization)). It is stable under extending the store: where `Γ_N2` extends `Γ_N`, `Σ; Γ_N ⊨ G` gives `Σ; Γ_N2 ⊨ G`, a value typed under fewer locations being typed under more, so a step that allocates leaves `G` conforming. Conditions (1) and (3) mention no location, and **`Σ ⊨ G` is `Σ; · ⊨ G`**, what an environment owes before any store exists and what an implementation of a `δ_f` is held to.
+
+**The environment a module's fold passes through is not yet conforming**, and holds an invariant of its own. Condition (1) asks for every global the module mentions, which the fold is still installing, and a `rec` group is installed member by member, a closure installed early mentioning a member written after it, latently. So the fold keeps the **initialization invariant** `Σ; Γ_N ⊨ᵢ G`, which is conditions (2) and (3) with (1′) in place of (1):
+
+```text
+  (1′) every global name a definition in G mentions is in G, or is a member,
+       not yet installed, of the rec group being installed
+```
+
+It holds of `G_decl` at `·`, the imports' definitions mentioning nothing of the module and its constructors and foreigns nothing at all, which linking establishes. **Each step of the fold keeps it**: a right-hand side is evaluated under the environment the fold has reached, a `nonrec` mentioning nothing after it and a member of a `rec` group reaching a later member only latently, initialization safety keeping every lookup during the evaluation off one not yet installed; and the value installed is typed under the store reached, conformance's stability under extending the store carrying the rest. **Where a group is installed whole, (1′) is (1) for the definitions in `G`**, every name they mention being installed, a cycle being confined to its group. **Where the fold ends, `Σ; Γ_N ⊨ G` holds**, every global of the module installed, and the run of `main` begins under it.
+
+The properties below are stated of a conforming environment. **During the fold they hold under `⊨ᵢ` in place of `⊨`**, with one premise more for Progress: a lookup of a member not yet installed has no rule, and what keeps evaluation off one is that the group being installed is initialization-safe.
 
 #### An ABI precondition is where condition (3) stops asking
 
@@ -385,7 +407,6 @@ v ::= c
     | Λ (_ : C) . v
     | M.Ctor ς                 a constructor spine
     | M.f ς                    a foreign spine that is not saturated
-    | rec_i(x̄ : σ̄. v̄)         a component of a local recursive group
     | {} | extend k v1 v2
     | inject k v
     | weaken k [τ] v          a value of a wider variant
@@ -438,12 +459,13 @@ A **constructor spine is always a value**, saturated or not: a saturated one is 
 
 ### Run-time forms
 
-Five forms arise during reduction and are never produced by elaboration.
+Six forms arise during reduction and are never produced by elaboration.
 
 ```text
 match θ dt            descending a decision tree
 openEffC [ρ] e        a computation whose effects are bounded by a wider row
-rec_i(x̄ : σ̄. v̄)       the i-th component of a local recursive binding group
+force ℓ               a reference to the member of a local recursive group whose by-need cell is ℓ
+fill ℓ e              the initializer of that cell running, its value to fill the cell
 region⟨ℓ⟩ θ in e      an open region of cells named ℓ, θ a finite map from key to value
 opaque ω [τ]          a value an implementation returned, typed above
 ```
@@ -457,9 +479,13 @@ The last is the only one a `δ_f` produces, and the only one that is a value rat
   ────────────────────────────────
   Γ;Δ ⊢ openEffC [ρ] e : τ ! (r ⊎ ρ)
 
-  Γ' = Γ, x̄ : σ̄     each i: v_i is a FunVal (D14) and Γ'; Δ ⊢ v_i : σ_i ! ()
-  ──────────────────────────────────────────────────────────────────────────
-  Γ;Δ ⊢ rec_i(x̄ : σ̄. v̄) : σ_i ! ρ
+  ( ℓ : σ ) ∈ Γ_N
+  ───────────────────────
+  Γ;Δ ⊢ force ℓ : σ ! ρ
+
+  ( ℓ : σ ) ∈ Γ_N    Γ;· ⊢ e : σ ! ()
+  ──────────────────────────────────
+  Γ;Δ ⊢ fill ℓ e : σ ! ρ
 
   ( region ℓ : ι ) ∈ Γ_R      ι = ( k̄ : σ̄ )      dom(θ) = { k̄ }
   each j:  Γ;· ⊢ θ(k_j) : σ_j ! ()
@@ -471,9 +497,20 @@ The last is the only one a `δ_f` produces, and the only one that is a value rat
 
 `openEffC [ρ] e` widens the **ambient row of a computation**, where `openEff` widens the **effect row inside a function's type**. Both are needed and neither subsumes the other: `openEff` is what allows a pure function to be passed where a wider arrow type is expected, and `openEffC` is what allows the result of applying such a function to sit in a context whose ambient row is the wider one.
 
-`rec_i` carries the type annotations of the group it came from, which is what makes its typing rule derivable and hence what makes preservation hold for `letrec`. It is a **local** form only. A top-level `rec` group installs its members into `G` in the order written, and its recursive references are global names.
+**A `letrec` allocates a location for each member**, and the locations allocated so far, each with the type of its member, form a global context `Γ_N` of entries `ℓ : σ`, which run-time terms are typed under as they are under `Γ_R`. **A store is typed by it**, each cell holding a term of its location's type:
 
-`region⟨ℓ⟩ θ in e` is a region whose initial values have been evaluated. **It binds nothing**: its rule is the source rule ([Typing Rules](05-Typing-Rules.md)) with `ℓ ∈ Γ_R` in place of the binder and `θ` in place of the initial values. It carries `θ` — **the cells themselves, by value** — together with the name the opening allocated, which is what makes its rule derivable and hence what makes preservation hold across a write (D36). The values live here and nowhere else: there is no store, no address, and no two ways to reach one cell of one frame.
+```text
+  dom(N) = dom(Γ_N)
+  each (ℓ : σ) ∈ Γ_N:   N(ℓ) = Suspended e   with  ·;· ⊢ e : σ ! ()
+                    or  N(ℓ) = Ready v       with  ·;· ⊢ v : σ ! ()
+                    or  N(ℓ) = Evaluating
+  ──────────────────────────────────────────────────
+  ⊢ N : Γ_N
+```
+
+An `Evaluating` cell's initializer is the term a `fill ℓ e` stands for, typed where it stands. **A location is no value**: it stands only as the operand of `force` and `fill`, which is what keeps a member's name, once substituted, a reference that reads its cell. They are **local** forms only. A top-level `rec` group installs its members into `G` in the order written, and its recursive references are global names.
+
+`region⟨ℓ⟩ θ in e` is a region whose initial values have been evaluated. **It binds nothing**: its rule is the source rule ([Typing Rules](05-Typing-Rules.md)) with `ℓ ∈ Γ_R` in place of the binder and `θ` in place of the initial values. It carries `θ` — **the cells themselves, by value** — together with the name the opening allocated, which is what makes its rule derivable and hence what makes preservation hold across a write (D36). The values live here and nowhere else: a region's cells have no store, no address, and no two ways to reach one cell of one frame.
 
 **One name may label several frames.** A continuation copies its segment as it stands, frames and names included, so applying one twice puts two frames named `ℓ` into the term. Every frame of a name descends from one opening and carries a `θ` typed against the one layout `Γ_R(ℓ)`. Which of them a reference reaches is settled with the rules for cells ([Cells](#cells)).
 
@@ -611,12 +648,13 @@ Ev ::= []
      | region [ℓ] ( k̄ : σ̄ ) @ ( v̄, Ev, ē ) in e
      | region⟨ℓ⟩ θ in Ev
      | writeCell ℓ.k Ev
+     | fill ℓ Ev
 ```
 
 ```text
-  G ⊢ e → e'                        G ⊢ e → fault φ     Ev ≠ []
-  ──────────────────                ─────────────────────────────
-  G ⊢ Ev[e] → Ev[e']                G ⊢ Ev[e] → fault φ
+  G ⊢ N; e → N'; e'                 G ⊢ N; e → N'; fault φ     Ev ≠ []
+  ────────────────────────          ────────────────────────────────────
+  G ⊢ N; Ev[e] → N'; Ev[e']         G ⊢ N; Ev[e] → N'; fault φ
 ```
 
 That `handle Ev with h` is a context expresses evaluation proceeding **under** an installed handler. A `region` whose initial values are not yet values is a context over them, evaluated outside the region; once they are, the opening step replaces the binder with a frame, and `region⟨ℓ⟩ θ in Ev` is evaluation proceeding **within** an open region. That `letjoin … in Ev` is one lets the body of a join point binding be evaluated normally. A fault propagates out of every context, including `handle` and a region frame, since no handler can intercept it.
@@ -681,19 +719,24 @@ The whole term is typed at ambient row `( E )`, and the rule for `let` requires 
 
 **Foreign and constructor application** is given by the spine rules above. A foreign reduces once its spine is saturated, and `δ_f` yields a value or a fault.
 
-**Recursive bindings** install recursive closures, and a closure unfolds only where it is eliminated.
+**Recursive bindings** allocate by-need cells, held in a store `N` the configuration carries alongside the term. A cell is `Suspended e`, its initializer not yet run; `Evaluating`, the initializer running; or `Ready v`. Every other rule leaves `N` as it is and is written without it. `N` is the reduction's own state and holds nothing a `δ_f` writes, so what [An observational effect is outside what this relation models](#an-observational-effect-is-outside-what-this-relation-models) says is untouched.
 
 ```text
-  letrec { x̄ : σ̄ = v̄ } in e          →  e[ x̄ := rec̄ ]    where rec_i = rec_i(x̄ : σ̄. v̄)
+  G ⊢ N; letrec { x̄ : σ̄ = ē } in e
+      →  N, ℓ₁ ↦ Suspended (e₁[ x̄ := force ℓ̄ ]), …, ℓₙ ↦ Suspended (eₙ[ x̄ := force ℓ̄ ]);
+         force ℓ₁ ; … ; force ℓₙ ; e[ x̄ := force ℓ̄ ]                      ℓ̄ fresh
 
-  rec_i(x̄ : σ̄. v̄) w                  →  (v_i[ x̄ := rec̄ ]) w
-  rec_i(x̄ : σ̄. v̄) [σ]                →  (v_i[ x̄ := rec̄ ]) [σ]
-  rec_i(x̄ : σ̄. v̄) [•]                →  (v_i[ x̄ := rec̄ ]) [•]
+  G ⊢ N; force ℓ   →  N; v                           N(ℓ) = Ready v
+  G ⊢ N; force ℓ   →  N[ℓ ↦ Evaluating]; fill ℓ e     N(ℓ) = Suspended e
+  G ⊢ N; fill ℓ v  →  N[ℓ ↦ Ready v]; v
+  G ⊢ N; force ℓ   →  N; fault φ_init                N(ℓ) = Evaluating
 ```
 
-Unfolding is confined to elimination position, so the rules do not overlap and no term steps to itself. A local `letrec` binding function values alone (D14) makes each `v_i` a function value, which is what allows initialization to install `rec_i` without evaluating anything; it does **not** claim that a recursive computation terminates, and Core makes no such claim anywhere.
+`e₁ ; e₂` is `let _ = e₁ in e₂`, and `fill ℓ □` is an evaluation context. A member's name given to a constructor, put in a record, or returned by the body is evaluated there, as any variable is, and so forces its cell: `Cons 1 ys` forces `ys`'s cell before the constructor is built. **Under a λ a reference stays `force ℓ`, unevaluated** until the closure is applied. An implementation realizes that as a closure capturing the cell, which is the one place a cell itself is held ([Mid IR](../04-MiddleEnd/01-Mid-IR.md)).
 
-An implementation allocates locations and back-patches rather than duplicating the binding group. The two agree because no `v_i` reads an `x_j` while it is itself being installed.
+**Initialization safety makes the cells strict.** The judgement bounds the cells evaluating an initializer forces by the members it reads, which a safe group's sequence has filled before it. So every `force` the sequence performs finds its cell `Suspended`, every other `force` during initialization finds its cell `Ready`, every `force` after the group finds every cell `Ready`, and no initialization fault is reached. Each initializer runs once, at its place in the order, and a divergence or a fault of one is observed where the group is initialized, as a `nonrec`'s is. A group of function values is the case in which every cell is filled at once with the closure its λ is; it does **not** claim that a recursive computation terminates, and Core makes no such claim anywhere.
+
+**An implementation keeps a cell only where a member is no function value.** A function member's force fills its cell with the closure at once and reads nothing, and by initialization safety a closure allocated before its place in the order is reached only from code that runs after the group, so a backend allocates the closures of a group first and fills their capture lists, a capture of a member that is a cell being the cell ([Mid IR](../04-MiddleEnd/01-Mid-IR.md)).
 
 ### Pattern matching
 
@@ -938,34 +981,36 @@ An erased handler carries the key alone: the payload of the element is what says
 
 **The `full` and `fast` markers survive erasure.** They carry no type information; they say what a clause binds and which reduction rule applies to it, and a backend lowers the two differently — a `fast` clause needs no representation of a continuation at all. Core writes the marker on every clause, so which rule applies is settled in the erased term as well.
 
-A variant value loses its `weaken` wrappers, so an erased `switchKey` dispatches on the key the value carries directly. Recursive closures survive erasure, since `rec_i(x̄. v̄)` carries computational content.
+A variant value loses its `weaken` wrappers, so an erased `switchKey` dispatches on the key the value carries directly. By-need cells survive erasure, a `force` and a `fill` carrying computational content: `⌊force ℓ⌋ = force ℓ`, `⌊fill ℓ e⌋ = fill ℓ ⌊e⌋`, and `⌊N⌋` erases the term each cell holds.
 
 ## Properties
 
 The following are stated as the properties the implementation is expected to have. They are not proved here. [Implementation Plan](../01-Introduction/04-Implementation-Plan.md) describes how each becomes a property test.
 
-Every property assumes three things, and each does work the others do not (above). Without `Σ ⊨ G` the global environment may supply an ill-typed definition or a `δ_f` that returns the wrong thing. Without `G` being **Core-modelled** the relation gives a saturated `foreign` no step at all, so there is no reduction sequence to quantify over — which is why an environment holding `Base.Array.unsafeSet` is outside every statement below, and one holding `Base.String.codePointAt` is not. Without `e` **respecting preconditions** a step is reached whose outcome the ABI declined to fix, so what follows it is not a term these statements describe.
+Every property assumes three things, and each does work the others do not (above), together with a store its types type, `⊢ N : Γ_N`, which conformance and the term are read under. Without `Σ; Γ_N ⊨ G` the global environment may supply an ill-typed definition or a `δ_f` that returns the wrong thing. Without `G` being **Core-modelled** the relation gives a saturated `foreign` no step at all, so there is no reduction sequence to quantify over — which is why an environment holding `Base.Array.unsafeSet` is outside every statement below, and one holding `Base.String.codePointAt` is not. Without `e` **respecting preconditions** a step is reached whose outcome the ABI declined to fix, so what follows it is not a term these statements describe.
 
 **The third is the one a reader is likely to want narrower, and it cannot be.** It is not a condition on `G`, since the same environment runs a program that reads only written slots and one that does not; and it is not decidable here, since nothing in these documents analyses which slots a program has written. **What it is, is a debt the library owes**, and `Data.Array` is where it is paid: an array leaves its constructors with every slot written, and an application reaching `Base.Array.unsafeIndex` through that library is a term that respects preconditions without its author having thought about it.
 
-**Preservation.** If `Σ ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `Γ; Δ ⊢ e : τ ! ρ`, and `G ⊢ e → e2` for a **term** `e2`, then `Γ; Δ ⊢ e2 : τ ! ρ`.
+**Preservation.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ N : Γ_N`, `Γ; Δ ⊢ e : τ ! ρ` under `Γ_N`, and `G ⊢ N; e → N2; e2` for a **term** `e2`, then there is a `Γ_N2` extending `Γ_N` with `⊢ N2 : Γ_N2`, `Σ; Γ_N2 ⊨ G`, and `Γ; Δ ⊢ e2 : τ ! ρ` under `Γ_N2`.
 
 A step to `fault φ` is outside the statement: a fault carries no type.
 
-Both the type and the ambient row are preserved exactly. Widening is never discarded by a step: applying through an `openEff` moves it to `openEffC`, and `openEffC` is discharged only against a value, whose type does not mention the ambient row. Handling an operation likewise leaves the row unchanged, since the clause body is typed at the residual row that the `handle` already had. `Γ_R` is the one thing a step changes: opening a region extends it with the name it allocates, and the statement is read under the extended one, every name already in it keeping its layout.
+Both the type and the ambient row are preserved exactly. Widening is never discarded by a step: applying through an `openEff` moves it to `openEffC`, and `openEffC` is discharged only against a value, whose type does not mention the ambient row. Handling an operation likewise leaves the row unchanged, since the clause body is typed at the residual row that the `handle` already had. `Γ_R` and `Γ_N` are what a step changes: opening a region extends `Γ_R` with the name it allocates, and a `letrec` extends `Γ_N` with the locations it allocates, and the statement is read under the extended ones, every name and every location already in them keeping its layout or its type. A `force` and a `fill` change the state of a cell and not its type.
 
-**Progress.** If `Σ ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, and `·; · ⊢ e : τ ! ()`, then `e` is a value, or there exists `e2` with `G ⊢ e → e2`, or `G ⊢ e → fault φ` for some fault φ.
+**Progress.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ N : Γ_N`, and `·; · ⊢ e : τ ! ()` under `Γ_N`, then `e` is a value, or there exist `N2` and `e2` with `G ⊢ N; e → N2; e2`, or `G ⊢ N; e → N2; fault φ` for some fault φ. A `force` has a rule in every state of its cell, and a `fill` of a value always steps.
 
-The third case is what admitting faults in condition (3) of `Σ ⊨ G` buys. A saturated `foreign` whose implementation fails would otherwise be neither a value nor a redex.
+**Initialization safety.** If `G_decl` holds the initialization invariant at `·`, which linking establishes, every recursive group of a program — in its modules' right-hand sides and in its entry point — is initialization-safe ([Initialization Safety](10-Initialization.md)), and the program respects preconditions, then neither the module fold nor the run of `main` that follows it, threading one store from `·`, reaches `φ_init`: every `force` a group's own sequence performs finds its cell `Suspended`, and every other finds its cell `Ready`.
+
+The third case of Progress is what admitting faults in condition (3) of `Σ ⊨ G` buys. A saturated `foreign` whose implementation fails would otherwise be neither a value nor a redex.
 
 Condition (1) of `Σ ⊨ G` is what linking establishes. Without it a global name has nothing to unfold to, and the property fails for a reason unrelated to the type system.
 
-**Effect safety.** If `Σ ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, and `·; · ⊢ e : τ ! ()`, then no reduction sequence from `e` reaches a term of the form `Ev_k[ perform k.op [σ̄] v ]` in which no handler of key `k` encloses the hole.
+**Effect safety.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ N : Γ_N`, and `·; · ⊢ e : τ ! ()` under `Γ_N`, then no reduction sequence from `N; e` reaches a store and a term of the form `Ev_k[ perform k.op [σ̄] v ]` in which no handler of key `k` encloses the hole. A cell's initializer is checked at row `()`, so forcing one inside `e` performs nothing outside the handlers it installs itself.
 
 The claim is **not** that operations are never performed. A term may be well typed at ambient row `()` and still perform operations internally: `handle (perform E.op v) with h` is such a term, and its reduction does reach the clause for `op`. What the empty row guarantees is that no operation **escapes**: every `perform` that runs is enclosed by a handler for its key, so evaluation never gets stuck on an unhandled operation.
 
 This is the property the whole design rests on, and it is the one that testing is least likely to reveal. A violation does not crash: it produces a program that silently performs effects it declared it would not. D7 places effect rows on arrows, D20 keeps `IO` out of the effect world, and D23 forbids effectful `foreign` arrows, all in service of this single statement. Note that D23 alone is not sufficient: a conforming `δ_f`, condition (3) of `Σ ⊨ G`, is equally required, since `handle` intercepts only `perform` while a `foreign` application calls its implementation directly.
 
-**Erasure.** If `Σ ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, and `G ⊢ e → e2`, then `⌊e⌋` reduces to `⌊e2⌋` in zero or one steps under the erased relation, the zero-step case being a step that only introduced or discharged a coercion. If `G ⊢ e → fault φ` then `⌊e⌋` reduces to the same fault `φ`; an erased evaluator and a typed one fail identically. The value restriction is what makes this hold: the body of a type or constraint abstraction is already a value, so erasing the abstraction cannot move evaluation to a different point.
+**Erasure.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ N : Γ_N`, and `G ⊢ N; e → N2; e2`, then `⌊N⌋; ⌊e⌋` reduces to `⌊N2⌋; ⌊e2⌋` in zero or one steps under the erased relation, the zero-step case being a step that only introduced or discharged a coercion. If `G ⊢ N; e → N2; fault φ` then `⌊N⌋; ⌊e⌋` reduces to `⌊N2⌋; fault φ`, the same fault; an erased evaluator and a typed one fail identically. The value restriction is what makes this hold: the body of a type or constraint abstraction is already a value, so erasing the abstraction cannot move evaluation to a different point.
 
 **A continuation applied twice is covered like any other term.** The reduction rule for a `full` clause places no bound on applications of `k_i`, so a term applying it twice is well typed and has a defined reduction sequence, and the properties above hold of it. A backend that does not reproduce that sequence does not conform (D18).

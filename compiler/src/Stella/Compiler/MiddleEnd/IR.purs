@@ -24,7 +24,9 @@ module Stella.Compiler.MiddleEnd.IR
   , ClauseForm(..)
   , OpClauseRef
   , Function
-  , RecBinding
+  , RecBinding(..)
+  , Capture
+  , recLocal
   , CtorEntry
   , EffectEntry
   , ForeignEntry
@@ -64,6 +66,15 @@ newtype FuncId = FuncId P.Int
 type Binder =
   { local :: Local
   , rep :: Rep
+  }
+
+-- | A capture a function takes. **A by-need cell is captured as the cell**, at
+-- | `Val`, `holds` saying so and giving the class of the value it holds once it is
+-- | `Ready`; `Nothing` is any other capture.
+type Capture =
+  { local :: Local
+  , rep :: Rep
+  , holds :: Maybe Rep
   }
 
 -- | A value denoted without computing, allocating, or performing anything.
@@ -147,14 +158,20 @@ data Comp
   -- | Replace what that cell holds. The value is `Prim.Unit`, a write being done
   -- | for its effect on the region rather than for a result of its own.
   | CWriteCell Atom P.Int Atom
+  -- | The value the by-need cell the atom names holds, entering its initializer
+  -- | where it is `Suspended`. The atom names a cell and nothing else.
+  | CForce Atom
 
 -- | The body of a function, of a join point, or of a branch.
 data Expr
   = ERet Atom
   | ELet Local Rep Comp Expr
-  -- | A group of closures that may capture one another. Every closure of the
-  -- | group is allocated before any capture list is filled, which guardedness
-  -- | (D14) is what makes safe.
+  -- | A recursive group, its members in the order written: closures, and
+  -- | by-need cells over initializers. **Every closure and every cell is
+  -- | allocated, then every capture list filled, then each cell forced in the
+  -- | order written, and only then the body runs**; that order is what the form
+  -- | means, so nothing beside it states it. Initialization safety (D14) is what
+  -- | makes it sufficient: a member reads only the members before it.
   | ELetRec (P.Array RecBinding) Expr
   | ELetJoin JoinId (P.Array Binder) Expr Expr
   | EJump JoinId (P.Array Atom)
@@ -171,12 +188,20 @@ data Expr
   | ESwitchKey Atom (P.Array KeyBranch) (Maybe Expr)
   | EIf Atom Expr Expr
 
-type RecBinding =
-  { local :: Local
-  , rep :: Rep
-  , func :: FuncId
-  , captures :: P.Array Atom
-  }
+-- | A member of a recursive group. A closure is bound at its `Rep`; a by-need
+-- | cell is bound at `Val`, a cell being no class of value a `Rep` describes,
+-- | and `holds` is the class of the value it holds once its initializer, a
+-- | function of no parameter, has returned. That class is the one translation
+-- | reads off the member's Core type, and is not checked against what the
+-- | initializer returns.
+data RecBinding
+  = RecClosure { local :: Local, rep :: Rep, func :: FuncId, captures :: P.Array Atom }
+  | RecNeed { local :: Local, holds :: Rep, func :: FuncId, captures :: P.Array Atom }
+
+recLocal :: RecBinding -> Local
+recLocal = case _ of
+  RecClosure b -> b.local
+  RecNeed b -> b.local
 
 type CtorBranch =
   { ctor :: Qualified Ident
@@ -223,7 +248,7 @@ type OpClauseRef =
 type Function =
   { id :: FuncId
   , params :: P.Array Binder
-  , captures :: P.Array Binder
+  , captures :: P.Array Capture
   , body :: Expr
   }
 
@@ -358,6 +383,12 @@ derive instance Generic Expr _
 
 instance Show Expr where
   show x = genericShow x
+
+derive instance Eq RecBinding
+derive instance Generic RecBinding _
+
+instance Show RecBinding where
+  show = genericShow
 
 derive instance Eq GlobalInit
 derive instance Generic GlobalInit _

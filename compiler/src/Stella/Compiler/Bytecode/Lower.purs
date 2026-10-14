@@ -355,6 +355,10 @@ comp d = case _ of
     b <- atomReg atom
     pure (a.code <> b.code <> [ CSET d a.reg index b.reg ])
 
+  M.CForce cell -> do
+    a <- atomReg cell
+    pure (a.code <> [ FORCE d a.reg ])
+
 -- | What a `HNDL` names: the handler's entry in the module's table, and the
 -- | registers its functions arrive in.
 -- |
@@ -472,13 +476,35 @@ expr = case _ of
     node <- expr rest
     pure (node { code = code <> node.code })
 
-  -- every closure of the group is allocated before any capture list is filled,
-  -- which is what a member capturing its neighbours requires
+  -- every closure and every cell of the group is allocated before any capture
+  -- list is filled, which is what a member capturing its neighbours requires,
+  -- and the cells are forced in the order written before the body runs
   M.ELetRec bindings rest -> do
-    let allocate b = CLOSN (regOfLocal b.local) (funcIxOf b.func) (Array.length b.captures)
-    fills <- traverse fillCaptures bindings
+    members <- traverse allocated bindings
+    fills <- traverse (\m -> fillCaptures m.closure m.captures) members
+    forces <- traverse forced (Array.mapMaybe need bindings)
     node <- expr rest
-    pure (node { code = map allocate bindings <> Array.concat fills <> node.code })
+    pure (node { code = Array.concatMap _.allocate members <> Array.concat fills <> forces <> node.code })
+    where
+    -- a cell's initializer is a closure of its own, in a register of its own,
+    -- the cell over it in the member's
+    allocated = case _ of
+      M.RecClosure b ->
+        pure { allocate: [ CLOSN (regOfLocal b.local) (funcIxOf b.func) (Array.length b.captures) ], closure: regOfLocal b.local, captures: b.captures }
+      M.RecNeed b -> do
+        initializer <- freshReg RepClos
+        pure
+          { allocate: [ CLOSN initializer (funcIxOf b.func) (Array.length b.captures), NEED (regOfLocal b.local) initializer ]
+          , closure: initializer
+          , captures: b.captures
+          }
+    need = case _ of
+      M.RecNeed b -> Just b
+      M.RecClosure _ -> Nothing
+    -- what the group's own force gives is read again where it is wanted
+    forced b = do
+      r <- freshReg b.holds
+      pure (FORCE r (regOfLocal b.local))
 
   M.ELetJoin joinId params body rest -> do
     definition <- expr body
@@ -521,10 +547,10 @@ expr = case _ of
     alt <- expr alternative
     pure { code: a.code, tail: BRIF a.reg c alt }
 
-fillCaptures :: M.RecBinding -> L (P.Array Instr)
-fillCaptures b = do
-  loaded <- traverse atomReg b.captures
-  let sets = Array.mapWithIndex (\i l -> SETCAP (regOfLocal b.local) i l.reg) loaded
+fillCaptures :: Reg -> P.Array M.Atom -> L (P.Array Instr)
+fillCaptures closure captures = do
+  loaded <- traverse atomReg captures
+  let sets = Array.mapWithIndex (\i l -> SETCAP closure i l.reg) loaded
   pure (Array.concatMap _.code loaded <> sets)
 
 ctorCase :: M.CtorBranch -> L B.CtorCase
@@ -580,15 +606,19 @@ captureCode f =
 -- | The `Rep` Mid IR wrote on every binding of a function, by register.
 localReps :: M.Function -> Map P.Int Rep
 localReps f =
-  foldl binder (foldl binder Map.empty f.params) f.captures # \acc -> body acc f.body
+  foldl binder (foldl binder Map.empty f.params) (map (\c -> { local: c.local, rep: c.rep }) f.captures) # \acc -> body acc f.body
   where
   binder acc b = case b.local of M.Local n -> Map.insert n b.rep acc
+  -- a cell's register holds the cell, at `Val`
+  member acc = case _ of
+    M.RecClosure b -> case b.local of M.Local n -> Map.insert n b.rep acc
+    M.RecNeed b -> case b.local of M.Local n -> Map.insert n RepVal acc
 
   body acc = case _ of
     M.ERet _ -> acc
     M.ELet (M.Local n) rep _ rest -> body (Map.insert n rep acc) rest
     M.ELetRec bindings rest ->
-      body (foldl (\a b -> case b.local of M.Local n -> Map.insert n b.rep a) acc bindings) rest
+      body (foldl member acc bindings) rest
     M.ELetJoin _ params definition rest ->
       body (body (foldl binder acc params) definition) rest
     M.EJump _ _ -> acc

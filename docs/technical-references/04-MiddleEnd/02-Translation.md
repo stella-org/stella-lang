@@ -485,9 +485,13 @@ long as it picks one and uses it on both sides.
 A lambda nested inside a run's body lifts in turn, an inner one's free variables
 becoming captures of the outer as well where it needs them.
 
-`LetRec` produces a group of closures. Each right-hand side is a function value,
-as a local `letrec` binds alone (D14), which is what allows every closure of the
-group to be allocated before any capture list is filled.
+`LetRec` produces a recursive group, its members in the order written. **A member
+whose right-hand side is a lambda once erasure has looked through the wrappers is
+a closure**, lifted as any lambda is, and any other a by-need cell over an
+initializer of no parameter, its whole right-hand side lifted — the shape
+deciding, as it does for a global. The cell's member is bound at `Val`, holding
+the class its Core type gives; a reference to it is a `force`, and a closure
+capturing it captures the cell, marked as one ([Mid IR](01-Mid-IR.md)).
 
 ## Declarations and module initialization
 

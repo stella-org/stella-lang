@@ -25,6 +25,7 @@
 -- | | `unitValue` | `Prim.Unit`, which no module declares |
 -- | | `unboxed`, `boxMatched`, `addCalled`, `addPartial` | a known call, a constructor, a dispatch, and a partial application reaching into another module |
 -- | | `dictTwice`, `mutualPair` | recursive groups of records whose closures read the group, one member and two |
+-- | | `localDict`, `localPair`, `localMixed` | the same groups bound locally, by-need cells, and a function and a cell capturing each other |
 module Test.Stella.Compiler.Fixtures.Programs
   ( intName
   , libName
@@ -241,6 +242,9 @@ tested =
   , "addPartial"
   , "dictTwice"
   , "mutualPair"
+  , "localDict"
+  , "localPair"
+  , "localMixed"
   ]
 
 mainModule :: Module P.Int
@@ -316,6 +320,17 @@ mainModule =
       , nonrec 34 "dictTwice" int $ app (RecordSelect 0 (symbolKey "twice") (global (inMain "dict"))) [ lit 5 ]
       , DeclRec 35 [ pairMember "first" 1 "second", pairMember "second" 2 "first" ]
       , nonrec 36 "mutualPair" int $ intOp "add" (app (RecordSelect 0 (symbolKey "other") (global (inMain "first"))) [ lit 10 ]) (app (RecordSelect 0 (symbolKey "other") (global (inMain "second"))) [ lit 20 ])
+      -- the same groups bound locally, each member that is no function a by-need
+      -- cell, and a group of a function and a cell capturing each other
+      , nonrec 37 "localDict" int $ LetRec 0 [ { name: Ident "dict", ty: dictTy, value: dictOver (var "dict") } ]
+          (app (RecordSelect 0 (symbolKey "twice") (var "dict")) [ lit 5 ])
+      , nonrec 38 "localPair" int $ LetRec 0 [ pairOver "first" 1 (var "second"), pairOver "second" 2 (var "first") ]
+          (intOp "add" (app (RecordSelect 0 (symbolKey "other") (var "first")) [ lit 10 ]) (app (RecordSelect 0 (symbolKey "other") (var "second")) [ lit 20 ]))
+      , nonrec 39 "localMixed" int $ LetRec 0
+          [ { name: Ident "go", ty: pureFn int int, value: lam "n" int (intOp "add" (RecordSelect 0 (symbolKey "base") (var "table")) (var "n")) }
+          , { name: Ident "table", ty: tableTy, value: RecordExtend 0 (symbolKey "base") (lit 40) (RecordExtend 0 (symbolKey "step") (var "go") (RecordEmpty 0)) }
+          ]
+          (app (RecordSelect 0 (symbolKey "step") (var "table")) [ lit 2 ])
       ]
   }
 
@@ -324,11 +339,29 @@ dictTy :: Type
 dictTy = recordOf [ Tuple (symbolKey "twice") (pureFn int int), Tuple (symbolKey "once") (pureFn int int) ]
 
 dictBody :: Expr P.Int
-dictBody =
+dictBody = dictOver (global (inMain "dict"))
+
+-- | The record, reaching itself through the reference given.
+dictOver :: Expr P.Int -> Expr P.Int
+dictOver self =
   RecordExtend 0 (symbolKey "twice") (lam "n" int (app once [ app once [ var "n" ] ]))
     (RecordExtend 0 (symbolKey "once") (lam "n" int (intOp "add" (var "n") (lit 1))) (RecordEmpty 0))
   where
-  once = RecordSelect 0 (symbolKey "once") (global (inMain "dict"))
+  once = RecordSelect 0 (symbolKey "once") self
+
+-- | A local `{ k: k, other: λn. n + peer.k }`, reaching its peer through the
+-- | reference given.
+pairOver :: P.String -> P.Int -> Expr P.Int -> { name :: Ident, ty :: Type, value :: Expr P.Int }
+pairOver name k peer =
+  { name: Ident name
+  , ty: pairTy
+  , value: RecordExtend 0 (symbolKey "k") (lit k)
+      (RecordExtend 0 (symbolKey "other") (lam "n" int (intOp "add" (var "n") (RecordSelect 0 (symbolKey "k") peer))) (RecordEmpty 0))
+  }
+
+-- | `{ base: Int, step: Int -> Int }`.
+tableTy :: Type
+tableTy = recordOf [ Tuple (symbolKey "base") int, Tuple (symbolKey "step") (pureFn int int) ]
 
 -- | `{ k: k, other: λn. n + peer.k }`, a member of a group of two reading the
 -- | other only under its λ.
@@ -640,6 +673,16 @@ faultCases =
   , ( f "fault-recursive-initializer" "Base.Int.quot by zero initializing a recursive group nothing refers to" selfTy
         (let' "z" int (call intName "quot" [ lit 1, lit 0 ]) (RecordExtend 0 (symbolKey "self") (lam "n" int (app (RecordSelect 0 (symbolKey "self") (global (inMain "faulted"))) [ var "n" ])) (RecordEmpty 0)))
     ) { recursive = true }
+  -- a local group is initialized where it stands, before its body
+  , f "fault-local-recursive-initializer" "Base.Int.quot by zero initializing a local recursive group its body does not read" int
+      ( LetRec 0
+          [ { name: Ident "bad"
+            , ty: selfTy
+            , value: let' "z" int (call intName "quot" [ lit 1, lit 0 ]) (RecordExtend 0 (symbolKey "self") (lam "n" int (app (RecordSelect 0 (symbolKey "self") (var "bad")) [ var "n" ])) (RecordEmpty 0))
+            }
+          ]
+          (lit 0)
+      )
   ]
   where
   f name description ty value = { name, description, recursive: false, ty, value }
@@ -723,6 +766,10 @@ expected =
   , Tuple "dictTwice" (EInt 7)
   -- (10 + 2) + (20 + 1)
   , Tuple "mutualPair" (EInt 33)
+  , Tuple "localDict" (EInt 7)
+  , Tuple "localPair" (EInt 33)
+  -- 40 + 2, `go` reading the cell `table` it was allocated before
+  , Tuple "localMixed" (EInt 42)
   ]
   where
   cons x xs = EData "Main.Cons" [ EInt x, xs ]

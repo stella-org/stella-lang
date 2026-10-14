@@ -986,11 +986,29 @@ spec = describe "TypedCore.Check" do
         `shouldEqual` Left (UnboundJoin (JoinName "j"))
 
   describe "recursive bindings" do
-    it "refuses a right-hand side that is not a function value" do
-      -- under strict evaluation `letrec x = x` has no meaning
+    it "admits a right-hand side that is no function value and reads nothing before it is initialized" do
       inferAt TRowEmpty
         (LetRec unit [ { name: Ident "x", ty: int, value: oneLit } ] (var "x"))
-        `shouldEqual` Left (NotAFunctionValue (Ident "x"))
+        `shouldEqual` Right int
+
+    it "refuses a right-hand side reading itself, or a member written after it" do
+      -- under strict evaluation `letrec x = x` has no meaning
+      inferAt TRowEmpty
+        (LetRec unit [ { name: Ident "x", ty: int, value: var "x" } ] (var "x"))
+        `shouldEqual` Left (LocalReadBeforeInitialized (Ident "x") (Ident "x"))
+      inferAt TRowEmpty
+        (LetRec unit [ { name: Ident "y", ty: int, value: var "z" }, { name: Ident "z", ty: int, value: oneLit } ] (var "y"))
+        `shouldEqual` Left (LocalReadBeforeInitialized (Ident "y") (Ident "z"))
+      inferAt TRowEmpty
+        (LetRec unit [ { name: Ident "z", ty: int, value: oneLit }, { name: Ident "y", ty: int, value: var "z" } ] (var "y"))
+        `shouldEqual` Right int
+
+    it "checks a right-hand side under no join point, so that none jumps out of its group" do
+      inferAt TRowEmpty
+        ( LetJoin unit (JoinName "j") [] int oneLit
+            (LetRec unit [ { name: Ident "x", ty: int, value: Jump unit (JoinName "j") [] } ] (var "x"))
+        )
+        `shouldEqual` Left (UnboundJoin (JoinName "j"))
 
     it "accepts one that is" do
       inferAt TRowEmpty

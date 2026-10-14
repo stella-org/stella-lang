@@ -195,10 +195,14 @@ inFunction func (T body) = T \s ->
 -- The context ----------------------------------------------------------------
 
 -- | What a Core variable stands for. A `let` whose right-hand side is already an
--- | atom binds an alias, so not every variable is a local.
+-- | atom binds an alias, so not every variable is a local. **A member of a local
+-- | recursive group that is no function value is a by-need cell**, at `Val`,
+-- | `cell` giving the class of the value it holds, and a reference to it is a
+-- | force of the cell.
 type Bound =
   { atom :: M.Atom
   , rep :: Rep
+  , cell :: Maybe Rep
   }
 
 type Ctx =
@@ -374,11 +378,11 @@ atomizeNamed ctx named expr k = case stripErased expr of
   C.Jump _ _ _ -> viaJoin ctx named expr k
 
   _ -> value ctx expr \result -> case result of
-    RAtom atom -> k { atom, rep: repAt ctx expr }
+    RAtom atom -> k { atom, rep: repAt ctx expr, cell: Nothing }
     RComp comp rep -> do
       local <- freshLocal
       traverse_ (recordLocal local) named
-      M.ELet local rep comp <$> k { atom: M.ALocal local, rep }
+      M.ELet local rep comp <$> k { atom: M.ALocal local, rep, cell: Nothing }
 
 viaJoin :: forall a. Ctx -> Maybe Ident -> C.Expr (Typed a) -> (Bound -> T a M.Expr) -> T a M.Expr
 viaJoin ctx named expr k = do
@@ -386,7 +390,7 @@ viaJoin ctx named expr k = do
   local <- freshLocal
   traverse_ (recordLocal local) named
   let rep = repAt ctx expr
-  rest <- k { atom: M.ALocal local, rep }
+  rest <- k { atom: M.ALocal local, rep, cell: Nothing }
   body <- go ctx (DJump j) expr
   pure (M.ELetJoin j [ { local, rep } ] rest body)
 
@@ -399,7 +403,9 @@ value :: forall a. Ctx -> C.Expr (Typed a) -> (Result -> T a M.Expr) -> T a M.Ex
 value ctx expr k = case stripErased expr of
   C.Var _ name -> do
     bound <- lookupBound ctx name
-    k (RAtom bound.atom)
+    case bound.cell of
+      Just holds -> k (RComp (M.CForce bound.atom) holds)
+      Nothing -> k (RAtom bound.atom)
 
   C.Lit _ literal -> k (RAtom (M.ALit literal))
 
@@ -680,7 +686,7 @@ paramBinder ctx name ty = do
   local <- freshLocal
   recordLocal local name
   let rep = repOf ctx.signature ty
-  pure { name, binder: { local, rep }, bound: { atom: M.ALocal local, rep } }
+  pure { name, binder: { local, rep }, bound: { atom: M.ALocal local, rep, cell: Nothing } }
 
 -- | Lift a body into the function table, over the free locals it needs.
 -- |
@@ -760,7 +766,7 @@ lift ctx source params body = do
     emitFunction
       { id: func
       , params: map _.binder regionInfos <> map _.binder paramInfos
-      , captures: map _.binder captureInfos <> map _.binder regionCaptureInfos
+      , captures: map _.binder captureInfos <> map (\info -> { local: info.binder.local, rep: info.binder.rep, holds: Nothing }) regionCaptureInfos
       , body: translated
       }
     pure { func, captures: outers <> outerRegions }
@@ -772,15 +778,16 @@ isCaptured ctx name = case Map.lookup name ctx.locals of
   Just { atom: M.ALocal _ } -> true
   _ -> false
 
-captureBinder :: forall ann. Ctx -> Ident -> T ann { name :: Ident, binder :: M.Binder, bound :: Bound, outer :: M.Atom }
+-- | A capture of a by-need cell is the cell, at `Val`, and stays one inside.
+captureBinder :: forall ann. Ctx -> Ident -> T ann { name :: Ident, binder :: M.Capture, bound :: Bound, outer :: M.Atom }
 captureBinder ctx name = do
   bound <- lookupBound ctx name
   local <- freshLocal
   recordLocal local name
   pure
     { name
-    , binder: { local, rep: bound.rep }
-    , bound: { atom: M.ALocal local, rep: bound.rep }
+    , binder: { local, rep: bound.rep, holds: bound.cell }
+    , bound: { atom: M.ALocal local, rep: bound.rep, cell: bound.cell }
     , outer: bound.atom
     }
 
@@ -796,30 +803,41 @@ regionCaptureBinder ctx name = do
   region <- lookupRegion ctx name
   regionBinder name region.keys
 
--- | A local recursive group. Every closure is allocated before any capture list
--- | is filled, so a member may capture its neighbours.
+-- | A local recursive group, its members in the order written. **A member that
+-- | is a lambda once erasure has looked through the wrappers is a closure**, and
+-- | any other a by-need cell over an initializer of no parameter, its whole
+-- | right-hand side — the shape deciding, as it does for a global. Every member
+-- | is allocated before any capture list is filled, so a member may capture its
+-- | neighbours.
 recursiveGroup
   :: forall a
    . Ctx
   -> P.Array { name :: Ident, ty :: Type, value :: C.Expr (Typed a) }
   -> T a { ctx :: Ctx, bindings :: P.Array M.RecBinding }
 recursiveGroup ctx bindings = do
-  infos <- traverse (\b -> paramBinder ctx b.name b.ty) bindings
+  infos <- traverse member bindings
   let inner = foldl (\acc info -> Map.insert info.name info.bound acc) ctx.locals infos
   let ctx' = ctx { locals = inner }
-  lifted <- traverse (liftOne ctx') bindings
-  pure
-    { ctx: ctx'
-    , bindings:
-        Array.zipWith
-          (\info l -> { local: info.binder.local, rep: info.binder.rep, func: l.func, captures: l.captures })
-          infos
-          lifted
-    }
+  members <- traverse (lifted ctx') infos
+  pure { ctx: ctx', bindings: members }
   where
-  liftOne ctx' b = do
-    let run = lambdaRun b.value
-    liftFunction ctx' (sourceAt b.value) run.params run.body
+  member b = do
+    local <- freshLocal
+    recordLocal local b.name
+    let
+      run = lambdaRun b.value
+      rep = repOf ctx.signature b.ty
+      bound =
+        if Array.null run.params then { atom: M.ALocal local, rep: RepVal, cell: Just rep }
+        else { atom: M.ALocal local, rep, cell: Nothing }
+    pure { name: b.name, value: b.value, run, local, rep, bound }
+  lifted ctx' info
+    | Array.null info.run.params = do
+        l <- liftFunction ctx' (sourceAt info.value) [] info.value
+        pure (M.RecNeed { local: info.local, holds: info.rep, func: l.func, captures: l.captures })
+    | otherwise = do
+        l <- liftFunction ctx' (sourceAt info.value) info.run.params info.run.body
+        pure (M.RecClosure { local: info.local, rep: info.rep, func: l.func, captures: l.captures })
 
 -- Decision trees -------------------------------------------------------------
 
@@ -846,7 +864,7 @@ decisionTree ctx dest types atoms dt = case dt of
       case atom of
         M.ALocal local | created -> recordLocal local name
         _ -> pure unit
-      decisionTree (bindLocal ctx name { atom, rep: occurrenceRep ctx types occurrence }) dest types atoms' inner
+      decisionTree (bindLocal ctx name { atom, rep: occurrenceRep ctx types occurrence, cell: Nothing }) dest types atoms' inner
 
   C.SwitchCtor occurrence branches fallback ->
     materialize ctx types atoms occurrence \atoms' atom -> do

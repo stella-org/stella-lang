@@ -14,17 +14,21 @@ import Prim as P
 -- rather than going unnoticed.
 import Stella.Compiler.Primitive (PrimOp(..), entryOfOp)
 import Stella.Compiler.Bytecode (ConstIx(..), Constant(..), CtorIx(..), Debug, Dmo, FuncIx(..), Function, FunctionDebug, GlobalIx(..), GlobalInit(..), Instr(..), LowerError, PrimIx(..), Reg(..), Tail(..), lower)
-import Stella.Compiler.Interface (noImports)
+import Stella.Compiler.Interface (aritiesOf, importsOf, noImports)
 import Stella.Compiler.MiddleEnd (Rep(..), translate)
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..), TyName(..), declare, declareAnnotated, primSignature)
 import Data.Array as Array
-import Data.Either (Either(..))
+import Data.Either (Either(..), either)
+import Data.Foldable (foldM)
+import Data.String (Pattern(..))
+import Data.String as String
+import Test.Stella.Compiler.Fixtures.Programs as Programs
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Test.Stella.Compiler.TypedCore.VerticalSlice (intModule, verticalSlice)
 import Test.Spec (Spec, describe, it)
-import Test.Spec.Assertions (shouldEqual)
+import Test.Spec.Assertions (fail, shouldEqual)
 
 mainModuleName :: ModuleName
 mainModuleName = ModuleName "Main"
@@ -66,6 +70,32 @@ functionOf i = do
   case Array.index dmo.functions i of
     Just f -> Right f
     Nothing -> Left ("no function #" <> show i)
+
+-- | The programs' `Main`, each module declared against those before it,
+-- | translated against their interfaces, and lowered.
+programsMain :: Either P.String Dmo
+programsMain = do
+  done <- foldM step { signature: Programs.abiSignature, dmis: [], dmos: [] } [ Programs.intModule, Programs.libModule, Programs.mainModule ]
+  case Array.last done.dmos of
+    Just dmo -> Right dmo
+    Nothing -> Left "no module"
+  where
+  step acc m = do
+    declared <- either (Left <<< show) Right (declareAnnotated acc.signature m)
+    imports <- either (Left <<< show) Right (importsOf acc.dmis)
+    mid <- either (Left <<< show) Right (translate imports m declared)
+    out <- either (Left <<< show) Right (lower mid)
+    pure
+      { signature: declared.signature
+      , dmis: Array.snoc acc.dmis { name: mid.module.name, imports: mid.module.imports, arities: aritiesOf mid.module }
+      , dmos: Array.snoc acc.dmos out.dmo
+      }
+
+-- | What an instruction is, by its opcode's name.
+opcodeOf :: Instr -> P.String
+opcodeOf i = case String.indexOf (Pattern " ") (show i) of
+  Just n -> String.take n (show i)
+  Nothing -> show i
 
 spec :: Spec Unit
 spec = describe "Stella.Compiler.Bytecode.Lower » the vertical slice" do
@@ -223,3 +253,16 @@ spec = describe "Stella.Compiler.Bytecode.Lower » the vertical slice" do
           , Tuple (Reg 2) (Ident "ys")
           ]
       ]
+
+  describe "a local recursive group" do
+    it "allocates its closures and cells before filling any capture, and forces each cell in order before the body" do
+      case programsMain of
+        Left err -> fail err
+        Right dmo -> case Array.find (\g -> g.name == value "localMixed") dmo.globals of
+          Just { init: GRun (FuncIx i) } -> case Array.index dmo.functions i of
+            -- `go` and the initializer of `table` allocated, the cell over the
+            -- latter, each capture list filled, and `table` forced by its group
+            -- before the body forces it again to select from it
+            Just f -> map opcodeOf (Array.take 8 f.body.code) `shouldEqual` [ "(CLOSN", "(CLOSN", "(NEED", "(SETCAP", "(SETCAP", "(FORCE", "(FORCE", "(RSEL" ]
+            Nothing -> fail "no function"
+          _ -> fail "no run named localMixed"

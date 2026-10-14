@@ -4,10 +4,9 @@
 right-hand side may read only the members written before it. Which members a right-hand side
 reads is judged statically, as an abstract interpretation of Core, so that a program the checker
 accepts never reads a member that is not yet initialized, and no run-time check is relied on for
-it. The judgement replaces guardedness (D14) for a top-level `rec` group
-([Modules](../06-Modules/01-Modules.md)); **a local `letrec` binds function values alone in this
-version** ([Terms](04-Terms-and-Matching.md)), its judgement in place of guardedness coming with
-the by-need cells that initialize one ([Initialization-Safe Recursion](../../proposals/11-Initialization-Safe-Recursion.md)).
+it. The judgement is D14, for a top-level `rec` group ([Modules](../06-Modules/01-Modules.md))
+and a local `letrec` ([Typing Rules](05-Typing-Rules.md)) alike; a local group's members that are
+no function values are by-need cells, filled in the order written ([Semantics](06-Semantics.md)).
 
 A function value reads nothing when it is initialized, so every group of function values is
 initialization-safe. What the judgement admits beside them is a member that is no function and
@@ -161,11 +160,12 @@ whether or not `g` is a function, as at top level a later global is installed la
 ## Where it is judged
 
 **The judgement is defined on Core**, and the Core checker enforces it on every top-level `rec`
-group, whoever built it, refusing the first read it finds where the reference stands
-([Core Type Checker](07-Core-Type-Checker.md)). That is the condition the language guarantees.
+group and every local `letrec`, whoever built it, refusing the first read it finds where the
+reference stands ([Core Type Checker](07-Core-Type-Checker.md)). That is the condition the
+language guarantees. A `letrec` a guest builds through the kernel is judged as any Core is.
 
-**The surface elaborator judges the source form** and reports what it refuses as an error of the
-program, located where the reference stands and where the form that promoted it does
+**The surface elaborator judges the source form** of a top-level group and reports what it refuses
+as an error of the program, located where the reference stands and where the form that promoted it does
 ([Elaboration](../02-Surface-Language/01-Elaboration.md)). It applies the same judgement to each
 member's right-hand side made Core with **every η-expansion it inserted taken as the expression it
 expands**, whatever became of the expansion: the initialization dependencies of an expression are

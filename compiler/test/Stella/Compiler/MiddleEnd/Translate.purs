@@ -16,16 +16,20 @@ import Prim as P
 -- lowering imports. A member missing from its re-export list fails this module
 -- rather than going unnoticed.
 import Stella.Compiler.Primitive (PrimOp(..))
-import Stella.Compiler.Interface (noImports)
+import Stella.Compiler.Interface (aritiesOf, importsOf, noImports)
 import Stella.Compiler.MiddleEnd (Rep(..), TranslateError, translate)
 import Stella.Compiler.MiddleEnd as M
 import Stella.Compiler.TypedCore (Ident(..), Literal(..), ModuleName(..), Qualified(..), TyName(..), declare, declareAnnotated, primSignature)
 import Data.Array as Array
-import Data.Either (Either(..))
+import Data.Either (Either(..), either)
+import Data.Foldable (foldM)
 import Data.Maybe (Maybe(..))
+import Data.String (Pattern(..))
+import Data.String as String
+import Test.Stella.Compiler.Fixtures.Programs as Programs
 import Test.Stella.Compiler.TypedCore.VerticalSlice (intModule, verticalSlice)
 import Test.Spec (Spec, describe, it)
-import Test.Spec.Assertions (shouldEqual)
+import Test.Spec.Assertions (fail, shouldEqual)
 
 mainModuleName :: ModuleName
 mainModuleName = ModuleName "Main"
@@ -69,6 +73,36 @@ functionOf i = do
   case Array.find (\f -> f.id == M.FuncId i) m.functions of
     Just f -> Right f
     Nothing -> Left ("no function #" <> show i)
+
+-- | The programs' modules, each declared against those before it and translated
+-- | against their interfaces; the last of them, `Main`.
+programsMain :: Either P.String M.Module
+programsMain = do
+  done <- foldM step { signature: Programs.abiSignature, dmis: [], modules: [] } [ Programs.intModule, Programs.libModule, Programs.mainModule ]
+  case Array.last done.modules of
+    Just m -> Right m
+    Nothing -> Left "no module"
+  where
+  step acc m = do
+    declared <- either (Left <<< show) Right (declareAnnotated acc.signature m)
+    imports <- either (Left <<< show) Right (importsOf acc.dmis)
+    mid <- either (Left <<< show) Right (translate imports m declared)
+    pure
+      { signature: declared.signature
+      , dmis: Array.snoc acc.dmis { name: mid.module.name, imports: mid.module.imports, arities: aritiesOf mid.module }
+      , modules: Array.snoc acc.modules mid.module
+      }
+
+-- | The function a global of `Main` is evaluated by, and the module.
+runOf :: P.String -> M.Module -> Either P.String M.Function
+runOf name m = case Array.find (\g -> g.ref == value name) m.globals of
+  Just { init: M.GRun func } -> case Array.find (\f -> f.id == func) m.functions of
+    Just f -> Right f
+    Nothing -> Left "no function"
+  _ -> Left ("no run named " <> name)
+
+functionIn :: M.Module -> M.FuncId -> Maybe M.Function
+functionIn m func = Array.find (\f -> f.id == func) m.functions
 
 spec :: Spec Unit
 spec = describe "Stella.Compiler.MiddleEnd.Translate » the vertical slice" do
@@ -159,6 +193,23 @@ spec = describe "Stella.Compiler.MiddleEnd.Translate » the vertical slice" do
 
   it "emits exactly the two functions the module needs" do
     map (\m -> map _.id m.functions) lowered `shouldEqual` Right [ M.FuncId 0, M.FuncId 1 ]
+
+  describe "a local recursive group" do
+    it "binds a member that is a function as a closure, and one that is none as a by-need cell, in the order written" do
+      case programsMain of
+        Left err -> fail err
+        Right m -> case runOf "localMixed" m of
+          Left err -> fail err
+          Right f -> case f.body of
+            M.ELetRec [ M.RecClosure go, M.RecNeed table ] rest -> do
+              table.holds `shouldEqual` RepRec
+              -- the initializer is the member's whole right-hand side, entered with nothing
+              map _.params (functionIn m table.func) `shouldEqual` Just []
+              -- `go` captures the cell itself, at `Val`, saying what it holds
+              map (map (\c -> { rep: c.rep, holds: c.holds }) <<< _.captures) (functionIn m go.func) `shouldEqual` Just [ { rep: RepVal, holds: Just RepRec } ]
+              -- and a reference to `table` in the body forces it
+              String.contains (Pattern "CForce") (show rest) `shouldEqual` true
+            other -> fail ("not a group of a closure and a cell: " <> show other)
 
 -- | The tail of a chain of `let`s.
 spine :: M.Expr -> M.Expr

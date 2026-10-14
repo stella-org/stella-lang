@@ -74,7 +74,7 @@ x̄, ē, v̄                   sequences of value variables, terms, and values
 | `τ1 -> τ2` | notation for `Function τ1 () τ2`, a pure function | [Types](../03-Typed-Core/01-Kinds-and-Types.md) |
 | `Γ; Δ ⊢ e : τ ! ρ` | term typing. The row to the right of `!` is the ambient effect row | [Typing Rules](../03-Typed-Core/05-Typing-Rules.md) |
 | `Σ ⊢ decl ⊣ Σ'` | declaration checking, extending the signature | [Modules](../06-Modules/01-Modules.md) |
-| `G ⊢ e → c` | reduction to a configuration: a term or a fault | [Semantics](../03-Typed-Core/06-Semantics.md) |
+| `G ⊢ N; e → N'; c` | reduction of a store and a term to a store and a configuration, a term or a fault; `G ⊢ e → c` where the store stands | [Semantics](../03-Typed-Core/06-Semantics.md) |
 | `cursorΣ(M.g, ς)` | the unconsumed declared type and accumulated substitution of a spine | [Semantics](../03-Typed-Core/06-Semantics.md) |
 | `ftv(τ)` | the type variables occurring free in `τ`, and likewise of a row | [Typing Rules](../03-Typed-Core/05-Typing-Rules.md) |
 | `dom(F)` | the keys a finite map is defined on | [Rows](../03-Typed-Core/02-Rows.md) |

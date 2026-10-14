@@ -19,7 +19,6 @@ module Stella.Compiler.TypedCore.Check
   , infer
   , check
   , isValueForm
-  , isFunVal
   ) where
 
 import Prelude
@@ -29,6 +28,7 @@ import Prim as P
 import Stella.Compiler.TypedCore.Context (Context, assume, bindRegion, bindTyVar, bindVar, lookupRegion, lookupTyVar, lookupVar)
 import Stella.Compiler.TypedCore.Entailment (DecomposeError, entails)
 import Stella.Compiler.TypedCore.Equality (constraintEquiv, typeEquiv)
+import Stella.Compiler.TypedCore.Initialization (localViolations)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..))
 import Stella.Compiler.TypedCore.Kinding (KindError(..), checkKind, quantifiableKind, wellFormedConstraint, wellFormedKey)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, JoinName, OpName, Qualified, RegionName, TyName, TyVar)
@@ -138,9 +138,10 @@ data CheckError
   -- | The body of a `Λ` that is not a value form. The value restriction is what
   -- | makes `Λ` and its elimination erasable.
   | NotAValueForm
-  -- | The right-hand side of a recursive binding that is not a function value
-  -- | (D14). Under strict evaluation such a binding has no meaning.
-  | NotAFunctionValue Ident
+  -- | A right-hand side of a local recursive group reading, while the group is
+  -- | initialized, a member not written before it: the member whose right-hand
+  -- | side it is, and the member read (D14).
+  | LocalReadBeforeInitialized Ident Ident
   | UnboundJoin JoinName
   | JoinArity JoinName P.Int P.Int
   -- | A `jump` outside tail position, which no transfer of control implements.
@@ -872,7 +873,11 @@ instantiateKinds at env name kinds scheme = do
   Right (substituteKindsInType (Map.fromFoldable (Array.zip scheme.kindVars kinds)) scheme.body)
 
 -- | Every scheme of a recursive group is registered before any right-hand side
--- | is checked, and each of those is a function value.
+-- | is checked, each under no join point and out of tail position, `Δ = ·`: an
+-- | initializer jumping out would leave its group half initialized. **The group
+-- | is initialization-safe**, each right-hand side reading only the members
+-- | written before it ([Initialization Safety](../../../../docs/technical-references/03-Typed-Core/10-Initialization.md)),
+-- | and the first that does not is refused where the reference stands.
 recursiveEnv
   :: forall a
    . a
@@ -881,13 +886,16 @@ recursiveEnv
   -> Either (CheckFailure a) { env :: Env, bindings :: P.Array (Binding (Typed a)) }
 recursiveEnv at env bindings = do
   let inner = foldl (\acc binding -> bound acc binding.name binding.ty) env bindings
-  checked <- traverse (checkBinding inner) bindings
+  case Array.head (localViolations env.signature (map (\b -> { name: b.name, value: b.value }) bindings)) of
+    Just v
+      | Just reader <- Array.index bindings v.initializer
+      , Just read <- Array.index bindings v.read -> Left { at: v.at, error: LocalReadBeforeInitialized reader.name read.name }
+    _ -> Right unit
+  checked <- traverse (checkBinding (inner { joins = Map.empty, tail = false })) bindings
   Right { env: inner, bindings: checked }
   where
   checkBinding inner binding = do
     kinded at (checkKind env.signature env.context binding.ty KType)
-    when (not (isFunVal binding.value))
-      (Left { at, error: NotAFunctionValue binding.name })
     value <- check inner TRowEmpty binding.ty binding.value
     Right (binding { value = value })
 
@@ -1211,14 +1219,6 @@ isCtorSpine sig = case _ of
   App _ f x -> isCtorSpine sig f && isValueForm sig x
   TyApp _ e _ -> isCtorSpine sig e
   ConstraintApp _ e -> isCtorSpine sig e
-  _ -> false
-
--- | `FunVal`, the right-hand side a recursive binding admits (D14).
-isFunVal :: forall a. Expr a -> P.Boolean
-isFunVal = case _ of
-  Lam _ _ _ _ -> true
-  TyLam _ _ _ body -> isFunVal body
-  ConstraintLam _ _ body -> isFunVal body
   _ -> false
 
 valueForm :: forall a. a -> Env -> Expr a -> Either (CheckFailure a) Unit

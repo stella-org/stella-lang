@@ -102,10 +102,15 @@ The distinction is also the unit of **separate compilation**. `Σ` is what a mod
   Γ;Δ ⊢ let x : τ1 = e1 in e2 : τ2 ! ρ
 
   Γ' = Γ, x1 : σ1, …, xn : σn
-  each i:  vi is a FunVal   and   Γ'; Δ ⊢ vi : σi ! ()
+  each i:  Γ'; · ⊢ ei : σi ! ()
+  { x̄ = ē } is initialization-safe          ← each ei reads only x1 … xi-1
   Γ'; Δ ⊢ e : τ ! ρ
   ──────────────────────────────────────────────────
-  Γ;Δ ⊢ letrec { xi : σi = vi } in e : τ ! ρ
+  Γ;Δ ⊢ letrec { xi : σi = ei } in e : τ ! ρ
+
+**An initializer is checked under no join point**, `Δ = ·`, and out of tail position: one jumping
+to a join point outside its group would leave the group half initialized. Its row is `()`, so
+initialization has no effect to order beside what it reads ([Initialization Safety](10-Initialization.md)).
 
   Γ;Δ ⊢ e : τ1 ! ρ    Γ ⊢ τ1 ≡ τ2
   ────────────────────────────────   ← conversion is by equality; there is no subtyping
