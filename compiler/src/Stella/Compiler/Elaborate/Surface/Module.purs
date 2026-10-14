@@ -118,7 +118,7 @@ import Stella.Compiler.TypedCore (Attribute, AttributeDecl, DataDecl, DeclError(
 import Stella.Compiler.TypedCore.Declare (ctorInfo, dataEntry)
 import Stella.Compiler.TypedCore.AttributeCheck (AttributeError, checkAttribute)
 import Stella.Compiler.TypedCore.Check (CheckError(NotAValueForm))
-import Stella.Compiler.TypedCore.Initialization (topLevelViolations)
+import Stella.Compiler.TypedCore.Initialization (localGroupViolations, topLevelViolations)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName, OpName(..), Qualified(..), TyName(..), TyVar, unqualified)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
@@ -173,6 +173,10 @@ data ElaborationError
   -- | where the form that made the read immediate stands, if one did, the
   -- | member whose right-hand side it is, and the member read.
   | ReadWhileInitializing Surface.Origin (Maybe Surface.Origin) (Qualified Ident) (Qualified Ident)
+  -- | A right-hand side of a local recursive group reading, while the group is
+  -- | initialized, a member not written before it, as a top-level one does:
+  -- | the member read by the name the group binds it to.
+  | LocalReadWhileInitializing Surface.Origin (Maybe Surface.Origin) Ident Ident
   -- | A Core module the Core checker refused, which is the elaborator's fault.
   | CoreRefused (DeclFailure Surface.Origin)
   -- | An entry a desugaring of the compiler's refers to, which a signature
@@ -1170,12 +1174,16 @@ elaborateModule signature surface imported m exports =
         else []
     )
     grouped
+  -- each value's local groups, judged as the top-level ones are
+  localValues = Array.concatMap
+    (\v -> map (\l -> LocalReadWhileInitializing l.at l.through l.initializer l.read) (localGroupViolations initializing v.initialization))
+    values
   -- what a group is judged against: the imports' signature, with the
   -- constructors and the foreigns the module declares
   initializing = foldl (\s f -> s { values = Map.insert f.name { scheme: f.decl.scheme, isForeign: true } s.values })
     (foldl (addData m.name) signature (map _.decl elaborated.data))
     elaborated.foreigns
-  errors = elaborated.errors <> recursiveValues
+  errors = elaborated.errors <> localValues <> recursiveValues
 
   decls = map (\d -> Core.DeclData d.origin d.decl) elaborated.data
     <> map (\e -> Core.DeclEffect e.origin e.decl) elaborated.effects

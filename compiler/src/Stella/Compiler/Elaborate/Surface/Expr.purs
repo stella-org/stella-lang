@@ -74,7 +74,7 @@ import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext, lookupVar)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
-import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..), isFunVal, isValueForm)
+import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..), isValueForm)
 import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), fromCore)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal)
 import Stella.Compiler.Elaborate.Surface.Group (groups)
@@ -421,17 +421,18 @@ mentioned leaf = go
 -- | in every right-hand side and in the body, at its signature's type or else
 -- | at a type metavariable of the level it stands at, which its right-hand
 -- | side's type is equated with — a parameter's binding inferred as a `λ` is.
--- | A right-hand side is evaluated where the block stands, under its ambient
--- | row, and elaborated in the order its group stands in, so that a reference
--- | finds the type of what it refers to as far as it is decided.
+-- | A right-hand side is elaborated in the order its group stands in, so that
+-- | a reference finds the type of what it refers to as far as it is decided.
 -- |
 -- | **The bindings are grouped by the references they make to one another**,
 -- | each a node — a `_` among them, named apart from every name source can
 -- | write, its right-hand side kept — and the groups stand in a stable
 -- | dependency order, the one depended on outside: one that does not refer to
--- | itself is a `let`, and a recursive one a `letrec`, which binds functions
--- | alone, so a member of one that is no function value — a `λ`, or a type or
--- | a constraint abstraction of one — is outside what this version elaborates.
+-- | itself is a `let`, its right-hand side evaluated where the block stands,
+-- | under its ambient row, and a recursive one a `letrec`, every member of
+-- | which is elaborated under the empty row, as Core checks it: a member that
+-- | is no function is initialized as the group is entered, and what it reads
+-- | too early is judged once the declaration is settled.
 letBlock :: Scope -> Surface.Origin -> Array LetBinding -> Surf { scope :: Scope, wrap :: XExpr Surface.Origin -> XExpr Surface.Origin }
 letBlock scope origin bindings = do
   heads <- traverse head bindings
@@ -442,8 +443,8 @@ letBlock scope origin bindings = do
     grouped = groups refers
   -- each right-hand side in the order its group stands, what it refers to
   -- elaborated before it
-  built <- traverse (\g -> traverse (rhs inner) (Array.mapMaybe (Array.index heads) g.members)) grouped
-  wraps <- traverse (\(Tuple g members) -> wrapping g members) (Array.zip grouped built)
+  built <- traverse (\g -> traverse (rhs (if g.recursive then inner { ambient = XRowEmpty } else inner)) (Array.mapMaybe (Array.index heads) g.members)) grouped
+  let wraps = map (\(Tuple g members) -> wrapping g members) (Array.zip grouped built)
   pure { scope: inner, wrap: \e -> foldr (\w acc -> w acc) e wraps }
   where
   head = case _ of
@@ -473,7 +474,7 @@ letBlock scope origin bindings = do
     pure { origin: o, binding, name, params, body, type: ty, signed: false }
 
   -- a binding with a signature is checked against it, as a definition is,
-  -- under the ambient row where the block stands
+  -- under the row its group is elaborated under
   rhs inner h | h.signed = do
     expr <- abstractions h.origin true false Written inner (map Named h.params) h.body h.type
     pure { head: h, expr }
@@ -485,10 +486,8 @@ letBlock scope origin bindings = do
     pure { head: h, expr: inferred.expr }
 
   wrapping g members' = case g.recursive, members' of
-    false, [ b ] -> pure \e -> ELet b.head.origin b.head.name b.head.type b.expr e
-    _, members -> case Array.find (not <<< isFunVal <<< _.expr) members of
-      Just b -> outside (OutsideSubset b.head.origin "a recursive value that is no function")
-      Nothing -> pure \e -> ELetRec (maybe origin _.head.origin (Array.head members)) (map (\b -> { name: b.head.name, ty: b.head.type, value: b.expr }) members) e
+    false, [ b ] -> \e -> ELet b.head.origin b.head.name b.head.type b.expr e
+    _, members -> \e -> ELetRec (maybe origin _.head.origin (Array.head members)) (map (\b -> { name: b.head.name, ty: b.head.type, value: b.expr }) members) e
 
 -- | The argument, the row, and the result of the arrow the type must be: its
 -- | own where it is one, and otherwise an arrow of fresh metavariables it is

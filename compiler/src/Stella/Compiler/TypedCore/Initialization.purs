@@ -25,6 +25,8 @@ module Stella.Compiler.TypedCore.Initialization
   ( Violation
   , topLevelViolations
   , localViolations
+  , LocalViolation
+  , localGroupViolations
   ) where
 
 import Prelude
@@ -32,7 +34,7 @@ import Prelude
 import Prim as P
 
 import Data.Array as Array
-import Data.Foldable (foldl)
+import Data.Foldable (foldMap, foldl)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
@@ -42,7 +44,7 @@ import Data.Tuple (Tuple(..))
 import Stella.Compiler.TypedCore.Name (Ident, JoinName, Qualified)
 import Stella.Compiler.TypedCore.Prim (foreignArity)
 import Stella.Compiler.TypedCore.Signature (Signature, lookupCtor, lookupValue)
-import Stella.Compiler.TypedCore.Term (DecisionTree(..), Expr(..), OpClause(..), Occurrence(..), exprAnnotation)
+import Stella.Compiler.TypedCore.Term (DecisionTree(..), Expr(..), OpClause(..), Occurrence(..), exprAnnotation, opClauseBody)
 
 -- | A member's right-hand side reading a member it may not: the right-hand
 -- | side and the member read, by their positions in the group, where the
@@ -65,6 +67,66 @@ topLevelViolations sig members =
 localViolations :: forall a. Signature -> P.Array { name :: Ident, value :: Expr a } -> P.Array (Violation a)
 localViolations sig members =
   violations sig Map.empty (Map.fromFoldable (Array.mapWithIndex (\i m -> Tuple m.name (Member i)) members)) (map _.value members)
+
+-- | A local group's right-hand side reading a member it may not, the two by
+-- | the names the group binds them to.
+type LocalViolation a =
+  { initializer :: Ident
+  , read :: Ident
+  , at :: a
+  , through :: Maybe a
+  }
+
+-- | Every local group an expression holds, wherever it stands, each judged
+-- | apart: a group before the groups its right-hand sides hold, taken in the
+-- | order written, and those before the groups its body holds.
+localGroupViolations :: forall a. Signature -> Expr a -> P.Array (LocalViolation a)
+localGroupViolations sig = groups
+  where
+  groups = case _ of
+    Var _ _ -> []
+    Global _ _ _ -> []
+    Lit _ _ -> []
+    Lam _ _ _ body -> groups body
+    App _ f x -> groups f <> groups x
+    TyLam _ _ _ body -> groups body
+    TyApp _ e _ -> groups e
+    ConstraintLam _ _ body -> groups body
+    ConstraintApp _ e -> groups e
+    Let _ _ _ value body -> groups value <> groups body
+    LetRec _ bindings body ->
+      Array.mapMaybe (named bindings) (localViolations sig (map (\b -> { name: b.name, value: b.value }) bindings))
+        <> foldMap (groups <<< _.value) bindings
+        <> groups body
+    Case _ scrutinees tree -> foldMap groups scrutinees <> treeGroups tree
+    LetJoin _ _ _ _ value body -> groups value <> groups body
+    Jump _ _ args -> foldMap groups args
+    RecordEmpty _ -> []
+    RecordExtend _ _ value rest -> groups value <> groups rest
+    RecordSelect _ _ e -> groups e
+    RecordRestrict _ _ e -> groups e
+    RecordUpdate _ _ record value -> groups record <> groups value
+    RecordMerge _ left right -> groups left <> groups right
+    VariantInject _ _ e -> groups e
+    VariantWeaken _ _ _ e -> groups e
+    VariantAbsurd _ _ e -> groups e
+    Perform _ _ _ _ e -> groups e
+    Handle _ e handler -> groups e <> groups handler.returnClause.body <> foldMap (groups <<< opClauseBody) handler.opClauses
+    Region _ _ _ initial body -> foldMap groups initial <> groups body
+    ReadCell _ _ _ -> []
+    WriteCell _ _ _ value -> groups value
+    OpenEff _ _ e -> groups e
+  treeGroups = case _ of
+    Leaf e -> groups e
+    Bind _ _ tree -> treeGroups tree
+    SwitchCtor _ branches fallback -> foldMap (treeGroups <<< _.tree) branches <> foldMap treeGroups fallback
+    SwitchLit _ branches fallback -> foldMap (treeGroups <<< _.tree) branches <> treeGroups fallback
+    SwitchKey _ branches fallback -> foldMap (treeGroups <<< _.tree) branches <> foldMap treeGroups fallback
+    Guard condition yes no -> groups condition <> treeGroups yes <> treeGroups no
+  named bindings v = do
+    initializer <- Array.index bindings v.initializer
+    read <- Array.index bindings v.read
+    pure { initializer: initializer.name, read: read.name, at: v.at, through: v.through }
 
 -- | What may be read of the group: for each member, by its position, the
 -- | witnesses through which it is.

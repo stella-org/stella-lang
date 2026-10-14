@@ -72,6 +72,7 @@ elaborationOrigins = case _ of
   TypeHoleStands o _ _ -> [ o ]
   ValueFormNeeded o -> [ o ]
   ReadWhileInitializing o through _ _ -> Array.cons o (Array.fromFoldable through)
+  LocalReadWhileInitializing o through _ _ -> Array.cons o (Array.fromFoldable through)
   EffectRowAmbiguous _ os -> os
   CoreRefused failure -> [ failure.at ]
   InternalEntryMismatch _ -> []
@@ -128,6 +129,11 @@ printElaborationError = case _ of
   ReadWhileInitializing _ _ reader read
     | reader == read -> fmt @"`{x}` is read here while it is being initialized" { x: nameOf read }
     | otherwise -> fmt @"`{y}` is read here while its recursive group is being initialized, before `{y}` is: it is written after `{x}`" { x: nameOf reader, y: nameOf read }
+  -- the member read is named by what the source wrote, and the right-hand
+  -- side reading it may be a `_`, named apart from what source can write
+  LocalReadWhileInitializing _ _ reader read
+    | reader == read -> fmt @"`{x}` is read here while it is being initialized" { x: localName read }
+    | otherwise -> fmt @"`{y}` is read here while its recursive group is being initialized, before `{y}` is" { y: localName read }
   EffectRowAmbiguous _ _ -> "Nothing here determines which effects this performs; an annotation of its type decides them"
   CoreRefused failure -> internal ("the Core checker refused what was elaborated: " <> show failure.error)
   InternalEntryMismatch name -> internal ("an entry the compiler refers to is missing or at another scheme than listed: " <> show name)
@@ -136,6 +142,7 @@ printElaborationError = case _ of
   where
   internal what = "Internal compiler error: " <> what
   nameOf (Qualified _ (Ident n)) = n
+  localName (Ident n) = n
 
 -- | Why a foreign's type does not cross to the host, and what does.
 printRefused :: String -> Refused -> String

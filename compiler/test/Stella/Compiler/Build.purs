@@ -671,6 +671,17 @@ spec = describe "Stella.Compiler.Build" do
         Left errors -> fail (joinWith "; " (map printCompileError errors))
         Right r -> r.handed `shouldEqual` [ "core f", "mid M", "bytecode M" ]
 
+    it "holds a member that is no function where nothing reads it before it is initialized, through to the module's bytecode, and is refused where one does" do
+      let
+        stored table = [ "data Stored = Stored (Int -> Int)", "keep :: Stored -> Int -> Int", "keep s n = n", "f :: Int -> Int", "f n = let", "      table :: Stored", table, "    in keep table n" ]
+      compilingUnder [ "module M (f) where" ] (stored "      table = Stored (\\m -> keep table m)") case _ of
+        Left errors -> fail (joinWith "; " (map printCompileError errors))
+        Right r -> r.handed `shouldEqual` [ "core keep f", "mid M", "bytecode M" ]
+      compilingUnder [ "module M (f) where" ] (stored "      table = Stored (keep table)") case _ of
+        Left errors -> map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors
+          `shouldEqual` [ "8:28 `table` is read here while it is being initialized" ]
+        Right _ -> fail "accepted"
+
   describe "a module's type declarations" do
     let
       rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors

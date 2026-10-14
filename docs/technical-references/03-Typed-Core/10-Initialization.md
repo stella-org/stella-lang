@@ -164,7 +164,8 @@ group and every local `letrec`, whoever built it, refusing the first read it fin
 reference stands ([Core Type Checker](07-Core-Type-Checker.md)). That is the condition the
 language guarantees. A `letrec` a guest builds through the kernel is judged as any Core is.
 
-**The surface elaborator judges the source form** of a top-level group and reports what it refuses
+**The surface elaborator judges the source form** of a top-level group, and of every local group
+a declaration holds, and reports what it refuses
 as an error of the program, located where the reference stands and where the form that promoted it does
 ([Elaboration](../02-Surface-Language/01-Elaboration.md)). It applies the same judgement to each
 member's right-hand side made Core with **every η-expansion it inserted taken as the expression it

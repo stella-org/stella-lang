@@ -33,7 +33,7 @@ import Stella.Compiler.Elaborate.Mechanism.Unify (KindMetaBinding(..))
 import Stella.Compiler.Elaborate.Surface.Types (readTypes)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), elaborateModule, settleBodies)
-import Stella.Compiler.Elaborate.Surface.Report (printType)
+import Stella.Compiler.Elaborate.Surface.Report (elaborationOrigins, printElaborationError, printType)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
@@ -209,13 +209,16 @@ at = case _ of
   TypeHoleStands o name t -> located o <> " hole " <> name <> " " <> printType t
   ValueFormNeeded o -> located o <> " value form needed"
   ReadWhileInitializing o through _ (Qualified _ (Ident read)) -> located o <> " reads " <> read <> " early" <> maybe "" (\p -> " through " <> located p) through
+  LocalReadWhileInitializing o through (Ident reader) (Ident read) -> located o <> " " <> reader <> " reads local " <> read <> " early" <> maybe "" (\p -> " through " <> located p) through
   EffectRowAmbiguous _ os -> joinWith " " (map located os) <> " effect row ambiguous"
   CoreRefused _ -> "the Core checker refused it"
   InternalEntryMismatch _ -> "an internal entry mismatched"
   Broken _ -> "broken"
   AttemptPostponed -> "postponed"
-  where
-  located o = let r = rangeOf o in show r.start.line <> ":" <> show r.start.column
+
+-- | Where a source origin starts, as line and column.
+located :: Surface.Origin -> String
+located o = let r = rangeOf o in show r.start.line <> ":" <> show r.start.column
 
 spec :: Spec Unit
 spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
@@ -877,13 +880,52 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         checked r \core -> shapes core `shouldEqual` [ "rec shout", "nonrec loud" ]
 
     it "is a recursive value that is no function where it reads its own group, and refers to one initialized before it as it likes" do
-      elaborating [ "n :: Int", "n = let m = inc m in m" ] \r ->
-        map at r.errors `shouldEqual` [ "4:9 outside: a recursive value that is no function" ]
+      elaborating [ "n :: Int", "n = let m = inc m in m" ] \r -> do
+        map at r.errors `shouldEqual` [ "4:17 m reads local m early" ]
+        map printElaborationError r.errors `shouldEqual` [ "`m` is read here while it is being initialized" ]
       -- a top-level member read inside a block it initializes is read by it
       elaborating [ "n :: Int", "n = let m = n in m" ] \r ->
         map at r.errors `shouldEqual` [ "4:13 reads n early" ]
       elaborating [ "p :: Int", "p = let", "      a = inc 1", "      go x = go a", "    in go 0" ] \r ->
         map at r.errors `shouldEqual` []
+
+    it "is initialized in the order written, a member reading only those written before it" do
+      elaborating [ "q :: Int", "q = let", "      a = Tuple b 0", "      b :: Tuple Int (Int -> Int)", "      b = Tuple 1 (\\n -> const (snd a) (inc n))", "    in snd a" ] \r -> do
+        map at r.errors `shouldEqual` [ "5:17 a reads local b early" ]
+        -- the right-hand side reading is not named: it may be a `_`
+        map printElaborationError r.errors `shouldEqual` [ "`b` is read here while its recursive group is being initialized, before `b` is" ]
+      elaborating [ "q :: Int", "q = let", "      b :: Tuple Int (Int -> Int)", "      b = Tuple 1 (\\n -> const (snd a) (inc n))", "      a = Tuple b 0", "    in snd a" ] \r -> checked r \core ->
+        shapes core `shouldEqual` [ "nonrec q" ]
+
+    it "reports a read an application makes immediate where the reference stands and where the application does" do
+      elaborating [ "p :: Int", "p = let", "      a :: Tuple Int (Int -> Int)", "      a = Tuple 1 (\\n -> snd b n)", "      b :: Tuple Int (Int -> Int)", "      b = Tuple (snd a 0) (\\n -> n)", "    in snd b 0" ] \r ->
+        map at r.errors `shouldEqual` [ "6:30 b reads local b early through 8:18" ]
+
+    it "holds records of closures referring to one another, and a recursive function stored in data" do
+      elaborating [ "f :: Int", "f = let", "      fibAnd :: Tuple Int (Int -> Int)", "      fibAnd = Tuple 0 (\\n -> snd fibAnd n)", "    in snd fibAnd 1" ] \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (LetRec _ [ _ ] _) -> pure unit
+          other -> fail ("not a letrec: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+      elaborating [ "g :: Int", "g = let", "      a :: Tuple Int (Int -> Int)", "      a = Tuple 1 (\\n -> snd b n)", "      b :: Tuple Int (Int -> Int)", "      b = Tuple 2 (\\n -> snd a n)", "    in snd a 0" ] \r -> checked r \core ->
+        shapes core `shouldEqual` [ "nonrec g" ]
+
+    it "is judged as the source writes it, a signature's η-expansion making no read later" do
+      elaborating [ "f :: Int", "f = let", "      go :: forall a. a -> a", "      go = go", "    in go 1" ] \r ->
+        map at r.errors `shouldEqual` [ "6:12 go reads local go early" ]
+
+    it "is a recursive group elaborated under the empty row, so that a member that is no function performs nothing" do
+      elaborating (shouting <> [ "loud :: Int -> Unit / {| Console |}", "loud x = let u = const (shout x) u in u" ]) \r ->
+        map (\e -> joinWith " " (map located (elaborationOrigins e)) <> " " <> printElaborationError e) r.errors
+          `shouldEqual` [ "8:25 This performs `{| Console |}`, which is not among the effects allowed here" ]
+      -- a function's body performs where it is applied
+      elaborating (shouting <> [ "loud :: Int -> Unit / {| Console |}", "loud x = let go n = const (shout n) go in go x" ]) \r -> checked r \core ->
+        shapes core `shouldEqual` [ "rec shout", "nonrec loud" ]
+
+    it "is judged a group before those its right-hand sides hold, and those before the ones its body holds" do
+      elaborating [ "k :: Int", "k = let", "      a = Tuple (let x = inc x in x) (inc (snd a))", "    in let y = inc y in y" ] \r ->
+        map at r.errors `shouldEqual` [ "5:48 a reads local a early", "5:30 x reads local x early", "6:20 y reads local y early" ]
 
     it "is a function value where an annotation abstracts it over a type or a constraint, as Core's `letrec` admits" do
       elaborating [ "f :: Int", "f = let go = ((\\x -> const x go) :: forall a. a -> a) in 1" ] \r -> do
@@ -1057,6 +1099,10 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       -- a recursive function stored in data, read only under its λ
       elaborating [ "fibAnd :: Tuple Int (Int -> Int)", "fibAnd = Tuple 0 (\\n -> snd fibAnd n)" ] \r -> checked r \core ->
         shapes core `shouldEqual` [ "rec fibAnd" ]
+
+    it "is reported after what each value's local groups read, those in the order of the values" do
+      elaborating [ "n :: Int", "n = n", "k :: Int", "k = let m = inc m in m", "j :: Int", "j = let w = inc w in w" ] \r ->
+        map at r.errors `shouldEqual` [ "6:17 m reads local m early", "8:17 w reads local w early", "4:5 reads n early" ]
 
     it "is made of records of closures referring to one another, in any order" do
       elaborating

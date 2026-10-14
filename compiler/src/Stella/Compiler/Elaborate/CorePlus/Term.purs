@@ -43,7 +43,6 @@ module Stella.Compiler.Elaborate.CorePlus.Term
   , typeVarsOfType
   , isValueForm
   , isSettledValueForm
-  , isFunVal
   , termMetasUnderRegions
   ) where
 
@@ -888,16 +887,6 @@ instance Show a => Show (Residue a) where
 -- | holds: what it is once it is decided equal. An η-expansion's λ is one.
 isValueForm :: forall a. (Qualified Ident -> P.Boolean) -> XExpr a -> P.Boolean
 isValueForm = valueFormWith true
-
--- | Whether a term is a function value by Core's rule (`Stella.Compiler.TypedCore.Check`):
--- | a `λ`, or a type or a constraint abstraction of one. An η-expansion not yet
--- | contracted is none, what it is made Core as being decided only then.
-isFunVal :: forall a. XExpr a -> P.Boolean
-isFunVal = case _ of
-  ELam _ _ _ _ -> true
-  ETyLam _ _ _ body -> isFunVal body
-  EConstraintLam _ _ body -> isFunVal body
-  _ -> false
 
 -- | Whether a zonked term is a value form whatever its fits still undecided
 -- | come to: one may widen what it holds, so the form it stands in is none.
