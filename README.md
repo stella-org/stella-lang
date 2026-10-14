@@ -51,12 +51,15 @@ import Prelude
 import Effect.Console (Console, log)
 
 -- Define new effect with two operations
+-- A weird `->*` arrow indicates that `say` and `listen` are
+-- not ordinal functions but effectful operations.
 effect Talker where
   say :: String ->* Unit
   listen :: Unit ->* String
 
--- A program carrying  `Talker` effect. In Stella, effect performing
--- is direct-style; there is no monadic do-notation or `<-` arrow.
+-- A program carrying  `Talker` effect.
+-- In Stella, performing effect is in direct-style;
+-- there is no monadic do-notation or `<-` arrow.
 program :: Unit / {| Talker |}
 program = 
   say "Hi";
@@ -85,8 +88,8 @@ main = handle program
 - ✅️ Surface Language AST, Macro Expander, and `Syntax` API
 - ✅️ Elaborator API
 - ✅️ Demonstration of macro within minimal sublanguage: list syntax `ls%[1,2,3]`
-- 🎯 Hindley-Milner Type Inference ... *WIP*
-- ☑️ More macro demo: array syntax `ar%[1,2,3]` and format string with `fmt%"..."`
+- ✅️ Hindley-Milner Type Inference
+- 🎯 More macro demo: array syntax `ar%[1,2,3]` and format string with `fmt%"..."` *WIP*
 - ☑️ Macro at declaration position: `m%{ ... }`
 - ☑️ Implicit handlers insertion
 - ☑️ E2E testing on whole set of language features
