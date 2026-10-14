@@ -262,24 +262,24 @@ Evaluating       its initializer running
 Ready v          its value
 ```
 
-A configuration carries a store `N` of by-need cells. **A location `ℓ` naming a cell is no value**:
-it stands only as the operand of the run-time forms `force ℓ` and `fill ℓ e`, and **evaluating a
+A configuration carries a store `N` of by-need cells. **A location `ν` naming a cell is no value**:
+it stands only as the operand of the run-time forms `force ν` and `fill ν e`, and **evaluating a
 member's name is forcing its cell**. `letrec` allocates a cell for each member, every initializer
 suspended with each member's name replaced by the force of its cell, then forces the cells in the
 order written, and only then evaluates its body:
 
 ```text
   letrec { x̄ : σ̄ = ē } in e
-    →  force ℓ₁ ; … ; force ℓₙ ; e[ x̄ := force ℓ̄ ]
-       with ℓ̄ fresh,  N(ℓᵢ) := Suspended (eᵢ[ x̄ := force ℓ̄ ])
+    →  force ν₁ ; … ; force νₙ ; e[ x̄ := force ν̄ ]
+       with ν̄ fresh,  N(νᵢ) := Suspended (eᵢ[ x̄ := force ν̄ ])
 
-  force ℓ     →  v                      where N(ℓ) = Ready v
-  force ℓ     →  fill ℓ e               where N(ℓ) = Suspended e,  and N(ℓ) := Evaluating
-  fill ℓ v    →  v                      and N(ℓ) := Ready v
-  force ℓ     →  initialization fault   where N(ℓ) = Evaluating
+  force ν     →  v                      where N(ν) = Ready v
+  force ν     →  fill ν e               where N(ν) = Suspended e,  and N(ν) := Evaluating
+  fill ν v    →  v                      and N(ν) := Ready v
+  force ν     →  initialization fault   where N(ν) = Evaluating
 ```
 
-`e₁ ; e₂` is `let _ = e₁ in e₂`, and `fill ℓ □` is an evaluation context. A member's name given to
+`e₁ ; e₂` is `let _ = e₁ in e₂`, and `fill ν □` is an evaluation context. A member's name given to
 a constructor, put in a record, or returned by the body is evaluated there, as any variable is,
 and so forces its cell: `Cons 1 ys` forces `ys`'s cell before the constructor is built, and a body
 returning `x` returns the value `x`'s cell holds. **A cell is held raw only under a λ**, where the
@@ -305,8 +305,8 @@ group of values could have.
 
 `rec_i(x̄ : σ̄. v̄)` is no longer needed: the force of a cell takes its place, and a group of
 function values is the case in which every cell is filled at once with the closure its λ is.
-Run-time terms are typed under a context of locations `ℓ : σ`, as they are under `Γ_R`, `force ℓ`
-at `σ` and `fill ℓ e` where `e : σ ! ()`; erasure keeps a cell as it keeps a recursive closure.
+Run-time terms are typed under a context of locations `ν : σ`, as they are under `Γ_R`, `force ν`
+at `σ` and `fill ν e` where `e : σ ! ()`; erasure keeps a cell as it keeps a recursive closure.
 
 ## Core⁺ and the elaborator
 

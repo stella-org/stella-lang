@@ -207,6 +207,7 @@ at = case _ of
   AttributeRejected o _ -> located o <> " attribute rejected"
   ForeignRefused o _ r -> located o <> " foreign refused " <> show r.position <> " " <> show r.refusal
   TypeHoleStands o name t -> located o <> " hole " <> name <> " " <> printType t
+  ExpressionHoleStands o name t context -> located o <> " expression hole " <> name <> " " <> printType t <> " [" <> joinWith ", " (map (\x -> let Ident n = x.name in n <> " : " <> printType x.type) context) <> "]"
   ValueFormNeeded o -> located o <> " value form needed"
   ReadWhileInitializing o through _ (Qualified _ (Ident read)) -> located o <> " reads " <> read <> " early" <> maybe "" (\p -> " through " <> located p) through
   LocalReadWhileInitializing o through (Ident reader) (Ident read) -> located o <> " " <> reader <> " reads local " <> read <> " early" <> maybe "" (\p -> " through " <> located p) through
@@ -496,6 +497,43 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     it "share a hole's name within one annotation alone" do
       elaborating [ "h :: Int -> Int", "h x = (inc :: ?a -> ?a) ((inc :: ?a -> ?a) x)" ] \r ->
         map at r.errors `shouldEqual` [ "4:15 hole a Int", "4:34 hole a Int" ]
+
+  describe "an expression hole" do
+    it "is reported with the type it stands at and the locals in scope, the body no value" do
+      elaborating [ "f :: Int -> Int", "f x = inc ?todo", "ok :: Int", "ok = 1" ] \r -> do
+        map at r.errors `shouldEqual` [ "4:11 expression hole todo Int [x : Int]" ]
+        map printElaborationError r.errors `shouldEqual` [ "The expression hole `?todo` stands for `Int`\nIn scope:\n  x : Int" ]
+        map _.name r.values `shouldEqual` [ Qualified (ModuleName "M") (Ident "ok") ]
+
+    it "stands at a type nothing decides, reported once" do
+      elaborating [ "g :: Int", "g = const 1 ?any" ] \r -> do
+        map at r.errors `shouldEqual` [ "4:13 expression hole any ? []" ]
+        map printElaborationError r.errors `shouldEqual` [ "The expression hole `?any` stands for `?`" ]
+
+    it "is a value form, so that a value without a signature holding one is reported by the hole alone" do
+      elaborating [ "x = ?todo" ] \r ->
+        map at r.errors `shouldEqual` [ "3:5 expression hole todo ? []" ]
+      elaborating [ "q :: forall a. a", "q = ?h" ] \r ->
+        map at r.errors `shouldEqual` [ "4:5 expression hole h a []" ]
+      -- reported before anything is generalized, `x` at what nothing decided
+      elaborating [ "g x = inc ?h" ] \r ->
+        map at r.errors `shouldEqual` [ "3:11 expression hole h Int [x : ?]" ]
+
+    it "stands at the type expected where it is checked, a quantifier there not opened" do
+      elaborating [ "k :: (forall a. a -> a) -> Int", "k f = 1", "m :: Int", "m = k ?h" ] \r ->
+        map at r.errors `shouldEqual` [ "6:7 expression hole h forall a. a -> a []" ]
+
+    it "is one of its own each time, a name shared by two being a label of each" do
+      elaborating [ "h :: Tuple Int String", "h = Tuple ?x ?x" ] \r ->
+        map at r.errors `shouldEqual` [ "4:11 expression hole x Int []", "4:14 expression hole x String []" ]
+
+    it "shows the locals source can name, by name, at their types where it stands" do
+      elaborating [ "p :: forall a. a -> Int -> a", "p y n = let", "      _ = inc n", "      b = inc n", "      a = 1", "    in (\\z -> ?here) a" ] \r ->
+        map at r.errors `shouldEqual` [ "8:15 expression hole here a [a : Int, b : Int, n : Int, y : a, z : Int]" ]
+
+    it "keeps what only a local in scope leaves undecided reported where the local's term holds it" do
+      elaborating [ "u :: Int", "u = let w = \\y -> y in ?h" ] \r ->
+        map at r.errors `shouldEqual` [ "4:24 expression hole h Int [w : ? -> ?]", "4:9 type undetermined", "4:14 type undetermined" ]
 
   describe "what a quantifier encloses" do
     let
@@ -1166,6 +1204,31 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       map at r.errors `shouldEqual` [ "1:1 rejected", "2:1 left unchecked", "3:1 hole a Int" ]
       map _.name r.values `shouldEqual` []
 
+    it "report an expression hole only in a body that settled, as a typed hole" do
+      let
+        afterF = stated "f" 1 "b" (initialState (SessionId 0) 10)
+        afterG = stated "g" 2 "a" (snd afterF)
+        holding t = (body t) { expressionHoles = [ { origin: origin (snd t), name: "a", type: XCon intTy [], context: [] } ] }
+        r = settleBodies primSession (attemptPending primSession) (snd afterG) (map holding [ Tuple "f" 1, Tuple "g" 2, Tuple "h" 3 ])
+      map at r.errors `shouldEqual` [ "1:1 rejected", "2:1 left unchecked", "3:1 expression hole a Int []" ]
+      map _.name r.values `shouldEqual` []
+
+    it "report an expression hole nothing noted where it stands, and leave its body no value" do
+      let
+        holding t = (body t) { body = EHole (origin (snd t)) (XCon intTy []) }
+        noted t = (holding t) { expressionHoles = [ { origin: origin (snd t), name: "a", type: XCon intTy [], context: [] } ] }
+        unnoted = settleBodies primSession (attemptPending primSession) (initialState (SessionId 0) 10) [ holding (Tuple "f" 1) ]
+        reported = settleBodies primSession (attemptPending primSession) (initialState (SessionId 0) 10) [ noted (Tuple "f" 1) ]
+      map at unnoted.errors `shouldEqual` [ "1:1 type undetermined" ]
+      map _.name unnoted.values `shouldEqual` []
+      map at reported.errors `shouldEqual` [ "1:1 expression hole a Int []" ]
+      -- a record at another type is no record of this hole
+      let elsewhere = settleBodies primSession (attemptPending primSession) (initialState (SessionId 0) 10) [ (noted (Tuple "f" 1)) { expressionHoles = [ { origin: origin 1, name: "a", type: XCon stringTy [], context: [] } ] } ]
+      map at elsewhere.errors `shouldEqual` [ "1:1 expression hole a String []", "1:1 type undetermined" ]
+      -- and so is one written elsewhere
+      let apart = settleBodies primSession (attemptPending primSession) (initialState (SessionId 0) 10) [ (noted (Tuple "f" 1)) { expressionHoles = [ { origin: origin 2, name: "a", type: XCon intTy [], context: [] } ] } ]
+      map at apart.errors `shouldEqual` [ "2:1 expression hole a Int []", "1:1 type undetermined" ]
+
     it "leave a value every declaration a failed synthesis does not belong to" do
       let
         -- `f` asks a synthesizer that fails; `g` states an equation the loop
@@ -1214,4 +1277,4 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     )
   inM = Qualified (ModuleName "M") <<< Ident
   siteIn name line = { context: emptyXContext, origin: AtSource { declaration: inM name, origin: origin line } }
-  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, spine: plainScheme { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1), holes: [], wildcards: [], unwritten: [] }
+  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, spine: plainScheme { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1), holes: [], wildcards: [], unwritten: [], expressionHoles: [] }

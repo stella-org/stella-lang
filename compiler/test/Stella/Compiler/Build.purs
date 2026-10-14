@@ -682,6 +682,13 @@ spec = describe "Stella.Compiler.Build" do
           `shouldEqual` [ "8:28 `table` is read here while it is being initialized" ]
         Right _ -> fail "accepted"
 
+  describe "an expression hole" do
+    it "is reported where it stands, with what it stands for and the locals in scope" do
+      compilingUnder [ "module M (f) where" ] [ "f :: Int -> Int", "f x = ?todo" ] case _ of
+        Left errors -> map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors
+          `shouldEqual` [ "3:7 The expression hole `?todo` stands for `Int`\nIn scope:\n  x : Int" ]
+        Right _ -> fail "accepted"
+
   describe "a module's type declarations" do
     let
       rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors

@@ -809,6 +809,14 @@ What a signature, a field, and an annotation write, read into Core⁺ ([Elaborat
 | `(inc :: ?a -> ?a) ((inc :: ?a -> ?a) x)` | Two holes, each reported. A name is shared within one annotation alone |
 | `?a -> (forall b. b -> ?a)`, and its two occurrences the other way about | `?a` cannot become `b` either way: one metavariable, its scope what every occurrence may mention, whichever is read first |
 | A hole in a body the loop refuses, or leaves unchecked | Not reported. The body is reported by that, what the hole stands for unsettled |
+| `f x = inc ?todo` under `f :: Int -> Int` | Reported where `?todo` stands, standing for `Int`, with `x : Int` in scope; the body no value |
+| `g = const 1 ?any` | Reported once, standing for `?`. Nothing its type leaves undecided is reported again |
+| `x = ?todo` without a signature | The hole alone. A hole is a value form, so the value restriction does not report the declaration first |
+| `k ?h` with `k :: (forall a. a -> a) -> Int`, and `q :: forall a. a; q = ?h` | Standing for `forall a. a -> a`, and for `a`. A hole stands at the type expected where it is checked, a definition's own quantifiers opened before its body is reached |
+| `Tuple ?x ?x` at `Tuple Int String` | Two holes, standing for `Int` and for `String`. Each `?x` of a body is a hole of its own |
+| A hole under a `let` with a `_` binding and under a `λ`, in `p :: forall a. a -> Int -> a` | The locals in scope in the order of their names, `y : a` among them; the `_` binding's name, which the elaborator made, left out |
+| `let w = \y -> y in ?h` | The hole, then `w`'s type undecided where `w` and `y` stand. What a local in scope leaves undecided is not the hole's |
+| A body holding an `EHole` no record notes, or one noted at another type or place | Reported where it stands as a type nothing determines; the body no value. A hole is suppressed only where its own record reports it |
 | `_` or `?a` in a signature | Outside the subset in this version |
 
 ### Kind and type unification (step 7, division 2)

@@ -12,7 +12,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar(..), XKind(..))
-import Stella.Compiler.Elaborate.CorePlus.Term (FreeVars, Residue(..), TermMetaVar(..), XDecisionTree(..), XExpr(..), fromCoreExpr, freeVarsOf, metasOfTerm, toCoreExpr)
+import Stella.Compiler.Elaborate.CorePlus.Term (FreeVars, Residue(..), TermMetaVar(..), XDecisionTree(..), XExpr(..), fromCoreExpr, freeVarsOf, isSettledValueForm, isValueForm, metasOfTerm, toCoreExpr)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XRowEntry(..), XType(..))
 import Stella.Compiler.TypedCore (Constraint(..), DecisionTree(..), EffName(..), Expr(..), Ident(..), JoinName(..), Kind(..), KindVar(..), Literal(..), ModuleName(..), OpClause(..), OpName(..), Occurrence(..), Qualified(..), RegionName(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyName(..), TyVar(..), Type(..))
 import Data.Array.NonEmpty as NonEmptyArray
@@ -218,6 +218,17 @@ spec = describe "Elaborate.Term" do
         ( NonEmptyArray.cons' (ResidualTypeMeta 1 (MetaVar 0))
             [ ResidualTermMeta 2 (TermMetaVar 0), ResidualTermMeta 3 (TermMetaVar 0) ]
         )
+
+  describe "a value form" do
+    it "is a hole, alone and as a constructor's argument, as built and as settled" do
+      let
+        hole = EHole unit xInt
+        ctor = Qualified main' (Ident "Box")
+        boxed = EApp unit (EGlobal unit ctor []) hole
+        called = EApp unit (EGlobal unit (Qualified main' (Ident "f")) []) hole
+        isCtor = (_ == ctor)
+      map (isValueForm isCtor) [ hole, boxed, called ] `shouldEqual` [ true, true, false ]
+      map (isSettledValueForm isCtor) [ hole, boxed, called ] `shouldEqual` [ true, true, false ]
 
   describe "free variables" do
     it "has a closed Core term mention nothing" do

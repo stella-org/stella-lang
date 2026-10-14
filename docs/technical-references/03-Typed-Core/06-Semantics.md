@@ -132,7 +132,7 @@ A configuration is either a term or a fault, and **reduction threads a store `N`
 
 ```text
 c ::= e  |  fault φ
-N ::= ·  |  N, ℓ ↦ s
+N ::= ·  |  N, ν ↦ s
 s ::= Suspended e  |  Evaluating  |  Ready v
 ```
 
@@ -464,8 +464,8 @@ Six forms arise during reduction and are never produced by elaboration.
 ```text
 match θ dt            descending a decision tree
 openEffC [ρ] e        a computation whose effects are bounded by a wider row
-force ℓ               a reference to the member of a local recursive group whose by-need cell is ℓ
-fill ℓ e              the initializer of that cell running, its value to fill the cell
+force ν               a reference to the member of a local recursive group whose by-need cell is ν
+fill ν e              the initializer of that cell running, its value to fill the cell
 region⟨ℓ⟩ θ in e      an open region of cells named ℓ, θ a finite map from key to value
 opaque ω [τ]          a value an implementation returned, typed above
 ```
@@ -479,13 +479,13 @@ The last is the only one a `δ_f` produces, and the only one that is a value rat
   ────────────────────────────────
   Γ;Δ ⊢ openEffC [ρ] e : τ ! (r ⊎ ρ)
 
-  ( ℓ : σ ) ∈ Γ_N
+  ( ν : σ ) ∈ Γ_N
   ───────────────────────
-  Γ;Δ ⊢ force ℓ : σ ! ρ
+  Γ;Δ ⊢ force ν : σ ! ρ
 
-  ( ℓ : σ ) ∈ Γ_N    Γ;· ⊢ e : σ ! ()
+  ( ν : σ ) ∈ Γ_N    Γ;· ⊢ e : σ ! ()
   ──────────────────────────────────
-  Γ;Δ ⊢ fill ℓ e : σ ! ρ
+  Γ;Δ ⊢ fill ν e : σ ! ρ
 
   ( region ℓ : ι ) ∈ Γ_R      ι = ( k̄ : σ̄ )      dom(θ) = { k̄ }
   each j:  Γ;· ⊢ θ(k_j) : σ_j ! ()
@@ -497,18 +497,18 @@ The last is the only one a `δ_f` produces, and the only one that is a value rat
 
 `openEffC [ρ] e` widens the **ambient row of a computation**, where `openEff` widens the **effect row inside a function's type**. Both are needed and neither subsumes the other: `openEff` is what allows a pure function to be passed where a wider arrow type is expected, and `openEffC` is what allows the result of applying such a function to sit in a context whose ambient row is the wider one.
 
-**A `letrec` allocates a location for each member**, and the locations allocated so far, each with the type of its member, form a global context `Γ_N` of entries `ℓ : σ`, which run-time terms are typed under as they are under `Γ_R`. **A store is typed by it**, each cell holding a term of its location's type:
+**A `letrec` allocates a location for each member**, and the locations allocated so far, each with the type of its member, form a global context `Γ_N` of entries `ν : σ`, which run-time terms are typed under as they are under `Γ_R`. **A store is typed by it**, each cell holding a term of its location's type:
 
 ```text
   dom(N) = dom(Γ_N)
-  each (ℓ : σ) ∈ Γ_N:   N(ℓ) = Suspended e   with  ·;· ⊢ e : σ ! ()
-                    or  N(ℓ) = Ready v       with  ·;· ⊢ v : σ ! ()
-                    or  N(ℓ) = Evaluating
+  each (ν : σ) ∈ Γ_N:   N(ν) = Suspended e   with  ·;· ⊢ e : σ ! ()
+                    or  N(ν) = Ready v       with  ·;· ⊢ v : σ ! ()
+                    or  N(ν) = Evaluating
   ──────────────────────────────────────────────────
   ⊢ N : Γ_N
 ```
 
-An `Evaluating` cell's initializer is the term a `fill ℓ e` stands for, typed where it stands. **A location is no value**: it stands only as the operand of `force` and `fill`, which is what keeps a member's name, once substituted, a reference that reads its cell. They are **local** forms only. A top-level `rec` group installs its members into `G` in the order written, and its recursive references are global names.
+An `Evaluating` cell's initializer is the term a `fill ν e` stands for, typed where it stands. **A location is no value**: it stands only as the operand of `force` and `fill`, which is what keeps a member's name, once substituted, a reference that reads its cell. They are **local** forms only. A top-level `rec` group installs its members into `G` in the order written, and its recursive references are global names.
 
 `region⟨ℓ⟩ θ in e` is a region whose initial values have been evaluated. **It binds nothing**: its rule is the source rule ([Typing Rules](05-Typing-Rules.md)) with `ℓ ∈ Γ_R` in place of the binder and `θ` in place of the initial values. It carries `θ` — **the cells themselves, by value** — together with the name the opening allocated, which is what makes its rule derivable and hence what makes preservation hold across a write (D36). The values live here and nowhere else: a region's cells have no store, no address, and no two ways to reach one cell of one frame.
 
@@ -648,7 +648,7 @@ Ev ::= []
      | region [ℓ] ( k̄ : σ̄ ) @ ( v̄, Ev, ē ) in e
      | region⟨ℓ⟩ θ in Ev
      | writeCell ℓ.k Ev
-     | fill ℓ Ev
+     | fill ν Ev
 ```
 
 ```text
@@ -723,16 +723,16 @@ The whole term is typed at ambient row `( E )`, and the rule for `let` requires 
 
 ```text
   G ⊢ N; letrec { x̄ : σ̄ = ē } in e
-      →  N, ℓ₁ ↦ Suspended (e₁[ x̄ := force ℓ̄ ]), …, ℓₙ ↦ Suspended (eₙ[ x̄ := force ℓ̄ ]);
-         force ℓ₁ ; … ; force ℓₙ ; e[ x̄ := force ℓ̄ ]                      ℓ̄ fresh
+      →  N, ν₁ ↦ Suspended (e₁[ x̄ := force ν̄ ]), …, νₙ ↦ Suspended (eₙ[ x̄ := force ν̄ ]);
+         force ν₁ ; … ; force νₙ ; e[ x̄ := force ν̄ ]                      ν̄ fresh
 
-  G ⊢ N; force ℓ   →  N; v                           N(ℓ) = Ready v
-  G ⊢ N; force ℓ   →  N[ℓ ↦ Evaluating]; fill ℓ e     N(ℓ) = Suspended e
-  G ⊢ N; fill ℓ v  →  N[ℓ ↦ Ready v]; v
-  G ⊢ N; force ℓ   →  N; fault φ_init                N(ℓ) = Evaluating
+  G ⊢ N; force ν   →  N; v                           N(ν) = Ready v
+  G ⊢ N; force ν   →  N[ν ↦ Evaluating]; fill ν e     N(ν) = Suspended e
+  G ⊢ N; fill ν v  →  N[ν ↦ Ready v]; v
+  G ⊢ N; force ν   →  N; fault φ_init                N(ν) = Evaluating
 ```
 
-`e₁ ; e₂` is `let _ = e₁ in e₂`, and `fill ℓ □` is an evaluation context. A member's name given to a constructor, put in a record, or returned by the body is evaluated there, as any variable is, and so forces its cell: `Cons 1 ys` forces `ys`'s cell before the constructor is built. **Under a λ a reference stays `force ℓ`, unevaluated** until the closure is applied. An implementation realizes that as a closure capturing the cell, which is the one place a cell itself is held ([Mid IR](../04-MiddleEnd/01-Mid-IR.md)).
+`e₁ ; e₂` is `let _ = e₁ in e₂`, and `fill ν □` is an evaluation context. A member's name given to a constructor, put in a record, or returned by the body is evaluated there, as any variable is, and so forces its cell: `Cons 1 ys` forces `ys`'s cell before the constructor is built. **Under a λ a reference stays `force ν`, unevaluated** until the closure is applied. An implementation realizes that as a closure capturing the cell, which is the one place a cell itself is held ([Mid IR](../04-MiddleEnd/01-Mid-IR.md)).
 
 **Initialization safety makes the cells strict.** The judgement bounds the cells evaluating an initializer forces by the members it reads, which a safe group's sequence has filled before it. So every `force` the sequence performs finds its cell `Suspended`, every other `force` during initialization finds its cell `Ready`, every `force` after the group finds every cell `Ready`, and no initialization fault is reached. Each initializer runs once, at its place in the order, and a divergence or a fault of one is observed where the group is initialized, as a `nonrec`'s is. A group of function values is the case in which every cell is filled at once with the closure its λ is; it does **not** claim that a recursive computation terminates, and Core makes no such claim anywhere.
 
@@ -981,7 +981,7 @@ An erased handler carries the key alone: the payload of the element is what says
 
 **The `full` and `fast` markers survive erasure.** They carry no type information; they say what a clause binds and which reduction rule applies to it, and a backend lowers the two differently — a `fast` clause needs no representation of a continuation at all. Core writes the marker on every clause, so which rule applies is settled in the erased term as well.
 
-A variant value loses its `weaken` wrappers, so an erased `switchKey` dispatches on the key the value carries directly. By-need cells survive erasure, a `force` and a `fill` carrying computational content: `⌊force ℓ⌋ = force ℓ`, `⌊fill ℓ e⌋ = fill ℓ ⌊e⌋`, and `⌊N⌋` erases the term each cell holds.
+A variant value loses its `weaken` wrappers, so an erased `switchKey` dispatches on the key the value carries directly. By-need cells survive erasure, a `force` and a `fill` carrying computational content: `⌊force ν⌋ = force ν`, `⌊fill ν e⌋ = fill ν ⌊e⌋`, and `⌊N⌋` erases the term each cell holds.
 
 ## Properties
 

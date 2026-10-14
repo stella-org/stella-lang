@@ -19,7 +19,7 @@ import Prelude
 import Prim hiding (Type)
 
 import Data.Array as Array
-import Data.Foldable (foldl, foldr)
+import Data.Foldable (foldMap, foldl, foldr)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.String (joinWith)
@@ -70,6 +70,7 @@ elaborationOrigins = case _ of
   AttributeRejected o _ -> [ o ]
   ForeignRefused o _ _ -> [ o ]
   TypeHoleStands o _ _ -> [ o ]
+  ExpressionHoleStands o _ _ _ -> [ o ]
   ValueFormNeeded o -> [ o ]
   ReadWhileInitializing o through _ _ -> Array.cons o (Array.fromFoldable through)
   LocalReadWhileInitializing o through _ _ -> Array.cons o (Array.fromFoldable through)
@@ -125,6 +126,9 @@ printElaborationError = case _ of
   ForeignRefused _ name refused -> printRefused (nameOf name) refused
   TypeHoleStands _ "_" t -> fmt @"This hole stands for `{t}`" { t: printType t }
   TypeHoleStands _ name t -> fmt @"The hole `?{name}` stands for `{t}`" { name, t: printType t }
+  ExpressionHoleStands _ name t context ->
+    fmt @"The expression hole `?{name}` stands for `{t}`" { name, t: printType t }
+      <> if Array.null context then "" else "\nIn scope:" <> foldMap (\x -> fmt @"\n  {x} : {t}" { x: localName x.name, t: printType x.type }) context
   ValueFormNeeded _ -> "This stands under a `forall` or a constraint, where only a value form may stand; where it is a function, writing its parameter makes it one"
   ReadWhileInitializing _ _ reader read
     | reader == read -> fmt @"`{x}` is read here while it is being initialized" { x: nameOf read }

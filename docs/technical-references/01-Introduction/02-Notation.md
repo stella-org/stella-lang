@@ -26,6 +26,9 @@ Notation confined to a single document is introduced where it is used.
 | `E` | effect constructors |
 | `x`, `y` | value variables |
 | `j` | join points |
+| `ℓ` | region names |
+| `ι` | region layouts, `( k1 : σ1, …, kn : σn )` |
+| `ν` | locations of by-need cells, which exist only at run time |
 | `o` | occurrences |
 | `C` | constraints |
 | `Σ`, `Γ`, `Δ`, `Ω` | contexts |

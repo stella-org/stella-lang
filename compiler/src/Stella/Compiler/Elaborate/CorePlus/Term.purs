@@ -884,7 +884,8 @@ instance Show a => Show (Residue a) where
 
 -- | Whether a term is a value form by Core's rule (`Stella.Compiler.TypedCore.Check`),
 -- | the predicate given telling a constructor, a wrapping fit judged by what it
--- | holds: what it is once it is decided equal. An η-expansion's λ is one.
+-- | holds: what it is once it is decided equal. An η-expansion's λ is one, and
+-- | so is a hole, which performs nothing and is never made Core.
 isValueForm :: forall a. (Qualified Ident -> P.Boolean) -> XExpr a -> P.Boolean
 isValueForm = valueFormWith true
 
@@ -900,6 +901,7 @@ valueFormWith throughFits isConstructor = value
     ELit _ _ -> true
     ELam _ _ _ _ -> true
     EEta _ _ _ -> true
+    EHole _ _ -> true
     EFit _ _ e -> throughFits && value e
     ETyLam _ _ _ body -> value body
     EConstraintLam _ _ body -> value body

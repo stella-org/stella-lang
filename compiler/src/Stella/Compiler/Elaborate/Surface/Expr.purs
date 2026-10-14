@@ -40,8 +40,9 @@
 -- |
 -- | **This version elaborates a subset**: variables, globals, computations,
 -- | constructors, literals, application, λ over variables, type annotations,
--- | a wildcard or a typed hole among what they write, and `let` blocks and
--- | `where`s binding variables and `_`, with a signature or without. A synthesized
+-- | a wildcard or a typed hole among what they write, expression holes, and
+-- | `let` blocks and `where`s binding variables and `_`, with a signature or
+-- | without. A synthesized
 -- | argument of the declaration's own is a parameter like any other; a
 -- | reference to a value taking one is outside the subset, a goal being what
 -- | supplies the argument. Anything else is reported where it stands, and the
@@ -49,6 +50,7 @@
 module Stella.Compiler.Elaborate.Surface.Expr
   ( Surf
   , Noted
+  , ExpressionHole
   , runSurf
   , elaborateValue
   , elaborateComputation
@@ -70,6 +72,8 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Set (Set)
 import Data.Set as Set
+import Data.String (Pattern(..))
+import Data.String as String
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext, lookupVar)
@@ -90,7 +94,7 @@ import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported
 import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder(..), Expr(..), GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..), exprOrigin)
 import Stella.Compiler.Surface.Name (BindingId, LocalVar(..))
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.TypedCore.Name (Ident, KindVar, Qualified)
+import Stella.Compiler.TypedCore.Name (Ident(..), KindVar, Qualified)
 import Stella.Compiler.TypedCore.Prim (functionTy, litType, unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
 import Stella.Compiler.TypedCore.Type (TypeScheme)
@@ -100,9 +104,20 @@ import Stella.Compiler.TypedCore.Type (TypeScheme)
 -- | reported once the body is settled.
 newtype Surf a = Surf (Elab (Either Unsupported (Noted a)))
 
--- | What was built, and the typed holes, the wildcards, and the kinds a local
--- | signature leaves unwritten noted on the way, in the order met.
-type Noted a = { value :: a, holes :: Array TypeHole, wildcards :: Array Wildcard, unwritten :: Array { origin :: Surface.Origin, kind :: XKind } }
+-- | What was built, and the typed holes, the wildcards, the kinds a local
+-- | signature leaves unwritten, and the expression holes noted on the way, in
+-- | the order met.
+type Noted a =
+  { value :: a
+  , holes :: Array TypeHole
+  , wildcards :: Array Wildcard
+  , unwritten :: Array { origin :: Surface.Origin, kind :: XKind }
+  , expressionHoles :: Array ExpressionHole
+  }
+
+-- | An expression hole where it is written, by its name, the type it stands
+-- | at, and the locals in scope there that source can name, each at its type.
+type ExpressionHole = { origin :: Surface.Origin, name :: String, type :: XType, context :: Array { name :: Ident, type :: XType } }
 
 runSurf :: forall a. Surf a -> Elab (Either Unsupported (Noted a))
 runSurf (Surf e) = e
@@ -114,31 +129,42 @@ instance Apply Surf where
   apply = ap
 
 instance Applicative Surf where
-  pure a = Surf (pure (Right { value: a, holes: [], wildcards: [], unwritten: [] }))
+  pure a = Surf (pure (Right { value: a, holes: [], wildcards: [], unwritten: [], expressionHoles: [] }))
 
 instance Bind Surf where
   bind (Surf e) k = Surf
     ( e >>= case _ of
         Left problem -> pure (Left problem)
-        Right a -> map (map (\b -> b { holes = a.holes <> b.holes, wildcards = a.wildcards <> b.wildcards, unwritten = a.unwritten <> b.unwritten })) (runSurf (k a.value))
+        Right a -> map (map (\b -> b { holes = a.holes <> b.holes, wildcards = a.wildcards <> b.wildcards, unwritten = a.unwritten <> b.unwritten, expressionHoles = a.expressionHoles <> b.expressionHoles })) (runSurf (k a.value))
     )
 
 instance Monad Surf
 
 lift :: forall a. Elab a -> Surf a
-lift = Surf <<< map (\a -> Right { value: a, holes: [], wildcards: [], unwritten: [] })
+lift = Surf <<< map (\a -> Right { value: a, holes: [], wildcards: [], unwritten: [], expressionHoles: [] })
 
 outside :: forall a. Unsupported -> Surf a
 outside = Surf <<< pure <<< Left
 
 -- | Note the typed holes and the wildcards an annotation holds.
 note :: forall r. { holes :: Array TypeHole, wildcards :: Array Wildcard | r } -> Surf Unit
-note read = Surf (pure (Right { value: unit, holes: read.holes, wildcards: read.wildcards, unwritten: [] }))
+note read = Surf (pure (Right { value: unit, holes: read.holes, wildcards: read.wildcards, unwritten: [], expressionHoles: [] }))
 
 -- | Note what a local signature holds: its typed holes and wildcards, and the
 -- | kinds it leaves unwritten, which nothing local generalizes.
 noteSignature :: Elaborated -> Surf Unit
-noteSignature e = Surf (pure (Right { value: unit, holes: e.holes, wildcards: e.wildcards, unwritten: e.unwritten }))
+noteSignature e = Surf (pure (Right { value: unit, holes: e.holes, wildcards: e.wildcards, unwritten: e.unwritten, expressionHoles: [] }))
+
+-- | An expression hole at the type given, noted with the locals in scope where
+-- | it stands: a value form that performs nothing. Every occurrence is a hole
+-- | of its own, its name a label of what is reported.
+hole :: Scope -> Surface.Origin -> String -> XType -> Surf (XExpr Surface.Origin)
+hole scope origin name ty = Surf (pure (Right { value: EHole origin ty, holes: [], wildcards: [], unwritten: [], expressionHoles: [ { origin, name, type: ty, context } ] }))
+  where
+  -- a name with `#` is one the elaborator made
+  context = Array.mapMaybe
+    (\(Tuple x@(Ident n) t) -> if String.contains (Pattern "#") n then Nothing else Just { name: x, type: t })
+    (Map.toUnfoldable scope.context.vars)
 
 -- | What an expression is elaborated under: the declaration it belongs to, the
 -- | context its node stands in, the row its evaluation may perform, the entries
@@ -511,6 +537,7 @@ check scope expr expected ty = case expr of
     block <- letBlock scope o bindings
     block.wrap <$> check block.scope body expected ty
   ExprInvalid o -> outside (ReportedAlready o)
+  ExprHole o name -> hole scope o name ty
   _ -> do
     metas <- lift currentMetas
     case substitute metas ty of
@@ -580,6 +607,9 @@ infer scope expr = case expr of
     inner <- infer block.scope body
     pure { expr: block.wrap inner.expr, type: inner.type }
   ExprInvalid o -> outside (ReportedAlready o)
+  ExprHole o name -> do
+    ty <- lift (freshTypeMeta scope.context XKType)
+    { expr: _, type: ty } <$> hole scope o name ty
   _ -> outside (OutsideSubset (exprOrigin expr) "this form")
   where
   lambda binders body = case Array.uncons binders of
