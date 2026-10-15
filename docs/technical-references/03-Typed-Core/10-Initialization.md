@@ -71,7 +71,7 @@ apart a value without running what it holds, and the control forms:
 | `x`, a member | `{ x ↦ ⟨x, –⟩ }` | `lat*(x)` |
 | `y`, a local | `∅` | `ρ(y)` |
 | `M.x [[κ̄]]`, `c`, `recordEmpty`, `readCell ℓ.k` | `∅` | `∅` |
-| `λ(y : τ). e` | `∅` | `imm(e) ∪ lat(e)`, with `ρ(y) = ∅` |
+| `λ(y : τ) / r. e` | `∅` | `imm(e) ∪ lat(e)`, with `ρ(y) = ∅` |
 | `Λ (a : κ). e`, `e [σ]`, `Λ (_ : C). e`, `e [•]`, `openEff [ρ] e` | `imm(e)` | `lat(e)` |
 | `M.c ē`, a spine whose head is a data constructor or a foreign, through type and constraint applications, with no more arguments than its arity | `⋃ imm(eₖ)` | `⋃ lat(eₖ)` |
 | `extend k e₁ e₂`, `update k e₁ e₂`, `merge e₁ e₂`, `inject k [ρ] e` | `⋃ imm(eₖ)` | `⋃ lat(eₖ)` |

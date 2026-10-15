@@ -53,7 +53,7 @@ After `e2` and `e1` are evaluated to values, the value form of `e1` determines w
 
 | Value form of `e1` | Behaviour |
 | --- | --- |
-| `λ (x : τ) . e` | β-reduction: evaluate `e[x := v2]` |
+| `λ (x : τ) / ρ . e` | β-reduction: evaluate `e[x := v2]` |
 | `M.Ctor [τ̄] v̄` with `\|v̄\| < arity` | append the argument, giving `M.Ctor [τ̄] (v̄, v2)`. **The result is again a value; no computation occurs** |
 | an application of `foreign f` | call the implementation, a primitive step, which yields a value or a fault. That it reaches the **world** nowhere is a conformance obligation on the implementation and not a consequence of D23 alone; a world effect happens when the runtime executes the returned `IO`. An **observational** effect is a separate matter and the call may have one, unless the declaration asserts `#observ(none)` (D41) |
 
@@ -402,7 +402,7 @@ An entry with observational effects reads and writes memory, and **the relation 
 
 ```text
 v ::= c
-    | λ (x : τ) . e
+    | λ (x : τ) / ρ . e
     | Λ (a : κ) . v
     | Λ (_ : C) . v
     | M.Ctor ς                 a constructor spine
@@ -685,7 +685,7 @@ Tl ::= []  |  letjoin j' (x̄ : τ̄) : τ = e' in Tl
 ### Ordinary reduction
 
 ```text
-  (λ(x : τ). e) v                    →  e[x := v]
+  (λ(x : τ) / ρ. e) v                →  e[x := v]
   (Λ(a : κ). v) [σ]                  →  v[a := σ]
   (Λ(_ : C). v) [•]                  →  v
 
@@ -790,8 +790,9 @@ The second rule discards a binding whose join point is no longer reachable.
 
 ```text
   handle Ev_k[ perform k.op [σ̄] v ] with h    →  e_i[ b̄_i := σ̄,  x_i := v,
-                                                     k_i := λ(y : τ_i'). handle Ev_k[y] with h ]
+                                                     k_i := λ(y : τ_i') / ρ. handle Ev_k[y] with h ]
                                                  where h = { handles ent ; … }, key(ent) = k,
+                                                   ρ the row the handle stands at,
                                                    and its clause for op is
                                                    full op [b̄_i] (x_i, k_i) -> e_i
 
@@ -864,7 +865,7 @@ The return clause runs where the `handle` stood, at `ρ`, and so within every re
 
 **A write rewrites the evaluation context.** Nothing is mutated and nothing is shared: the frame is a part of the term, and the step replaces it with another frame of the same name. This is what makes a cell a binder with a lifetime rather than a location (D36).
 
-What follows is the interaction with continuations, and **which continuations it holds of is the whole of it.** A continuation is `λ(y : τ_i'). handle Ev_k[y] with h`, and **it copies its segment as it stands, names included**: applying it twice yields two terms holding `region⟨ℓ⟩` under the same `ℓ`, and no rule renames them. What it carries is whatever `Ev_k` contains, and whether that includes a region depends on where the capturing handler stands.
+What follows is the interaction with continuations, and **which continuations it holds of is the whole of it.** A continuation is `λ(y : τ_i') / ρ. handle Ev_k[y] with h`, and **it copies its segment as it stands, names included**: applying it twice yields two terms holding `region⟨ℓ⟩` under the same `ℓ`, and no rule renames them. What it carries is whatever `Ev_k` contains, and whether that includes a region depends on where the capturing handler stands.
 
 | The continuation is captured by | Is the region in the captured segment | What resumptions see |
 | --- | --- | --- |
@@ -952,6 +953,7 @@ Placing execution outside Core keeps the trusted core free of **world** state: a
 Erasure `⌊·⌋` removes the forms that carry no run-time content.
 
 ```text
+⌊λ (x : τ) / ρ . e⌋ = λ x . ⌊e⌋
 ⌊Λ (a : κ) . v⌋   = ⌊v⌋        ⌊e [τ]⌋           = ⌊e⌋
 ⌊Λ (_ : C) . v⌋   = ⌊v⌋        ⌊e [•]⌋           = ⌊e⌋
 ⌊T [[κ̄]]⌋         = ⌊T⌋        ⌊M.x [[κ̄]]⌋       = ⌊M.x⌋
@@ -975,7 +977,7 @@ Erasure `⌊·⌋` removes the forms that carry no run-time content.
 
 This is **not** a reduction relation. `openEff`, `openEffC`, `weaken`, and `[[κ̄]]` change a term's type or its ambient row, and `[[κ̄]]` additionally discards an instantiation that the typed rules require. A backend erases first and then evaluates; the typed relation above evaluates without erasing.
 
-An erased handler carries the key alone: the payload of the element is what says which operations the clauses must exhaust, and that is settled before evaluation begins. The result type of a join point goes the same way, being written for the checker rather than for reduction.
+**A λ keeps its parameter and its body**: the type of the parameter and the row of the body are written for the checker, as a `let`'s type is, and go. An erased handler carries the key alone: the payload of the element is what says which operations the clauses must exhaust, and that is settled before evaluation begins. The result type of a join point goes the same way, being written for the checker rather than for reduction.
 
 **A region keeps its name, its values, and the positions of its cells; its keys stay as debug information, and everything else goes.** The region name survives as a **term-level** binder: it stands for the run-time identity the opening step allocates, which is what a closure over a cell captures and what `Ev_ℓ` walks by. The types of the layout go, and so do the element `region ℓ` and the key `RegionKey ℓ`, which occur only in types. A cell is named by its position in the layout, `⌊θ⌋` mapping positions to values (D36).
 

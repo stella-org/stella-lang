@@ -28,7 +28,7 @@ Conversely, some things CoreFn has do not appear in Stella's Core.
 | CoreFn | Stella Typed Core | Difference |
 | --- | --- | --- |
 | `Var Ann (Qualified Ident)` | `x` / `M.x` | Carries a type |
-| `Abs Ann Ident Expr` | `λ (x : τ). e` | The argument is annotated |
+| `Abs Ann Ident Expr` | `λ (x : τ) / ρ . e` | The argument is annotated, and so is the row the body is evaluated under |
 | `App Ann Expr Expr` | `e1 e2` | The same, except that the arrow's effect row must equal the ambient row |
 | (absent) | `Λ (a : κ). v` / `e [τ]` | New. Makes independent type checking possible |
 | (absent) | `Λ (_ : C). v` / `e [•]` | New. Row constraints, with no run-time content |

@@ -73,9 +73,9 @@ The distinction is also the unit of **separate compilation**. `Σ` is what a mod
   ─────────────────  ─────────────────────────────────────────────────────
   Γ;Δ ⊢ x : τ ! ρ    Γ;Δ ⊢ M.x [[κ̄']] : σ[k̄ := κ̄'] ! ρ
 
-  Γ, x : τ1; · ⊢ e : τ2 ! ρ'
-  ────────────────────────────────────────────   ← the body's effects go on the arrow
-  Γ;Δ ⊢ λ(x : τ1). e : τ1 -{ρ'}-> τ2 ! ρ         ← Δ is discarded
+  Γ ⊢ ρ' : Row Effect    Γ, x : τ1; · ⊢ e : τ2 ! ρ'
+  ─────────────────────────────────────────────────   ← the row the λ writes is its arrow's
+  Γ;Δ ⊢ λ(x : τ1) / ρ'. e : τ1 -{ρ'}-> τ2 ! ρ           ← Δ is discarded
 
   Γ;Δ ⊢ e1 : τ1 -{ρ}-> τ2 ! ρ    Γ;Δ ⊢ e2 : τ1 ! ρ
   ────────────────────────────────────────────────   ← the arrow's row equals the ambient row
@@ -239,7 +239,7 @@ A `fast` clause's premise names neither `k_i` nor `β`, and that absence is the 
 ```text
 -- f : Int -> Int                        (pure)
 -- to call f where g : Int -{( Console )}-> Int
-g = λ(n : Int). (openEff [( Console )] f) n
+g = λ(n : Int) / ( Console ). (openEff [( Console )] f) n
 ```
 
 The explicitness is the price of D8. The elaborator inserts it, so an author does not see it.

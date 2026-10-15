@@ -5,7 +5,7 @@
 ```text
 e ::= x | M.x [[κ̄]]                    variable; `M.x` when κ̄ is empty
     | c                                literal
-    | λ (x : τ) . e                    value abstraction
+    | λ (x : τ) / ρ . e                value abstraction, its body evaluated under ρ
     | e1 e2                            value application
     | Λ (a : κ) . e                    type abstraction
     | e [τ]                            type application
@@ -40,13 +40,15 @@ e ::= x | M.x [[κ̄]]                    variable; `M.x` when κ̄ is empty
 c ::= literals of Int, Number, String, Char, Boolean
 ```
 
+**A λ writes the row its body is evaluated under**, which is the row of its arrow: `λ (x : τ) / ρ . e` is a `τ -{ρ}-> τ'`, wherever it stands. The row ambient where it stands is no part of its type, so a λ keeps its row where it is applied directly and where an `openEff` widens it. The examples in these documents leave `/ ρ` out where the type a λ is checked against is written beside it — a signature, an annotation, a `let`'s type, or the parameter it is passed to — the row being that type's.
+
 There is no array literal and no object literal. Arrays are the `Array` type constructor together with primitives; records are built by iterating `extend`. There is no dedicated constructor node: a data constructor is an ordinary global name `M.Ctor` whose type the declaration table records, and construction is ordinary application.
 
 ## Value forms
 
 ```text
 v ::= c
-    | λ (x : τ) . e
+    | λ (x : τ) / ρ . e
     | Λ (a : κ) . v
     | Λ (_ : C) . v
     | M.Ctor ς                 a constructor spine
@@ -65,7 +67,7 @@ With `|v̄| = arity` it is a completed structure; with `|v̄| < arity` it is a v
 **A recursive group is judged by what its right-hand sides read, not by their shape** (D14). Under strict evaluation a binding such as `letrec x = f x` has no meaning; PureScript leaves this to an uninitialized reference at run time, and Stella rejects it in the type checker: a `letrec` and a top-level `rec` group are initialization-safe, each right-hand side reading only the members written before it ([Initialization Safety](10-Initialization.md)). A function value reads nothing as it is initialized,
 
 ```text
-FunVal ::= λ (x : τ) . e
+FunVal ::= λ (x : τ) / ρ . e
          | Λ (a : κ) . FunVal
          | Λ (_ : C) . FunVal
 ```
@@ -88,7 +90,7 @@ The last condition is what makes a join point a join point. `jump j` must be imp
 The typing rules enforce this by **discarding** the join point context `Δ`.
 
 ```text
-λ (x : τ). e                 check e with Δ := ·
+λ (x : τ) / ρ. e             check e with Δ := ·
 Λ (a : κ). v                 check v with Δ := ·
 handle e with h              check e, the return clause, and every operation clause with Δ := ·
 region [ℓ] … @ ( ē ) in e    check e with Δ := ·

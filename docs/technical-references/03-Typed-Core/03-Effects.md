@@ -118,9 +118,10 @@ A Core operation takes a single argument. An operation written with none takes `
 ```text
 -- surface: writeAt :: Int -> String ->* Unit
 -- Σ:       writeAt : Record ( #0 : Int | ( #1 : String | () ) ) ->* Unit
--- generated function:
-writeAt = λ(line : Int). λ(text : String).
-            perform Console.writeAt (extend #0 line (extend #1 text {}))
+-- generated function, at the scheme the operation is called at:
+writeAt = Λ (e : Row Effect). Λ (_ : Console ∉ e).
+            λ(line : Int) / (). λ(text : String) / ( Console | e ).
+              perform Console.writeAt [] (extend #0 line (extend #1 text {}))
 ```
 
 `#n` stands for `PositionKey n` here, a key no source writes.

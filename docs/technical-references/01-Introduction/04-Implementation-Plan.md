@@ -197,6 +197,18 @@ The heading of each group names the step of the plan that the group belongs to.
 | `handle (handle e with h) with h` at one key | Rejected. The inner one would stand at `( k \| ( k \| ρ ) )`, which is not sharp |
 | A pure function handling `E` within itself, called through `openEff [( E )]` under an outer handler of `E` | **Accepted.** No row carries `E` twice; the two handlers meet only in the run-time stack |
 
+### Abstractions (step 3)
+
+[Terms and Matching](../03-Typed-Core/04-Terms-and-Matching.md), [Typing Rules](../03-Typed-Core/05-Typing-Rules.md).
+
+| Input | Required outcome |
+| --- | --- |
+| `λ (n : Int) / ( Console ). n` synthesized at `()`, and `λ (n : Int) / (). n` at `( Console )` | `Int -{( Console )}-> Int`; `Int -> Int`. The row ambient where a λ stands is no part of its type |
+| `λ (n : Int) / (). n` checked against `Int -{( Console )}-> Int` | Rejected, the rows differing |
+| A λ writing `( Console )` widened by `openEff [( Counter )]` and applied where `( Counter, Console )` is ambient | Accepted. A λ synthesized at the ambient row would hold `Console` before the widening, and the widening refused, `Console` and `Counter` already in it |
+| A λ writing a row that is no row of effects | Rejected by its kind |
+| The row a Core⁺ λ writes, holding a metavariable, a rigid variable, and a region | Collected by every walk over a Core⁺ term's types, substituted by zonking, refused in a term metavariable's solution where out of its scope, and reported at the boundary while it holds a metavariable |
+
 ### Injections (step 3)
 
 | Input | Required outcome |
@@ -204,7 +216,7 @@ The heading of each group names the step of the plan that the group belongs to.
 | `inject n [()] 1`, and `inject n [( m : String )] 1`, synthesized | `Variant ( n : Int )`; `Variant ( n : Int, m : String )`. The row the term writes is the variant's rest |
 | `inject n [( n : String )] 1` | Rejected. The row an injection writes lacks its key |
 | An open injection a record's field holds, and one a `case` scrutinizes with a branch for each key | Typed at the variant its row writes. Taking `()` as its rest wherever it is synthesized would refuse the record against its declared type, and leave the scrutinee's other keys with no element |
-| An injection checked against `Variant ( n : Int -{( Console )}-> Int )`, its payload a λ | Accepted, the payload checked against the type the variant gives `n`: the λ takes the arrow's row, where synthesized it would take the ambient one |
+| An injection checked against `Variant ( n : Int -{( Console )}-> Int )`, its payload a λ writing `( Console )`, and one writing `()` | Accepted, the payload checked against the type the variant gives `n`; rejected, the row the λ writes not being the arrow's |
 | An injection checked against a variant whose rest is not the row it writes | Rejected |
 | `weaken m [Int]` of an injection writing `( size : String )` | The variant with `m` added in front of the row the injection writes |
 | The row an injection writes, holding a metavariable and a rigid variable | Collected by every walk over a Core⁺ term's types — metavariables, free variables, the types a term holds — substituted by zonking, and reported at the boundary while it holds a metavariable |
@@ -248,7 +260,7 @@ The heading of each group names the step of the plan that the group belongs to.
 | An initial value of the wrong type, or a layout and initial values of different lengths | Rejected |
 | An initial value reading a cell of its own region | Rejected, `ℓ` being unbound there. The initial values are evaluated before the region opens, outside its binder |
 | A layout writing one key twice | Rejected by kinding the layout, a row extension requiring its key absent from the rest |
-| A region whose body is `λ (_ : Unit). readCell ℓ.k` | Rejected. The closure carries `region ℓ` in its arrow, so it mentions `ℓ`, and `ℓ ∉ frn(β)` |
+| A region whose body is `λ (_ : Unit) / ( region ℓ ). readCell ℓ.k` | Rejected. The closure carries `region ℓ` in its arrow, so it mentions `ℓ`, and `ℓ ∉ frn(β)` |
 | A handler inside a region whose return clause hands back such a closure | Rejected by the same condition, the region's answer then mentioning `ℓ` |
 | A region standing at a row holding `State (Unit -{ ( region ℓ ) }-> Int)` | Rejected. `ℓ ∉ frn(ρ)` |
 | Two regions nested, the inner one reading the outer's cell beside its own | Accepted. Each region has its own key, so the two sit side by side in one sharp row |
@@ -943,13 +955,13 @@ no identifier is at once ready and blocked
 | `termApply` of a function whose claim is `?g ()` with `?g : Row Type -> Type`, or a metavariable applied to four arguments | A defect of the synthesizer, and nothing waited on. No solution of the head makes the spine a function type, so a job registered under it would wait forever |
 | `termApply` of a function claimed at `?a -{()}-> Int` | Claimed at `Int`, without waiting. The head is `Function` already, and what the arrow holds decides nothing about the shape |
 | `termApply` of a term claimed at `Int` | A defect of the synthesizer. No solution makes it a function |
-| `termApply` of `λ(x : Int). x` to a `Boolean` literal | Built, claimed at `Int`, and refused by the Core type checker. A derived claim reads the syntax and proves nothing |
+| `termApply` of `λ(x : Int) / (). x` to a `Boolean` literal | Built, claimed at `Int`, and refused by the Core type checker. A derived claim reads the syntax and proves nothing |
 | `typeApply` of a type abstraction at a type of another kind, and of a term claimed at no `forall` | Refused |
 | `constraintApply` of a term claimed at `k ∉ r => τ`, at the root and inside `openConstraint (k ∉ r)` | A failure, and claimed at `τ`. The requirement is introduced with the term, against the scope's assumptions |
 | A constraint abstraction closed over a constraint that cannot hold | A failure there |
 | A `letrec` of two names whose right-hand sides refer to each other, closed with one right-hand side, or with one built outside the group | Built; refused for the count; refused for the scope |
 | A binder of any sort closed by the operation for another, or left open when the attempt succeeds | A defect of the synthesizer |
-| `λ(x#0 : Int). x#0` built by the kernel and handed to the Core type checker | Accepted. The names the host binds pass it |
+| `λ(x#0 : Int) / (). x#0` built by the kernel and handed to the Core type checker | Accepted. The names the host binds pass it |
 | A `letjoin` whose definition jumps to itself, and whose body jumps to it | Built, and accepted by the Core type checker. The join point is in both scopes |
 | A `letjoin` closed with a parameter as its body, or with the body and the definition exchanged | Refused. The definition and the continuation are sibling scopes, the parameters bound in the first alone |
 | A `jump` outside its `letjoin`, or with another number of arguments | Refused |
@@ -1011,7 +1023,7 @@ no identifier is at once ready and blocked
 | The target of a goal not yet run, crossing the boundary | Reported as a residue |
 | A kernel-built term committed as a goal's solution, zonked, crossed, and walked for references | Accepted by the Core type checker, its references the committed term's |
 | The same, after a candidate that opened a lambda and assigned the target a reference to another global, then failed inside a `transact` | The same term, and none of the candidate's references. The assignment, the names, and the handles went with the rollback |
-| `(λ(x : Int). x) true`, kernel-built and claimed at the goal's `Int`, committed as its solution | Committed, and refused by the Core type checker. A derived claim reads the syntax and proves nothing |
+| `(λ(x : Int) / (). x) true`, kernel-built and claimed at the goal's `Int`, committed as its solution | Committed, and refused by the Core type checker. A derived claim reads the syntax and proves nothing |
 | A `throw` of text, a type, a term, and a name | A failure holding the message frozen — the type zonked with its kind evidence, the term with its claim, the text as written — and the goal it is about: its origin, its job, its synthesizer, and its expected type |
 | A `throw` or a `warn` where the frame runs no goal | A defect of the host. A report is a synthesizer's |
 | A message naming a type observed under a binder, and one naming a scope as a type | Frozen, and refused. A message's handle is shown and not built with, so only its validity and its class are checked |
@@ -1073,7 +1085,7 @@ no identifier is at once ready and blocked
 | An attempt of a job the scheduler does not hold, in a session that traces | Reported by the host's runner, and nothing traced: a job whose kind is not known is not a synthesis attempt |
 | A goal naming a synthesizer the registry does not hold | A defect of the session. The trace holds the attempt opened and abandoned, and no command |
 | The same goal, its target solved before it is attempted | The malformed target is reported, and the trace holds the attempt as not opened: the target is checked before the synthesizer is resolved |
-| `λ(x : Int). ?m`, `?m` a goal at `Int` asked where `x : Int` is bound, queued, and answered by the reference synthesizer — a host script using the facade alone — run by the loop | Completed, and `?m` zonks to `x`, carrying the hole's annotation |
+| `λ(x : Int) / (). ?m`, `?m` a goal at `Int` asked where `x : Int` is bound, queued, and answered by the reference synthesizer — a host script using the facade alone — run by the loop | Completed, and `?m` zonks to `x`, carrying the hole's annotation |
 | The same with `x : Boolean`, the synthesizer given the monomorphic global `Main.one : Int` | `?m` zonks to `Main.one`, carrying the hole's annotation. A global is referred to only once its scheme has no kind variable to instantiate |
 | Two goals queued together, each where a different variable is bound at `Int` | Each zonks to its own site's variable: a goal is answered from the site it was created at, however late the loop runs it |
 | A goal at `Boolean` where nothing is bound, the synthesizer given only `Main.one` | The loop stops with the synthesizer's failure, and the hole is left unsolved. Types are compared as constructor views only, a candidate test and not type equality |
@@ -1092,7 +1104,7 @@ no identifier is at once ready and blocked
 | A candidate that misuses the kernel, in a goal queued before another | The loop stops with the defect; the transaction does not hide it, and the second goal is still first on the ready queue, both targets unsolved |
 | A handle built inside a candidate that failed, presented after the transaction closed, by command | A defect naming the handle as stale |
 | `answer = let y : ?g = ?m in y`, `?m` a goal at `?g` submitted and waiting on `?g`, then `?g ≡ Record (a : Boolean, z : Int)` submitted through the same attempter, then the loop | The first attempt Registered on `?g`, the equation Committed, and the loop Completed, the retry passing over `cand0` and rolling back `cand1`. `?g` is the record type, the `let`'s annotation zonks to it, and `?m` to `Main.cand2`; the term crosses the boundary with nothing unsolved, refers to `Main.cand2` alone, and the Core checker accepts `Main` with `answer` declared after it |
-| `(λ(x : Int). x) true`, returned for a goal at `Int` | Committed, its claim derived from its parts; the Core checker refuses the declaration it completes |
+| `(λ(x : Int) / (). x) true`, returned for a goal at `Int` | Committed, its claim derived from its parts; the Core checker refuses the declaration it completes |
 | A goal left unsolved, its target zonked and taken to the boundary | Reported as a residual term metavariable, and not crossed |
 | The scenario above, run twice from one input in a session that traces | The same submissions, report, term, state, and trace. The attempt that waited is rolled back whole; in the retry, the transaction passing over `cand0` commits, `cand1`'s is rolled back, and `cand2`'s and the attempt's finish are kept |
 | An attempt finished with a transaction open | A defect naming the transaction, and nothing committed |
@@ -1243,10 +1255,12 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | `wider k u = k u` at `(Unit -> Int / {\| Console \|}) -> Unit -> Int / {\| Console, Clock \|}` | `openEff [( Clock )]` around `k`, accepted by Core and lowered. The fit is the application's, against the boundary's row once decided |
 | `logged k u = twice k u`, `twice : forall e. (Unit -{e}-> Unit) -> Unit -{e}-> Unit`, at `( Console )` | `twice`'s `e` an instantiation row, decided `( Console )` by the fits of its argument and its application. An inference row would not take the ambient one |
 | `apply k u = (\v -> k v) u` at `(Unit -> Unit / {\| Console \|}) -> Unit -> Unit / {\| Console \|}` | Accepted, the λ's row `( Console )` by rule 1 |
+| `c u = (\_ -> asked ()) u` at `Unit -> Int / {\| Ask, Log \|}`, `asked` at `( Ask )` | Accepted, the λ writing `( Ask )` under `openEff [( Log )]`. A λ taking the row ambient where it stands would hold `Log` before the widening |
 | The same at `(Unit -> Unit / {\| Console \|}) -> Unit -> Unit` | Outside the subset in this version, where the boundary stands. The boundary is decided only once the λ's row is, after the resolution |
 | A form inferred at `Unit -{( Console )}-> Unit` where `Unit -{( Console, Clock )}-> Unit` is expected | The arguments and results equated, and `( Console )` fitted into `( Console, Clock )` around the form. Subsumption is the outermost row's containment alone |
 | `n = (\u -> 1) ()` and `m = (\x -> x) 1`, at `Int` | Accepted, each λ's row closed to `()`: no fit needs anything of it. Left open, it would be an ambiguous effect row |
 | A row named by two fits and standing once in a type the term writes; one standing there twice | Closed; left open. A fit finds a candidate and is no occurrence of it |
+| A row only a λ inside a body writes, `f u = { ignored: \(x :: Int) -> x, kept: u }.kept`; and `id = \x -> x`, whose λ writes the row its type holds | Closed, `f` at `∀a. a -> a`; closed. The row a λ writes finds a candidate and is no occurrence apart from the λ's arrow: left out of the search, `f`'s is undetermined, and counted again, `id`'s stays open |
 | `( Console \| ?a ) ⊆ ?e` and `( Clock \| ?b ) ⊆ ?e`, nothing else deciding them | `?a` and `?b` closed, then `?e := ( Console, Clock )` by rule 1. A row in a fit's target is required of, and not closed |
 | A boundary at `()` whose body's sources `( Console \| ?a )` and `( Clock \| ?b )` form a union only once their tails are closed | The closing undone, and the declaration reported outside the subset where the boundary stands. What the closing met is the report, not the ambiguity left once it is undone |
 | A row a waiting equation awaits, neither of its sides showing it | Left open. What an equation could still assign is required of |

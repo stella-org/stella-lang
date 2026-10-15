@@ -191,7 +191,7 @@ A kind scheme is instantiated **explicitly at the use site**, in both types and 
 e ::= …  | M.x [[κ̄]]      instantiate a global name's kind scheme
 ```
 
-`[[…]]` is not an application to an arbitrary expression; it is an annotation on the occurrence of a global name. Since D3 provides no introduction form for kind abstraction, there can be no elimination form either, and the grammar forbids terms such as `(λ(x : τ). x) [[Type]]`.
+`[[…]]` is not an application to an arbitrary expression; it is an annotation on the occurrence of a global name. Since D3 provides no introduction form for kind abstraction, there can be no elimination form either, and the grammar forbids terms such as `(λ(x : τ) / ρ. x) [[Type]]`.
 
 When the scheme is empty, `[[]]` is omitted. Most declarations are in this case, so `[[…]]` appears only where a kind-polymorphic declaration is used.
 

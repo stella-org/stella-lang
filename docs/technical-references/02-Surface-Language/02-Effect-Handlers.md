@@ -477,9 +477,9 @@ A cell problem names the cell and where cells stand.
 A handler takes a thunk and returns a computation, so handlers do not compose by application alone: **the result of one is thunked again before the next receives it.** Keeping the two apart makes the rule total. With `W'` the elements step 4 widens by, and `H1 … Hn` the plan in the order `≺` gives, innermost first:
 
 ```text
-q0      = openEff [ W' ] ( λ (_ : Unit). e )      a thunk
+q0      = openEff [ W' ] ( λ (_ : Unit) / ρ1. e )   a thunk, at the body's row
 di      = Hi ⟨ instantiation ⟩ q(i-1)             a computation
-qi      = λ (_ : Unit). di                        a thunk again
+qi      = λ (_ : Unit) / ri. di                   a thunk again, at the row ri Hi leaves
 
 e'      = dn
 ```
@@ -493,7 +493,7 @@ Only `q0` is widened, and only in the insertion branch. Each later thunk stands 
 ```text
 -- program : a ! ( Console | e ),  checked against a ! ( LiftIO | e )
 Js.Effect.Console.runConsole [e] [a] [•] [•]
-  ( openEff [( LiftIO )] ( λ (_ : Unit). program ) )
+  ( openEff [( LiftIO )] ( λ (_ : Unit) / ( Console | e ). program ) )
 ```
 
 The widening takes the thunk from `Unit -{ ( Console | e ) }-> a` to the

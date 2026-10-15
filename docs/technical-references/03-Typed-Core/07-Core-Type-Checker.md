@@ -8,7 +8,7 @@ The Core type checker is independent of the surface language, macros, elaborator
 2. Kind well-formedness ([Kinds](01-Kinds-and-Types.md))
 3. Kinding of types, including the side conditions `k ∉ ρ` for row extension and `ρ1 # ρ2` for row union
 4. Re-derivation of `Γ ⊨ C` ([Rows](02-Rows.md)). No proof term is accepted; the checker derives it
-5. Term typing ([Typing Rules](05-Typing-Rules.md))
+5. Term typing ([Typing Rules](05-Typing-Rules.md)), a λ's body checked at the row the λ writes, which is a row of effects and its arrow's, and not at the row ambient where the λ stands
 6. That every `letrec` and every top-level `rec` group is initialization-safe, each right-hand side reading only the members written before it ([Initialization Safety](10-Initialization.md)), and that a `letrec`'s right-hand sides are checked under no join point
 7. That the body of a `Λ` is a value form, the value restriction
 8. That `jump` occurs in tail position with matching arity and types, and that join points are out of scope under `λ`, `Λ`, `handle`, and the body of a `region`
