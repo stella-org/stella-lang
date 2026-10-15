@@ -42,11 +42,12 @@
 -- | constructors, literals, application, λ, type annotations, a wildcard or a
 -- | typed hole among what they write, expression holes, records and the
 -- | fields selected from them, tuples, `let` blocks and `where`s, with a
--- | signature or without, and `case` with guard blocks; the
--- | patterns are variables, `_`, as-patterns, constructors, literals,
--- | or-patterns, and annotated patterns, and those a parameter, a binding of a
--- | block, or a guard block's binding is written as always match; a recursive
--- | group binds variables alone. A synthesized argument of the declaration's own is a parameter like any other; a
+-- | signature or without, and `case` with guard blocks; the patterns are
+-- | variables, `_`, as-patterns, constructors, literals, or-patterns,
+-- | annotated patterns, and record and tuple patterns, and those a parameter, a
+-- | binding of a block, or a guard block's binding is written as always match;
+-- | a recursive group binds variables alone. A synthesized argument of the
+-- | declaration's own is a parameter like any other; a
 -- | reference to a value taking one is outside the subset, a goal being what
 -- | supplies the argument. Anything else is reported where it stands, and the
 -- | declaration holding it is not elaborated further.
@@ -563,7 +564,7 @@ letBlock scope origin bindings = do
     { head: h, expr: inferred.expr, bound: _ } <$> matcher inner h
 
   matcher inner h = case h.bound of
-    Left p -> Left <$> irrefutable inner h.origin [ p.pattern ]
+    Left p -> Left <$> irrefutable inner h.origin [ { pattern: p.pattern, vars: h.vars } ]
     Right name -> pure (Right name)
 
   -- a pattern matches its right-hand side's value around what follows, and a
@@ -936,7 +937,7 @@ caseOf scope origin scrutinees alternatives expected result = do
           _ -> do
             value <- infer inner e
             typed <- pattern inner b value.type
-            match <- irrefutable inner o [ typed.pattern ]
+            match <- irrefutable inner o [ typed ]
             rest <- block (withVars inner typed.vars) tail fall
             pure (match [ value.expr ] rest)
       GuardWhen o condition body
@@ -971,7 +972,7 @@ caseOf scope origin scrutinees alternatives expected result = do
 
   built uncovered placed = case _ of
     Match.Leaf i bindings -> case Array.find (\p -> p.alternative.index == i) placed of
-      Just p -> pure (foldr (\b t -> XBind b.name b.occurrence t) (XLeaf (leafOf p)) bindings)
+      Just p -> (_ $ leafOf p) <$> boundAround scope origin p.alternative.vars bindings
       Nothing -> malformed
     Match.Uncovered -> maybe malformed (pure <<< XUncovered) uncovered
     Match.SwitchCtor o branches fallback ->
@@ -1014,7 +1015,11 @@ noteUncovered m = Surf (pure (Right { value: unit, holes: [], wildcards: [], unw
 -- | type, in the order written. A constructor is instantiated as a reference
 -- | to it is, its fields read off its arrows and what it builds equated with
 -- | the type given; a literal's type is equated with it, and so is an
--- | annotation's.
+-- | annotation's. A tuple is the record of its components at their positions,
+-- | closed. A record pattern takes each key it writes, in the order written,
+-- | from the row of the record, which the rest of the row lacks it from, where
+-- | its label stands; the row left is empty where the pattern is closed, and
+-- | its rest's where it binds one.
 pattern :: Scope -> Binder -> XType -> Surf { pattern :: Match.Pattern Surface.Origin, vars :: Array { name :: Ident, type :: XType } }
 pattern scope binder ty = case binder of
   BinderWildcard _ -> pure { pattern: Match.PAny, vars: [] }
@@ -1046,10 +1051,44 @@ pattern scope binder ty = case binder of
         lift (equate (siteAt scope o) { kind: XKType, left: annotation.type, right: ty })
         pattern scope inner ty
   BinderTag o _ _ -> outside (OutsideSubset o "a tag pattern")
-  BinderTuple o _ -> outside (OutsideSubset o "a tuple pattern")
-  BinderRecord o _ _ -> outside (OutsideSubset o "a record pattern")
+  BinderTuple o components -> do
+    types <- traverse (\_ -> lift (freshTypeMeta scope.context XKType)) components
+    let indexed = Array.mapWithIndex Tuple types
+    lift (equate (siteAt scope o) { kind: XKType, left: recordOf (foldr (\(Tuple i t) rest -> XRowExtend (XRowTypeEntry (PositionKey i) t) rest) XRowEmpty indexed), right: ty })
+    parts <- traverse (\(Tuple b t) -> pattern scope b t) (Array.zip components types)
+    pure
+      { pattern: Match.PRecord { fields: Array.mapWithIndex (\i p -> { key: PositionKey i, pattern: p.pattern }) parts, rest: Nothing, open: false }
+      , vars: Array.concatMap _.vars parts
+      }
+  BinderRecord o fields rest -> do
+    whole <- lift (freshTypeMeta scope.context (XKRow RowType))
+    lift (equate (siteAt scope o) { kind: XKType, left: recordOf whole, right: ty })
+    taken <- foldM field { row: whole, parts: [] } fields
+    case rest of
+      Nothing -> lift (equate (siteAt scope o) { kind: XKType, left: recordOf taken.row, right: recordOf XRowEmpty })
+      Just _ -> pure unit
+    let restVar = foldMap (\(LocalVar v) -> [ { name: v.name, type: recordOf taken.row } ]) (rest >>= _.var)
+    pure
+      { pattern: Match.PRecord
+          { fields: map (\p -> { key: p.key, pattern: p.typed.pattern }) taken.parts
+          , rest: map (\(LocalVar v) -> v.name) (rest >>= _.var)
+          , open: isJust rest
+          }
+      , vars: Array.concatMap _.typed.vars taken.parts <> restVar
+      }
   BinderInvalid o -> outside (ReportedAlready o)
   where
+  -- a field of a record pattern takes its key from the row it is matched
+  -- against, which the rest lacks it from, where its label stands
+  field acc f = do
+    let key = SymbolKey f.label
+    payload <- lift (freshTypeMeta scope.context XKType)
+    next <- lift (freshTypeMeta scope.context (XKRow RowType))
+    lift (equate (siteAt scope f.labelOrigin) { kind: XKType, left: recordOf acc.row, right: recordOf (XRowExtend (XRowTypeEntry key payload) next) })
+    lift (require (siteAt scope f.labelOrigin) (XLacks key next))
+    typed <- pattern scope f.binder payload
+    pure { row: next, parts: Array.snoc acc.parts { key, typed } }
+
   -- the argument of each of a constructor's arrows, one per field, and what
   -- is left
   fieldsOf o n t
@@ -1063,26 +1102,67 @@ pattern scope binder ty = case binder of
 -- | matches the values given against them around the body given, binding the
 -- | variables they bind. Name resolution admits none here that can fail, so
 -- | the tree leaves no value uncovered and takes the body at one leaf.
-irrefutable :: Scope -> Surface.Origin -> Array (Match.Pattern Surface.Origin) -> Surf (Array (XExpr Surface.Origin) -> XExpr Surface.Origin -> XExpr Surface.Origin)
-irrefutable scope origin patterns = do
+irrefutable
+  :: Scope
+  -> Surface.Origin
+  -> Array { pattern :: Match.Pattern Surface.Origin, vars :: Array { name :: Ident, type :: XType } }
+  -> Surf (Array (XExpr Surface.Origin) -> XExpr Surface.Origin -> XExpr Surface.Origin)
+irrefutable scope origin typed = do
   table <- constructorTable
-  case Match.compile table (Array.length patterns) [ { alternative: 0, choice: Nothing, patterns, fallible: false } ] of
+  case Match.compile table (Array.length typed) [ { alternative: 0, choice: Nothing, patterns: map _.pattern typed, fallible: false } ] of
     Right compiled
       | Map.lookup 0 compiled.references == Just 1
-      , Just tree <- planted compiled.plan -> pure \values body -> ECase origin values (tree body)
-    _ -> lift (break (MatchMalformed (AtSource { declaration: scope.declaration, origin })))
+      , [ bindings ] <- leafBindings compiled.plan -> do
+          leaf <- boundAround scope origin (Array.concatMap _.vars typed) bindings
+          case planted leaf compiled.plan of
+            Just tree -> pure \values body -> ECase origin values (tree body)
+            Nothing -> malformed
+    _ -> malformed
   where
-  planted = case _ of
-    Match.Leaf _ bindings -> Just \body -> foldr (\b t -> XBind b.name b.occurrence t) (XLeaf body) bindings
+  malformed :: forall x. Surf x
+  malformed = lift (break (MatchMalformed (AtSource { declaration: scope.declaration, origin })))
+
+  leafBindings = case _ of
+    Match.Leaf _ bindings -> [ bindings ]
+    Match.Uncovered -> []
+    Match.SwitchCtor _ branches fallback -> Array.concatMap (leafBindings <<< _.plan) branches <> foldMap leafBindings fallback
+    Match.SwitchLit _ branches fallback -> Array.concatMap (leafBindings <<< _.plan) branches <> leafBindings fallback
+
+  planted leaf = case _ of
+    Match.Leaf _ _ -> Just leaf
     Match.Uncovered -> Nothing
     Match.SwitchCtor o branches fallback -> do
-      branches' <- traverse (\b -> { ctor: b.ctor, tree: _ } <$> planted b.plan) branches
-      fallback' <- traverse planted fallback
+      branches' <- traverse (\b -> { ctor: b.ctor, tree: _ } <$> planted leaf b.plan) branches
+      fallback' <- traverse (planted leaf) fallback
       pure \body -> XSwitchCtor o (map (\b -> { ctor: b.ctor, tree: b.tree body }) branches') (map (_ $ body) fallback')
     Match.SwitchLit o branches fallback -> do
-      branches' <- traverse (\b -> { lit: b.lit, tree: _ } <$> planted b.plan) branches
-      fallback' <- planted fallback
+      branches' <- traverse (\b -> { lit: b.lit, tree: _ } <$> planted leaf b.plan) branches
+      fallback' <- planted leaf fallback
       pure \body -> XSwitchLit o (map (\b -> { lit: b.lit, tree: b.tree body }) branches') (fallback' body)
+
+-- | A leaf binding what its patterns bind around the expression given: each
+-- | variable at its occurrence, and the rest of a record pattern by a `let`
+-- | around the expression, the keys the pattern writes restricted, in the
+-- | order written, from the record bound at its occurrence under a name the
+-- | compiler makes. The variables given are those of the row, at their types.
+boundAround
+  :: Scope
+  -> Surface.Origin
+  -> Array { name :: Ident, type :: XType }
+  -> Array Match.Binding
+  -> Surf (XExpr Surface.Origin -> XDecisionTree Surface.Origin)
+boundAround scope origin vars bindings = do
+  steps <- traverse step bindings
+  pure \body -> foldr (\s t -> XBind s.bound s.occurrence t) (XLeaf (foldr _.around body steps)) steps
+  where
+  step b
+    | Array.null b.restricted = pure { bound: b.name, occurrence: b.occurrence, around: identity }
+    | otherwise = case Array.find (\v -> v.name == b.name) vars of
+        Just v -> do
+          record <- lift (freshIdent (Map.keys scope.context.vars) "r")
+          let restricted = foldl (\e k -> ERecordRestrict origin k e) (EVar origin record) b.restricted
+          pure { bound: record, occurrence: b.occurrence, around: ELet origin b.name v.type restricted }
+        Nothing -> lift (break (MatchMalformed (AtSource { declaration: scope.declaration, origin })))
 
 -- | The parameters written as patterns, each a variable the compiler named,
 -- | matched as one row: the scope the variables they bind are in, and what
@@ -1095,7 +1175,7 @@ parametersMatched
 parametersMatched scope origin matched
   | Array.null matched = pure { scope, wrap: identity }
   | otherwise = do
-      match <- irrefutable scope origin (map _.typed.pattern matched)
+      match <- irrefutable scope origin (map _.typed matched)
       pure
         { scope: withVars scope (Array.concatMap _.typed.vars matched)
         , wrap: match (map (\m -> EVar origin m.name) matched)

@@ -158,7 +158,9 @@ printElaborationError = case _ of
   localName (Ident n) = n
 
 -- | A value a `case` does not match, written as a pattern: a constructor by its
--- | name, parenthesized where it takes fields and stands as a field itself.
+-- | name, parenthesized where it takes fields and stands as a field itself; a
+-- | tuple by its components, and a record by its fields, `...` closing one no
+-- | pattern closes.
 printWitness :: Boolean -> Witness -> String
 printWitness nested = case _ of
   WitnessAny -> "_"
@@ -166,6 +168,15 @@ printWitness nested = case _ of
   WitnessConstructor (Qualified _ (Ident n)) [] -> n
   WitnessConstructor (Qualified _ (Ident n)) fields ->
     let applied = n <> foldMap (\f -> " " <> printWitness true f) fields in if nested then "(" <> applied <> ")" else applied
+  WitnessRecord r
+    | not r.open && not (Array.null r.fields) && Array.all (isPosition <<< _.key) r.fields ->
+        fmt @"({components})" { components: joinWith ", " (map (printWitness false <<< _.witness) r.fields) }
+    | otherwise ->
+        bracketed "{" "}" (map (\f -> fmt @"{key}: {value}" { key: keyName f.key, value: printWitness false f.witness }) r.fields <> (if r.open then [ "..." ] else []))
+  where
+  isPosition = case _ of
+    PositionKey _ -> true
+    _ -> false
 
 -- | A literal as source writes it, a character that cannot stand in a literal
 -- | as written escaped.
@@ -358,9 +369,11 @@ printers _ = { type: go 0, effectRow }
 
   effectText (Qualified _ (EffName e)) args = joinWith " " (Array.cons e (map (go 2) args))
 
-  bracketed open close = case _ of
-    [] -> open <> close
-    items -> fmt @"{open} {items} {close}" { open, items: joinWith ", " items, close }
+-- | Items between brackets, a space inside each where there are any.
+bracketed :: String -> String -> Array String -> String
+bracketed open close = case _ of
+  [] -> open <> close
+  items -> fmt @"{open} {items} {close}" { open, items: joinWith ", " items, close }
 
 -- | A row's key as source writes it.
 keyName :: RowKey -> String

@@ -1,12 +1,17 @@
--- | A module written in source that builds records and tuples, compiled and
--- | loaded, and each value read as the machine holds it once the module is
--- | initialized: the front end's `extend`, `select`, and `update`, run.
+-- | A module written in source that builds records and tuples and matches
+-- | them, compiled and loaded, and each value read as the machine holds it
+-- | once the module is initialized: the front end's `extend`, `select`,
+-- | `update`, and `restrict`, and its record occurrences, run.
 -- |
 -- | `point` is a record literal and `pair` a tuple; `moved` replaces a field
 -- | of a record spread and `labelled` extends one, both through functions open
 -- | in the rest of the row; `retyped` replaces a field at a type of its own and
 -- | `replacedTwice` two fields, and `ordered` writes extensions and replacements
--- | around each other.
+-- | around each other. `firstOf` matches a tuple in a `case`, `swapped` one a
+-- | parameter is written as, and `yOf` a record pattern a `let` binds;
+-- | `rested` binds the rest of a record; `some` and `none` dispatch within a
+-- | field; and `kept` and `replacedRest` pass a rest to the join point of an
+-- | alternative several leaves take.
 module Test.Steam.Records (spec) where
 
 import Prelude
@@ -22,6 +27,7 @@ import Test.Steam.Compiled (running)
 source :: P.Array P.String
 source =
   [ "module Main where"
+  , "data Opt a = None | Some a"
   , "point = { x: 1, y: 2 }"
   , "pair = (3, true)"
   , "getX r = r.x"
@@ -34,6 +40,23 @@ source =
   , "replacedTwice = { x = 10, y = false, ...point }"
   , "ordered = { a: 1, x = 10, b: 2, y = 20, ...point }"
   , "nested = { inner: point }.inner.y"
+  , "firstOf = case pair of"
+  , "  (a, _) -> a"
+  , "swap (a, b) = (b, a)"
+  , "swapped = swap pair"
+  , "yOf = let { y, ... } = point in y"
+  , "dropXY { x, y, ...rest } = rest"
+  , "rested = dropXY { x: 1, y: 2, z: 3 }"
+  , "orZero r = case r of"
+  , "  { v: Some n, ... } -> n"
+  , "  { v: None, ... } -> 0"
+  , "some = orZero { v: Some 4, w: true }"
+  , "none = orZero { v: None, w: 1 }"
+  , "pickRest b r = case b, r of"
+  , "  true, { x: 1, ...rest } -> { y = 0, ...rest }"
+  , "  _, { x, ...rest } -> rest"
+  , "kept = pickRest false point"
+  , "replacedRest = pickRest true point"
   ]
 
 spec :: Spec Unit
@@ -50,4 +73,17 @@ spec = describe "Steam, records and tuples compiled from source" do
         , Tuple "replacedTwice" "{x: 10, y: false}"
         , Tuple "ordered" "{a: 1, b: 2, x: 10, y: 20}"
         , Tuple "nested" "2"
+        ]
+
+  it "matches records and tuples, binding their fields and the rest of a record" do
+    running source [ "firstOf", "swapped", "yOf", "rested", "some", "none", "kept", "replacedRest" ] \values ->
+      values `shouldEqual` Map.fromFoldable
+        [ Tuple "firstOf" "3"
+        , Tuple "swapped" "{0: true, 1: 3}"
+        , Tuple "yOf" "2"
+        , Tuple "rested" "{z: 3}"
+        , Tuple "some" "4"
+        , Tuple "none" "0"
+        , Tuple "kept" "{y: 2}"
+        , Tuple "replacedRest" "{y: 0}"
         ]

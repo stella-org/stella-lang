@@ -5,10 +5,15 @@
 -- | alternative written as several rows, holding one pattern per value matched.
 -- | The output is a plan of the decision tree Core holds: a dispatch on the
 -- | value at an occurrence — a path from a matched value through the fields of
--- | constructors — and, at each leaf, the alternative taken with the variables
--- | its patterns bind, each at its occurrence. A place no row covers is a leaf
--- | of its own. The compiler reads no type and binds no name; the elaborator
--- | builds the tree from the plan.
+-- | constructors and records — and, at each leaf, the alternative taken with
+-- | the variables its patterns bind, each at its occurrence. A place no row
+-- | covers is a leaf of its own. The compiler reads no type and binds no name;
+-- | the elaborator builds the tree from the plan.
+-- |
+-- | **A record is taken apart without a dispatch**: its type decides its keys,
+-- | so a column a record or a tuple pattern stands in becomes a column for
+-- | each key the rows write, in the order they first write them, before any
+-- | column is dispatched on. It tests nothing, and leaves nothing uncovered.
 -- |
 -- | **Which column is dispatched on first changes nothing observable**, since
 -- | reading an occurrence performs nothing and cannot fail; the choice is made
@@ -45,18 +50,18 @@ import Prim hiding (Row)
 
 import Data.Array as Array
 import Data.Either (Either(..))
-import Data.Foldable (foldM, foldl, sum)
+import Data.Foldable (foldM, foldMap, foldl, sum)
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Show.Generic (genericShow)
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.TypedCore.Name (Ident, Qualified, TyName)
 import Stella.Compiler.TypedCore.Prim (booleanTy, litType)
 import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
-import Stella.Compiler.TypedCore.Type (Type(..))
+import Stella.Compiler.TypedCore.Type (RowKey, Type(..))
 
 -- | A pattern as the compiler reads it. A choice of an or-pattern carries a
 -- | label, by which a choice no value reaches is told.
@@ -67,6 +72,10 @@ data Pattern c
   | PCtor (Qualified Ident) (Array (Pattern c))
   | PLit Literal
   | POr (Array { label :: c, pattern :: Pattern c })
+  -- | A record, or a tuple keyed by positions: a pattern for each key it
+  -- | writes, in the order written; the variable bound to the record without
+  -- | those keys, where one is; and whether the record may have other keys.
+  | PRecord { fields :: Array { key :: RowKey, pattern :: Pattern c }, rest :: Maybe Ident, open :: Boolean }
 
 -- | A row of the matrix: the alternative it belongs to, the label of the
 -- | choice it is where its alternative writes several rows, its patterns, and
@@ -119,8 +128,10 @@ data Plan
   | SwitchCtor Occurrence (Array { ctor :: Qualified Ident, plan :: Plan }) (Maybe Plan)
   | SwitchLit Occurrence (Array { lit :: Literal, plan :: Plan }) Plan
 
--- | A variable a pattern binds, and the occurrence of the value it is bound to.
-type Binding = { name :: Ident, occurrence :: Occurrence }
+-- | A variable a pattern binds, and the occurrence of the value it is bound to:
+-- | that value without the keys given, in the order given, where a record
+-- | pattern binds it to the fields it does not write.
+type Binding = { name :: Ident, occurrence :: Occurrence, restricted :: Array RowKey }
 
 -- | The plan; for each alternative that may fail and that some leaf takes, the
 -- | plan of the alternatives after it, matched afresh where it fails; how many
@@ -197,6 +208,9 @@ compile table width rows = do
     Nothing -> pure { plan: Uncovered, selected: [] }
     Just first
       | Array.all isAny first.patterns -> pure { plan: Leaf first.alternative first.bindings, selected: [ { alternative: first.alternative, labels: first.labels } ] }
+      | Just j <- productColumn work -> do
+          apart <- takenApart j occs work
+          go apart.occurrences (Array.concatMap (normalize apart.occurrences) apart.rows)
       | otherwise -> choose table occs work >>= dispatch occs work
 
   dispatch :: Array Occurrence -> Array (Work c) -> Column -> Either MatchError (Built c)
@@ -246,6 +260,50 @@ type Built c = { plan :: Plan, selected :: Array { alternative :: Int, labels ::
 fieldsOf :: Occurrence -> Qualified Ident -> Int -> Array Occurrence
 fieldsOf o name arity = Array.mapWithIndex (\k _ -> OccField o name k) (Array.replicate arity unit)
 
+-- | The leftmost column a record pattern stands in.
+productColumn :: forall r c. Array { patterns :: Array (Pattern c) | r } -> Maybe Int
+productColumn rows = Array.findIndex (\j -> Array.any (\r -> isRecord (Array.index r.patterns j)) rows) (Array.range 0 (width - 1))
+  where
+  width = maybe 0 (Array.length <<< _.patterns) (Array.head rows)
+  isRecord = case _ of
+    Just (PRecord _) -> true
+    _ -> false
+
+-- | The keys the record patterns of column `j` write, in the order the rows
+-- | first write them. A column holding a record pattern holds no constructor
+-- | and no literal.
+productKeys :: forall r c. Occurrence -> Int -> Array { patterns :: Array (Pattern c) | r } -> Either MatchError (Array RowKey)
+productKeys o j rows = Array.nub <<< Array.concat <$> traverse keysOf rows
+  where
+  keysOf r = case Array.index r.patterns j of
+    Just (PRecord p) -> pure (map _.key p.fields)
+    Just PAny -> pure []
+    _ -> Left (IncompatibleHeads o)
+
+-- | The rows with column `j` a column for each key its record patterns write,
+-- | each record pattern binding its rest.
+takenApart :: forall c. Int -> Array Occurrence -> Array (Work c) -> Either MatchError { occurrences :: Array Occurrence, rows :: Array (Work c) }
+takenApart j occs rows = productKeys o j rows <#> \keys ->
+  { occurrences: splice j (map (OccRecordField o) keys) occs, rows: map (row keys) rows }
+  where
+  o = fromMaybe (OccScrutinee j) (Array.index occs j)
+  row keys r = r
+    { patterns = keyed j keys r.patterns
+    , bindings = r.bindings <> case Array.index r.patterns j of
+        Just (PRecord p) -> foldMap (\x -> [ { name: x, occurrence: o, restricted: map _.key p.fields } ]) p.rest
+        _ -> []
+    }
+
+-- | A row's patterns with column `j` a pattern for each key given: a record
+-- | pattern's of the key, matching anything at a key it does not write, and
+-- | anything at every key where the row matches anything there.
+keyed :: forall c. Int -> Array RowKey -> Array (Pattern c) -> Array (Pattern c)
+keyed j keys patterns = splice j parts patterns
+  where
+  parts = case Array.index patterns j of
+    Just (PRecord p) -> map (\k -> maybe PAny _.pattern (Array.find (\f -> f.key == k) p.fields)) keys
+    _ -> Array.replicate (Array.length keys) PAny
+
 -- | The rows a row stands for once every variable and as-pattern at the top of
 -- | a column is bound and every or-pattern there is taken apart into its
 -- | choices, in the order written.
@@ -260,8 +318,8 @@ normalize occs row = map finish (foldl step [ { done: [], bindings: row.bindings
 
 expand :: forall c. Occurrence -> Pattern c -> Array { pattern :: Pattern c, bindings :: Array Binding, labels :: Array c }
 expand o = case _ of
-  PVar x -> [ { pattern: PAny, bindings: [ { name: x, occurrence: o } ], labels: [] } ]
-  PAs x inner -> map (\e -> e { bindings = Array.cons { name: x, occurrence: o } e.bindings }) (expand o inner)
+  PVar x -> [ { pattern: PAny, bindings: [ { name: x, occurrence: o, restricted: [] } ], labels: [] } ]
+  PAs x inner -> map (\e -> e { bindings = Array.cons { name: x, occurrence: o, restricted: [] } e.bindings }) (expand o inner)
   POr choices -> do
     c <- choices
     e <- expand o c.pattern
@@ -380,6 +438,7 @@ rowLabels r = maybe [] pure r.choice <> Array.concatMap labelsOf r.patterns
     POr choices -> Array.concatMap (\c -> Array.cons c.label (labelsOf c.pattern)) choices
     PAs _ inner -> labelsOf inner
     PCtor _ ps -> Array.concatMap labelsOf ps
+    PRecord p -> Array.concatMap (labelsOf <<< _.pattern) p.fields
     _ -> []
 
 -- | How many leaves take each alternative.
@@ -398,9 +457,14 @@ data Witness
   = WitnessAny
   | WitnessConstructor (Qualified Ident) (Array Witness)
   | WitnessLiteral Literal
+  -- | A record, or a tuple keyed by positions: what each key the rows write
+  -- | holds, in the order of the keys, and whether no row closes it.
+  | WitnessRecord { fields :: Array { key :: RowKey, witness :: Witness }, open :: Boolean }
 
 -- | One vector of values no row matches, where there is one, a row that may
--- | fail once its patterns match covering nothing, found by a fixed rule: the leftmost column first, the constructors of a data type in the
+-- | fail once its patterns match covering nothing, found by a fixed rule: the
+-- | leftmost column first, a record taken apart where it stands and shown in
+-- | the order of its keys, the constructors of a data type in the
 -- | order the declaration writes them, a finite set of literals in its order
 -- | (`false` before `true`), and of an open set the literals the rows write, in
 -- | the fixed order of literals, before anything else, written `_`.
@@ -412,6 +476,17 @@ witness table width rows = search occurrences (Array.concatMap (\r -> plain r.pa
   search :: Array Occurrence -> Array (Array (Pattern c)) -> Either MatchError (Maybe (Array Witness))
   search occs patterns = case Array.head occs of
     Nothing -> pure (if Array.null patterns then Just [] else Nothing)
+    Just o
+      | Array.any (isJust <<< recordFirst) patterns -> do
+          keys <- productKeys o 0 (map (\ps -> { patterns: ps }) patterns)
+          let
+            open = not (Array.any (maybe false (not <<< _.open) <<< recordFirst) patterns)
+            n = Array.length keys
+          found <- search (map (OccRecordField o) keys <> Array.drop 1 occs) (Array.concatMap (plain <<< keyed 0 keys) patterns)
+          pure $ found <#> \w ->
+            Array.cons
+              (WitnessRecord { fields: Array.sortWith _.key (Array.zipWith { key: _, witness: _ } keys (Array.take n w)), open })
+              (Array.drop n w)
     Just o -> do
       let rows' = map (\ps -> { patterns: ps }) patterns
       column <- columnAt table 0 o rows'
@@ -430,6 +505,12 @@ witness table width rows = search occurrences (Array.concatMap (\r -> plain r.pa
           case found of
             Just w -> pure (Just w)
             Nothing -> map (Array.cons WitnessAny) <$> search rest (map _.patterns (defaultRows 0 rows'))
+
+  -- the record pattern a row's first column holds, where it holds one; one
+  -- that is closed writes every key its record has
+  recordFirst ps = case Array.head ps of
+    Just (PRecord p) -> Just p
+    _ -> Nothing
 
   firstJust :: forall a. Array a -> (a -> Either MatchError (Maybe (Array Witness))) -> Either MatchError (Maybe (Array Witness))
   firstJust candidates f = case Array.uncons candidates of
@@ -454,6 +535,7 @@ plain = foldl
     PAs _ inner -> flat inner
     POr choices -> Array.concatMap (flat <<< _.pattern) choices
     PCtor name ps -> map (PCtor name) (plain ps)
+    PRecord p -> map (\ps -> PRecord p { fields = Array.zipWith (\f q -> f { pattern = q }) p.fields ps }) (plain (map _.pattern p.fields))
     other -> [ other ]
 
 derive instance Eq c => Eq (Pattern c)

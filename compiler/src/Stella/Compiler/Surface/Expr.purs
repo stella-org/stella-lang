@@ -193,9 +193,11 @@ binderOrigin = case _ of
   BinderTyped o _ _ -> o
   BinderInvalid o -> o
 
--- | A field of a record pattern. A pun `{ x }` is the field `x: x`.
+-- | A field of a record pattern, with where it is written and where its label
+-- | is written. A pun `{ x }` is the field `x: x`.
 type RecordBinderField =
   { origin :: Origin
+  , labelOrigin :: Origin
   , label :: Symbol
   , binder :: Binder
   }

@@ -201,14 +201,14 @@ binder supply b = case b of
   item acc = case _ of
     CST.RecordBinderField n p -> do
       r <- binder acc.supply p
-      let f = { origin: originOf (covering n.range (binderRange p)), label: Symbol n.name, binder: r.binder }
+      let f = { origin: originOf (covering n.range (binderRange p)), labelOrigin: originOf n.range, label: Symbol n.name, binder: r.binder }
       pure acc { fields = Array.snoc acc.fields f, supply = r.supply }
     CST.RecordBinderPun n ->
       let
         r = variable acc.supply (BinderVar (originOf n.range))
 
         f :: RecordBinderField
-        f = { origin: originOf n.range, label: Symbol n.name, binder: r.binder }
+        f = { origin: originOf n.range, labelOrigin: originOf n.range, label: Symbol n.name, binder: r.binder }
       in
         pure acc { fields = Array.snoc acc.fields f, supply = r.supply }
     CST.RecordBinderRest r n -> pure case n of

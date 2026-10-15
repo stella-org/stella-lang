@@ -50,7 +50,7 @@ import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy, unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Type (RowKey(..), Type(..))
-import Stella.Compiler.TypedCore.Term (Literal(..))
+import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
@@ -224,6 +224,15 @@ at = case _ of
 -- | Where a source origin starts, as line and column.
 located :: Surface.Origin -> String
 located o = let r = rangeOf o in show r.start.line <> ":" <> show r.start.column
+
+-- | An error as `at` gives it, a rejection's site by the whole of its range.
+spanned :: ElaborationError -> String
+spanned = case _ of
+  Rejected (EquationFailed (AtSource s) _) -> spanOf s.origin <> " rejected"
+  Rejected (ObligationRejected { obligation: AtSource s }) -> spanOf s.origin <> " obligation rejected"
+  e -> at e
+  where
+  spanOf o = let r = rangeOf o in fmt @"{startLine}:{startColumn}-{endLine}:{endColumn}" { startLine: r.start.line, startColumn: r.start.column, endLine: r.end.line, endColumn: r.end.column }
 
 spec :: Spec Unit
 spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
@@ -877,13 +886,6 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         checked r \core -> shapes core `shouldEqual` [ "nonrec getX", "nonrec bump" ]
 
     it "is reported where the label stands that it selects or replaces and does not have, or extends it by and has" do
-      let
-        -- the whole of the site, not only where it starts
-        spanned = case _ of
-          Rejected (EquationFailed (AtSource s) _) -> spanOf s.origin <> " rejected"
-          Rejected (ObligationRejected { obligation: AtSource s }) -> spanOf s.origin <> " obligation rejected"
-          e -> at e
-        spanOf o = let r = rangeOf o in fmt @"{startLine}:{startColumn}-{endLine}:{endColumn}" { startLine: r.start.line, startColumn: r.start.column, endLine: r.end.line, endColumn: r.end.column }
       elaborating [ "f :: { a :: Int } -> Int", "f r = r.b" ] \r ->
         map spanned r.errors `shouldEqual` [ "4:9-4:10 rejected" ]
       elaborating [ "g :: { a :: Int } -> { a :: Int, b :: Int }", "g r = { b = 1, ...r }" ] \r ->
@@ -940,6 +942,77 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
           Just (RecordExtend _ (PositionKey 0) (Lit _ (LitInt 1)) (RecordExtend _ (PositionKey 1) (Lit _ (LitBoolean true)) (RecordEmpty _))) -> pure unit
           other -> fail ("not by position: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec t", "nonrec pair" ]
+
+  describe "a record or a tuple pattern" do
+    let
+      schemeOf name values = map (\v -> printType (fromCore v.scheme.body)) (Array.find (\x -> x.name == inM name) values)
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+      types = [ "data Opt a = None | Some a" ]
+      key = SymbolKey <<< Symbol
+    it "is checked against a record of the keys it writes, closed or open, its rest the record without them, and the Core checker accepts it" do
+      elaborating [ "fst (a, _) = a", "both { x, y } = x", "getX { x, ... } = x", "dropX { x, ...rest } = rest", "whole { ...r } = r", "none {} = 0" ] \r -> do
+        map at r.errors `shouldEqual` []
+        map (\name -> schemeOf name r.values) [ "fst", "both", "getX", "dropX", "whole", "none" ] `shouldEqual` map Just
+          [ "forall a. forall b. (a, b) -> a"
+          , "forall a. forall b. { y :: a, x :: b } -> b"
+          , "forall a. forall b. … => { x :: b, ...a } -> b"
+          , "forall a. forall b. … => { x :: b, ...a } -> { ...a }"
+          , "forall a. { ...a } -> { ...a }"
+          , "{} -> Int"
+          ]
+        checked r \core -> shapes core `shouldEqual` [ "nonrec fst", "nonrec both", "nonrec getX", "nonrec dropX", "nonrec whole", "nonrec none" ]
+      elaborating [ "getX :: { x :: Int, ... } -> Int", "getX { x, ... } = x", "swap :: (Int, Boolean) -> (Boolean, Int)", "swap (a, b) = (b, a)" ] \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec getX", "nonrec swap" ]
+
+    it "binds its fields at their occurrences, and its rest by a `let` around the leaf, the keys it writes restricted in the order written" do
+      elaborating [ "dropYX :: { x :: Int, y :: Int, z :: Int } -> { z :: Int }", "dropYX { y, x, ...rest } = rest" ] \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "dropYX" r.values of
+          Just
+            ( Lam _ p _
+                ( Case _ [ Var _ p' ]
+                    ( Bind whole (OccScrutinee 0)
+                        ( Bind (Ident "y") (OccRecordField (OccScrutinee 0) y)
+                            ( Bind (Ident "x") (OccRecordField (OccScrutinee 0) x)
+                                (Leaf (Let _ (Ident "rest") _ (RecordRestrict _ x' (RecordRestrict _ y' (Var _ whole'))) (Var _ (Ident "rest"))))
+                            )
+                        )
+                    )
+                )
+            )
+            | p == p' && whole == whole' && [ y, x, y', x' ] == map key [ "y", "x", "y", "x" ] -> pure unit
+          other -> fail ("not restricted: " <> show other)
+
+    it "passes its rest to the join point of an alternative several leaves take, whose body stands once" do
+      elaborating (types <> [ "f :: Boolean -> { x :: Opt Int, y :: Int } -> { y :: Int }", "f b r = case b, r of", "  true, { x: Some 0, ...rest } -> rest", "  _, { x, ...rest } -> rest" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ (Lam _ _ _ (LetJoin _ _ [ { name: Ident "x" }, { name: Ident "rest" } ] _ (Var _ (Ident "rest")) (Case _ _ _)))) -> pure unit
+          other -> fail ("not joined: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "dispatches within a field, and a value it does not match is shown as a record or a tuple" do
+      elaborating (types <> [ "f :: { x :: Opt Int, y :: Int } -> Int", "f r = case r of", "  { x: Some a, y } -> a" ]) \r ->
+        map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `{ x: None, y: _ }`" ]
+      elaborating (types <> [ "g :: { x :: Opt Int, ... } -> Int", "g r = case r of", "  { x: Some a, ... } -> a" ]) \r ->
+        map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `{ x: None, ... }`" ]
+      elaborating [ "h :: (Boolean, Int) -> Int", "h p = case p of", "  (true, n) -> n" ] \r ->
+        map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `(false, _)`" ]
+
+    it "is reported where a label stands that the record does not have, and where a closed pattern or a tuple stands that does not write every key" do
+      elaborating [ "f :: { a :: Int } -> Int", "f { b, ... } = b" ] \r ->
+        map spanned r.errors `shouldEqual` [ "4:5-4:6 rejected" ]
+      elaborating [ "g :: { a :: Int, b :: Int } -> Int", "g { a } = a" ] \r ->
+        map spanned r.errors `shouldEqual` [ "4:3-4:8 rejected" ]
+      elaborating [ "h :: (Int, Int, Int) -> Int", "h (a, b) = a" ] \r ->
+        map spanned r.errors `shouldEqual` [ "4:4-4:8 rejected" ]
+
+    it "is written where a `λ`, a `let`, and a guard block bind" do
+      elaborating [ "pick = \\{ x, ... } -> x", "first p = let (a, _) = p in a", "g :: { x :: Int } -> Int", "g r = case r of", "  q where", "      { x } = q", "      otherwise -> x" ] \r -> do
+        map at r.errors `shouldEqual` []
+        map (\name -> schemeOf name r.values) [ "pick", "first" ] `shouldEqual` map Just [ "forall a. forall b. … => { x :: b, ...a } -> b", "forall a. forall b. (a, b) -> a" ]
+        checked r \core -> shapes core `shouldEqual` [ "nonrec pick", "nonrec first", "nonrec g" ]
 
   describe "what a quantifier encloses" do
     let

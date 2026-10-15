@@ -12,15 +12,17 @@ module Test.Stella.Compiler.Elaborate.Match (spec) where
 import Prelude
 import Prim hiding (Row)
 
+import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
 import Stella.Compiler.Elaborate.Surface.Match (Compiled, Row, Domain(..), Head(..), MatchError(..), Pattern(..), Plan(..), Witness(..), compile, coverageDomain, witness)
-import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), TyName(..))
+import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..))
 import Stella.Compiler.TypedCore.Prim (unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
+import Stella.Compiler.TypedCore.Type (RowKey(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
@@ -95,8 +97,33 @@ s = OccScrutinee
 field :: Occurrence -> Qualified Ident -> Int -> Occurrence
 field = OccField
 
-bound :: String -> Occurrence -> { name :: Ident, occurrence :: Occurrence }
-bound name occurrence = { name: Ident name, occurrence }
+bound :: String -> Occurrence -> { name :: Ident, occurrence :: Occurrence, restricted :: Array RowKey }
+bound name occurrence = { name: Ident name, occurrence, restricted: [] }
+
+-- | The rest of a record bound to a variable: the record at the occurrence
+-- | given without the keys given.
+restOf :: String -> Occurrence -> Array String -> { name :: Ident, occurrence :: Occurrence, restricted :: Array RowKey }
+restOf name occurrence keys = { name: Ident name, occurrence, restricted: map keyOf keys }
+
+keyOf :: String -> RowKey
+keyOf = SymbolKey <<< Symbol
+
+-- | A closed record pattern, its fields in the order given.
+closed :: Array (Tuple String (Pattern String)) -> Pattern String
+closed fields = PRecord { fields: map (\(Tuple k p) -> { key: keyOf k, pattern: p }) fields, rest: Nothing, open: false }
+
+-- | An open record pattern, binding its rest where a name is given.
+opened :: Array (Tuple String (Pattern String)) -> Maybe String -> Pattern String
+opened fields rest = PRecord { fields: map (\(Tuple k p) -> { key: keyOf k, pattern: p }) fields, rest: map Ident rest, open: true }
+
+tuple :: Array (Pattern String) -> Pattern String
+tuple parts = PRecord { fields: Array.mapWithIndex (\i p -> { key: PositionKey i, pattern: p }) parts, rest: Nothing, open: false }
+
+at :: Occurrence -> String -> Occurrence
+at o k = OccRecordField o (keyOf k)
+
+position :: Occurrence -> Int -> Occurrence
+position o i = OccRecordField o (PositionKey i)
 
 -- | The plan a matrix of the width given compiles to.
 planned :: Int -> Array (Row String) -> (Plan -> Compiled String -> Aff Unit) -> Aff Unit
@@ -247,6 +274,7 @@ spec = describe "Elaborate.Surface.Match" do
       map _.plan (compile table 1 [ row 0 [ int 0 ], row 1 [ c none [] ] ]) `shouldEqual` Left (IncompatibleHeads (s 0))
       map _.plan (compile table 1 [ row 0 [ c (ctor "Nope") [] ] ]) `shouldEqual` Left (UnknownConstructor (s 0) (ctor "Nope"))
       map _.plan (compile table 1 [ row 0 [ c some [] ] ]) `shouldEqual` Left (ArityMismatch (s 0) some)
+      map _.plan (compile table 1 [ row 0 [ closed [ Tuple "x" PAny ] ], row 1 [ c none [] ] ]) `shouldEqual` Left (IncompatibleHeads (s 0))
 
   describe "a witness" do
     it "is none where every value is matched" do
@@ -268,3 +296,43 @@ spec = describe "Elaborate.Surface.Match" do
       witness table 2 [ row 0 [ or [ Tuple "a" (c red []), Tuple "b" (c green []) ], v "x" ] ] `shouldEqual`
         Right (Just [ WitnessConstructor blue [], WitnessAny ])
       witness table 1 [ row 0 [ or [ Tuple "a" (c red []), Tuple "b" (c green []) ] ] ] `shouldEqual` Right (Just [ WitnessConstructor blue [] ])
+
+  describe "a record or a tuple pattern" do
+    it "is taken apart without a dispatch, a column for each key in the order the rows first write them" do
+      planned 1 [ row 0 [ opened [ Tuple "x" (c none []) ] Nothing ], row 1 [ opened [ Tuple "y" (v "b"), Tuple "x" (v "a") ] Nothing ] ] \plan compiled -> do
+        plan `shouldEqual`
+          SwitchCtor (at (s 0) "x")
+            [ { ctor: none, plan: Leaf 0 [] } ]
+            (Just (Leaf 1 [ bound "a" (at (s 0) "x"), bound "b" (at (s 0) "y") ]))
+        compiled.references `shouldEqual` Map.fromFoldable [ Tuple 0 1, Tuple 1 1 ]
+
+    it "leaves nothing uncovered where every component matches anything" do
+      planned 1 [ row 0 [ tuple [ v "a", v "b" ] ] ] \plan _ ->
+        plan `shouldEqual` Leaf 0 [ bound "a" (position (s 0) 0), bound "b" (position (s 0) 1) ]
+      planned 2 [ row 0 [ PAny, closed [ Tuple "x" (tuple [ PAny, v "c" ]) ] ] ] \plan _ ->
+        plan `shouldEqual` Leaf 0 [ bound "c" (position (at (s 1) "x") 1) ]
+
+    it "that writes no key takes its column apart into none" do
+      planned 1 [ row 0 [ closed [] ] ] \plan _ -> plan `shouldEqual` Leaf 0 []
+      planned 1 [ row 0 [ opened [] Nothing ] ] \plan _ -> plan `shouldEqual` Leaf 0 []
+      planned 1 [ row 0 [ opened [] (Just "r") ] ] \plan _ -> plan `shouldEqual` Leaf 0 [ restOf "r" (s 0) [] ]
+
+    it "binds its rest to the record without the keys it writes, in the order written, and not every key its column is taken apart into" do
+      planned 1 [ row 0 [ opened [ Tuple "x" (c none []) ] (Just "r") ], row 1 [ opened [ Tuple "y" (v "b"), Tuple "x" PAny ] (Just "q") ] ] \plan _ ->
+        plan `shouldEqual`
+          SwitchCtor (at (s 0) "x")
+            [ { ctor: none, plan: Leaf 0 [ restOf "r" (s 0) [ "x" ] ] } ]
+            (Just (Leaf 1 [ restOf "q" (s 0) [ "y", "x" ], bound "b" (at (s 0) "y") ]))
+
+    it "is shown in a witness by what each key holds, in the order of the keys, a tuple by position" do
+      witness table 1 [ row 0 [ tuple [ bool true, PAny ] ] ] `shouldEqual`
+        Right (Just [ WitnessRecord { fields: [ { key: PositionKey 0, witness: WitnessLiteral (LitBoolean false) }, { key: PositionKey 1, witness: WitnessAny } ], open: false } ])
+      witness table 1 [ row 0 [ closed [ Tuple "y" (c none []), Tuple "x" PAny ] ] ] `shouldEqual`
+        Right (Just [ WitnessRecord { fields: [ { key: keyOf "x", witness: WitnessAny }, { key: keyOf "y", witness: WitnessConstructor some [ WitnessAny ] } ], open: false } ])
+
+    it "is shown open in a witness where no row closes it" do
+      witness table 1 [ row 0 [ opened [ Tuple "x" (c none []) ] Nothing ] ] `shouldEqual`
+        Right (Just [ WitnessRecord { fields: [ { key: keyOf "x", witness: WitnessConstructor some [ WitnessAny ] } ], open: true } ])
+      witness table 1 [ row 0 [ opened [ Tuple "x" (c none []) ] Nothing ], row 1 [ closed [ Tuple "x" (c some [ int 0 ]) ] ] ] `shouldEqual`
+        Right (Just [ WitnessRecord { fields: [ { key: keyOf "x", witness: WitnessConstructor some [ WitnessAny ] } ], open: false } ])
+      witness table 1 [ row 0 [ opened [ Tuple "x" PAny ] Nothing ] ] `shouldEqual` Right Nothing

@@ -1296,6 +1296,15 @@ Record literals, selections, and tuples as the surface elaborator infers them ([
 | `{ a = 1, a: 2, ...r }`, `{ x = 1, x = 2, ...r }` | A label written twice, rejected by name resolution whatever form each field is |
 | `({ f: id } :: { f :: forall a. a -> a })` | Refused: a record literal is inferred, and no expected record type checks a field yet |
 | A field performing an operation | Its row in the row ambient where the literal stands |
+| `getX { x, ... } = x`, and `dropX { x, ...rest } = rest` | `∀ρ α. x ∉ ρ => { x :: α, ...ρ } -> α`, and the same to `{ ...ρ }` |
+| `both { x, y } = x` applied to `{ x :: Int, y :: Int, z :: Int }` | Refused: a closed pattern matches a record of its keys alone |
+| `f :: { a :: Int } -> Int; f { b, ... } = b`; `g :: { a :: Int, b :: Int } -> Int; g { a } = a`; `h :: (Int, Int, Int) -> Int; h (a, b) = a` | Reported at `b`, the label alone; at `{ a }`; and at the tuple pattern |
+| `case r of { x: None, ... } -> 0; { x: Some n, ... } -> n` | One `switchCtor` at `s0 . x`, nothing dispatching on the record. A record has no tag to dispatch on |
+| `{}`, `{ ... }`, and `{ ...rest }` as a pattern | Their column taken apart into none, `rest` the record itself |
+| `{ x: None, ...rest }` above `{ y, x: _, ...q }` in one column | `rest` the record without `x`, `q` without `y` and then `x`, each by `restrict` from the record bound once at its occurrence. Restricting every key the column is taken apart into drops `y` from `rest` |
+| An alternative binding `rest` that several leaves take | `rest` made at each leaf and passed to the alternative's join point, the body standing once. Copying the body to each leaf to bind `rest` there puts its fits and holes in the term twice |
+| `case p of (true, n) -> n`, and `case r of { x: Some a, ... } -> a` | Reported with `(false, _)` and with `{ x: None, ... }`, a record's keys in a fixed order and `...` only where no row's pattern is closed. Reading the keys in the order the rows write them makes the report depend on which row comes first |
+| `case r of { x } -> x; Some y -> y` | Reported where `Some y` stands, a pattern of another type than what it matches. The compiler of matches refuses such a column as a matrix no typing admits, and is not reached |
 
 ### Binding groups and generalization (step 7)
 
