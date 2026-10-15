@@ -172,7 +172,7 @@ weakenModule = moduleOf
   [ DeclNonRec 1
       { name: Ident "mkVariant"
       , scheme: monoScheme (pureFn int (variant (TRowExtend (RowTypeEntry bKey int) TRowEmpty)))
-      , value: Lam 0 (Ident "x") int (VariantInject 0 bKey (Var 0 (Ident "x")))
+      , value: Lam 0 (Ident "x") int (VariantInject 0 bKey TRowEmpty (Var 0 (Ident "x")))
       , attributes: []
       }
   , DeclNonRec 2

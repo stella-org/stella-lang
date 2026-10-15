@@ -468,20 +468,53 @@ spec = describe "TypedCore.Check" do
           )
 
   describe "variants" do
-    it "synthesizes the variant of the key alone" do
-      inferAt TRowEmpty (VariantInject unit nameKey oneLit)
+    let
+      sized = TRowExtend (RowTypeEntry sizeKey string) TRowEmpty
+      wide = variant (TRowExtend (RowTypeEntry nameKey int) sized)
+
+    it "synthesizes the variant whose row an injection writes" do
+      inferAt TRowEmpty (VariantInject unit nameKey TRowEmpty oneLit)
         `shouldEqual` Right (variant (TRowExtend (RowTypeEntry nameKey int) TRowEmpty))
+      inferAt TRowEmpty (VariantInject unit nameKey sized oneLit) `shouldEqual` Right wide
 
-    it "checks an injection against a wider variant" do
-      let wide = variant (TRowExtend (RowTypeEntry nameKey int) (TRowExtend (RowTypeEntry sizeKey string) TRowEmpty))
-      checkAt TRowEmpty wide (VariantInject unit nameKey oneLit) `shouldEqual` Right unit
+    it "requires the key absent from the row an injection writes" do
+      let named = TRowExtend (RowTypeEntry nameKey string) TRowEmpty
+      inferAt TRowEmpty (VariantInject unit nameKey named oneLit) `shouldEqual` Left (NotEntailed (Lacks nameKey named))
 
-    it "widens one with weaken" do
-      inferAt TRowEmpty (VariantWeaken unit sizeKey string (VariantInject unit nameKey oneLit))
+    it "checks an injection against the variant whose rest its row is" do
+      checkAt TRowEmpty wide (VariantInject unit nameKey sized oneLit) `shouldEqual` Right unit
+      checkAt TRowEmpty wide (VariantInject unit nameKey TRowEmpty oneLit)
+        `shouldEqual` Left (TypeMismatch wide (variant (TRowExtend (RowTypeEntry nameKey int) TRowEmpty)))
+
+    it "checks an injection's payload against the type the variant expected gives it" do
+      -- a λ checked against an arrow takes its row; synthesized, it would take
+      -- the ambient row
+      let
+        expected = variant (TRowExtend (RowTypeEntry nameKey (fn int consoleRow int)) TRowEmpty)
+        injection = VariantInject unit nameKey TRowEmpty (lam "n" int (var "n"))
+      checkAt TRowEmpty expected injection `shouldEqual` Right unit
+      (inferAt TRowEmpty injection == Right expected) `shouldEqual` false
+
+    it "widens one with weaken, open or not" do
+      let colourKey = SymbolKey (Symbol "colour")
+      inferAt TRowEmpty (VariantWeaken unit sizeKey string (VariantInject unit nameKey TRowEmpty oneLit))
         `shouldEqual` Right
           ( variant
               (TRowExtend (RowTypeEntry sizeKey string) (TRowExtend (RowTypeEntry nameKey int) TRowEmpty))
           )
+      inferAt TRowEmpty (VariantWeaken unit colourKey int (VariantInject unit nameKey sized oneLit))
+        `shouldEqual` Right (variant (TRowExtend (RowTypeEntry colourKey int) (TRowExtend (RowTypeEntry nameKey int) sized)))
+
+    it "synthesizes an open injection where a record's field holds it" do
+      inferAt TRowEmpty (RecordExtend unit (PositionKey 0) (VariantInject unit nameKey sized oneLit) emptyRecord)
+        `shouldEqual` Right (record (TRowExtend (RowTypeEntry (PositionKey 0) wide) TRowEmpty))
+
+    it "dispatches on every key of an open injection a case scrutinizes" do
+      let
+        tree = SwitchKey (OccScrutinee 0)
+          [ { key: nameKey, tree: Leaf oneLit }, { key: sizeKey, tree: Leaf (Lit unit (LitInt 2)) } ]
+          Nothing
+      inferAt TRowEmpty (Case unit [ VariantInject unit nameKey sized oneLit ] tree) `shouldEqual` Right int
 
   describe "perform" do
     it "takes the element the key names" do
@@ -1147,7 +1180,7 @@ spec = describe "TypedCore.Check" do
       let
         row = TRowExtend (RowTypeEntry nameKey int) (TRowExtend (RowTypeEntry sizeKey string) TRowEmpty)
         tree = SwitchKey (OccScrutinee 0)
-          [ { key: nameKey, tree: Leaf (VariantInject unit nameKey oneLit) } ]
+          [ { key: nameKey, tree: Leaf (VariantInject unit nameKey TRowEmpty oneLit) } ]
           (Just (Leaf (var "v")))
       inferIn (env { context = bindVar emptyContext (Ident "v") (variant row) }) TRowEmpty
         (Case unit [ var "v" ] tree)

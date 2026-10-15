@@ -90,7 +90,9 @@ data Expr a
   -- | `extend` writes them the other way about, the value first.
   | RecordUpdate a RowKey (Expr a) (Expr a)
   | RecordMerge a (Expr a) (Expr a)
-  | VariantInject a RowKey (Expr a)
+  -- | `inject k [ρ] e`: the value `e` at the key `k` of a variant whose row
+  -- | holds `ρ` besides it.
+  | VariantInject a RowKey Type (Expr a)
   | VariantWeaken a RowKey Type (Expr a)
   | VariantAbsurd a Type (Expr a)
   -- | Invocation of an operation, `perform k.op [τ̄] e`. It requires the ambient
@@ -265,7 +267,7 @@ exprAnnotation = case _ of
   RecordRestrict a _ _ -> a
   RecordUpdate a _ _ _ -> a
   RecordMerge a _ _ -> a
-  VariantInject a _ _ -> a
+  VariantInject a _ _ _ -> a
   VariantWeaken a _ _ _ -> a
   VariantAbsurd a _ _ -> a
   Perform a _ _ _ _ -> a
@@ -299,7 +301,7 @@ withAnnotation a = case _ of
   RecordRestrict _ key e -> RecordRestrict a key e
   RecordUpdate _ key rec value -> RecordUpdate a key rec value
   RecordMerge _ left right -> RecordMerge a left right
-  VariantInject _ key value -> VariantInject a key value
+  VariantInject _ key row value -> VariantInject a key row value
   VariantWeaken _ key ty e -> VariantWeaken a key ty e
   VariantAbsurd _ ty e -> VariantAbsurd a ty e
   Perform _ key op tyArgs arg -> Perform a key op tyArgs arg

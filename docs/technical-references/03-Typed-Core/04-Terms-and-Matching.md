@@ -25,7 +25,7 @@ e ::= x | M.x [[κ̄]]                    variable; `M.x` when κ̄ is empty
     | update k e1 e2
     | merge e1 e2
     -- variants
-    | inject k e
+    | inject k [ρ] e
     | weaken k [τ] e
     | absurd [τ] e
     -- effects
@@ -51,7 +51,7 @@ v ::= c
     | Λ (_ : C) . v
     | M.Ctor ς                 a constructor spine
     | {} | extend k v1 v2
-    | inject k v
+    | inject k [ρ] v
 ```
 
 `ς` is the spine of arguments the constructor has accumulated: kind, type, and constraint instantiations together with values, in whatever order the declared type calls for. [Semantics](06-Semantics.md) gives the full value grammar, which adds the forms that arise only during reduction.

@@ -193,7 +193,7 @@ zonkExpr ctx = go
     ERecordRestrict a key e -> ERecordRestrict a key (go e)
     ERecordUpdate a key rec v -> ERecordUpdate a key (go rec) (go v)
     ERecordMerge a l r -> ERecordMerge a (go l) (go r)
-    EVariantInject a key v -> EVariantInject a key (go v)
+    EVariantInject a key row v -> EVariantInject a key (ty row) (go v)
     EVariantWeaken a key t e -> EVariantWeaken a key (ty t) (go e)
     EVariantAbsurd a t e -> EVariantAbsurd a (ty t) (go e)
     EPerform a key op tyArgs arg -> EPerform a key op (map ty tyArgs) (go arg)

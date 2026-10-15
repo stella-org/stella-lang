@@ -22,7 +22,7 @@ import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..), assignTermMe
 import Stella.Compiler.Elaborate.Mechanism.TermMeta as TermMeta
 import Stella.Compiler.Elaborate.CorePlus.Type (XType(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, TermBinding(..), TermScope, emptyContext, freshMeta, lookupMeta, lookupTermMeta)
-import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar(..), ModuleName(..), Qualified(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
@@ -206,6 +206,13 @@ spec = describe "Elaborate.TermMeta" do
         solvedType = ctx1 { bindings = Map.insert tm (Assigned xInt) ctx1.bindings }
         zonked = map (\c -> zonkExpr c (ETermMeta 4 m)) (hush (assignTermMeta solvedType m (ELam 1 y (XMeta tm) (EVar 2 y))))
       zonked `shouldEqual` Just (ELam 4 y xInt (EVar 4 y))
+
+    it "applies a solved type metavariable in the row an injection writes" do
+      let
+        Tuple tm ctx0 = freshMeta { kind: XKRow RowType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty }, level: 0 } emptyContext
+        emptied = ctx0 { bindings = Map.insert tm (Assigned XRowEmpty) ctx0.bindings }
+        key = SymbolKey (Symbol "n")
+      zonkExpr emptied (EVariantInject 1 key (XMeta tm) (EVar 2 x)) `shouldEqual` EVariantInject 1 key XRowEmpty (EVar 2 x)
 
     it "leaves an unsolved metavariable for the boundary to report" do
       let

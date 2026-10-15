@@ -113,7 +113,7 @@ operationOf = case _ of
     RecordRestrict _ _ _ -> "recordRestrict"
     RecordUpdate _ _ _ _ -> "recordUpdate"
     RecordMerge _ _ _ -> "recordMerge"
-    VariantInject _ _ _ -> "variantInject"
+    VariantInject _ _ _ _ -> "variantInject"
     VariantWeaken _ _ _ _ -> "variantWeaken"
     VariantAbsurd _ _ _ -> "variantAbsurd"
     OpenEff _ _ _ -> "openEff"
@@ -357,7 +357,7 @@ probes =
   , p "recordRestrict" (F.recordRestrict s key s)
   , p "recordUpdate" (F.recordUpdate s key s s)
   , p "recordMerge" (F.recordMerge s s s)
-  , p "variantInject" (F.variantInject s key s)
+  , p "variantInject" (F.variantInject s key s s)
   , p "variantWeaken" (F.variantWeaken s key s s)
   , p "variantAbsurd" (F.variantAbsurd s s s)
   , p "openEff" (F.openEff s s s)

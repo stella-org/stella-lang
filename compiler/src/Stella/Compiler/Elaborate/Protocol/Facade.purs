@@ -329,8 +329,8 @@ recordUpdate scope key e value = recordHandle (RecordUpdate scope key e value)
 recordMerge :: Handle -> Handle -> Handle -> Facade Handle
 recordMerge scope left right = recordHandle (RecordMerge scope left right)
 
-variantInject :: Handle -> RowKey -> Handle -> Facade Handle
-variantInject scope key value = recordHandle (VariantInject scope key value)
+variantInject :: Handle -> RowKey -> Handle -> Handle -> Facade Handle
+variantInject scope key row value = recordHandle (VariantInject scope key row value)
 
 variantWeaken :: Handle -> RowKey -> Handle -> Handle -> Facade Handle
 variantWeaken scope key payload e = recordHandle (VariantWeaken scope key payload e)

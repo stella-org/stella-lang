@@ -155,7 +155,7 @@ The rules for global names instantiate a kind scheme with `κ̄'`, which is **pu
 
   Γ;Δ ⊢ e : τ ! ρ    Γ ⊢ k key Type    Γ ⊨ k ∉ r    Γ ⊢ r : Row Type
   ─────────────────────────────────────────────────────────────────────
-  Γ;Δ ⊢ inject k e : Variant ( k : τ | r ) ! ρ
+  Γ;Δ ⊢ inject k [r] e : Variant ( k : τ | r ) ! ρ
 
   Γ;Δ ⊢ e : Variant r ! ρ    Γ ⊢ k key Type    Γ ⊨ k ∉ r    Γ ⊢ τ : Type
   ─────────────────────────────────────────────────────────────────────
@@ -176,6 +176,8 @@ merge : forall (r : Row Type). forall (s : Row Type).
 `merge` is a term constructor and not a global name, so that type describes the rule rather than declaring anything ([Prim and Base](../06-Modules/02-Prim-and-Base.md)).
 
 `r # s` is a `C => τ`, not a dictionary argument, and disappears at run time.
+
+**An injection writes the row its variant holds besides its key**, as `weaken` writes the payload it adds and `absurd` the type it answers at. The type of `inject k [r] e` is therefore read off the term wherever it stands, a field of a record and a scrutinee among them; where a type is expected of it, `r` is the rest of that variant, and the payload is checked against the type that variant gives `k`. The variant of one element is `inject k [()] e`.
 
 ## Effects
 

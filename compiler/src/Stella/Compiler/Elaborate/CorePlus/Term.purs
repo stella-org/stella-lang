@@ -105,7 +105,8 @@ data XExpr a
   | ERecordRestrict a RowKey (XExpr a)
   | ERecordUpdate a RowKey (XExpr a) (XExpr a)
   | ERecordMerge a (XExpr a) (XExpr a)
-  | EVariantInject a RowKey (XExpr a)
+  -- | `inject k [ρ] e`, with the row `ρ` the variant holds besides `k`.
+  | EVariantInject a RowKey XType (XExpr a)
   | EVariantWeaken a RowKey XType (XExpr a)
   | EVariantAbsurd a XType (XExpr a)
   | EPerform a RowKey OpName (P.Array XType) (XExpr a)
@@ -270,7 +271,7 @@ xExprAnnotation = case _ of
   ERecordRestrict a _ _ -> a
   ERecordUpdate a _ _ _ -> a
   ERecordMerge a _ _ -> a
-  EVariantInject a _ _ -> a
+  EVariantInject a _ _ _ -> a
   EVariantWeaken a _ _ _ -> a
   EVariantAbsurd a _ _ -> a
   EPerform a _ _ _ _ -> a
@@ -309,7 +310,7 @@ fromCoreExpr = case _ of
   RecordRestrict a key e -> ERecordRestrict a key (fromCoreExpr e)
   RecordUpdate a key rec value -> ERecordUpdate a key (fromCoreExpr rec) (fromCoreExpr value)
   RecordMerge a left right -> ERecordMerge a (fromCoreExpr left) (fromCoreExpr right)
-  VariantInject a key value -> EVariantInject a key (fromCoreExpr value)
+  VariantInject a key row value -> EVariantInject a key (fromCore row) (fromCoreExpr value)
   VariantWeaken a key ty e -> EVariantWeaken a key (fromCore ty) (fromCoreExpr e)
   VariantAbsurd a ty e -> EVariantAbsurd a (fromCore ty) (fromCoreExpr e)
   Perform a key op tyArgs arg -> EPerform a key op (map fromCore tyArgs) (fromCoreExpr arg)
@@ -440,7 +441,7 @@ convExpr view = case _ of
   ERecordRestrict a key e -> RecordRestrict a key <$> convExpr view e
   ERecordUpdate a key rec value -> RecordUpdate a key <$> convExpr view rec <*> convExpr view value
   ERecordMerge a left right -> RecordMerge a <$> convExpr view left <*> convExpr view right
-  EVariantInject a key value -> VariantInject a key <$> convExpr view value
+  EVariantInject a key row value -> VariantInject a key <$> convType a row <*> convExpr view value
   EVariantWeaken a key ty e -> VariantWeaken a key <$> convType a ty <*> convExpr view e
   EVariantAbsurd a ty e -> VariantAbsurd a <$> convType a ty <*> convExpr view e
   EPerform a key op tyArgs arg -> Perform a key op <$> traverse (convType a) tyArgs <*> convExpr view arg
@@ -587,7 +588,7 @@ freeVarsOf = case _ of
   ERecordRestrict _ _ e -> freeVarsOf e
   ERecordUpdate _ _ rec v -> freeVarsOf rec <> freeVarsOf v
   ERecordMerge _ l r -> freeVarsOf l <> freeVarsOf r
-  EVariantInject _ _ v -> freeVarsOf v
+  EVariantInject _ _ row v -> typeVars row <> freeVarsOf v
   EVariantWeaken _ _ ty e -> typeVars ty <> freeVarsOf e
   EVariantAbsurd _ ty e -> typeVars ty <> freeVarsOf e
   EPerform _ _ _ tyArgs arg -> foldMap typeVars tyArgs <> freeVarsOf arg
@@ -696,7 +697,7 @@ metasOfTerm = case _ of
   ERecordRestrict _ _ e -> metasOfTerm e
   ERecordUpdate _ _ rec v -> metasOfTerm rec <> metasOfTerm v
   ERecordMerge _ l r -> metasOfTerm l <> metasOfTerm r
-  EVariantInject _ _ v -> metasOfTerm v
+  EVariantInject _ _ row v -> typeMetas row <> metasOfTerm v
   EVariantWeaken _ _ ty e -> typeMetas ty <> metasOfTerm e
   EVariantAbsurd _ ty e -> typeMetas ty <> metasOfTerm e
   EPerform _ _ _ tyArgs arg -> foldMap typeMetas tyArgs <> metasOfTerm arg
@@ -761,7 +762,7 @@ typesOfTerm = case _ of
   ERecordRestrict _ _ e -> typesOfTerm e
   ERecordUpdate _ _ rec v -> typesOfTerm rec <> typesOfTerm v
   ERecordMerge _ l r -> typesOfTerm l <> typesOfTerm r
-  EVariantInject _ _ v -> typesOfTerm v
+  EVariantInject _ _ row v -> [ row ] <> typesOfTerm v
   EVariantWeaken _ _ ty e -> [ ty ] <> typesOfTerm e
   EVariantAbsurd _ ty e -> [ ty ] <> typesOfTerm e
   EPerform _ _ _ tyArgs arg -> tyArgs <> typesOfTerm arg
@@ -819,7 +820,7 @@ termMetasUnderRegions = go Set.empty
     ERecordRestrict _ _ e -> go bound e
     ERecordUpdate _ _ rec v -> go bound rec <> go bound v
     ERecordMerge _ l r -> go bound l <> go bound r
-    EVariantInject _ _ v -> go bound v
+    EVariantInject _ _ _ v -> go bound v
     EVariantWeaken _ _ _ e -> go bound e
     EVariantAbsurd _ _ e -> go bound e
     EPerform _ _ _ _ arg -> go bound arg
@@ -928,7 +929,7 @@ valueFormWith throughFits isConstructor = value
     EConstraintLam _ _ body -> value body
     ERecordEmpty _ -> true
     ERecordExtend _ _ v rest -> value v && value rest
-    EVariantInject _ _ v -> value v
+    EVariantInject _ _ _ v -> value v
     other -> spine other
   spine = case _ of
     EGlobal _ name _ -> isConstructor name
@@ -962,7 +963,7 @@ typeVarsOfTerm term = Set.unions (map typeVarsOfType (typesOfTerm term)) <> bind
     ERecordRestrict _ _ e -> binders e
     ERecordUpdate _ _ rec v -> binders rec <> binders v
     ERecordMerge _ l r -> binders l <> binders r
-    EVariantInject _ _ v -> binders v
+    EVariantInject _ _ _ v -> binders v
     EVariantWeaken _ _ _ e -> binders e
     EVariantAbsurd _ _ e -> binders e
     EPerform _ _ _ _ arg -> binders arg

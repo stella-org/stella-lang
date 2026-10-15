@@ -197,6 +197,18 @@ The heading of each group names the step of the plan that the group belongs to.
 | `handle (handle e with h) with h` at one key | Rejected. The inner one would stand at `( k \| ( k \| ρ ) )`, which is not sharp |
 | A pure function handling `E` within itself, called through `openEff [( E )]` under an outer handler of `E` | **Accepted.** No row carries `E` twice; the two handlers meet only in the run-time stack |
 
+### Injections (step 3)
+
+| Input | Required outcome |
+| --- | --- |
+| `inject n [()] 1`, and `inject n [( m : String )] 1`, synthesized | `Variant ( n : Int )`; `Variant ( n : Int, m : String )`. The row the term writes is the variant's rest |
+| `inject n [( n : String )] 1` | Rejected. The row an injection writes lacks its key |
+| An open injection a record's field holds, and one a `case` scrutinizes with a branch for each key | Typed at the variant its row writes. Taking `()` as its rest wherever it is synthesized would refuse the record against its declared type, and leave the scrutinee's other keys with no element |
+| An injection checked against `Variant ( n : Int -{( Console )}-> Int )`, its payload a λ | Accepted, the payload checked against the type the variant gives `n`: the λ takes the arrow's row, where synthesized it would take the ambient one |
+| An injection checked against a variant whose rest is not the row it writes | Rejected |
+| `weaken m [Int]` of an injection writing `( size : String )` | The variant with `m` added in front of the row the injection writes |
+| The row an injection writes, holding a metavariable and a rigid variable | Collected by every walk over a Core⁺ term's types — metavariables, free variables, the types a term holds — substituted by zonking, and reported at the boundary while it holds a metavariable |
+
 ### Decision trees and handlers (step 3)
 
 | Input | Required outcome |
@@ -968,10 +980,11 @@ no identifier is at once ready and blocked
 | `select` at a key a record lacks, its tail flexible, closed, or rigid | Postponed on the tail; refused; refused |
 | `select`, `recordField`, or a switch on keys at `PositionKey (-1)`, over a row with a flexible tail | Refused, and not waited on. No solution puts an ill-formed key in a row |
 | `merge` of records apart, and of records sharing a key | Claimed at the union; a failure |
-| `inject n 1`, then `weaken m [Boolean]` of it, and `weaken n` of it | `Variant ( n : Int )`, with no row given; `Variant ( m : Boolean, n : Int )`; a failure |
+| `inject n [()] 1`, and over `( m : Boolean )`; then `weaken m [Boolean]` of the first, and `weaken n` of it | `Variant ( n : Int )`; `Variant ( n : Int, m : Boolean )`; `Variant ( m : Boolean, n : Int )`; a failure |
+| `inject n` over a row holding `n`, and over a row of effects | A failure; refused, the row being no row of types |
 | `absurd [Int]` of the empty variant, and of an `Int` | `Int`; refused. That the variant is empty is the Core type checker's |
 | `openEff` of a pure function at `()`, at a row of `Row Type`, and of an `Int` | The arrow at `() ⊎ ()`; refused; refused |
-| Records and variants the kernel built, declared at what they are claimed at | Accepted by the Core type checker |
+| Records and variants the kernel built, declared at what they are claimed at, a record whose field holds an open injection among them | Accepted by the Core type checker |
 | `perform` of `State.get` at the element `State Int`, unlabelled and labelled | Claimed at `Int`, the effect's parameter instantiated. The element is an annotation; that it is in the ambient row is the Core type checker's |
 | `perform` of `Poly.ident [Boolean]` | Claimed at `Boolean`, the operation's own binder instantiated with the effect's parameters, simultaneously |
 | `perform` of an operation the effect lacks, with type arguments it does not bind, at a key that does not make the element, or at an ill-kinded element | Refused |

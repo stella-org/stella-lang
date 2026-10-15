@@ -216,7 +216,7 @@ everyForm = do
   restricted <- recordRestrict root keyN extended
   updated <- recordUpdate root keyN extended one
   merged <- recordExtend root keyM one empty >>= recordMerge root extended
-  injected <- variantInject root keyN one
+  injected <- emptyRow root >>= \row -> variantInject root keyN row one
   boolean <- typeConstructor root booleanTy []
   weakened <- variantWeaken root keyM boolean injected
   absurd <- var root "none" >>= variantAbsurd root i
@@ -294,7 +294,7 @@ forms = case _ of
   ERecordRestrict _ _ e -> [ "ERecordRestrict" ] <> forms e
   ERecordUpdate _ _ r v -> [ "ERecordUpdate" ] <> forms r <> forms v
   ERecordMerge _ l r -> [ "ERecordMerge" ] <> forms l <> forms r
-  EVariantInject _ _ v -> [ "EVariantInject" ] <> forms v
+  EVariantInject _ _ _ v -> [ "EVariantInject" ] <> forms v
   EVariantWeaken _ _ _ e -> [ "EVariantWeaken" ] <> forms e
   EVariantAbsurd _ _ e -> [ "EVariantAbsurd" ] <> forms e
   EPerform _ _ _ _ arg -> [ "EPerform" ] <> forms arg

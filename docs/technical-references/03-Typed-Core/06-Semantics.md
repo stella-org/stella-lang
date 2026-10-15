@@ -408,7 +408,7 @@ v ::= c
     | M.Ctor ς                 a constructor spine
     | M.f ς                    a foreign spine that is not saturated
     | {} | extend k v1 v2
-    | inject k v
+    | inject k [ρ] v
     | weaken k [τ] v          a value of a wider variant
     | openEff [ρ] v           a function value at a wider effect row
     | opaque ω [τ]            a value of an intrinsic type, produced by a foreign
@@ -637,7 +637,7 @@ Ev ::= []
      | update k Ev e  |  update k v Ev
      | merge Ev e  |  merge v Ev
      | select k Ev  |  restrict k Ev
-     | inject k Ev  |  weaken k [τ] Ev  |  absurd [τ] Ev
+     | inject k [ρ] Ev  |  weaken k [τ] Ev  |  absurd [τ] Ev
      | let x : τ = Ev in e
      | case (v̄, Ev, ē) of dt
      | match θ (guard Ev dt1 dt2)
@@ -956,7 +956,7 @@ Erasure `⌊·⌋` removes the forms that carry no run-time content.
 ⌊Λ (_ : C) . v⌋   = ⌊v⌋        ⌊e [•]⌋           = ⌊e⌋
 ⌊T [[κ̄]]⌋         = ⌊T⌋        ⌊M.x [[κ̄]]⌋       = ⌊M.x⌋
 ⌊openEff [ρ] e⌋   = ⌊e⌋        ⌊openEffC [ρ] e⌋  = ⌊e⌋
-⌊weaken k [τ] e⌋  = ⌊e⌋
+⌊weaken k [τ] e⌋  = ⌊e⌋        ⌊inject k [ρ] e⌋  = inject k ⌊e⌋
 
 ⌊letjoin j (x̄ : τ̄) : τ = e1 in e2⌋  = letjoin j (x̄) = ⌊e1⌋ in ⌊e2⌋
 

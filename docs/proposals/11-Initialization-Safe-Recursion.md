@@ -126,7 +126,7 @@ apart a value without running what it holds, and the control forms:
 | `λ(y : τ). e` | `∅` | `imm(e) ∪ lat(e)`, with `ρ(y) = ∅` |
 | `Λ (a : κ). e`, `e [σ]`, `Λ (_ : C). e`, `e [•]`, `openEff [ρ] e` | `imm(e)` | `lat(e)` |
 | `M.c ē`, a spine whose head is a data constructor or a foreign, through type and constraint applications, with no more arguments than its arity | `⋃ imm(eₖ)` | `⋃ lat(eₖ)` |
-| `extend k e₁ e₂`, `update k e₁ e₂`, `merge e₁ e₂`, `inject k e` | `⋃ imm(eₖ)` | `⋃ lat(eₖ)` |
+| `extend k e₁ e₂`, `update k e₁ e₂`, `merge e₁ e₂`, `inject k [ρ] e` | `⋃ imm(eₖ)` | `⋃ lat(eₖ)` |
 | `select k e`, `restrict k e`, `weaken k [τ] e`, `absurd [τ] e` | `imm(e)` | `lat(e)` |
 | `let y : τ = e₁ in e₂` | `imm(e₁) ∪ imm(e₂)`, with `ρ(y) = lat(e₁)` | `lat(e₂)` |
 | `letrec { ȳ : σ̄ = ē' } in e`, a group nested in `R` | `⋃ imm(e'ₖ) ∪ imm(e)`, each `yₖ` a local at `ρ(yₖ) = lat(e'ₖ)`, the least fixed point over the nested group | `lat(e)` |

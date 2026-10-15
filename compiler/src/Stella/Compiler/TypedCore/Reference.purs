@@ -45,7 +45,7 @@ globalsOf = case _ of
   RecordRestrict _ _ e -> globalsOf e
   RecordUpdate _ _ rec value -> globalsOf rec <> globalsOf value
   RecordMerge _ left right -> globalsOf left <> globalsOf right
-  VariantInject _ _ e -> globalsOf e
+  VariantInject _ _ _ e -> globalsOf e
   VariantWeaken _ _ _ e -> globalsOf e
   VariantAbsurd _ _ e -> globalsOf e
   Perform _ _ _ _ e -> globalsOf e

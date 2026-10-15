@@ -13,7 +13,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.Vocabulary.Trace (Tracing(..))
-import Stella.Compiler.Elaborate.Kernel.Builder.Type (emptyRow, rootScope, typeConstructor)
+import Stella.Compiler.Elaborate.Kernel.Builder.Type (emptyRow, extendRow, rootScope, typeConstructor)
 import Stella.Compiler.Elaborate.Kernel.Builder.Record (openEff, recordEmpty, recordExtend, recordMerge, recordRestrict, recordSelect, recordUpdate, variantAbsurd, variantInject, variantWeaken)
 import Stella.Compiler.Elaborate.Kernel.Builder.Term (literal, localVariable)
 import Stella.Compiler.Elaborate.Environment.Catalog (catalogOf)
@@ -32,7 +32,7 @@ import Stella.Compiler.Elaborate.Kernel.Solve (freshMetaType)
 import Stella.Compiler.Elaborate.CorePlus.Term (toCoreExpr)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XRowEntry(..), XType(..), toCore)
 import Stella.Compiler.Elaborate.Mechanism.Unify (emptyContext, freshMeta)
-import Stella.Compiler.Elaborate.Vocabulary.View (KindView(..))
+import Stella.Compiler.Elaborate.Vocabulary.View (KindView(..), PayloadView(..))
 import Stella.Compiler.TypedCore (Decl(..), EffName(..), Ident(..), Literal(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyVar(..), monoScheme)
 import Stella.Compiler.TypedCore.Declare (declare)
 import Stella.Compiler.TypedCore.Prim (booleanTy, functionTy, intTy, primSignature, recordTy, variantTy)
@@ -211,18 +211,31 @@ spec = describe "Elaborate.BuildRecord" do
       rejects (rootScope >>= \root -> join (recordMerge root <$> var "rec" <*> extendWith keyN empty)) Required (SidesShareKey keyN)
 
   describe "variants" do
-    it "are injected at one element and widened by weaken" do
+    it "are injected at the row given and widened by weaken" do
       let
-        injected = rootScope >>= \root -> lit (LitInt 1) >>= variantInject root keyN
+        injected = rootScope >>= \root -> emptyRow root >>= \row -> lit (LitInt 1) >>= variantInject root keyN row
         weakened key = do
           root <- rootScope
           boolean <- typeConstructor root booleanTy []
           injected >>= variantWeaken root key boolean
+        injectedOver extend = do
+          root <- rootScope
+          row <- extend root
+          lit (LitInt 1) >>= variantInject root keyN row
+        withM root = typeConstructor root booleanTy [] >>= \boolean -> emptyRow root >>= extendRow root keyM (TypePayload boolean)
       claims injected (_ `shouldEqual` variant (field keyN xInt XRowEmpty))
+      claims (injectedOver withM) (_ `shouldEqual` variant (field keyN xInt (field keyM xBoolean XRowEmpty)))
       claims (weakened keyM) (_ `shouldEqual` variant (field keyM xBoolean (field keyN xInt XRowEmpty)))
       rejects (weakened keyN) Required (SolutionCarriesKey keyN)
       refuses (rootScope >>= \root -> emptyRow root >>= \row -> injected >>= variantWeaken root keyM row) case _ of
         NotAType _ -> true
+        _ -> false
+
+    it "require the key absent from the row an injection writes, a row of types" do
+      let withN root = typeConstructor root intTy [] >>= \i -> emptyRow root >>= extendRow root keyN (TypePayload i)
+      rejects (rootScope >>= \root -> withN root >>= \row -> lit (LitInt 1) >>= variantInject root keyN row) Required (SolutionCarriesKey keyN)
+      refuses (rootScope >>= \root -> freshMetaType root (KindRow RowEffect) >>= \row -> lit (LitInt 1) >>= variantInject root keyN row) case _ of
+        NotATypeRow _ -> true
         _ -> false
 
     it "are eliminated by absurd at the type given" do
@@ -251,7 +264,14 @@ spec = describe "Elaborate.BuildRecord" do
             , do
                 root <- rootScope
                 boolean <- typeConstructor root booleanTy []
-                lit (LitInt 1) >>= variantInject root keyN >>= variantWeaken root keyM boolean
+                closed <- emptyRow root
+                lit (LitInt 1) >>= variantInject root keyN closed >>= variantWeaken root keyM boolean
+            , do
+                root <- rootScope
+                boolean <- typeConstructor root booleanTy []
+                open <- emptyRow root >>= extendRow root keyM (TypePayload boolean)
+                injected <- lit (LitInt 1) >>= variantInject root keyN open
+                recordEmpty root >>= recordExtend root keyN injected
             ]
         declOf i o = case toCore o.claimed, toCoreExpr o.term of
           Just scheme, Right value ->

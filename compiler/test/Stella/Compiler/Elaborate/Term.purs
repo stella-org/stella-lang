@@ -12,7 +12,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar(..), XKind(..))
-import Stella.Compiler.Elaborate.CorePlus.Term (FreeVars, Residue(..), TermMetaVar(..), XDecisionTree(..), XExpr(..), fromCoreExpr, freeVarsOf, isSettledValueForm, isValueForm, metasOfTerm, toCoreExpr)
+import Stella.Compiler.Elaborate.CorePlus.Term (FreeVars, Residue(..), TermMetaVar(..), XDecisionTree(..), XExpr(..), fromCoreExpr, freeVarsOf, isSettledValueForm, isValueForm, metasOfTerm, toCoreExpr, typesOfTerm)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XRowEntry(..), XType(..))
 import Stella.Compiler.TypedCore (Constraint(..), DecisionTree(..), EffName(..), Expr(..), Ident(..), JoinName(..), Kind(..), KindVar(..), Literal(..), ModuleName(..), OpClause(..), OpName(..), Occurrence(..), Qualified(..), RegionName(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyName(..), TyVar(..), Type(..))
 import Data.Array.NonEmpty as NonEmptyArray
@@ -105,7 +105,7 @@ otherForms =
         (RecordExtend 3 keyN (Lit 4 (LitInt 1)) (RecordEmpty 5))
         ( RecordUpdate 6 keyN
             (RecordRestrict 7 keyN (RecordSelect 8 keyN (TyApp 9 (ConstraintApp 10 (Var 11 x)) intTy)))
-            ( Case 12 [ VariantWeaken 13 keyN intTy (VariantInject 14 keyN (Var 15 y)) ]
+            ( Case 12 [ VariantWeaken 13 keyN intTy (VariantInject 14 keyN (TVar r) (Var 15 y)) ]
                 ( SwitchKey (OccScrutinee 0)
                     [ { key: keyN, tree: Guard (Lit 16 (LitBoolean true)) (Leaf (VariantAbsurd 17 intTy (Var 18 y))) (Leaf (Var 19 y)) } ]
                     ( Just
@@ -270,6 +270,19 @@ spec = describe "Elaborate.Term" do
       let
         term = ELetRec 1 [ { name: f, ty: xInt, value: ELam 2 x xInt (EApp 3 (EVar 4 f) (EVar 5 y)) } ] (EVar 6 f)
       freeVarsOf term `shouldEqual` free { values = Set.singleton y }
+
+  describe "the row an injection writes" do
+    let
+      row = XRowExtend (XRowTypeEntry (SymbolKey (Symbol "m")) (XMeta (MetaVar 7))) (XVar r)
+      injection = EVariantInject 1 keyN row (ELit 2 (LitInt 1))
+
+    it "is a type of the term, read by every walk over its types" do
+      metasOfTerm injection `shouldEqual` { terms: Set.empty, types: Set.singleton (MetaVar 7), kinds: Set.empty }
+      freeVarsOf injection `shouldEqual` free { types = Set.singleton r }
+      typesOfTerm injection `shouldEqual` [ row ]
+
+    it "is reported at the boundary while it holds a metavariable" do
+      toCoreExpr injection `shouldEqual` Left (NonEmptyArray.singleton (ResidualTypeMeta 1 (MetaVar 7)))
 
   describe "metavariables" do
     it "are collected from every position, by class" do

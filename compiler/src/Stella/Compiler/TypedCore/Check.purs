@@ -343,16 +343,11 @@ infer env rho expr = case expr of
     require at env (Disjoint left'.row right'.row)
     Right (RecordMerge (at' at (record (TRowUnion left'.row right'.row))) left'.expr right'.expr)
 
-  -- The residual row of an injection is not written in the term. A synthesized
-  -- one is the variant of that key alone, and `weaken` is what widens it.
-  VariantInject at key value -> do
-    kinded at (wellFormedKey env.signature env.context key RowType)
+  -- The row an injection writes is what the variant holds besides its key.
+  VariantInject at key row value -> do
+    injectionRest at env key row
     value' <- infer (notTail env) rho value
-    Right
-      ( VariantInject (at' at (variant (TRowExtend (RowTypeEntry key (typeOf value')) TRowEmpty)))
-          key
-          value'
-      )
+    Right (VariantInject (at' at (variant (TRowExtend (RowTypeEntry key (typeOf value')) row))) key row value')
 
   VariantWeaken at key ty e -> do
     kinded at (wellFormedKey env.signature env.context key RowType)
@@ -432,12 +427,14 @@ check env rho expected expr = case expr of
     body' <- check (lambdaEnv env name ty) parts.row parts.result body
     Right (Lam (at' at expected) name ty body')
 
-  VariantInject at key value -> do
-    kinded at (wellFormedKey env.signature env.context key RowType)
-    row <- variantOf at expected
-    payload <- payloadAt at key row
+  -- The payload is checked against the type the expected variant gives its
+  -- key, and the row written is the rest of that variant.
+  VariantInject at key row value -> do
+    injectionRest at env key row
+    payload <- payloadAt at key =<< variantOf at expected
+    equalTypes at expected (variant (TRowExtend (RowTypeEntry key payload) row))
     value' <- check (notTail env) rho payload value
-    Right (VariantInject (at' at expected) key value')
+    Right (VariantInject (at' at expected) key row value')
 
   Let at name ty value body -> do
     kinded at (checkKind env.signature env.context ty KType)
@@ -1210,7 +1207,7 @@ isValueForm sig = case _ of
   ConstraintLam _ _ body -> isValueForm sig body
   RecordEmpty _ -> true
   RecordExtend _ _ value rest -> isValueForm sig value && isValueForm sig rest
-  VariantInject _ _ value -> isValueForm sig value
+  VariantInject _ _ _ value -> isValueForm sig value
   other -> isCtorSpine sig other
 
 isCtorSpine :: forall a. Signature -> Expr a -> P.Boolean
@@ -1334,6 +1331,14 @@ variantRow at env rho e = do
   expr <- infer (notTail env) rho e
   row <- variantOf at (typeOf expr)
   Right { expr, row }
+
+-- | That the row an injection writes is a `Row Type` lacking the key it
+-- | injects at.
+injectionRest :: forall a. a -> Env -> RowKey -> Type -> Either (CheckFailure a) Unit
+injectionRest at env key row = do
+  kinded at (wellFormedKey env.signature env.context key RowType)
+  kinded at (checkKind env.signature env.context row (KRow RowType))
+  require at env (Lacks key row)
 
 payloadAt :: forall a. a -> RowKey -> Type -> Either (CheckFailure a) Type
 payloadAt at key row = do

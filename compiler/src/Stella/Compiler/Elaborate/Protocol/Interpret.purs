@@ -103,7 +103,7 @@ record = case _ of
   RecordRestrict scope key e -> HandleAnswer <$> BuildRecord.recordRestrict scope key e
   RecordUpdate scope key e value -> HandleAnswer <$> BuildRecord.recordUpdate scope key e value
   RecordMerge scope left right -> HandleAnswer <$> BuildRecord.recordMerge scope left right
-  VariantInject scope key value -> HandleAnswer <$> BuildRecord.variantInject scope key value
+  VariantInject scope key row value -> HandleAnswer <$> BuildRecord.variantInject scope key row value
   VariantWeaken scope key payload e -> HandleAnswer <$> BuildRecord.variantWeaken scope key payload e
   VariantAbsurd scope result e -> HandleAnswer <$> BuildRecord.variantAbsurd scope result e
   OpenEff scope row e -> HandleAnswer <$> BuildRecord.openEff scope row e

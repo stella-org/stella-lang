@@ -373,7 +373,7 @@ types =
       , ctor "RecordRestrict" [ handle, con "RowKey", handle ]
       , ctor "RecordUpdate" [ handle, con "RowKey", handle, handle ]
       , ctor "RecordMerge" [ handle, handle, handle ]
-      , ctor "VariantInject" [ handle, con "RowKey", handle ]
+      , ctor "VariantInject" [ handle, con "RowKey", handle, handle ]
       , ctor "VariantWeaken" [ handle, con "RowKey", handle, handle ]
       , ctor "VariantAbsurd" [ handle, handle, handle ]
       , ctor "OpenEff" [ handle, handle, handle ]

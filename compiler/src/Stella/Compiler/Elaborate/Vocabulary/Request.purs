@@ -123,7 +123,7 @@ data RecordRequest
   | RecordRestrict Handle RowKey Handle
   | RecordUpdate Handle RowKey Handle Handle
   | RecordMerge Handle Handle Handle
-  | VariantInject Handle RowKey Handle
+  | VariantInject Handle RowKey Handle Handle
   | VariantWeaken Handle RowKey Handle Handle
   | VariantAbsurd Handle Handle Handle
   | OpenEff Handle Handle Handle
@@ -413,7 +413,7 @@ expectedAnswerShape = case _ of
     RecordRestrict _ _ _ -> HandleShape
     RecordUpdate _ _ _ _ -> HandleShape
     RecordMerge _ _ _ -> HandleShape
-    VariantInject _ _ _ -> HandleShape
+    VariantInject _ _ _ _ -> HandleShape
     VariantWeaken _ _ _ _ -> HandleShape
     VariantAbsurd _ _ _ -> HandleShape
     OpenEff _ _ _ -> HandleShape
@@ -523,7 +523,7 @@ traverseRequestHandles v = case _ of
     RecordRestrict s key e -> RecordRestrict <$> v s <*> pure key <*> v e
     RecordUpdate s key e value -> RecordUpdate <$> v s <*> pure key <*> v e <*> v value
     RecordMerge s left right -> RecordMerge <$> v s <*> v left <*> v right
-    VariantInject s key value -> VariantInject <$> v s <*> pure key <*> v value
+    VariantInject s key row value -> VariantInject <$> v s <*> pure key <*> v row <*> v value
     VariantWeaken s key payload e -> VariantWeaken <$> v s <*> pure key <*> v payload <*> v e
     VariantAbsurd s result e -> VariantAbsurd <$> v s <*> v result <*> v e
     OpenEff s row e -> OpenEff <$> v s <*> v row <*> v e

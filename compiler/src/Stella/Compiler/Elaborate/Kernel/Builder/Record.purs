@@ -1,14 +1,15 @@
 -- | The kernel's builders of records, variants, and `openEff`.
 -- |
 -- | **Each is claimed at the type the Core rule gives it, read off the claims of
--- | its parts**; a type the term writes — the payload of a `weaken`, the result
--- | of an `absurd`, the row an `openEff` adds — is the synthesizer's to give, as
--- | a type the scope may use. A row is read at a key by the one procedure every
--- | builder shares: known, it is there; absent with a flexible tail, the tails
--- | are waited on; otherwise it is a misuse.
+-- | its parts**; a type the term writes — the residual row of an `inject`, the
+-- | payload of a `weaken`, the result of an `absurd`, the row an `openEff` adds —
+-- | is the synthesizer's to give, as a type the scope may use. A row is read at
+-- | a key by the one procedure every builder shares: known, it is there; absent
+-- | with a flexible tail, the tails are waited on; otherwise it is a misuse.
 -- |
 -- | **A row a term builds is sharp by construction**, as a row a type builder
--- | builds is: `extend` and `weaken` require the key absent from the rest, and
+-- | builds is: `inject`, `extend`, and `weaken` require the key absent from the
+-- | rest, and
 -- | `merge` and `openEff` the two rows apart, each introducing the requirement
 -- | together with the term. What else the Core rules ask — that the row a
 -- | `select` reads from is the one its term is claimed at, that an `absurd`'s
@@ -100,14 +101,21 @@ recordMerge scopeHandle leftHandle rightHandle = do
   requiredIn scope (XDisjoint l r)
   issueTerm scope (ERecordMerge unit left.term right.term) (record (XRowUnion l r))
 
--- | `inject k e`, at `Variant ( k : τ )`: a variant of one element. It is
--- | widened by `weaken`, and by nothing written here.
-variantInject :: Handle -> RowKey -> Handle -> Elab Handle
-variantInject scopeHandle key termHandle = do
+-- | `inject k [ρ] e`, at `Variant ( k : τ | ρ )` where `e` is claimed at `τ`,
+-- | requiring `k ∉ ρ`. `ρ` is a type the scope may use, at `Row Type`; the
+-- | empty row makes a variant of one element.
+variantInject :: Handle -> RowKey -> Handle -> Handle -> Elab Handle
+variantInject scopeHandle key rowHandle termHandle = do
   scope <- resolveScope scopeHandle
   typeKey key
+  rest <- usableIn scope rowHandle
+  case rest.kind of
+    ExactKind (XKRow RowType) -> pure unit
+    AnyRow -> pure unit
+    _ -> rejected (NotATypeRow rowHandle)
   term <- usableTermIn scope termHandle
-  issueTerm scope (EVariantInject unit key term.term) (variant (XRowExtend (XRowTypeEntry key term.claimed) XRowEmpty))
+  requiredIn scope (XLacks key rest.type)
+  issueTerm scope (EVariantInject unit key rest.type term.term) (variant (XRowExtend (XRowTypeEntry key term.claimed) rest.type))
 
 -- | `weaken k [τ] e`, at `Variant ( k : τ | r )` where `e` is claimed at
 -- | `Variant r`, requiring `k ∉ r`. `τ` is a type the scope may use, at `Type`.

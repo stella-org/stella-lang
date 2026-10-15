@@ -450,7 +450,7 @@ value ctx expr k = case stripErased expr of
   C.RecordMerge _ left right ->
     atomize ctx left \a1 -> atomize ctx right \a2 -> k (RComp (M.CRecordMerge a1 a2) RepRec)
 
-  C.VariantInject _ key v ->
+  C.VariantInject _ key _ v ->
     atomize ctx v \a -> k (RComp (M.CInject key a) RepVariant)
 
   C.VariantAbsurd _ _ e ->
@@ -992,7 +992,7 @@ freeVars = case _ of
   C.RecordRestrict _ _ e -> freeVars e
   C.RecordUpdate _ _ rec newValue -> freeVars rec <> freeVars newValue
   C.RecordMerge _ left right -> freeVars left <> freeVars right
-  C.VariantInject _ _ e -> freeVars e
+  C.VariantInject _ _ _ e -> freeVars e
   C.VariantWeaken _ _ _ e -> freeVars e
   C.VariantAbsurd _ _ e -> freeVars e
   C.Perform _ _ _ _ arg -> freeVars arg

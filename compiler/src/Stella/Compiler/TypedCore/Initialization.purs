@@ -107,7 +107,7 @@ localGroupViolations sig = groups
     RecordRestrict _ _ e -> groups e
     RecordUpdate _ _ record value -> groups record <> groups value
     RecordMerge _ left right -> groups left <> groups right
-    VariantInject _ _ e -> groups e
+    VariantInject _ _ _ e -> groups e
     VariantWeaken _ _ _ e -> groups e
     VariantAbsurd _ _ e -> groups e
     Perform _ _ _ _ e -> groups e
@@ -219,7 +219,7 @@ go env e pos = case e of
   RecordExtend _ _ value rest -> built [ value, rest ]
   RecordUpdate _ _ record value -> built [ record, value ]
   RecordMerge _ left right -> built [ left, right ]
-  VariantInject _ _ value -> built [ value ]
+  VariantInject _ _ _ value -> built [ value ]
   Perform _ _ _ _ argument -> promoting [ argument ]
   WriteCell _ _ _ value -> promoting [ value ]
   Let _ y _ value body ->

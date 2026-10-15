@@ -334,6 +334,8 @@ data BuildError
   | NotConstrained Handle
   -- | A lambda closed with an effect row that is not a row of effects.
   | NotAnEffectRow Handle
+  -- | An injection given a residual row that is not a row of types.
+  | NotATypeRow Handle
   -- | A `letrec` closed with another number of right-hand sides than it binds.
   | LetRecArity Handle P.Int P.Int
   -- | A join point used where it is not in scope, or a term mentioning one used

@@ -470,11 +470,11 @@ loopedBody n =
     )
     (Jump 0 (JoinName "loop") [ lit n, lit 0 ])
 
--- | `let v : Variant ( #Ok : Int, #Err : Int ) = inject #Ok 5 in
+-- | `let v : Variant ( #Ok : Int, #Err : Int ) = inject #Ok [( #Err : Int )] 5 in
 -- | case (v) of #Ok -> p + 1 ; #Err -> q`.
 variantBody :: Expr P.Int
 variantBody =
-  let' "v" (variantOf [ Tuple (tagKey "Ok") int, Tuple (tagKey "Err") int ]) (VariantInject 0 (tagKey "Ok") (lit 5)) $
+  let' "v" (variantOf [ Tuple (tagKey "Ok") int, Tuple (tagKey "Err") int ]) (VariantInject 0 (tagKey "Ok") (rowOf [ Tuple (tagKey "Err") int ]) (lit 5)) $
     Case 0 [ var "v" ]
       ( SwitchKey (OccScrutinee 0)
           [ { key: tagKey "Ok", tree: Bind (Ident "p") (OccVariantPayload (OccScrutinee 0) (tagKey "Ok")) (Leaf (intOp "add" (var "p") (lit 1))) }
