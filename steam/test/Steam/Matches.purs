@@ -9,7 +9,9 @@
 -- | `Boolean` its alternatives exhaust. `guarded` binds a name in a guard block
 -- | and falls through to the alternative after it where its guard fails, and
 -- | `sizeOf` ends its block with `otherwise`; `layered` falls through two
--- | guard blocks in turn.
+-- | guard blocks in turn. `first` and `unwrap` match a parameter written as a
+-- | pattern, `secondOf` a pattern a `let` binds, `split` one a guard block
+-- | binds, and `rankOf` is a `case _ of`.
 module Test.Steam.Matches (spec) where
 
 import Prelude
@@ -95,6 +97,24 @@ source =
   , "  m where"
   , "      isZero m -> 0"
   , "      otherwise -> 1"
+  , "data Pair a b = Pair a b"
+  , "newtype Wrap = Wrap Int"
+  , "first :: Pair Int Int -> Int"
+  , "first (Pair a _) = a"
+  , "unwrap :: Wrap -> Int"
+  , "unwrap (Wrap n) = n"
+  , "secondOf :: Pair Int Int -> Int"
+  , "secondOf p = let Pair _ b = p in b"
+  , "split :: Pair Int Int -> Int"
+  , "split p = case p of"
+  , "  q where"
+  , "      Pair a b = q"
+  , "      isZero a -> b"
+  , "      otherwise -> a"
+  , "rankOf :: Color -> Int"
+  , "rankOf = case _ of"
+  , "  Red -> 10"
+  , "  _ -> 20"
   , "rankRed = rank Red"
   , "rankBlue = rank Blue"
   , "secondOfTwo = second (Cons 1 (Cons 2 Nil))"
@@ -115,6 +135,14 @@ source =
   , "layeredOne = layered (Some 1)"
   , "layeredFive = layered (Some 5)"
   , "layeredNone = layered None"
+  , "firstOf = first (Pair 5 6)"
+  , "unwrapped = unwrap (Wrap 7)"
+  , "secondOfPair = secondOf (Pair 1 8)"
+  , "splitZero = split (Pair 0 9)"
+  , "splitOne = split (Pair 1 9)"
+  , "rankOfRed = rankOf Red"
+  , "rankOfBlue = rankOf Blue"
+  , "lambda = (\\(Pair a b) -> b) (Pair 3 4)"
   ]
 
 -- | `Main` compiled, loaded, and each of its globals named rendered.
@@ -185,6 +213,19 @@ spec = describe "Steam, a `case` compiled from source" do
         , Tuple "layeredOne" "1"
         , Tuple "layeredFive" "2"
         , Tuple "layeredNone" "2"
+        ]
+
+  it "matches a pattern a parameter, a `let`, or a guard block's binding is written as, and a `case _ of` applied" do
+    running [ "firstOf", "unwrapped", "secondOfPair", "splitZero", "splitOne", "rankOfRed", "rankOfBlue", "lambda" ] \values ->
+      values `shouldEqual` Map.fromFoldable
+        [ Tuple "firstOf" "5"
+        , Tuple "unwrapped" "7"
+        , Tuple "secondOfPair" "8"
+        , Tuple "splitZero" "9"
+        , Tuple "splitOne" "1"
+        , Tuple "rankOfRed" "10"
+        , Tuple "rankOfBlue" "20"
+        , Tuple "lambda" "4"
         ]
 
   it "takes the alternative its value matches, through an or-pattern, a nested constructor, a join point, and a literal" do
