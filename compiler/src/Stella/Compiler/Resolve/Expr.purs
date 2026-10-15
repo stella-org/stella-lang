@@ -25,13 +25,17 @@
 -- | scope its clauses name.
 -- |
 -- | **`resume` stands applied, in the immediate body of a `full` clause**: not
--- | inside a lambda, a local function, or a handling expression there, each of
--- | which could keep it beyond the clause
+-- | inside a lambda, a local function, a `case _ of`, or a handling expression
+-- | there, each of which could keep it beyond the clause
 -- | ([Effect Handlers](../../../../docs/technical-references/02-Surface-Language/02-Effect-Handlers.md)).
 -- |
+-- | **`case _ of` is a function**: each anonymous scrutinee, from the left, is a
+-- | parameter of a λ around the `case`, named apart from every name source can
+-- | write.
+-- |
 -- | The forms whose resolution belongs to a later part are reported as not
--- | supported yet: the anonymous argument `_` and the sections and `case _ of`
--- | it makes, and a macro call.
+-- | supported yet: the anonymous argument `_` elsewhere, and the sections it
+-- | makes, and a macro call.
 module Stella.Compiler.Resolve.Expr
   ( resolveExpr
   , resolveLet
@@ -63,11 +67,11 @@ import Stella.Compiler.Resolve.Label (reportLabelsTwice)
 import Stella.Compiler.Interface.Environment (reachable)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Resolve.Quotation (quotation)
-import Stella.Compiler.Resolve.Monad (Cell(..), CellClosure(..), Found(..), HandledEffectProblem(..), Resolve, SynonymBody(..), ResolveReason(..), ResumeBlock(..), ResumeState(..), TypeReference(..), ValueKind(..), ValueReference(..), blockResume, context, lookupCell, lookupOperator, lookupType, lookupValue, lookupValueReference, openedBy, operationOf, operationsOf, report, resumeState, speculatively, synonymBody, valueKind, withCells, withCellsClosed, withOpened, withResume, withTypeVariables, withValues)
+import Stella.Compiler.Resolve.Monad (Cell(..), CellClosure(..), Found(..), HandledEffectProblem(..), Resolve, SynonymBody(..), ResolveReason(..), ResumeBlock(..), ResumeState(..), TypeReference(..), ValueKind(..), ValueReference(..), blockResume, context, freshBinding, lookupCell, lookupOperator, lookupType, lookupValue, lookupValueReference, openedBy, operationOf, operationsOf, report, resumeState, speculatively, synonymBody, valueKind, withCells, withCellsClosed, withOpened, withResume, withTypeVariables, withValues)
 import Stella.Compiler.Resolve.Type (handlerScope, resolveHandlerSignature, resolveSignature, resolveType, signatureScope)
 import Stella.Compiler.Surface.Decl (Associativity(..))
-import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder, CellDeclaration, ClauseForm(..), Expr(..), Group, GuardLine(..), HandlerBody, HandlerItem(..), LetBinding(..), OperationClause, RecordField(..), exprOrigin)
-import Stella.Compiler.Surface.Name (CellVar)
+import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder(..), CellDeclaration, ClauseForm(..), Expr(..), Group, GuardLine(..), HandlerBody, HandlerItem(..), LetBinding(..), OperationClause, RecordField(..), exprOrigin)
+import Stella.Compiler.Surface.Name (BindingId(..), CellVar, LocalVar(..))
 import Stella.Compiler.Surface.Origin (Origin, originOf, spanning)
 import Stella.Compiler.Surface.Type (EffectRowItem(..), HandlerSignature(..), Signature, Type(..))
 import Stella.Compiler.TypedCore.Domain (scalarString, scalarValue)
@@ -115,8 +119,14 @@ resolveExpr e = case e of
     ExprLambda o r.binders <$> withValues r.bound (resolveExpr body)
   CST.ExprLet items body -> resolveLet o items (resolveExpr body)
   CST.ExprCase scrutinees alternatives -> do
-    scrutinees' <- traverse scrutinee scrutinees
-    ExprCase o scrutinees' <$> traverse (alternative (Array.length scrutinees)) alternatives
+    anonymous <- traverse anonymousScrutinee scrutinees
+    let
+      params = Array.catMaybes anonymous
+      matching = do
+        scrutinees' <- traverse (\(Tuple s a) -> maybe (resolveExpr s) (\p -> pure (ExprLocal p.origin p.var)) a) (Array.zip scrutinees anonymous)
+        ExprCase o scrutinees' <$> traverse (alternative (Array.length scrutinees)) alternatives
+    if Array.null params then matching
+    else blockResume InsideAnonymousCase (ExprLambda o (map (\p -> BinderVar p.origin p.var) params) <$> matching)
   CST.ExprHandle inner items -> blockResume InsideHandling (handling items inner)
   CST.ExprUsing items inner -> blockResume InsideHandling (handling items inner)
   CST.ExprLocalOpen alias inner -> open alias inner
@@ -150,9 +160,13 @@ resolveExpr e = case e of
     NotFound -> invalid (UnknownConstructor (written n))
     Ambiguous -> invalid (AmbiguousValue (written n))
 
-  scrutinee = case _ of
-    CST.ExprSection r -> report r (NotYetSupported "`case _ of`") $> ExprInvalid (originOf r)
-    s -> resolveExpr s
+  -- an anonymous scrutinee, parenthesized or not, is a parameter of a λ
+  -- around the `case`, named apart from every name source can write
+  anonymousScrutinee s = case unparenthesized s of
+    CST.ExprSection r -> do
+      id@(BindingId n) <- freshBinding
+      pure (Just { origin: originOf r, var: LocalVar { id, name: Ident ("case#" <> show n) } })
+    _ -> pure Nothing
 
   handling items inner = do
     source <- foldM handlingItem { cells: [], items: [] } items

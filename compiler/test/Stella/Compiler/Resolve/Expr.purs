@@ -501,10 +501,22 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
       handles [ "type S = {| E |}", "handler h :: S ~> () where", "  | return r -> r" ] "?{return r#0 -> r#0}" [ SynonymAtCapability "S" ]
       handles [ "type S = {| E |}", "handler h :: E ~> ( S ) where", "  | return r -> r" ] "A.E{return r#0 -> r#0}" [ SynonymAtCapability "S" ]
 
+  describe "`case _ of`" do
+    it "is a λ around the `case`, a parameter for each anonymous scrutinee from the left" do
+      shows [ "f y = case _, y, _ of", "  _, _, _ -> 1" ] "(\\case#1#1 case#2#2 -> (case case#1#1, y#0, case#2#2 of _, _, _ -> 1))" []
+
+    it "has an anonymous scrutinee parenthesized as one standing bare" do
+      shows [ "f = case (_), ((_)) of", "  _, _ -> 1" ] "(\\case#0#0 case#1#1 -> (case case#0#0, case#1#1 of _, _ -> 1))" []
+
+    it "reports `resume` inside it within a clause" do
+      shows [ "f = handle x with", "  E | get _ -> case _ of", "    _ -> resume 1" ]
+        "(handle A.x with A.E{full A.get _ -> (\\case#0#0 -> (case case#0#0 of _ -> (! 1)))})"
+        [ ResumeMisplaced InsideAnonymousCase ]
+
   describe "what is not supported yet" do
     it "is reported where it stands" do
-      shows [ "f = (_ + 1, m%(1), case _ of", "  _ -> 1)" ] "(<A.plus ! 1>, !, (case ! of _ -> 1))"
-        [ NotYetSupported "The anonymous argument `_`", NotYetSupported "A macro call", NotYetSupported "`case _ of`" ]
+      shows [ "f = (_ + 1, m%(1))" ] "(<A.plus ! 1>, !)"
+        [ NotYetSupported "The anonymous argument `_`", NotYetSupported "A macro call" ]
 
 renderVar :: LocalVar -> String
 renderVar (LocalVar v) = case v.name, v.id of

@@ -1268,6 +1268,16 @@ A `case` compiled into a decision tree by the surface elaborator ([Elaboration](
 | A guard block that may fail, of an alternative no leaf takes | Kept and checked, its fall-through point jumping to itself. Compiling a match for that point leaves an uncovered place no report names |
 | Lines after `otherwise` that can pass their end | Kept and checked, their type errors and holes reported, their fall-through point jumping to itself. Dropping them loses what they hold |
 | A binding whose right-hand side performs, or a guard whose condition does | Its row in the row ambient where the `case` stands, so a signature writing none is not met |
+| `pick (Tuple a _) n (Tuple _ d) = d` | One `case` of the two named variables inside the last `λ`, its row `Tuple a _, Tuple _ d`. A `case` per parameter between the `λ`s makes the spine no value form |
+| `f :: Tuple Int Int -> (forall a. a -> a); f (Tuple x _) y = y` | `λp. Λa. λy. case p of …`. Matching before the `Λ` puts a `case` where Core asks for a value form |
+| A tree of a pattern a binding is written as that leaves a value uncovered or takes its body at other than one leaf | A defect of the host. Name resolution admits no pattern there that can fail |
+| `let Tuple a b = e in a` | `case e of Tuple a b -> a`, `e` evaluated where the block stands |
+| `let () = told u in 1`, `told` performing | Kept as a node, `told u` evaluated once and its row in the ambient row. Dropping a node that binds no variable drops what its right-hand side performs |
+| `x = a; y = b; Tuple a b = e` in one block | One node for the pattern, which `x` and `y` both depend on, the `case` around both `let`s |
+| `let Tuple a b = Tuple n a in b`, or a pattern a group refers to through another binding | Outside the subset where the pattern stands, the whole group refused. Binding some of its variables apart from the others splits the match |
+| `case _, y, _ of …`, and `case (_) of …` | `\a b -> case a, y, b of …`, a parameter for each anonymous scrutinee from the left, `y` read when the function is applied. Parentheses around `_` change nothing |
+| `resume` inside `case _ of` within a `full` clause | Reported as standing inside a `case _ of`. Naming a lambda names one the author did not write |
+| An expression hole, or a value not matched, inside `case _ of` | Reported naming no variable the compiler made |
 
 ### Binding groups and generalization (step 7)
 

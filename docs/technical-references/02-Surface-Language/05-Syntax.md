@@ -46,7 +46,7 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | any type as a handler declaration's signature | one in full whose thunk's row and result's row, each written `{| … |}` or named by a type synonym without parameters, do not differ by exactly one unlabelled effect ([Effect Handlers](02-Effect-Handlers.md)) |
 | any row item in any bracket | an item the bracket does not admit; an element of an effect row that is no effect applied to its arguments, a type synonym standing for a row among them ([Surface AST](08-Surface-AST.md)) |
 | any chain of operators | two operators of one precedence that cannot be chained |
-| `resume` anywhere | `resume` outside the immediate body of a `full` clause, a lambda, a local function, or a handling expression inside the body included; `resume` other than applied, `resume e` |
+| `resume` anywhere | `resume` outside the immediate body of a `full` clause, a lambda, a local function, a `case _ of`, or a handling expression inside the body included; `resume` other than applied, `resume e` |
 | any patterns after a clause's operation | other than one per argument of the operation, followed for a `reifiable full` clause by the continuation it keeps; a refutable one |
 | any name after a clause's `\|` | one naming no operation of the effect handled; in a group headed by a label, operations of several effects, or none |
 | any number of clauses for one operation | a second clause for one operation, a second `return` clause; no clause for an operation of the effect handled, which the Core type checker rejects |

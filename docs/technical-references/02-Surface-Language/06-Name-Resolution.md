@@ -207,6 +207,8 @@ g xs = A.( length xs )           -- length is A.length
 
 **A `let` block and a `where` are recursive.** Everything the block binds — the names its definitions bind and the variables of its pattern bindings — is in scope in every right-hand side and in the body, as in Haskell and PureScript. **Initializing a block requires no reference to what it is initializing.** `fibAnd = Tuple "fib" \n -> … snd fibAnd …` is admitted: the recursive function is stored in the tuple, and reads `fibAnd` only when it is applied, after the block is initialized. `x = Tuple 1 x` is not, reading `x` while building it. Standing inside a lambda is not enough on its own, a lambda applied at once, `x = (\_ -> x) ()`, reading the reference during initialization all the same. A block is judged, conservatively and decidably, where it is elaborated, as a top-level group is ([Elaboration](01-Elaboration.md#a-value-declarations-body)).
 
+**`case _ of` is a function of its anonymous scrutinees.** Each `_` written as a scrutinee, parenthesized or not, is a parameter of a `λ` around the `case`, from the left, bound under a name no source can write ([Generated bindings shadow nothing](#generated-bindings-shadow-nothing)); the scrutinees written beside it and the alternatives are resolved inside that `λ`, so `resume` does not stand there, as it does not inside any lambda ([Effect Handlers](02-Effect-Handlers.md)). An expression `_` anywhere outside a `case`'s scrutinees, one making a section among them, is not supported yet.
+
 **A local signature's type variables are in scope in its definition**, as a top-level signature's are ([Type variables](#type-variables)).
 
 ## Type variables

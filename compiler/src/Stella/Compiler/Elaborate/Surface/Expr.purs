@@ -39,12 +39,13 @@
 -- | instantiated**, under a constraint application.
 -- |
 -- | **This version elaborates a subset**: variables, globals, computations,
--- | constructors, literals, application, λ over variables, type annotations,
--- | a wildcard or a typed hole among what they write, expression holes,
--- | `let` blocks and `where`s binding variables and `_`, with a signature or
--- | without, and `case` over variables, `_`, as-patterns, constructors,
--- | literals, or-patterns, and annotated patterns, a guard block binding
--- | variables and `_`. A synthesized argument of the declaration's own is a parameter like any other; a
+-- | constructors, literals, application, λ, type annotations, a wildcard or a
+-- | typed hole among what they write, expression holes, `let` blocks and
+-- | `where`s, with a signature or without, and `case` with guard blocks; the
+-- | patterns are variables, `_`, as-patterns, constructors, literals,
+-- | or-patterns, and annotated patterns, and those a parameter, a binding of a
+-- | block, or a guard block's binding is written as always match; a recursive
+-- | group binds variables alone. A synthesized argument of the declaration's own is a parameter like any other; a
 -- | reference to a value taking one is outside the subset, a goal being what
 -- | supplies the argument. Anything else is reported where it stands, and the
 -- | declaration holding it is not elaborated further.
@@ -68,8 +69,8 @@ import Prelude
 import Prim hiding (Type)
 
 import Data.Array as Array
-import Data.Either (Either(..))
-import Data.Foldable (foldMap, foldl, foldr)
+import Data.Either (Either(..), either)
+import Data.Foldable (foldMap, foldl, foldr, for_)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Set (Set)
@@ -171,7 +172,7 @@ noteSignature e = Surf (pure (Right { value: unit, holes: e.holes, wildcards: e.
 hole :: Scope -> Surface.Origin -> String -> XType -> Surf (XExpr Surface.Origin)
 hole scope origin name ty = Surf (pure (Right { value: EHole origin ty, holes: [], wildcards: [], unwritten: [], expressionHoles: [ { origin, name, type: ty, context } ], uncovered: [] }))
   where
-  -- a name with `#` is one the elaborator made
+  -- a name with `#` is one the compiler made
   context = Array.mapMaybe
     (\(Tuple x@(Ident n) t) -> if String.contains (Pattern "#") n then Nothing else Just { name: x, type: t })
     (Map.toUnfoldable scope.context.vars)
@@ -300,26 +301,41 @@ boundary scope origin expected inside = do
 -- | once every variable is bound is the body's to meet. A `λ` at an arrow that
 -- | is written is a checking boundary at the arrow's row. What a `Λ` or a
 -- | constraint abstraction encloses is built at `()`, as a value form.
+-- |
+-- | **A parameter written as a pattern is a variable the compiler names**, the
+-- | pattern checked against the arrow's argument, and the patterns of every
+-- | such parameter are matched as one row, from the left, around the body,
+-- | inside every abstraction the spine opens.
 abstractions :: Surface.Origin -> Boolean -> Boolean -> Expected -> Scope -> Array Parameter -> Expr -> XType -> Surf (XExpr Surface.Origin)
-abstractions origin front quantified expected scope params body ty = case ty, Array.uncons params of
-  XForall a k rest, _ | opening -> ETyLam origin a k <$> abstractions origin front true expected (scope { context = bindTyVar scope.context a k, ambient = XRowEmpty }) params body rest
-  XConstrained c rest, _ | opening -> do
-    context <- lift (assume (siteAt scope origin) c)
-    EConstraintLam origin c <$> abstractions origin front true expected (scope { context = context, ambient = XRowEmpty }) params body rest
-  _, Nothing
-    | quantified -> quantifiedBody scope body expected ty
-    | otherwise -> check scope body expected ty
-  _, Just { head, tail } -> do
-    let at = parameterOrigin head
-    parts <- arrow scope at ty
-    let bound o name = lambdaAt scope o expected name parts \s -> abstractions origin false false expected s tail body parts.result
-    case head of
-      Named (BinderVar o (LocalVar v)) -> bound o v.name
-      Named (BinderInvalid o) -> outside (ReportedAlready o)
-      Named other -> outside (OutsideSubset (binderOrigin other) "a pattern that is no variable")
-      Thunk -> bound at =<< lift (freshIdent (Map.keys scope.context.vars) "u")
+abstractions origin = opened []
   where
-  opening = front || not (Array.null params)
+  opened matched front quantified expected scope params body ty = case ty, Array.uncons params of
+    XForall a k rest, _ | opening -> ETyLam origin a k <$> opened matched front true expected (scope { context = bindTyVar scope.context a k, ambient = XRowEmpty }) params body rest
+    XConstrained c rest, _ | opening -> do
+      context <- lift (assume (siteAt scope origin) c)
+      EConstraintLam origin c <$> opened matched front true expected (scope { context = context, ambient = XRowEmpty }) params body rest
+    _, Nothing -> do
+      matching <- parametersMatched scope origin matched
+      matching.wrap <$>
+        if quantified then quantifiedBody matching.scope body expected ty
+        else check matching.scope body expected ty
+    _, Just { head, tail } -> do
+      let at = parameterOrigin head
+      parts <- arrow scope at ty
+      let
+        bound o name more = lambdaAt scope o expected name parts \s -> more s >>= \m -> opened m false false expected s tail body parts.result
+        plain o name = bound o name \_ -> pure matched
+      case head of
+        Named (BinderVar o (LocalVar v)) -> plain o v.name
+        Named (BinderWildcard o) -> plain o =<< unnamed "_"
+        Named (BinderInvalid o) -> outside (ReportedAlready o)
+        Named b -> do
+          name <- unnamed "p"
+          bound at name \s -> Array.snoc matched <<< { name, typed: _ } <$> pattern s b parts.argument
+        Thunk -> plain at =<< unnamed "u"
+    where
+    opening = front || not (Array.null params)
+    unnamed hint = lift (freshIdent (Map.keys scope.context.vars) hint)
   parameterOrigin = case _ of
     Named b -> binderOrigin b
     Thunk -> origin
@@ -469,14 +485,24 @@ mentioned leaf = go
 -- | which is elaborated under the empty row, as Core checks it: a member that
 -- | is no function is initialized as the group is entered, and what it reads
 -- | too early is judged once the declaration is settled.
+-- |
+-- | **A pattern is one node**, whichever of its variables is referred to, one
+-- | binding none among them: checked against a type metavariable its
+-- | right-hand side's type is equated with, and matched against that side's
+-- | value where the block stands. No recursive group binds a pattern.
 letBlock :: Scope -> Surface.Origin -> Array LetBinding -> Surf { scope :: Scope, wrap :: XExpr Surface.Origin -> XExpr Surface.Origin }
 letBlock scope origin bindings = do
   heads <- traverse head bindings
   let
-    inner = scope { context = foldl (\c h -> bindVar c h.name h.type) scope.context heads }
-    indexOf = Map.fromFoldable (Array.catMaybes (Array.mapWithIndex (\i h -> map (\v -> Tuple v i) h.binding) heads))
+    inner = scope { context = foldl (\c h -> foldl (\c' v -> bindVar c' v.name v.type) c h.vars) scope.context heads }
+    indexOf = Map.fromFoldable (Array.concat (Array.mapWithIndex (\i h -> map (\v -> Tuple v i) h.bindings) heads))
     refers = map (\h -> Set.fromFoldable (Array.mapMaybe (\v -> Map.lookup v indexOf) (Array.fromFoldable (localReferences h.body)))) heads
     grouped = groups refers
+  -- a pattern is bound by no recursive group, which would bind some of its
+  -- variables before the others
+  for_ grouped \g -> when g.recursive do
+    for_ (Array.findMap (either Just (const Nothing) <<< _.bound) (Array.mapMaybe (Array.index heads) g.members)) \p ->
+      outside (OutsideSubset p.at "a pattern a recursive group binds")
   -- each right-hand side in the order its group stands, what it refers to
   -- elaborated before it
   built <- traverse (\g -> traverse (rhs (if g.recursive then inner { ambient = XRowEmpty } else inner)) (Array.mapMaybe (Array.index heads) g.members)) grouped
@@ -495,35 +521,57 @@ letBlock scope origin bindings = do
           | not (Array.null e.synthesized) -> outside (OutsideSubset v.origin "a local signature taking a synthesized argument")
           | otherwise -> do
               noteSignature e
-              pure { origin: v.origin, binding: Just l.id, name: l.name, params: v.params, body: v.body, type: e.type, signed: true }
-    LetValue v -> let LocalVar l = v.var in fresh v.origin (Just l.id) l.name v.params v.body
+              pure { origin: v.origin, bindings: [ l.id ], bound: Right l.name, vars: [ { name: l.name, type: e.type } ], params: v.params, body: v.body, type: e.type, signed: true }
+    LetValue v -> let LocalVar l = v.var in named v.origin [ l.id ] l.name v.params v.body
     LetPattern p -> case p.binder of
-      BinderVar _ (LocalVar l) -> fresh p.origin (Just l.id) l.name [] p.body
+      BinderVar _ (LocalVar l) -> named p.origin [ l.id ] l.name [] p.body
       BinderWildcard _ -> do
         name <- lift (freshIdent (Map.keys scope.context.vars) "_")
-        fresh p.origin Nothing name [] p.body
+        named p.origin [] name [] p.body
       BinderInvalid o -> outside (ReportedAlready o)
-      other -> outside (OutsideSubset (binderOrigin other) "a pattern that is no variable")
+      -- a pattern checked against the type of the value it matches, its
+      -- variables at the types it gives them
+      b -> do
+        ty <- lift (freshTypeMeta scope.context XKType)
+        typed <- pattern scope b ty
+        pure
+          { origin: p.origin
+          , bindings: map (\(LocalVar l) -> l.id) (binderVars b)
+          , vars: typed.vars
+          , bound: Left { at: binderOrigin b, pattern: typed.pattern }
+          , params: []
+          , body: p.body
+          , type: ty
+          , signed: false
+          }
 
-  fresh o binding name params body = do
+  named o ids name params body = do
     ty <- lift (freshTypeMeta scope.context XKType)
-    pure { origin: o, binding, name, params, body, type: ty, signed: false }
+    pure { origin: o, bindings: ids, bound: Right name, vars: [ { name, type: ty } ], params, body, type: ty, signed: false }
 
   -- a binding with a signature is checked against it, as a definition is,
   -- under the row its group is elaborated under
   rhs inner h | h.signed = do
     expr <- abstractions h.origin true false Written inner (map Named h.params) h.body h.type
-    pure { head: h, expr }
+    { head: h, expr, bound: _ } <$> matcher inner h
   rhs inner h = do
     inferred <- case h.params of
       [] -> infer inner h.body
       params -> infer inner (ExprLambda h.origin params h.body)
     lift (equate (siteAt inner h.origin) { kind: XKType, left: inferred.type, right: h.type })
-    pure { head: h, expr: inferred.expr }
+    { head: h, expr: inferred.expr, bound: _ } <$> matcher inner h
 
+  matcher inner h = case h.bound of
+    Left p -> Left <$> irrefutable inner h.origin [ p.pattern ]
+    Right name -> pure (Right name)
+
+  -- a pattern matches its right-hand side's value around what follows, and a
+  -- recursive group binds names alone
   wrapping g members' = case g.recursive, members' of
-    false, [ b ] -> \e -> ELet b.head.origin b.head.name b.head.type b.expr e
-    _, members -> \e -> ELetRec (maybe origin _.head.origin (Array.head members)) (map (\b -> { name: b.head.name, ty: b.head.type, value: b.expr }) members) e
+    false, [ b ] -> case b.bound of
+      Left match -> \e -> match [ b.expr ] e
+      Right name -> \e -> ELet b.head.origin name b.head.type b.expr e
+    _, members -> \e -> ELetRec (maybe origin _.head.origin (Array.head members)) (Array.mapMaybe (\b -> either (const Nothing) (\name -> Just { name, ty: b.head.type, value: b.expr }) b.bound) members) e
 
 -- | The argument, the row, and the result of the arrow the type must be: its
 -- | own where it is one, and otherwise an arrow of fresh metavariables it is
@@ -627,19 +675,30 @@ infer scope expr = case expr of
     { expr: _, type: ty } <$> caseOf scope o scrutinees alternatives Derived ty
   _ -> outside (OutsideSubset (exprOrigin expr) "this form")
   where
-  lambda binders body = case Array.uncons binders of
-    Nothing -> infer scope body
-    Just { head: BinderVar o (LocalVar v), tail } -> do
-      argument <- lift (freshTypeMeta scope.context XKType)
-      row <- lift (freshTypeMeta scope.context (XKRow RowEffect))
-      inner <- infer' (scope { context = bindVar scope.context v.name argument, ambient = row }) tail body
-      pure { expr: ELam o v.name argument inner.expr, type: xFunction argument row inner.type }
+  -- each parameter written as a pattern a variable the compiler names, the
+  -- patterns matched as one row around the body
+  lambda = parameters scope []
+  parameters s matched binders body = case Array.uncons binders of
+    Nothing -> do
+      matching <- parametersMatched s (exprOrigin expr) matched
+      inner <- infer matching.scope body
+      pure inner { expr = matching.wrap inner.expr }
     Just { head: BinderInvalid o } -> outside (ReportedAlready o)
-    Just { head } -> outside (OutsideSubset (binderOrigin head) "a pattern that is no variable")
-
-  infer' s binders body = case binders of
-    [] -> infer s body
-    _ -> infer s (ExprLambda (exprOrigin body) binders body)
+    Just { head, tail } -> do
+      argument <- lift (freshTypeMeta s.context XKType)
+      row <- lift (freshTypeMeta s.context (XKRow RowEffect))
+      let o = binderOrigin head
+      name <- case head of
+        BinderVar _ (LocalVar v) -> pure v.name
+        BinderWildcard _ -> lift (freshIdent (Map.keys s.context.vars) "_")
+        _ -> lift (freshIdent (Map.keys s.context.vars) "p")
+      let s' = s { context = bindVar s.context name argument, ambient = row }
+      matched' <- case head of
+        BinderVar _ _ -> pure matched
+        BinderWildcard _ -> pure matched
+        _ -> Array.snoc matched <<< { name, typed: _ } <$> pattern s' head argument
+      inner <- parameters s' matched' tail body
+      pure { expr: ELam o name argument inner.expr, type: xFunction argument row inner.type }
 
   -- a global at a fresh metavariable for each kind variable and each
   -- quantifier of its scheme, outermost first, a row quantifier's an
@@ -719,9 +778,8 @@ caseOf :: Scope -> Surface.Origin -> Array Expr -> Array Alternative -> Expected
 caseOf scope origin scrutinees alternatives expected result = do
   inferred <- traverse (infer scope) scrutinees
   typed <- traverse (alternative (map _.type inferred)) (Array.mapWithIndex Tuple alternatives)
-  env <- lift askEnv
+  table <- constructorTable
   let
-    table = map (\c -> { owner: c.owner, tag: c.tag, arity: Array.length c.fields }) env.session.constructors
     rows = Array.concatMap _.rows typed
     width = Array.length scrutinees
   compiled <- matched (Match.compile table width rows)
@@ -766,7 +824,7 @@ caseOf scope origin scrutinees alternatives expected result = do
       choice written = case Array.head written, Array.last written of
         Just first, Just last | several -> Just (Surface.spanning (binderOrigin first) (binderOrigin last))
         _, _ -> Nothing
-      inner = scope { context = foldl (\c v -> bindVar c v.name v.type) scope.context vars }
+      inner = withVars scope vars
       rowsOf fallible = Array.zipWith (\written typedRow -> { alternative: index, choice: choice written, patterns: map _.pattern typedRow, fallible }) alt.patterns rows
     case alt.body of
       Unconditional body -> do
@@ -786,14 +844,22 @@ caseOf scope origin scrutinees alternatives expected result = do
       Nothing -> malformed
     Just { head: line, tail } -> case line of
       GuardBinding o b e -> do
-        name <- case b of
-          BinderVar _ (LocalVar v) -> pure v.name
-          BinderWildcard _ -> lift (freshIdent (Map.keys inner.context.vars) "_")
+        let
+          named name = do
+            value <- infer inner e
+            rest <- block (inner { context = bindVar inner.context name value.type }) tail fall
+            pure (ELet o name value.type value.expr rest)
+        case b of
+          BinderVar _ (LocalVar v) -> named v.name
+          BinderWildcard _ -> named =<< lift (freshIdent (Map.keys inner.context.vars) "_")
           BinderInvalid at -> outside (ReportedAlready at)
-          other -> outside (OutsideSubset (binderOrigin other) "a pattern that is no variable")
-        value <- infer inner e
-        rest <- block (inner { context = bindVar inner.context name value.type }) tail fall
-        pure (ELet o name value.type value.expr rest)
+          -- a pattern matches the value around the lines after it
+          _ -> do
+            value <- infer inner e
+            typed <- pattern inner b value.type
+            match <- irrefutable inner o [ typed.pattern ]
+            rest <- block (withVars inner typed.vars) tail fall
+            pure (match [ value.expr ] rest)
       GuardWhen o condition body
         | Array.null tail && total line -> check inner body expected result
         | otherwise -> do
@@ -913,6 +979,71 @@ pattern scope binder ty = case binder of
         parts <- arrow scope o t
         rest <- fieldsOf o (n - 1) parts.result
         pure (rest { arguments = Array.cons parts.argument rest.arguments })
+
+-- | Patterns that always match, compiled as the one row of a match: what
+-- | matches the values given against them around the body given, binding the
+-- | variables they bind. Name resolution admits none here that can fail, so
+-- | the tree leaves no value uncovered and takes the body at one leaf.
+irrefutable :: Scope -> Surface.Origin -> Array (Match.Pattern Surface.Origin) -> Surf (Array (XExpr Surface.Origin) -> XExpr Surface.Origin -> XExpr Surface.Origin)
+irrefutable scope origin patterns = do
+  table <- constructorTable
+  case Match.compile table (Array.length patterns) [ { alternative: 0, choice: Nothing, patterns, fallible: false } ] of
+    Right compiled
+      | Map.lookup 0 compiled.references == Just 1
+      , Just tree <- planted compiled.plan -> pure \values body -> ECase origin values (tree body)
+    _ -> lift (break (MatchMalformed (AtSource { declaration: scope.declaration, origin })))
+  where
+  planted = case _ of
+    Match.Leaf _ bindings -> Just \body -> foldr (\b t -> XBind b.name b.occurrence t) (XLeaf body) bindings
+    Match.Uncovered -> Nothing
+    Match.SwitchCtor o branches fallback -> do
+      branches' <- traverse (\b -> { ctor: b.ctor, tree: _ } <$> planted b.plan) branches
+      fallback' <- traverse planted fallback
+      pure \body -> XSwitchCtor o (map (\b -> { ctor: b.ctor, tree: b.tree body }) branches') (map (_ $ body) fallback')
+    Match.SwitchLit o branches fallback -> do
+      branches' <- traverse (\b -> { lit: b.lit, tree: _ } <$> planted b.plan) branches
+      fallback' <- planted fallback
+      pure \body -> XSwitchLit o (map (\b -> { lit: b.lit, tree: b.tree body }) branches') (fallback' body)
+
+-- | The parameters written as patterns, each a variable the compiler named,
+-- | matched as one row: the scope the variables they bind are in, and what
+-- | matches them around a body.
+parametersMatched
+  :: Scope
+  -> Surface.Origin
+  -> Array { name :: Ident, typed :: { pattern :: Match.Pattern Surface.Origin, vars :: Array { name :: Ident, type :: XType } } }
+  -> Surf { scope :: Scope, wrap :: XExpr Surface.Origin -> XExpr Surface.Origin }
+parametersMatched scope origin matched
+  | Array.null matched = pure { scope, wrap: identity }
+  | otherwise = do
+      match <- irrefutable scope origin (map _.typed.pattern matched)
+      pure
+        { scope: withVars scope (Array.concatMap _.typed.vars matched)
+        , wrap: match (map (\m -> EVar origin m.name) matched)
+        }
+
+-- | The scope given with the variables given bound, in order.
+withVars :: Scope -> Array { name :: Ident, type :: XType } -> Scope
+withVars scope vars = scope { context = foldl (\c v -> bindVar c v.name v.type) scope.context vars }
+
+-- | Every constructor the session knows, as the compiler of matches reads it.
+constructorTable :: Surf Match.Constructors
+constructorTable = lift askEnv <#> \env -> map (\c -> { owner: c.owner, tag: c.tag, arity: Array.length c.fields }) env.session.constructors
+
+-- | The variables a pattern binds, in the order written.
+binderVars :: Binder -> Array LocalVar
+binderVars = case _ of
+  BinderVar _ v -> [ v ]
+  BinderAs _ v inner -> Array.cons v (binderVars inner)
+  BinderConstructor _ _ args -> Array.concatMap binderVars args
+  BinderTag _ _ payload -> foldMap binderVars payload
+  BinderTuple _ parts -> Array.concatMap binderVars parts
+  BinderRecord _ fields rest -> Array.concatMap (binderVars <<< _.binder) fields <> foldMap (Array.fromFoldable <<< _.var) rest
+  BinderOr _ _ -> []
+  BinderTyped _ inner _ -> binderVars inner
+  BinderWildcard _ -> []
+  BinderLiteral _ _ -> []
+  BinderInvalid _ -> []
 
 binderOrigin :: Binder -> Surface.Origin
 binderOrigin = case _ of

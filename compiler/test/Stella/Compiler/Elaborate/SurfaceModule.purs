@@ -724,9 +724,126 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (prelude <> effects <> [ "h :: Int -> Int", "h n = case n of", "  m where", "      asks () -> 1", "      otherwise -> m" ]) \r ->
         map at r.errors `shouldEqual` [ "16:3 outside: implicit-handler resolution at this checking boundary", "12:1 left unchecked", "14:1 left unchecked" ]
 
-    it "binds a variable or `_` in this version, and reports any other pattern bound as outside it" do
-      elaborating (prelude <> [ "f :: Int -> Int", "f n = case n of", "  m where", "      _ = isZero m", "      Tuple a b = Tuple m m", "      otherwise -> a" ]) \r ->
-        map at r.errors `shouldEqual` [ "13:7 outside: a pattern that is no variable" ]
+    it "binds a pattern over the lines after it, matching the value it is bound to" do
+      elaborating (prelude <> [ "f :: Int -> Int", "f n = case n of", "  m where", "      _ = isZero m", "      Tuple a b = Tuple m 1", "      otherwise -> b" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ (Case _ _ (Bind _ _ (Leaf (Let _ _ _ _ (Case _ [ _ ] (SwitchCtor _ [ { tree: Bind (Ident "a") _ (Bind (Ident "b") _ (Leaf (Var _ (Ident "b")))) } ] Nothing))))))) -> pure unit
+          other -> fail ("not matched: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec isZero", "nonrec f" ]
+      elaborating (prelude <> [ "f :: Int -> Int", "f n = case n of", "  m where", "      Tuple a b = Tuple m true", "      otherwise -> b" ]) \r ->
+        map at r.errors `shouldEqual` [ "13:20 rejected" ]
+
+  describe "a pattern a parameter is written as" do
+    let
+      schemeOf name values = map (\v -> printType (fromCore v.scheme.body)) (Array.find (\x -> x.name == inM name) values)
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+    it "is matched inside the last λ, the patterns of several parameters as one row from the left, and the Core checker accepts it" do
+      elaborating [ "pick :: Tuple Int Int -> Int -> Tuple Int Int -> Int", "pick (Tuple a _) n (Tuple _ d) = d" ] \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "pick" r.values of
+          Just (Lam _ p _ (Lam _ (Ident "n") _ (Lam _ q _ (Case _ [ Var _ p', Var _ q' ] _)))) | p == p' && q == q' && p /= q -> pure unit
+          other -> fail ("not one row: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec pick" ]
+      elaborating [ "first :: Tuple Int Int -> Int", "first = \\(Tuple a _) -> a" ] \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec first" ]
+
+    it "is matched inside the abstractions a quantifier after it opens" do
+      elaborating [ "f :: Tuple Int Int -> (forall a. a -> a)", "f (Tuple x _) y = y" ] \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ p _ (TyLam _ _ _ (Lam _ (Ident "y") _ (Case _ [ Var _ p' ] (SwitchCtor _ [ { tree: Bind (Ident "x") _ (Leaf (Var _ (Ident "y"))) } ] Nothing))))) | p == p' -> pure unit
+          other -> fail ("not inside: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "is inferred where nothing gives its type, a `_` parameter among them" do
+      elaborating [ "first (Tuple a _) = a", "second = \\(Tuple _ b) -> b", "always _ = 0" ] \r -> do
+        map at r.errors `shouldEqual` []
+        map (\name -> schemeOf name r.values) [ "first", "second", "always" ] `shouldEqual` map Just [ "forall a. forall b. Tuple a b -> a", "forall a. forall b. Tuple a b -> b", "forall a. a -> Int" ]
+        checked r \core -> shapes core `shouldEqual` [ "nonrec first", "nonrec second", "nonrec always" ]
+
+    it "binds the parameters of a local function, with a signature or without" do
+      elaborating [ "f :: Int -> Int", "f n = inc (g (Tuple n (h (Tuple n n))))", "  where", "    g (Tuple a _) = a", "    h :: Tuple Int Int -> Int", "    h (Tuple _ b) = b" ] \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "may be a constructor of a newtype, `()`, an as-pattern, or an annotation" do
+      elaborating
+        [ "newtype Wrap = Wrap Int"
+        , "unwrap (Wrap n) = n"
+        , "unit () = 1"
+        , "whole t@(Tuple a _) = t"
+        , "annotated (n :: Int) = n"
+        ]
+        \r -> do
+          map at r.errors `shouldEqual` []
+          map (\name -> schemeOf name r.values) [ "unwrap", "unit", "whole", "annotated" ] `shouldEqual` map Just [ "Wrap -> Int", "Unit -> Int", "forall a. forall b. Tuple a b -> Tuple a b", "Int -> Int" ]
+          checked r \core -> shapes core `shouldEqual` [ "nonrec unwrap", "nonrec unit", "nonrec whole", "nonrec annotated" ]
+
+    it "of another type than its argument's is reported where it stands" do
+      elaborating [ "f :: Int -> Int", "f (Tuple a _) = a" ] \r ->
+        map at r.errors `shouldEqual` [ "4:4 rejected" ]
+
+  describe "a pattern a `let` or a `where` binds" do
+    let
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+    it "matches its right-hand side's value where the block stands, its variables at the types it gives them" do
+      elaborating [ "f :: Int -> Int", "f n = let Tuple a b = Tuple n true in a" ] \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ (Case _ [ App _ _ _ ] (SwitchCtor _ [ { tree: Bind (Ident "a") _ (Bind (Ident "b") _ (Leaf (Var _ (Ident "a")))) } ] Nothing))) -> pure unit
+          other -> fail ("not matched: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+      elaborating [ "f :: Int -> Int", "f n = let Tuple a b = Tuple n true in b" ] \r ->
+        map at r.errors `shouldEqual` [ "4:39 rejected" ]
+
+    it "is kept where it binds no variable, its right-hand side evaluated once where the block stands" do
+      let effects = [ "effect Ask where", "  ask :: Unit ->* Int", "told :: Unit -> Unit / {| Ask |}", "told u = told u" ]
+      elaborating (effects <> [ "f :: Unit -> Int / {| Ask |}", "f u = let () = told u in 1" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ (Case _ [ App _ (Global _ _ _) (Var _ (Ident "u")) ] (SwitchCtor _ [ { tree: Leaf (Lit _ (LitInt 1)) } ] Nothing))) -> pure unit
+          other -> fail ("not kept: " <> show other)
+      elaborating (effects <> [ "f :: Unit -> Int", "f u = let () = told u in 1" ]) \r ->
+        map at r.errors `shouldEqual` [ "8:3 outside: implicit-handler resolution at this checking boundary", "6:1 left unchecked" ]
+
+    it "is one node, every variable it binds depended on there" do
+      elaborating [ "f :: Int -> Tuple Int Boolean", "f n = Tuple x y", "  where", "    x = a", "    y = b", "    Tuple a b = Tuple n true" ] \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ (Case _ _ (SwitchCtor _ [ { tree: Bind (Ident "a") _ (Bind (Ident "b") _ (Leaf (Let _ (Ident "x") _ (Var _ (Ident "a")) (Let _ (Ident "y") _ (Var _ (Ident "b")) _)))) } ] Nothing))) -> pure unit
+          other -> fail ("not one node: " <> show other)
+
+    it "is bound by no recursive group, which is reported where the pattern stands" do
+      elaborating [ "f :: Int -> Int", "f n = let Tuple a b = Tuple n a in b" ] \r ->
+        map at r.errors `shouldEqual` [ "4:11 outside: a pattern a recursive group binds" ]
+      elaborating [ "f :: Int -> Int", "f n = b", "  where", "    c = b", "    Tuple a b = Tuple n c" ] \r ->
+        map at r.errors `shouldEqual` [ "7:5 outside: a pattern a recursive group binds" ]
+
+  describe "`case _ of`" do
+    let
+      schemeOf name values = map (\v -> printType (fromCore v.scheme.body)) (Array.find (\x -> x.name == inM name) values)
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+      types = [ "data Color = Red | Green | Blue", "data Opt a = None | Some a" ]
+    it "is a function of its anonymous scrutinees, checked against the type expected" do
+      elaborating (types <> [ "isRed :: Color -> Boolean", "isRed = case _ of", "  Red -> true", "  _ -> false" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "isRed" r.values of
+          Just (Lam _ x _ (Case _ [ Var _ x' ] _)) | x == x' -> pure unit
+          other -> fail ("no λ: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec isRed" ]
+
+    it "is inferred where nothing gives its type, its anonymous scrutinees parameters from the left" do
+      elaborating (types <> [ "orElse d = case d, _ of", "  _, Some x -> x", "  e, None -> e" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "orElse" r.values `shouldEqual` Just "forall a. a -> Opt a -> a"
+
+    it "names no variable of its own where it is reported" do
+      elaborating (types <> [ "h :: Opt Int -> Int", "h = case _ of", "  Some x -> ?here", "  None -> 0" ]) \r ->
+        map at r.errors `shouldEqual` [ "7:13 expression hole here Int [x : Int]" ]
+      elaborating (types <> [ "h :: Opt Int -> Int", "h = case _ of", "  Some x -> x" ]) \r ->
+        map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `None`" ]
 
   describe "what a quantifier encloses" do
     let

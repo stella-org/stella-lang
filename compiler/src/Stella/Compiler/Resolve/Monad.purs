@@ -154,10 +154,12 @@ data ResumeBlock
   = OutsideFullClause
   | InFastClause
   | InReifiableClause
-  -- | Inside a lambda, a local function, or a handling expression, within a
-  -- | `full` clause: each could keep what it encloses beyond the clause.
+  -- | Inside a lambda, a local function, a `case _ of`, which is a function,
+  -- | or a handling expression, within a `full` clause: each could keep what
+  -- | it encloses beyond the clause.
   | InsideLambda
   | InsideLocalFunction
+  | InsideAnonymousCase
   | InsideHandling
 
 -- | What a construct around the position puts in scope: the local values a
@@ -459,6 +461,7 @@ printResolveReason = case _ of
     InReifiableClause -> "A `reifiable full` clause takes its continuation as its last parameter; resume it with `Continuation.continue`"
     InsideLambda -> "`resume` cannot stand inside a lambda within its clause, which could keep it beyond the clause; mark the clause `reifiable full` to keep the continuation"
     InsideLocalFunction -> "`resume` cannot stand inside a local function within its clause, which could keep it beyond the clause; mark the clause `reifiable full` to keep the continuation"
+    InsideAnonymousCase -> "`resume` cannot stand inside a `case _ of` within its clause, a function that could keep it beyond the clause; mark the clause `reifiable full` to keep the continuation"
     InsideHandling -> "`resume` cannot stand inside a handling expression within its clause, whose handlers could keep it beyond the clause; mark the clause `reifiable full` to keep the continuation"
   ResumeNotApplied -> "`resume` is applied to the value the operation resumes with, as `resume x`, and is no value of its own"
   NotAnEffect n -> "`" <> n <> "` is not an effect; a group is headed by an effect or by a label"

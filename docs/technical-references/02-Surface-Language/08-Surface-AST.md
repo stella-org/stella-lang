@@ -90,6 +90,7 @@ Origin = FromSource range
 - **An operator is applied to its two operands**, rebracketed by fixity: `ExprOperator` holds the operator, as the reference it stands for with the origin of where it was written, and then the operands.
 - **`e.a.b` is two selections**, one label at a time.
 - **A declaration's `where` is a `let`** around the body.
+- **`case _ of` is a `λ` around a `case`**, a parameter for each anonymous scrutinee, from the left, under a name no source can write; no anonymous scrutinee stands in a `case`.
 - **A `case` alternative holds a row of patterns per or-choice at its top**, one pattern per scrutinee in each, and a body that is unconditional or a guard block. A guard block holds bindings, guards, and `otherwise`, which is a line of its own rather than a guard naming a value ([Pattern Matching](../../proposals/03-Pattern-Matching-Syntax.md)).
 - **A constructor pattern holds one pattern per field**, as many as the constructor has.
 - **A tag pattern holds one pattern for its payload, or none.** A variant element carries one payload, so several values are a tuple.
@@ -104,7 +105,7 @@ Origin = FromSource range
 - **A handler declaration holds the effect it handles**: the left of `~>`, or, for a signature written in full, the one element the thunk's row holds and the result's row does not, a row named by a type synonym read through it ([Effect Handlers](02-Effect-Handlers.md)).
 - **A clause holds the form in effect for it**, a group's marker and the default resolved: `ClauseFast`, `ClauseFull`, or `ClauseReifiable` with the pattern its continuation is bound by, the clause's last parameter.
 - **A clause holds one pattern per argument of its operation**, a `reifiable full` clause's continuation apart from them, and **a handler holds one clause per operation at most, and one return clause at most**. That every operation of the effect has a clause is not checked here: a handler missing one is rejected by the Core type checker.
-- **`ExprResume` stands only as the function of an `ExprApp`**, `resume e`, in the immediate body of a `full` clause: not inside a lambda, a local function, or a handling expression there ([Effect Handlers](02-Effect-Handlers.md)).
+- **`ExprResume` stands only as the function of an `ExprApp`**, `resume e`, in the immediate body of a `full` clause: not inside a lambda, a local function, a `case _ of`, or a handling expression there ([Effect Handlers](02-Effect-Handlers.md)).
 - **A group and a handler declaration hold one `HandlerBody`**: the operation clauses, and the return clause where one is written. A handler declaration holds its cells beside its body, as `ExprHandle` holds an expression's: they are the cells of the handling expression an application of it is, not of the effect it handles.
 - **A cell declaration holds the `CellVar` it binds and its initial value.** A `CellVar` keeps its binding identity, which is what elaboration maps to the region of the expression declaring it and to the cell's position there.
 
