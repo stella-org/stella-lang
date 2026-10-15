@@ -222,6 +222,7 @@ zonkExpr ctx = go
       Just (TermAssigned solution) -> go (map (const a) solution)
       _ -> ETermMeta a m
     EHole a t -> EHole a (ty t)
+    EPendingCase a id -> EPendingCase a id
 
   param p = { name: p.name, ty: ty p.ty }
 

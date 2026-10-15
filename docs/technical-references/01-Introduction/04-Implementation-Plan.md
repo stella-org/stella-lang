@@ -1336,8 +1336,20 @@ Tags as expressions and as patterns ([Elaboration](../02-Surface-Language/01-Ela
 | `case v of 'A n -> 'A (inc n); other -> other` at `[ 'A :: Int, 'B :: Int, ...r ]` | `other` bound by a `let` to the residual widened by `weaken A`, accepted by the Core checker. Binding `other` to the occurrence itself gives it the residual variant |
 | A default binding `x` and `y` at two variants that both hold `'A`, at `Int` in one and `Boolean` in the other | Each widened at the payload type its own occurrence gives `'A`. Reading the payload type by the tag alone gives one of them the other's |
 | `k v = case v of 'A n -> n; _ -> 0`, the row not decided | Accepted, at `∀ρ. A ∉ ρ => [ 'A :: Int, ...ρ ] -> Int` |
-| `k v = case v of 'A n -> n; 'B -> 0`, and `k v = case v of 'A n -> n; _ where false -> 0`, the row not decided | Outside what this version reads, where the `case` stands. The second leaves values uncovered past the guard block its default reaches, and is found by following that fall-through point |
-| The same with `_ where false -> 0; otherwise -> 1` | Accepted: the default's block always takes what it is given |
+| `k v = case v of 'A n -> n; 'B -> 0`, the row not decided | `[ 'A :: Int, 'B :: Unit ] -> Int`, one `switchKey` with no default, and no row quantified |
+| `k v = case v of 'A n -> n; _ where false -> 0`, the row not decided | `[ 'A :: Int ] -> Int`, the default's body kept as a join point nothing jumps to, and checked. The values left uncovered past the guard block are found by following its fall-through point; dropping the default from a tree built while the row was open drops that body from the term |
+| The same with `_ where false -> 0; otherwise -> 1` | `∀ρ. A ∉ ρ => [ 'A :: Int, ...ρ ] -> Int`: the default's block always takes what it is given |
+| `g x = let n = case x of 'A -> 1; 'B -> 2 in h x`, and the same with `h x` bound and the `case` the body, `h` at `[ 'A :: Unit, 'B :: Unit, 'C :: Unit ] -> Int` and at `[ 'A :: Unit, 'B :: Unit ] -> Int` | With the first `h`, reported with `'C` in both orders; with the second, accepted in both. Closing the row where the `case` is read instead would report `h x` in one order and the `case` in the other |
+| The same, `h` at `[ 'A :: Unit, 'B :: Unit, ...r ] -> Int` | `g` at `[ 'A :: Unit, 'B :: Unit ] -> Int`, the metavariable instantiating `r` closed |
+| The `case` in a `let` of `g x`, `x` given also to `same x 'C` with `same :: a -> a -> a` | Reported with `'C`, a tag the row has come to hold that no alternative takes |
+| `g :: [ 'A :: Unit, ...r ] -> Int; g v = let k = \w -> case w of 'A -> 1 in k v` | Reported with `_`. A row a quantifier comes to open is not closed |
+| A pending `case` in a local binding, in a body with a signature, and in another `case`'s alternative | Each row closed, the inner `case` of the last built inside the outer's: `f v w` at `[ 'A :: Unit, 'B :: Unit ] -> [ 'X :: Unit, 'Y :: Unit ] -> Int` |
+| `f v = let a = case v of 'A -> 1; 'B -> 2 in case v of 'A -> a; _ -> 0` | `[ 'A :: Unit, 'B :: Unit ] -> Int`: closed for the first `case`, the second's default taking the rest of a row now closed |
+| Two pending `case`s of one body, the second needing its row closed only once the first's is | Both closed, a round each, and the second built against the metavariables the second round left |
+| Three bodies with signatures: one whose row cannot be closed, one with a `case` still pending, and one with neither | The first reported by its refusal, the second left unchecked, and the third settled. Treating a failure to close as one no declaration owns drops every body without a word |
+| A pending node with no record, a record with no node, a node standing twice, and a node standing after its replacement | Each a defect of the host |
+| A pending `case` whose tail is a metavariable of a level outside the one being settled | Not closed: the `case` reads its row as open, and shows the rest as `_` |
+| `temperature v = case v of 'Hot -> 1; 'Cold -> 2`, no signature, and `cold = temperature 'Cold`, run on Steam | `2` |
 
 ### Binding groups and generalization (step 7)
 

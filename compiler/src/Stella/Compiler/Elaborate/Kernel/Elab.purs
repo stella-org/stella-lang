@@ -79,6 +79,7 @@ module Stella.Compiler.Elaborate.Kernel.Elab
   , freshIdent
   , freshJoin
   , freshCoverage
+  , freshPendingCase
   , holdOpen
   , recordWarning
   , drainWarnings
@@ -107,7 +108,7 @@ import Stella.Compiler.Elaborate.Mechanism.Pending (EqualityGoal, GoalRecord, Ha
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm, rebuild, xnf)
 import Stella.Compiler.Elaborate.Mechanism.Fit (Classified(..), FitRecord, FitState(..), FitUse, classify, remaindersOf, sharedAcross, sharedEntries, unionOf)
 import Stella.Compiler.Elaborate.Mechanism.Scheduler (Scheduler, create, emptyScheduler, enqueueInitial, wake)
-import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId(..), FitId(..), RecRefId(..), TermMetaVar, XExpr)
+import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId(..), FitId(..), PendingCaseId(..), RecRefId(..), TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta as TermMeta
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XType(..))
@@ -177,7 +178,7 @@ type Tentative =
   , scheduler :: Scheduler
   , written :: Set MetaVar
   , arena :: Arena
-  , names :: { nextScope :: P.Int, nextBinder :: P.Int, nextIdent :: P.Int, nextJoin :: P.Int, nextCoverage :: P.Int }
+  , names :: { nextScope :: P.Int, nextBinder :: P.Int, nextIdent :: P.Int, nextJoin :: P.Int, nextCoverage :: P.Int, nextPendingCase :: P.Int }
   , open :: Map ScopeId (Set ScopeId)
   , warnings :: P.Array Warning
   }
@@ -325,7 +326,7 @@ initialState session fuel =
       , scheduler: emptyScheduler
       , written: Set.empty
       , arena: emptyArena
-      , names: { nextScope: 1, nextBinder: 0, nextIdent: 0, nextJoin: 0, nextCoverage: 0 }
+      , names: { nextScope: 1, nextBinder: 0, nextIdent: 0, nextJoin: 0, nextCoverage: 0, nextPendingCase: 0 }
       , open: Map.empty
       , warnings: []
       }
@@ -515,6 +516,11 @@ freshJoin taken hint = Elab \_ s ->
 freshCoverage :: Elab CoverageId
 freshCoverage = Elab \_ s ->
   Tuple (Done (CoverageId s.tentative.names.nextCoverage)) (s { tentative { names { nextCoverage = s.tentative.names.nextCoverage + 1 } } })
+
+-- | A `case` left pending, numbered from a supply of its own.
+freshPendingCase :: Elab PendingCaseId
+freshPendingCase = Elab \_ s ->
+  Tuple (Done (PendingCaseId s.tentative.names.nextPendingCase)) (s { tentative { names { nextPendingCase = s.tentative.names.nextPendingCase + 1 } } })
 
 -- The first number from the one given whose name is not taken, and that name.
 firstFree :: forall a. (P.Int -> a) -> (a -> P.Boolean) -> P.Int -> Tuple P.Int a

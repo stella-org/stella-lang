@@ -12,7 +12,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar(..), XKind(..))
-import Stella.Compiler.Elaborate.CorePlus.Term (FreeVars, Residue(..), TermMetaVar(..), XDecisionTree(..), XExpr(..), fromCoreExpr, freeVarsOf, isSettledValueForm, isValueForm, metasOfTerm, toCoreExpr, typesOfTerm)
+import Stella.Compiler.Elaborate.CorePlus.Term (FreeVars, PendingCaseId(..), Residue(..), TermMetaVar(..), XDecisionTree(..), XExpr(..), fromCoreExpr, freeVarsOf, isSettledValueForm, isValueForm, metasOfTerm, pendingCasesOf, replacePendingCases, toCoreExpr, typesOfTerm)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XRowEntry(..), XType(..))
 import Stella.Compiler.TypedCore (Constraint(..), DecisionTree(..), EffName(..), Expr(..), Ident(..), JoinName(..), Kind(..), KindVar(..), Literal(..), ModuleName(..), OpClause(..), OpName(..), Occurrence(..), Qualified(..), RegionName(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyName(..), TyVar(..), Type(..))
 import Data.Array.NonEmpty as NonEmptyArray
@@ -270,6 +270,24 @@ spec = describe "Elaborate.Term" do
       let
         term = ELetRec 1 [ { name: f, ty: xInt, value: ELam 2 x xInt (EApp 3 (EVar 4 f) (EVar 5 y)) } ] (EVar 6 f)
       freeVarsOf term `shouldEqual` free { values = Set.singleton y }
+
+  describe "a pending `case`" do
+    let
+      node id = EPendingCase 1 (PendingCaseId id)
+      inTree = ECase 2 [ node 0 ] (XLeaf (EApp 3 (node 1) (node 1)))
+    it "is counted as often as it stands, in a tree among the rest" do
+      pendingCasesOf inTree `shouldEqual` [ PendingCaseId 0, PendingCaseId 1, PendingCaseId 1 ]
+
+    it "is replaced by what is given for it, a replacement holding one replaced in turn" do
+      let
+        given = case _ of
+          PendingCaseId 0 -> Just (node 2)
+          PendingCaseId 2 -> Just (ELit 4 (LitInt 7))
+          _ -> Nothing
+      replacePendingCases given inTree `shouldEqual` ECase 2 [ ELit 4 (LitInt 7) ] (XLeaf (EApp 3 (node 1) (node 1)))
+
+    it "is reported at the boundary where one is left" do
+      toCoreExpr (node 0) `shouldEqual` Left (NonEmptyArray.singleton (ResidualPendingCase 1 (PendingCaseId 0)))
 
   describe "the row an injection writes" do
     let

@@ -80,7 +80,7 @@ import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
-import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), XExpr, isSettledValueForm, toCoreExpr, toInitializationExpr)
+import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), XExpr, isSettledValueForm, pendingCasesOf, replacePendingCases, toCoreExpr, toInitializationExpr)
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind(..), kindMetasOf)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType(..), fromCore, kindMetasOfType, metasOf, toCore)
 import Stella.Compiler.Elaborate.Surface.Types (readAttributeDeclaration, readTypes, settledTypes)
@@ -99,9 +99,10 @@ import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), Surfac
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, atLevel, equate, freshTypeMeta, initialState)
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..))
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
+import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, substitute, substituteKind)
 import Stella.Compiler.Elaborate.Surface.Match (Witness)
-import Stella.Compiler.Elaborate.Surface.Expr (ExpressionHole, UncoveredMatch, Parameter(..), asArrow, checkDefinition, elaborateComputation, elaborateValue, expandable, inferDefinition, references, runSurf)
+import Stella.Compiler.Elaborate.Surface.Expr (ExpressionHole, PendingCase, UncoveredMatch, Parameter(..), asArrow, checkDefinition, elaborateComputation, elaborateValue, expandable, inferDefinition, references, runSurf)
 import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported(..), Wildcard, elaborateComputationSignature, elaborateSignature, elaborateValueSignature, schemeOf, settledScheme)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..), Warning)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
@@ -123,7 +124,7 @@ import Stella.Compiler.TypedCore.Initialization (localGroupViolations, topLevelV
 import Stella.Compiler.TypedCore.Reference (globalsOf)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName, OpName(..), Qualified(..), TyName(..), TyVar, unqualified)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
-import Stella.Compiler.TypedCore.Kind (KindScheme)
+import Stella.Compiler.TypedCore.Kind (KindScheme, RowElemKind(..))
 import Stella.Compiler.TypedCore.Type (Type(..), TypeScheme)
 import Stella.Compiler.TypedCore.Prim (pureFn)
 
@@ -230,6 +231,7 @@ type Elaborating =
   , unwritten :: Array { origin :: Surface.Origin, kind :: XKind }
   , expressionHoles :: Array ExpressionHole
   , uncovered :: Array UncoveredMatch
+  , pending :: Array PendingCase
   }
 
 -- | A data declaration elaborated, and where it stands.
@@ -557,7 +559,7 @@ elaborateValues imports surface importedEntries m =
     ComputationBody body -> attemptBody acc v (elaborateComputation internal withFinal v.declared.name v.declared.origin v.scheme body)
   attemptBody acc v elaborating =
     case runAttempt session (runSurf elaborating) acc.state of
-      Tuple (Done (Right built)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, spine: v.spine, body: built.value, holes: built.holes, wildcards: built.wildcards, unwritten: built.unwritten, expressionHoles: built.expressionHoles, uncovered: built.uncovered } }
+      Tuple (Done (Right built)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, spine: v.spine, body: built.value, holes: built.holes, wildcards: built.wildcards, unwritten: built.unwritten, expressionHoles: built.expressionHoles, uncovered: built.uncovered, pending: built.pending } }
       Tuple (Done (Left problem)) _ -> acc { errors = Array.snoc acc.errors (Unsupported problem) }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
   unchecked acc v = acc { errors = Array.snoc acc.errors (LeftUnchecked v.declared.origin v.declared.name) }
@@ -639,26 +641,67 @@ settleBodies session attempter state bodies =
       Tuple (Right _) s' -> { defect: Nothing, state: s', undone }
     stopped -> stopped
 
+  -- the variants the pending `case`s leave open closed for their sake, the
+  -- loop run and the fits resolved by direction again, until none is left to
+  -- close
+  bounded s = case closableTails s.tentative.metas (Array.concatMap _.pending bodies) of
+    Left d -> Tuple (Left (brokenBy d)) s
+    Right [] -> Tuple (Right unit) s
+    Right ts -> case closeTails session 0 ts s of
+      Tuple (Done _) s1 ->
+        let
+          Tuple again s2 = runAttempting attempter s1
+        in
+          case again.result of
+            Loop.Rejected d -> Tuple (Left (rejectedBy d)) s2
+            Loop.Exhausted p -> Tuple (Left { errors: [ EquationUndecided p.origin ], names: Just (Set.singleton (declarationOf p.origin)) }) s2
+            Loop.Halted d -> Tuple (Left (brokenBy d)) s2
+            _ -> case resolveByDirection session attempter declarationOf (const 0) s2 of
+              Tuple (ResolutionHalted d) s3 -> Tuple (Left (brokenBy d)) s3
+              Tuple (Resolution _) s3 -> bounded s3
+      Tuple (Failed d) s1 -> Tuple (Left (rejectedBy d)) s1
+      Tuple (Broke d) s1 -> Tuple (Left (brokenBy d)) s1
+      Tuple outcome s1 -> Tuple (Left { errors: [ failure outcome ], names: Just (Set.fromFoldable (map (declarationOf <<< _.site.origin) ts)) }) s1
+
+  -- what stops the settling: a refusal names the declarations its diagnostic
+  -- is about, and a defect leaves nothing to trust
+  rejectedBy d = { errors: [ rejected d ], names: Just (Set.fromFoldable (diagnosticDeclarations d)) }
+  brokenBy d = { errors: [ Broken d ], names: Nothing }
+
+  -- a body with each pending `case` it holds replaced by its match
+  placed (Tuple acc s) b = case acc of
+    Left e -> Tuple (Left e) s
+    Right done -> case settlePending session 0 { term: b.body, pending: b.pending } s of
+      Tuple (Left e@(Broken _)) s' -> Tuple (Left { errors: [ e ], names: Nothing }) s'
+      Tuple (Left e) s' -> Tuple (Left { errors: [ e ], names: Just (Set.singleton b.name) }) s'
+      Tuple (Right r) s' -> Tuple (Right (Array.snoc done b { body = r.term, uncovered = b.uncovered <> r.uncovered, pending = [] })) s'
+
   Tuple report quiet = runAttempting attempter state
 
-  -- at quiescence: the fits left undecided resolved by direction, each
-  -- declaration's rows nothing needs closed, the fits resolved again and the
-  -- loop run to what it then waits on, every state handed on to the next
+  -- at quiescence: the fits left undecided resolved by direction, the
+  -- variants pending `case`s leave open closed for their sake and each such
+  -- `case` replaced by its match, each declaration's rows nothing needs
+  -- closed, the fits resolved again and the loop run to what it then waits
+  -- on, every state handed on to the next
   Tuple settledBy after = case report.result of
     Loop.Completed -> settling
     Loop.Blocked _ -> settling
     _ -> Tuple Nothing quiet
     where
     settling = case resolveByDirection session attempter declarationOf (const 0) quiet of
-      Tuple (ResolutionHalted d) s1 -> Tuple (Just (Left d)) s1
-      Tuple (Resolution _) s1 -> case foldl closing { defect: Nothing, state: s1, undone: Map.empty } bodies of
-        { defect: Just d, state: s2 } -> Tuple (Just (Left d)) s2
-        { state: s2, undone } ->
-          let
-            Tuple resolution s3 = resolveByDirection session attempter declarationOf (const 0) s2
-            Tuple left s4 = runAttempting attempter s3
-          in
-            Tuple (Just (Right { resolution, left, undone })) s4
+      Tuple (ResolutionHalted d) s1 -> Tuple (Just (Left (brokenBy d))) s1
+      Tuple (Resolution _) s1 -> case bounded s1 of
+        Tuple (Left e) s2 -> Tuple (Just (Left e)) s2
+        Tuple (Right _) s2 -> case foldl placed (Tuple (Right []) s2) bodies of
+          Tuple (Left e) s3 -> Tuple (Just (Left e)) s3
+          Tuple (Right settledBodies) s3 -> case foldl closing { defect: Nothing, state: s3, undone: Map.empty } settledBodies of
+            { defect: Just d, state: s4 } -> Tuple (Just (Left (brokenBy d))) s4
+            { state: s4, undone } ->
+              let
+                Tuple resolution s5 = resolveByDirection session attempter declarationOf (const 0) s4
+                Tuple left s6 = runAttempting attempter s5
+              in
+                Tuple (Just (Right { resolution, left, undone, bodies: settledBodies })) s6
 
   -- what the loop, the resolution, and the closing stopped at, and the
   -- declarations they name; `Nothing` at a defect, which leaves nothing to
@@ -667,7 +710,7 @@ settleBodies session attempter state bodies =
     Loop.Rejected d, _ -> Tuple [ rejected d ] (Just (Set.fromFoldable (diagnosticDeclarations d)))
     Loop.Exhausted p, _ -> Tuple [ EquationUndecided p.origin ] (Just (Set.singleton (declarationOf p.origin)))
     Loop.Halted d, _ -> Tuple [ Broken d ] Nothing
-    _, Just (Left d) -> Tuple [ Broken d ] Nothing
+    _, Just (Left stop) -> Tuple stop.errors stop.names
     _, Just (Right { resolution: ResolutionHalted d }) -> Tuple [ Broken d ] Nothing
     _, Just (Right { resolution: Resolution r, left, undone }) ->
       let
@@ -686,12 +729,16 @@ settleBodies session attempter state bodies =
   -- the declarations a job still waits for
   waiting = Set.fromFoldable (map (\p -> declarationOf p.site.origin) (Map.values after.tentative.scheduler.pending))
 
-  finished = map finish bodies
+  -- the bodies with their pending `case`s replaced where the loop reached
+  -- quiescence; one holding a `case` left pending otherwise is unchecked
+  finished = map finish case settledBy of
+    Just (Right r) -> r.bodies
+    _ -> bodies
   finish b = case named of
     Nothing -> Tuple [] Nothing
     Just names
       | Set.member b.name names -> Tuple [] Nothing
-      | Set.member b.name waiting -> Tuple [ LeftUnchecked b.origin b.name ] Nothing
+      | Set.member b.name waiting || not (Array.null b.pending) -> Tuple [ LeftUnchecked b.origin b.name ] Nothing
       | otherwise -> settled b
 
   -- a settled body holding a typed hole, an expression hole, or a wildcard not
@@ -755,6 +802,61 @@ annotated metas holes wildcards unwritten expressionHoles uncovered = { reported
   kindMetas :: forall r. { type :: XType, kind :: XKind | r } -> Set KindMetaVar
   kindMetas w = Set.union (kindMetasOfType (substitute metas w.type)) (kindMetasOf (substituteKind metas w.kind))
 
+-- | The metavariables the pending `case`s given may close for their matches'
+-- | sake, read off the metavariables as they stand, each once with the site of
+-- | the first `case` naming it. A match its compiler refuses is the host's
+-- | defect, its patterns having been typed.
+closableTails :: MetaContext -> Array PendingCase -> Either Defect (Array { tail :: XType, site :: Site })
+closableTails metas pending = Array.nubByEq (\a b -> a.tail == b.tail) <<< Array.concat <$> traverse tails pending
+  where
+  tails p = case p.closable metas of
+    Right ts -> Right (map (\t -> { tail: substitute metas t, site: p.site }) ts)
+    Left _ -> Left (MatchMalformed p.site.origin)
+
+-- | The tails given closed, each equated with the empty row where the `case`
+-- | naming it stands.
+closeTails :: SessionEnv -> Int -> Array { tail :: XType, site :: Site } -> SolverState -> Tuple (Outcome Unit) SolverState
+closeTails session level tails = runAttempt session (atLevel level (for_ tails \t -> equate t.site { kind: XKRow RowType, left: t.tail, right: XRowEmpty }))
+
+-- | A term with each pending `case` it holds replaced by the match built for
+-- | it, the `case`s built once each in the order of their numbers against the
+-- | metavariables as they stand, and the matches they leave uncovered. A
+-- | `case` held with no record, one recorded and held nowhere, one held more
+-- | than once, and one still held once replaced are the host's defects.
+settlePending
+  :: SessionEnv
+  -> Int
+  -> { term :: XExpr Surface.Origin, pending :: Array PendingCase }
+  -> SolverState
+  -> Tuple (Either ElaborationError { term :: XExpr Surface.Origin, uncovered :: Array UncoveredMatch }) SolverState
+settlePending session level b state = case foldl build (Tuple (Right []) state) (Array.sortWith _.id b.pending) of
+  Tuple (Left e) s -> Tuple (Left e) s
+  Tuple (Right built) s -> Tuple (replaced built) s
+  where
+  metas = state.tentative.metas
+
+  build (Tuple acc s) p = case acc of
+    Left e -> Tuple (Left e) s
+    Right done -> case runAttempt session (atLevel level (runSurf (p.assembled metas))) s of
+      Tuple (Done (Right n)) s' -> Tuple (Right (Array.snoc done { id: p.id, term: n.value, uncovered: n.uncovered })) s'
+      Tuple (Done (Left problem)) s' -> Tuple (Left (Unsupported problem)) s'
+      Tuple outcome s' -> Tuple (Left (failure outcome)) s'
+
+  replaced built =
+    let
+      recorded = map _.id built
+      held = pendingCasesOf b.term <> Array.concatMap (pendingCasesOf <<< _.term) built
+      matches = Map.fromFoldable (map (\m -> Tuple m.id m.term) built)
+      term = replacePendingCases (\id -> Map.lookup id matches) b.term
+    in
+      case Array.find (\id -> not (Array.elem id recorded)) held, Array.find (\id -> Array.length (Array.filter (_ == id) held) /= 1) recorded, Array.head (pendingCasesOf term) of
+        Just id, _, _ -> Left (Broken (PendingCaseUnrecorded id))
+        _, Just id, _
+          | Array.elem id held -> Left (Broken (PendingCaseRepeated id))
+          | otherwise -> Left (Broken (PendingCaseNodeless id))
+        _, _, Just id -> Left (Broken (PendingCaseLeft id))
+        Nothing, Nothing, Nothing -> Right { term, uncovered: Array.concatMap _.uncovered built }
+
 residueOrigin :: forall a. Residue a -> a
 residueOrigin = case _ of
   ResidualTypeMeta o _ -> o
@@ -765,6 +867,7 @@ residueOrigin = case _ of
   ResidualRecursiveRef o _ -> o
   ResidualEta o -> o
   ResidualUncovered o _ -> o
+  ResidualPendingCase o _ -> o
 
 -- | A settled body as Core, and as its initialization is judged.
 asCore :: forall a. XExpr a -> Either (NonEmptyArray (Residue a)) { body :: Core.Expr a, initialization :: Core.Expr a }
@@ -777,6 +880,7 @@ defectOf = case _ of
   ResidualRecursiveRef _ id -> Just (RecursiveReferenceLeft id)
   ResidualEta _ -> Just EtaExpansionMalformed
   ResidualUncovered _ id -> Just (UncoveredUnrecorded id)
+  ResidualPendingCase _ id -> Just (PendingCaseLeft id)
   _ -> Nothing
 
 -- | A diagnostic as the author is told it: a boundary no row expected of it
@@ -923,17 +1027,15 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
           for_ noted \n -> equate site { kind: XKType, left: n.value.type, right: t }
           pure (map (\n -> n { value = n.value.expr }) noted)
     case runAttempt session (atLevel topLevel body) s of
-      Tuple (Done (Right n)) s' -> put s' $> { unsigned: u, expr: n.value, type: t, holes: n.holes, wildcards: n.wildcards, unwritten: n.unwritten, expressionHoles: n.expressionHoles, uncovered: n.uncovered }
+      Tuple (Done (Right n)) s' -> put s' $> { unsigned: u, expr: n.value, type: t, holes: n.holes, wildcards: n.wildcards, unwritten: n.unwritten, expressionHoles: n.expressionHoles, uncovered: n.uncovered, pending: n.pending }
       Tuple (Done (Left problem)) s' -> put s' *> throwError [ { error: Unsupported problem, names: [ u.name ] } ]
       Tuple outcome s' -> put s' *> throwError [ attemptFailure [ u.name ] outcome ]
 
-  settle built loopWarnings = do
+  settle unbounded loopWarnings = do
     resolution <- step (resolveOwners session attempter groupOwner (const topLevel) (_ == key))
-    resolutionWarnings <- case resolution of
-      ResolutionHalted d -> throwError [ defect d ]
-      Resolution r -> case Array.findMap refusal r.components of
-        Just d -> throwError [ diagnosed d ]
-        Nothing -> pure r.warnings
+    resolutionWarnings <- resolvedBy resolution
+    boundWarnings <- variantsBounded (Array.concatMap _.pending unbounded)
+    built <- traverse settledPending unbounded
     generalizing <- gets \s -> map (\b -> { key: b.unsigned.name, name: b.unsigned.name, type: b.type, body: b.expr, valueForm: isSettledValueForm isConstructor (zonkExpr s.tentative.metas b.expr), written: isJust b.unsigned.signature }) built
     prepared <- step (prepareGeneralization attempter memberOwner topLevel generalizing)
     draft <- case prepared.preparation of
@@ -961,7 +1063,39 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
       GeneralizationHalted d -> throwError [ defect d ]
     metas <- gets _.tentative.metas
     values <- traverse (made metas) (Array.zip members finalized)
-    pure { values, warnings: loopWarnings <> resolutionWarnings <> prepared.warnings <> closingWarnings }
+    pure { values, warnings: loopWarnings <> resolutionWarnings <> boundWarnings <> prepared.warnings <> closingWarnings }
+
+  resolvedBy = case _ of
+    ResolutionHalted d -> throwError [ defect d ]
+    Resolution r -> case Array.findMap refusal r.components of
+      Just d -> throwError [ diagnosed d ]
+      Nothing -> pure r.warnings
+
+  -- the variants the pending `case`s leave open closed for their sake, the
+  -- loop run and the fits resolved again, until none is left to close
+  variantsBounded pending = do
+    tails <- gets \s -> closableTails s.tentative.metas pending
+    case tails of
+      Left d -> throwError [ defect d ]
+      Right [] -> pure []
+      Right ts -> do
+        closed <- step (closeTails session topLevel ts)
+        case closed of
+          Done _ -> pure unit
+          outcome -> throwError [ attemptFailure names outcome ]
+        report <- step (runAttempting attempter)
+        throwIfAny (stoppedAt report.result)
+        resolution <- step (resolveOwners session attempter groupOwner (const topLevel) (_ == key))
+        warnings <- resolvedBy resolution
+        more <- variantsBounded pending
+        pure (report.warnings <> warnings <> more)
+
+  -- a member with each pending `case` it holds replaced by its match
+  settledPending b = do
+    result <- step (settlePending session topLevel { term: b.expr, pending: b.pending })
+    case result of
+      Left error -> throwError [ { error, names } ]
+      Right r -> pure b { expr = r.term, uncovered = b.uncovered <> r.uncovered }
 
   -- a member as Core: its scheme and its definition
   made metas (Tuple u f) = do

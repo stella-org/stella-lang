@@ -18,7 +18,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), maybe)
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
-import Stella.Compiler.Elaborate.Surface.Match (Binding, Compiled, Domain(..), Head(..), MatchError(..), Pattern(..), Plan(..), Row, Tags, Tail(..), Transform(..), Witness(..), compile, coverageDomain, witness)
+import Stella.Compiler.Elaborate.Surface.Match (Binding, Compiled, Domain(..), Head(..), MatchError(..), Pattern(..), Plan(..), Row, Tags, Tail(..), Transform(..), Witness(..), closable, compile, coverageDomain, witness)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..), TyName(..))
 import Stella.Compiler.TypedCore.Prim (unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
@@ -129,7 +129,7 @@ tagOf :: String -> RowKey
 tagOf = TagKey <<< Tag
 
 -- | The tags `'A` and `'B`, their payloads at `a` and `b`, and the tail given.
-ab :: Tail -> Tags String
+ab :: Tail String -> Tags String
 ab tail = { keys: [ { key: tagOf "A", payload: "a" }, { key: tagOf "B", payload: "b" } ], tail }
 
 tag :: Tags String -> String -> Pattern String String -> Pattern String String
@@ -420,3 +420,31 @@ spec = describe "Elaborate.Surface.Match" do
         Right (Just [ WitnessTag (tagOf "A") (WitnessConstructor some [ WitnessAny ]) "a" ])
       witness table 1 [ row 0 [ tag (ab Rigid) "A" PAny ], row 1 [ tag (ab Rigid) "B" PAny ] ] `shouldEqual` Right (Just [ WitnessAny ])
       witness table 1 [ row 0 [ tag (ab Closed) "A" PAny ], row 1 [ tag (ab Closed) "B" PAny ] ] `shouldEqual` Right Nothing
+
+  describe "the tails a match may close" do
+    let
+      open = ab (Flexible [ "?r" ])
+      closableOf rows = map closable (compile table 1 rows)
+    it "are the metavariables of a variant whose default leaves values uncovered" do
+      closableOf [ row 0 [ tag open "A" PAny ], row 1 [ tag open "B" PAny ] ] `shouldEqual` Right [ "?r" ]
+      witness table 1 [ row 0 [ tag open "A" PAny ], row 1 [ tag open "B" PAny ] ] `shouldEqual` Right (Just [ WitnessAny ])
+
+    it "are none where a default takes what the row may hold besides" do
+      closableOf [ row 0 [ tag open "A" PAny ], row 1 [ PAny ] ] `shouldEqual` Right []
+
+    it "follow a default past a guard block that may fall through" do
+      closableOf [ row 0 [ tag open "A" PAny ], fallible 1 [ PAny ] ] `shouldEqual` Right [ "?r" ]
+
+    it "are none where the row is closed, open by a variable a quantifier binds, or open by a metavariable of an outer level" do
+      closableOf [ row 0 [ tag (ab Closed) "A" PAny ] ] `shouldEqual` Right []
+      closableOf [ row 0 [ tag (ab Rigid) "A" PAny ] ] `shouldEqual` Right []
+      closableOf [ row 0 [ tag (ab External) "A" PAny ] ] `shouldEqual` Right []
+      witness table 1 [ row 0 [ tag (ab External) "A" PAny ], row 1 [ tag (ab External) "B" PAny ] ] `shouldEqual` Right (Just [ WitnessAny ])
+
+    it "show a tag the row has come to hold that no row takes" do
+      let grown = { keys: [ { key: tagOf "A", payload: "a" }, { key: tagOf "B", payload: "b" }, { key: tagOf "C", payload: "c" } ], tail: Flexible [ "?r" ] }
+      closableOf [ row 0 [ tag grown "A" PAny ], row 1 [ tag grown "B" PAny ] ] `shouldEqual` Right [ "?r" ]
+      witness table 1 [ row 0 [ tag grown "A" PAny ], row 1 [ tag grown "B" PAny ] ] `shouldEqual` Right (Just [ WitnessTag (tagOf "C") WitnessAny "c" ])
+
+    it "are found where the variant stands in a constructor's field" do
+      closableOf [ row 0 [ c some [ tag open "A" PAny ] ], row 1 [ c none [] ] ] `shouldEqual` Right [ "?r" ]

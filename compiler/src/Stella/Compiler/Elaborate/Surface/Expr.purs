@@ -56,6 +56,8 @@ module Stella.Compiler.Elaborate.Surface.Expr
   , Noted
   , ExpressionHole
   , UncoveredMatch
+  , PendingCase
+  , tagsOf
   , runSurf
   , elaborateValue
   , elaborateComputation
@@ -84,7 +86,7 @@ import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext, lookupVar)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.CorePlus.Row (rebuild, xnf)
-import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId, XDecisionTree(..), XExpr(..), isValueForm)
+import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId, PendingCaseId, XDecisionTree(..), XExpr(..), isValueForm)
 import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal)
 import Stella.Compiler.Elaborate.Surface.Group (groups)
@@ -92,10 +94,10 @@ import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Environment.Constructors (lookupConstructor)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, break, closeBoundary, currentMetas, equate, freshCoverage, freshIdent, freshJoin, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, recursiveRef, require)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, break, closeBoundary, currentMetas, currentLevel, equate, freshCoverage, freshIdent, freshJoin, freshPendingCase, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, recursiveRef, require)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
-import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), MetaContext, substitute)
+import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), MetaBinding(..), MetaContext, lookupMeta, substitute)
 import Stella.Compiler.Elaborate.Surface.Match as Match
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..))
 import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported(..), Wildcard, elaborateLocalSignature, elaborateType, xFunction)
@@ -114,8 +116,9 @@ import Stella.Compiler.TypedCore.Type (RowKey(..), TypeScheme)
 newtype Surf a = Surf (Elab (Either Unsupported (Noted a)))
 
 -- | What was built, and the typed holes, the wildcards, the kinds a local
--- | signature leaves unwritten, the expression holes, and the matches that
--- | leave values uncovered, noted on the way, in the order met.
+-- | signature leaves unwritten, the expression holes, the matches that leave
+-- | values uncovered, and the `case`s left pending, noted on the way, in the
+-- | order met.
 type Noted a =
   { value :: a
   , holes :: Array TypeHole
@@ -123,6 +126,7 @@ type Noted a =
   , unwritten :: Array { origin :: Surface.Origin, kind :: XKind }
   , expressionHoles :: Array ExpressionHole
   , uncovered :: Array UncoveredMatch
+  , pending :: Array PendingCase
   }
 
 -- | An expression hole where it is written, by its name, the type it stands
@@ -132,6 +136,17 @@ type ExpressionHole = { origin :: Surface.Origin, name :: String, type :: XType,
 -- | A `case` that leaves values uncovered, where it is written: the number its
 -- | uncovered places carry, and a vector of values it does not match.
 type UncoveredMatch = { id :: CoverageId, origin :: Surface.Origin, witness :: Array (Match.Witness XType) }
+
+-- | A `case` left pending, where it is written: the number its node carries,
+-- | the site it is elaborated at, the metavariables its match may close, read
+-- | off the metavariables as they stand, and the match built once they are
+-- | decided.
+type PendingCase =
+  { id :: PendingCaseId
+  , site :: Site
+  , closable :: MetaContext -> Either Match.MatchError (Array XType)
+  , assembled :: MetaContext -> Surf (XExpr Surface.Origin)
+  }
 
 runSurf :: forall a. Surf a -> Elab (Either Unsupported (Noted a))
 runSurf (Surf e) = e
@@ -143,37 +158,37 @@ instance Apply Surf where
   apply = ap
 
 instance Applicative Surf where
-  pure a = Surf (pure (Right { value: a, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [] }))
+  pure a = Surf (pure (Right { value: a, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [], pending: [] }))
 
 instance Bind Surf where
   bind (Surf e) k = Surf
     ( e >>= case _ of
         Left problem -> pure (Left problem)
-        Right a -> map (map (\b -> b { holes = a.holes <> b.holes, wildcards = a.wildcards <> b.wildcards, unwritten = a.unwritten <> b.unwritten, expressionHoles = a.expressionHoles <> b.expressionHoles, uncovered = a.uncovered <> b.uncovered })) (runSurf (k a.value))
+        Right a -> map (map (\b -> b { holes = a.holes <> b.holes, wildcards = a.wildcards <> b.wildcards, unwritten = a.unwritten <> b.unwritten, expressionHoles = a.expressionHoles <> b.expressionHoles, uncovered = a.uncovered <> b.uncovered, pending = a.pending <> b.pending })) (runSurf (k a.value))
     )
 
 instance Monad Surf
 
 lift :: forall a. Elab a -> Surf a
-lift = Surf <<< map (\a -> Right { value: a, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [] })
+lift = Surf <<< map (\a -> Right { value: a, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [], pending: [] })
 
 outside :: forall a. Unsupported -> Surf a
 outside = Surf <<< pure <<< Left
 
 -- | Note the typed holes and the wildcards an annotation holds.
 note :: forall r. { holes :: Array TypeHole, wildcards :: Array Wildcard | r } -> Surf Unit
-note read = Surf (pure (Right { value: unit, holes: read.holes, wildcards: read.wildcards, unwritten: [], expressionHoles: [], uncovered: [] }))
+note read = Surf (pure (Right { value: unit, holes: read.holes, wildcards: read.wildcards, unwritten: [], expressionHoles: [], uncovered: [], pending: [] }))
 
 -- | Note what a local signature holds: its typed holes and wildcards, and the
 -- | kinds it leaves unwritten, which nothing local generalizes.
 noteSignature :: Elaborated -> Surf Unit
-noteSignature e = Surf (pure (Right { value: unit, holes: e.holes, wildcards: e.wildcards, unwritten: e.unwritten, expressionHoles: [], uncovered: [] }))
+noteSignature e = Surf (pure (Right { value: unit, holes: e.holes, wildcards: e.wildcards, unwritten: e.unwritten, expressionHoles: [], uncovered: [], pending: [] }))
 
 -- | An expression hole at the type given, noted with the locals in scope where
 -- | it stands: a value form that performs nothing. Every occurrence is a hole
 -- | of its own, its name a label of what is reported.
 hole :: Scope -> Surface.Origin -> String -> XType -> Surf (XExpr Surface.Origin)
-hole scope origin name ty = Surf (pure (Right { value: EHole origin ty, holes: [], wildcards: [], unwritten: [], expressionHoles: [ { origin, name, type: ty, context } ], uncovered: [] }))
+hole scope origin name ty = Surf (pure (Right { value: EHole origin ty, holes: [], wildcards: [], unwritten: [], expressionHoles: [ { origin, name, type: ty, context } ], uncovered: [], pending: [] }))
   where
   -- a name with `#` is one the compiler made
   context = Array.mapMaybe
@@ -863,22 +878,31 @@ variantOf row = XApp (XCon variantTy []) row
 type TypedPattern = { pattern :: MetaContext -> Match.Pattern XType Surface.Origin, vars :: Array { name :: Ident, type :: XType } }
 
 -- | The tags of a variant type, zonked: each known tag, in the order of its
--- | key, with the type of its payload, and what its row holds besides them —
--- | a metavariable, where one is left, otherwise a rigid variable, where one
--- | is, and otherwise nothing.
-tagsOf :: MetaContext -> XType -> Match.Tags XType
-tagsOf metas ty = case substitute metas ty of
+-- | key, with the type of its payload, and what its row holds besides them. A
+-- | rigid variable may stand for any other tag, and so may a metavariable of a
+-- | level outside the one given, which the match leaves as it is; the
+-- | metavariables of that level may be closed for the match's sake, and a row
+-- | holding none of these holds nothing more.
+tagsOf :: Int -> MetaContext -> XType -> Match.Tags XType
+tagsOf level metas ty = case substitute metas ty of
   XApp (XCon name []) row
     | name == variantTy
     , Right normal <- xnf row ->
-        { keys: Array.mapMaybe tag (Map.toUnfoldable normal.known)
-        , tail:
-            if not (Set.isEmpty normal.flexible) then Match.Flexible
-            else if not (Set.isEmpty normal.rigid) then Match.Rigid
-            else Match.Closed
-        }
-  _ -> { keys: [], tail: Match.Flexible }
+        let
+          flexible = Set.toUnfoldable normal.flexible
+        in
+          { keys: Array.mapMaybe tag (Map.toUnfoldable normal.known)
+          , tail:
+              if not (Set.isEmpty normal.rigid) then Match.Rigid
+              else if Array.any ofOuterLevel flexible then Match.External
+              else if not (Array.null flexible) then Match.Flexible (map XMeta flexible)
+              else Match.Closed
+          }
+  _ -> { keys: [], tail: Match.External }
   where
+  ofOuterLevel m = case lookupMeta metas m of
+    Just (Unsolved info) -> info.level < level
+    _ -> false
   tag (Tuple key entry) = case entry of
     XRowTypeEntry _ payload -> Just { key, payload }
     _ -> Nothing
@@ -917,6 +941,11 @@ applyTo scope at whole f argument = do
 -- | those around it. A match leaving values uncovered is noted with a vector of
 -- | values it does not match, and each place it leaves uncovered stands in the
 -- | tree under the number of that note.
+-- |
+-- | **A match on a variant whose row its declaration may yet close for it is
+-- | left pending**: a node stands where the `case` does, numbered as the record
+-- | noted of it, and the match is built once the declaration is settled, the
+-- | rows it may close closed first.
 caseOf :: Scope -> Surface.Origin -> Array Expr -> Array Alternative -> Expected -> XType -> Surf (XExpr Surface.Origin)
 caseOf scope origin scrutinees alternatives expected result = do
   inferred <- traverse (infer scope) scrutinees
@@ -924,43 +953,51 @@ caseOf scope origin scrutinees alternatives expected result = do
   table <- constructorTable
   metas <- lift currentMetas
   let
-    rows = map (\r -> r { patterns = map (_ $ metas) r.patterns }) (Array.concatMap _.rows typed)
     width = Array.length scrutinees
-  compiled <- matched (Match.compile table width rows)
-  -- a dispatch on a variant whose row is not decided yet, its default leaving
-  -- values uncovered, is outside what this version elaborates
-  when (Array.any (undecided compiled.falls) (Array.cons compiled.plan (Array.fromFoldable (Map.values compiled.falls))))
-    (outside (OutsideSubset origin "a match on a variant whose row is not decided yet"))
-  found <- matched (Match.witness table width rows)
-  uncovered <- case found, uncovers compiled.plan || Array.any uncovers (Array.fromFoldable (Map.values compiled.falls)) of
-    Just witness, true -> do
-      id <- lift freshCoverage
-      noteUncovered { id, origin, witness }
-      pure (Just id)
-    Nothing, false -> pure Nothing
-    _, _ -> malformed
-  placed <- traverse (place compiled.references) typed
-  -- the scrutinees bound to variables where a fall-through point matches them
-  -- again
-  bound <-
-    if Array.any (isJust <<< _.fall) typed then traverse (\s -> { scrutinee: s, name: _ } <$> lift (freshIdent (Map.keys scope.context.vars) "s")) inferred
-    else pure []
-  let
-    matchedValues = if Array.null bound then map _.expr inferred else map (\b -> EVar origin b.name) bound
-    fallsThrough p = case p.alternative.fall of
-      Just j -> do
-        body <- case Map.lookup p.alternative.index compiled.falls of
-          Just plan -> ECase origin matchedValues <$> built uncovered placed plan
-          Nothing -> pure (EJump origin j [])
-        pure [ \e -> ELetJoin origin j [] result body e ]
-      Nothing -> pure []
-  tree <- built uncovered placed compiled.plan
-  falls <- traverse (\p -> (_ <> joined p) <$> fallsThrough p) (Array.reverse (Array.filter _.alternative.guarded placed))
-  let
-    wraps = Array.concatMap joined (Array.filter (not <<< _.alternative.guarded) placed) <> Array.concat falls
-    matching = foldr (\w e -> w e) (ECase origin matchedValues tree) wraps
-  pure (foldr (\b e -> ELet origin b.name b.scrutinee.type b.scrutinee.expr e) matching bound)
+    rowsAt ms = map (\r -> r { patterns = map (_ $ ms) r.patterns }) (Array.concatMap _.rows typed)
+    closableAt ms = Match.closable <$> Match.compile table width (rowsAt ms)
+  case closableAt metas of
+    Left _ -> malformed
+    Right [] -> assembled table width inferred typed (rowsAt metas)
+    -- a variant whose row may yet be closed for the match's sake leaves the
+    -- match to be built once its declaration is settled
+    Right _ -> do
+      id <- lift freshPendingCase
+      notePending { id, site: siteAt scope origin, closable: closableAt, assembled: \ms -> assembled table width inferred typed (rowsAt ms) }
+      pure (EPendingCase origin id)
   where
+  assembled table width inferred typed rows = do
+    compiled <- matched (Match.compile table width rows)
+    found <- matched (Match.witness table width rows)
+    uncovered <- case found, uncovers compiled.plan || Array.any uncovers (Array.fromFoldable (Map.values compiled.falls)) of
+      Just witness, true -> do
+        id <- lift freshCoverage
+        noteUncovered { id, origin, witness }
+        pure (Just id)
+      Nothing, false -> pure Nothing
+      _, _ -> malformed
+    placed <- traverse (place compiled.references) typed
+    -- the scrutinees bound to variables where a fall-through point matches them
+    -- again
+    bound <-
+      if Array.any (isJust <<< _.fall) typed then traverse (\s -> { scrutinee: s, name: _ } <$> lift (freshIdent (Map.keys scope.context.vars) "s")) inferred
+      else pure []
+    let
+      matchedValues = if Array.null bound then map _.expr inferred else map (\b -> EVar origin b.name) bound
+      fallsThrough p = case p.alternative.fall of
+        Just j -> do
+          body <- case Map.lookup p.alternative.index compiled.falls of
+            Just plan -> ECase origin matchedValues <$> built uncovered placed plan
+            Nothing -> pure (EJump origin j [])
+          pure [ \e -> ELetJoin origin j [] result body e ]
+        Nothing -> pure []
+    tree <- built uncovered placed compiled.plan
+    falls <- traverse (\p -> (_ <> joined p) <$> fallsThrough p) (Array.reverse (Array.filter _.alternative.guarded placed))
+    let
+      wraps = Array.concatMap joined (Array.filter (not <<< _.alternative.guarded) placed) <> Array.concat falls
+      matching = foldr (\w e -> w e) (ECase origin matchedValues tree) wraps
+    pure (foldr (\b e -> ELet origin b.name b.scrutinee.type b.scrutinee.expr e) matching bound)
+
   -- an alternative's rows, one per choice written at its top, the variables
   -- they bind, its body, and the fall-through point of its guard block where
   -- the block may fall through
@@ -1079,31 +1116,13 @@ caseOf scope origin scrutinees alternatives expected result = do
     Match.SwitchLit _ branches fallback -> Array.any (uncovers <<< _.plan) branches || uncovers fallback
     Match.SwitchKey _ _ branches fallback -> Array.any (uncovers <<< _.plan) branches || maybe false uncovers fallback
 
-  -- whether a dispatch on a variant whose row holds a metavariable leaves
-  -- values its default does not take, there or past a guard block it reaches
-  -- that falls through
-  undecided falls = case _ of
-    Match.Leaf _ _ -> false
-    Match.Uncovered -> false
-    Match.SwitchCtor _ branches fallback -> Array.any (undecided falls <<< _.plan) branches || maybe false (undecided falls) fallback
-    Match.SwitchLit _ branches fallback -> Array.any (undecided falls <<< _.plan) branches || undecided falls fallback
-    Match.SwitchKey _ tail branches fallback ->
-      Array.any (undecided falls <<< _.plan) branches
-        || maybe false (\f -> (tail == Match.Flexible && leavesUncovered falls f) || undecided falls f) fallback
-
-  -- whether a plan leaves values uncovered, or takes an alternative whose
-  -- guard block falls through to a plan that does; a fall-through point
-  -- matches only the alternatives after its own, so the walk ends
-  leavesUncovered falls = case _ of
-    Match.Leaf i _ -> maybe false (leavesUncovered falls) (Map.lookup i falls)
-    Match.Uncovered -> true
-    Match.SwitchCtor _ branches fallback -> Array.any (leavesUncovered falls <<< _.plan) branches || maybe false (leavesUncovered falls) fallback
-    Match.SwitchLit _ branches fallback -> Array.any (leavesUncovered falls <<< _.plan) branches || leavesUncovered falls fallback
-    Match.SwitchKey _ _ branches fallback -> Array.any (leavesUncovered falls <<< _.plan) branches || maybe false (leavesUncovered falls) fallback
+-- | Note a `case` left pending.
+notePending :: PendingCase -> Surf Unit
+notePending p = Surf (pure (Right { value: unit, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [], pending: [ p ] }))
 
 -- | Note a match that leaves values uncovered.
 noteUncovered :: UncoveredMatch -> Surf Unit
-noteUncovered m = Surf (pure (Right { value: unit, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [ m ] }))
+noteUncovered m = Surf (pure (Right { value: unit, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [ m ], pending: [] }))
 
 -- | A pattern checked against the type of the value it matches, as the
 -- | compiler of matches reads it, and the variables it binds, each at its
@@ -1160,7 +1179,8 @@ pattern scope binder ty = case binder of
     lift (equate (siteAt scope at) { kind: XKType, left: whole, right: ty })
     lift (require (siteAt scope at) (XLacks key rest))
     inner <- pattern scope (fromMaybe (BinderConstructor at unitCtor []) payload) argument
-    pure { pattern: \metas -> Match.PTag { key, payload: inner.pattern metas, domain: tagsOf metas whole }, vars: inner.vars }
+    level <- lift currentLevel
+    pure { pattern: \metas -> Match.PTag { key, payload: inner.pattern metas, domain: tagsOf level metas whole }, vars: inner.vars }
   BinderTuple o components -> do
     types <- traverse (\_ -> lift (freshTypeMeta scope.context XKType)) components
     let indexed = Array.mapWithIndex Tuple types

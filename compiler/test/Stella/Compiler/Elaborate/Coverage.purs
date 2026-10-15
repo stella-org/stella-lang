@@ -309,6 +309,7 @@ forms = case _ of
   ERecursiveRef _ _ -> [ "ERecursiveRef" ]
   ETermMeta _ _ -> [ "ETermMeta" ]
   EHole _ _ -> [ "EHole" ]
+  EPendingCase _ _ -> [ "EPendingCase" ]
   where
   treeForms = case _ of
     XLeaf e -> [ "XLeaf" ] <> forms e
@@ -378,7 +379,7 @@ reachable =
 
 spec :: Spec Unit
 spec = describe "Elaborate, the kernel's reach over Core⁺" do
-  it "builds every form but the typed hole, the fit, the λ of an η-expansion, a recursive reference, and a place a `case` leaves uncovered by its requests alone" do
+  it "builds every form but the typed hole, the fit, the λ of an η-expansion, a recursive reference, a place a `case` leaves uncovered, and a `case` left pending by its requests alone" do
     case fst (runElabIn session (initialState (SessionId 0) 10) (withFrame frame (everyForm >>= traverse resolveExpr))) of
       Done objects -> do
         let

@@ -12,6 +12,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), isNothing, maybe)
 import Data.Set as Set
 import Data.String (joinWith)
+import Data.String as String
 import Data.Tuple (Tuple(..), snd)
 import Effect.Aff (Aff)
 import Fmt (fmt)
@@ -21,7 +22,7 @@ import Stella.Compiler.Surface.Decl (Observation(..))
 import Stella.Compiler.Surface.Decl (Declaration(..)) as SurfaceDecl
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
-import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId(..), XDecisionTree(..), XExpr(..))
+import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId(..), PendingCaseId(..), XDecisionTree(..), XExpr(..))
 import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
 import Stella.Compiler.Elaborate.Driver.Synthesis (attemptJob)
@@ -30,14 +31,15 @@ import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Environment.Imported (importedCatalog, importedSignature, sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Surface (importedSurface)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), closeBoundary, createSynthesis, equate, freshTypeMeta, initialState, openBoundary, placeFit)
-import Stella.Compiler.Elaborate.Mechanism.Unify (KindMetaBinding(..))
+import Stella.Compiler.Elaborate.Mechanism.Unify (KindMetaBinding(..), MetaBinding(..), lookupMeta)
 import Stella.Compiler.Elaborate.Surface.Types (readTypes)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), elaborateModule, settleBodies)
 import Stella.Compiler.Elaborate.Surface.Report (elaborationOrigins, printElaborationError, printType)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
-import Stella.Compiler.Elaborate.Surface.Match (Witness(..))
+import Stella.Compiler.Elaborate.Surface.Match (Tail(..), Witness(..))
+import Stella.Compiler.Elaborate.Surface.Expr (tagsOf)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment, viewFor)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
@@ -48,7 +50,7 @@ import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, DecisionTree(..), Export(..), Expr(..), Module, primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
-import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy, unitCtor, unitTy)
+import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy, unitCtor, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Type (RowKey(..), Type(..))
 import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
 import Test.Spec (Spec, describe, it)
@@ -1083,20 +1085,81 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map at r.errors `shouldEqual` []
         checked r \core -> shapes core `shouldEqual` [ "nonrec w" ]
 
-    it "is matched where the row is not decided yet only where a default takes what the row may hold besides" do
+    it "leaves the row open where a default takes what it may hold besides, and closes it where none does" do
       elaborating [ "k v = case v of", "  'A n -> n", "  _ -> 0" ] \r -> do
         map at r.errors `shouldEqual` []
         schemeOf "k" r.values `shouldEqual` Just "forall a. … => [ 'A :: Int, ...a ] -> Int"
         checked r \core -> shapes core `shouldEqual` [ "nonrec k" ]
-      elaborating [ "k v = case v of", "  'A n -> n", "  'B -> 0" ] \r ->
-        map at r.errors `shouldEqual` [ "3:12 outside: a match on a variant whose row is not decided yet" ]
+      elaborating [ "k v = case v of", "  'A n -> n", "  'B -> 0" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "k" r.values `shouldEqual` Just "[ 'A :: Int, 'B :: Unit ] -> Int"
+        case bodyOf "k" r.values of
+          Just (Lam _ _ _ (Case _ _ (SwitchKey _ [ _, _ ] Nothing))) -> pure unit
+          other -> fail ("not closed: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec k" ]
 
-    it "is matched where the row is not decided yet only where the default's guard block always takes what it is given" do
-      elaborating [ "k v = case v of", "  'A n -> n", "  _ where", "      false -> 0" ] \r ->
-        map at r.errors `shouldEqual` [ "3:12 outside: a match on a variant whose row is not decided yet" ]
+    it "closes the row where the default's guard block may fall through, its alternative kept as a join point nothing jumps to" do
+      elaborating [ "k v = case v of", "  'A n -> n", "  _ where", "      false -> 0" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "k" r.values `shouldEqual` Just "[ 'A :: Int ] -> Int"
+        map (String.contains (String.Pattern "(LitInt 0)") <<< show) (bodyOf "k" r.values) `shouldEqual` Just true
+        checked r \core -> shapes core `shouldEqual` [ "nonrec k" ]
       elaborating [ "k v = case v of", "  'A n -> n", "  _ where", "      false -> 0", "      otherwise -> 1" ] \r -> do
         map at r.errors `shouldEqual` []
+        schemeOf "k" r.values `shouldEqual` Just "forall a. … => [ 'A :: Int, ...a ] -> Int"
         checked r \core -> shapes core `shouldEqual` [ "nonrec k" ]
+
+    it "closes a row nothing else decides to the tags its `case` takes, and quantifies no row for it" do
+      elaborating [ "f v = case v of", "  'A -> 1", "  'B -> 2" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "f" r.values `shouldEqual` Just "[ 'A :: Unit, 'B :: Unit ] -> Int"
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ (Case _ _ (SwitchKey _ [ _, _ ] Nothing))) -> pure unit
+          other -> fail ("not closed: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "decides the same whichever is elaborated first, the `case` or what else the variant is given to" do
+      let
+        before h = [ h, "h _ = 0", "g x = let", "    n = case x of", "      'A -> 1", "      'B -> 2", "  in h x" ]
+        after h = [ h, "h _ = 0", "g x = let", "    n = h x", "  in case x of", "    'A -> 1", "    'B -> 2" ]
+        wider = "h :: [ 'A :: Unit, 'B :: Unit, 'C :: Unit ] -> Int"
+        exact = "h :: [ 'A :: Unit, 'B :: Unit ] -> Int"
+      elaborating (before wider) \r -> map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `'C`" ]
+      elaborating (after wider) \r -> map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `'C`" ]
+      elaborating (before exact) \r -> map at r.errors `shouldEqual` []
+      elaborating (after exact) \r -> map at r.errors `shouldEqual` []
+
+    it "closes the instantiation of an open function the variant is given to" do
+      elaborating [ "h :: [ 'A :: Unit, 'B :: Unit, ...r ] -> Int", "h _ = 0", "g x = let", "    n = h x", "  in case x of", "    'A -> 1", "    'B -> 2" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "g" r.values `shouldEqual` Just "[ 'A :: Unit, 'B :: Unit ] -> Int"
+        checked r \core -> shapes core `shouldEqual` [ "nonrec h", "nonrec g" ]
+
+    it "shows a tag the row has come to hold that no alternative takes" do
+      elaborating [ "same :: a -> a -> a", "same a _ = a", "g x = let", "    n = case x of", "      'A -> 1", "      'B -> 2", "  in same x 'C" ] \r ->
+        map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `'C`" ]
+
+    it "leaves open, and shows as `_`, a row a quantifier comes to open" do
+      elaborating [ "g :: [ 'A :: Unit, ...r ] -> Int", "g v = let", "    k = \\w -> case w of", "      'A -> 1", "  in k v" ] \r ->
+        map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `_`" ]
+
+    it "closes a row for a `case` in a local binding, in a body with a signature, and in another `case`'s alternative" do
+      elaborating [ "f x = let", "    g v = case v of", "      'A -> 1", "      'B -> 2", "  in g x" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "f" r.values `shouldEqual` Just "forall a. [ 'A :: Unit, 'B :: Unit ] -> Int / {| ...a |}"
+      elaborating [ "f :: Int", "f = let", "    g = \\v -> case v of", "      'A -> 1", "      'B -> 2", "  in g 'A" ] \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+      elaborating [ "f v w = case v of", "  'A -> case w of", "      'X -> 1", "      'Y -> 2", "  'B -> 3" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "f" r.values `shouldEqual` Just "[ 'A :: Unit, 'B :: Unit ] -> [ 'X :: Unit, 'Y :: Unit ] -> Int"
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "closes a row two `case`s share, the one with a default keeping it" do
+      elaborating [ "f v = let", "    a = case v of", "      'A -> 1", "      'B -> 2", "  in case v of", "    'A -> a", "    _ -> 0" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "f" r.values `shouldEqual` Just "[ 'A :: Unit, 'B :: Unit ] -> Int"
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
 
     it "is reported where its tag stands, in an expression and in a pattern" do
       elaborating [ "f :: [ 'A :: Int ]", "f = 'B 1" ] \r ->
@@ -1847,6 +1910,55 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         r = settleBodies primSession (attemptPending primSession) (snd afterF) (map body [ Tuple "f" 1, Tuple "h" 3 ])
       map at r.errors `shouldEqual` [ "1:1 outside: implicit-handler resolution at this checking boundary" ]
       map _.name r.values `shouldEqual` [ inM "h" ]
+
+    it "closes, a round at a time, a tail a pending `case` comes to need once another's is closed" do
+      case runAttempt primSession (Tuple <$> freshTypeMeta emptyXContext rowType <*> freshTypeMeta emptyXContext rowType) (initialState (SessionId 0) 100) of
+        Tuple (Done (Tuple first second)) state -> do
+          let
+            closedIn metas = case _ of
+              XMeta m -> case lookupMeta metas m of
+                Just (Assigned _) -> true
+                _ -> false
+              _ -> false
+            -- the first closes its tail; the second needs its own closed only
+            -- once the first's is, and is built at 2 where it was
+            leading = { id: PendingCaseId 0, site: siteIn "f" 1, closable: \ms -> Right (if closedIn ms first then [] else [ first ]), assembled: \_ -> pure (EPendingCase (origin 1) (PendingCaseId 1)) }
+            following = { id: PendingCaseId 1, site: siteIn "f" 1, closable: \ms -> Right (if closedIn ms first && not (closedIn ms second) then [ second ] else []), assembled: \ms -> pure (ELit (origin 1) (LitInt (if closedIn ms second then 2 else 1))) }
+            r = settleBodies primSession (attemptPending primSession) state [ (body (Tuple "f" 1)) { body = EPendingCase (origin 1) (PendingCaseId 0), pending = [ leading, following ] } ]
+          map at r.errors `shouldEqual` []
+          map (map (const unit) <<< _.body) r.values `shouldEqual` [ Lit unit (LitInt 2) ]
+        _ -> fail "no metavariables made"
+
+    it "reports a declaration whose tail cannot be closed, leaves one still pending unchecked, and settles the rest" do
+      let
+        -- `f`'s match closes a row holding `a`, which the empty row is not
+        failing = { id: PendingCaseId 0, site: siteIn "f" 1, closable: \_ -> Right [ fieldOf "a" ], assembled: \_ -> pure (ELit (origin 1) (LitInt 1)) }
+        quiet = { id: PendingCaseId 1, site: siteIn "g" 2, closable: \_ -> Right [], assembled: \_ -> pure (ELit (origin 2) (LitInt 1)) }
+        pendingIn (Tuple name line) p = (body (Tuple name line)) { body = EPendingCase (origin line) p.id, pending = [ p ] }
+        r = settleBodies primSession (attemptPending primSession) (initialState (SessionId 0) 100)
+          [ pendingIn (Tuple "f" 1) failing, pendingIn (Tuple "g" 2) quiet, body (Tuple "h" 3) ]
+      map at r.errors `shouldEqual` [ "1:1 rejected", "2:1 left unchecked" ]
+      map _.name r.values `shouldEqual` [ inM "h" ]
+
+    it "breaks where a pending `case` and its record do not stand one to one" do
+      let
+        recorded id = { id: PendingCaseId id, site: siteIn "f" 1, closable: \_ -> Right [], assembled: \_ -> pure (ELit (origin 1) (LitInt 1)) }
+        node id = EPendingCase (origin 1) (PendingCaseId id)
+        settledWith term pending = (settleBodies primSession (attemptPending primSession) (initialState (SessionId 0) 100) [ (body (Tuple "f" 1)) { body = term, pending = pending } ]).errors
+        broken = case _ of
+          [ Broken d ] -> Just d
+          _ -> Nothing
+      broken (settledWith (node 0) []) `shouldEqual` Just (PendingCaseUnrecorded (PendingCaseId 0))
+      broken (settledWith (ELit (origin 1) (LitInt 1)) [ recorded 0 ]) `shouldEqual` Just (PendingCaseNodeless (PendingCaseId 0))
+      broken (settledWith (EApp (origin 1) (node 0) (node 0)) [ recorded 0 ]) `shouldEqual` Just (PendingCaseRepeated (PendingCaseId 0))
+
+    it "takes a tail of a level outside the one settling as one no match may close" do
+      case runAttempt primSession (freshTypeMeta emptyXContext rowType) (initialState (SessionId 0) 100) of
+        Tuple (Done tail) state -> do
+          let variant = XApp (XCon variantTy []) (XRowExtend (XRowTypeEntry (TagKey (Tag "A")) (XCon unitTy [])) tail)
+          (tagsOf 1 state.tentative.metas variant).tail `shouldEqual` External
+          (tagsOf 0 state.tentative.metas variant).tail `shouldEqual` Flexible [ tail ]
+        _ -> fail "no metavariable made"
   where
   primSession = sessionEnvOf primSignature []
   rowType = XKRow RowType
@@ -1865,4 +1977,4 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     )
   inM = Qualified (ModuleName "M") <<< Ident
   siteIn name line = { context: emptyXContext, origin: AtSource { declaration: inM name, origin: origin line } }
-  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, spine: plainScheme { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1), holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [] }
+  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, spine: plainScheme { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1), holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [], pending: [] }

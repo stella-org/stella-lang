@@ -33,7 +33,7 @@ import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis, Breach)
 import Stella.Compiler.Elaborate.Mechanism.Pending (Job, PendingId, SynthRef)
 import Stella.Compiler.Elaborate.Mechanism.Scheduler (Invariant)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError)
-import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId, FitId, RecRefId, TermMetaVar)
+import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId, FitId, PendingCaseId, RecRefId, TermMetaVar)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm)
 import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError)
@@ -277,6 +277,15 @@ data Defect
   -- | A place a `case` leaves uncovered, standing where its term is made Core
   -- | with no record of the match it belongs to.
   | UncoveredUnrecorded CoverageId
+  -- | A `case` left pending where its term is made Core, settling having
+  -- | replaced it with nothing.
+  | PendingCaseLeft PendingCaseId
+  -- | A pending `case` a term holds with no record of the match it belongs to.
+  | PendingCaseUnrecorded PendingCaseId
+  -- | A record of a pending `case` no term holds.
+  | PendingCaseNodeless PendingCaseId
+  -- | A pending `case` the terms of one declaration hold more than once.
+  | PendingCaseRepeated PendingCaseId
   -- | A `case` whose patterns its typing admitted and the compiler of matches
   -- | refused: a column of heads of different domains, a constructor the
   -- | table lacks, or one matched with other than one pattern per field.

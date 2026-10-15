@@ -13,7 +13,8 @@
 -- | pattern, `secondOf` a pattern a `let` binds, `split` one a guard block
 -- | binds, and `rankOf` is a `case _ of`. `area` dispatches on the tags of a
 -- | closed variant, `'Dot` carrying `()`, and `bump` hands on the variant its
--- | default holds whole, widened back by the tag it took.
+-- | default holds whole, widened back by the tag it took; `temperature` writes no
+-- | type, and its `case` closes the row of the variant it matches.
 module Test.Steam.Matches (spec) where
 
 import Prelude
@@ -142,6 +143,10 @@ source =
   , "bumped = bump ('Up 5)"
   , "kept :: [ 'Up :: Int, 'Down :: Int ]"
   , "kept = bump ('Down 7)"
+  , "temperature v = case v of"
+  , "  'Hot -> 1"
+  , "  'Cold -> 2"
+  , "cold = temperature 'Cold"
   ]
 
 spec :: Spec Unit
@@ -202,3 +207,7 @@ spec = describe "Steam, a `case` compiled from source" do
         , Tuple "bumped" "'Up(0)"
         , Tuple "kept" "'Down(7)"
         ]
+
+  it "dispatches on a variant whose row the match itself closes" do
+    running source [ "cold" ] \values ->
+      values `shouldEqual` Map.fromFoldable [ Tuple "cold" "2" ]

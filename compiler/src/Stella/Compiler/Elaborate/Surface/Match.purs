@@ -33,6 +33,10 @@
 -- | tags**, so a variable bound to the variant there is bound to it widened
 -- | back by the tags the dispatch took, in the order taken (`Weaken`).
 -- |
+-- | **A variant whose row holds metavariables the match may close** gives them
+-- | as `Flexible`; `closable` reads off a compiled match the ones whose
+-- | dispatch has a default that leaves values uncovered.
+-- |
 -- | **An alternative may fail once its patterns match**, where a guard block
 -- | falls through. Its row is taken where it matches as any other's is, and
 -- | where it fails the alternatives after it are matched afresh, by a plan of
@@ -45,6 +49,8 @@ module Stella.Compiler.Elaborate.Surface.Match
   , Domain(..)
   , Tags
   , Tail(..)
+  , isClosed
+  , closable
   , coverageDomain
   , Plan(..)
   , Binding
@@ -93,12 +99,14 @@ data Pattern t c
 
 -- | The tags of a variant's row, in the order of their keys, each with the
 -- | type of its payload, and what the row holds besides them.
-type Tags t = { keys :: Array { key :: RowKey, payload :: t }, tail :: Tail }
+type Tags t = { keys :: Array { key :: RowKey, payload :: t }, tail :: Tail t }
 
 -- | What a variant's row holds besides its known tags: nothing; a row
--- | variable bound by a quantifier, which may stand for any other tags; or a
--- | metavariable not yet solved.
-data Tail = Closed | Rigid | Flexible
+-- | variable bound by a quantifier, which may stand for any other tags;
+-- | metavariables not yet solved that the match may close, each given as the
+-- | caller's token; or metavariables it may not, which stand for any other tags
+-- | as a row variable does.
+data Tail t = Closed | Rigid | Flexible (Array t) | External
 
 -- | A row of the matrix: the alternative it belongs to, the label of the
 -- | choice it is where its alternative writes several rows, its patterns, and
@@ -157,7 +165,7 @@ data Plan t
   | SwitchLit Occurrence (Array { lit :: Literal, plan :: Plan t }) (Plan t)
   -- | A dispatch on the tag of a variant, with what the variant's row holds
   -- | besides its known tags.
-  | SwitchKey Occurrence Tail (Array { key :: RowKey, plan :: Plan t }) (Maybe (Plan t))
+  | SwitchKey Occurrence (Tail t) (Array { key :: RowKey, plan :: Plan t }) (Maybe (Plan t))
 
 -- | A variable a pattern binds, the occurrence of the value it is bound to,
 -- | and how that value is made what the variable holds.
@@ -281,7 +289,7 @@ compile table width rows = do
       let present = Array.filter (\k -> Array.elem (HeadTag k.key) column.heads) tags.keys
       branches <- traverse (\k -> { key: k.key, built: _ } <$> tagged k.key) present
       fallback <-
-        if tags.tail == Closed && Array.length present == Array.length tags.keys then pure Nothing
+        if isClosed tags.tail && Array.length present == Array.length tags.keys then pure Nothing
         else Just <$> widened present
       pure
         { plan: SwitchKey column.occurrence tags.tail (map (\b -> { key: b.key, plan: b.built.plan }) branches) (map _.plan fallback)
@@ -311,6 +319,41 @@ compile table width rows = do
       go occs' (Array.concatMap (normalize occs') (specializeTag column.index key work))
 
     widened taken = go removed (Array.concatMap (normalize removed) (map (weakenAt column.occurrence taken) (defaultRows column.index work)))
+
+isClosed :: forall t. Tail t -> Boolean
+isClosed = case _ of
+  Closed -> true
+  _ -> false
+
+-- | The metavariables of the variants a compiled match dispatches on that
+-- | may be closed for its sake: each `Flexible` tail of a dispatch on tags
+-- | whose default leaves values uncovered, there or past a guard block it
+-- | reaches that falls through, in the order the plans meet them.
+closable :: forall t c. Compiled t c -> Array t
+closable compiled = Array.concatMap tails (Array.cons compiled.plan (Array.fromFoldable (Map.values compiled.falls)))
+  where
+  tails = case _ of
+    Leaf _ _ -> []
+    Uncovered -> []
+    SwitchCtor _ branches fallback -> Array.concatMap (tails <<< _.plan) branches <> foldMap tails fallback
+    SwitchLit _ branches fallback -> Array.concatMap (tails <<< _.plan) branches <> tails fallback
+    SwitchKey _ tail branches fallback ->
+      Array.concatMap (tails <<< _.plan) branches
+        <> foldMap (\f -> (if leavesUncovered f then flexible tail else []) <> tails f) fallback
+
+  flexible = case _ of
+    Flexible ms -> ms
+    _ -> []
+
+  -- whether a plan leaves values uncovered, or takes an alternative whose
+  -- guard block falls through to a plan that does; a fall-through point
+  -- matches only the alternatives after its own, so the walk ends
+  leavesUncovered = case _ of
+    Leaf i _ -> maybe false leavesUncovered (Map.lookup i compiled.falls)
+    Uncovered -> true
+    SwitchCtor _ branches fallback -> Array.any (leavesUncovered <<< _.plan) branches || maybe false leavesUncovered fallback
+    SwitchLit _ branches fallback -> Array.any (leavesUncovered <<< _.plan) branches || leavesUncovered fallback
+    SwitchKey _ _ branches fallback -> Array.any (leavesUncovered <<< _.plan) branches || maybe false leavesUncovered fallback
 
 -- | A plan, and the rows its leaves take: each the alternative, and the labels
 -- | of the choices it passed through.
@@ -450,7 +493,13 @@ columnAt table j o rows = do
     Literals all, HeadLiteral l, _ -> Array.elem l all
     Open, HeadLiteral l, HeadLiteral l0 -> litType l == litType l0
     _, _, _ -> false
-  sameTags a b = map _.key a.keys == map _.key b.keys && a.tail == b.tail
+  sameTags a b = map _.key a.keys == map _.key b.keys && sameTail a.tail b.tail
+  sameTail a b = case a, b of
+    Closed, Closed -> true
+    Rigid, Rigid -> true
+    Flexible _, Flexible _ -> true
+    External, External -> true
+    _, _ -> false
   holds tags = case _ of
     HeadTag key
       | Array.any (\k -> k.key == key) tags.keys -> pure unit
@@ -462,7 +511,7 @@ complete c = case c.domain of
   Constructors all -> Array.all (\e -> Array.elem (HeadConstructor e.name) c.heads) all
   Literals all -> Array.all (\l -> Array.elem (HeadLiteral l) c.heads) all
   Open -> false
-  Variant tags -> tags.tail == Closed && Array.all (\k -> Array.elem (HeadTag k.key) c.heads) tags.keys
+  Variant tags -> isClosed tags.tail && Array.all (\k -> Array.elem (HeadTag k.key) c.heads) tags.keys
 
 headArity :: Constructors -> Head -> Int
 headArity table = case _ of
@@ -622,7 +671,7 @@ witness table width rows = search occurrences (Array.concatMap (\r -> plain r.pa
             pure (map (\w -> Array.cons (WitnessTag k.key (fromMaybe WitnessAny (Array.head w)) k.payload) (Array.drop 1 w)) payload)
           case found, tags.tail of
             Just w, _ -> pure (Just w)
-            Nothing, Closed -> pure Nothing
+            Nothing, tail | isClosed tail -> pure Nothing
             Nothing, _ -> map (Array.cons WitnessAny) <$> search rest (map _.patterns (defaultRows 0 rows'))
 
   -- the record pattern a row's first column holds, where it holds one; one
@@ -664,10 +713,10 @@ derive instance Generic (Pattern t c) _
 instance (Show t, Show c) => Show (Pattern t c) where
   show x = genericShow x
 
-derive instance Eq Tail
-derive instance Generic Tail _
+derive instance Eq t => Eq (Tail t)
+derive instance Generic (Tail t) _
 
-instance Show Tail where
+instance Show t => Show (Tail t) where
   show = genericShow
 
 derive instance Eq Head

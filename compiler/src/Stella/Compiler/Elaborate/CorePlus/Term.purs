@@ -20,6 +20,9 @@ module Stella.Compiler.Elaborate.CorePlus.Term
   , FitId(..)
   , RecRefId(..)
   , CoverageId(..)
+  , PendingCaseId(..)
+  , pendingCasesOf
+  , replacePendingCases
   , XExpr(..)
   , XParam
   , XBinding
@@ -56,12 +59,13 @@ import Prim as P
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind(..), fromCoreKind, kindMetasOf, kindVarsOf)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..), fromCore, fromCoreConstraint, fromCoreEntry, freeKindVars, freeRegions, freeRigids, kindMetasOfType, metasOf)
 import Stella.Compiler.TypedCore (Constraint(..), DecisionTree(..), Expr(..), Ident, JoinName, Kind(..), KindVar, Literal, OpClause(..), OpName, Occurrence, Qualified, RegionName, RowEntry(..), RowKey, TyVar, Type(..))
+import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
 import Data.Foldable (foldMap)
 import Data.Generic.Rep (class Generic)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
@@ -82,8 +86,13 @@ newtype RecRefId = RecRefId P.Int
 -- | node and on the record the elaborator keeps of the match.
 newtype CoverageId = CoverageId P.Int
 
--- | A Core⁺ term. Each constructor but the last three mirrors the Core form of
--- | the same name ([Term](../TypedCore/Term.purs)).
+-- | Names a `case` left pending until the declaration it belongs to is
+-- | settled, the same number standing on the node and on the record the
+-- | elaborator keeps of the match.
+newtype PendingCaseId = PendingCaseId P.Int
+
+-- | A Core⁺ term. Each constructor before `EFit` mirrors the Core form of the
+-- | same name ([Term](../TypedCore/Term.purs)); those from it on have none.
 data XExpr a
   = EVar a Ident
   | EGlobal a (Qualified Ident) (P.Array XKind)
@@ -132,6 +141,9 @@ data XExpr a
   | ETermMeta a TermMetaVar
   -- | `hole τ`, a place the author left open. It is reported, never filled.
   | EHole a XType
+  -- | A `case` on a variant whose row is not decided yet, which the match it
+  -- | compiles to replaces once the declaration it belongs to is settled.
+  | EPendingCase a PendingCaseId
 
 type XParam =
   { name :: Ident
@@ -227,6 +239,8 @@ data Residue a
   | ResidualEta a
   -- | A place a `case` leaves uncovered.
   | ResidualUncovered a CoverageId
+  -- | A `case` left pending, which settling replaces: the host's defect.
+  | ResidualPendingCase a PendingCaseId
 
 -- | The variables a term mentions free, one set per class.
 -- |
@@ -285,6 +299,7 @@ xExprAnnotation = case _ of
   ERecursiveRef a _ -> a
   ETermMeta a _ -> a
   EHole a _ -> a
+  EPendingCase a _ -> a
 
 -- | A Core term as a Core⁺ one, which holds nothing unresolved.
 fromCoreExpr :: forall a. Expr a -> XExpr a
@@ -465,6 +480,7 @@ convExpr view = case _ of
       Nothing -> residue (ResidualEta a)
   ETermMeta a m -> residue (ResidualTermMeta a m)
   EHole a ty -> convType a ty *> residue (ResidualHole a ty)
+  EPendingCase a id -> residue (ResidualPendingCase a id)
 
 convParam :: forall a. a -> XParam -> Conv (Residue a) { name :: Ident, ty :: Type }
 convParam at p = { name: p.name, ty: _ } <$> convType at p.ty
@@ -605,6 +621,7 @@ freeVarsOf = case _ of
   ERecursiveRef _ _ -> none
   ETermMeta _ _ -> none
   EHole _ ty -> typeVars ty
+  EPendingCase _ _ -> none
   where
   treeVars = case _ of
     XLeaf e -> freeVarsOf e
@@ -712,6 +729,7 @@ metasOfTerm = case _ of
   ERecursiveRef _ _ -> noMetas
   ETermMeta _ m -> noMetas { terms = Set.singleton m }
   EHole _ ty -> typeMetas ty
+  EPendingCase _ _ -> noMetas
   where
   treeMetas = case _ of
     XLeaf e -> metasOfTerm e
@@ -776,6 +794,7 @@ typesOfTerm = case _ of
   ERecursiveRef _ _ -> []
   ETermMeta _ _ -> []
   EHole _ ty -> [ ty ]
+  EPendingCase _ _ -> []
   where
   treeTypes = case _ of
     XLeaf e -> typesOfTerm e
@@ -838,6 +857,7 @@ termMetasUnderRegions = go Set.empty
     ERecursiveRef _ _ -> []
     ETermMeta _ m -> [ { meta: m, bound } ]
     EHole _ _ -> []
+    EPendingCase _ _ -> []
 
   tree bound = case _ of
     XLeaf e -> go bound e
@@ -873,9 +893,116 @@ derive instance Eq RecRefId
 derive instance Ord RecRefId
 derive newtype instance Show RecRefId
 
+-- | The pending `case`s a term holds, each as often as it stands there.
+pendingCasesOf :: forall a. XExpr a -> P.Array PendingCaseId
+pendingCasesOf = case _ of
+  EPendingCase _ id -> [ id ]
+  e -> Array.concatMap pendingCasesOf (subterms e)
+
+-- | A term with each pending `case` the function given has a term for
+-- | replaced by it, a replacement holding pending `case`s replaced in turn.
+replacePendingCases :: forall a. (PendingCaseId -> Maybe (XExpr a)) -> XExpr a -> XExpr a
+replacePendingCases replacement = go
+  where
+  go = case _ of
+    EPendingCase a id -> maybe (EPendingCase a id) go (replacement id)
+    e -> mapSubterms go e
+
+-- | The terms a term holds directly, in the order it holds them: in its
+-- | decision tree and its handler's clauses as well as in its own fields.
+subterms :: forall a. XExpr a -> P.Array (XExpr a)
+subterms = case _ of
+  ELam _ _ _ body -> [ body ]
+  EApp _ f x -> [ f, x ]
+  ETyLam _ _ _ body -> [ body ]
+  ETyApp _ e _ -> [ e ]
+  EConstraintLam _ _ body -> [ body ]
+  EConstraintApp _ e -> [ e ]
+  ELet _ _ _ v body -> [ v, body ]
+  ELetRec _ bindings body -> map _.value bindings <> [ body ]
+  ECase _ scrutinees dt -> scrutinees <> tree dt
+  ELetJoin _ _ _ _ v body -> [ v, body ]
+  EJump _ _ args -> args
+  ERecordExtend _ _ v rest -> [ v, rest ]
+  ERecordSelect _ _ e -> [ e ]
+  ERecordRestrict _ _ e -> [ e ]
+  ERecordUpdate _ _ rec v -> [ rec, v ]
+  ERecordMerge _ l r -> [ l, r ]
+  EVariantInject _ _ _ v -> [ v ]
+  EVariantWeaken _ _ _ e -> [ e ]
+  EVariantAbsurd _ _ e -> [ e ]
+  EPerform _ _ _ _ arg -> [ arg ]
+  EHandle _ body h -> [ body, h.returnClause.body ] <> map clauseBody h.opClauses
+  ERegion _ _ _ initial body -> initial <> [ body ]
+  EWriteCell _ _ _ v -> [ v ]
+  EOpenEff _ _ e -> [ e ]
+  EFit _ _ e -> [ e ]
+  EEta _ _ e -> [ e ]
+  _ -> []
+  where
+  tree = case _ of
+    XLeaf e -> [ e ]
+    XBind _ _ dt -> tree dt
+    XSwitchCtor _ branches d -> Array.concatMap (tree <<< _.tree) branches <> foldMap tree d
+    XSwitchLit _ branches d -> Array.concatMap (tree <<< _.tree) branches <> tree d
+    XSwitchKey _ branches d -> Array.concatMap (tree <<< _.tree) branches <> foldMap tree d
+    XGuard e yes no -> [ e ] <> tree yes <> tree no
+    XUncovered _ -> []
+  clauseBody = case _ of
+    XFullClause c -> c.body
+    XFastClause c -> c.body
+
+-- | A term with each term it holds directly, as `subterms` gives them, the
+-- | function given applied to it, and nothing else changed.
+mapSubterms :: forall a. (XExpr a -> XExpr a) -> XExpr a -> XExpr a
+mapSubterms f = case _ of
+  ELam a x t body -> ELam a x t (f body)
+  EApp a g x -> EApp a (f g) (f x)
+  ETyLam a name k body -> ETyLam a name k (f body)
+  ETyApp a e t -> ETyApp a (f e) t
+  EConstraintLam a c body -> EConstraintLam a c (f body)
+  EConstraintApp a e -> EConstraintApp a (f e)
+  ELet a x t v body -> ELet a x t (f v) (f body)
+  ELetRec a bindings body -> ELetRec a (map (\b -> b { value = f b.value }) bindings) (f body)
+  ECase a scrutinees dt -> ECase a (map f scrutinees) (tree dt)
+  ELetJoin a j params result v body -> ELetJoin a j params result (f v) (f body)
+  EJump a j args -> EJump a j (map f args)
+  ERecordExtend a key v rest -> ERecordExtend a key (f v) (f rest)
+  ERecordSelect a key e -> ERecordSelect a key (f e)
+  ERecordRestrict a key e -> ERecordRestrict a key (f e)
+  ERecordUpdate a key rec v -> ERecordUpdate a key (f rec) (f v)
+  ERecordMerge a l r -> ERecordMerge a (f l) (f r)
+  EVariantInject a key row v -> EVariantInject a key row (f v)
+  EVariantWeaken a key t e -> EVariantWeaken a key t (f e)
+  EVariantAbsurd a t e -> EVariantAbsurd a t (f e)
+  EPerform a key op tyArgs arg -> EPerform a key op tyArgs (f arg)
+  EHandle a body h -> EHandle a (f body) h { returnClause { body = f h.returnClause.body }, opClauses = map clause h.opClauses }
+  ERegion a name cells initial body -> ERegion a name cells (map f initial) (f body)
+  EWriteCell a name key v -> EWriteCell a name key (f v)
+  EOpenEff a row e -> EOpenEff a row (f e)
+  EFit a fit e -> EFit a fit (f e)
+  EEta a contractible e -> EEta a contractible (f e)
+  e -> e
+  where
+  tree = case _ of
+    XLeaf e -> XLeaf (f e)
+    XBind x o dt -> XBind x o (tree dt)
+    XSwitchCtor o branches d -> XSwitchCtor o (map (\b -> b { tree = tree b.tree }) branches) (map tree d)
+    XSwitchLit o branches d -> XSwitchLit o (map (\b -> b { tree = tree b.tree }) branches) (tree d)
+    XSwitchKey o branches d -> XSwitchKey o (map (\b -> b { tree = tree b.tree }) branches) (map tree d)
+    XGuard e yes no -> XGuard (f e) (tree yes) (tree no)
+    XUncovered id -> XUncovered id
+  clause = case _ of
+    XFullClause c -> XFullClause c { body = f c.body }
+    XFastClause c -> XFastClause c { body = f c.body }
+
 derive instance Eq CoverageId
 derive instance Ord CoverageId
 derive newtype instance Show CoverageId
+
+derive instance Eq PendingCaseId
+derive instance Ord PendingCaseId
+derive newtype instance Show PendingCaseId
 
 derive instance Eq a => Eq (XExpr a)
 derive instance Functor XExpr
