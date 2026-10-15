@@ -152,8 +152,8 @@ binder supply b = case b of
     Nothing -> pure { binder: BinderInvalid o, supply }
   CST.BinderConstructor n args -> constructor n args
   CST.BinderTag n args -> case args of
-    [] -> done (BinderTag o (Tag n.name) Nothing)
-    [ payload ] -> binder supply payload <#> \r -> r { binder = BinderTag o (Tag n.name) (Just r.binder) }
+    [] -> done (BinderTag o (originOf n.range) (Tag n.name) Nothing)
+    [ payload ] -> binder supply payload <#> \r -> r { binder = BinderTag o (originOf n.range) (Tag n.name) (Just r.binder) }
     _ -> invalid TagPayloadMany
   CST.BinderBoolean _ v -> done (BinderLiteral o (LitBoolean v))
   CST.BinderInt l -> done (BinderLiteral o (LitInt l.value))
@@ -252,7 +252,7 @@ refutableParts b = case b of
   BinderConstructor o q args -> constructorOf q >>= case _ of
     Just c | c.siblings == 1 -> parts args
     _ -> pure [ o ]
-  BinderTag o _ _ -> pure [ o ]
+  BinderTag o _ _ _ -> pure [ o ]
   BinderLiteral o _ -> pure [ o ]
   BinderOr o _ -> pure [ o ]
   BinderInvalid _ -> pure []

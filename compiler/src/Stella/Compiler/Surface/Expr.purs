@@ -59,8 +59,10 @@ data Expr
   | ExprOperation Origin (Qualified Ident) (Maybe Symbol)
   -- | `C?`, the predicate that holds of a value built with the constructor `C`.
   | ExprDiscriminator Origin (Qualified Ident)
-  -- | `'Ok`, injecting its argument into a variant at that tag.
-  | ExprTag Origin Tag
+  -- | `'Ok e`, the value `e` injected into a variant at the tag `'Ok`, with where
+  -- | the tag is written. A tag written with no payload, `'None`, carries `()`. A
+  -- | tag is no function: it is applied to its payload where it is written.
+  | ExprTag Origin Origin Tag (Maybe Expr)
   | ExprLiteral Origin Literal
   -- | `?name`, a typed hole. `?_` holds `_`.
   | ExprHole Origin String
@@ -98,7 +100,7 @@ exprOrigin = case _ of
   ExprConstructor o _ -> o
   ExprOperation o _ _ -> o
   ExprDiscriminator o _ -> o
-  ExprTag o _ -> o
+  ExprTag o _ _ _ -> o
   ExprLiteral o _ -> o
   ExprHole o _ -> o
   ExprApp o _ _ -> o
@@ -168,8 +170,9 @@ data Binder
   | BinderAs Origin LocalVar Binder
   -- | A constructor and a pattern for each field. `()` is `Prim.Unit`.
   | BinderConstructor Origin (Qualified Ident) (Array Binder)
-  -- | A tag, and a pattern for its payload where one is written.
-  | BinderTag Origin Tag (Maybe Binder)
+  -- | A tag with where it is written, and a pattern for its payload where one
+  -- | is written.
+  | BinderTag Origin Origin Tag (Maybe Binder)
   | BinderLiteral Origin Literal
   | BinderTuple Origin (Array Binder)
   | BinderRecord Origin (Array RecordBinderField) (Maybe RecordRest)
@@ -185,7 +188,7 @@ binderOrigin = case _ of
   BinderVar o _ -> o
   BinderAs o _ _ -> o
   BinderConstructor o _ _ -> o
-  BinderTag o _ _ -> o
+  BinderTag o _ _ _ -> o
   BinderLiteral o _ -> o
   BinderTuple o _ -> o
   BinderRecord o _ _ -> o

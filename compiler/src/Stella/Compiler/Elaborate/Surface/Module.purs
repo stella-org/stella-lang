@@ -168,7 +168,7 @@ data ElaborationError
   -- | A `case` that leaves values uncovered, where it is written, and a
   -- | vector of values it does not match. This version reports such a match,
   -- | `Prelude.Partial` not being supplied.
-  | NonExhaustiveMatch Surface.Origin (Array Witness)
+  | NonExhaustiveMatch Surface.Origin (Array (Witness XType))
   -- | An expression hole, where it is written, by its name, the type it
   -- | stands for as far as it is decided, and the locals in scope there that
   -- | source can name, each at its type.
@@ -730,7 +730,7 @@ annotated metas holes wildcards unwritten expressionHoles uncovered = { reported
     <> map TypeUndetermined (Array.nubEq (map _.origin open))
     <> map KindUndetermined (Array.nubEq (map _.origin undecided))
     <> map (\h -> ExpressionHoleStands h.origin h.name (substitute metas h.type) (map (\x -> x { type = substitute metas x.type }) h.context)) expressionHoles
-    <> map (\m -> NonExhaustiveMatch m.origin m.witness) uncovered
+    <> map (\m -> NonExhaustiveMatch m.origin (map (map (substitute metas)) m.witness)) uncovered
   written = map (\h -> { type: h.type, kind: h.kind }) holes <> map (\w -> { type: w.type, kind: w.kind }) wildcards <> map (\h -> { type: h.type, kind: XKType }) expressionHoles
   types = Set.unions (map typeMetas written)
   kinds = Set.unions (map kindMetas written)

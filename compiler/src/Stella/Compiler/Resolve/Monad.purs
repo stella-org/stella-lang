@@ -434,7 +434,7 @@ printResolveReason = case _ of
     "The constructor `" <> n <> "` has " <> show fields <> " field(s), and is matched here with " <> show written <> " pattern(s)"
   PatternCount written scrutinees ->
     "This row has " <> show written <> " pattern(s), and the `case` matches " <> show scrutinees <> " value(s): one pattern is written per value"
-  TagPayloadMany -> "A tag carries one value; match several with a tuple, `'T (a, b)`"
+  TagPayloadMany -> "A tag carries one value; write several as a tuple, `'T (a, b)`"
   NumberPattern -> "A `Number` cannot be matched by a literal; compare it in a guard"
   OrPatternBinds -> "The choices of an or-pattern cannot bind variables"
   NotAPattern -> "This is not a pattern"

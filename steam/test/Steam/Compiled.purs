@@ -28,7 +28,7 @@ import Stella.Compiler.Interface.Environment (initialEnvironment)
 import Stella.Compiler.Macro.Run (ParseOutcome(..), defaultSettings)
 import Stella.Compiler.Macro.Tree (Position(..))
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
-import Stella.Compiler.TypedCore.Name (Symbol(..))
+import Stella.Compiler.TypedCore.Name (Symbol(..), Tag(..))
 import Test.Spec.Assertions (fail)
 
 -- | The module `Main` the lines given write, compiled, loaded, and each of its
@@ -66,7 +66,8 @@ running source globals k = do
     Just x -> f x
 
 -- | A value as `Some(2)`, a constructor named by the store, or as
--- | `{a: 1, b: true}`, a record's fields in the order of their keys' names.
+-- | `{a: 1, b: true}`, a record's fields in the order of their keys' names, or
+-- | as `'Ok(1)`, a variant's tag and its payload.
 render :: Identities -> Value -> P.String
 render known = go
   where
@@ -85,8 +86,10 @@ render known = go
         named = Array.sortWith (\(Tuple k _) -> k) (map (\(Tuple id v) -> Tuple (keyName id) (go v)) (Map.toUnfoldable fields))
       in
         fmt @"{open}{fields}{close}" { open: "{", fields: joinWith ", " (map (\(Tuple k v) -> fmt @"{k}: {v}" { k, v }) named), close: "}" }
+    VVariant id payload -> fmt @"{tag}({payload})" { tag: keyName id, payload: go payload }
     _ -> "…"
   keyName id = case Map.lookup id known.keyNames of
     Just (KSymbol (Symbol s)) -> s
     Just (KPosition n) -> show n
+    Just (KTag (Tag t)) -> "'" <> t
     _ -> "?"

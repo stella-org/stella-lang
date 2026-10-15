@@ -15,11 +15,11 @@ import Prim hiding (Row)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
-import Stella.Compiler.Elaborate.Surface.Match (Compiled, Row, Domain(..), Head(..), MatchError(..), Pattern(..), Plan(..), Witness(..), compile, coverageDomain, witness)
-import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..))
+import Stella.Compiler.Elaborate.Surface.Match (Binding, Compiled, Domain(..), Head(..), MatchError(..), Pattern(..), Plan(..), Row, Tags, Tail(..), Transform(..), Witness(..), compile, coverageDomain, witness)
+import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..), TyName(..))
 import Stella.Compiler.TypedCore.Prim (unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
 import Stella.Compiler.TypedCore.Type (RowKey(..))
@@ -65,30 +65,30 @@ table = Map.fromFoldable
   ]
 
 -- | A row of the alternative given, written as one row.
-row :: Int -> Array (Pattern String) -> Row String
+row :: Int -> Array (Pattern String String) -> Row String String
 row alternative patterns = { alternative, choice: Nothing, patterns, fallible: false }
 
 -- | A row of the alternative given, written as the choice labelled.
-choice :: Int -> String -> Array (Pattern String) -> Row String
+choice :: Int -> String -> Array (Pattern String String) -> Row String String
 choice alternative label patterns = { alternative, choice: Just label, patterns, fallible: false }
 
 -- | A row of the alternative given whose guard block may fall through.
-fallible :: Int -> Array (Pattern String) -> Row String
+fallible :: Int -> Array (Pattern String String) -> Row String String
 fallible alternative patterns = { alternative, choice: Nothing, patterns, fallible: true }
 
-c :: Qualified Ident -> Array (Pattern String) -> Pattern String
+c :: Qualified Ident -> Array (Pattern String String) -> Pattern String String
 c = PCtor
 
-v :: String -> Pattern String
+v :: String -> Pattern String String
 v = PVar <<< Ident
 
-int :: Int -> Pattern String
+int :: Int -> Pattern String String
 int = PLit <<< LitInt
 
-bool :: Boolean -> Pattern String
+bool :: Boolean -> Pattern String String
 bool = PLit <<< LitBoolean
 
-or :: Array (Tuple String (Pattern String)) -> Pattern String
+or :: Array (Tuple String (Pattern String String)) -> Pattern String String
 or choices = POr (map (\(Tuple label pattern) -> { label, pattern }) choices)
 
 s :: Int -> Occurrence
@@ -97,26 +97,26 @@ s = OccScrutinee
 field :: Occurrence -> Qualified Ident -> Int -> Occurrence
 field = OccField
 
-bound :: String -> Occurrence -> { name :: Ident, occurrence :: Occurrence, restricted :: Array RowKey }
-bound name occurrence = { name: Ident name, occurrence, restricted: [] }
+bound :: String -> Occurrence -> Binding String
+bound name occurrence = { name: Ident name, occurrence, transform: Identity }
 
 -- | The rest of a record bound to a variable: the record at the occurrence
 -- | given without the keys given.
-restOf :: String -> Occurrence -> Array String -> { name :: Ident, occurrence :: Occurrence, restricted :: Array RowKey }
-restOf name occurrence keys = { name: Ident name, occurrence, restricted: map keyOf keys }
+restOf :: String -> Occurrence -> Array String -> Binding String
+restOf name occurrence keys = { name: Ident name, occurrence, transform: Restrict (map keyOf keys) }
 
 keyOf :: String -> RowKey
 keyOf = SymbolKey <<< Symbol
 
 -- | A closed record pattern, its fields in the order given.
-closed :: Array (Tuple String (Pattern String)) -> Pattern String
+closed :: Array (Tuple String (Pattern String String)) -> Pattern String String
 closed fields = PRecord { fields: map (\(Tuple k p) -> { key: keyOf k, pattern: p }) fields, rest: Nothing, open: false }
 
 -- | An open record pattern, binding its rest where a name is given.
-opened :: Array (Tuple String (Pattern String)) -> Maybe String -> Pattern String
+opened :: Array (Tuple String (Pattern String String)) -> Maybe String -> Pattern String String
 opened fields rest = PRecord { fields: map (\(Tuple k p) -> { key: keyOf k, pattern: p }) fields, rest: map Ident rest, open: true }
 
-tuple :: Array (Pattern String) -> Pattern String
+tuple :: Array (Pattern String String) -> Pattern String String
 tuple parts = PRecord { fields: Array.mapWithIndex (\i p -> { key: PositionKey i, pattern: p }) parts, rest: Nothing, open: false }
 
 at :: Occurrence -> String -> Occurrence
@@ -125,8 +125,39 @@ at o k = OccRecordField o (keyOf k)
 position :: Occurrence -> Int -> Occurrence
 position o i = OccRecordField o (PositionKey i)
 
+tagOf :: String -> RowKey
+tagOf = TagKey <<< Tag
+
+-- | The tags `'A` and `'B`, their payloads at `a` and `b`, and the tail given.
+ab :: Tail -> Tags String
+ab tail = { keys: [ { key: tagOf "A", payload: "a" }, { key: tagOf "B", payload: "b" } ], tail }
+
+tag :: Tags String -> String -> Pattern String String -> Pattern String String
+tag domain name payload = PTag { key: tagOf name, payload, domain }
+
+payloadAt :: Occurrence -> String -> Occurrence
+payloadAt o name = OccVariantPayload o (tagOf name)
+
+-- | A variable bound to the variant at the occurrence given, widened by the
+-- | tags given, each with its payload's type.
+widened :: String -> Occurrence -> Array (Tuple String String) -> Binding String
+widened name occurrence tags = { name: Ident name, occurrence, transform: Weaken (map (\(Tuple k p) -> { key: tagOf k, payload: p }) tags) }
+
+-- | Every variable a leaf of a plan binds.
+bindingsOf :: Plan String -> Array (Binding String)
+bindingsOf = case _ of
+  Leaf _ bindings -> bindings
+  Uncovered -> []
+  SwitchCtor _ branches fallback -> Array.concatMap (bindingsOf <<< _.plan) branches <> maybe [] bindingsOf fallback
+  SwitchLit _ branches fallback -> Array.concatMap (bindingsOf <<< _.plan) branches <> bindingsOf fallback
+  SwitchKey _ _ branches fallback -> Array.concatMap (bindingsOf <<< _.plan) branches <> maybe [] bindingsOf fallback
+
+-- | The domain of the column a constructor or a literal stands in.
+domainOf :: Head -> Maybe (Domain String)
+domainOf = coverageDomain table
+
 -- | The plan a matrix of the width given compiles to.
-planned :: Int -> Array (Row String) -> (Plan -> Compiled String -> Aff Unit) -> Aff Unit
+planned :: Int -> Array (Row String String) -> (Plan String -> Compiled String String -> Aff Unit) -> Aff Unit
 planned width rows k = case compile table width rows of
   Right compiled -> k compiled.plan compiled
   Left err -> fail (show err)
@@ -135,16 +166,16 @@ spec :: Spec Unit
 spec = describe "Elaborate.Surface.Match" do
   describe "the domain of a column" do
     it "of a constructor is its data type's constructors, in the order of their tags" do
-      coverageDomain table (HeadConstructor green) `shouldEqual`
+      domainOf (HeadConstructor green) `shouldEqual`
         Just (Constructors [ { name: red, arity: 0 }, { name: green, arity: 0 }, { name: blue, arity: 0 } ])
-      coverageDomain table (HeadConstructor unitCtor) `shouldEqual` Just (Constructors [ { name: unitCtor, arity: 0 } ])
+      domainOf (HeadConstructor unitCtor) `shouldEqual` Just (Constructors [ { name: unitCtor, arity: 0 } ])
 
     it "of a `Boolean` is its two literals, `false` first, and of any other literal open" do
-      coverageDomain table (HeadLiteral (LitBoolean true)) `shouldEqual` Just (Literals [ LitBoolean false, LitBoolean true ])
-      coverageDomain table (HeadLiteral (LitInt 0)) `shouldEqual` Just Open
+      domainOf (HeadLiteral (LitBoolean true)) `shouldEqual` Just (Literals [ LitBoolean false, LitBoolean true ])
+      domainOf (HeadLiteral (LitInt 0)) `shouldEqual` Just Open
 
     it "of a constructor the table does not hold is none" do
-      coverageDomain table (HeadConstructor (ctor "Nope")) `shouldEqual` Nothing
+      domainOf (HeadConstructor (ctor "Nope")) `shouldEqual` Nothing
 
   describe "a plan" do
     it "dispatches on a data type its alternatives exhaust with no default, binding a field where a leaf takes it" do
@@ -336,3 +367,56 @@ spec = describe "Elaborate.Surface.Match" do
       witness table 1 [ row 0 [ opened [ Tuple "x" (c none []) ] Nothing ], row 1 [ closed [ Tuple "x" (c some [ int 0 ]) ] ] ] `shouldEqual`
         Right (Just [ WitnessRecord { fields: [ { key: keyOf "x", witness: WitnessConstructor some [ WitnessAny ] } ], open: false } ])
       witness table 1 [ row 0 [ opened [ Tuple "x" PAny ] Nothing ] ] `shouldEqual` Right Nothing
+
+  describe "a tag pattern" do
+    it "dispatches on the tags of a closed row with no default where every tag is taken" do
+      planned 1 [ row 0 [ tag (ab Closed) "A" (v "x") ], row 1 [ tag (ab Closed) "B" PAny ] ] \plan compiled -> do
+        plan `shouldEqual`
+          SwitchKey (s 0) Closed
+            [ { key: tagOf "A", plan: Leaf 0 [ bound "x" (payloadAt (s 0) "A") ] }, { key: tagOf "B", plan: Leaf 1 [] } ]
+            Nothing
+        compiled.references `shouldEqual` Map.fromFoldable [ Tuple 0 1, Tuple 1 1 ]
+
+    it "has a default where a tag is not taken, or the row holds more than its tags" do
+      planned 1 [ row 0 [ tag (ab Closed) "A" PAny ] ] \plan _ ->
+        plan `shouldEqual` SwitchKey (s 0) Closed [ { key: tagOf "A", plan: Leaf 0 [] } ] (Just Uncovered)
+      planned 1 [ row 0 [ tag (ab Rigid) "A" PAny ], row 1 [ tag (ab Rigid) "B" PAny ] ] \plan _ ->
+        plan `shouldEqual`
+          SwitchKey (s 0) Rigid [ { key: tagOf "A", plan: Leaf 0 [] }, { key: tagOf "B", plan: Leaf 1 [] } ] (Just Uncovered)
+
+    it "takes each tag an or-pattern chooses" do
+      planned 1 [ row 0 [ or [ Tuple "a" (tag (ab Closed) "A" PAny), Tuple "b" (tag (ab Closed) "B" PAny) ] ] ] \plan _ ->
+        plan `shouldEqual`
+          SwitchKey (s 0) Closed [ { key: tagOf "A", plan: Leaf 0 [] }, { key: tagOf "B", plan: Leaf 0 [] } ] Nothing
+
+    it "widens a variable a default binds by the tags taken, in the order taken, and none a branch binds" do
+      planned 1 [ row 0 [ tag (ab Rigid) "A" PAny ], row 1 [ tag (ab Rigid) "B" PAny ], row 2 [ v "x" ] ] \plan _ ->
+        plan `shouldEqual`
+          SwitchKey (s 0) Rigid
+            [ { key: tagOf "A", plan: Leaf 0 [] }, { key: tagOf "B", plan: Leaf 1 [] } ]
+            (Just (Leaf 2 [ widened "x" (s 0) [ Tuple "A" "a", Tuple "B" "b" ] ]))
+      planned 1 [ row 0 [ PAs (Ident "y") (tag (ab Rigid) "A" PAny) ], row 1 [ v "x" ] ] \plan _ ->
+        plan `shouldEqual`
+          SwitchKey (s 0) Rigid
+            [ { key: tagOf "A", plan: Leaf 0 [ bound "y" (s 0) ] } ]
+            (Just (Leaf 1 [ widened "x" (s 0) [ Tuple "A" "a" ] ]))
+
+    it "widens by the payload its occurrence's domain gives a tag, not by the tag alone" do
+      let
+        ofInt = { keys: [ { key: tagOf "A", payload: "Int" } ], tail: Rigid }
+        ofString = { keys: [ { key: tagOf "A", payload: "String" } ], tail: Rigid }
+      planned 2 [ row 0 [ tag ofInt "A" PAny, tag ofString "A" PAny ], row 1 [ v "x", v "y" ] ] \plan _ -> do
+        Array.elem (widened "x" (s 0) [ Tuple "A" "Int" ]) (bindingsOf plan) `shouldEqual` true
+        Array.elem (widened "y" (s 1) [ Tuple "A" "String" ]) (bindingsOf plan) `shouldEqual` true
+
+    it "is refused where the tag patterns of one column carry different domains, or its domain does not hold its tag" do
+      map _.plan (compile table 1 [ row 0 [ tag (ab Closed) "A" PAny ], row 1 [ tag (ab Rigid) "B" PAny ] ]) `shouldEqual` Left (DomainMismatch (s 0))
+      map _.plan (compile table 1 [ row 0 [ tag (ab Closed) "C" PAny ] ]) `shouldEqual` Left (UnknownTag (s 0) (tagOf "C"))
+      map _.plan (compile table 1 [ row 0 [ tag (ab Closed) "A" PAny ], row 1 [ c none [] ] ]) `shouldEqual` Left (IncompatibleHeads (s 0))
+
+    it "is shown in a witness by the first tag not matched, with its payload's type, and `_` for the rest of an open row" do
+      witness table 1 [ row 0 [ tag (ab Closed) "A" PAny ] ] `shouldEqual` Right (Just [ WitnessTag (tagOf "B") WitnessAny "b" ])
+      witness table 1 [ row 0 [ tag (ab Closed) "A" (c none []) ], row 1 [ tag (ab Closed) "B" PAny ] ] `shouldEqual`
+        Right (Just [ WitnessTag (tagOf "A") (WitnessConstructor some [ WitnessAny ]) "a" ])
+      witness table 1 [ row 0 [ tag (ab Rigid) "A" PAny ], row 1 [ tag (ab Rigid) "B" PAny ] ] `shouldEqual` Right (Just [ WitnessAny ])
+      witness table 1 [ row 0 [ tag (ab Closed) "A" PAny ], row 1 [ tag (ab Closed) "B" PAny ] ] `shouldEqual` Right Nothing

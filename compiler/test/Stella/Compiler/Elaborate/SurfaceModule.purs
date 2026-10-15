@@ -47,7 +47,7 @@ import Stella.Compiler.Surface.Origin (rangeOf)
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, DecisionTree(..), Export(..), Expr(..), Module, primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy, unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Type (RowKey(..), Type(..))
 import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
@@ -268,7 +268,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         , "bad :: Int"
         , "bad = inc"
         , "lam :: Int"
-        , "lam = 'A"
+        , "lam = Unit?"
         , "open :: Int"
         , "open = const 1 id"
         , "ok :: Int"
@@ -1013,6 +1013,96 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map at r.errors `shouldEqual` []
         map (\name -> schemeOf name r.values) [ "pick", "first" ] `shouldEqual` map Just [ "forall a. forall b. … => { x :: b, ...a } -> b", "forall a. forall b. (a, b) -> a" ]
         checked r \core -> shapes core `shouldEqual` [ "nonrec pick", "nonrec first", "nonrec g" ]
+
+  describe "a tag" do
+    let
+      schemeOf name values = map (\v -> printType (fromCore v.scheme.body)) (Array.find (\x -> x.name == inM name) values)
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+      tagKey = TagKey <<< Tag
+      -- whether a Core term holds a `weaken`
+      weakens = maybe false exprWeakens
+      treeOf = case _ of
+        TyLam _ _ _ e -> treeOf e
+        ConstraintLam _ _ e -> treeOf e
+        Lam _ _ _ e -> treeOf e
+        Case _ _ tree -> treeWeakens tree
+        _ -> false
+      treeWeakens = case _ of
+        Leaf e -> exprWeakens e
+        Bind _ _ t -> treeWeakens t
+        SwitchKey _ branches fallback -> Array.any (treeWeakens <<< _.tree) branches || maybe false treeWeakens fallback
+        _ -> false
+      exprWeakens = case _ of
+        Let _ _ _ (VariantWeaken _ _ _ _) _ -> true
+        Let _ _ _ _ e -> exprWeakens e
+        e -> treeOf e
+    it "injects its payload, `()` where none is written, at a row the rest lacks it from, and the Core checker accepts it" do
+      elaborating [ "data List a = Nil | Cons a (List a)", "mk x = 'Ok x", "none = 'None", "pair x = ('A, x)", "field = { a: 'A }", "listed :: List [ 'A :: Int, 'B :: Unit ]", "listed = Cons ('A 1) (Cons 'B Nil)" ] \r -> do
+        map at r.errors `shouldEqual` []
+        map (\name -> schemeOf name r.values) [ "mk", "none" ] `shouldEqual` map Just
+          [ "forall a. forall b. … => a -> [ 'Ok :: a, ...b ]"
+          , "forall a. … => [ 'None :: Unit, ...a ]"
+          ]
+        case bodyOf "none" r.values of
+          Just (TyLam _ _ _ (ConstraintLam _ _ (VariantInject _ k (TVar _) (Global _ u [])))) | k == tagKey "None" && u == unitCtor -> pure unit
+          other -> fail ("not injected: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec mk", "nonrec none", "nonrec pair", "nonrec field", "nonrec listed" ]
+
+    it "checks its payload against the type the variant expected gives the tag" do
+      elaborating [ "c :: [ 'F :: forall a. a -> a ]", "c = 'F (\\x -> x)" ] \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec c" ]
+
+    it "is matched against the tags of a closed variant, no default where every tag is taken" do
+      elaborating [ "f :: [ 'A :: Int, 'B :: Boolean ] -> Int", "f v = case v of", "  'A n -> n", "  'B _ -> 0" ] \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ (Case _ _ (SwitchKey (OccScrutinee 0) [ { key: a }, { key: b } ] Nothing))) | [ a, b ] == map tagKey [ "A", "B" ] -> pure unit
+          other -> fail ("not dispatched: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "needs a default where the variant's row is open by a variable a quantifier binds" do
+      elaborating [ "g :: [ 'A :: Int, ... ] -> Int", "g v = case v of", "  'A n -> n" ] \r ->
+        map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `_`" ]
+      elaborating [ "g :: [ 'A :: Int, ... ] -> Int", "g v = case v of", "  'A n -> n", "  _ -> 0" ] \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec g" ]
+
+    it "is shown in a value a match leaves uncovered by its tag, its payload where it is no `()`" do
+      elaborating [ "f :: [ 'A :: Int, 'B :: Unit ] -> Int", "f v = case v of", "  'A n -> n" ] \r ->
+        map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `'B`" ]
+      elaborating [ "f :: [ 'A :: Int, 'B :: Int ] -> Int", "f v = case v of", "  'A n -> n" ] \r ->
+        map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `'B _`" ]
+
+    it "binds the variant whole in a default, widened by the tags its dispatch took" do
+      elaborating [ "h :: [ 'A :: Int, 'B :: Int, ... ] -> [ 'A :: Int, 'B :: Int, ... ]", "h v = case v of", "  'A n -> 'A (inc n)", "  other -> other" ] \r -> do
+        map at r.errors `shouldEqual` []
+        weakens (bodyOf "h" r.values) `shouldEqual` true
+        checked r \core -> shapes core `shouldEqual` [ "nonrec h" ]
+      elaborating [ "w :: ([ 'A :: Int, ...r ], [ 'A :: Boolean, ...s ]) -> ([ 'A :: Int, ...r ], [ 'A :: Boolean, ...s ])", "w p = case p of", "  ('A n, 'A _) -> ('A n, 'A true)", "  (x, y) -> (x, y)" ] \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec w" ]
+
+    it "is matched where the row is not decided yet only where a default takes what the row may hold besides" do
+      elaborating [ "k v = case v of", "  'A n -> n", "  _ -> 0" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "k" r.values `shouldEqual` Just "forall a. … => [ 'A :: Int, ...a ] -> Int"
+        checked r \core -> shapes core `shouldEqual` [ "nonrec k" ]
+      elaborating [ "k v = case v of", "  'A n -> n", "  'B -> 0" ] \r ->
+        map at r.errors `shouldEqual` [ "3:12 outside: a match on a variant whose row is not decided yet" ]
+
+    it "is matched where the row is not decided yet only where the default's guard block always takes what it is given" do
+      elaborating [ "k v = case v of", "  'A n -> n", "  _ where", "      false -> 0" ] \r ->
+        map at r.errors `shouldEqual` [ "3:12 outside: a match on a variant whose row is not decided yet" ]
+      elaborating [ "k v = case v of", "  'A n -> n", "  _ where", "      false -> 0", "      otherwise -> 1" ] \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec k" ]
+
+    it "is reported where its tag stands, in an expression and in a pattern" do
+      elaborating [ "f :: [ 'A :: Int ]", "f = 'B 1" ] \r ->
+        map spanned r.errors `shouldEqual` [ "4:5-4:7 rejected" ]
+      elaborating [ "f :: [ 'A :: Int ] -> Int", "f v = case v of", "  'B n -> n" ] \r ->
+        map spanned r.errors `shouldEqual` [ "5:3-5:5 rejected" ]
 
   describe "what a quantifier encloses" do
     let

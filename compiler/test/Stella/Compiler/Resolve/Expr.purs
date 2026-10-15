@@ -13,6 +13,7 @@ import Data.Set as Set
 import Data.String (joinWith)
 import Data.Tuple (Tuple(..), fst)
 import Effect.Aff (Aff)
+import Fmt (fmt)
 import Stella.Compiler.CST (parseModule, printSyntaxError)
 import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment)
@@ -328,6 +329,13 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
     it "report a replacement where no record is spread" do
       shows [ "f = { a: 1, b = 2, c = 3 }" ] "{ a: 1, b = 2, c = 3 }" [ ReplacementWithoutSpread "b", ReplacementWithoutSpread "c" ]
 
+  describe "tags" do
+    it "hold the payload they are applied to where they are written, none where they stand alone" do
+      shows [ "f g x = ('None, 'Ok x, ('Err) x, g 'A x)" ] "('None, ('Ok x#1), ('Err x#1), ((g#0 'A) x#1))" []
+
+    it "report a tag applied to more than one payload" do
+      shows [ "f x = 'Ok x x" ] "!" [ TagPayloadMany ]
+
   describe "groups written in place" do
     it "headed by an effect name its operations among the effect's, whatever is in scope" do
       shows [ "f get = handle x with", "  E fast | get _ -> get", "  x" ]
@@ -535,7 +543,7 @@ renderExpr = case _ of
   ExprConstructor _ q -> qualified q
   ExprOperation _ q label -> "op:" <> qualified q <> maybe "" (\(Symbol l) -> "@" <> l) label
   ExprDiscriminator _ q -> qualified q <> "?"
-  ExprTag _ (Tag t) -> "'" <> t
+  ExprTag _ _ (Tag t) payload -> maybe ("'" <> t) (\p -> fmt @"('{t} {p})" { t, p: renderExpr p }) payload
   ExprLiteral _ l -> literal l
   ExprHole _ h -> "?" <> h
   ExprApp _ f a -> "(" <> renderExpr f <> " " <> renderExpr a <> ")"
@@ -604,7 +612,7 @@ renderBinder = case _ of
   BinderAs _ v b -> renderVar v <> "@" <> renderBinder b
   BinderConstructor _ q [] -> qualified q
   BinderConstructor _ q bs -> "(" <> qualified q <> " " <> joinWith " " (map renderBinder bs) <> ")"
-  BinderTag _ (Tag t) b -> "'" <> t <> maybe "" (\p -> " " <> renderBinder p) b
+  BinderTag _ _ (Tag t) b -> "'" <> t <> maybe "" (\p -> " " <> renderBinder p) b
   BinderLiteral _ l -> literal l
   BinderTuple _ bs -> "(" <> joinWith ", " (map renderBinder bs) <> ")"
   BinderRecord _ _ _ -> "{…}"

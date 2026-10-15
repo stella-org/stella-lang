@@ -29,6 +29,7 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | a constructor followed by any patterns | other than one pattern per field |
 | any number of patterns in a row of a `case` alternative | other than one per value the `case` matches |
 | a tag followed by any patterns | more than one |
+| a tag applied to any arguments | more than one: a tag carries one payload, and several are written as a tuple, `'T (a, b)` |
 | `import lazy M` without `as`, or with a list | a lazy import that is not qualified and implicit |
 | `hiding ( … )` after any import | `hiding` on an import with a list, an alias, or `lazy` (`Check`); a name hidden that the module does not export |
 | any operator as a type operator in a fixity declaration | `/`, which belongs to the grammar of types (`Check`); a target that does not resolve in the type namespace |

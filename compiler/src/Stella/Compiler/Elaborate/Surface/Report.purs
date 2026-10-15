@@ -44,7 +44,7 @@ import Stella.Compiler.ForeignBoundary (Position(..), Refusal(..), Refused)
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), Qualified(..), RegionName(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
-import Stella.Compiler.TypedCore.Prim (functionTy, recordTy, variantTy)
+import Stella.Compiler.TypedCore.Prim (functionTy, recordTy, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Type (RowKey(..))
 
 -- | The places an error is about, the one it is chiefly about first.
@@ -160,8 +160,9 @@ printElaborationError = case _ of
 -- | A value a `case` does not match, written as a pattern: a constructor by its
 -- | name, parenthesized where it takes fields and stands as a field itself; a
 -- | tuple by its components, and a record by its fields, `...` closing one no
--- | pattern closes.
-printWitness :: Boolean -> Witness -> String
+-- | pattern closes; a tag followed by its payload, the tag alone where the
+-- | payload is `()`.
+printWitness :: Boolean -> Witness XType -> String
 printWitness nested = case _ of
   WitnessAny -> "_"
   WitnessLiteral literal -> printLiteral literal
@@ -173,6 +174,10 @@ printWitness nested = case _ of
         fmt @"({components})" { components: joinWith ", " (map (printWitness false <<< _.witness) r.fields) }
     | otherwise ->
         bracketed "{" "}" (map (\f -> fmt @"{key}: {value}" { key: keyName f.key, value: printWitness false f.witness }) r.fields <> (if r.open then [ "..." ] else []))
+  WitnessTag key payload ty
+    | ty == XCon unitTy [] -> keyName key
+    | otherwise ->
+        let applied = fmt @"{tag} {payload}" { tag: keyName key, payload: printWitness true payload } in if nested then fmt @"({applied})" { applied } else applied
   where
   isPosition = case _ of
     PositionKey _ -> true

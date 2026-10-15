@@ -236,8 +236,8 @@ renderBinder = case _ of
   BinderAs _ v b -> renderVar v <> "@" <> renderBinder b
   BinderConstructor _ q [] -> qualified q
   BinderConstructor _ q bs -> "(" <> qualified q <> " " <> joinWith " " (map renderBinder bs) <> ")"
-  BinderTag _ (Tag t) Nothing -> "'" <> t
-  BinderTag _ (Tag t) (Just b) -> "('" <> t <> " " <> renderBinder b <> ")"
+  BinderTag _ _ (Tag t) Nothing -> "'" <> t
+  BinderTag _ _ (Tag t) (Just b) -> "('" <> t <> " " <> renderBinder b <> ")"
   BinderLiteral _ l -> case l of
     LitInt i -> show i
     LitBoolean b -> show b

@@ -89,7 +89,7 @@ resolveExpr e = case e of
     Found f -> maybe (pure (ExprInvalid o)) (global o) f.target
     NotFound -> invalid (UnknownOperator (written n))
     Ambiguous -> invalid (AmbiguousOperator (written n))
-  CST.ExprTag n -> pure (ExprTag o (Tag n.name))
+  CST.ExprTag n -> pure (ExprTag o (originOf n.range) (Tag n.name) Nothing)
   CST.ExprHole n -> pure (ExprHole o n.name)
   CST.ExprSection _ -> invalid (NotYetSupported "The anonymous argument `_`")
   CST.ExprBoolean _ b -> pure (ExprLiteral o (LitBoolean b))
@@ -105,9 +105,13 @@ resolveExpr e = case e of
   CST.ExprParens inner -> resolveExpr inner
   CST.ExprTuple es -> ExprTuple o <$> traverse resolveExpr es
   CST.ExprRecord _ fields -> ExprRecord o <$> recordFields fields
-  CST.ExprApp f a -> case unparenthesized f of
-    CST.ExprResume r -> ExprApp o <$> resumeAt r <*> resolveExpr a
-    _ -> ExprApp o <$> resolveExpr f <*> resolveExpr a
+  CST.ExprApp f a
+    | Just applied <- tagApplied f [ a ] -> case applied.payloads of
+        [ payload ] -> ExprTag o (originOf applied.tag.range) (Tag applied.tag.name) <<< Just <$> resolveExpr payload
+        _ -> invalid TagPayloadMany
+    | otherwise -> case unparenthesized f of
+        CST.ExprResume r -> ExprApp o <$> resumeAt r <*> resolveExpr a
+        _ -> ExprApp o <$> resolveExpr f <*> resolveExpr a
   CST.ExprOp _ _ _ -> operatorChain e
   CST.ExprTyped inner t -> ExprTyped o <$> resolveExpr inner <*> resolveType t
   CST.ExprAccess inner labels -> do
@@ -385,6 +389,17 @@ unparenthesized :: CST.Expr -> CST.Expr
 unparenthesized = case _ of
   CST.ExprParens inner -> unparenthesized inner
   e -> e
+
+-- | A tag at the head of an application, and the payloads it is applied to,
+-- | from the first. A tag is applied to its payload where it is written, so
+-- | the spine is read through applications alone, and parentheses only around
+-- | the tag itself.
+tagApplied :: CST.Expr -> Array CST.Expr -> Maybe { tag :: CST.Name, payloads :: Array CST.Expr }
+tagApplied f payloads = case f of
+  CST.ExprApp g a -> tagApplied g (Array.cons a payloads)
+  _ -> case unparenthesized f of
+    CST.ExprTag tag -> Just { tag, payloads }
+    _ -> Nothing
 
 -- | `resume` applied to an argument, where it stands.
 resumeAt :: CST.SourceRange -> Resolve Expr

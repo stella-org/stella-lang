@@ -104,6 +104,8 @@ A name standing for two macros is ambiguous where it is called. A name the modul
 
 **A replacement `name = e` stands beside a record spread**, whose field it replaces ([Elaboration](01-Elaboration.md#records-and-tuples)): one in a literal spreading no record is an error, reported where it stands, a literal with no spread giving each of its fields as `name: e`.
 
+**A tag takes the payload it is applied to where it is written**, a tag being no function ([Elaboration](01-Elaboration.md#tags)): an application whose head is a tag, with parentheses optionally around that tag itself, is the tag holding its argument, and a tag written alone holds none. A tag applied to more than one argument is an error, reported where the application stands, several values being written as a tuple, `'T (a, b)`; so is a tag pattern given more than one.
+
 **A row written in a type holds each key once**, which is what keeps a row sharp before any spread joins it ([Rows](../03-Typed-Core/02-Rows.md)). A variant's row writes each tag once and each label once, and an effect row each label once and each effect once unlabelled: an unlabelled element's key is its effect, so `{| State Int, State String |}` holds `State` twice however the name is spelt or qualified, and a second instance of an effect is written with a label, `{| State Int, s :: State String |}`. Each key written after one equal to it is an error, reported where the later item stands; what a spread brings is no key written, and whether it repeats one is decided where the row is elaborated.
 
 ### Macro declarations

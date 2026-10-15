@@ -11,7 +11,9 @@
 -- | `sizeOf` ends its block with `otherwise`; `layered` falls through two
 -- | guard blocks in turn. `first` and `unwrap` match a parameter written as a
 -- | pattern, `secondOf` a pattern a `let` binds, `split` one a guard block
--- | binds, and `rankOf` is a `case _ of`.
+-- | binds, and `rankOf` is a `case _ of`. `area` dispatches on the tags of a
+-- | closed variant, `'Dot` carrying `()`, and `bump` hands on the variant its
+-- | default holds whole, widened back by the tag it took.
 module Test.Steam.Matches (spec) where
 
 import Prelude
@@ -125,6 +127,21 @@ source =
   , "rankOfRed = rankOf Red"
   , "rankOfBlue = rankOf Blue"
   , "lambda = (\\(Pair a b) -> b) (Pair 3 4)"
+  , "area :: [ 'Circle :: Int, 'Square :: Int, 'Dot :: Unit ] -> Int"
+  , "area s = case s of"
+  , "  'Circle r -> r"
+  , "  'Square n -> n"
+  , "  'Dot -> 0"
+  , "bump :: [ 'Up :: Int, ...r ] -> [ 'Up :: Int, ...r ]"
+  , "bump v = case v of"
+  , "  'Up _ -> 'Up 0"
+  , "  other -> other"
+  , "circle = area ('Circle 3)"
+  , "dot = area 'Dot"
+  , "bumped :: [ 'Up :: Int, 'Down :: Int ]"
+  , "bumped = bump ('Up 5)"
+  , "kept :: [ 'Up :: Int, 'Down :: Int ]"
+  , "kept = bump ('Down 7)"
   ]
 
 spec :: Spec Unit
@@ -175,4 +192,13 @@ spec = describe "Steam, a `case` compiled from source" do
         , Tuple "two" "2"
         , Tuple "other" "0"
         , Tuple "flipped" "false"
+        ]
+
+  it "injects a tag's payload, dispatches on the tag, and hands on the variant a default holds whole" do
+    running source [ "circle", "dot", "bumped", "kept" ] \values ->
+      values `shouldEqual` Map.fromFoldable
+        [ Tuple "circle" "3"
+        , Tuple "dot" "0"
+        , Tuple "bumped" "'Up(0)"
+        , Tuple "kept" "'Down(7)"
         ]

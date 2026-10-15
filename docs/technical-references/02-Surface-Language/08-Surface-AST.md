@@ -93,7 +93,7 @@ Origin = FromSource range
 - **`case _ of` is a `λ` around a `case`**, a parameter for each anonymous scrutinee, from the left, under a name no source can write; no anonymous scrutinee stands in a `case`.
 - **A `case` alternative holds a row of patterns per or-choice at its top**, one pattern per scrutinee in each, and a body that is unconditional or a guard block. A guard block holds bindings, guards, and `otherwise`, which is a line of its own rather than a guard naming a value ([Pattern Matching](../../proposals/03-Pattern-Matching-Syntax.md)).
 - **A constructor pattern holds one pattern per field**, as many as the constructor has.
-- **A tag pattern holds one pattern for its payload, or none.** A variant element carries one payload, so several values are a tuple.
+- **A tag holds the payload it is applied to, or none**, `ExprTag`, a tag written alone carrying `()`; name resolution gives it its payload, a tag being no function. **A tag pattern holds one pattern for its payload, or none.** A variant element carries one payload, so several values are a tuple. Each holds where its tag is written beside where it stands, which is where what the tag asks of a variant is reported.
 - **A literal pattern is a `Boolean`, an `Int`, a `Char`, or a `String`.** A `Number` is matched by no literal: a literal's identity, bitwise for a `Number` (D37), is not numeric equality, and a guard writes the comparison it means.
 - **A pun is a field**: `{ x }` is `x: x`, in a record and in a record pattern alike.
 - **An or-pattern binds no variable** and is held as its choices.
@@ -191,6 +191,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | `RowItem` | the item of the row its bracket gives; one the bracket does not admit is dropped |
 | `ExprVar`, `ExprConstructor`, `ExprDiscriminator`, `ExprOperatorValue` | the reference node of what it resolves to |
 | `ExprOp` | `ExprOperator`, rebracketed by fixity |
+| `ExprTag`, and an `ExprApp` whose head is a tag, with parentheses optionally around that tag itself | `ExprTag`, holding the argument as its payload; a tag applied to more than one argument is refused |
 | `ExprSection` | the lambda it stands for |
 | `ExprAccess`, `ExprAt` | nested `ExprSelect`, and an `ExprOperation` with its label |
 | `ExprHandle`, `ExprUsing` | `ExprHandle` |

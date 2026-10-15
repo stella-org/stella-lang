@@ -74,7 +74,7 @@ import Data.Array as Array
 import Data.Either (Either(..), either)
 import Data.Foldable (foldM, foldMap, foldl, foldr, for_)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), isJust, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.String (Pattern(..))
@@ -83,6 +83,7 @@ import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext, lookupVar)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
+import Stella.Compiler.Elaborate.CorePlus.Row (rebuild, xnf)
 import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId, XDecisionTree(..), XExpr(..), isValueForm)
 import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal)
@@ -94,7 +95,7 @@ import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, subs
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, break, closeBoundary, currentMetas, equate, freshCoverage, freshIdent, freshJoin, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, recursiveRef, require)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
-import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), substitute)
+import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), MetaContext, substitute)
 import Stella.Compiler.Elaborate.Surface.Match as Match
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..))
 import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported(..), Wildcard, elaborateLocalSignature, elaborateType, xFunction)
@@ -102,7 +103,7 @@ import Stella.Compiler.Surface.Expr (Alternative, AlternativeBody(..), Binder(..
 import Stella.Compiler.Surface.Name (BindingId, LocalVar(..))
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Name (Ident(..), KindVar, Qualified, Symbol(..))
-import Stella.Compiler.TypedCore.Prim (booleanTy, functionTy, litType, recordTy, unitCtor, unitTy)
+import Stella.Compiler.TypedCore.Prim (booleanTy, functionTy, litType, recordTy, unitCtor, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
 import Stella.Compiler.TypedCore.Type (RowKey(..), TypeScheme)
@@ -130,7 +131,7 @@ type ExpressionHole = { origin :: Surface.Origin, name :: String, type :: XType,
 
 -- | A `case` that leaves values uncovered, where it is written: the number its
 -- | uncovered places carry, and a vector of values it does not match.
-type UncoveredMatch = { id :: CoverageId, origin :: Surface.Origin, witness :: Array Match.Witness }
+type UncoveredMatch = { id :: CoverageId, origin :: Surface.Origin, witness :: Array (Match.Witness XType) }
 
 runSurf :: forall a. Surf a -> Elab (Either Unsupported (Noted a))
 runSurf (Surf e) = e
@@ -443,6 +444,7 @@ mentioned leaf = go
       ExprSelect _ inner _ _ -> go inner
       ExprTuple _ es -> foldMap go es
       ExprRecord _ fields -> foldMap field fields
+      ExprTag _ _ _ payload -> foldMap go payload
       ExprLambda _ _ body -> go body
       ExprLet _ bindings body -> foldMap binding bindings <> go body
       ExprCase _ scrutinees alternatives -> foldMap go scrutinees <> foldMap (alternative <<< _.body) alternatives
@@ -606,6 +608,27 @@ check scope expr expected ty = case expr of
       opened@(XConstrained _ _) -> abstractions (exprOrigin expr) true false expected scope [] expr opened
       _ -> case expr of
         ExprCase o scrutinees alternatives -> caseOf scope o scrutinees alternatives expected ty
+        -- the payload is checked against the type the variant expected gives
+        -- the tag, where that variant is known to hold it; otherwise the
+        -- variant is equated with one holding the tag at a type of its own
+        ExprTag o at tag payload -> do
+          let key = TagKey tag
+          known <- case substitute metas ty of
+            XApp (XCon name []) row
+              | name == variantTy
+              , Right normal <- xnf row
+              , Just (XRowTypeEntry _ argument) <- Map.lookup key normal.known ->
+                  pure { argument, rest: rebuild normal { known = Map.delete key normal.known } }
+            _ -> do
+              argument <- lift (freshTypeMeta scope.context XKType)
+              rest <- lift (freshTypeMeta scope.context (XKRow RowType))
+              lift (equate (siteAt scope at) { kind: XKType, left: variantOf (XRowExtend (XRowTypeEntry key argument) rest), right: ty })
+              pure { argument, rest }
+          lift (require (siteAt scope at) (XLacks key known.rest))
+          value <- case payload of
+            Nothing -> check scope (ExprConstructor at unitCtor) Derived known.argument
+            Just p -> check scope p expected known.argument
+          pure (EVariantInject o key known.rest value)
         _ -> do
           inferred <- infer scope expr
           subsume scope (exprOrigin expr) inferred ty
@@ -678,6 +701,16 @@ infer scope expr = case expr of
       , type: recordOf (foldr (\(Tuple i p) rest -> XRowExtend (XRowTypeEntry (PositionKey i) p.type) rest) XRowEmpty indexed)
       }
   ExprRecord o fields -> recordLiteral scope o fields
+  -- a tag injects its payload, `()` where none is written, into a variant of
+  -- that tag at a row the rest lacks it from
+  ExprTag o at tag payload -> do
+    let key = TagKey tag
+    value <- case payload of
+      Nothing -> infer scope (ExprConstructor at unitCtor)
+      Just p -> infer scope p
+    rest <- lift (freshTypeMeta scope.context (XKRow RowType))
+    lift (require (siteAt scope at) (XLacks key rest))
+    pure { expr: EVariantInject o key rest value.expr, type: variantOf (XRowExtend (XRowTypeEntry key value.type) rest) }
   -- the record has the field at a row the rest of it lacks it from
   ExprSelect o inner at (Symbol label) -> do
     record <- infer scope inner
@@ -820,6 +853,36 @@ recordLiteral scope origin fields = do
 recordOf :: XType -> XType
 recordOf row = XApp (XCon recordTy []) row
 
+-- | `Prim.Variant` of the row given.
+variantOf :: XType -> XType
+variantOf row = XApp (XCon variantTy []) row
+
+-- | A pattern as typed, read for the compiler of matches against the
+-- | metavariables as they stand once its match is typed, and the variables it
+-- | binds, each at its type, in the order written.
+type TypedPattern = { pattern :: MetaContext -> Match.Pattern XType Surface.Origin, vars :: Array { name :: Ident, type :: XType } }
+
+-- | The tags of a variant type, zonked: each known tag, in the order of its
+-- | key, with the type of its payload, and what its row holds besides them —
+-- | a metavariable, where one is left, otherwise a rigid variable, where one
+-- | is, and otherwise nothing.
+tagsOf :: MetaContext -> XType -> Match.Tags XType
+tagsOf metas ty = case substitute metas ty of
+  XApp (XCon name []) row
+    | name == variantTy
+    , Right normal <- xnf row ->
+        { keys: Array.mapMaybe tag (Map.toUnfoldable normal.known)
+        , tail:
+            if not (Set.isEmpty normal.flexible) then Match.Flexible
+            else if not (Set.isEmpty normal.rigid) then Match.Rigid
+            else Match.Closed
+        }
+  _ -> { keys: [], tail: Match.Flexible }
+  where
+  tag (Tuple key entry) = case entry of
+    XRowTypeEntry _ payload -> Just { key, payload }
+    _ -> Nothing
+
 -- | A function inferred where it stands, applied to the argument built at the
 -- | type it takes, and fitted there into the row ambient: the function's place,
 -- | then the application's.
@@ -859,10 +922,15 @@ caseOf scope origin scrutinees alternatives expected result = do
   inferred <- traverse (infer scope) scrutinees
   typed <- traverse (alternative (map _.type inferred)) (Array.mapWithIndex Tuple alternatives)
   table <- constructorTable
+  metas <- lift currentMetas
   let
-    rows = Array.concatMap _.rows typed
+    rows = map (\r -> r { patterns = map (_ $ metas) r.patterns }) (Array.concatMap _.rows typed)
     width = Array.length scrutinees
   compiled <- matched (Match.compile table width rows)
+  -- a dispatch on a variant whose row is not decided yet, its default leaving
+  -- values uncovered, is outside what this version elaborates
+  when (Array.any (undecided compiled.falls) (Array.cons compiled.plan (Array.fromFoldable (Map.values compiled.falls))))
+    (outside (OutsideSubset origin "a match on a variant whose row is not decided yet"))
   found <- matched (Match.witness table width rows)
   uncovered <- case found, uncovers compiled.plan || Array.any uncovers (Array.fromFoldable (Map.values compiled.falls)) of
     Just witness, true -> do
@@ -983,6 +1051,10 @@ caseOf scope origin scrutinees alternatives expected result = do
       XSwitchLit o
         <$> traverse (\b -> { lit: b.lit, tree: _ } <$> built uncovered placed b.plan) branches
         <*> built uncovered placed fallback
+    Match.SwitchKey o _ branches fallback ->
+      XSwitchKey o
+        <$> traverse (\b -> { key: b.key, tree: _ } <$> built uncovered placed b.plan) branches
+        <*> traverse (built uncovered placed) fallback
 
   leafOf p = case p.join of
     Nothing -> p.alternative.body
@@ -1005,6 +1077,29 @@ caseOf scope origin scrutinees alternatives expected result = do
     Match.Uncovered -> true
     Match.SwitchCtor _ branches fallback -> Array.any (uncovers <<< _.plan) branches || maybe false uncovers fallback
     Match.SwitchLit _ branches fallback -> Array.any (uncovers <<< _.plan) branches || uncovers fallback
+    Match.SwitchKey _ _ branches fallback -> Array.any (uncovers <<< _.plan) branches || maybe false uncovers fallback
+
+  -- whether a dispatch on a variant whose row holds a metavariable leaves
+  -- values its default does not take, there or past a guard block it reaches
+  -- that falls through
+  undecided falls = case _ of
+    Match.Leaf _ _ -> false
+    Match.Uncovered -> false
+    Match.SwitchCtor _ branches fallback -> Array.any (undecided falls <<< _.plan) branches || maybe false (undecided falls) fallback
+    Match.SwitchLit _ branches fallback -> Array.any (undecided falls <<< _.plan) branches || undecided falls fallback
+    Match.SwitchKey _ tail branches fallback ->
+      Array.any (undecided falls <<< _.plan) branches
+        || maybe false (\f -> (tail == Match.Flexible && leavesUncovered falls f) || undecided falls f) fallback
+
+  -- whether a plan leaves values uncovered, or takes an alternative whose
+  -- guard block falls through to a plan that does; a fall-through point
+  -- matches only the alternatives after its own, so the walk ends
+  leavesUncovered falls = case _ of
+    Match.Leaf i _ -> maybe false (leavesUncovered falls) (Map.lookup i falls)
+    Match.Uncovered -> true
+    Match.SwitchCtor _ branches fallback -> Array.any (leavesUncovered falls <<< _.plan) branches || maybe false (leavesUncovered falls) fallback
+    Match.SwitchLit _ branches fallback -> Array.any (leavesUncovered falls <<< _.plan) branches || leavesUncovered falls fallback
+    Match.SwitchKey _ _ branches fallback -> Array.any (leavesUncovered falls <<< _.plan) branches || maybe false (leavesUncovered falls) fallback
 
 -- | Note a match that leaves values uncovered.
 noteUncovered :: UncoveredMatch -> Surf Unit
@@ -1019,27 +1114,34 @@ noteUncovered m = Surf (pure (Right { value: unit, holes: [], wildcards: [], unw
 -- | closed. A record pattern takes each key it writes, in the order written,
 -- | from the row of the record, which the rest of the row lacks it from, where
 -- | its label stands; the row left is empty where the pattern is closed, and
--- | its rest's where it binds one.
-pattern :: Scope -> Binder -> XType -> Surf { pattern :: Match.Pattern Surface.Origin, vars :: Array { name :: Ident, type :: XType } }
+-- | its rest's where it binds one. A tag pattern takes its tag from the row of
+-- | the variant, which the rest lacks it from, where it stands; a tag written
+-- | with no payload matches `()`.
+-- |
+-- | **The pattern is read once every pattern of its match is typed**: a tag
+-- | pattern carries the tags its variant holds, which the patterns of the rows
+-- | after it may add to, so what the compiler of matches is given is read off
+-- | the metavariables as they then stand.
+pattern :: Scope -> Binder -> XType -> Surf TypedPattern
 pattern scope binder ty = case binder of
-  BinderWildcard _ -> pure { pattern: Match.PAny, vars: [] }
-  BinderVar _ (LocalVar v) -> pure { pattern: Match.PVar v.name, vars: [ { name: v.name, type: ty } ] }
+  BinderWildcard _ -> pure { pattern: const Match.PAny, vars: [] }
+  BinderVar _ (LocalVar v) -> pure { pattern: const (Match.PVar v.name), vars: [ { name: v.name, type: ty } ] }
   BinderAs _ (LocalVar v) inner -> do
     p <- pattern scope inner ty
-    pure { pattern: Match.PAs v.name p.pattern, vars: Array.cons { name: v.name, type: ty } p.vars }
+    pure { pattern: Match.PAs v.name <<< p.pattern, vars: Array.cons { name: v.name, type: ty } p.vars }
   BinderConstructor o name args -> do
     instantiated <- infer scope (ExprConstructor o name)
     fields <- fieldsOf o (Array.length args) instantiated.type
     lift (equate (siteAt scope o) { kind: XKType, left: fields.result, right: ty })
     parts <- traverse (\(Tuple b t) -> pattern scope b t) (Array.zip args fields.arguments)
-    pure { pattern: Match.PCtor name (map _.pattern parts), vars: Array.concatMap _.vars parts }
+    pure { pattern: \metas -> Match.PCtor name (map (\p -> p.pattern metas) parts), vars: Array.concatMap _.vars parts }
   BinderLiteral o literal -> do
     lift (equate (siteAt scope o) { kind: XKType, left: fromCore (litType literal), right: ty })
-    pure { pattern: Match.PLit literal, vars: [] }
+    pure { pattern: const (Match.PLit literal), vars: [] }
   BinderOr _ choices -> do
     parts <- traverse (\b -> pattern scope b ty) choices
     pure
-      { pattern: Match.POr (Array.zipWith (\b p -> { label: binderOrigin b, pattern: p.pattern }) choices parts)
+      { pattern: \metas -> Match.POr (Array.zipWith (\b p -> { label: binderOrigin b, pattern: p.pattern metas }) choices parts)
       , vars: Array.concatMap _.vars parts
       }
   BinderTyped o inner t -> do
@@ -1050,14 +1152,22 @@ pattern scope binder ty = case binder of
         note annotation
         lift (equate (siteAt scope o) { kind: XKType, left: annotation.type, right: ty })
         pattern scope inner ty
-  BinderTag o _ _ -> outside (OutsideSubset o "a tag pattern")
+  BinderTag _ at tag payload -> do
+    let key = TagKey tag
+    argument <- lift (freshTypeMeta scope.context XKType)
+    rest <- lift (freshTypeMeta scope.context (XKRow RowType))
+    let whole = variantOf (XRowExtend (XRowTypeEntry key argument) rest)
+    lift (equate (siteAt scope at) { kind: XKType, left: whole, right: ty })
+    lift (require (siteAt scope at) (XLacks key rest))
+    inner <- pattern scope (fromMaybe (BinderConstructor at unitCtor []) payload) argument
+    pure { pattern: \metas -> Match.PTag { key, payload: inner.pattern metas, domain: tagsOf metas whole }, vars: inner.vars }
   BinderTuple o components -> do
     types <- traverse (\_ -> lift (freshTypeMeta scope.context XKType)) components
     let indexed = Array.mapWithIndex Tuple types
     lift (equate (siteAt scope o) { kind: XKType, left: recordOf (foldr (\(Tuple i t) rest -> XRowExtend (XRowTypeEntry (PositionKey i) t) rest) XRowEmpty indexed), right: ty })
     parts <- traverse (\(Tuple b t) -> pattern scope b t) (Array.zip components types)
     pure
-      { pattern: Match.PRecord { fields: Array.mapWithIndex (\i p -> { key: PositionKey i, pattern: p.pattern }) parts, rest: Nothing, open: false }
+      { pattern: \metas -> Match.PRecord { fields: Array.mapWithIndex (\i p -> { key: PositionKey i, pattern: p.pattern metas }) parts, rest: Nothing, open: false }
       , vars: Array.concatMap _.vars parts
       }
   BinderRecord o fields rest -> do
@@ -1069,8 +1179,8 @@ pattern scope binder ty = case binder of
       Just _ -> pure unit
     let restVar = foldMap (\(LocalVar v) -> [ { name: v.name, type: recordOf taken.row } ]) (rest >>= _.var)
     pure
-      { pattern: Match.PRecord
-          { fields: map (\p -> { key: p.key, pattern: p.typed.pattern }) taken.parts
+      { pattern: \metas -> Match.PRecord
+          { fields: map (\p -> { key: p.key, pattern: p.typed.pattern metas }) taken.parts
           , rest: map (\(LocalVar v) -> v.name) (rest >>= _.var)
           , open: isJust rest
           }
@@ -1105,11 +1215,12 @@ pattern scope binder ty = case binder of
 irrefutable
   :: Scope
   -> Surface.Origin
-  -> Array { pattern :: Match.Pattern Surface.Origin, vars :: Array { name :: Ident, type :: XType } }
+  -> Array TypedPattern
   -> Surf (Array (XExpr Surface.Origin) -> XExpr Surface.Origin -> XExpr Surface.Origin)
 irrefutable scope origin typed = do
   table <- constructorTable
-  case Match.compile table (Array.length typed) [ { alternative: 0, choice: Nothing, patterns: map _.pattern typed, fallible: false } ] of
+  metas <- lift currentMetas
+  case Match.compile table (Array.length typed) [ { alternative: 0, choice: Nothing, patterns: map (\t -> t.pattern metas) typed, fallible: false } ] of
     Right compiled
       | Map.lookup 0 compiled.references == Just 1
       , [ bindings ] <- leafBindings compiled.plan -> do
@@ -1127,6 +1238,7 @@ irrefutable scope origin typed = do
     Match.Uncovered -> []
     Match.SwitchCtor _ branches fallback -> Array.concatMap (leafBindings <<< _.plan) branches <> foldMap leafBindings fallback
     Match.SwitchLit _ branches fallback -> Array.concatMap (leafBindings <<< _.plan) branches <> leafBindings fallback
+    Match.SwitchKey _ _ branches fallback -> Array.concatMap (leafBindings <<< _.plan) branches <> foldMap leafBindings fallback
 
   planted leaf = case _ of
     Match.Leaf _ _ -> Just leaf
@@ -1139,30 +1251,38 @@ irrefutable scope origin typed = do
       branches' <- traverse (\b -> { lit: b.lit, tree: _ } <$> planted leaf b.plan) branches
       fallback' <- planted leaf fallback
       pure \body -> XSwitchLit o (map (\b -> { lit: b.lit, tree: b.tree body }) branches') (fallback' body)
+    Match.SwitchKey o _ branches fallback -> do
+      branches' <- traverse (\b -> { key: b.key, tree: _ } <$> planted leaf b.plan) branches
+      fallback' <- traverse (planted leaf) fallback
+      pure \body -> XSwitchKey o (map (\b -> { key: b.key, tree: b.tree body }) branches') (map (_ $ body) fallback')
 
 -- | A leaf binding what its patterns bind around the expression given: each
--- | variable at its occurrence, and the rest of a record pattern by a `let`
--- | around the expression, the keys the pattern writes restricted, in the
--- | order written, from the record bound at its occurrence under a name the
--- | compiler makes. The variables given are those of the row, at their types.
+-- | variable at its occurrence, and, by a `let` around the expression, from
+-- | the value bound at its occurrence under a name the compiler makes, the
+-- | rest of a record pattern, the keys the pattern writes restricted in the
+-- | order written, and a variant a default holds without the tags its
+-- | dispatches took, widened by them from the last taken to the first. The
+-- | variables given are those of the row, at their types.
 boundAround
   :: Scope
   -> Surface.Origin
   -> Array { name :: Ident, type :: XType }
-  -> Array Match.Binding
+  -> Array (Match.Binding XType)
   -> Surf (XExpr Surface.Origin -> XDecisionTree Surface.Origin)
 boundAround scope origin vars bindings = do
   steps <- traverse step bindings
   pure \body -> foldr (\s t -> XBind s.bound s.occurrence t) (XLeaf (foldr _.around body steps)) steps
   where
-  step b
-    | Array.null b.restricted = pure { bound: b.name, occurrence: b.occurrence, around: identity }
-    | otherwise = case Array.find (\v -> v.name == b.name) vars of
-        Just v -> do
-          record <- lift (freshIdent (Map.keys scope.context.vars) "r")
-          let restricted = foldl (\e k -> ERecordRestrict origin k e) (EVar origin record) b.restricted
-          pure { bound: record, occurrence: b.occurrence, around: ELet origin b.name v.type restricted }
-        Nothing -> lift (break (MatchMalformed (AtSource { declaration: scope.declaration, origin })))
+  step b = case b.transform of
+    Match.Identity -> pure { bound: b.name, occurrence: b.occurrence, around: identity }
+    Match.Restrict keys -> made b "r" \value -> foldl (\e k -> ERecordRestrict origin k e) value keys
+    Match.Weaken taken -> made b "v" \value -> foldr (\k e -> EVariantWeaken origin k.key k.payload e) value taken
+
+  made b hint transform = case Array.find (\v -> v.name == b.name) vars of
+    Just v -> do
+      value <- lift (freshIdent (Map.keys scope.context.vars) hint)
+      pure { bound: value, occurrence: b.occurrence, around: ELet origin b.name v.type (transform (EVar origin value)) }
+    Nothing -> lift (break (MatchMalformed (AtSource { declaration: scope.declaration, origin })))
 
 -- | The parameters written as patterns, each a variable the compiler named,
 -- | matched as one row: the scope the variables they bind are in, and what
@@ -1170,7 +1290,7 @@ boundAround scope origin vars bindings = do
 parametersMatched
   :: Scope
   -> Surface.Origin
-  -> Array { name :: Ident, typed :: { pattern :: Match.Pattern Surface.Origin, vars :: Array { name :: Ident, type :: XType } } }
+  -> Array { name :: Ident, typed :: TypedPattern }
   -> Surf { scope :: Scope, wrap :: XExpr Surface.Origin -> XExpr Surface.Origin }
 parametersMatched scope origin matched
   | Array.null matched = pure { scope, wrap: identity }
@@ -1195,7 +1315,7 @@ binderVars = case _ of
   BinderVar _ v -> [ v ]
   BinderAs _ v inner -> Array.cons v (binderVars inner)
   BinderConstructor _ _ args -> Array.concatMap binderVars args
-  BinderTag _ _ payload -> foldMap binderVars payload
+  BinderTag _ _ _ payload -> foldMap binderVars payload
   BinderTuple _ parts -> Array.concatMap binderVars parts
   BinderRecord _ fields rest -> Array.concatMap (binderVars <<< _.binder) fields <> foldMap (Array.fromFoldable <<< _.var) rest
   BinderOr _ _ -> []
@@ -1210,7 +1330,7 @@ binderOrigin = case _ of
   BinderVar o _ -> o
   BinderAs o _ _ -> o
   BinderConstructor o _ _ -> o
-  BinderTag o _ _ -> o
+  BinderTag o _ _ _ -> o
   BinderLiteral o _ -> o
   BinderTuple o _ -> o
   BinderRecord o _ _ -> o

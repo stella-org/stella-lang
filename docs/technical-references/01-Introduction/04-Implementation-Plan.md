@@ -1319,6 +1319,26 @@ Record literals, selections, and tuples as the surface elaborator infers them ([
 | `case p of (true, n) -> n`, and `case r of { x: Some a, ... } -> a` | Reported with `(false, _)` and with `{ x: None, ... }`, a record's keys in a fixed order and `...` only where no row's pattern is closed. Reading the keys in the order the rows write them makes the report depend on which row comes first |
 | `case r of { x } -> x; Some y -> y` | Reported where `Some y` stands, a pattern of another type than what it matches. The compiler of matches refuses such a column as a matrix no typing admits, and is not reached |
 
+### Tags (step 7)
+
+Tags as expressions and as patterns ([Elaboration](../02-Surface-Language/01-Elaboration.md#tags), [A `case`](../02-Surface-Language/01-Elaboration.md#a-case)).
+
+| Input | Required outcome |
+| --- | --- |
+| `mk x = 'Ok x`, and `none = 'None` | `∀α ρ. Ok ∉ ρ => α -> [ 'Ok :: α, ...ρ ]`, and `∀ρ. None ∉ ρ => [ 'None :: Unit, ...ρ ]`, each injection writing `ρ`; the Core checker accepts both |
+| `pair x = ('A, x)`, `{ a: 'A }`, and `Cons ('A 1) (Cons 'B Nil)` at a closed variant | Accepted by the Core checker. An injection writing no row would be typed at the variant of its tag alone where Core synthesizes it, and refused against the open variant elaboration gave it |
+| `'T a b`, as an expression and as a pattern | Refused by name resolution: a tag carries one payload |
+| `c :: [ 'F :: forall a. a -> a ]; c = 'F (\x -> x)` | Accepted, the payload checked against the type the variant expected gives the tag. Equating that variant with one holding the tag at a fresh type would solve a metavariable to a polymorphic type |
+| `f = 'B 1` at `[ 'A :: Int ]`, and the pattern `'B n` against it | Reported at `'B`, the tag alone, in the expression and in the pattern |
+| `case v of 'A n -> n; 'B _ -> 0` at `[ 'A :: Int, 'B :: Boolean ]` | One `switchKey` with no default |
+| The same with only `'A n -> n`, and `'B` at `Unit` or at `Int` | Reported with `'B`, and with `'B _`. Whether the payload is shown is decided by its type once settled |
+| `case v of 'A n -> n` at `[ 'A :: Int, ... ]` | Reported with `_`: a row a quantifier opens may hold any other tag |
+| `case v of 'A n -> 'A (inc n); other -> other` at `[ 'A :: Int, 'B :: Int, ...r ]` | `other` bound by a `let` to the residual widened by `weaken A`, accepted by the Core checker. Binding `other` to the occurrence itself gives it the residual variant |
+| A default binding `x` and `y` at two variants that both hold `'A`, at `Int` in one and `Boolean` in the other | Each widened at the payload type its own occurrence gives `'A`. Reading the payload type by the tag alone gives one of them the other's |
+| `k v = case v of 'A n -> n; _ -> 0`, the row not decided | Accepted, at `∀ρ. A ∉ ρ => [ 'A :: Int, ...ρ ] -> Int` |
+| `k v = case v of 'A n -> n; 'B -> 0`, and `k v = case v of 'A n -> n; _ where false -> 0`, the row not decided | Outside what this version reads, where the `case` stands. The second leaves values uncovered past the guard block its default reaches, and is found by following that fall-through point |
+| The same with `_ where false -> 0; otherwise -> 1` | Accepted: the default's block always takes what it is given |
+
 ### Binding groups and generalization (step 7)
 
 [Elaboration](../02-Surface-Language/01-Elaboration.md#generalization) and the state of [Elaborator API](../02-Surface-Language/03-Elaborator-API.md#inference-state).
