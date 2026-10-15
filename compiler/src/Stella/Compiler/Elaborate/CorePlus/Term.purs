@@ -45,6 +45,7 @@ module Stella.Compiler.Elaborate.CorePlus.Term
   , freeVarsOf
   , metasOfTerm
   , typesOfTerm
+  , standingTypesOfTerm
   , typeVarsOfTerm
   , typeVarsOfType
   , isValueForm
@@ -97,7 +98,8 @@ data XExpr a
   = EVar a Ident
   | EGlobal a (Qualified Ident) (P.Array XKind)
   | ELit a Literal
-  | ELam a Ident XType (XExpr a)
+  -- | `λ(x : σ) / ρ. e`, the row the body is evaluated under written.
+  | ELam a Ident XType XType (XExpr a)
   | EApp a (XExpr a) (XExpr a)
   | ETyLam a TyVar XKind (XExpr a)
   | ETyApp a (XExpr a) XType
@@ -268,7 +270,7 @@ xExprAnnotation = case _ of
   EVar a _ -> a
   EGlobal a _ _ -> a
   ELit a _ -> a
-  ELam a _ _ _ -> a
+  ELam a _ _ _ _ -> a
   EApp a _ _ -> a
   ETyLam a _ _ _ -> a
   ETyApp a _ _ -> a
@@ -307,7 +309,7 @@ fromCoreExpr = case _ of
   Var a x -> EVar a x
   Global a name kinds -> EGlobal a name (map fromCoreKind kinds)
   Lit a literal -> ELit a literal
-  Lam a x ty body -> ELam a x (fromCore ty) (fromCoreExpr body)
+  Lam a x ty row body -> ELam a x (fromCore ty) (fromCore row) (fromCoreExpr body)
   App a f x -> EApp a (fromCoreExpr f) (fromCoreExpr x)
   TyLam a name kind body -> ETyLam a name (fromCoreKind kind) (fromCoreExpr body)
   TyApp a e ty -> ETyApp a (fromCoreExpr e) (fromCore ty)
@@ -402,7 +404,7 @@ data EtaView = AsBuilt | AsWritten
 -- | parameter; nothing where it is no such λ.
 expanded :: forall a. XExpr a -> Maybe (XExpr a)
 expanded term = case through term of
-  ELam _ x _ inner -> case through inner of
+  ELam _ x _ _ inner -> case through inner of
     EApp _ f argument | EVar _ x' <- through argument, x == x' -> Just f
     _ -> Nothing
   _ -> Nothing
@@ -438,7 +440,7 @@ convExpr view = case _ of
   EVar a x -> pure (Var a x)
   EGlobal a name kinds -> Global a name <$> traverse (convKind a) kinds
   ELit a literal -> pure (Lit a literal)
-  ELam a x ty body -> Lam a x <$> convType a ty <*> convExpr view body
+  ELam a x ty row body -> Lam a x <$> convType a ty <*> convType a row <*> convExpr view body
   EApp a f x -> App a <$> convExpr view f <*> convExpr view x
   ETyLam a name kind body -> TyLam a name <$> convKind a kind <*> convExpr view body
   ETyApp a e ty -> (\t e' -> TyApp a e' t) <$> convType a ty <*> convExpr view e
@@ -473,7 +475,7 @@ convExpr view = case _ of
   ERecursiveRef a id -> residue (ResidualRecursiveRef a id)
   EEta a contractible lambda -> case view of
     AsBuilt -> case lambda of
-      ELam _ x _ (EApp _ f (EVar _ x')) | contractible && x == x' && isValueForm (const true) f -> convExpr view f
+      ELam _ x _ _ (EApp _ f (EVar _ x')) | contractible && x == x' && isValueForm (const true) f -> convExpr view f
       _ -> convExpr view lambda
     AsWritten -> case expanded lambda of
       Just f -> convExpr view f
@@ -579,7 +581,7 @@ freeVarsOf = case _ of
   EVar _ x -> valueVar x
   EGlobal _ _ kinds -> foldMap kindsOf kinds
   ELit _ _ -> none
-  ELam _ x ty body -> typeVars ty <> withoutValue x (freeVarsOf body)
+  ELam _ x ty row body -> typeVars ty <> typeVars row <> withoutValue x (freeVarsOf body)
   EApp _ f x -> freeVarsOf f <> freeVarsOf x
   ETyLam _ name kind body -> kindsOf kind <> withoutType name (freeVarsOf body)
   ETyApp _ e ty -> freeVarsOf e <> typeVars ty
@@ -696,7 +698,7 @@ metasOfTerm = case _ of
   EVar _ _ -> noMetas
   EGlobal _ _ kinds -> foldMap kindMetas kinds
   ELit _ _ -> noMetas
-  ELam _ _ ty body -> typeMetas ty <> metasOfTerm body
+  ELam _ _ ty row body -> typeMetas ty <> typeMetas row <> metasOfTerm body
   EApp _ f x -> metasOfTerm f <> metasOfTerm x
   ETyLam _ _ kind body -> kindMetas kind <> metasOfTerm body
   ETyApp _ e ty -> metasOfTerm e <> typeMetas ty
@@ -756,58 +758,69 @@ metasOfTerm = case _ of
       foldMap (kindMetas <<< _.kind) c.tyBinders <> typeMetas c.argBinder.ty <> metasOfTerm c.body
 
 -- | Every type a term writes, in the order a depth-first walk meets them: a
--- | binder's, a type argument's, a constraint's as the type it constrains
--- | nothing of, and every other a node holds.
+-- | binder's, a λ's row, a type argument's, a constraint's as the type it
+-- | constrains nothing of, and every other a node holds.
 typesOfTerm :: forall a. XExpr a -> P.Array XType
-typesOfTerm = case _ of
-  EVar _ _ -> []
-  EGlobal _ _ _ -> []
-  ELit _ _ -> []
-  ELam _ _ ty body -> [ ty ] <> typesOfTerm body
-  EApp _ f x -> typesOfTerm f <> typesOfTerm x
-  ETyLam _ _ _ body -> typesOfTerm body
-  ETyApp _ e ty -> typesOfTerm e <> [ ty ]
-  EConstraintLam _ c body -> [ XConstrained c XRowEmpty ] <> typesOfTerm body
-  EConstraintApp _ e -> typesOfTerm e
-  ELet _ _ ty v body -> [ ty ] <> typesOfTerm v <> typesOfTerm body
-  ELetRec _ bindings body -> foldMap (\b -> [ b.ty ] <> typesOfTerm b.value) bindings <> typesOfTerm body
-  ECase _ scrutinees dt -> foldMap typesOfTerm scrutinees <> treeTypes dt
-  ELetJoin _ _ params result v body -> map _.ty params <> [ result ] <> typesOfTerm v <> typesOfTerm body
-  EJump _ _ args -> foldMap typesOfTerm args
-  ERecordEmpty _ -> []
-  ERecordExtend _ _ v rest -> typesOfTerm v <> typesOfTerm rest
-  ERecordSelect _ _ e -> typesOfTerm e
-  ERecordRestrict _ _ e -> typesOfTerm e
-  ERecordUpdate _ _ rec v -> typesOfTerm rec <> typesOfTerm v
-  ERecordMerge _ l r -> typesOfTerm l <> typesOfTerm r
-  EVariantInject _ _ row v -> [ row ] <> typesOfTerm v
-  EVariantWeaken _ _ ty e -> [ ty ] <> typesOfTerm e
-  EVariantAbsurd _ ty e -> [ ty ] <> typesOfTerm e
-  EPerform _ _ _ tyArgs arg -> tyArgs <> typesOfTerm arg
-  EHandle _ body h -> typesOfTerm body <> [ XRowExtend h.element XRowEmpty, h.returnClause.ty ] <> typesOfTerm h.returnClause.body <> foldMap clauseTypes h.opClauses
-  ERegion _ _ cells initial body -> map _.ty cells <> foldMap typesOfTerm initial <> typesOfTerm body
-  EReadCell _ _ _ -> []
-  EWriteCell _ _ _ v -> typesOfTerm v
-  EOpenEff _ row e -> [ row ] <> typesOfTerm e
-  EFit _ _ e -> typesOfTerm e
-  EEta _ _ e -> typesOfTerm e
-  ERecursiveRef _ _ -> []
-  ETermMeta _ _ -> []
-  EHole _ ty -> [ ty ]
-  EPendingCase _ _ -> []
+typesOfTerm = typesWritten true
+
+-- | The types a term writes where what stands in them is counted: every one
+-- | but a λ's row, which is the row of the λ's arrow and stands wherever that
+-- | arrow is written.
+standingTypesOfTerm :: forall a. XExpr a -> P.Array XType
+standingTypesOfTerm = typesWritten false
+
+typesWritten :: forall a. P.Boolean -> XExpr a -> P.Array XType
+typesWritten rows = go
   where
+  go = case _ of
+    EVar _ _ -> []
+    EGlobal _ _ _ -> []
+    ELit _ _ -> []
+    ELam _ _ ty row body -> [ ty ] <> (if rows then [ row ] else []) <> go body
+    EApp _ f x -> go f <> go x
+    ETyLam _ _ _ body -> go body
+    ETyApp _ e ty -> go e <> [ ty ]
+    EConstraintLam _ c body -> [ XConstrained c XRowEmpty ] <> go body
+    EConstraintApp _ e -> go e
+    ELet _ _ ty v body -> [ ty ] <> go v <> go body
+    ELetRec _ bindings body -> foldMap (\b -> [ b.ty ] <> go b.value) bindings <> go body
+    ECase _ scrutinees dt -> foldMap go scrutinees <> treeTypes dt
+    ELetJoin _ _ params result v body -> map _.ty params <> [ result ] <> go v <> go body
+    EJump _ _ args -> foldMap go args
+    ERecordEmpty _ -> []
+    ERecordExtend _ _ v rest -> go v <> go rest
+    ERecordSelect _ _ e -> go e
+    ERecordRestrict _ _ e -> go e
+    ERecordUpdate _ _ rec v -> go rec <> go v
+    ERecordMerge _ l r -> go l <> go r
+    EVariantInject _ _ row v -> [ row ] <> go v
+    EVariantWeaken _ _ ty e -> [ ty ] <> go e
+    EVariantAbsurd _ ty e -> [ ty ] <> go e
+    EPerform _ _ _ tyArgs arg -> tyArgs <> go arg
+    EHandle _ body h -> go body <> [ XRowExtend h.element XRowEmpty, h.returnClause.ty ] <> go h.returnClause.body <> foldMap clauseTypes h.opClauses
+    ERegion _ _ cells initial body -> map _.ty cells <> foldMap go initial <> go body
+    EReadCell _ _ _ -> []
+    EWriteCell _ _ _ v -> go v
+    EOpenEff _ row e -> [ row ] <> go e
+    EFit _ _ e -> go e
+    EEta _ _ e -> go e
+    ERecursiveRef _ _ -> []
+    ETermMeta _ _ -> []
+    EHole _ ty -> [ ty ]
+    EPendingCase _ _ -> []
+
   treeTypes = case _ of
-    XLeaf e -> typesOfTerm e
+    XLeaf e -> go e
     XBind _ _ dt -> treeTypes dt
     XSwitchCtor _ branches d -> foldMap (treeTypes <<< _.tree) branches <> foldMap treeTypes d
     XSwitchLit _ branches d -> foldMap (treeTypes <<< _.tree) branches <> treeTypes d
     XSwitchKey _ branches d -> foldMap (treeTypes <<< _.tree) branches <> foldMap treeTypes d
-    XGuard e yes no -> typesOfTerm e <> treeTypes yes <> treeTypes no
+    XGuard e yes no -> go e <> treeTypes yes <> treeTypes no
     XUncovered _ -> []
 
   clauseTypes = case _ of
-    XFullClause c -> [ c.argBinder.ty, c.contBinder.ty ] <> typesOfTerm c.body
-    XFastClause c -> [ c.argBinder.ty ] <> typesOfTerm c.body
+    XFullClause c -> [ c.argBinder.ty, c.contBinder.ty ] <> go c.body
+    XFastClause c -> [ c.argBinder.ty ] <> go c.body
 
 -- | The term metavariables a term holds, each with the region names bound around
 -- | it inside the term.
@@ -822,7 +835,7 @@ termMetasUnderRegions = go Set.empty
     EVar _ _ -> []
     EGlobal _ _ _ -> []
     ELit _ _ -> []
-    ELam _ _ _ body -> go bound body
+    ELam _ _ _ _ body -> go bound body
     EApp _ f x -> go bound f <> go bound x
     ETyLam _ _ _ body -> go bound body
     ETyApp _ e _ -> go bound e
@@ -912,7 +925,7 @@ replacePendingCases replacement = go
 -- | decision tree and its handler's clauses as well as in its own fields.
 subterms :: forall a. XExpr a -> P.Array (XExpr a)
 subterms = case _ of
-  ELam _ _ _ body -> [ body ]
+  ELam _ _ _ _ body -> [ body ]
   EApp _ f x -> [ f, x ]
   ETyLam _ _ _ body -> [ body ]
   ETyApp _ e _ -> [ e ]
@@ -956,7 +969,7 @@ subterms = case _ of
 -- | function given applied to it, and nothing else changed.
 mapSubterms :: forall a. (XExpr a -> XExpr a) -> XExpr a -> XExpr a
 mapSubterms f = case _ of
-  ELam a x t body -> ELam a x t (f body)
+  ELam a x t row body -> ELam a x t row (f body)
   EApp a g x -> EApp a (f g) (f x)
   ETyLam a name k body -> ETyLam a name k (f body)
   ETyApp a e t -> ETyApp a (f e) t
@@ -1048,7 +1061,7 @@ valueFormWith throughFits isConstructor = value
   where
   value = case _ of
     ELit _ _ -> true
-    ELam _ _ _ _ -> true
+    ELam _ _ _ _ _ -> true
     EEta _ _ _ -> true
     EHole _ _ -> true
     EFit _ _ e -> throughFits && value e
@@ -1075,7 +1088,7 @@ typeVarsOfTerm term = Set.unions (map typeVarsOfType (typesOfTerm term)) <> bind
   where
   binders = case _ of
     ETyLam _ name _ body -> Set.insert name (binders body)
-    ELam _ _ _ body -> binders body
+    ELam _ _ _ _ body -> binders body
     EApp _ f x -> binders f <> binders x
     ETyApp _ e _ -> binders e
     EConstraintLam _ _ body -> binders body

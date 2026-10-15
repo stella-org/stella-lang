@@ -60,7 +60,9 @@ data Expr a
   -- | constructors and foreigns are reached through this form.
   | Global a (Qualified Ident) (P.Array Kind)
   | Lit a Literal
-  | Lam a Ident Type (Expr a)
+  -- | `λ(x : σ) / ρ. e`: the parameter's type, and the row the body is
+  -- | evaluated under, which is the row of the arrow the abstraction has.
+  | Lam a Ident Type Type (Expr a)
   | App a (Expr a) (Expr a)
   -- | Type abstraction, `Λ (a : κ). v`. The body is a value form, which is what
   -- | makes the abstraction erasable.
@@ -250,7 +252,7 @@ exprAnnotation = case _ of
   Var a _ -> a
   Global a _ _ -> a
   Lit a _ -> a
-  Lam a _ _ _ -> a
+  Lam a _ _ _ _ -> a
   App a _ _ -> a
   TyLam a _ _ _ -> a
   TyApp a _ _ -> a
@@ -284,7 +286,7 @@ withAnnotation a = case _ of
   Var _ x -> Var a x
   Global _ name kinds -> Global a name kinds
   Lit _ literal -> Lit a literal
-  Lam _ x ty body -> Lam a x ty body
+  Lam _ x ty row body -> Lam a x ty row body
   App _ f x -> App a f x
   TyLam _ name kind body -> TyLam a name kind body
   TyApp _ e ty -> TyApp a e ty

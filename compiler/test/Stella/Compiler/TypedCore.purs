@@ -40,7 +40,7 @@ toMaybe =
   TyLam 1 (TyVar "e") (KRow RowEffect)
     $ ConstraintLam 2 (Lacks (EffectKey partialEff) (TVar (TyVar "e")))
     $ TyLam 3 (TyVar "a") KType
-    $ Lam 4 (Ident "thunk") thunkTy
+    $ Lam 4 (Ident "thunk") thunkTy (TVar (TyVar "e"))
     $
       Handle 5 (App 6 (Var 7 (Ident "thunk")) (Global 8 primUnit []))
         { element: RowEffectEntry partialEff []
@@ -108,7 +108,7 @@ handlerOf :: forall a. Expr a -> Maybe (Expr a)
 handlerOf = case _ of
   TyLam _ _ _ e -> handlerOf e
   ConstraintLam _ _ e -> handlerOf e
-  Lam _ _ _ e -> handlerOf e
+  Lam _ _ _ _ e -> handlerOf e
   e@(Handle _ _ _) -> Just e
   _ -> Nothing
 
@@ -189,13 +189,13 @@ declKind = case _ of
 
 treeShape :: forall a. Expr a -> Maybe (P.Array P.String)
 treeShape = case _ of
-  Lam _ _ _ (Case _ _ (SwitchCtor _ branches _)) ->
+  Lam _ _ _ _ (Case _ _ (SwitchCtor _ branches _)) ->
     Just (map (\b -> "switchCtor " <> showQualified b.ctor) branches)
   _ -> Nothing
 
 hasDefault :: forall a. Expr a -> Maybe P.Boolean
 hasDefault = case _ of
-  Lam _ _ _ (Case _ _ (SwitchCtor _ _ def)) ->
+  Lam _ _ _ _ (Case _ _ (SwitchCtor _ _ def)) ->
     Just case def of
       Just _ -> true
       Nothing -> false

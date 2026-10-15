@@ -197,8 +197,13 @@ checkAt rho expected expr = case check env rho expected expr of
   Left failure -> Left failure.error
   Right _ -> Right unit
 
+-- | A pure λ.
 lam :: P.String -> Type -> Expr Unit -> Expr Unit
-lam name ty body = Lam unit (Ident name) ty body
+lam name ty body = Lam unit (Ident name) ty TRowEmpty body
+
+-- | A λ whose body is evaluated under the row given.
+lamAt :: P.String -> Type -> Type -> Expr Unit -> Expr Unit
+lamAt name ty row body = Lam unit (Ident name) ty row body
 
 var :: P.String -> Expr Unit
 var name = Var unit (Ident name)
@@ -366,9 +371,27 @@ spec = describe "TypedCore.Check" do
       inferAt TRowEmpty (Global unit (value "Just") [ KType ])
         `shouldEqual` Left (GlobalKindArgCount (value "Just") 0 1)
 
-    it "synthesizes a lambda at the ambient row" do
-      inferAt consoleRow (lam "n" int (var "n"))
+    it "synthesizes a lambda at the row it writes, whatever the row ambient" do
+      inferAt TRowEmpty (lamAt "n" int consoleRow (var "n"))
         `shouldEqual` Right (fn int consoleRow int)
+      inferAt consoleRow (lam "n" int (var "n"))
+        `shouldEqual` Right (pureFn int int)
+
+    it "keeps the row it writes under a widening, applied where a wider row is ambient" do
+      let
+        counterOnly = TRowExtend (RowEffectEntry counterEff []) TRowEmpty
+        both = TRowExtend (RowEffectEntry counterEff []) consoleRow
+        logs = lamAt "u" unitT consoleRow (Perform unit (EffectKey consoleEff) (OpName "log") [] (Lit unit (strLit "x")))
+      inferAt both (App unit (OpenEff unit counterOnly logs) primUnit) `shouldEqual` Right unitT
+
+    it "refuses one checked against an arrow whose row is not the one it writes" do
+      checkAt TRowEmpty (fn int consoleRow int) (lam "n" int (var "n"))
+        `shouldEqual` Left (RowMismatch consoleRow TRowEmpty)
+
+    it "refuses a row that is no row of effects" do
+      case inferAt TRowEmpty (lamAt "n" int int (var "n")) of
+        Left (IllKindedType _) -> pure unit
+        other -> show other `shouldEqual` "Left (IllKindedType …)"
 
     it "checks one against the row its type writes" do
       checkAt consoleRow (pureFn int int) (lam "n" int (var "n"))
@@ -487,13 +510,12 @@ spec = describe "TypedCore.Check" do
         `shouldEqual` Left (TypeMismatch wide (variant (TRowExtend (RowTypeEntry nameKey int) TRowEmpty)))
 
     it "checks an injection's payload against the type the variant expected gives it" do
-      -- a λ checked against an arrow takes its row; synthesized, it would take
-      -- the ambient row
+      -- a λ checked against an arrow writes the arrow's row
       let
         expected = variant (TRowExtend (RowTypeEntry nameKey (fn int consoleRow int)) TRowEmpty)
-        injection = VariantInject unit nameKey TRowEmpty (lam "n" int (var "n"))
-      checkAt TRowEmpty expected injection `shouldEqual` Right unit
-      (inferAt TRowEmpty injection == Right expected) `shouldEqual` false
+        injection row = VariantInject unit nameKey TRowEmpty (lamAt "n" int row (var "n"))
+      checkAt TRowEmpty expected (injection consoleRow) `shouldEqual` Right unit
+      checkAt TRowEmpty expected (injection TRowEmpty) `shouldEqual` Left (RowMismatch consoleRow TRowEmpty)
 
     it "widens one with weaken, open or not" do
       let colourKey = SymbolKey (Symbol "colour")
@@ -755,7 +777,7 @@ spec = describe "TypedCore.Check" do
       -- the body is a closure carrying `( region r )` in its own arrow, so it
       -- mentions `r`, which is what `r ∉ frn(β)` rejects
       inferAt TRowEmpty
-        (Region unit regionName oneCell [ oneLit ] (lam "u" unitT (ReadCell unit regionName nKey)))
+        (Region unit regionName oneCell [ oneLit ] (lamAt "u" unitT (regionRow TRowEmpty) (ReadCell unit regionName nKey)))
         `shouldEqual` Left (RegionEscapes regionName)
 
     it "refuses a handler's answer closing over a cell of the region around it" do
@@ -765,7 +787,7 @@ spec = describe "TypedCore.Check" do
         ( Region unit regionName oneCell [ oneLit ]
             ( Handle unit oneLit
                 { element: RowEffectEntry counterEff []
-                , returnClause: { binder: Ident "x", ty: int, body: lam "u" unitT (ReadCell unit regionName nKey) }
+                , returnClause: { binder: Ident "x", ty: int, body: lamAt "u" unitT (regionRow TRowEmpty) (ReadCell unit regionName nKey) }
                 , opClauses: [ fastNext oneLit ]
                 }
             )
@@ -823,7 +845,7 @@ spec = describe "TypedCore.Check" do
           TyLam unit e (KRow RowEffect)
             $ TyLam unit a KType
             $ ConstraintLam unit (Lacks (EffectKey counterEff) rowE)
-            $ lam "thunk" thunkTy
+            $ lamAt "thunk" thunkTy rowE
             $ Region unit regionName oneCell [ oneLit ]
             $ Handle unit (App unit (OpenEff unit (regionRow TRowEmpty) (var "thunk")) primUnit)
                 { element: RowEffectEntry counterEff []
@@ -963,7 +985,7 @@ spec = describe "TypedCore.Check" do
       let expected = TForall (TyVar "a") KType (fn int consoleRow unitT)
       checkAt TRowEmpty expected
         ( TyLam unit (TyVar "b") KType
-            (lam "n" int (Perform unit (EffectKey consoleEff) (OpName "log") [] (Lit unit (strLit "x"))))
+            (lamAt "n" int consoleRow (Perform unit (EffectKey consoleEff) (OpName "log") [] (Lit unit (strLit "x"))))
         )
         `shouldEqual` Right unit
 

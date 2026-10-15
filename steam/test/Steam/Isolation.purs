@@ -121,7 +121,7 @@ stashModule =
       , DeclNonRec unit
           { name: Ident "caching"
           , scheme: monoScheme (fn handleT (TRowExtend (RowEffectEntry kernelEffect []) TRowEmpty) handleT)
-          , value: App unit (global "synthesizer") (Lam unit (Ident "goal") handleT policy)
+          , value: App unit (global "synthesizer") (Lam unit (Ident "goal") handleT elabRow policy)
           , attributes: []
           }
       ]

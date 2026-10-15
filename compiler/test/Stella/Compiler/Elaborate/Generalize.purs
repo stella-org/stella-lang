@@ -274,7 +274,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
 
     it "asks of a candidate its body alone reaches an annotation" do
       prepared ((\a c -> { a, c }) <$> freshTypeMeta emptyXContext XKType <*> freshTypeMeta emptyXContext XKType)
-        { members: \r -> [ { key: f, name: f, type: pure' r.a r.a, body: ELam unit (Ident "y") r.c (EVar unit (Ident "y")), valueForm: true, written: false } ]
+        { members: \r -> [ { key: f, name: f, type: pure' r.a r.a, body: ELam unit (Ident "y") r.c XRowEmpty (EVar unit (Ident "y")), valueForm: true, written: false } ]
         , then: \r _ outcome -> outcome `shouldEqual` FinalizationHindered [ AmbiguousCandidates f [ metaOf r.c ] ]
         }
 
@@ -435,11 +435,11 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
       record r = XApp (XCon recordTy []) r
     it "makes each member's quantifiers rigid, wraps its body in their abstractions, and retires what it quantified" do
       committing (freshTypeMeta emptyXContext XKType)
-        (\a -> [ { key: f, name: f, type: pure' a a, body: ELam unit (Ident "y") a (EVar unit (Ident "y")), valueForm: true, written: false } ])
+        (\a -> [ { key: f, name: f, type: pure' a a, body: ELam unit (Ident "y") a XRowEmpty (EVar unit (Ident "y")), valueForm: true, written: false } ])
         \a outcome after -> case outcome of
           Generalized group -> do
             map _.scheme group.members `shouldEqual` [ { kindVars: [], body: XForall (TyVar "a") XKType (pure' (XVar (TyVar "a")) (XVar (TyVar "a"))) } ]
-            sameTerms (map _.body group.members) [ ETyLam unit (TyVar "a") XKType (ELam unit (Ident "y") (XVar (TyVar "a")) (EVar unit (Ident "y"))) ]
+            sameTerms (map _.body group.members) [ ETyLam unit (TyVar "a") XKType (ELam unit (Ident "y") (XVar (TyVar "a")) XRowEmpty (EVar unit (Ident "y"))) ]
             isRetired after (metaOf a) `shouldEqual` true
           GeneralizationHindered hs -> fail ("hindered: " <> show hs)
           GeneralizationHalted d -> fail ("halted: " <> show d)
@@ -498,7 +498,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             b <- freshTypeMeta emptyXContext XKType
             equate (siteIn f) { kind: XKType, left: a, right: b }
             m <- freshTermMeta emptyXContext a
-            assignTerm (siteIn f) m (ELam unit (Ident "y") b (EVar unit (Ident "y")))
+            assignTerm (siteIn f) m (ELam unit (Ident "y") b XRowEmpty (EVar unit (Ident "y")))
             pure { k1, k2, g, x, a, b, m }
         )
         (\r -> [ { key: f, name: f, type: pure' (XApp r.g r.x) (pure' r.a r.a), body, valueForm: true, written: false } ])

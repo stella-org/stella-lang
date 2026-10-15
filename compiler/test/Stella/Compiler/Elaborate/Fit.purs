@@ -231,7 +231,7 @@ spec = describe "Stella.Compiler.Elaborate.Mechanism.Fit" do
       expansion = do
         m <- freshTypeMeta emptyXContext (XKRow RowEffect)
         f <- placeFit site Wrapping XRowEmpty m
-        pure { m, term: EEta unit true (ELam unit (Ident "x") (XCon unitTy []) (EApp unit (EFit unit f (EGlobal unit unitCtor [])) (EVar unit (Ident "x")))) }
+        pure { m, term: EEta unit true (ELam unit (Ident "x") (XCon unitTy []) m (EApp unit (EFit unit f (EGlobal unit unitCtor [])) (EVar unit (Ident "x")))) }
       made s term = map (map (const unit)) (toCoreExpr (zonkExpr s.tentative.metas term))
       decided to built s = case runAttempt session (equate site { kind: XKRow RowEffect, left: built.m, right: to }) s of
         Tuple (Done _) after -> pure after
@@ -246,7 +246,7 @@ spec = describe "Stella.Compiler.Elaborate.Mechanism.Fit" do
           made empty built.term `shouldEqual` Right (Global unit unitCtor [])
           widened <- decided (closed [ console ]) built s
           case made widened built.term of
-            Right (Lam _ _ _ (App _ (OpenEff _ _ (Global _ c _)) (Var _ _))) | c == unitCtor -> pure unit
+            Right (Lam _ _ _ _ (App _ (OpenEff _ _ (Global _ c _)) (Var _ _))) | c == unitCtor -> pure unit
             other -> fail ("not kept: " <> show other)
         _ -> fail "not done"
 

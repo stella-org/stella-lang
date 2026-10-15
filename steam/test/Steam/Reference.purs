@@ -155,15 +155,19 @@ binding name ty value = { name: Ident name, scheme: monoScheme ty, value, attrib
 pureDecl :: P.String -> Type -> Expr Unit -> Decl Unit
 pureDecl name ty value = DeclNonRec unit (binding name ty value)
 
-lambdas :: P.Array (Tuple P.String Type) -> Expr Unit -> Expr Unit
-lambdas params body = foldr (\(Tuple x t) inner -> Lam unit (Ident x) t inner) body params
+-- | A curried function of the parameters given, the last arrow at the row given
+-- | and every other pure.
+lambdas :: Type -> P.Array (Tuple P.String Type) -> Expr Unit -> Expr Unit
+lambdas row params body = case Array.unsnoc params of
+  Just { init, last: Tuple x t } -> foldr (\(Tuple y s) inner -> Lam unit (Ident y) s TRowEmpty inner) (Lam unit (Ident x) t row body) init
+  Nothing -> body
 
 -- Comparing views ------------------------------------------------------------------------------
 
 -- | `sameName : Name -> Name -> Boolean`.
 sameName :: Decl Unit
 sameName = pureDecl "sameName" (pureFn nameT (pureFn nameT booleanT))
-  $ lambdas [ Tuple "left" nameT, Tuple "right" nameT ]
+  $ lambdas TRowEmpty [ Tuple "left" nameT, Tuple "right" nameT ]
   $
     Case unit [ var "left", var "right" ]
       ( SwitchCtor occ0
@@ -187,7 +191,7 @@ sameName = pureDecl "sameName" (pureFn nameT (pureFn nameT booleanT))
 sameKinds :: Decl Unit
 sameKinds = DeclRec unit
   [ binding "sameKind" (pureFn kindT (pureFn kindT booleanT))
-      $ lambdas [ Tuple "a" kindT, Tuple "b" kindT ]
+      $ lambdas TRowEmpty [ Tuple "a" kindT, Tuple "b" kindT ]
       $
         Case unit [ var "a", var "b" ]
           ( SwitchCtor occ0
@@ -240,7 +244,7 @@ sameKinds = DeclRec unit
               Nothing
           )
   , binding "sameKinds" (pureFn (listT kindT) (pureFn (listT kindT) booleanT))
-      $ lambdas [ Tuple "as" (listT kindT), Tuple "bs" (listT kindT) ]
+      $ lambdas TRowEmpty [ Tuple "as" (listT kindT), Tuple "bs" (listT kindT) ]
       $
         Case unit [ var "as", var "bs" ]
           ( SwitchCtor occ0
@@ -270,7 +274,7 @@ sameKinds = DeclRec unit
 -- | same type constructor applied to the same kinds. Any other view is not compared.
 sameConstructorView :: Decl Unit
 sameConstructorView = pureDecl "sameConstructorView" (pureFn viewT (pureFn viewT booleanT))
-  $ lambdas [ Tuple "left" viewT, Tuple "right" viewT ]
+  $ lambdas TRowEmpty [ Tuple "left" viewT, Tuple "right" viewT ]
   $
     Case unit [ var "left", var "right" ]
       ( SwitchCtor occ0
@@ -300,7 +304,7 @@ sameConstructorView = pureDecl "sameConstructorView" (pureFn viewT (pureFn viewT
 -- | that stays open, and a warning, all named by the word given.
 leaveBehind :: Decl Unit
 leaveBehind = pureDecl "leaveBehind" (pureFn handleT (fn stringT elabRow unitT))
-  $ lambdas [ Tuple "root" handleT, Tuple "word" stringT ]
+  $ lambdas elabRow [ Tuple "root" handleT, Tuple "word" stringT ]
   $ Let unit (Ident "row") handleT (call (global "freshMetaType") [ var "root", construct elabRow "KindRow" [] [ global "RowType" ] ])
   $ Let unit (Ident "required") unitT
       ( call (global "require")
@@ -311,13 +315,13 @@ leaveBehind = pureDecl "leaveBehind" (pureFn handleT (fn stringT elabRow unitT))
 -- | `nothingBefore`, the hook that does nothing.
 nothingBefore :: Decl Unit
 nothingBefore = pureDecl "nothingBefore" hookT $
-  lambdas [ Tuple "root" handleT, Tuple "wanted" handleT, Tuple "name" nameT ] unitValue
+  lambdas elabRow [ Tuple "root" handleT, Tuple "wanted" handleT, Tuple "name" nameT ] unitValue
 
 -- | `workingOn candidate`, the hook that leaves behind what a candidate can where the
 -- | candidate named is tried.
 workingOn :: Decl Unit
 workingOn = pureDecl "workingOn" (pureFn nameT hookT)
-  $ lambdas [ Tuple "candidate" nameT, Tuple "root" handleT, Tuple "wanted" handleT, Tuple "name" nameT ]
+  $ lambdas elabRow [ Tuple "candidate" nameT, Tuple "root" handleT, Tuple "wanted" handleT, Tuple "name" nameT ]
   $
     ifThen (applyAt elabRow (own "sameName") [ var "name", var "candidate" ])
       (call (own "leaveBehind") [ var "root", text "trying" ])
@@ -330,7 +334,7 @@ workingOn = pureDecl "workingOn" (pureFn nameT hookT)
 findLocal :: Decl Unit
 findLocal = DeclRec unit
   [ binding "findLocal" (pureFn viewT (fn (listT entryT) elabRow (maybeOf stringT)))
-      $ lambdas [ Tuple "wanted" viewT, Tuple "entries" (listT entryT) ]
+      $ lambdas elabRow [ Tuple "wanted" viewT, Tuple "entries" (listT entryT) ]
       $
         Case unit [ var "entries" ]
           ( SwitchCtor occ0
@@ -355,7 +359,7 @@ findLocal = DeclRec unit
 findGlobal :: Decl Unit
 findGlobal = DeclRec unit
   [ binding "findGlobal" (pureFn viewT (fn (listT nameT) elabRow (maybeOf nameT)))
-      $ lambdas [ Tuple "wanted" viewT, Tuple "names" (listT nameT) ]
+      $ lambdas elabRow [ Tuple "wanted" viewT, Tuple "names" (listT nameT) ]
       $
         Case unit [ var "names" ]
           ( SwitchCtor occ0
@@ -397,7 +401,7 @@ findGlobal = DeclRec unit
 -- | hook, the root scope, the goal's type, and the candidate.
 trying :: Decl Unit
 trying = pureDecl "trying" (pureFn hookT (pureFn handleT (pureFn handleT (fn nameT elabRow (maybeOf handleT)))))
-  $ lambdas [ Tuple "hook" hookT, Tuple "root" handleT, Tuple "wanted" handleT, Tuple "name" nameT ]
+  $ lambdas elabRow [ Tuple "hook" hookT, Tuple "root" handleT, Tuple "wanted" handleT, Tuple "name" nameT ]
   $
     Case unit [ call (global "lookupGlobal") [ var "name" ] ]
       ( SwitchCtor occ0
@@ -422,7 +426,7 @@ trying = pureDecl "trying" (pureFn hookT (pureFn handleT (pureFn handleT (fn nam
 search :: Decl Unit
 search = DeclRec unit
   [ binding "search" (pureFn hookT (pureFn handleT (pureFn handleT (fn (listT nameT) elabRow (maybeOf handleT)))))
-      $ lambdas [ Tuple "hook" hookT, Tuple "root" handleT, Tuple "wanted" handleT, Tuple "names" (listT nameT) ]
+      $ lambdas elabRow [ Tuple "hook" hookT, Tuple "root" handleT, Tuple "wanted" handleT, Tuple "names" (listT nameT) ]
       $
         Case unit [ var "names" ]
           ( SwitchCtor occ0
@@ -438,7 +442,7 @@ search = DeclRec unit
   where
   tried = Case unit
     [ call (TyApp unit (global "transact") (maybeOf handleT))
-        [ Lam unit (Ident "u") unitT (call (own "trying") [ var "hook", var "root", var "wanted", var "candidate" ]) ]
+        [ Lam unit (Ident "u") unitT elabRow (call (own "trying") [ var "hook", var "root", var "wanted", var "candidate" ]) ]
     ]
     ( SwitchCtor occ0
         [ { ctor: elab "Just"
@@ -457,7 +461,7 @@ search = DeclRec unit
 -- | policy.
 referenceWith :: Decl Unit
 referenceWith = pureDecl "referenceWith" (pureFn (listT nameT) (pureFn nameT (pureFn hookT (fn handleT elabRow handleT))))
-  $ lambdas [ Tuple "globals" (listT nameT), Tuple "attribute" nameT, Tuple "hook" hookT, Tuple "goal" handleT ]
+  $ lambdas elabRow [ Tuple "globals" (listT nameT), Tuple "attribute" nameT, Tuple "hook" hookT, Tuple "goal" handleT ]
   $ Let unit (Ident "root") handleT (call (global "rootScope") [ unitValue ])
   $ Let unit (Ident "goalType") handleT (call (global "goalType") [ var "goal" ])
   $ Case unit [ call (global "viewType") [ var "goalType" ] ]

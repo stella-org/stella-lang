@@ -166,7 +166,7 @@ twiceDecl = DeclNonRec 2
   , value:
       TyLam 0 (TyVar "e") (KRow RowEffect)
         $ ConstraintLam 0 counterLacks
-        $ Lam 0 (Ident "u") unit'
+        $ Lam 0 (Ident "u") unit' counterRow
         $ Let 0 (Ident "a") int performNext
         $ Let 0 (Ident "b") int performNext
         $ added counterRow (Var 0 (Ident "a")) (Var 0 (Ident "b"))
@@ -223,7 +223,7 @@ counterValue initial =
   TyLam 0 (TyVar "e") (KRow RowEffect)
     $ TyLam 0 (TyVar "a") KType
     $ ConstraintLam 0 counterLacks
-    $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
+    $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA) rowVar
     $ Region 0 regionName cellLayout [ initial ]
     $ Handle 0
         (App 0 (OpenEff 0 regionAlone (Var 0 (Ident "thunk"))) (Global 0 unitCtor []))
@@ -280,7 +280,7 @@ always0Decl = DeclNonRec 4
       TyLam 0 (TyVar "e") (KRow RowEffect)
         $ ConstraintLam 0 counterLacks
         $ TyLam 0 (TyVar "a") KType
-        $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
+        $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA) rowVar
         $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
             { element: RowEffectEntry counterEff []
             , returnClause: { binder: Ident "x", ty: tyVarA, body: Var 0 (Ident "x") }
@@ -317,7 +317,7 @@ twiceCountedDecl = DeclNonRec 5
   , value:
       TyLam 0 (TyVar "e") (KRow RowEffect)
         $ ConstraintLam 0 counterLacks
-        $ Lam 0 (Ident "u") unit'
+        $ Lam 0 (Ident "u") unit' rowVar
         $ Let 0 (Ident "n") int
             ( Region 0 regionName cellLayout [ Lit 0 (LitInt 0) ]
                 ( Handle 0
@@ -367,7 +367,7 @@ withoutRegion = sliceWith
           TyLam 0 (TyVar "e") (KRow RowEffect)
             $ TyLam 0 (TyVar "a") KType
             $ ConstraintLam 0 counterLacks
-            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
+            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA) rowVar
             $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
                 counterHandler
       , attributes: []
@@ -385,7 +385,7 @@ withoutWidening = sliceWith
           TyLam 0 (TyVar "e") (KRow RowEffect)
             $ TyLam 0 (TyVar "a") KType
             $ ConstraintLam 0 counterLacks
-            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
+            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA) rowVar
             $ Region 0 regionName cellLayout [ Lit 0 (LitInt 0) ]
             $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
                 counterHandler
@@ -404,10 +404,10 @@ withEscape = sliceWith
           TyLam 0 (TyVar "e") (KRow RowEffect)
             $ TyLam 0 (TyVar "a") KType
             $ ConstraintLam 0 counterLacks
-            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
+            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA) rowVar
             $ Case 0
                 [ Region 0 regionName cellLayout [ Lit 0 (LitInt 0) ]
-                    (Lam 0 (Ident "y") unit' (ReadCell 0 regionName cellKey))
+                    (Lam 0 (Ident "y") unit' clauseRow (ReadCell 0 regionName cellKey))
                 ]
             $ Leaf (Var 0 (Ident "thunk"))
       , attributes: []
@@ -424,7 +424,7 @@ withShadowingRegion = sliceWith
           TyLam 0 (TyVar "e") (KRow RowEffect)
             $ TyLam 0 (TyVar "a") KType
             $ ConstraintLam 0 counterLacks
-            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
+            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA) rowVar
             $ Region 0 regionName cellLayout [ Lit 0 (LitInt 0) ]
             $ Region 0 regionName cellLayout [ Lit 0 (LitInt 0) ]
             $ Handle 0
@@ -447,7 +447,7 @@ withInnerRowVariable assumes = sliceWith
           TyLam 0 (TyVar "e") (KRow RowEffect)
             $ TyLam 0 (TyVar "a") KType
             $ ConstraintLam 0 counterLacks
-            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA)
+            $ Lam 0 (Ident "thunk") (fn unit' counterRow tyVarA) rowVar
             $ Region 0 regionName cellLayout [ Lit 0 (LitInt 0) ]
             $ Let 0 (Ident "peek") peekType peek
             $ Handle 0
@@ -463,7 +463,7 @@ withInnerRowVariable assumes = sliceWith
   peekType =
     TForall (TyVar "t") (KRow RowEffect)
       (if assumes then TConstrained innerLacks peekArrow else peekArrow)
-  peekBody = Lam 0 (Ident "q") unit' (ReadCell 0 regionName cellKey)
+  peekBody = Lam 0 (Ident "q") unit' innerRow (ReadCell 0 regionName cellKey)
   peek =
     TyLam 0 (TyVar "t") (KRow RowEffect)
       (if assumes then ConstraintLam 0 innerLacks peekBody else peekBody)

@@ -87,7 +87,7 @@ localGroupViolations sig = groups
     Var _ _ -> []
     Global _ _ _ -> []
     Lit _ _ -> []
-    Lam _ _ _ body -> groups body
+    Lam _ _ _ _ body -> groups body
     App _ f x -> groups f <> groups x
     TyLam _ _ _ body -> groups body
     TyApp _ e _ -> groups e
@@ -199,7 +199,7 @@ go env e pos = case e of
   Lit _ _ -> leaf none
   RecordEmpty _ -> leaf none
   ReadCell _ _ _ -> leaf none
-  Lam _ x _ body ->
+  Lam _ x _ _ body ->
     let
       r = go (local x Map.empty env) body (pos + 1)
     in

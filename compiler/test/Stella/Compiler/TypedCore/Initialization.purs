@@ -45,7 +45,7 @@ var :: P.String -> P.String -> Expr P.String
 var label name = Var label (Ident name)
 
 lam :: P.String -> Expr P.String -> Expr P.String
-lam x body = Lam "λ" (Ident x) unitTy body
+lam x body = Lam "λ" (Ident x) unitTy TRowEmpty body
 
 lit :: Expr P.String
 lit = Lit "lit" (LitInt 0)
@@ -120,7 +120,7 @@ spec = describe "Stella.Compiler.TypedCore.Initialization" do
     it "shadows a member of a local group it binds the name of" do
       judgedLocally [ { name: "x", value: var "r" "x" } ] `shouldEqual` [ { initializer: 0, read: 0, at: "r", through: Nothing } ]
       judgedLocally [ { name: "x", value: Let "let" (Ident "x") unitTy lit (var "r" "x") } ] `shouldEqual` []
-      judgedLocally [ { name: "x", value: app "app" (Lam "λ" (Ident "x") unitTy (var "r" "x")) lit } ] `shouldEqual` []
+      judgedLocally [ { name: "x", value: app "app" (Lam "λ" (Ident "x") unitTy TRowEmpty (var "r" "x")) lit } ] `shouldEqual` []
 
   describe "a decision tree" do
     it "reads its guard" do

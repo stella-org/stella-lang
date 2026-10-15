@@ -277,7 +277,7 @@ forms = case _ of
   EVar _ _ -> [ "EVar" ]
   EGlobal _ _ _ -> [ "EGlobal" ]
   ELit _ _ -> [ "ELit" ]
-  ELam _ _ _ body -> [ "ELam" ] <> forms body
+  ELam _ _ _ _ body -> [ "ELam" ] <> forms body
   EApp _ f x -> [ "EApp" ] <> forms f <> forms x
   ETyLam _ _ _ body -> [ "ETyLam" ] <> forms body
   ETyApp _ e _ -> [ "ETyApp" ] <> forms e

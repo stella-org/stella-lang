@@ -139,7 +139,7 @@ mainModule =
                     (TyApp 0 (TyApp 0 (bindAt) unit') (TCon charTy []))
                     (App 0 (pureAt unit') (Global 0 unitCtor []))
                 )
-                ( Lam 0 (Ident "_") unit'
+                ( Lam 0 (Ident "_") unit' TRowEmpty
                     (App 0 (pureAt (TCon charTy [])) outOfRange)
                 )
           , attributes: []

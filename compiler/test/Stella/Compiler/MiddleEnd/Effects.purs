@@ -127,7 +127,7 @@ regionModule =
       , value 2 "closed"
           ( regionOf "r" 3
               $ Let 0 (Ident "f") (fn unitType (regionRow "r" TRowEmpty) int)
-                  (Lam 0 (Ident "u") unitType (readN "r"))
+                  (Lam 0 (Ident "u") unitType (regionRow "r" TRowEmpty) (readN "r"))
               $ App 0 (Var 0 (Ident "f")) (Global 0 unitCtor [])
           )
       ]

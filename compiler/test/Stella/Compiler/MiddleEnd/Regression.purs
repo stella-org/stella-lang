@@ -81,7 +81,7 @@ updateModule = moduleOf
 -- The wrapper fixture ---------------------------------------------------------
 
 identity' :: Expr P.Int
-identity' = Lam 0 (Ident "x") int (Var 0 (Ident "x"))
+identity' = Lam 0 (Ident "x") int TRowEmpty (Var 0 (Ident "x"))
 
 -- | Three definitions of `Int -> Int`, each a lambda under a wrapper erasure
 -- | removes, and one call site for each.
@@ -90,7 +90,7 @@ wrapperModule = moduleOf
   [ DeclNonRec 1
       { name: Ident "viaTyApp"
       , scheme: monoScheme (pureFn int int)
-      , value: TyApp 0 (TyLam 0 (TyVar "a") KType (Lam 0 (Ident "x") (TVar (TyVar "a")) (Var 0 (Ident "x")))) int
+      , value: TyApp 0 (TyLam 0 (TyVar "a") KType (Lam 0 (Ident "x") (TVar (TyVar "a")) TRowEmpty (Var 0 (Ident "x")))) int
       , attributes: []
       }
   , DeclNonRec 2
@@ -129,7 +129,7 @@ debugModule = moduleOf
   [ DeclNonRec 1
       { name: Ident "named"
       , scheme: monoScheme (pureFn int int)
-      , value: Lam 10 (Ident "x") int (Var 11 (Ident "x"))
+      , value: Lam 10 (Ident "x") int TRowEmpty (Var 11 (Ident "x"))
       , attributes: []
       }
   , DeclNonRec 2
@@ -148,7 +148,7 @@ debugModule = moduleOf
       , scheme: monoScheme (record (TRowExtend (RowTypeEntry aKey (pureFn int int)) TRowEmpty))
       , value:
           RecordExtend 40 aKey
-            (OpenEff 30 TRowEmpty (Lam 10 (Ident "y") int (Var 11 (Ident "y"))))
+            (OpenEff 30 TRowEmpty (Lam 10 (Ident "y") int TRowEmpty (Var 11 (Ident "y"))))
             (RecordEmpty 0)
       , attributes: []
       }
@@ -172,7 +172,7 @@ weakenModule = moduleOf
   [ DeclNonRec 1
       { name: Ident "mkVariant"
       , scheme: monoScheme (pureFn int (variant (TRowExtend (RowTypeEntry bKey int) TRowEmpty)))
-      , value: Lam 0 (Ident "x") int (VariantInject 0 bKey TRowEmpty (Var 0 (Ident "x")))
+      , value: Lam 0 (Ident "x") int TRowEmpty (VariantInject 0 bKey TRowEmpty (Var 0 (Ident "x")))
       , attributes: []
       }
   , DeclNonRec 2

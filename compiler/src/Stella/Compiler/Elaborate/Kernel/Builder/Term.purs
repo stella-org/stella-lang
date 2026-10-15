@@ -175,7 +175,7 @@ closeLambda scopeHandle binderHandle bodyHandle rowHandle = do
         ExactKind (XKRow RowEffect) -> pure unit
         AnyRow -> pure unit
         _ -> rejected (NotAnEffectRow rowHandle)
-      issueTerm scope (ELam unit b.name b.type body.term) (functionType b.type row.type body.claimed)
+      issueTerm scope (ELam unit b.name b.type row.type body.term) (functionType b.type row.type body.claimed)
     ForallBinder _ -> misuse
     AssumedConstraint _ -> misuse
     TypeAbsBinder _ -> misuse

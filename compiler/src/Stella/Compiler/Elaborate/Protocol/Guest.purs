@@ -656,7 +656,7 @@ askDecl :: Decl Unit
 askDecl = DeclNonRec unit
   { name: Ident "ask"
   , scheme: monoScheme (fn (con "KernelRequest") elabRow (con "KernelAnswer"))
-  , value: Lam unit request (con "KernelRequest")
+  , value: Lam unit request (con "KernelRequest") elabRow
       ( Let unit answered (con "GuestAnswer")
           (command (construct elabRow "Kernel" [] [ Var unit request ]))
           ( Case unit [ Var unit answered ]
@@ -691,9 +691,10 @@ operationDecl o = DeclNonRec unit
   where
   parameters = Array.mapWithIndex (\i t -> { name: Ident ("x" <> show i), ty: t }) (parametersOf o)
 
-  lambdas body = case Array.null parameters of
-    true -> Lam unit (Ident "x") unitType body
-    false -> foldr (\p inner -> Lam unit p.name p.ty inner) body parameters
+  -- every arrow pure but the last, which performs the request
+  lambdas body = case Array.unsnoc parameters of
+    Nothing -> Lam unit (Ident "x") unitType elabRow body
+    Just { init, last } -> foldr (\p inner -> Lam unit p.name p.ty TRowEmpty inner) (Lam unit last.name last.ty elabRow body) init
 
   asked = App unit (Global unit (elab "ask") [])
     ( construct elabRow o.family []
@@ -716,25 +717,20 @@ operationDecl o = DeclNonRec unit
 -- where it returns. **A failure closes nothing here**: the host has closed the
 -- innermost transaction as it answered, which is this one, the transactions a
 -- guest opens being nested as its calls of `transact` are. The handling stands
--- inside a function annotated at `( Breach, Kernel )` and widened by `Abort`: the
--- row `transact` runs at already holds the `Abort` the handled candidate raises,
--- and a `λ` with no annotation would take that row.
+-- inside a function at `( Breach, Kernel )` widened by `Abort`, the row
+-- `transact` runs at already holding the `Abort` the handled candidate raises.
 transactDecl :: Decl Unit
 transactDecl = DeclNonRec unit
   { name: Ident "transact"
   , scheme: monoScheme
       (TForall a KType (fn (fn unitType elabRow (TVar a)) elabRow (maybeOf (TVar a))))
   , value: TyLam unit a KType
-      ( Lam unit candidate (fn unitType elabRow (TVar a))
+      ( Lam unit candidate (fn unitType elabRow (TVar a)) elabRow
           ( Let unit begun (con "GuestAnswer") (command (Global unit (elab "BeginTransaction") []))
               ( Case unit [ Var unit begun ]
                   ( SwitchCtor scrutinee
                       [ { ctor: elab "TransactionBegun"
-                        , tree: Leaf
-                            ( Let unit handling (fn unitType outside (maybeOf (TVar a)))
-                                (Lam unit (Ident "u") unitType handled)
-                                (App unit (OpenEff unit (effectRow [ abortEffect ]) (Var unit handling)) unitValue)
-                            )
+                        , tree: Leaf (App unit (OpenEff unit (effectRow [ abortEffect ]) (Lam unit (Ident "u") unitType outside handled)) unitValue)
                         }
                       ]
                       (Just (Leaf (breach (maybeOf (TVar a)))))
@@ -748,7 +744,6 @@ transactDecl = DeclNonRec unit
   a = TyVar "a"
   candidate = Ident "candidate"
   begun = Ident "begun"
-  handling = Ident "handling"
   committed = Ident "committed"
   result = Ident "result"
   outside = effectRow [ breachEffect, kernelEffect ]
@@ -780,8 +775,8 @@ synthesizerDecl :: Decl Unit
 synthesizerDecl = DeclNonRec unit
   { name: Ident "synthesizer"
   , scheme: monoScheme (pureFn policyType (fn handle kernelOnly handle))
-  , value: Lam unit policy policyType
-      ( Lam unit goal handle
+  , value: Lam unit policy policyType TRowEmpty
+      ( Lam unit goal handle kernelOnly
           ( Handle unit
               ( Handle unit (App unit (Var unit policy) (Var unit goal))
                   (endingWithGoal abortEffect failedOp (effectRow [ breachEffect, kernelEffect ]))

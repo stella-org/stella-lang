@@ -79,8 +79,13 @@ lit = Lit 0 <<< LitInt
 let' :: P.String -> Type -> Expr P.Int -> Expr P.Int -> Expr P.Int
 let' name = Let 0 (Ident name)
 
+-- | A pure λ.
 lam :: P.String -> Type -> Expr P.Int -> Expr P.Int
-lam name = Lam 0 (Ident name)
+lam name ty = Lam 0 (Ident name) ty TRowEmpty
+
+-- | A λ whose body is evaluated under the row given.
+lamAt :: P.String -> Type -> Type -> Expr P.Int -> Expr P.Int
+lamAt name ty row = Lam 0 (Ident name) ty row
 
 app :: Expr P.Int -> P.Array (Expr P.Int) -> Expr P.Int
 app = Array.foldl (App 0)
@@ -327,7 +332,7 @@ localClosure =
   region "r" (lit 5)
     $ handle bumpEff
         [ fast "bump"
-            ( let' "f" (fn unit' clauseRow int) (lam "w" unit' (readN "r"))
+            ( let' "f" (fn unit' clauseRow int) (lamAt "w" unit' clauseRow (readN "r"))
                 $ let' "w" unit' (writeN "r" (intOpAt clauseRow "add" (call (var "f")) (lit 1)))
                 $ call (var "f")
             )
@@ -350,7 +355,7 @@ countingScheme = fn (fn unit' (rowWith [ counter, ask ] TRowEmpty) int) (rowWith
 -- | declaration with a cell is a function of a thunk to.
 counting :: Expr P.Int
 counting =
-  lam "thunk" (fn unit' (rowWith [ counter, ask ] TRowEmpty) int)
+  lamAt "thunk" (fn unit' (rowWith [ counter, ask ] TRowEmpty) int) (rowWith [ ask ] TRowEmpty)
     $ region "r" (lit 0)
     $ handle counter
         [ fast "next"
@@ -380,7 +385,7 @@ declaredApart =
             )
         ]
     $ App 0 (OpenEff 0 (regionRow "s" TRowEmpty) (Global 0 (inMain "counting") []))
-        ( lam "u" unit'
+        ( lamAt "u" unit' thunkRow
             $ let' "a" int (perform counter "next")
             $ let' "b" int (perform counter "next")
             $ let' "c" int (perform ask "ask")
@@ -424,7 +429,7 @@ nest =
     $ ConstraintLam 0 tickLacks
     $ lam "init" int
     $ lam "probe" (fn unit' rowVar int)
-    $ lam "thunk" (fn unit' (rowWith [ tick ] rowVar) int)
+    $ lamAt "thunk" (fn unit' (rowWith [ tick ] rowVar) int) rowVar
     $ region "r" (var "init")
     $ handle tick
         [ fast "tick"
@@ -455,8 +460,8 @@ nest =
               (lit 2)
           )
       )
-      [ lam "w" unit' (readN "r")
-      , lam "w" unit' (perform tick "tick")
+      [ lamAt "w" unit' clauseRow (readN "r")
+      , lamAt "w" unit' (rowWith [ tick ] clauseRow) (perform tick "tick")
       ]
 
 -- | `nest 1 (λu. 0) (λu. tick ())`.
@@ -471,7 +476,7 @@ recursed =
   app (ConstraintApp 0 (TyApp 0 (Global 0 (inMain "nest") []) TRowEmpty))
     [ lit 1
     , lam "u" unit' (lit 0)
-    , lam "u" unit' (perform tick "tick")
+    , lamAt "u" unit' (rowWith [ tick ] TRowEmpty) (perform tick "tick")
     ]
 
 -- A continuation resumed while a copy of it runs ----------------------------------------------------
@@ -518,7 +523,7 @@ closureBefore =
   handle split
     [ full "split" int TRowEmpty (twice TRowEmpty (lit 1) (lit 2)) ]
     $ region "r" (lit 0)
-    $ let' "g" (fn unit' row int) (lam "u" unit' (readN "r"))
+    $ let' "g" (fn unit' row int) (lamAt "u" unit' row (readN "r"))
     $ let' "s" int (perform split "split")
     $ bumpBy "r" row (var "s")
     $ call (var "g")
@@ -544,7 +549,7 @@ stashed =
         }
     ]
     $ region "r" (lit 0)
-    $ let' "g" closure (lam "u" unit' (readN "r"))
+    $ let' "g" closure (lamAt "u" unit' row (readN "r"))
     $ let' "h" closure (Perform 0 (EffectKey stash) (OpName "stash") [ closure ] (var "g"))
     $ bumpBy "r" row (lit 1)
     $ call (var "h")

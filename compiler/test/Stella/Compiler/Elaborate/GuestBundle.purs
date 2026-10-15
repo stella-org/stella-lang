@@ -275,7 +275,7 @@ synthesizer =
       [ DeclNonRec unit
           { name: Ident "synth"
           , scheme: monoScheme (fn (TCon handleTy []) kernelRow (TCon handleTy []))
-          , value: Lam unit (Ident "g") (TCon handleTy [])
+          , value: Lam unit (Ident "g") (TCon handleTy []) kernelRow
               ( Let unit (Ident "a") (elabType "GuestAnswer")
                   ( Perform unit (EffectKey kernelEffect) commandOp []
                       ( app "Kernel"
@@ -303,7 +303,7 @@ takesApart =
       [ DeclNonRec unit
           { name: Ident "inspect"
           , scheme: monoScheme (pureFn (TCon handleTy []) (TCon intTy []))
-          , value: Lam unit (Ident "h") (TCon handleTy [])
+          , value: Lam unit (Ident "h") (TCon handleTy []) TRowEmpty
               (Case unit [ Var unit (Ident "h") ] (SwitchCtor (OccScrutinee 0) [] Nothing))
           , attributes: []
           }

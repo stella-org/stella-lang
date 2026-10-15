@@ -20,9 +20,9 @@ import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), TermMetaVar(..), XExpr(..), toCoreExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta as TermMeta
-import Stella.Compiler.Elaborate.CorePlus.Type (XType(..))
+import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, TermBinding(..), TermScope, emptyContext, freshMeta, lookupMeta, lookupTermMeta)
-import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar(..), ModuleName(..), Qualified(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar(..), ModuleName(..), Qualified(..), RegionName(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
@@ -115,9 +115,17 @@ spec = describe "Elaborate.TermMeta" do
       let
         Tuple m ctx = single narrow
       assignTermMeta ctx m (EVar 1 x) `shouldEqual` Left (TermEscapingValue m x)
-      assignTermMeta ctx m (ELam 1 y (XVar a) (EVar 2 y)) `shouldEqual` Left (TermEscapingType m a)
-      assignTermMeta ctx m (ELam 1 y (XCon (Qualified prim (TyName "P")) [ XKVar k ]) (EVar 2 y))
+      assignTermMeta ctx m (ELam 1 y (XVar a) XRowEmpty (EVar 2 y)) `shouldEqual` Left (TermEscapingType m a)
+      assignTermMeta ctx m (ELam 1 y (XCon (Qualified prim (TyName "P")) [ XKVar k ]) XRowEmpty (EVar 2 y))
         `shouldEqual` Left (TermEscapingKind m k)
+
+    it "refuses a type and a region the row a λ writes names out of scope" do
+      let
+        Tuple m ctx = single narrow
+        region = RegionName "r"
+      assignTermMeta ctx m (ELam 1 y xInt (XVar a) (EVar 2 y)) `shouldEqual` Left (TermEscapingType m a)
+      assignTermMeta ctx m (ELam 1 y xInt (XRowExtend (XRowRegionEntry region) XRowEmpty) (EVar 2 y))
+        `shouldEqual` Left (TermEscapingRegion m region)
 
     it "refuses a jump to a join point of the place it stands in" do
       let
@@ -174,7 +182,7 @@ spec = describe "Elaborate.TermMeta" do
       let
         Tuple tm ctx0 = freshMeta { kind: XKType, scope: { types: Set.singleton a, kinds: Set.empty, regions: Set.empty }, level: 0 } emptyContext
         Tuple m ctx1 = TermMeta.freshTermMeta { ty: xInt, scope: narrow } ctx0
-        narrowed = case assignTermMeta ctx1 m (ELam 1 y (XMeta tm) (EVar 2 y)) of
+        narrowed = case assignTermMeta ctx1 m (ELam 1 y (XMeta tm) XRowEmpty (EVar 2 y)) of
           Right ctx2 -> lookupMeta ctx2 tm
           Left _ -> Nothing
       narrowed `shouldEqual` Just (Unsolved { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty }, level: 0 })
@@ -184,9 +192,9 @@ spec = describe "Elaborate.TermMeta" do
       let
         Tuple m ctx0 = single wide
         zonked = case assignTermMeta ctx0 m (EApp 90 (EVar 91 x) (EVar 92 y)) of
-          Right ctx1 -> Just (zonkExpr ctx1 (ELam 1 x xInt (ETermMeta 7 m)))
+          Right ctx1 -> Just (zonkExpr ctx1 (ELam 1 x xInt XRowEmpty (ETermMeta 7 m)))
           Left _ -> Nothing
-      zonked `shouldEqual` Just (ELam 1 x xInt (EApp 7 (EVar 7 x) (EVar 7 y)))
+      zonked `shouldEqual` Just (ELam 1 x xInt XRowEmpty (EApp 7 (EVar 7 x) (EVar 7 y)))
 
     it "follows a chain of solutions" do
       let
@@ -204,8 +212,16 @@ spec = describe "Elaborate.TermMeta" do
         Tuple tm ctx0 = freshMeta { kind: XKType, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty }, level: 0 } emptyContext
         Tuple m ctx1 = TermMeta.freshTermMeta { ty: xInt, scope: wide } ctx0
         solvedType = ctx1 { bindings = Map.insert tm (Assigned xInt) ctx1.bindings }
-        zonked = map (\c -> zonkExpr c (ETermMeta 4 m)) (hush (assignTermMeta solvedType m (ELam 1 y (XMeta tm) (EVar 2 y))))
-      zonked `shouldEqual` Just (ELam 4 y xInt (EVar 4 y))
+        zonked = map (\c -> zonkExpr c (ETermMeta 4 m)) (hush (assignTermMeta solvedType m (ELam 1 y (XMeta tm) XRowEmpty (EVar 2 y))))
+      zonked `shouldEqual` Just (ELam 4 y xInt XRowEmpty (EVar 4 y))
+
+    it "applies a solved row metavariable in the row a λ writes" do
+      let
+        Tuple tm ctx0 = freshMeta { kind: XKRow RowEffect, scope: { types: Set.empty, kinds: Set.empty, regions: Set.empty }, level: 0 } emptyContext
+        Tuple m ctx1 = TermMeta.freshTermMeta { ty: xInt, scope: wide } ctx0
+        solvedRow = ctx1 { bindings = Map.insert tm (Assigned XRowEmpty) ctx1.bindings }
+        zonked = map (\c -> zonkExpr c (ETermMeta 4 m)) (hush (assignTermMeta solvedRow m (ELam 1 y xInt (XMeta tm) (EVar 2 y))))
+      zonked `shouldEqual` Just (ELam 4 y xInt XRowEmpty (EVar 4 y))
 
     it "applies a solved type metavariable in the row an injection writes" do
       let

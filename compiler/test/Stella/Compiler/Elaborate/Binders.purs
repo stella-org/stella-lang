@@ -159,7 +159,7 @@ spec = describe "Elaborate.BuildTerm, binders and applications" do
   describe "a lambda" do
     it "binds a fresh variable in its body, and is claimed at an arrow over the row given" do
       builds intIdentity \o -> do
-        o.term `shouldEqual` ELam unit x0 xInt (EVar unit x0)
+        o.term `shouldEqual` ELam unit x0 xInt XRowEmpty (EVar unit x0)
         o.claimed `shouldEqual` fnType xInt XRowEmpty xInt
         o.builtIn `shouldEqual` Just (ScopeId 0)
 
@@ -206,7 +206,7 @@ spec = describe "Elaborate.BuildTerm, binders and applications" do
   describe "termApply" do
     it "is claimed at the result of the function's claim, whatever the argument is claimed at" do
       builds (intIdentity >>= \f -> rootScope >>= \root -> litOne root >>= termApply root f) \o -> do
-        o.term `shouldEqual` EApp unit (ELam unit x0 xInt (EVar unit x0)) (ELit unit (LitInt 1))
+        o.term `shouldEqual` EApp unit (ELam unit x0 xInt XRowEmpty (EVar unit x0)) (ELit unit (LitInt 1))
         o.claimed `shouldEqual` xInt
       builds (intIdentity >>= \f -> rootScope >>= \root -> literal root (LitBoolean true) >>= termApply root f) \o ->
         o.claimed `shouldEqual` xInt

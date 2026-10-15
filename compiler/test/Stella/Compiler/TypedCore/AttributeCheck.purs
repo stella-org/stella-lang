@@ -57,7 +57,7 @@ fixture =
       , DeclNonRec 3
           { name: Ident "id"
           , scheme: monoScheme (TForall a KType (pureFn (TVar a) (TVar a)))
-          , value: TyLam 3 a KType (Lam 3 (Ident "x") (TVar a) (Var 3 (Ident "x")))
+          , value: TyLam 3 a KType (Lam 3 (Ident "x") (TVar a) TRowEmpty (Var 3 (Ident "x")))
           , attributes: []
           }
       , DeclNonRec 4

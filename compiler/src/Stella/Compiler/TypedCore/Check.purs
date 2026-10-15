@@ -222,13 +222,13 @@ infer env rho expr = case expr of
 
   Lit at literal -> Right (Lit (at' at (litType literal)) literal)
 
-  -- A `λ` does not write the row of its arrow. A synthesized one takes the
-  -- ambient row, which is what application requires of it; every other position
-  -- that reaches a `λ` has a type to check it against.
-  Lam at name ty body -> do
+  -- A `λ` writes the row of its arrow, which its body is evaluated under; the
+  -- row ambient where it stands is no part of its type.
+  Lam at name ty row body -> do
     kinded at (checkKind env.signature env.context ty KType)
-    body' <- infer (lambdaEnv env name ty) rho body
-    Right (Lam (at' at (fn ty rho (typeOf body'))) name ty body')
+    kinded at (checkKind env.signature env.context row (KRow RowEffect))
+    body' <- infer (lambdaEnv env name ty) row body
+    Right (Lam (at' at (fn ty row (typeOf body'))) name ty row body')
 
   App at f x -> do
     f' <- infer (notTail env) rho f
@@ -420,12 +420,14 @@ infer env rho expr = case expr of
 -- | one thing whichever way it was reached.
 check :: forall a. Env -> Type -> Type -> Expr a -> Either (CheckFailure a) (Expr (Typed a))
 check env rho expected expr = case expr of
-  Lam at name ty body -> do
+  Lam at name ty row body -> do
     parts <- functionParts at expected
     kinded at (checkKind env.signature env.context ty KType)
+    kinded at (checkKind env.signature env.context row (KRow RowEffect))
     equalTypes at parts.argument ty
-    body' <- check (lambdaEnv env name ty) parts.row parts.result body
-    Right (Lam (at' at expected) name ty body')
+    sameRow at parts.row row
+    body' <- check (lambdaEnv env name ty) row parts.result body
+    Right (Lam (at' at expected) name ty row body')
 
   -- The payload is checked against the type the expected variant gives its
   -- key, and the row written is the rest of that variant.
@@ -1202,7 +1204,7 @@ operationSubstitution at env op params args binders tyArgs = do
 isValueForm :: forall a. Signature -> Expr a -> P.Boolean
 isValueForm sig = case _ of
   Lit _ _ -> true
-  Lam _ _ _ _ -> true
+  Lam _ _ _ _ _ -> true
   TyLam _ _ _ body -> isValueForm sig body
   ConstraintLam _ _ body -> isValueForm sig body
   RecordEmpty _ -> true

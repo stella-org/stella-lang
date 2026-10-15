@@ -46,13 +46,13 @@ instantiating =
       [ DeclNonRec 1
           { name: Ident "pair"
           , scheme: monoScheme (TForall a KType (TForall b KType (pureFn (TVar a) (pureFn (TVar b) (TVar a)))))
-          , value: TyLam 1 a KType (TyLam 1 b KType (Lam 1 (Ident "x") (TVar a) (Lam 1 (Ident "y") (TVar b) (Var 1 (Ident "x")))))
+          , value: TyLam 1 a KType (TyLam 1 b KType (Lam 1 (Ident "x") (TVar a) TRowEmpty (Lam 1 (Ident "y") (TVar b) TRowEmpty (Var 1 (Ident "x")))))
           , attributes: []
           }
       , DeclNonRec 2
           { name: Ident "flipped"
           , scheme: monoScheme (TForall a KType (TForall b KType (pureFn (TVar b) (pureFn (TVar a) (TVar b)))))
-          , value: TyLam 2 a KType $ TyLam 2 b KType $ Lam 2 (Ident "y") (TVar b) $ Lam 2 (Ident "z") (TVar a) $
+          , value: TyLam 2 a KType $ TyLam 2 b KType $ Lam 2 (Ident "y") (TVar b) TRowEmpty $ Lam 2 (Ident "z") (TVar a) TRowEmpty $
               App 2 (App 2 (TyApp 2 (TyApp 2 (Global 2 (Qualified main (Ident "pair")) []) (TVar b)) (TVar a)) (Var 2 (Ident "y"))) (Var 2 (Ident "z"))
           , attributes: []
           }

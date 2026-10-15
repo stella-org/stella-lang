@@ -139,6 +139,23 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Close" do
         closed `shouldEqual` Closed (Set.fromFoldable (Array.mapMaybe metaOf [ r.a, r.b ]))
         sameRow after r.e (row [ console, clock ] XRowEmpty)
 
+  it "finds a row no type but the row a λ writes holds, and closes it" do
+    closing
+      ( do
+          e <- freshTypeMeta emptyXContext rowEffect
+          pure { term: ELam unit (Ident "x") unit' e literal, keep: e }
+      )
+      \e closed _ -> closed `shouldEqual` Closed (Set.fromFoldable (metaOf e))
+
+  it "counts the row a λ writes where its arrow stands, and not again" do
+    -- standing once in a parameter's type, and written by the λ besides: closed
+    closing
+      ( do
+          e <- freshTypeMeta emptyXContext rowEffect
+          pure { term: ELam unit (Ident "x") (xFunction unit' e unit') e literal, keep: e }
+      )
+      \e closed _ -> closed `shouldEqual` Closed (Set.fromFoldable (metaOf e))
+
   it "counts where a row stands in the types the term writes, and not the fits naming it" do
     -- named by two fits and standing once in a type: closed
     closing
@@ -146,7 +163,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Close" do
           e <- freshTypeMeta emptyXContext rowEffect
           f <- placeFit site Wrapping e (row [ console ] XRowEmpty)
           _ <- placeFit site Wrapping e (row [ clock ] XRowEmpty)
-          pure { term: ELam unit (Ident "x") (xFunction unit' e unit') (EFit unit f literal), keep: e }
+          pure { term: ELam unit (Ident "x") (xFunction unit' e unit') (row [ console ] XRowEmpty) (EFit unit f literal), keep: e }
       )
       \e closed _ -> closed `shouldEqual` Closed (Set.fromFoldable (metaOf e))
     -- standing twice: left
@@ -154,7 +171,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Close" do
       ( do
           e <- freshTypeMeta emptyXContext rowEffect
           f <- placeFit site Wrapping e (row [ console ] XRowEmpty)
-          pure { term: ELam unit (Ident "x") (xFunction unit' e unit') (ELam unit (Ident "y") (xFunction unit' e unit') (EFit unit f literal)), keep: unit }
+          pure { term: ELam unit (Ident "x") (xFunction unit' e unit') XRowEmpty (ELam unit (Ident "y") (xFunction unit' e unit') (row [ console ] XRowEmpty) (EFit unit f literal)), keep: unit }
       )
       \_ closed _ -> closed `shouldEqual` NothingClosed
 

@@ -150,8 +150,9 @@ global q = Global 0 q []
 app :: Expr P.Int -> P.Array (Expr P.Int) -> Expr P.Int
 app = Array.foldl (App 0)
 
+-- | A pure λ.
 lam :: P.String -> Type -> Expr P.Int -> Expr P.Int
-lam name = Lam 0 (Ident name)
+lam name ty = Lam 0 (Ident name) ty TRowEmpty
 
 lit :: P.Int -> Expr P.Int
 lit = Lit 0 <<< LitInt

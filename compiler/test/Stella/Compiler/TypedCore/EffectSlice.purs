@@ -375,7 +375,7 @@ lowerConsoleOf source clause =
     $ TyLam 0 (TyVar "a") KType
     $ ConstraintLam 0 (Lacks (EffectKey consoleEff) rowVar)
     $ ConstraintLam 0 (Lacks (EffectKey liftIOEff) rowVar)
-    $ Lam 0 (Ident "thunk") (fn unit' source tyVarA)
+    $ Lam 0 (Ident "thunk") (fn unit' source tyVarA) liftIORow
     $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
         { element: RowEffectEntry consoleEff []
         , returnClause: { binder: Ident "x", ty: tyVarA, body: Var 0 (Ident "x") }
@@ -482,7 +482,7 @@ tickOf :: Expr P.Int -> Expr P.Int
 tickOf addExpr =
   TyLam 0 (TyVar "e") (KRow RowEffect)
     $ ConstraintLam 0 (Lacks (EffectKey stateEff) rowVar)
-    $ Lam 0 (Ident "u") unit'
+    $ Lam 0 (Ident "u") unit' tickRow
     $ Let 0 (Ident "n") int
         (Perform 0 (EffectKey stateEff) (OpName "get") [] (Global 0 unitCtor []))
     $ Let 0 (Ident "w") unit'
@@ -527,7 +527,7 @@ toMaybeOf clauses =
   TyLam 0 (TyVar "e") (KRow RowEffect)
     $ ConstraintLam 0 (Lacks (EffectKey partialEff) rowVar)
     $ TyLam 0 (TyVar "a") KType
-    $ Lam 0 (Ident "thunk") (fn unit' partialRow tyVarA)
+    $ Lam 0 (Ident "thunk") (fn unit' partialRow tyVarA) rowVar
     $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
         { element: RowEffectEntry partialEff []
         , returnClause:
@@ -562,7 +562,7 @@ runConsoleIOScheme = monoScheme
 runConsoleIOValue :: Expr P.Int
 runConsoleIOValue =
   TyLam 0 (TyVar "a") KType
-    $ Lam 0 (Ident "thunk") (fn unit' consoleRow tyVarA)
+    $ Lam 0 (Ident "thunk") (fn unit' consoleRow tyVarA) TRowEmpty
     $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor [])) consoleHandler
 
 -- | Every arrow here is pure, the row outside the handle being `()`, so nothing
@@ -587,7 +587,7 @@ consoleHandler =
                     (TyApp 0 (TyApp 0 (Global 0 ioBind []) unit') tyVarA)
                     (App 0 (Global 0 jsConsoleLog []) (Var 0 (Ident "s")))
                 )
-                (Lam 0 (Ident "w") unit' (App 0 (Var 0 (Ident "k")) (Global 0 unitCtor [])))
+                (Lam 0 (Ident "w") unit' TRowEmpty (App 0 (Var 0 (Ident "k")) (Global 0 unitCtor [])))
           }
       ]
   }
@@ -683,7 +683,7 @@ openConsoleValue =
   TyLam 0 (TyVar "a") KType
     $ TyLam 0 (TyVar "e") (KRow RowEffect)
     $ ConstraintLam 0 (Lacks (EffectKey consoleEff) rowVar)
-    $ Lam 0 (Ident "thunk") (fn unit' openConsoleRow tyVarA)
+    $ Lam 0 (Ident "thunk") (fn unit' openConsoleRow tyVarA) rowVar
     $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
         { element: RowEffectEntry consoleEff []
         , returnClause:
@@ -705,7 +705,7 @@ openConsoleValue =
                               (App 0 (OpenEff 0 rowVar (Global 0 jsConsoleLog [])) (Var 0 (Ident "s")))
                           )
                       )
-                      (Lam 0 (Ident "w") unit' (App 0 (Var 0 (Ident "k")) (Global 0 unitCtor [])))
+                      (Lam 0 (Ident "w") unit' TRowEmpty (App 0 (Var 0 (Ident "k")) (Global 0 unitCtor [])))
                 }
             ]
         }
@@ -721,7 +721,7 @@ bareJustToMaybe =
   TyLam 0 (TyVar "e") (KRow RowEffect)
     $ ConstraintLam 0 (Lacks (EffectKey partialEff) rowVar)
     $ TyLam 0 (TyVar "a") KType
-    $ Lam 0 (Ident "thunk") (fn unit' partialRow tyVarA)
+    $ Lam 0 (Ident "thunk") (fn unit' partialRow tyVarA) rowVar
     $ Handle 0 (App 0 (Var 0 (Ident "thunk")) (Global 0 unitCtor []))
         { element: RowEffectEntry partialEff []
         , returnClause:

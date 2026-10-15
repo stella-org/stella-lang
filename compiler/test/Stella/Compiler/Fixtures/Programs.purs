@@ -148,8 +148,9 @@ char c = case scalarValue c of
 intOp :: P.String -> Expr P.Int -> Expr P.Int -> Expr P.Int
 intOp name a b = app (global (inInt name)) [ a, b ]
 
+-- | A pure λ.
 lam :: P.String -> Type -> Expr P.Int -> Expr P.Int
-lam name = Lam 0 (Ident name)
+lam name ty = Lam 0 (Ident name) ty TRowEmpty
 
 let' :: P.String -> Type -> Expr P.Int -> Expr P.Int -> Expr P.Int
 let' name = Let 0 (Ident name)

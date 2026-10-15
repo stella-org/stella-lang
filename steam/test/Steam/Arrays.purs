@@ -213,10 +213,10 @@ mainModule =
             , value:
                 TyLam 0 (TyVar "a") KType
                   ( TyLam 0 (TyVar "b") KType
-                      ( Lam 0 (Ident "f") (pureFn tyA tyB)
-                          ( Lam 0 (Ident "from") (arrayOf tyA)
-                              ( Lam 0 (Ident "into") (arrayOf tyB)
-                                  ( Lam 0 (Ident "i") int
+                      ( Lam 0 (Ident "f") (pureFn tyA tyB) TRowEmpty
+                          ( Lam 0 (Ident "from") (arrayOf tyA) TRowEmpty
+                              ( Lam 0 (Ident "into") (arrayOf tyB) TRowEmpty
+                                  ( Lam 0 (Ident "i") int TRowEmpty
                                       ( Case 0 []
                                           ( Guard
                                               ( apply (Global 0 (intEntry "lt") [])
@@ -257,8 +257,8 @@ mainModule =
           , value:
               TyLam 0 (TyVar "a") KType
                 ( TyLam 0 (TyVar "b") KType
-                    ( Lam 0 (Ident "g") (pureFn tyA tyB)
-                        ( Lam 0 (Ident "source") (arrayOf tyA)
+                    ( Lam 0 (Ident "g") (pureFn tyA tyB) TRowEmpty
+                        ( Lam 0 (Ident "source") (arrayOf tyA) TRowEmpty
                             ( Let 0 (Ident "target") (arrayOf tyB)
                                 (App 0 (inst "unsafeNew" tyB) (apply (inst "length" tyA) [ Var 0 (Ident "source") ]))
                                 ( apply (fillAt tyA tyB)
@@ -280,7 +280,7 @@ mainModule =
                     ( Let 0 (Ident "_1") unit' (setting 1 20)
                         ( Let 0 (Ident "_2") unit' (setting 2 30)
                             ( apply (TyApp 0 (TyApp 0 (Global 0 (mainNamed "mapArray") []) int) int)
-                                [ Lam 0 (Ident "x") int
+                                [ Lam 0 (Ident "x") int TRowEmpty
                                     (apply (Global 0 (intEntry "add") []) [ Var 0 (Ident "x"), Lit 0 (LitInt 1) ])
                                 , Var 0 (Ident "xs")
                                 ]

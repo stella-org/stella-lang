@@ -103,7 +103,7 @@ ap :: Expr P.Int -> P.Array (Expr P.Int) -> Expr P.Int
 ap = foldl (App 0)
 
 lam :: P.String -> Type -> Expr P.Int -> Expr P.Int
-lam x t = Lam 0 (Ident x) t
+lam x t = Lam 0 (Ident x) t TRowEmpty
 
 var :: P.String -> Expr P.Int
 var = Var 0 <<< Ident

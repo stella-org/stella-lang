@@ -28,7 +28,7 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
-import Stella.Compiler.Elaborate.CorePlus.Term (XExpr, typesOfTerm)
+import Stella.Compiler.Elaborate.CorePlus.Term (XExpr, standingTypesOfTerm, typesOfTerm)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XType(..), metaOccurrences, metasOf)
 import Stella.Compiler.Elaborate.Driver.Loop (Attempter, PendingReport, RunResult(..), runAttempting)
 import Stella.Compiler.Elaborate.Driver.Resolve (ComponentOutcome(..), Resolution(..), resolveOwners)
@@ -123,12 +123,14 @@ closeRows session attempter owner key level members s0 =
   zonked = substitute metas
 
   -- the types each member's term writes and it is given, where a candidate is
-  -- counted: every fit kept a fit, so that the row a decided widening carries
-  -- counts no more than an undecided fit's does
+  -- found and sited, every fit kept a fit
   written = map
-    (\m -> { site: m.site, metas: Array.concatMap (metaOccurrences <<< zonked) (typesOfTerm (zonkExpr (metas { fits = Map.empty }) m.term) <> m.types) })
+    (\m -> { site: m.site, metas: Array.concatMap (metaOccurrences <<< zonked) (typesOfTerm (term m) <> m.types) })
     members
-  occurrences = Array.concatMap _.metas written
+  -- where a candidate is counted: a λ's row where its arrow stands, and the row
+  -- a decided widening carries no more than an undecided fit's
+  occurrences = Array.concatMap (\m -> Array.concatMap (metaOccurrences <<< zonked) (standingTypesOfTerm (term m) <> m.types)) members
+  term m = zonkExpr (metas { fits = Map.empty }) m.term
 
   siteOf m = case Array.find (Array.elem m <<< _.metas) written of
     Just w -> Just w.site
@@ -175,7 +177,7 @@ closeRows session attempter owner key level members s0 =
     XDisjoint l r -> Set.union (metasOf (zonked l)) (metasOf (zonked r))
 
   found = Set.unions
-    [ Set.fromFoldable occurrences
+    [ Set.fromFoldable (Array.concatMap _.metas written)
     , Set.unions (map (\f -> Set.union (metasOf f.source) (metasOf f.target)) fits)
     , Set.unions (map _.metas atoms)
     ]

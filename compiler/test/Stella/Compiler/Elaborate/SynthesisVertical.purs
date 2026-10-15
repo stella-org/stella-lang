@@ -269,7 +269,7 @@ spec = describe "Elaborate, a synthesis hole filled by the reference synthesizer
       [ m ] -> do
         result `shouldEqual` Completed
         -- `λ(x : Int). ?m`, the hole annotated 7 and the rest 0.
-        zonkExpr s.tentative.metas (ELam 0 x xInt (ETermMeta 7 m)) `shouldEqual` ELam 0 x xInt (EVar 7 x)
+        zonkExpr s.tentative.metas (ELam 0 x xInt XRowEmpty (ETermMeta 7 m)) `shouldEqual` ELam 0 x xInt XRowEmpty (EVar 7 x)
       other -> fail (show other)
 
   it "is answered from the globals given where nothing its site binds has its type" do
@@ -277,7 +277,7 @@ spec = describe "Elaborate, a synthesis hole filled by the reference synthesizer
       [ m ] -> do
         result `shouldEqual` Completed
         -- `λ(x : Boolean). ?m`.
-        zonkExpr s.tentative.metas (ELam 0 x xBoolean (ETermMeta 7 m)) `shouldEqual` ELam 0 x xBoolean (EGlobal 7 mainOne [])
+        zonkExpr s.tentative.metas (ELam 0 x xBoolean XRowEmpty (ETermMeta 7 m)) `shouldEqual` ELam 0 x xBoolean XRowEmpty (EGlobal 7 mainOne [])
       other -> fail (show other)
 
   it "reads the site each goal was created at, however late the loop runs it" do
@@ -346,7 +346,7 @@ spec = describe "Elaborate, a synthesis hole filled by the reference synthesizer
         second.result `shouldEqual` Completed
         second.warnings `shouldEqual` []
         s3.retained.fuel `shouldEqual` 9
-        zonkExpr s3.tentative.metas (ELam 0 x xInt (ETermMeta 7 w.target)) `shouldEqual` ELam 0 x xInt (EVar 7 x)
+        zonkExpr s3.tentative.metas (ELam 0 x xInt XRowEmpty (ETermMeta 7 w.target)) `shouldEqual` ELam 0 x xInt XRowEmpty (EVar 7 x)
         Map.isEmpty s3.tentative.scheduler.pending `shouldEqual` true
 
   it "requires, while it waits, a constraint that stays open until the attempt is rolled back" do

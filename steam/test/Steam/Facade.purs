@@ -137,7 +137,7 @@ probeDecl o = DeclNonRec unit
   { name: Ident ("probe_" <> o.name)
   , scheme: monoScheme synthesizerType
   , value: App unit (global "synthesizer")
-      ( Lam unit goal handleT
+      ( Lam unit goal handleT elabRow
           ( Let unit result sig.result (call operation (map (_.term <<< sampleOf goalSample) sig.parameters))
               (if sig.result == handleT then Var unit result else call (global "rootScope") [ unitValue ])
           )
@@ -192,7 +192,7 @@ rootScopeCommand = wire "Kernel" [ wire "BuildRequest" [ wire "RootScope" [] ] ]
 
 -- | `transact [Handle] (λ_. body)`.
 transacting :: P.String -> Expr Unit -> Expr Unit
-transacting binder body = call (TyApp unit (global "transact") handleT) [ Lam unit (Ident binder) (TCon unitTy []) body ]
+transacting binder body = call (TyApp unit (global "transact") handleT) [ Lam unit (Ident binder) (TCon unitTy []) elabRow body ]
 
 -- | `case e of Just h -> h; Nothing -> otherwise`.
 orElse :: P.String -> Expr Unit -> Expr Unit -> Expr Unit
@@ -211,7 +211,7 @@ synthesizing :: P.String -> Expr Unit -> Decl Unit
 synthesizing name body = DeclNonRec unit
   { name: Ident name
   , scheme: monoScheme synthesizerType
-  , value: App unit (global "synthesizer") (Lam unit goal handleT body)
+  , value: App unit (global "synthesizer") (Lam unit goal handleT elabRow body)
   , attributes: []
   }
 

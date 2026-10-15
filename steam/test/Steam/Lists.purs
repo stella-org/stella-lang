@@ -109,7 +109,7 @@ call :: P.String -> P.Array Type -> P.Array (Expr P.Int) -> Expr P.Int
 call n tys = ap (g n tys)
 
 lam :: P.Array (Tuple P.String Type) -> Expr P.Int -> Expr P.Int
-lam ps body = foldr (\(Tuple x t) e -> Lam 0 (Ident x) t e) body ps
+lam ps body = foldr (\(Tuple x t) e -> Lam 0 (Ident x) t TRowEmpty e) body ps
 
 v :: P.String -> Expr P.Int
 v = Var 0 <<< Ident

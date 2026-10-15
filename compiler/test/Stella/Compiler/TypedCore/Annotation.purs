@@ -69,7 +69,7 @@ sumCase :: Either P.String (Expr (Typed P.Int))
 sumCase = do
   value <- valueOf "sum"
   case value of
-    Lam _ _ _ body -> Right body
+    Lam _ _ _ _ body -> Right body
     _ -> Left "sum is not a lambda"
 
 spec :: Spec Unit
@@ -109,11 +109,11 @@ spec = describe "Stella.Compiler.TypedCore.Check » what checking records" do
     it "is replaced at the root alone by `withAnnotation`" do
       -- the dual of `exprAnnotation`, where `map` would reach every node
       let
-        term = Lam unit (Ident "x") int (Var unit (Ident "x"))
+        term = Lam unit (Ident "x") int TRowEmpty (Var unit (Ident "x"))
         result = case infer (envOf primSignature emptyContext) TRowEmpty term of
           Left _ -> Left "did not check"
           Right checked -> case withAnnotation ((exprAnnotation checked) { ty = string }) checked of
-            Lam ann _ _ body -> Right (Tuple ann.ty (typeOf body))
+            Lam ann _ _ _ body -> Right (Tuple ann.ty (typeOf body))
             _ -> Left "not a lambda"
       result `shouldEqual` Right (Tuple string int)
 

@@ -79,7 +79,7 @@ synthModule =
       [ DeclNonRec unit
           { name: Ident "synth"
           , scheme: monoScheme (fn handle kernelRow handle)
-          , value: Lam unit goal handle
+          , value: Lam unit goal handle kernelRow
               ( asking (Ident "first") (observe "GoalType" (Var unit goal))
                   \found -> asking (Ident "second") (observe "Whnf" (Var unit found)) (Var unit)
               )

@@ -51,7 +51,7 @@ import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, Decis
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy, unitCtor, unitTy, variantTy)
-import Stella.Compiler.TypedCore.Type (RowKey(..), Type(..))
+import Stella.Compiler.TypedCore.Type (RowEntry(..), RowKey(..), Type(..))
 import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -262,6 +262,25 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map at r.errors `shouldEqual` []
         map _.name r.values `shouldEqual` map (Qualified (ModuleName "M") <<< Ident) [ "a", "b" ]
         checked r \core -> shapes core `shouldEqual` [ "rec a b" ]
+
+    it "applies a λ performing less than the row ambient, widened and keeping the row it writes" do
+      elaborating
+        [ "effect Ask where"
+        , "  ask :: Unit ->* Int"
+        , "effect Log where"
+        , "  log :: Int ->* Unit"
+        , "asked :: Unit -> Int / {| Ask |}"
+        , "asked u = asked u"
+        , "c :: Unit -> Int / {| Ask, Log |}"
+        , "c u = (\\_ -> asked ()) u"
+        ]
+        \r -> do
+          map at r.errors `shouldEqual` []
+          let ask = TRowExtend (RowEffectEntry (Qualified (ModuleName "M") (EffName "Ask")) []) TRowEmpty
+          case map _.body (Array.find (\v -> v.name == Qualified (ModuleName "M") (Ident "c")) r.values) of
+            Just (Lam _ _ _ _ (App _ (OpenEff _ _ (Lam _ _ _ row _)) _)) | row == ask -> pure unit
+            other -> fail ("not widened at its own row: " <> show (map (map (const unit)) other))
+          checked r \core -> shapes core `shouldEqual` [ "rec asked", "nonrec c" ]
 
   describe "what is not elaborated" do
     it "is reported where it stands, and leaves the rest elaborated" do
@@ -589,17 +608,17 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (types <> [ "f :: Color -> Opt Int -> Int", "f c o = case c, o of", "  Red, Some 0 -> 0", "  _, Some n -> n", "  _, None -> 9" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
-          Just (Lam _ _ _ (Lam _ _ _ (LetJoin _ _ [ { name: Ident "n" } ] _ (Var _ (Ident "n")) (Case _ _ _)))) -> pure unit
+          Just (Lam _ _ _ _ (Lam _ _ _ _ (LetJoin _ _ [ { name: Ident "n" } ] _ (Var _ (Ident "n")) (Case _ _ _)))) -> pure unit
           other -> fail ("no join point: " <> show other)
 
     it "puts an alternative one leaf takes in that leaf, and keeps one no leaf takes once, as a join point nothing jumps to" do
       elaborating (types <> [ "fromInt :: Int -> Opt Int -> Int", "fromInt d o = case o of", "  None -> d", "  Some x -> x", "k :: Opt Int -> Int", "k o = case o of", "  _ -> 0", "  Some x -> x" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "fromInt" r.values of
-          Just (Lam _ _ _ (Lam _ _ _ (Case _ _ (SwitchCtor _ [ { tree: Leaf (Var _ (Ident "d")) }, { tree: Bind (Ident "x") _ (Leaf (Var _ (Ident "x"))) } ] Nothing)))) -> pure unit
+          Just (Lam _ _ _ _ (Lam _ _ _ _ (Case _ _ (SwitchCtor _ [ { tree: Leaf (Var _ (Ident "d")) }, { tree: Bind (Ident "x") _ (Leaf (Var _ (Ident "x"))) } ] Nothing)))) -> pure unit
           other -> fail ("not in the leaves: " <> show other)
         case bodyOf "k" r.values of
-          Just (Lam _ _ _ (LetJoin _ _ [ { name: Ident "x" } ] _ (Var _ (Ident "x")) (Case _ _ (Leaf (Lit _ (LitInt 0)))))) -> pure unit
+          Just (Lam _ _ _ _ (LetJoin _ _ [ { name: Ident "x" } ] _ (Var _ (Ident "x")) (Case _ _ (Leaf (Lit _ (LitInt 0)))))) -> pure unit
           other -> fail ("not kept once: " <> show other)
 
     it "reports a pattern of another type than what it matches where the pattern stands" do
@@ -692,7 +711,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (prelude <> [ "wrap :: Int -> Opt Int", "wrap n = Some n", "pick :: Int -> Int", "pick n = case wrap n of", "  Some x where", "      isZero x -> 0", "  Some x -> x", "  None -> 1" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "pick" r.values of
-          Just (Lam _ _ _ (Let _ s _ (App _ (Global _ _ _) (Var _ _)) (LetJoin _ _ [] _ _ (LetJoin _ _ [] _ (Case _ [ Var _ s' ] _) (Case _ [ Var _ s'' ] _)))))
+          Just (Lam _ _ _ _ (Let _ s _ (App _ (Global _ _ _) (Var _ _)) (LetJoin _ _ [] _ _ (LetJoin _ _ [] _ (Case _ [ Var _ s' ] _) (Case _ [ Var _ s'' ] _)))))
             | s == s' && s == s'' -> pure unit
           other -> fail ("not bound once: " <> show other)
 
@@ -713,14 +732,14 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (prelude <> [ "k :: Opt Int -> Int", "k o = case o of", "  _ -> 0", "  Some x where", "      isZero x -> 1" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "k" r.values of
-          Just (Lam _ _ _ (Let _ _ _ (Var _ _) (LetJoin _ fall [] _ (Jump _ fall' []) (LetJoin _ _ [ { name: Ident "x" } ] _ _ (Case _ [ Var _ _ ] (Leaf (Lit _ (LitInt 0)))))))) | fall == fall' -> pure unit
+          Just (Lam _ _ _ _ (Let _ _ _ (Var _ _) (LetJoin _ fall [] _ (Jump _ fall' []) (LetJoin _ _ [ { name: Ident "x" } ] _ _ (Case _ [ Var _ _ ] (Leaf (Lit _ (LitInt 0)))))))) | fall == fall' -> pure unit
           other -> fail ("not kept: " <> show other)
 
     it "keeps the lines after a guard that always succeeds, checked, their fall-through point jumping to itself" do
       elaborating (prelude <> [ "t :: Int -> Int", "t n = case n of", "  m where", "      otherwise -> 0", "      isZero m -> 1" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "t" r.values of
-          Just (Lam _ _ _ (Let _ _ _ (Var _ _) (LetJoin _ fall [] _ (Jump _ fall' []) (Case _ _ _)))) | fall == fall' -> pure unit
+          Just (Lam _ _ _ _ (Let _ _ _ (Var _ _) (LetJoin _ fall [] _ (Jump _ fall' []) (Case _ _ _)))) | fall == fall' -> pure unit
           other -> fail ("not kept: " <> show other)
       elaborating (prelude <> [ "t :: Int -> Int", "t n = case n of", "  m where", "      otherwise -> 0", "      isZero m -> true" ]) \r ->
         map at r.errors `shouldEqual` [ "13:19 rejected" ]
@@ -741,7 +760,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (prelude <> [ "f :: Int -> Int", "f n = case n of", "  m where", "      _ = isZero m", "      Tuple a b = Tuple m 1", "      otherwise -> b" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
-          Just (Lam _ _ _ (Case _ _ (Bind _ _ (Leaf (Let _ _ _ _ (Case _ [ _ ] (SwitchCtor _ [ { tree: Bind (Ident "a") _ (Bind (Ident "b") _ (Leaf (Var _ (Ident "b")))) } ] Nothing))))))) -> pure unit
+          Just (Lam _ _ _ _ (Case _ _ (Bind _ _ (Leaf (Let _ _ _ _ (Case _ [ _ ] (SwitchCtor _ [ { tree: Bind (Ident "a") _ (Bind (Ident "b") _ (Leaf (Var _ (Ident "b")))) } ] Nothing))))))) -> pure unit
           other -> fail ("not matched: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec isZero", "nonrec f" ]
       elaborating (prelude <> [ "f :: Int -> Int", "f n = case n of", "  m where", "      Tuple a b = Tuple m true", "      otherwise -> b" ]) \r ->
@@ -755,7 +774,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "pick :: Tuple Int Int -> Int -> Tuple Int Int -> Int", "pick (Tuple a _) n (Tuple _ d) = d" ] \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "pick" r.values of
-          Just (Lam _ p _ (Lam _ (Ident "n") _ (Lam _ q _ (Case _ [ Var _ p', Var _ q' ] _)))) | p == p' && q == q' && p /= q -> pure unit
+          Just (Lam _ p _ _ (Lam _ (Ident "n") _ _ (Lam _ q _ _ (Case _ [ Var _ p', Var _ q' ] _)))) | p == p' && q == q' && p /= q -> pure unit
           other -> fail ("not one row: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec pick" ]
       elaborating [ "first :: Tuple Int Int -> Int", "first = \\(Tuple a _) -> a" ] \r -> do
@@ -766,7 +785,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "f :: Tuple Int Int -> (forall a. a -> a)", "f (Tuple x _) y = y" ] \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
-          Just (Lam _ p _ (TyLam _ _ _ (Lam _ (Ident "y") _ (Case _ [ Var _ p' ] (SwitchCtor _ [ { tree: Bind (Ident "x") _ (Leaf (Var _ (Ident "y"))) } ] Nothing))))) | p == p' -> pure unit
+          Just (Lam _ p _ _ (TyLam _ _ _ (Lam _ (Ident "y") _ _ (Case _ [ Var _ p' ] (SwitchCtor _ [ { tree: Bind (Ident "x") _ (Leaf (Var _ (Ident "y"))) } ] Nothing))))) | p == p' -> pure unit
           other -> fail ("not inside: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
 
@@ -805,7 +824,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "f :: Int -> Int", "f n = let Tuple a b = Tuple n true in a" ] \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
-          Just (Lam _ _ _ (Case _ [ App _ _ _ ] (SwitchCtor _ [ { tree: Bind (Ident "a") _ (Bind (Ident "b") _ (Leaf (Var _ (Ident "a")))) } ] Nothing))) -> pure unit
+          Just (Lam _ _ _ _ (Case _ [ App _ _ _ ] (SwitchCtor _ [ { tree: Bind (Ident "a") _ (Bind (Ident "b") _ (Leaf (Var _ (Ident "a")))) } ] Nothing))) -> pure unit
           other -> fail ("not matched: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
       elaborating [ "f :: Int -> Int", "f n = let Tuple a b = Tuple n true in b" ] \r ->
@@ -816,7 +835,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (effects <> [ "f :: Unit -> Int / {| Ask |}", "f u = let () = told u in 1" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
-          Just (Lam _ _ _ (Case _ [ App _ (Global _ _ _) (Var _ (Ident "u")) ] (SwitchCtor _ [ { tree: Leaf (Lit _ (LitInt 1)) } ] Nothing))) -> pure unit
+          Just (Lam _ _ _ _ (Case _ [ App _ (Global _ _ _) (Var _ (Ident "u")) ] (SwitchCtor _ [ { tree: Leaf (Lit _ (LitInt 1)) } ] Nothing))) -> pure unit
           other -> fail ("not kept: " <> show other)
       elaborating (effects <> [ "f :: Unit -> Int", "f u = let () = told u in 1" ]) \r ->
         map at r.errors `shouldEqual` [ "8:3 outside: implicit-handler resolution at this checking boundary", "6:1 left unchecked" ]
@@ -825,7 +844,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "f :: Int -> Tuple Int Boolean", "f n = Tuple x y", "  where", "    x = a", "    y = b", "    Tuple a b = Tuple n true" ] \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
-          Just (Lam _ _ _ (Case _ _ (SwitchCtor _ [ { tree: Bind (Ident "a") _ (Bind (Ident "b") _ (Leaf (Let _ (Ident "x") _ (Var _ (Ident "a")) (Let _ (Ident "y") _ (Var _ (Ident "b")) _)))) } ] Nothing))) -> pure unit
+          Just (Lam _ _ _ _ (Case _ _ (SwitchCtor _ [ { tree: Bind (Ident "a") _ (Bind (Ident "b") _ (Leaf (Let _ (Ident "x") _ (Var _ (Ident "a")) (Let _ (Ident "y") _ (Var _ (Ident "b")) _)))) } ] Nothing))) -> pure unit
           other -> fail ("not one node: " <> show other)
 
     it "is bound by no recursive group, which is reported where the pattern stands" do
@@ -843,7 +862,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (types <> [ "isRed :: Color -> Boolean", "isRed = case _ of", "  Red -> true", "  _ -> false" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "isRed" r.values of
-          Just (Lam _ x _ (Case _ [ Var _ x' ] _)) | x == x' -> pure unit
+          Just (Lam _ x _ _ (Case _ [ Var _ x' ] _)) | x == x' -> pure unit
           other -> fail ("no λ: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec isRed" ]
 
@@ -871,6 +890,12 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
           Just (RecordExtend _ a (Lit _ (LitInt 1)) (RecordExtend _ b (Lit _ (LitBoolean true)) (RecordEmpty _))) | a == key "a" && b == key "b" -> pure unit
           other -> fail ("not extended: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec r", "nonrec pun" ]
+
+    it "holds a λ no type around it writes, the row that λ writes closed" do
+      elaborating [ "f u = { ignored: \\(x :: Int) -> x, kept: u }.kept" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "f" r.values `shouldEqual` Just "forall a. a -> a"
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
 
     it "selects, replaces, and extends a record whose row is open, the field required absent from the rest" do
       elaborating [ "getA r = r.a", "setA r = { a = 1, ...r }", "addB r = { b: true, ...r }", "copy r = { ...r }", "setAB r = { a = 1, b = true, ...r }" ] \r -> do
@@ -902,7 +927,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
           Just
-            ( Lam _ (Ident "r") _
+            ( Lam _ (Ident "r") _ _
                 ( Let _ va _ (Lit _ (LitInt 1))
                     ( Let _ vb _ (Lit _ (LitBoolean true))
                         ( Let _ vc _ (Lit _ (LitInt 3))
@@ -922,7 +947,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
       elaborating [ "f :: { a :: Int } -> { a :: Int, b :: Int }", "f r = { b: 2, ...r }" ] \r ->
         case bodyOf "f" r.values of
-          Just (Lam _ _ _ (RecordExtend _ _ (Lit _ (LitInt 2)) (Var _ (Ident "r")))) -> pure unit
+          Just (Lam _ _ _ _ (RecordExtend _ _ (Lit _ (LitInt 2)) (Var _ (Ident "r")))) -> pure unit
           other -> fail ("bound: " <> show other)
 
     it "performs what its fields and the record it spreads perform, in the row ambient where it stands" do
@@ -972,7 +997,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map at r.errors `shouldEqual` []
         case bodyOf "dropYX" r.values of
           Just
-            ( Lam _ p _
+            ( Lam _ p _ _
                 ( Case _ [ Var _ p' ]
                     ( Bind whole (OccScrutinee 0)
                         ( Bind (Ident "y") (OccRecordField (OccScrutinee 0) y)
@@ -990,7 +1015,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (types <> [ "f :: Boolean -> { x :: Opt Int, y :: Int } -> { y :: Int }", "f b r = case b, r of", "  true, { x: Some 0, ...rest } -> rest", "  _, { x, ...rest } -> rest" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
-          Just (Lam _ _ _ (Lam _ _ _ (LetJoin _ _ [ { name: Ident "x" }, { name: Ident "rest" } ] _ (Var _ (Ident "rest")) (Case _ _ _)))) -> pure unit
+          Just (Lam _ _ _ _ (Lam _ _ _ _ (LetJoin _ _ [ { name: Ident "x" }, { name: Ident "rest" } ] _ (Var _ (Ident "rest")) (Case _ _ _)))) -> pure unit
           other -> fail ("not joined: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
 
@@ -1026,7 +1051,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       treeOf = case _ of
         TyLam _ _ _ e -> treeOf e
         ConstraintLam _ _ e -> treeOf e
-        Lam _ _ _ e -> treeOf e
+        Lam _ _ _ _ e -> treeOf e
         Case _ _ tree -> treeWeakens tree
         _ -> false
       treeWeakens = case _ of
@@ -1059,7 +1084,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "f :: [ 'A :: Int, 'B :: Boolean ] -> Int", "f v = case v of", "  'A n -> n", "  'B _ -> 0" ] \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
-          Just (Lam _ _ _ (Case _ _ (SwitchKey (OccScrutinee 0) [ { key: a }, { key: b } ] Nothing))) | [ a, b ] == map tagKey [ "A", "B" ] -> pure unit
+          Just (Lam _ _ _ _ (Case _ _ (SwitchKey (OccScrutinee 0) [ { key: a }, { key: b } ] Nothing))) | [ a, b ] == map tagKey [ "A", "B" ] -> pure unit
           other -> fail ("not dispatched: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
 
@@ -1094,7 +1119,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map at r.errors `shouldEqual` []
         schemeOf "k" r.values `shouldEqual` Just "[ 'A :: Int, 'B :: Unit ] -> Int"
         case bodyOf "k" r.values of
-          Just (Lam _ _ _ (Case _ _ (SwitchKey _ [ _, _ ] Nothing))) -> pure unit
+          Just (Lam _ _ _ _ (Case _ _ (SwitchKey _ [ _, _ ] Nothing))) -> pure unit
           other -> fail ("not closed: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec k" ]
 
@@ -1114,7 +1139,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map at r.errors `shouldEqual` []
         schemeOf "f" r.values `shouldEqual` Just "[ 'A :: Unit, 'B :: Unit ] -> Int"
         case bodyOf "f" r.values of
-          Just (Lam _ _ _ (Case _ _ (SwitchKey _ [ _, _ ] Nothing))) -> pure unit
+          Just (Lam _ _ _ _ (Case _ _ (SwitchKey _ [ _, _ ] Nothing))) -> pure unit
           other -> fail ("not closed: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
 
@@ -1174,7 +1199,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       tupleOf = Qualified lib (Ident "Tuple")
       -- `Λ a. λ x. id [a] x`, whatever the names
       expanded = case _ of
-        Just (TyLam _ a _ (Lam _ x _ (App _ (TyApp _ (Global _ g _) (TVar a')) (Var _ x')))) -> g == idOf && a == a' && x == x'
+        Just (TyLam _ a _ (Lam _ x _ _ (App _ (TyApp _ (Global _ g _) (TVar a')) (Var _ x')))) -> g == idOf && a == a' && x == x'
         _ -> false
     it "is built as it is where it is a value form, and η-expanded once where it is a function and may move" do
       elaborating
@@ -1195,7 +1220,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
           expanded (bodyOf "f" r.values) `shouldEqual` true
           expanded (bodyOf "annotated" r.values) `shouldEqual` true
           case bodyOf "g" r.values of
-            Just (Lam _ _ _ inner) -> expanded (Just inner) `shouldEqual` true
+            Just (Lam _ _ _ _ inner) -> expanded (Just inner) `shouldEqual` true
             other -> fail ("not a λ: " <> show other)
           -- a constructor spine is a value form, and is left as it is: the
           -- expansion's fit is decided equal only once its boundary is, after
@@ -1219,7 +1244,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         \r -> do
           map at r.errors `shouldEqual` []
           case bodyOf "loudId" r.values of
-            Just (TyLam _ _ _ (Lam _ _ _ (App _ (OpenEff _ _ (TyApp _ (Global _ g _) _)) _))) | g == idOf -> pure unit
+            Just (TyLam _ _ _ (Lam _ _ _ _ (App _ (OpenEff _ _ (TyApp _ (Global _ g _) _)) _))) | g == idOf -> pure unit
             other -> fail ("not widened under the λ: " <> show other)
           checked r \core -> shapes core `shouldEqual` [ "nonrec loudId" ]
       -- what a `Λ` encloses is at `()` whatever the λ around it performs, so the
@@ -1233,7 +1258,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         \r -> do
           map at r.errors `shouldEqual` []
           case bodyOf "h" r.values of
-            Just (Lam _ _ _ (TyLam _ _ _ (App _ (TyApp _ (TyApp _ (Global _ c _) _) _) (Lit _ (LitInt 1))))) | c == tupleOf -> pure unit
+            Just (Lam _ _ _ _ (TyLam _ _ _ (App _ (TyApp _ (TyApp _ (Global _ c _) _) _) (Lit _ (LitInt 1))))) | c == tupleOf -> pure unit
             other -> fail ("not the spine under the Λ: " <> show other)
           checked r \core -> shapes core `shouldEqual` [ "nonrec h" ]
       -- and a spine that is no function is built there as it is, a value form
@@ -1266,7 +1291,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "spread :: forall e a. a -> Tuple Int a / {| ...e |}", "spread = Tuple 1" ] \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "spread" r.values of
-          Just (TyLam _ _ _ (TyLam _ _ _ (Lam _ _ _ (App _ (OpenEff _ _ _) _)))) -> pure unit
+          Just (TyLam _ _ _ (TyLam _ _ _ (Lam _ _ _ _ (App _ (OpenEff _ _ _) _)))) -> pure unit
           other -> fail ("not widened under the λ: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec spread" ]
 
@@ -1322,7 +1347,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map at r.errors `shouldEqual` []
         schemeOf "g" r.values `shouldEqual` Just "forall a. a -> a"
         case bodyOf "g" r.values of
-          Just (TyLam _ a _ (Lam _ x _ (App _ (TyApp _ (Global _ _ _) (TVar a')) (Var _ x')))) | a == a' && x == x' -> pure unit
+          Just (TyLam _ a _ (Lam _ x _ _ (App _ (TyApp _ (Global _ _ _) (TVar a')) (Var _ x')))) | a == a' && x == x' -> pure unit
           other -> fail ("not expanded: " <> show other)
         schemeOf "t" r.values `shouldEqual` Just "forall a. a -> Tuple Int a"
         case bodyOf "t" r.values of
@@ -1391,7 +1416,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
             ConstraintApp _ (TyApp _ (TyApp _ (Global _ g _) _) _) -> g == inM "r"
             TyLam _ _ _ e -> refersConstrained e
             ConstraintLam _ _ e -> refersConstrained e
-            Lam _ _ _ e -> refersConstrained e
+            Lam _ _ _ _ e -> refersConstrained e
             App _ f x -> refersConstrained f || refersConstrained x
             OpenEff _ _ e -> refersConstrained e
             _ -> false
@@ -1526,10 +1551,10 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "f :: Int -> Int", "f n = let go x = go x in go n", "g :: Int -> Int", "g n = h n", "  where", "  h x = inc x" ] \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
-          Just (Lam _ _ _ (LetRec _ [ _ ] (App _ (Var _ _) (Var _ _)))) -> pure unit
+          Just (Lam _ _ _ _ (LetRec _ [ _ ] (App _ (Var _ _) (Var _ _)))) -> pure unit
           other -> fail ("not a letrec: " <> show other)
         case bodyOf "g" r.values of
-          Just (Lam _ _ _ (Let _ _ _ (Lam _ _ _ _) (App _ (Var _ _) (Var _ _)))) -> pure unit
+          Just (Lam _ _ _ _ (Let _ _ _ (Lam _ _ _ _ _) (App _ (Var _ _) (Var _ _)))) -> pure unit
           other -> fail ("not a let: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec f", "nonrec g" ]
 
@@ -1545,7 +1570,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map at r.errors `shouldEqual` []
         schemeOf "loud" r.values `shouldEqual` Just "forall a. a -> a / {| Console |}"
         case bodyOf "loud" r.values of
-          Just (TyLam _ _ _ (Lam _ _ _ (Let _ _ _ (App _ _ (Lit _ (LitInt 1))) (Var _ _)))) -> pure unit
+          Just (TyLam _ _ _ (Lam _ _ _ _ (Let _ _ _ (App _ _ (Lit _ (LitInt 1))) (Var _ _)))) -> pure unit
           other -> fail ("not kept: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "rec shout", "nonrec loud" ]
 
@@ -1601,13 +1626,13 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "f :: Int", "f = let go = ((\\x -> const x go) :: forall a. a -> a) in 1" ] \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
-          Just (LetRec _ [ { value: TyLam _ _ _ (Lam _ _ _ _) } ] _) -> pure unit
+          Just (LetRec _ [ { value: TyLam _ _ _ (Lam _ _ _ _ _) } ] _) -> pure unit
           other -> fail ("not a letrec of an abstraction: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
       elaborating [ "effect Console where", "  log :: Int ->* Unit", "g :: Int", "g = let go = ((\\u -> const u go) :: forall r. Unit -> Unit / {| Console, ...r |}) in 1" ] \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "g" r.values of
-          Just (LetRec _ [ { value: TyLam _ _ _ (ConstraintLam _ _ (Lam _ _ _ _)) } ] _) -> pure unit
+          Just (LetRec _ [ { value: TyLam _ _ _ (ConstraintLam _ _ (Lam _ _ _ _ _)) } ] _) -> pure unit
           other -> fail ("not a letrec of an abstraction: " <> show other)
         checked r \core -> shapes core `shouldEqual` [ "nonrec g" ]
 
@@ -1651,7 +1676,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "c :: Int", "c = let", "      go :: forall a. a -> a", "      go x = go x", "    in go 1" ] \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "c" r.values of
-          Just (LetRec _ [ { value: TyLam _ _ _ (Lam _ _ _ _) } ] _) -> pure unit
+          Just (LetRec _ [ { value: TyLam _ _ _ (Lam _ _ _ _ _) } ] _) -> pure unit
           other -> fail ("not a letrec of an abstraction: " <> show other)
 
     it "may be partial, what it holds undecided reported once its declaration is settled" do
@@ -1719,7 +1744,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating computations \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "n" r.values of
-          Just (Lam _ _ (TCon u []) (Lit _ (LitInt 1))) | u == unitTy -> pure unit
+          Just (Lam _ _ (TCon u []) _ (Lit _ (LitInt 1))) | u == unitTy -> pure unit
           other -> fail ("not a thunk: " <> show other)
         bodyOf "v" r.values `shouldEqual` Just (App unit (Global unit (Qualified (ModuleName "M") (Ident "n")) []) (Global unit unitCtor []))
         -- a computation referring to itself is a function, its recursion under the thunk

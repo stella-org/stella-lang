@@ -100,8 +100,9 @@ nonrec name scheme expr = DeclNonRec unit
 globalRef :: P.String -> Expr Unit
 globalRef name = Global unit (value name) []
 
+-- | A pure λ.
 lam :: P.String -> Type -> Expr Unit -> Expr Unit
-lam name ty body = Lam unit (Ident name) ty body
+lam name ty body = Lam unit (Ident name) ty TRowEmpty body
 
 -- | A kind variable no scheme binds.
 ghost :: KindVar

@@ -266,7 +266,7 @@ inferDefinition internal surface declaration origin params body expand = case pa
     let inner = scope { context = bindVar scope.context x argument, ambient = row }
     f <- infer inner body
     applied <- applyTo inner at at f \a -> subsume inner at { expr: EVar at x, type: argument } a
-    lambda <- expansion at (ELam at x argument applied.expr)
+    lambda <- expansion at (ELam at x argument row applied.expr)
     pure { expr: lambda, type: xFunction argument row applied.type }
   [] -> infer scope body
   _ -> infer scope (ExprLambda origin params body)
@@ -363,7 +363,7 @@ abstractions origin = opened []
 -- | is written, and under the row as it is otherwise.
 lambdaAt :: Scope -> Surface.Origin -> Expected -> Ident -> { argument :: XType, row :: XType, result :: XType } -> (Scope -> Surf (XExpr Surface.Origin)) -> Surf (XExpr Surface.Origin)
 lambdaAt scope origin expected name parts body =
-  ELam origin name parts.argument <$> case expected of
+  ELam origin name parts.argument parts.row <$> case expected of
     Written -> boundary inner origin parts.row body
     Derived -> body (inner { ambient = parts.row })
   where
@@ -406,7 +406,7 @@ expansion origin lambda = do
       EApp _ f _ -> Just f
       _ -> Nothing
     contractible = case lambda of
-      ELam _ _ _ inner -> maybe false (isValueForm isConstructor) (applies inner)
+      ELam _ _ _ _ inner -> maybe false (isValueForm isConstructor) (applies inner)
       _ -> false
   pure (EEta origin contractible lambda)
 
@@ -767,7 +767,7 @@ infer scope expr = case expr of
         BinderWildcard _ -> pure matched
         _ -> Array.snoc matched <<< { name, typed: _ } <$> pattern s' head argument
       inner <- parameters s' matched' tail body
-      pure { expr: ELam o name argument inner.expr, type: xFunction argument row inner.type }
+      pure { expr: ELam o name argument row inner.expr, type: xFunction argument row inner.type }
 
   -- a global at a fresh metavariable for each kind variable and each
   -- quantifier of its scheme, outermost first, a row quantifier's an

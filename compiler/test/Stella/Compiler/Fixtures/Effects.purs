@@ -94,8 +94,13 @@ lit = Lit 0 <<< LitInt
 let' :: P.String -> Type -> Expr P.Int -> Expr P.Int -> Expr P.Int
 let' name = Let 0 (Ident name)
 
+-- | A pure λ.
 lam :: P.String -> Type -> Expr P.Int -> Expr P.Int
-lam name = Lam 0 (Ident name)
+lam name ty = Lam 0 (Ident name) ty TRowEmpty
+
+-- | A λ whose body is evaluated under the row given.
+lamAt :: P.String -> Type -> Type -> Expr P.Int -> Expr P.Int
+lamAt name ty row = Lam 0 (Ident name) ty row
 
 app :: Expr P.Int -> P.Array (Expr P.Int) -> Expr P.Int
 app = Array.foldl (App 0)
@@ -482,18 +487,18 @@ shadowType = fn unit' (rowOf [ trigger ]) int
 
 -- | `λu. handle (go ()) with { handles Ask ; fast ask u -> 100 }`.
 shadowAsk :: Expr P.Int
-shadowAsk = lam "u" unit' $ handleFast ask "ask" Nothing (lit 100) (perform trigger "go")
+shadowAsk = lamAt "u" unit' (rowOf [ trigger ]) $ handleFast ask "ask" Nothing (lit 100) (perform trigger "go")
 
 -- | `λu. region [r2] ( n : Int ) @ ( 42 ) in handle (go ()) with { handles Ask ;
 -- | fast ask u -> readCell r2.n }`: a region declaring the cell key the region
 -- | around the `Trigger` handler declares.
 shadowCell :: Expr P.Int
-shadowCell = lam "u" unit'
+shadowCell = lamAt "u" unit' (rowOf [ trigger ])
   $ handleFast ask "ask" (Just { region: "r2", initial: 42 }) (readN "r2") (perform trigger "go")
 
 -- | The same, asking its own region what `n` holds after `go`.
 shadowWrite :: Expr P.Int
-shadowWrite = lam "u" unit'
+shadowWrite = lamAt "u" unit' (rowOf [ trigger ])
   $ handleFast ask "ask" (Just { region: "r2", initial: 42 }) (readN "r2")
       (let' "ignored" int (perform trigger "go") (perform ask "ask"))
 

@@ -150,7 +150,7 @@ resultDeclOf value = DeclNonRec 3
 
 -- | `λ (xs : List Int). case (xs) of dt`, the shape every summation here keeps.
 summing :: DecisionTree P.Int -> Expr P.Int
-summing dt = Lam 0 (Ident "xs") (listOf int) (Case 0 [ Var 0 (Ident "xs") ] dt)
+summing dt = Lam 0 (Ident "xs") (listOf int) TRowEmpty (Case 0 [ Var 0 (Ident "xs") ] dt)
 
 sumBody :: Expr P.Int
 sumBody = summing (SwitchCtor (OccScrutinee 0) [ nilBranch, consBranch ] Nothing)

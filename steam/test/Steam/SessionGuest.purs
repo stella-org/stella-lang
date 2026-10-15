@@ -60,12 +60,12 @@ guestModule =
   , exports: []
   , decls:
       [ value 1 "identity" (TForall (TyVar "a") KType (pureFn a a))
-          (TyLam 0 (TyVar "a") KType (Lam 0 (Ident "x") a (Var 0 (Ident "x"))))
+          (TyLam 0 (TyVar "a") KType (Lam 0 (Ident "x") a TRowEmpty (Var 0 (Ident "x"))))
       , value 2 "seven" (TCon intTy []) (Lit 0 (LitInt 7))
       , value 3 "constant" (TForall (TyVar "a") KType (pureFn a (TCon intTy [])))
-          (TyLam 0 (TyVar "a") KType (Lam 0 (Ident "x") a (Lit 0 (LitInt 7))))
+          (TyLam 0 (TyVar "a") KType (Lam 0 (Ident "x") a TRowEmpty (Lit 0 (LitInt 7))))
       , value 4 "faulting" (TForall (TyVar "a") KType (pureFn a (TCon charTy [])))
-          (TyLam 0 (TyVar "a") KType (Lam 0 (Ident "x") a outOfRange))
+          (TyLam 0 (TyVar "a") KType (Lam 0 (Ident "x") a TRowEmpty outOfRange))
       ]
   }
   where

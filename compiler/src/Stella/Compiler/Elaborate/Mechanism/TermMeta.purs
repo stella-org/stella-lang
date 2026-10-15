@@ -174,7 +174,7 @@ zonkExpr ctx = go
     EVar a x -> EVar a x
     EGlobal a name kinds -> EGlobal a name (map kind kinds)
     ELit a literal -> ELit a literal
-    ELam a x t body -> ELam a x (ty t) (go body)
+    ELam a x t r body -> ELam a x (ty t) (ty r) (go body)
     EApp a f x -> EApp a (go f) (go x)
     ETyLam a name k body -> ETyLam a name (kind k) (go body)
     ETyApp a e t -> ETyApp a (go e) (ty t)

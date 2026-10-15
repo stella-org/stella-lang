@@ -290,8 +290,9 @@ ap = foldl (App unit)
 call :: P.String -> P.Array Type -> P.Array (Expr Unit) -> Expr Unit
 call n tys = ap (g n tys)
 
+-- | A curried function of the parameters given, every arrow pure.
 lam :: P.Array (Tuple P.String Type) -> Expr Unit -> Expr Unit
-lam ps body = foldr (\(Tuple x t) e -> Lam unit (Ident x) t e) body ps
+lam ps body = foldr (\(Tuple x t) e -> Lam unit (Ident x) t TRowEmpty e) body ps
 
 tylam :: P.Array P.String -> Expr Unit -> Expr Unit
 tylam names body = foldr (\x e -> TyLam unit (TyVar x) KType e) body names

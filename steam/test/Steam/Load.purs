@@ -112,8 +112,8 @@ libModule =
           { name: Ident "add2"
           , scheme: monoScheme (pureFn int (pureFn int int))
           , value:
-              Lam 0 (Ident "a") int
-                ( Lam 0 (Ident "b") int
+              Lam 0 (Ident "a") int TRowEmpty
+                ( Lam 0 (Ident "b") int TRowEmpty
                     ( App 0 (App 0 (Global 0 intAdd []) (Var 0 (Ident "a")))
                         (Var 0 (Ident "b"))
                     )

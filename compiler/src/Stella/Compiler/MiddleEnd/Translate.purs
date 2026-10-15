@@ -426,7 +426,7 @@ value ctx expr k = case stripErased expr of
         Nothing, 0 -> k (RComp (M.CForeign name []) (repAt ctx expr))
         Nothing, _ -> k (RComp (M.CPap (M.CalleeForeign name) []) RepClos)
 
-  C.Lam _ _ _ _ -> do
+  C.Lam _ _ _ _ _ -> do
     let run = lambdaRun expr
     lifted <- liftFunction ctx (sourceAt expr) run.params run.body
     k (RComp (M.CClosure lifted.func lifted.captures) RepClos)
@@ -658,7 +658,7 @@ opClauseRef ctx = case _ of
 -- | supplies the parameters of one entry rather than one at a time.
 lambdaRun :: forall a. C.Expr (Typed a) -> { params :: P.Array (Tuple Ident Type), body :: C.Expr (Typed a) }
 lambdaRun expr = case stripErased expr of
-  C.Lam _ name ty body ->
+  C.Lam _ name ty _ body ->
     let
       r = lambdaRun body
     in
@@ -972,7 +972,7 @@ freeVars = case _ of
   C.Var _ name -> value' name
   C.Global _ _ _ -> mempty
   C.Lit _ _ -> mempty
-  C.Lam _ name _ body -> withoutValues [ name ] (freeVars body)
+  C.Lam _ name _ _ body -> withoutValues [ name ] (freeVars body)
   C.App _ f x -> freeVars f <> freeVars x
   C.TyLam _ _ _ body -> freeVars body
   C.TyApp _ e _ -> freeVars e

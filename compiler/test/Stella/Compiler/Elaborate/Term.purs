@@ -12,7 +12,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar(..), XKind(..))
-import Stella.Compiler.Elaborate.CorePlus.Term (FreeVars, PendingCaseId(..), Residue(..), TermMetaVar(..), XDecisionTree(..), XExpr(..), fromCoreExpr, freeVarsOf, isSettledValueForm, isValueForm, metasOfTerm, pendingCasesOf, replacePendingCases, toCoreExpr, typesOfTerm)
+import Stella.Compiler.Elaborate.CorePlus.Term (FreeVars, PendingCaseId(..), Residue(..), TermMetaVar(..), XDecisionTree(..), XExpr(..), fromCoreExpr, freeVarsOf, isSettledValueForm, isValueForm, metasOfTerm, pendingCasesOf, replacePendingCases, standingTypesOfTerm, toCoreExpr, typesOfTerm)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XRowEntry(..), XType(..))
 import Stella.Compiler.TypedCore (Constraint(..), DecisionTree(..), EffName(..), Expr(..), Ident(..), JoinName(..), Kind(..), KindVar(..), Literal(..), ModuleName(..), OpClause(..), OpName(..), Occurrence(..), Qualified(..), RegionName(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyName(..), TyVar(..), Type(..))
 import Data.Array.NonEmpty as NonEmptyArray
@@ -71,7 +71,7 @@ coreTerm :: Expr P.Int
 coreTerm =
   TyLam 1 a KType
     ( LetRec 2
-        [ { name: f, ty: intTy, value: Lam 3 x intTy (Var 4 x) } ]
+        [ { name: f, ty: intTy, value: Lam 3 x intTy TRowEmpty (Var 4 x) } ]
         ( LetJoin 5 j [ { name: y, ty: intTy } ] intTy (Var 6 y)
             ( Case 7 [ Lit 8 (LitInt 0) ]
                 ( SwitchLit (OccScrutinee 0)
@@ -151,7 +151,7 @@ spec = describe "Elaborate.Term" do
       let
         term =
           EApp 1
-            (ELam 2 x (XMeta (MetaVar 0)) (ETermMeta 3 (TermMetaVar 0)))
+            (ELam 2 x (XMeta (MetaVar 0)) XRowEmpty (ETermMeta 3 (TermMetaVar 0)))
             (EApp 4 (EGlobal 5 (Qualified main' f) [ XKMeta (KindMetaVar 0) ]) (EHole 6 xInt))
       toCoreExpr term `shouldEqual` Left
         ( NonEmptyArray.cons' (ResidualTypeMeta 2 (MetaVar 0))
@@ -261,14 +261,20 @@ spec = describe "Elaborate.Term" do
       freeVarsOf (opened xInt (EReadCell 3 inner keyN))
         `shouldEqual` free { regions = Set.singleton inner }
 
+    it "takes the rigid variables and the regions the row a λ writes names" do
+      let
+        outer = RegionName "outer"
+      freeVarsOf (ELam 1 x xInt (XRowExtend (XRowRegionEntry outer) (XVar r)) (EVar 2 x))
+        `shouldEqual` free { types = Set.singleton r, regions = Set.singleton outer }
+
     it "takes a type abstraction's binder over its body, and leaves every kind variable free" do
       let
-        term = ETyLam 1 a (XKVar k) (ELam 2 x (XVar a) (EVar 3 x))
+        term = ETyLam 1 a (XKVar k) (ELam 2 x (XVar a) XRowEmpty (EVar 3 x))
       freeVarsOf term `shouldEqual` free { kinds = Set.singleton k }
 
     it "takes a letrec's names over every right-hand side and the body" do
       let
-        term = ELetRec 1 [ { name: f, ty: xInt, value: ELam 2 x xInt (EApp 3 (EVar 4 f) (EVar 5 y)) } ] (EVar 6 f)
+        term = ELetRec 1 [ { name: f, ty: xInt, value: ELam 2 x xInt XRowEmpty (EApp 3 (EVar 4 f) (EVar 5 y)) } ] (EVar 6 f)
       freeVarsOf term `shouldEqual` free { values = Set.singleton y }
 
   describe "a pending `case`" do
@@ -302,12 +308,32 @@ spec = describe "Elaborate.Term" do
     it "is reported at the boundary while it holds a metavariable" do
       toCoreExpr injection `shouldEqual` Left (NonEmptyArray.singleton (ResidualTypeMeta 1 (MetaVar 7)))
 
+  describe "the row a λ writes" do
+    let
+      row = XRowExtend (XRowEffectEntry (Qualified main' (EffName "E")) [ XMeta (MetaVar 7) ]) (XVar r)
+      lambda = ELam 1 x xInt row (EVar 2 x)
+
+    it "is a type the term writes, and no place a type stands in apart from the λ's arrow" do
+      typesOfTerm lambda `shouldEqual` [ xInt, row ]
+      standingTypesOfTerm lambda `shouldEqual` [ xInt ]
+
+    it "is reported at the boundary while it holds a metavariable" do
+      toCoreExpr lambda `shouldEqual` Left (NonEmptyArray.singleton (ResidualTypeMeta 1 (MetaVar 7)))
+
+    it "is carried to Core and back" do
+      let
+        core = Lam 1 x intTy (TRowExtend (RowEffectEntry (Qualified main' (EffName "E")) []) TRowEmpty) (Var 2 x)
+      toCoreExpr (fromCoreExpr core) `shouldEqual` Right core
+
   describe "metavariables" do
+    it "are collected from the row a λ writes" do
+      metasOfTerm (ELam 1 x xInt (XMeta (MetaVar 2)) (EVar 3 x)) `shouldEqual` { terms: Set.empty, types: Set.singleton (MetaVar 2), kinds: Set.empty }
+
     it "are collected from every position, by class" do
       let
         term =
           EApp 3
-            (ELam 1 x (XMeta (MetaVar 0)) (EGlobal 2 (Qualified main' f) [ XKMeta (KindMetaVar 3) ]))
+            (ELam 1 x (XMeta (MetaVar 0)) XRowEmpty (EGlobal 2 (Qualified main' f) [ XKMeta (KindMetaVar 3) ]))
             (ETermMeta 4 (TermMetaVar 5))
       metasOfTerm term `shouldEqual`
         { terms: Set.singleton (TermMetaVar 5)

@@ -28,7 +28,7 @@ globalsOf = case _ of
   Var _ _ -> Set.empty
   Global _ name _ -> Set.singleton name
   Lit _ _ -> Set.empty
-  Lam _ _ _ body -> globalsOf body
+  Lam _ _ _ _ body -> globalsOf body
   App _ f x -> globalsOf f <> globalsOf x
   TyLam _ _ _ body -> globalsOf body
   TyApp _ e _ -> globalsOf e

@@ -97,7 +97,7 @@ type Holes =
 -- | which stands at annotation 42.
 sumRhs :: Holes -> XExpr P.Int
 sumRhs holes =
-  ELam 0 xs (holes.param)
+  ELam 0 xs (holes.param) XRowEmpty
     ( ECase 0 [ EVar 0 xs ]
         ( XSwitchCtor (OccScrutinee 0)
             [ { ctor: nil, tree: XLeaf (ELit 0 (LitInt 0)) }
