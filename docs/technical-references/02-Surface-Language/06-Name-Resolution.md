@@ -100,7 +100,9 @@ A name standing for two macros is ambiguous where it is called. A name the modul
 
 **A label is a key of a row, and keys are structural.** A record field, the label of an effect instance in `get@cache`, and the label heading a handler group are `SymbolKey`s, which no declaration introduces and no scope holds ([Rows](../03-Typed-Core/02-Rows.md)). Resolution leaves them as written.
 
-**A record writes each label once**: a record type, a record literal and its update, and a record pattern. A pun is a label, `{ a, a: x }` writing `a` twice, and a spread or a rest is none. Each label written after one of its spelling is an error, reported where it stands; in a pattern this is apart from a variable bound twice, so `{ a: x, a: x }` is both.
+**A record writes each label once**: a record type, a record literal, and a record pattern. A pun and a replacement are labels, `{ a, a: x }` and `{ a = 1, a: 2, ...r }` each writing `a` twice, and a spread or a rest is none. Each label written after one of its spelling is an error, reported where it stands; in a pattern this is apart from a variable bound twice, so `{ a: x, a: x }` is both.
+
+**A replacement `name = e` stands beside a record spread**, whose field it replaces ([Elaboration](01-Elaboration.md#records-and-tuples)): one in a literal spreading no record is an error, reported where it stands, a literal with no spread giving each of its fields as `name: e`.
 
 **A row written in a type holds each key once**, which is what keeps a row sharp before any spread joins it ([Rows](../03-Typed-Core/02-Rows.md)). A variant's row writes each tag once and each label once, and an effect row each label once and each effect once unlabelled: an unlabelled element's key is its effect, so `{| State Int, State String |}` holds `State` twice however the name is spelt or qualified, and a second instance of an effect is written with a label, `{| State Int, s :: State String |}`. Each key written after one equal to it is an error, reported where the later item stands; what a spread brings is no key written, and whether it repeats one is decided where the row is elaborated.
 

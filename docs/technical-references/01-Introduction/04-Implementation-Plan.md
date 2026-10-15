@@ -1279,6 +1279,24 @@ A `case` compiled into a decision tree by the surface elaborator ([Elaboration](
 | `resume` inside `case _ of` within a `full` clause | Reported as standing inside a `case _ of`. Naming a lambda names one the author did not write |
 | An expression hole, or a value not matched, inside `case _ of` | Reported naming no variable the compiler made |
 
+### Records and tuples (step 7)
+
+Record literals, selections, and tuples as the surface elaborator infers them ([Elaboration](../02-Surface-Language/01-Elaboration.md#records-and-tuples)).
+
+| Input | Required outcome |
+| --- | --- |
+| `{ a: 1, b: true }`, and `(1, true)` | `extend a 1 (extend b true {})`, the first written outermost, and the same at `PositionKey 0` and `PositionKey 1` |
+| `\r -> { a = 1, ...r }` | `∀ρ α. a ∉ ρ => { a :: α, ...ρ } -> { a :: Int, ...ρ }`. Equating the value's type with the field's makes a replacement keep the type it replaces |
+| `{ a = 1, b = true, ...r }` | Two `update`s, `a` outermost, each field at the type of its value and required absent from the rest of its row |
+| `{ a: 1, x = 10, b: 2, y = 20, ...p }` | Each field's value bound by a `let` in the order written, then `extend a a' (extend b b' (update x (update y p y') x'))` of the variables. Building it in place evaluates `1`, `2`, `p`, `20`, `10` |
+| `{ b: 2, ...r }` with no replacement | The `extend`s as written, nothing bound |
+| `{ ...e }` | `e`, at a record type, evaluated once |
+| `r.b` and `{ b = 1, ...r }` with `r :: { a :: Int }`; `{ a: 1, ...r }` with `r :: { a :: Int }` | Each reported at `b`, or `a`, the label alone. Reporting at the field or the literal covers the value too |
+| `{ b = 1 }`, spreading no record | Rejected by name resolution where the field stands |
+| `{ a = 1, a: 2, ...r }`, `{ x = 1, x = 2, ...r }` | A label written twice, rejected by name resolution whatever form each field is |
+| `({ f: id } :: { f :: forall a. a -> a })` | Refused: a record literal is inferred, and no expected record type checks a field yet |
+| A field performing an operation | Its row in the row ambient where the literal stands |
+
 ### Binding groups and generalization (step 7)
 
 [Elaboration](../02-Surface-Language/01-Elaboration.md#generalization) and the state of [Elaborator API](../02-Surface-Language/03-Elaborator-API.md#inference-state).

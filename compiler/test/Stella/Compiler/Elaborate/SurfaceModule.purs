@@ -14,6 +14,7 @@ import Data.Set as Set
 import Data.String (joinWith)
 import Data.Tuple (Tuple(..), snd)
 import Effect.Aff (Aff)
+import Fmt (fmt)
 import Stella.Compiler.CST (parseModule, printSyntaxError)
 import Stella.Compiler.CST.Types (inSource)
 import Stella.Compiler.Surface.Decl (Observation(..))
@@ -201,6 +202,7 @@ at = case _ of
   KindUndetermined o -> located o <> " kind undetermined"
   Rejected (EquationFailed (AtSource s) _) -> located s.origin <> " rejected"
   Rejected (SynthesisFailed { goal: { origin: AtSource s } }) -> located s.origin <> " synthesis failed"
+  Rejected (ObligationRejected { obligation: AtSource s }) -> located s.origin <> " obligation rejected"
   Rejected _ -> "rejected"
   EquationUndecided _ -> "undecided"
   TypeUndetermined o -> located o <> " type undetermined"
@@ -257,7 +259,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         , "bad :: Int"
         , "bad = inc"
         , "lam :: Int"
-        , "lam = (1, 2)"
+        , "lam = 'A"
         , "open :: Int"
         , "open = const 1 id"
         , "ok :: Int"
@@ -266,7 +268,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         \r -> do
           map at r.errors `shouldEqual`
             [ "5:7 rejected"
-            , "7:8 outside: this form"
+            , "7:7 outside: this form"
             , "9:8 type undetermined"
             , "9:16 type undetermined"
             ]
@@ -845,6 +847,100 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (types <> [ "h :: Opt Int -> Int", "h = case _ of", "  Some x -> x" ]) \r ->
         map printElaborationError r.errors `shouldEqual` [ "This `case` does not match every value: it does not match `None`" ]
 
+  describe "a record" do
+    let
+      schemeOf name values = map (\v -> printType (fromCore v.scheme.body)) (Array.find (\x -> x.name == inM name) values)
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+      key = SymbolKey <<< Symbol
+    it "extends the empty record by each field, the first written outermost, and the Core checker accepts it" do
+      elaborating [ "r = { a: 1, b: true }", "pun :: Int -> { a :: Int }", "pun a = { a }" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "r" r.values `shouldEqual` Just "{ a :: Int, b :: Boolean }"
+        case bodyOf "r" r.values of
+          Just (RecordExtend _ a (Lit _ (LitInt 1)) (RecordExtend _ b (Lit _ (LitBoolean true)) (RecordEmpty _))) | a == key "a" && b == key "b" -> pure unit
+          other -> fail ("not extended: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec r", "nonrec pun" ]
+
+    it "selects, replaces, and extends a record whose row is open, the field required absent from the rest" do
+      elaborating [ "getA r = r.a", "setA r = { a = 1, ...r }", "addB r = { b: true, ...r }", "copy r = { ...r }", "setAB r = { a = 1, b = true, ...r }" ] \r -> do
+        map at r.errors `shouldEqual` []
+        map (\name -> schemeOf name r.values) [ "getA", "setA", "addB", "copy", "setAB" ] `shouldEqual` map Just
+          [ "forall a. forall b. … => { a :: a, ...b } -> a"
+          , "forall a. forall b. … => { a :: b, ...a } -> { a :: Int, ...a }"
+          , "forall a. … => { ...a } -> { b :: Boolean, ...a }"
+          , "forall a. { ...a } -> { ...a }"
+          , "forall a. forall b. forall c. … => … => { a :: b, b :: c, ...a } -> { a :: Int, b :: Boolean, ...a }"
+          ]
+        checked r \core -> shapes core `shouldEqual` [ "nonrec getA", "nonrec setA", "nonrec addB", "nonrec copy", "nonrec setAB" ]
+      elaborating [ "getX :: { x :: Int, ... } -> Int", "getX r = r.x", "bump :: { x :: Int, ... } -> { x :: Boolean, ... }", "bump r = { x = true, ...r }" ] \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec getX", "nonrec bump" ]
+
+    it "is reported where the label stands that it selects or replaces and does not have, or extends it by and has" do
+      let
+        -- the whole of the site, not only where it starts
+        spanned = case _ of
+          Rejected (EquationFailed (AtSource s) _) -> spanOf s.origin <> " rejected"
+          Rejected (ObligationRejected { obligation: AtSource s }) -> spanOf s.origin <> " obligation rejected"
+          e -> at e
+        spanOf o = let r = rangeOf o in fmt @"{startLine}:{startColumn}-{endLine}:{endColumn}" { startLine: r.start.line, startColumn: r.start.column, endLine: r.end.line, endColumn: r.end.column }
+      elaborating [ "f :: { a :: Int } -> Int", "f r = r.b" ] \r ->
+        map spanned r.errors `shouldEqual` [ "4:9-4:10 rejected" ]
+      elaborating [ "g :: { a :: Int } -> { a :: Int, b :: Int }", "g r = { b = 1, ...r }" ] \r ->
+        map spanned r.errors `shouldEqual` [ "4:9-4:10 rejected" ]
+      elaborating [ "g :: { a :: Int } -> { a :: Int, b :: Int }", "g r = { a = 2, b = 1, ...r }" ] \r ->
+        map spanned r.errors `shouldEqual` [ "4:16-4:17 rejected" ]
+      elaborating [ "h :: { a :: Int } -> { a :: Int }", "h r = { a: 1, ...r }" ] \r ->
+        map spanned r.errors `shouldEqual` [ "4:9-4:10 obligation rejected" ]
+
+    it "evaluates its fields from the left and the record spread last, binding each field's value first where it replaces one" do
+      elaborating [ "f :: { b :: Int, d :: Int } -> { a :: Int, b :: Boolean, c :: Int, d :: Int }", "f r = { a: 1, b = true, c: 3, d = 4, ...r }" ] \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just
+            ( Lam _ (Ident "r") _
+                ( Let _ va _ (Lit _ (LitInt 1))
+                    ( Let _ vb _ (Lit _ (LitBoolean true))
+                        ( Let _ vc _ (Lit _ (LitInt 3))
+                            ( Let _ vd _ (Lit _ (LitInt 4))
+                                ( RecordExtend _ a (Var _ va')
+                                    ( RecordExtend _ c (Var _ vc')
+                                        (RecordUpdate _ b (RecordUpdate _ d (Var _ (Ident "r")) (Var _ vd')) (Var _ vb'))
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+            | [ va, vb, vc, vd ] == [ va', vb', vc', vd' ] && [ a, b, c, d ] == map key [ "a", "b", "c", "d" ] -> pure unit
+          other -> fail ("not in order: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+      elaborating [ "f :: { a :: Int } -> { a :: Int, b :: Int }", "f r = { b: 2, ...r }" ] \r ->
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ (RecordExtend _ _ (Lit _ (LitInt 2)) (Var _ (Ident "r")))) -> pure unit
+          other -> fail ("bound: " <> show other)
+
+    it "performs what its fields and the record it spreads perform, in the row ambient where it stands" do
+      let effects = [ "effect Ask where", "  ask :: Unit ->* Int", "asked :: Unit -> Int / {| Ask |}", "asked u = asked u" ]
+      elaborating (effects <> [ "f :: Unit -> { a :: Int } / {| Ask |}", "f u = { a: asked u }" ]) \r ->
+        map at r.errors `shouldEqual` []
+      elaborating (effects <> [ "f :: Unit -> { a :: Int }", "f u = { a: asked u }" ]) \r ->
+        map at r.errors `shouldEqual` [ "8:3 outside: implicit-handler resolution at this checking boundary", "6:1 left unchecked" ]
+
+  describe "a tuple" do
+    let
+      schemeOf name values = map (\v -> printType (fromCore v.scheme.body)) (Array.find (\x -> x.name == inM name) values)
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+    it "is the record of its components at their positions, built from the left" do
+      elaborating [ "t = (1, true)", "pair :: Int -> (Int, Boolean)", "pair n = (n, false)" ] \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "t" r.values `shouldEqual` Just "(Int, Boolean)"
+        case bodyOf "t" r.values of
+          Just (RecordExtend _ (PositionKey 0) (Lit _ (LitInt 1)) (RecordExtend _ (PositionKey 1) (Lit _ (LitBoolean true)) (RecordEmpty _))) -> pure unit
+          other -> fail ("not by position: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec t", "nonrec pair" ]
+
   describe "what a quantifier encloses" do
     let
       bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == Qualified (ModuleName "M") (Ident name)) values)
@@ -1353,7 +1449,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (effects <> [ "o1 :: forall r. Unit -> Unit / {| Console, ...r |}", "o1 u = let", "      h :: Unit -> Unit / {| Console, ...r |}", "      h v = v", "    in h u" ]) \r ->
         map at r.errors `shouldEqual` []
       elaborating (effects <> [ "o2 :: forall r. Unit -> Unit / {| ...r |}", "o2 u = let", "      h :: Unit -> Unit / {| Console, ...r |}", "      h v = v", "    in u" ]) \r ->
-        map at r.errors `shouldEqual` [ "rejected" ]
+        map at r.errors `shouldEqual` [ "7:27 obligation rejected" ]
 
     it "is outside this version where it binds a kind variable of its own or takes a synthesized argument" do
       elaborating [ "kv :: Int", "kv = let", "      q :: forall (f :: k -> Type). Int", "      q = 1", "    in q" ] \r ->

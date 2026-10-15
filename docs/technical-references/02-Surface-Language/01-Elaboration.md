@@ -763,7 +763,7 @@ f d x = x                                         λ d. Λ a. λ (x : a). x
 
 **Every equation is stated where the node it is about stands**, and is decided at once where it can be. One that cannot be decided yet becomes an equality job and the body goes on ([Elaborator API](03-Elaborator-API.md#an-equation-the-surface-elaborator-cannot-decide-yet-becomes-a-job)).
 
-**This version elaborates a subset**: locals, globals, constructors, literals, application, `λ`, annotations, expression holes, `let` blocks and `where`s, with a signature or without, the `case`s [described below](#a-case), and the patterns [a binding is written as](#patterns-a-binding-is-written-as). A pattern a recursive group binds is outside it, and so is a local signature taking a synthesized argument or binding a kind variable of its own. A checking boundary whose body performs what the row expected of it cannot hold asks for an implicit handler, which this version does not seek: it is reported as outside the subset where the boundary stands, rather than as a mismatch the language may resolve. A reference to a value whose scheme takes a synthesized argument, from the module or from an import, is outside it, a goal being what supplies the argument. Every other form is reported as outside it where it stands, and the declaration holding one is not elaborated further.
+**This version elaborates a subset**: locals, globals, constructors, literals, application, `λ`, annotations, expression holes, `let` blocks and `where`s, with a signature or without, the `case`s [described below](#a-case), the patterns [a binding is written as](#patterns-a-binding-is-written-as), and [records and tuples](#records-and-tuples), including field selection. A pattern a recursive group binds is outside it, and so is a local signature taking a synthesized argument or binding a kind variable of its own. A checking boundary whose body performs what the row expected of it cannot hold asks for an implicit handler, which this version does not seek: it is reported as outside the subset where the boundary stands, rather than as a mismatch the language may resolve. A reference to a value whose scheme takes a synthesized argument, from the module or from an import, is outside it, a goal being what supplies the argument. Every other form is reported as outside it where it stands, and the declaration holding one is not elaborated further.
 
 ### A `case`
 
@@ -806,6 +806,24 @@ f d x = x                                         λ d. Λ a. λ (x : a). x
 **A guard block's binding to a pattern** matches the value of its right-hand side, inferred under the ambient row, around the lines after it, which see the variables the pattern binds. A block's binding to one is [a node of its own](#a-value-declarations-body).
 
 **`case _ of` is a function**: name resolution makes each anonymous scrutinee, from the left, a parameter of a `λ` around the `case`, named apart from every name source can write ([Name Resolution](06-Name-Resolution.md#local-scopes)), and it is elaborated as that `λ` is. `case d, _ of` is `\x -> case d, x of`, its named scrutinee evaluated each time the function is applied. A report about it — a hole's locals, a value it does not match — names no variable the compiler made.
+
+### Records and tuples
+
+**A record literal and a tuple are inferred.** Where a type is expected of one, it is inferred and its type equated with the type expected, as any form only inferred is ([A value declaration's body](#a-value-declarations-body)): **a record literal cannot yet use an expected record type to check its fields**, so `({ f: id } :: { f :: forall a. a -> a })` is refused, `id` instantiated where it stands. Each field's value, and the record spread, is elaborated under the ambient row where the literal stands.
+
+**A tuple is the record of its components at their positions** ([A signature's type](#a-signatures-type)): `(a, b)` is `extend 0 a (extend 1 b {})`, built and evaluated from the left.
+
+**A record literal extends the record it spreads, or the empty record.** The record spread, `...e`, is inferred and its type equated with `Prim.Record` of a fresh row, where `e` stands; `{ ...e }` is `e`, evaluated once. **An extension `k: e` adds a field the record lacks, and a replacement `k = e` replaces a field of the record spread, at a type of its own** — `update`'s rule ([Typing Rules](../03-Typed-Core/05-Typing-Rules.md)) — so `\r -> { a = 1, ...r }` is `∀ρ α. a ∉ ρ => { a :: α, ...ρ } -> { a :: Int, ...ρ }`. The replacements stand inside, nearest the record spread, and the extensions outside, each outermost first in the order written, its values bound first as below:
+
+```text
+{ a: 1, x = 10, b: 2, y = 20, ...p }    extend a 1 (extend b 2 (update x (update y p 20) 10))
+```
+
+**What a field asks of the row is required where its label stands.** An extension requires `k ∉ ρ` of the row `ρ` it extends. A replacement equates the record's type with `Record ( k : ?τ | ?ρ )` and requires `k ∉ ?ρ`, the field it adds at the type of its value. A selection `e.k` equates `e`'s type with `Record ( k : ?τ | ?ρ )` and requires `k ∉ ?ρ`, at `?τ`. So `h :: { a :: Int } -> { a :: Int }; h r = { a: 1, ...r }` is reported at `a`, and not at `a: 1` or at the literal.
+
+**A record literal evaluates its fields from the left, and the record it spreads last.** Core evaluates an `extend`'s value before the record it extends and an `update`'s record before the value ([Semantics](../03-Typed-Core/06-Semantics.md#evaluation-order)), so a literal with no replacement is its nest of `extend`s as it stands, and **one with a replacement binds each field's value by a `let` first**, in the order written, under a name the compiler makes, the record built of those variables around the record spread, which is not bound: the literal above evaluates `1`, `10`, `2`, `20`, and then `p`.
+
+**`k = e` stands only beside a record spread**: one written in a literal spreading none is rejected by name resolution ([Name Resolution](06-Name-Resolution.md#labels-are-not-resolved)).
 
 ### A module's type declarations
 

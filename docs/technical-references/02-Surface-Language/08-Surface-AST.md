@@ -88,7 +88,7 @@ Origin = FromSource range
 ## Expressions and patterns
 
 - **An operator is applied to its two operands**, rebracketed by fixity: `ExprOperator` holds the operator, as the reference it stands for with the origin of where it was written, and then the operands.
-- **`e.a.b` is two selections**, one label at a time.
+- **`e.a.b` is two selections**, one label at a time, each holding where its label is written beside where it stands; **each labelled field of a record literal holds both too**, a pun's label being the whole field, and a spread only where it stands. What a label asks of a row is reported where the label stands ([Elaboration](01-Elaboration.md#records-and-tuples)).
 - **A declaration's `where` is a `let`** around the body.
 - **`case _ of` is a `λ` around a `case`**, a parameter for each anonymous scrutinee, from the left, under a name no source can write; no anonymous scrutinee stands in a `case`.
 - **A `case` alternative holds a row of patterns per or-choice at its top**, one pattern per scrutinee in each, and a body that is unconditional or a guard block. A guard block holds bindings, guards, and `otherwise`, which is a line of its own rather than a guard naming a value ([Pattern Matching](../../proposals/03-Pattern-Matching-Syntax.md)).

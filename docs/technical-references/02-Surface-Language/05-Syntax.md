@@ -46,6 +46,7 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | any type as a handler declaration's signature | one in full whose thunk's row and result's row, each written `{| … |}` or named by a type synonym without parameters, do not differ by exactly one unlabelled effect ([Effect Handlers](02-Effect-Handlers.md)) |
 | any row item in any bracket | an item the bracket does not admit; an element of an effect row that is no effect applied to its arguments, a type synonym standing for a row among them ([Surface AST](08-Surface-AST.md)) |
 | any chain of operators | two operators of one precedence that cannot be chained |
+| a replacement `name = e` among any record literal's fields | one in a literal spreading no record ([Name Resolution](06-Name-Resolution.md#labels-are-not-resolved)) |
 | `resume` anywhere | `resume` outside the immediate body of a `full` clause, a lambda, a local function, a `case _ of`, or a handling expression inside the body included; `resume` other than applied, `resume e` |
 | any patterns after a clause's operation | other than one per argument of the operation, followed for a `reifiable full` clause by the continuation it keeps; a refutable one |
 | any name after a clause's `\|` | one naming no operation of the effect handled; in a group headed by a label, operations of several effects, or none |
@@ -340,7 +341,7 @@ letBinding  ::= ident "::" type | binder1 "=" expr
 - **Application binds tighter than any operator.** A negative literal is one token, so `f -1` is `f` applied to `-1` ([Lexical Structure](04-Lexical-Structure.md)).
 - **A lambda, `let`, `case`, `handle`, and `using` extend as far to the right as they can**, and may stand as the last argument of an application: `map \x -> x + 1`.
 - **`_` is an anonymous argument**: `case _, _ of`, and the section `(_ + 1)`.
-- **A record literal's field is `name: e`, a pun `name`, or a replacement `name = e`, and one spread `...e` may stand last.**
+- **A record literal's field is `name: e`, a pun `name`, or a replacement `name = e`, and one spread `...e` may stand last.** A replacement replaces a field of the record spread ([Elaboration](01-Elaboration.md#records-and-tuples)).
 - **`op@label`** performs an operation of a labelled effect, and on the left of a guard block's binding `m@(Just x)` is an as-pattern; **`x!`** reads a cell and **`x := e`** writes one ([Effect Handlers](02-Effect-Handlers.md)).
 - **`M.( e )` opens `M` within `e`**, and **`import M in e`** does the same over the rest of the expression ([Name Resolution](06-Name-Resolution.md)).
 

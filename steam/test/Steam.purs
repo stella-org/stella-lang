@@ -20,6 +20,7 @@ import Test.Steam.Handlers as Handlers
 import Test.Steam.Load as Load
 import Test.Steam.Marshal as Marshal
 import Test.Steam.Matches as Matches
+import Test.Steam.Records as Records
 import Test.Steam.Structural as Structural
 import Test.Steam.Ops as Ops
 import Test.Steam.Root as Root
@@ -39,6 +40,7 @@ main = do
     Foreign.spec
     Handlers.spec
     Matches.spec
+    Records.spec
     Root.spec
     Fixtures.spec fixtures
     Drive.spec

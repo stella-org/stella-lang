@@ -18,29 +18,11 @@ import Prelude
 
 import Prim as P
 
-import Data.Array as Array
-import Data.Either (Either(..))
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
-import Data.Set as Set
-import Data.String (joinWith)
 import Data.Tuple (Tuple(..))
-import Effect.Aff (Aff)
-import Effect.Class (liftEffect)
-import Effect.Ref as Ref
-import Fmt (fmt)
-import Run (runBaseEffect)
-import Run.Except as Except
-import Steam.Foreign (emptyTable)
-import Steam.Load (emptyStore, globalNamed, load, noIdentities)
-import Steam.Value (CtorId, Value(..))
-import Stella.Compiler.Build (CompilerAction, compileModule, defaultHooks, printCompileError)
-import Stella.Compiler.Interface.Environment (initialEnvironment)
-import Stella.Compiler.Macro.Run (ParseOutcome(..), defaultSettings)
-import Stella.Compiler.Macro.Tree (Position(..))
-import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
 import Test.Spec (Spec, describe, it)
-import Test.Spec.Assertions (fail, shouldEqual)
+import Test.Spec.Assertions (shouldEqual)
+import Test.Steam.Compiled (running)
 
 source :: P.Array P.String
 source =
@@ -145,59 +127,10 @@ source =
   , "lambda = (\\(Pair a b) -> b) (Pair 3 4)"
   ]
 
--- | `Main` compiled, loaded, and each of its globals named rendered.
-running :: P.Array P.String -> (Map.Map P.String P.String -> Aff Unit) -> Aff Unit
-running globals k = do
-  compiled <- compileModule action defaultSettings initialEnvironment Map.empty (joinWith "\n" source)
-  case compiled of
-    Left errors -> fail (joinWith "; " (map printCompileError (Array.fromFoldable errors)))
-    Right made -> k =<< liftEffect do
-      identities <- Ref.new noIdentities
-      stored <- runBaseEffect (Except.runExcept (load (emptyStore emptyTable identities) made.dmo))
-      case stored of
-        Left err -> pure (Map.singleton "load" (show err))
-        Right store -> do
-          known <- Ref.read identities
-          held <- Array.foldM
-            ( \acc name -> case globalNamed store (Qualified (ModuleName "Main") (Ident name)) of
-                Nothing -> pure (Array.snoc acc (Tuple name "absent"))
-                Just slot -> Ref.read slot <#> \value -> Array.snoc acc (Tuple name (maybe "uninitialized" (render known.ctorNames) value))
-            )
-            []
-            globals
-          pure (Map.fromFoldable held)
-  where
-  -- no macro is called, so no parser is run
-  action :: CompilerAction Aff
-  action =
-    { readSource: \_ -> pure (Left "no file")
-    , runParser: \_ _ _ -> pure (FailedAs { position: Position 0 0, expected: Set.empty, labels: [] })
-    , hooks: defaultHooks
-    }
-  maybe d f = case _ of
-    Nothing -> d
-    Just x -> f x
-
--- | A value as `Some(2)`, a constructor named by the store.
-render :: Map.Map CtorId (Qualified Ident) -> Value -> P.String
-render names = go
-  where
-  go = case _ of
-    VInt n -> show n
-    VBoolean b -> show b
-    VData id fields ->
-      let
-        name = case Map.lookup id names of
-          Just (Qualified _ (Ident c)) -> c
-          Nothing -> "?"
-      in
-        if Array.null fields then name else fmt @"{name}({fields})" { name, fields: joinWith ", " (map go fields) }
-    _ -> "…"
-
 spec :: Spec Unit
 spec = describe "Steam, a `case` compiled from source" do
   it "tries a guard block's guards in order, falling through to the alternatives after it where every one fails" do
-    running [ "guardZero", "guardFive", "guardNone", "sizeZero", "sizeTwo" ] \values ->
+    running source [ "guardZero", "guardFive", "guardNone", "sizeZero", "sizeTwo" ] \values ->
       values `shouldEqual` Map.fromFoldable
         [ Tuple "guardZero" "100"
         , Tuple "guardFive" "5"
@@ -207,7 +140,7 @@ spec = describe "Steam, a `case` compiled from source" do
         ]
 
   it "falls through two guard blocks in turn to the alternative after both" do
-    running [ "layeredZero", "layeredOne", "layeredFive", "layeredNone" ] \values ->
+    running source [ "layeredZero", "layeredOne", "layeredFive", "layeredNone" ] \values ->
       values `shouldEqual` Map.fromFoldable
         [ Tuple "layeredZero" "0"
         , Tuple "layeredOne" "1"
@@ -216,7 +149,7 @@ spec = describe "Steam, a `case` compiled from source" do
         ]
 
   it "matches a pattern a parameter, a `let`, or a guard block's binding is written as, and a `case _ of` applied" do
-    running [ "firstOf", "unwrapped", "secondOfPair", "splitZero", "splitOne", "rankOfRed", "rankOfBlue", "lambda" ] \values ->
+    running source [ "firstOf", "unwrapped", "secondOfPair", "splitZero", "splitOne", "rankOfRed", "rankOfBlue", "lambda" ] \values ->
       values `shouldEqual` Map.fromFoldable
         [ Tuple "firstOf" "5"
         , Tuple "unwrapped" "7"
@@ -229,7 +162,7 @@ spec = describe "Steam, a `case` compiled from source" do
         ]
 
   it "takes the alternative its value matches, through an or-pattern, a nested constructor, a join point, and a literal" do
-    running [ "rankRed", "rankBlue", "secondOfTwo", "secondOfOne", "redZero", "redFour", "blueFour", "greenNone", "two", "other", "flipped" ] \values ->
+    running source [ "rankRed", "rankBlue", "secondOfTwo", "secondOfOne", "redZero", "redFour", "blueFour", "greenNone", "two", "other", "flipped" ] \values ->
       values `shouldEqual` Map.fromFoldable
         [ Tuple "rankRed" "1"
         , Tuple "rankBlue" "2"

@@ -70,8 +70,8 @@ data Expr
   -- | was written.
   | ExprOperator Origin Expr Expr Expr
   | ExprTyped Origin Expr Type
-  -- | `e.label`, one label at a time.
-  | ExprSelect Origin Expr Symbol
+  -- | `e.label`, one label at a time, the label with where it is written.
+  | ExprSelect Origin Expr Origin Symbol
   | ExprTuple Origin (Array Expr)
   | ExprRecord Origin (Array RecordField)
   -- | A lambda over irrefutable patterns.
@@ -104,7 +104,7 @@ exprOrigin = case _ of
   ExprApp o _ _ -> o
   ExprOperator o _ _ _ -> o
   ExprTyped o _ _ -> o
-  ExprSelect o _ _ -> o
+  ExprSelect o _ _ _ -> o
   ExprTuple o _ -> o
   ExprRecord o _ -> o
   ExprLambda o _ _ -> o
@@ -116,11 +116,12 @@ exprOrigin = case _ of
   ExprResume o -> o
   ExprInvalid o -> o
 
--- | A field of a record literal. A pun `{ x }` is the field `x: x`.
+-- | A field of a record literal, with where it is written and, for a labelled
+-- | field, where its label is written. A pun `{ x }` is the field `x: x`.
 data RecordField
-  = FieldValue Origin Symbol Expr
+  = FieldValue Origin Origin Symbol Expr
   -- | `name = e`, replacing a field the spread record has.
-  | FieldUpdate Origin Symbol Expr
+  | FieldUpdate Origin Origin Symbol Expr
   -- | `...e`, which stands last.
   | FieldSpread Origin Expr
 

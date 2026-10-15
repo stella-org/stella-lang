@@ -40,8 +40,9 @@
 -- |
 -- | **This version elaborates a subset**: variables, globals, computations,
 -- | constructors, literals, application, λ, type annotations, a wildcard or a
--- | typed hole among what they write, expression holes, `let` blocks and
--- | `where`s, with a signature or without, and `case` with guard blocks; the
+-- | typed hole among what they write, expression holes, records and the
+-- | fields selected from them, tuples, `let` blocks and `where`s, with a
+-- | signature or without, and `case` with guard blocks; the
 -- | patterns are variables, `_`, as-patterns, constructors, literals,
 -- | or-patterns, and annotated patterns, and those a parameter, a binding of a
 -- | block, or a guard block's binding is written as always match; a recursive
@@ -70,7 +71,7 @@ import Prim hiding (Type)
 
 import Data.Array as Array
 import Data.Either (Either(..), either)
-import Data.Foldable (foldMap, foldl, foldr, for_)
+import Data.Foldable (foldM, foldMap, foldl, foldr, for_)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Set (Set)
@@ -82,7 +83,7 @@ import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext, lookupVar)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId, XDecisionTree(..), XExpr(..), isValueForm)
-import Stella.Compiler.Elaborate.CorePlus.Type (XType(..), fromCore)
+import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal)
 import Stella.Compiler.Elaborate.Surface.Group (groups)
 import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
@@ -99,11 +100,11 @@ import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported
 import Stella.Compiler.Surface.Expr (Alternative, AlternativeBody(..), Binder(..), Expr(..), GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..), exprOrigin)
 import Stella.Compiler.Surface.Name (BindingId, LocalVar(..))
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.TypedCore.Name (Ident(..), KindVar, Qualified)
-import Stella.Compiler.TypedCore.Prim (booleanTy, functionTy, litType, unitCtor, unitTy)
+import Stella.Compiler.TypedCore.Name (Ident(..), KindVar, Qualified, Symbol(..))
+import Stella.Compiler.TypedCore.Prim (booleanTy, functionTy, litType, recordTy, unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
-import Stella.Compiler.TypedCore.Type (TypeScheme)
+import Stella.Compiler.TypedCore.Type (RowKey(..), TypeScheme)
 
 -- | Elaboration that stops at the first form this version does not read, and
 -- | notes the typed holes and the wildcards its annotations hold, to be
@@ -438,7 +439,7 @@ mentioned leaf = go
       ExprApp _ f x -> go f <> go x
       ExprOperator _ op l r -> go op <> go l <> go r
       ExprTyped _ inner _ -> go inner
-      ExprSelect _ inner _ -> go inner
+      ExprSelect _ inner _ _ -> go inner
       ExprTuple _ es -> foldMap go es
       ExprRecord _ fields -> foldMap field fields
       ExprLambda _ _ body -> go body
@@ -448,8 +449,8 @@ mentioned leaf = go
       ExprCellWrite _ _ value -> go value
       _ -> Set.empty
   field = case _ of
-    FieldValue _ _ e -> go e
-    FieldUpdate _ _ e -> go e
+    FieldValue _ _ _ e -> go e
+    FieldUpdate _ _ _ e -> go e
     FieldSpread _ e -> go e
   binding = case _ of
     LetValue b -> go b.body
@@ -666,6 +667,25 @@ infer scope expr = case expr of
     block <- letBlock scope o bindings
     inner <- infer block.scope body
     pure { expr: block.wrap inner.expr, type: inner.type }
+  -- a tuple is the record of its components at their positions, built from
+  -- the left
+  ExprTuple o components -> do
+    parts <- traverse (infer scope) components
+    let indexed = Array.mapWithIndex Tuple parts
+    pure
+      { expr: foldr (\(Tuple i p) rest -> ERecordExtend o (PositionKey i) p.expr rest) (ERecordEmpty o) indexed
+      , type: recordOf (foldr (\(Tuple i p) rest -> XRowExtend (XRowTypeEntry (PositionKey i) p.type) rest) XRowEmpty indexed)
+      }
+  ExprRecord o fields -> recordLiteral scope o fields
+  -- the record has the field at a row the rest of it lacks it from
+  ExprSelect o inner at (Symbol label) -> do
+    record <- infer scope inner
+    let key = SymbolKey (Symbol label)
+    field <- lift (freshTypeMeta scope.context XKType)
+    rest <- lift (freshTypeMeta scope.context (XKRow RowType))
+    lift (equate (siteAt scope at) { kind: XKType, left: record.type, right: recordOf (XRowExtend (XRowTypeEntry key field) rest) })
+    lift (require (siteAt scope at) (XLacks key rest))
+    pure { expr: ERecordSelect o key record.expr, type: field }
   ExprInvalid o -> outside (ReportedAlready o)
   ExprHole o name -> do
     ty <- lift (freshTypeMeta scope.context XKType)
@@ -739,6 +759,65 @@ infer scope expr = case expr of
       lift (require (siteAt scope o) c)
       instantiated o (EConstraintApp o e) rest
     ty -> pure { expr: e, type: ty }
+
+-- | A record literal, inferred. An extension `k: e` adds a field the record
+-- | lacks, and a replacement `k = e` replaces one of the record spread, at a
+-- | type of its own; the replacements stand inside, nearest the record spread,
+-- | and the extensions outside, each outermost first in the order written. A
+-- | field the record must lack, or have, is required where its label stands.
+-- |
+-- | **The fields are evaluated from the left, and the record spread last.** An
+-- | extension evaluates its value before the record it extends and a
+-- | replacement after, so where a replacement is written each field's value is
+-- | bound by a `let` first, in the order written.
+recordLiteral :: Scope -> Surface.Origin -> Array RecordField -> Surf { expr :: XExpr Surface.Origin, type :: XType }
+recordLiteral scope origin fields = do
+  written <- traverse (\f -> f { value = _ } <$> infer scope f.value) (Array.mapMaybe field fields)
+  let replacing = Array.any _.replaces written
+  named <- traverse (\f -> f { name = _ } <$> if replacing then Just <$> lift (freshIdent (Map.keys scope.context.vars) "v") else pure Nothing) written
+  base <- case Array.findMap spread fields of
+    Nothing -> pure { expr: ERecordEmpty origin, row: XRowEmpty }
+    Just s -> do
+      spreading <- infer scope s.expr
+      row <- lift (freshTypeMeta scope.context (XKRow RowType))
+      lift (equate (siteAt scope s.at) { kind: XKType, left: spreading.type, right: recordOf row })
+      pure { expr: spreading.expr, row }
+  replaced <- foldM replace base (Array.reverse (Array.filter _.replaces named))
+  extended <- foldM extend replaced (Array.reverse (Array.filter (not <<< _.replaces) named))
+  let bound = Array.mapMaybe (\f -> f.name <#> \name -> { at: f.at, name, value: f.value }) named
+  pure
+    { expr: foldr (\b e -> ELet b.at b.name b.value.type b.value.expr e) extended.expr bound
+    , type: recordOf extended.row
+    }
+  where
+  field = case _ of
+    FieldValue at labelAt label value -> Just { at, labelAt, key: SymbolKey label, replaces: false, value, name: Nothing }
+    FieldUpdate at labelAt label value -> Just { at, labelAt, key: SymbolKey label, replaces: true, value, name: Nothing }
+    FieldSpread _ _ -> Nothing
+
+  spread = case _ of
+    FieldSpread at expr -> Just { at, expr }
+    _ -> Nothing
+
+  -- a field's value, or the variable it is bound to
+  valueOf f = maybe f.value.expr (EVar f.at) f.name
+
+  -- the record has the field at a type of its own, at a row the rest of it
+  -- lacks it from
+  replace record f = do
+    old <- lift (freshTypeMeta scope.context XKType)
+    rest <- lift (freshTypeMeta scope.context (XKRow RowType))
+    lift (equate (siteAt scope f.labelAt) { kind: XKType, left: recordOf record.row, right: recordOf (XRowExtend (XRowTypeEntry f.key old) rest) })
+    lift (require (siteAt scope f.labelAt) (XLacks f.key rest))
+    pure { expr: ERecordUpdate f.at f.key record.expr (valueOf f), row: XRowExtend (XRowTypeEntry f.key f.value.type) rest }
+
+  extend record f = do
+    lift (require (siteAt scope f.labelAt) (XLacks f.key record.row))
+    pure { expr: ERecordExtend f.at f.key (valueOf f) record.expr, row: XRowExtend (XRowTypeEntry f.key f.value.type) record.row }
+
+-- | `Prim.Record` of the row given.
+recordOf :: XType -> XType
+recordOf row = XApp (XCon recordTy []) row
 
 -- | A function inferred where it stands, applied to the argument built at the
 -- | type it takes, and fitted there into the row ambient: the function's place,

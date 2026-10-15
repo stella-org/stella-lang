@@ -319,9 +319,14 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
         r.warnings `shouldEqual` [ "len" ]
 
   describe "records" do
-    it "hold their fields, a pun being a field, and report a label written twice" do
+    it "hold their fields, a pun being a field, and report a label written twice, whether it extends or replaces" do
       shows [ "f a r = ({ a, b: 1 }, { c = 2, ...r }, r.a.b)" ] "({ a: a#0, b: 1 }, { c = 2, ...r#1 }, r#1.a.b)" []
       shows [ "f a = { a, a: 1, b: 2, b: 3 }" ] "{ a: a#0, a: 1, b: 2, b: 3 }" [ LabelTwice "a", LabelTwice "b" ]
+      shows [ "f r = { a = 1, a: 2, b: 3, b = 4, ...r }" ] "{ a = 1, a: 2, b: 3, b = 4, ...r#0 }" [ LabelTwice "a", LabelTwice "b" ]
+      shows [ "f r = { x = 1, x = 2, ...r }" ] "{ x = 1, x = 2, ...r#0 }" [ LabelTwice "x" ]
+
+    it "report a replacement where no record is spread" do
+      shows [ "f = { a: 1, b = 2, c = 3 }" ] "{ a: 1, b = 2, c = 3 }" [ ReplacementWithoutSpread "b", ReplacementWithoutSpread "c" ]
 
   describe "groups written in place" do
     it "headed by an effect name its operations among the effect's, whatever is in scope" do
@@ -536,7 +541,7 @@ renderExpr = case _ of
   ExprApp _ f a -> "(" <> renderExpr f <> " " <> renderExpr a <> ")"
   ExprOperator _ op l r -> "<" <> renderExpr op <> " " <> renderExpr l <> " " <> renderExpr r <> ">"
   ExprTyped _ e _ -> "(" <> renderExpr e <> " :: τ)"
-  ExprSelect _ e (Symbol l) -> renderExpr e <> "." <> l
+  ExprSelect _ e _ (Symbol l) -> renderExpr e <> "." <> l
   ExprTuple _ es -> "(" <> joinWith ", " (map renderExpr es) <> ")"
   ExprRecord _ fs -> "{ " <> joinWith ", " (map field fs) <> " }"
   ExprLambda _ ps body -> "(\\" <> joinWith " " (map renderBinder ps) <> " -> " <> renderExpr body <> ")"
@@ -549,8 +554,8 @@ renderExpr = case _ of
   ExprInvalid _ -> "!"
   where
   field = case _ of
-    FieldValue _ (Symbol l) e -> l <> ": " <> renderExpr e
-    FieldUpdate _ (Symbol l) e -> l <> " = " <> renderExpr e
+    FieldValue _ _ (Symbol l) e -> l <> ": " <> renderExpr e
+    FieldUpdate _ _ (Symbol l) e -> l <> " = " <> renderExpr e
     FieldSpread _ e -> "..." <> renderExpr e
   binding = case _ of
     LetValue b -> joinWith " " ([ renderVar b.var ] <> map renderBinder b.params) <> " = " <> renderExpr b.body

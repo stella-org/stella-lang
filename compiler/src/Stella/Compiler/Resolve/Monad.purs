@@ -281,6 +281,8 @@ data ResolveReason
   -- | A label a record, its update, or its pattern writes twice, or a row of a
   -- | variant or of effects.
   | LabelTwice String
+  -- | `label = e` in a record spreading no record whose field it replaces.
+  | ReplacementWithoutSpread String
   -- | A tag a variant's row writes twice.
   | TagTwice String
   -- | An effect an effect row holds twice, unlabelled: its key is the effect.
@@ -446,6 +448,7 @@ printResolveReason = case _ of
   NotAnOperation n -> "`" <> n <> "` is not an operation, which a label selects the instance of"
   LabelExpected -> "A label, the name of an instance, follows `@` here"
   LabelTwice l -> "The label `" <> l <> "` is written twice here"
+  ReplacementWithoutSpread l -> "`" <> l <> " = …` replaces a field of the record spread with `...`, and this record spreads none; write `" <> l <> ": …` to give the field"
   TagTwice t -> "The tag `'" <> t <> "` is written twice here"
   EffectTwice e -> "The effect `" <> e <> "` is written twice here; a row holds an effect once, and a second instance of it is written with a label"
   LetGrouping reason -> printGroupReason reason

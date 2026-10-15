@@ -112,7 +112,7 @@ resolveExpr e = case e of
   CST.ExprTyped inner t -> ExprTyped o <$> resolveExpr inner <*> resolveType t
   CST.ExprAccess inner labels -> do
     inner' <- resolveExpr inner
-    pure (foldl (\acc l -> ExprSelect (spanning (exprOrigin acc) (originOf l.range)) acc (Symbol l.name)) inner' labels)
+    pure (foldl (\acc l -> ExprSelect (spanning (exprOrigin acc) (originOf l.range)) acc (originOf l.range) (Symbol l.name)) inner' labels)
   CST.ExprLambda bs body -> blockResume InsideLambda do
     r <- resolveBinders bs
     traverse_ requireIrrefutable r.binders
@@ -255,17 +255,24 @@ operatorChain e = do
 recordFields :: Array CST.RecordField -> Resolve (Array RecordField)
 recordFields fields = do
   reportLabelsTwice (Array.mapMaybe labelOf fields)
+  -- a replacement replaces a field of the record spread
+  unless (Array.any spread fields) $ for_ fields case _ of
+    CST.FieldUpdate n v -> report (covering n.range (exprRange v)) (ReplacementWithoutSpread n.name)
+    _ -> pure unit
   traverse field fields
   where
+  spread = case _ of
+    CST.FieldSpread _ -> true
+    _ -> false
   labelOf = case _ of
     CST.FieldValue n _ -> Just n
     CST.FieldPun n -> Just n
     CST.FieldUpdate n _ -> Just n
     CST.FieldSpread _ -> Nothing
   field = case _ of
-    CST.FieldValue n v -> FieldValue (originOf (covering n.range (exprRange v))) (Symbol n.name) <$> resolveExpr v
-    CST.FieldPun n -> FieldValue (originOf n.range) (Symbol n.name) <$> reference (originOf n.range) n
-    CST.FieldUpdate n v -> FieldUpdate (originOf (covering n.range (exprRange v))) (Symbol n.name) <$> resolveExpr v
+    CST.FieldValue n v -> FieldValue (originOf (covering n.range (exprRange v))) (originOf n.range) (Symbol n.name) <$> resolveExpr v
+    CST.FieldPun n -> FieldValue (originOf n.range) (originOf n.range) (Symbol n.name) <$> reference (originOf n.range) n
+    CST.FieldUpdate n v -> FieldUpdate (originOf (covering n.range (exprRange v))) (originOf n.range) (Symbol n.name) <$> resolveExpr v
     CST.FieldSpread v -> FieldSpread (originOf (exprRange v)) <$> resolveExpr v
 
 -- | An alternative of a `case` matching the number of values given: each row of
