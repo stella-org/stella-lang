@@ -70,7 +70,7 @@ module Stella.Compiler.Elaborate.Surface.Expr
   ) where
 
 import Prelude
-import Prim hiding (Type)
+import Prim hiding (Symbol, Type)
 
 import Data.Array as Array
 import Data.Either (Either(..), either)
@@ -82,9 +82,9 @@ import Data.Set as Set
 import Data.String (Pattern(..))
 import Data.String as String
 import Data.Traversable (traverse)
-import Data.Tuple (Tuple(..))
+import Data.Tuple (Tuple(..), snd)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext, lookupVar)
-import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
+import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..), fromCoreKind)
 import Stella.Compiler.Elaborate.CorePlus.Row (rebuild, xnf)
 import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId, PendingCaseId, XDecisionTree(..), XExpr(..), isValueForm)
 import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..), fromCore)
@@ -92,6 +92,7 @@ import Stella.Compiler.Elaborate.Surface.Internal (Internal)
 import Stella.Compiler.Elaborate.Surface.Group (groups)
 import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Environment.Constructors (lookupConstructor)
+import Stella.Compiler.Interface.Operation (operationElement, operationKey, operationRest, operationRow)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, break, closeBoundary, currentMetas, currentLevel, equate, freshCoverage, freshIdent, freshJoin, freshPendingCase, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, recursiveRef, require)
@@ -108,7 +109,7 @@ import Stella.Compiler.TypedCore.Name (Ident(..), KindVar, Qualified, Symbol(..)
 import Stella.Compiler.TypedCore.Prim (booleanTy, functionTy, litType, recordTy, unitCtor, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
-import Stella.Compiler.TypedCore.Type (RowKey(..), TypeScheme)
+import Stella.Compiler.TypedCore.Type (RowKey(..), Type(..), TypeScheme)
 
 -- | Elaboration that stops at the first form this version does not read, and
 -- | notes the typed holes and the wildcards its annotations hold, to be
@@ -688,9 +689,13 @@ infer scope expr = case expr of
     thunk <- global o name
     applyTo scope o o thunk \argument -> subsume scope o { expr: EGlobal o unitCtor [], type: XCon unitTy [] } argument
   ExprLiteral o literal -> pure { expr: ELit o literal, type: fromCore (litType literal) }
-  ExprApp _ f x -> do
-    f' <- infer scope f
-    applyTo scope (exprOrigin f) (exprOrigin expr) f' \argument -> check scope x Derived argument
+  -- an operation is called with the arguments of the whole application at once
+  ExprApp _ f x -> case operationSpine expr of
+    Just call -> operation scope call
+    Nothing -> do
+      f' <- infer scope f
+      applyTo scope (exprOrigin f) (exprOrigin expr) f' \argument -> check scope x Derived argument
+  ExprOperation o at name label -> operation scope { origin: o, at, name, label, arguments: [] }
   ExprTyped _ inner t -> do
     annotation <- lift (elaborateType scope.surface.synonyms scope.declaration scope.context t)
     case Array.head annotation.unsupported of
@@ -808,6 +813,88 @@ infer scope expr = case expr of
       lift (require (siteAt scope o) c)
       instantiated o (EConstraintApp o e) rest
     ty -> pure { expr: e, type: ty }
+
+-- | An operation referred to where it is written, its name and its label, and
+-- | the arguments it is applied to from the left, each with the application
+-- | that gives it.
+type OperationCall =
+  { origin :: Surface.Origin
+  , at :: Surface.Origin
+  , name :: Qualified Ident
+  , label :: Maybe { origin :: Surface.Origin, label :: Symbol }
+  , arguments :: Array { origin :: Surface.Origin, argument :: Expr }
+  }
+
+-- | An application whose head is an operation.
+operationSpine :: Expr -> Maybe OperationCall
+operationSpine = go []
+  where
+  go arguments = case _ of
+    ExprApp o f x -> go (Array.cons { origin: o, argument: x } arguments) f
+    ExprOperation o at name label -> Just { origin: o, at, name, label, arguments }
+    _ -> Nothing
+
+-- | An operation, applied to the arguments given (D17). **Given every argument
+-- | it is written with, it is performed where it is applied**: the arguments
+-- | are checked from the left against the types it takes, the effect's
+-- | parameters and its own variables instantiated afresh, and the row ambient
+-- | must hold the element it is performed on, by a demanding fit placed where
+-- | its name is written. Several arguments are bound from the right, as an
+-- | application evaluates them, and passed as the record of their positions.
+-- | The arguments past those are applied to what it resumes with.
+-- |
+-- | **Given fewer, it is the `λ`s taking every argument and performing it**, at
+-- | the type it is called at with the rest of the row an instantiation row,
+-- | lacking the element's key where the operation is referred to; the arguments
+-- | given are applied to them.
+operation :: Scope -> OperationCall -> Surf { expr :: XExpr Surface.Origin, type :: XType }
+operation scope call = case Map.lookup call.name scope.surface.operations of
+  Nothing -> lift (break (OperationUnknown (AtSource { declaration: scope.declaration, origin: call.at }) call.name))
+  Just op -> do
+    params <- traverse fresh op.params
+    binders <- traverse fresh op.binders
+    let
+      label = map _.label call.label
+      key = operationKey label op
+      substitution = Map.fromFoldable (Array.zip (map _.name op.params) params <> Array.zip (map _.name op.binders) binders)
+      instantiate = substituteTyVars substitution Map.empty <<< fromCore
+      types = map instantiate op.arguments
+      arity = Array.length op.arguments
+      perform o values = EPerform o key op.name binders case values of
+        [ one ] -> one
+        _ -> foldr (\(Tuple i v) rest -> ERecordExtend o (PositionKey i) v rest) (ERecordEmpty o) (Array.mapWithIndex Tuple values)
+      resumed = instantiate op.resumesWith
+    case Array.index call.arguments (arity - 1) of
+      Just saturating -> do
+        let o = saturating.origin
+        values <- traverse (\(Tuple a t) -> check scope a.argument Derived t) (Array.zip call.arguments types)
+        _ <- lift (placeFit (siteAt scope call.at) Demanding (instantiate (TRowExtend (operationElement label op) TRowEmpty)) scope.ambient)
+        performed <- case values of
+          [ _ ] -> pure (perform o values)
+          _ -> do
+            names <- traverse (\_ -> lift (freshIdent (Map.keys scope.context.vars) "a")) values
+            -- the last argument bound outermost, so it is evaluated first
+            pure (foldl (\inner (Tuple x (Tuple v t)) -> ELet o x t v inner) (perform o (map (EVar o) names)) (Array.zip names (Array.zip values types)))
+        applied o { expr: performed, type: resumed } (Array.drop arity call.arguments)
+      Nothing -> do
+        let o = call.origin
+        rest <- lift (freshInstantiationRow scope.context)
+        lift (require (siteAt scope call.at) (XLacks key rest))
+        names <- traverse (\_ -> lift (freshIdent (Map.keys scope.context.vars) "a")) types
+        let
+          -- only the last `λ` performs, on the element over the rest
+          rows = Array.snoc (map (const XRowEmpty) (Array.drop 1 types)) (substituteTyVars (Map.insert (operationRest op) rest substitution) Map.empty (fromCore (operationRow label op)))
+          lambdas = foldr
+            (\(Tuple x (Tuple t row)) inner -> { expr: ELam o x t row inner.expr, type: xFunction t row inner.type })
+            { expr: perform o (map (EVar o) names), type: resumed }
+            (Array.zip names (Array.zip types rows))
+        applied o lambdas call.arguments
+  where
+  fresh b = lift (freshTypeMeta scope.context (fromCoreKind b.kind))
+  applied o f arguments = snd <$> foldM
+    (\(Tuple at g) a -> Tuple a.origin <$> applyTo scope at a.origin g \t -> check scope a.argument Derived t)
+    (Tuple o f)
+    arguments
 
 -- | A record literal, inferred. An extension `k: e` adds a field the record
 -- | lacks, and a replacement `k = e` replaces one of the record spread, at a

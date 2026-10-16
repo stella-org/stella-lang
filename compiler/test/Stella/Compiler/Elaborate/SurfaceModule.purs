@@ -49,7 +49,7 @@ import Stella.Compiler.Surface.Origin (rangeOf)
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, DecisionTree(..), Export(..), Expr(..), Module, primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), OpName(..), Qualified(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy, unitCtor, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Type (RowEntry(..), RowKey(..), Type(..))
 import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
@@ -232,6 +232,7 @@ spanned :: ElaborationError -> String
 spanned = case _ of
   Rejected (EquationFailed (AtSource s) _) -> spanOf s.origin <> " rejected"
   Rejected (ObligationRejected { obligation: AtSource s }) -> spanOf s.origin <> " obligation rejected"
+  Rejected (RowNotContained (AtSource s) _) -> spanOf s.origin <> " row not contained"
   e -> at e
   where
   spanOf o = let r = rangeOf o in fmt @"{startLine}:{startColumn}-{endLine}:{endColumn}" { startLine: r.start.line, startColumn: r.start.column, endLine: r.end.line, endColumn: r.end.column }
@@ -1191,6 +1192,95 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map spanned r.errors `shouldEqual` [ "4:5-4:7 rejected" ]
       elaborating [ "f :: [ 'A :: Int ] -> Int", "f v = case v of", "  'B n -> n" ] \r ->
         map spanned r.errors `shouldEqual` [ "5:3-5:5 rejected" ]
+
+  describe "an operation" do
+    let
+      schemeOf name values = map (\v -> printType (fromCore v.scheme.body)) (Array.find (\x -> x.name == inM name) values)
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+      state = [ "effect State s where", "  get :: Unit ->* s", "  put :: s ->* Unit" ]
+      logs = [ "effect Log where", "  writeAt :: Int -> String ->* Unit" ]
+      pick = [ "effect Pick where", "  pick :: forall a. a -> a ->* a" ]
+      stateKey = EffectKey (Qualified (ModuleName "M") (EffName "State"))
+
+    it "is performed where it is given its argument, the effect's parameter read off the row ambient" do
+      elaborating (state <> [ "f :: Unit -> Int / {| State Int |}", "f _ = get ()" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ _ (Perform _ key (OpName "get") [] (Global _ _ _))) | key == stateKey -> pure unit
+          other -> fail ("not performed: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "binds several arguments from the right and passes them as the record of their positions" do
+      elaborating (logs <> [ "w :: Unit -> Unit / {| Log |}", "w _ = writeAt 1 \"a\"" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "w" r.values of
+          Just (Lam _ _ _ _ (Let _ second _ (Lit _ (LitString _)) (Let _ first _ (Lit _ (LitInt 1)) (Perform _ _ (OpName "writeAt") [] (RecordExtend _ (PositionKey 0) (Var _ first') (RecordExtend _ (PositionKey 1) (Var _ second') (RecordEmpty _)))))))
+            | first == first' && second == second' -> pure unit
+          other -> fail ("not bound from the right: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec w" ]
+
+    it "asks of the row only the element it is performed on" do
+      elaborating (state <> [ "f = \\_ -> get ()" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        schemeOf "f" r.values `shouldEqual` Just "forall a. forall b. a -> b / {| State b |}"
+
+    it "referred to short of its arguments is the `λ`s performing it, the rest of the row its type brings kept where nothing closes it" do
+      elaborating (state <> [ "g = get", "p u = let h = get in Tuple h h", "q u = let h = \\_ -> get () in Tuple h h" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        map (\name -> schemeOf name r.values) [ "g", "p", "q" ] `shouldEqual` map Just
+          [ "forall a. Unit -> a / {| State a |}"
+          , "forall a. forall b. forall c. … => a -> Tuple (Unit -> b / {| State b, ...c |}) (Unit -> b / {| State b, ...c |})"
+          , "forall a. forall b. forall c. a -> Tuple (b -> c / {| State c |}) (b -> c / {| State c |})"
+          ]
+        case bodyOf "g" r.values of
+          Just (TyLam _ _ _ (Lam _ x _ _ (Perform _ key (OpName "get") [] (Var _ x')))) | key == stateKey && x == x' -> pure unit
+          other -> fail ("not the λ performing it: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec g", "nonrec p", "nonrec q" ]
+
+    it "applied short of its arguments performs nothing" do
+      elaborating (logs <> [ "w :: String -> Unit / {| Log |}", "w = writeAt 0" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec w" ]
+
+    it "applied short of its arguments is an application, which only a value form generalizes past" do
+      elaborating (pick <> [ "q = pick", "r = pick id" ]) \r -> do
+        map at r.errors `shouldEqual` [ "6:1 signature needed" ]
+        schemeOf "q" r.values `shouldEqual` Just "forall a. a -> a -> a / {| Pick |}"
+
+    it "applies what it resumes with to the arguments past its own" do
+      elaborating ([ "effect Ask where", "  ask :: Unit ->* (Int -> Int)", "f :: Unit -> Int / {| Ask |}", "f _ = ask () 1" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ _ (App _ (OpenEff _ _ (Perform _ _ (OpName "ask") [] _)) (Lit _ (LitInt 1)))) -> pure unit
+          other -> fail ("not applied: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "instantiates its own variables afresh where it is called" do
+      elaborating ([ "effect Abort where", "  abort :: forall a. Unit ->* a", "f :: Unit -> Tuple Int String / {| Abort |}", "f _ = Tuple (abort ()) (abort ())" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "is performed on the instance a label names, its fit at its name alone" do
+      elaborating (state <> [ "f :: Unit -> Int / {| cache :: State Int |}", "f _ = get@cache ()" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ _ (Perform _ (SymbolKey (Symbol "cache")) (OpName "get") [] (Global _ _ _))) -> pure unit
+          other -> fail ("not performed on the instance: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+      elaborating (state <> [ "loud = get@cache ()" ]) \r ->
+        map spanned r.errors `shouldEqual` [ "6:8-6:11 row not contained" ]
+
+    it "reports an argument not of the type it takes where the argument is written" do
+      elaborating (logs <> [ "w :: Unit -> Unit / {| Log |}", "w _ = writeAt \"a\" \"b\"" ]) \r ->
+        map spanned r.errors `shouldEqual` [ "6:15-6:18 rejected" ]
+
+    it "performed on an element at other parameters than the row's is a mismatch where the boundary decides it" do
+      elaborating (state <> [ "f :: Unit -> Unit / {| State Int |}", "f _ = put \"x\"" ]) \r ->
+        map spanned r.errors `shouldEqual` [ "7:3-7:4 rejected" ]
+
+    it "performed where the row does not hold its element is a mismatch of rows, outside the boundary, and needs a handler under one" do
+      elaborating (state <> logs <> [ "f :: Unit -> Int / {| Log |}", "f _ = get ()", "loud = get ()" ]) \r ->
+        map spanned r.errors `shouldEqual` [ "10:8-10:11 row not contained", "9:3 outside: implicit-handler resolution at this checking boundary" ]
 
   describe "what a quantifier encloses" do
     let

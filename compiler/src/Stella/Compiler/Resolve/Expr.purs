@@ -200,7 +200,7 @@ resolveExpr e = case e of
   operationAt n label = case label of
     CST.ExprVar l | l.qualifier == Nothing -> lookupValueReference n >>= case _ of
       Found (GlobalReference q) -> valueKind q >>= case _ of
-        OperationValue -> pure (ExprOperation o q (Just (Symbol l.name)))
+        OperationValue -> pure (ExprOperation o (originOf n.range) q (Just { origin: originOf l.range, label: Symbol l.name }))
         _ -> report n.range (NotAnOperation (written n)) $> ExprInvalid o
       Found (LocalReference _) -> report n.range (NotAnOperation (written n)) $> ExprInvalid o
       NotFound -> report n.range (UnknownValue (written n)) $> ExprInvalid o
@@ -221,7 +221,7 @@ global o q = valueKind q <#> case _ of
   PlainValue -> ExprValue o q
   ComputationValue -> ExprComputation o q
   ConstructorValue -> ExprConstructor o q
-  OperationValue -> ExprOperation o q Nothing
+  OperationValue -> ExprOperation o o q Nothing
 
 -- | A chain of operators, rebracketed by fixity. An operator nothing in scope
 -- | stands for, or two that cannot be chained, leave the chain invalid.

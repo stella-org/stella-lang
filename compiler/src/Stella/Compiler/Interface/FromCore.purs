@@ -8,7 +8,8 @@
 -- | one value:
 -- |
 -- | - a value is a value, and a foreign one that may observe;
--- | - an operation takes its one Core argument as its one argument;
+-- | - an operation takes its one Core argument as its one argument, at the type
+-- |   a declaration from source is called at;
 -- | - there are no operators, type operators, implicit handlers, or entries
 -- |   published to the catalog alone, and no type is a synonym or a foreign
 -- |   type;
@@ -39,15 +40,15 @@ import Data.Traversable (for, traverse_)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Interface.Assemble (reachedFromOutside)
 import Stella.Compiler.Interface.Module (Attribute, EffectEntry, Exports, ModuleInterface, TypeEntity(..), TypeEntry, TypeExport, TypeSort(..), ValueEntry, ValueSort(..), Via(..), emptyDeclarations, emptyExports)
+import Stella.Compiler.Interface.Operation (operationOf, operationScheme)
 import Stella.Compiler.Interface.Prim (primAttribute)
 import Stella.Compiler.Interface.Scheme (plainScheme)
 import Stella.Compiler.Surface.Decl (Observation(..))
 import Stella.Compiler.TypedCore (Decl(..), Declared, Module)
 import Stella.Compiler.TypedCore.Decl (Export(..)) as Core
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), OpName(..), Qualified(..), TyName(..))
-import Stella.Compiler.TypedCore.Prim (pureFn, primModule)
+import Stella.Compiler.TypedCore.Prim (primModule)
 import Stella.Compiler.TypedCore.Signature (TyConInfo(..))
-import Stella.Compiler.TypedCore.Type (Type(..))
 
 data FromCoreError
   -- | An export naming nothing the module declares.
@@ -138,7 +139,7 @@ interfaceOfCore m declared arities = do
     DeclEffect _ e -> map
       ( \o -> Tuple (opIdent o.name)
           { sort: SortOperation (Qualified self e.name)
-          , scheme: plainScheme { kindVars: [], body: Array.foldr (\b t -> TForall b.name b.kind t) (pureFn o.argument o.resumesWith) (e.params <> o.tyBinders) }
+          , scheme: plainScheme (operationScheme Nothing (operationOf (Qualified self e.name) e.params { name: o.name, binders: o.tyBinders, arguments: [ o.argument ], resumesWith: o.resumesWith }))
           , attributes: []
           }
       )

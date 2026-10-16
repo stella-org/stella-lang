@@ -823,25 +823,28 @@ spec = describe "Stella.Compiler.Build" do
         , "both k = Thunk k"
         ]
 
-    it "is declared to Core with its operations, each taking its arguments as one, through to the interface and its file" do
+    it "is declared to Core with its operations, each taking its arguments as one, and each called at its arguments one by one, through to the interface and its file" do
       compilingUnder [ "module M (State, Log, Pick, Apply, Thunk(..), both) where" ] effectsModule' case _ of
         Left errors -> fail (joinWith "; " (rendered errors))
         Right r -> do
           let
             s = TVar (TyVar "s")
             a = TVar (TyVar "a")
+            e = TVar (TyVar "e")
             unit' = TCon unitTy []
             effect n = Map.lookup (EffName n) r.interface.declarations.effects
             scheme n = map _.scheme (Map.lookup (Ident n) r.interface.declarations.values)
-            positions ts = TApp (TCon recordTy []) (Array.foldr (\(Tuple k t) rest -> TRowExtend (RowTypeEntry (PositionKey k) t) rest) TRowEmpty (Array.mapWithIndex Tuple ts))
+            inM n = Qualified (ModuleName "M") (EffName n)
+            -- the rest of the row, lacking the effect, under the last arrow only
+            performing n params body = TForall (TyVar "e") (KRow RowEffect) (TConstrained (Lacks (EffectKey (inM n)) e) (body (TRowExtend (RowEffectEntry (inM n) params) e)))
           map _.params (effect "State") `shouldEqual` Just [ { name: TyVar "s", kind: KType } ]
           map (map _.arguments <<< _.operations) (effect "State") `shouldEqual` Just [ [ unit' ], [ s ] ]
           map (map _.arguments <<< _.operations) (effect "Log") `shouldEqual` Just [ [ int, TCon stringTy [] ] ]
           -- a parameter's kind is decided by what the operations make of it
           map _.params (effect "Apply") `shouldEqual` Just [ { name: TyVar "f", kind: KFun KType KType } ]
-          scheme "get" `shouldEqual` Just (plainScheme { kindVars: [], body: TForall (TyVar "s") KType (pureFn unit' s) })
-          scheme "writeAt" `shouldEqual` Just (plainScheme (monoScheme (pureFn (positions [ int, TCon stringTy [] ]) unit')))
-          scheme "pick" `shouldEqual` Just (plainScheme { kindVars: [], body: TForall (TyVar "a") KType (pureFn (positions [ a, a ]) a) })
+          scheme "get" `shouldEqual` Just (plainScheme { kindVars: [], body: TForall (TyVar "s") KType (performing "State" [ s ] \row -> fn unit' row s) })
+          scheme "writeAt" `shouldEqual` Just (plainScheme (monoScheme (performing "Log" [] \row -> pureFn int (fn (TCon stringTy []) row unit'))))
+          scheme "pick" `shouldEqual` Just (plainScheme { kindVars: [], body: TForall (TyVar "a") KType (performing "Pick" [] \row -> pureFn a (fn a row a)) })
           case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
             Right stored -> stored.interface `shouldEqual` r.interface
             Left problem -> fail problem
@@ -853,6 +856,17 @@ spec = describe "Stella.Compiler.Build" do
         ]
         \r -> case r.result of
           Right built -> built `shouldEqual` [ "A", "B" ]
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+
+    it "gives a module importing it its operations to call, given their arguments or short of them" do
+      building
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "f :: Unit -> Int / {| State Int |}", "f _ = get ()", "w :: String -> Unit / {| Log |}", "w = writeAt 0", "p = pick" ])
+        , Tuple "src/A.stel" (moduleOf "A" [] effectsModule')
+        ]
+        \r -> case r.result of
+          Right built -> do
+            built `shouldEqual` [ "A", "B" ]
+            Array.filter (String.contains (String.Pattern "lowered B")) r.log `shouldEqual` [ "lowered B, exporting f p w" ]
           Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
 
     it "refuses a parameter at a kind variable or at a kind nothing decides, and an operation whose rows need a condition no binder of it carries" do

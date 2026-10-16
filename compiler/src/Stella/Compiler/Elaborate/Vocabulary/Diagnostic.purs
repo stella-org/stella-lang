@@ -290,6 +290,9 @@ data Defect
   -- | refused: a column of heads of different domains, a constructor the
   -- | table lacks, or one matched with other than one pattern per field.
   | MatchMalformed Origin
+  -- | A reference to an operation no effect the module reaches declares, name
+  -- | resolution having resolved it to one.
+  | OperationUnknown Origin (Qualified Ident)
   -- | `Ψ` holding, once a group is generalized, a metavariable the group retired.
   | RetiredMetavariableHeld
   -- | A group committed other than as it was planned: its members not those

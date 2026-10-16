@@ -541,7 +541,7 @@ renderExpr = case _ of
   ExprValue _ q -> qualified q
   ExprComputation _ q -> "comp:" <> qualified q
   ExprConstructor _ q -> qualified q
-  ExprOperation _ q label -> "op:" <> qualified q <> maybe "" (\(Symbol l) -> "@" <> l) label
+  ExprOperation _ _ q label -> "op:" <> qualified q <> maybe "" (\{ label: Symbol l } -> "@" <> l) label
   ExprDiscriminator _ q -> qualified q <> "?"
   ExprTag _ _ (Tag t) payload -> maybe ("'" <> t) (\p -> fmt @"('{t} {p})" { t, p: renderExpr p }) payload
   ExprLiteral _ l -> literal l

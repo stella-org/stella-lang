@@ -95,6 +95,7 @@ import Stella.Compiler.Elaborate.Driver.Generalize (Commitment(..), Finalization
 import Stella.Compiler.Elaborate.Driver.Close (Closing(..), Undoing(..), closeRows)
 import Stella.Compiler.Elaborate.Environment.Catalog (CatalogEntry, EntrySort(..))
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
+import Stella.Compiler.Interface.Operation (Operation, operationOf, operationScheme)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv, takesSynthesized)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, atLevel, equate, freshTypeMeta, initialState)
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..))
@@ -125,8 +126,7 @@ import Stella.Compiler.TypedCore.Reference (globalsOf)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName, OpName(..), Qualified(..), TyName(..), TyVar, unqualified)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
 import Stella.Compiler.TypedCore.Kind (KindScheme, RowElemKind(..))
-import Stella.Compiler.TypedCore.Type (Type(..), TypeScheme)
-import Stella.Compiler.TypedCore.Prim (pureFn)
+import Stella.Compiler.TypedCore.Type (Type, TypeScheme)
 
 data ElaborationError
   -- | A form this version does not elaborate, or one resolution reported.
@@ -245,6 +245,16 @@ type ElaboratedSynonym = { origin :: Surface.Origin, attributes :: Array Surface
 -- | the arguments each operation is written with.
 type ElaboratedEffect = { origin :: Surface.Origin, name :: Qualified EffName, decl :: EffectDecl, arguments :: Array (Array Type) }
 
+-- | The operations of an effect the module declares, each by the qualified name
+-- | it is referred to by.
+localOperations :: ModuleName -> ElaboratedEffect -> Array (Tuple (Qualified Ident) Operation)
+localOperations m e = Array.zipWith
+  (\o arguments -> Tuple (Qualified m (identOf o.name)) (operationOf e.name e.decl.params { name: o.name, binders: o.tyBinders, arguments, resumesWith: o.resumesWith }))
+  e.decl.operations
+  e.arguments
+  where
+  identOf (OpName n) = Ident n
+
 -- | A foreign type elaborated: where it stands, its attributes, its name, and
 -- | its kind scheme.
 type ElaboratedForeignType = { origin :: Surface.Origin, attributes :: Array Surface.Attribute, name :: Qualified TyName, kind :: KindScheme }
@@ -329,9 +339,12 @@ elaborateValues imports surface importedEntries m =
   -- the effects the module declares
   signature = foldl addEffect (foldl addForeignType (foldl (addData m.name) imports (map _.decl elaboratedData)) types.foreignTypes) types.effects
   dataErrors = typesRead.errors <> map Unsupported types.unsupported
-  -- the synonyms the values' types are read through: the imports', and the
-  -- module's own
-  withSynonyms = surface { synonyms = Map.union (Map.fromFoldable (map (\s -> Tuple s.name s.entry) types.synonyms)) surface.synonyms }
+  -- the synonyms the values' types are read through and the operations they
+  -- call: the imports', and the module's own
+  withSynonyms = surface
+    { synonyms = Map.union (Map.fromFoldable (map (\s -> Tuple s.name s.entry) types.synonyms)) surface.synonyms
+    , operations = Map.union (Map.fromFoldable (Array.concatMap (localOperations m.name) types.effects)) surface.operations
+    }
   -- the entries the compiler's desugarings refer to, read off it
   Tuple internal internalErrors = case internalEntries signature of
     Right entries -> Tuple entries []
@@ -1394,9 +1407,8 @@ elaborateModule signature surface imported m exports =
     | otherwise = []
   -- an effect exported by name, with its operations
   effectExported e = declaredHere (map (\x -> x.entity == EffectEntity e.name && x.via == Declared) (Map.lookup (effNameText e.decl.name) exports.types))
-  -- an operation's scheme: its effect's parameters and its own variables
-  -- quantified over its one argument to what it resumes with
-  operationSchemes e = map (\o -> Tuple (identOfOp o.name) (plainScheme { kindVars: [], body: Array.foldr (\b t -> TForall b.name b.kind t) (pureFn o.argument o.resumesWith) (e.decl.params <> o.tyBinders) })) e.decl.operations
+  -- an operation's scheme: the type it is called at
+  operationSchemes e = map (\(Tuple q op) -> Tuple (nameOf q) (plainScheme (operationScheme Nothing op))) (localOperations m.name e)
   exportedValue c = declaredHere (map (\e -> e.entity == Qualified m.name c && e.via == Declared) (Map.lookup (identText c) exports.values))
   declaredHere = case _ of
     Just true -> true
@@ -1424,7 +1436,6 @@ elaborateModule signature surface imported m exports =
   identText (Ident n) = n
   tyNameText (TyName n) = n
   effNameText (EffName n) = n
-  identOfOp (OpName n) = Ident n
 
   -- `T : forall k̄. κ̄ -> Type`
   dataKind decl = case dataEntry m.name decl of

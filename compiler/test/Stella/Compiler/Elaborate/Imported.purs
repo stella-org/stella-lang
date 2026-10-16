@@ -14,6 +14,7 @@ import Data.String as String
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
 import Stella.Compiler.Elaborate.Environment.Imported (importedCatalog, importedSignature)
+import Stella.Compiler.Elaborate.Environment.Operations (importedOperations)
 import Stella.Compiler.Interface.Environment (BuildEnvironment, ModuleView, addInterface, initialEnvironment, viewFor)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
 import Stella.Compiler.Interface.Scheme (plainScheme)
@@ -154,7 +155,7 @@ spec = describe "Stella.Compiler.Elaborate.Environment.Imported" do
             Map.lookup (Qualified lib (TyName "Box")) sig.types `shouldEqual` Map.lookup (Qualified lib (TyName "Box")) declared.types
             Map.lookup (Qualified lib (Ident "Box")) sig.ctors `shouldEqual` Map.lookup (Qualified lib (Ident "Box")) declared.ctors
 
-    it "gives an operation the one argument Core takes, whatever number it is written with" do
+    it "gives an operation the one argument Core takes, whatever number it is written with, and the surface the arguments it is written with" do
       let
         operation name arguments = { name: Ident name, binders: [], arguments, resumesWith: int }
         effects = libInterface
@@ -169,6 +170,12 @@ spec = describe "Stella.Compiler.Elaborate.Environment.Imported" do
         argumentOf sig "one" `shouldEqual` Just int
         argumentOf sig "both" `shouldEqual` Just
           (TApp (TCon recordTy []) (TRowExtend (RowTypeEntry (PositionKey 0) int) (TRowExtend (RowTypeEntry (PositionKey 1) unitType) TRowEmpty)))
+      -- the surface calls it with the arguments it is written with, at least one
+      viewing [ effects ] [ lib ] \env view -> do
+        let argumentsOf op = map _.arguments (Map.lookup (Qualified lib (Ident op)) (importedOperations env view))
+        argumentsOf "none" `shouldEqual` Just [ unitType ]
+        argumentsOf "one" `shouldEqual` Just [ int ]
+        argumentsOf "both" `shouldEqual` Just [ int, unitType ]
 
     it "holds a foreign type as an opaque type of its module, which a scheme may mention" do
       let

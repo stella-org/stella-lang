@@ -17,15 +17,16 @@ import Stella.Compiler.Elaborate.Environment.Imported (importedCatalog, imported
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment, viewFor)
 import Stella.Compiler.Interface.FromCore (FromCoreError(..), interfaceOfCore)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeSort(..), ValueSort(..))
+import Stella.Compiler.Interface.Scheme (plainScheme)
 import Stella.Compiler.Interface.Prim (primAttribute)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Surface.Decl (Observation(..))
 import Stella.Compiler.TypedCore (CanonicalClass(..), Decl(..), Export(..), Expr(..), Literal(..), Module, declareAnnotated, primSignature)
-import Stella.Compiler.TypedCore.Kind (monoScheme)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), OpName(..), Qualified(..), TyName(..))
-import Stella.Compiler.TypedCore.Prim (intTy, pureFn, unitTy)
-import Stella.Compiler.TypedCore.Type (Type(..))
+import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), OpName(..), Qualified(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, unitTy)
+import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), Type(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
@@ -89,6 +90,14 @@ spec = describe "Stella.Compiler.Interface.FromCore" do
         map _.members (Map.lookup "Box" i.exports.types) `shouldEqual` Just [ Ident "Box" ]
         map _.members (Map.lookup "E" i.exports.types) `shouldEqual` Just [ Ident "get" ]
         map (map _.arguments <<< _.operations) (Map.lookup (EffName "E") i.declarations.effects) `shouldEqual` Just [ [ TCon unitTy [] ] ]
+
+    it "gives an operation the type a declaration from source is called at, its one Core argument its one argument" do
+      withInterface \i -> do
+        let
+          e = TVar (TyVar "e")
+          effect = Qualified lib (EffName "E")
+        map _.scheme (Map.lookup (Ident "get") i.declarations.values) `shouldEqual` Just
+          (plainScheme (monoScheme (TForall (TyVar "e") (KRow RowEffect) (TConstrained (Lacks (EffectKey effect) e) (fn (TCon unitTy []) (TRowExtend (RowEffectEntry effect []) e) int)))))
 
     it "has no arity of a value no module downstream reaches, nor one below one" do
       interfaceWith (Map.singleton (Ident "hidden") 1) `shouldEqual` Left (ArityNotOwn (Ident "hidden"))
