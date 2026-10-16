@@ -7,7 +7,7 @@ import Prim hiding (Type)
 
 import Data.Array as Array
 import Data.Array.NonEmpty as NonEmptyArray
-import Data.Either (Either(..))
+import Data.Either (Either(..), either)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), isNothing, maybe)
 import Data.Set as Set
@@ -22,6 +22,7 @@ import Stella.Compiler.Surface.Decl (Observation(..))
 import Stella.Compiler.Surface.Decl (Declaration(..)) as SurfaceDecl
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
+import Stella.Compiler.Elaborate.CorePlus.Row (rebuild, xnf)
 import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId(..), PendingCaseId(..), XDecisionTree(..), XExpr(..))
 import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
@@ -246,6 +247,20 @@ spanned = case _ of
   e -> at e
   where
   spanOf o = let r = rangeOf o in fmt @"{startLine}:{startColumn}-{endLine}:{endColumn}" { startLine: r.start.line, startColumn: r.start.column, endLine: r.end.line, endColumn: r.end.column }
+
+-- | The scheme of the value of `M` named, each row in its normal form, so that a
+-- | row closed to nothing reads as none, however it was assembled.
+normalSchemeOf :: String -> Array ElaboratedValue -> Maybe String
+normalSchemeOf name values =
+  map (\v -> printType (normalRows (fromCore v.scheme.body))) (Array.find (\x -> x.name == Qualified (ModuleName "M") (Ident name)) values)
+  where
+  normalRows t = case t of
+    XApp f x -> XApp (normalRows f) (normalRows x)
+    XForall a k body -> XForall a k (normalRows body)
+    XConstrained c body -> XConstrained c (normalRows body)
+    XRowExtend _ _ -> either (const t) rebuild (xnf t)
+    XRowUnion _ _ -> either (const t) rebuild (xnf t)
+    _ -> t
 
 spec :: Spec Unit
 spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
@@ -1182,7 +1197,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     it "closes a row for a `case` in a local binding, in a body with a signature, and in another `case`'s alternative" do
       elaborating [ "f x = let", "    g v = case v of", "      'A -> 1", "      'B -> 2", "  in g x" ] \r -> do
         map at r.errors `shouldEqual` []
-        schemeOf "f" r.values `shouldEqual` Just "forall a. [ 'A :: Unit, 'B :: Unit ] -> Int / {| ...a |}"
+        normalSchemeOf "f" r.values `shouldEqual` Just "[ 'A :: Unit, 'B :: Unit ] -> Int"
       elaborating [ "f :: Int", "f = let", "    g = \\v -> case v of", "      'A -> 1", "      'B -> 2", "  in g 'A" ] \r -> do
         map at r.errors `shouldEqual` []
         checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
@@ -1793,6 +1808,16 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     it "is monomorphic, so that using it at two types is a mismatch" do
       elaborating [ "f :: Int", "f = let i = \\x -> x in const (i 1) (i \"s\")" ] \r ->
         map at r.errors `shouldEqual` [ "4:39 rejected" ]
+
+    it "is no occurrence of the row its function shares with the value applying it, which is closed" do
+      elaborating [ "f b = let g y = 1 in g b", "m b = let g = \\y -> inc y in g b", "r b = let go y = go y in go b" ] \r -> do
+        map at r.errors `shouldEqual` []
+        map (\name -> normalSchemeOf name r.values) [ "f", "m", "r" ] `shouldEqual` map Just
+          [ "forall a. a -> Int"
+          , "Int -> Int"
+          , "forall a. forall b. a -> b"
+          ]
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f", "nonrec m", "nonrec r" ]
 
     it "is in scope in every right-hand side of its block and in its body, a recursive function a `letrec`, and a `where` a `let`" do
       elaborating [ "f :: Int -> Int", "f n = let go x = go x in go n", "g :: Int -> Int", "g n = h n", "  where", "  h x = inc x" ] \r -> do

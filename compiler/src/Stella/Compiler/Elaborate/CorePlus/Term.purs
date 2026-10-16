@@ -765,25 +765,27 @@ typesOfTerm = typesWritten true
 
 -- | The types a term writes where what stands in them is counted: every one
 -- | but a λ's row, which is the row of the λ's arrow and stands wherever that
--- | arrow is written.
+-- | arrow is written, and a local binding's type, which is its right-hand
+-- | side's written again. A join point's types are its own, and counted.
 standingTypesOfTerm :: forall a. XExpr a -> P.Array XType
 standingTypesOfTerm = typesWritten false
 
+-- | The types a term writes, the ones it writes again among them or not.
 typesWritten :: forall a. P.Boolean -> XExpr a -> P.Array XType
-typesWritten rows = go
+typesWritten again = go
   where
   go = case _ of
     EVar _ _ -> []
     EGlobal _ _ _ -> []
     ELit _ _ -> []
-    ELam _ _ ty row body -> [ ty ] <> (if rows then [ row ] else []) <> go body
+    ELam _ _ ty row body -> [ ty ] <> written row <> go body
     EApp _ f x -> go f <> go x
     ETyLam _ _ _ body -> go body
     ETyApp _ e ty -> go e <> [ ty ]
     EConstraintLam _ c body -> [ XConstrained c XRowEmpty ] <> go body
     EConstraintApp _ e -> go e
-    ELet _ _ ty v body -> [ ty ] <> go v <> go body
-    ELetRec _ bindings body -> foldMap (\b -> [ b.ty ] <> go b.value) bindings <> go body
+    ELet _ _ ty v body -> written ty <> go v <> go body
+    ELetRec _ bindings body -> foldMap (\b -> written b.ty <> go b.value) bindings <> go body
     ECase _ scrutinees dt -> foldMap go scrutinees <> treeTypes dt
     ELetJoin _ _ params result v body -> map _.ty params <> [ result ] <> go v <> go body
     EJump _ _ args -> foldMap go args
@@ -808,6 +810,9 @@ typesWritten rows = go
     ETermMeta _ _ -> []
     EHole _ ty -> [ ty ]
     EPendingCase _ _ -> []
+
+  -- a type written again, which only the types written whole hold
+  written ty = if again then [ ty ] else []
 
   treeTypes = case _ of
     XLeaf e -> go e
