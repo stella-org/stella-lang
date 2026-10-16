@@ -19,7 +19,7 @@ optimizer is written** (D34): the bodies eligible for inlining are not here.
 | Module | The module's name |
 | Imports | The modules its header imports, which are its dependencies (D22) |
 | Exports | The names it publishes, one table per namespace — value, type, operator, type operator, macro, attribute — each the name as an importer writes it, the entity it stands for, qualified by the module declaring it, and the way it came: declared, or imported from a module and re-exported; a type's members; and the modules it re-exports whole |
-| Values | Every value it declares — a value, a computation, a foreign with its observation, a handler, a constructor with the type it builds, an operation with the effect declaring it — with its scheme and its attributes |
+| Values | Every value it declares — a value, a computation, a foreign with its observation, a handler, a constructor with the type it builds, an operation with the effect declaring it — with its scheme, an operation's the type it is called at (D17, [Effects](../03-Typed-Core/03-Effects.md)), and its attributes |
 | Types | Every type it declares — a data type or newtype with its parameters and each constructor's fields, a synonym with its parameters and its body, a foreign type — with its kind and its attributes |
 | Effects | Every effect it declares, with its parameters, each operation's own type variables, arguments, and the type it resumes with, and its attributes |
 | Operators, type operators | Every fixity it declares: the associativity, the precedence, and what the operator stands for |
@@ -369,7 +369,7 @@ speak of one module.** An interface is made only where the checks pass.
 | a top-level value | a value |
 | a foreign | a foreign that may observe, Core holding no `#observ(none)` |
 | a data type, its constructors | a data type with its parameters, and its constructors in the order of their tags |
-| an effect, its operations | an effect, each operation taking its one Core argument as its one argument |
+| an effect, its operations | an effect, each operation taking its one Core argument as its one argument, and at the scheme an operation declared with that one argument is called at |
 | an intrinsic type the signature holds under the module's name | an intrinsic type of the module, with its canonical class: `Stella.Syntax`'s `IssuedOrigin` |
 | an attribute declaration | an attribute declaration |
 | an exported value carrying `Prim.macro` | a macro exported in the macro namespace, and no value exported; declared as any value is |

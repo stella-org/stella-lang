@@ -94,6 +94,7 @@ Origin = FromSource range
 - **A `case` alternative holds a row of patterns per or-choice at its top**, one pattern per scrutinee in each, and a body that is unconditional or a guard block. A guard block holds bindings, guards, and `otherwise`, which is a line of its own rather than a guard naming a value ([Pattern Matching](../../proposals/03-Pattern-Matching-Syntax.md)).
 - **A constructor pattern holds one pattern per field**, as many as the constructor has.
 - **A tag holds the payload it is applied to, or none**, `ExprTag`, a tag written alone carrying `()`; name resolution gives it its payload, a tag being no function. **A tag pattern holds one pattern for its payload, or none.** A variant element carries one payload, so several values are a tuple. Each holds where its tag is written beside where it stands, which is where what the tag asks of a variant is reported.
+- **An operation holds where its name is written beside where it stands, and where its label is written where it has one**, `get@cache` holding `get` and `cache` apart: what performing it asks of the row is reported where its name stands ([Elaboration](01-Elaboration.md#operations)).
 - **A literal pattern is a `Boolean`, an `Int`, a `Char`, or a `String`.** A `Number` is matched by no literal: a literal's identity, bitwise for a `Number` (D37), is not numeric equality, and a guard writes the comparison it means.
 - **A pun is a field**: `{ x }` is `x: x`, in a record and in a record pattern alike.
 - **An or-pattern binds no variable** and is held as its choices.

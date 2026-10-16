@@ -1365,6 +1365,29 @@ Tags as expressions and as patterns ([Elaboration](../02-Surface-Language/01-Ela
 | A pending `case` whose tail is a metavariable of a level outside the one being settled | Not closed: the `case` reads its row as open, and shows the rest as `_` |
 | `temperature v = case v of 'Hot -> 1; 'Cold -> 2`, no signature, and `cold = temperature 'Cold`, run on Steam | `2` |
 
+### Operations (step 7)
+
+Operations called as functions ([Elaboration](../02-Surface-Language/01-Elaboration.md#operations), [Effects](../03-Typed-Core/03-Effects.md)). No handler is elaborated yet, so what an operation becomes is checked by the Core checker and by its shape; running it waits on handling expressions.
+
+| Input | Required outcome |
+| --- | --- |
+| `f :: Unit -> Int / {\| State Int \|}; f _ = get ()` | `perform State.get [] Prim.Unit` under the `λ`, at `Int`: the effect's parameter decided by the payload the row gives the element. Accepted by the Core checker |
+| `w _ = writeAt 1 "a"` under `{\| Log \|}` | `"a"` bound outside `1`, and the `perform` given the record of the two variables by position: the arguments evaluated from the right, as an application's are |
+| `f = \_ -> get ()` | `∀a b. a -> b / {\| State b \|}`: a call asks the row for its element alone, and brings no rest |
+| `g = get`, `p u = let h = get in Tuple h h`, and `q u = let h = \_ -> get () in Tuple h h` | `g` at `∀a. Unit -> a / {\| State a \|}`, the rest its scheme brings closed, and the `λ` performing `get` on its parameter; `p` keeping the rest, quantified and lacking `State`, the one row both components share; `q` the element alone. Accepted by the Core checker |
+| `w :: String -> Unit / {\| Log \|}; w = writeAt 0` | Accepted by the Core checker: the partial application performs nothing, its `λ`s each under its own row |
+| `q = pick` and `r = pick id`, `pick :: forall a. a -> a ->* a` | `q` at `∀a. a -> a -> a / {\| Pick \|}`; `r` asking for a signature: performing nothing makes no application a value form |
+| `f _ = ask () 1`, `ask :: Unit ->* (Int -> Int)` | What `ask` resumes with, widened by `openEff`, applied to `1` |
+| `f _ = Tuple (abort ()) (abort ())` at `Tuple Int String`, `abort :: forall a. Unit ->* a` | Accepted: the operation's own variable instantiated apart at each call |
+| `f _ = get@cache ()` under `{\| cache :: State Int \|}`, and `loud = get@cache ()` | `perform cache.get`, accepted by the Core checker; `loud` a mismatch of rows reported at `get` alone, where the fit stands |
+| `w _ = writeAt "a" "b"` under `{\| Log \|}` | Reported at `"a"`, the argument checked against the type it takes |
+| `f _ = put "x"` under `{\| State Int \|}` | A failed equation of `String` and `Int`, reported where the boundary deciding the fit stands |
+| `f _ = get ()` under `{\| Log \|}`, and `loud = get ()` | `f` outside the subset, an implicit handler asked for at its boundary; `loud` a mismatch of rows at `get` |
+| The interface of a module declaring `get`, `writeAt`, and `pick` | Each at its scheme (D17): `get` at `∀s e. State ∉ e => Unit -{( State s \| e )}-> s`, `writeAt` at `∀e. Log ∉ e => Int -> String -{( Log \| e )}-> Unit`, the same through the file and back |
+| The interface of a module written in Core declaring `get` | At the scheme a declaration with its one Core argument is called at. A pure function of that argument would give it another type than a module calling it from source expects |
+| `B` importing `A` and calling `get ()`, `writeAt 0`, and `pick` | Built through lowering |
+| An interface giving an operation no argument | Called with one, at `Unit` |
+
 ### Binding groups and generalization (step 7)
 
 [Elaboration](../02-Surface-Language/01-Elaboration.md#generalization) and the state of [Elaborator API](../02-Surface-Language/03-Elaborator-API.md#inference-state).

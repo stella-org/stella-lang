@@ -113,8 +113,9 @@ signatureOf i =
       Tuple name { name, tyBinders: o.binders, argument: operationArgument o.arguments, resumesWith: o.resumesWith }
 
 -- | The one argument Core gives an operation written with the arguments given
--- | (D21): none is `Prim.Unit`, one is itself, and several are a record of them,
--- | each under its position.
+-- | (D21): one is itself, and several are a record of them, each under its
+-- | position. None, which only an interface gives, is `Prim.Unit`, the one
+-- | argument an operation needing nothing is written with.
 operationArgument :: Array Type -> Type
 operationArgument = case _ of
   [] -> TCon unitTy []

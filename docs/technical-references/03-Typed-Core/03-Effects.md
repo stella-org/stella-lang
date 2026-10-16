@@ -85,7 +85,7 @@ All three are checked by walking the declared type.
 effect Console where
   log     :: String ->* Unit
   writeAt :: Int -> String ->* Unit              -- two arguments
-  readAll :: Unit ->* String                     -- no arguments
+  readAll :: Unit ->* String                     -- one argument, `Unit`
 
 effect Partial where
   abort :: forall b. Unit ->* b
@@ -109,19 +109,33 @@ let writeAt0 = writeAt 0      -- pure; nothing happens
 writeAt0 "foo"                -- control reaches the handler's clause
 ```
 
+**The generated type is the operation's scheme**, the one its module's interface publishes and every module calls it at: the effect's parameters `ā` in the order the effect declares them, the operation's own variables `b̄` in the order its `forall` writes them, and last the rest of the row, `e`, named apart from both, which lacks the element's key. Every arrow but the last is pure.
+
+```text
+op :: forall b̄. σ1 -> … -> σn ->* τ      declared in   effect E ā
+op : ∀ā b̄ (e : Row Effect). E ∉ e => σ1 -> … -> σn -{( E ā | e )}-> τ
+```
+
+A labelled instance is called at the same type over its label: `get@cache` at `∀s (e : Row Effect). cache ∉ e => Unit -{( cache : State s | e )}-> s`.
+
+Purity does not make an expression a value form. `writeAt 0` performs nothing, but it is an application, so it is generalized only as an application is ([Elaboration](../02-Surface-Language/01-Elaboration.md#the-value-restriction)).
+
 `->*` is not an ad hoc symbol; it names a structure that D7 and currying already imply.
 
 ### Core operations take one argument
 
-A Core operation takes a single argument. An operation written with none takes `Prim.Unit`, one written with one takes it, and one written with several takes a record of them, each under its position — `PositionKey 0`, `PositionKey 1`, and so on; the surface packs the arguments and generates a curried function. Core has no tuple of its own: what source writes as a tuple is such a record.
+A Core operation takes a single argument. An operation is written with at least one argument — one that needs nothing takes `Unit`, as `readAll` does — and takes the one it is written with, or a record of the several it is written with, each under its position — `PositionKey 0`, `PositionKey 1`, and so on. Core has no tuple of its own: what source writes as a tuple is such a record.
+
+**An operation has no Core global.** Applied to every argument it is written with, it is performed where it is applied: the arguments are bound by `let`s from the right, as an application evaluates them (D35), and packed. Given fewer, a bare reference among them, the surface places the curried function where it stands, a `λ` for each argument and only the last performing, and applies it to what it is given. The arguments past its own are applied to what it resumes with.
 
 ```text
 -- surface: writeAt :: Int -> String ->* Unit
 -- Σ:       writeAt : Record ( #0 : Int | ( #1 : String | () ) ) ->* Unit
--- generated function, at the scheme the operation is called at:
-writeAt = Λ (e : Row Effect). Λ (_ : Console ∉ e).
-            λ(line : Int) / (). λ(text : String) / ( Console | e ).
-              perform Console.writeAt [] (extend #0 line (extend #1 text {}))
+-- writeAt 1 "a":
+let x1 = "a" in let x0 = 1 in perform Console.writeAt [] (extend #0 x0 (extend #1 x1 {}))
+-- writeAt, its scheme instantiated where it stands, the rest of the row at ρ:
+λ(line : Int) / (). λ(text : String) / ( Console | ρ ).
+  perform Console.writeAt [] (extend #0 line (extend #1 text {}))
 ```
 
 `#n` stands for `PositionKey n` here, a key no source writes.

@@ -761,8 +761,9 @@ settledSynonym metas r
 
 -- | An effect once every kind of it is decided: the Core declaration, each
 -- | operation's arguments as written beside it, or what keeps it from being
--- | one. An operation takes its arguments as Core's one argument: none is
--- | `Prim.Unit`, one is itself, and several are a record of them by position.
+-- | one. An operation is written with at least one argument, and takes them as
+-- | Core's one argument: one is itself, and several are a record of them by
+-- | position.
 settledEffect :: MetaContext -> EffectRead -> Either (Array Unsupported) { decl :: EffectDecl, arguments :: Array (Array Core.Type) }
 settledEffect metas r
   | not (Array.null r.unsupported) = Left r.unsupported
