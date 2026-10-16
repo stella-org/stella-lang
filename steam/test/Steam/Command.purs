@@ -12,6 +12,8 @@
 module Test.Steam.Command
   ( spec
   , writeModules
+  , modulesCompiled
+  , requiring
   , dir
   , pathOf
   , manifestPath
@@ -418,6 +420,18 @@ dir = "steam/.test-dmo"
 pathOf :: P.String -> P.String
 pathOf name = dir <> "/" <> name <> ".dmo"
 
+-- | Whether the modules `writeModules` writes compile, and why not.
+modulesCompiled :: Either P.String Unit
+modulesCompiled = map (const unit) compiled
+
+-- | The cases given where the fixture they read compiles, and otherwise one
+-- | case failing with why: no case is left to read a file the fixture did not
+-- | write, or one an earlier run left.
+requiring :: forall a. Either P.String a -> (a -> Spec Unit) -> Spec Unit
+requiring fixture cases = case fixture of
+  Left err -> it "compiles the fixture" (fail err)
+  Right made -> cases made
+
 writeModules :: Aff Unit
 writeModules = case compiled of
   Left err -> fail err
@@ -615,7 +629,7 @@ manifestPath :: P.String -> P.String
 manifestPath name = dir <> "/" <> name <> ".json"
 
 spec :: Spec Unit
-spec = describe "the steam run command" do
+spec = describe "the steam run command" $ requiring modulesCompiled \_ -> do
 
   it "writes the fixture" do
     writeModules

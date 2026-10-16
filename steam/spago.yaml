@@ -39,6 +39,7 @@ package:
     dependencies:
       - aff
       - argonaut-core
+      - bifunctors
       - node-buffer
       - node-child-process
       - node-execa

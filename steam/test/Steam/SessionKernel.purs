@@ -49,7 +49,7 @@ import Steam.Foreign (emptyTable)
 import Steam.Load (emptyStore, noIdentities)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Steam.Command (bugModule, pathOf)
+import Test.Steam.Command (bugModule, pathOf, requiring)
 import Test.Steam.Session (Streams, hello, steamChild, streams)
 
 -- The guests ------------------------------------------------------------------------------
@@ -190,6 +190,13 @@ named name = bugModule
   , globals = []
   }
 
+-- | Whether `Synth` compiles, and why not: the one module `writeGuests` writes
+-- | that is compiled.
+synthCompiled :: Either P.String Unit
+synthCompiled = case compiledSynth of
+  Left err -> Left ("Synth did not compile: " <> err)
+  Right _ -> Right unit
+
 writeGuests :: Aff Unit
 writeGuests = do
   case compiledSynth of
@@ -329,7 +336,7 @@ violating s reply = do
   pure (Tuple (came result) exit.code)
 
 spec :: Spec Unit
-spec = describe "steam session, answering a guest's commands" do
+spec = describe "steam session, answering a guest's commands" $ requiring synthCompiled \_ -> do
   it "writes the guests" writeGuests
 
   describe "opening" do

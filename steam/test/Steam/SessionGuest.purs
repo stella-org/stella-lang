@@ -3,7 +3,7 @@
 -- | What is asserted is what a client sees: the answer to each request, the order
 -- | answers come in, and how the process ended. The guests are Core modules compiled
 -- | here, and two `.dmo`s written by hand for states no compiler produces.
-module Test.Steam.SessionGuest (spec, writeGuests, steamWith) where
+module Test.Steam.SessionGuest (spec, guestsCompiled, writeGuests, steamWith) where
 
 import Prelude
 
@@ -39,7 +39,7 @@ import Stella.Compiler.TypedCore (Decl(..), Expr(..), Ident(..), Kind(..), Liter
 import Stella.Compiler.TypedCore.Prim (charTy, intTy, pureFn)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual, shouldSatisfy)
-import Test.Steam.Command (bugModule, ioModule, manifestPath, outOfRange, pathOf, stringModule, stringModuleName, writeModules)
+import Test.Steam.Command (bugModule, ioModule, manifestPath, modulesCompiled, outOfRange, pathOf, requiring, stringModule, stringModuleName, writeModules)
 import Test.Steam.Session (Streams, close', draining, hello, node, open', opened, ping', request', streams)
 
 -- The guests -----------------------------------------------------------------------------
@@ -123,6 +123,15 @@ bugGuest = bugModule
       ]
   , globals = [ { name: Qualified (ModuleName "BugGuest") (Ident "boom"), init: GFunc (FuncIx 0) } ]
   }
+
+-- | Whether the modules `writeGuests` writes compile, and why not.
+guestsCompiled :: Either P.String Unit
+guestsCompiled = do
+  modulesCompiled
+  _ <- compiledGuest
+  _ <- compiledHosted slowModule
+  _ <- compiledHosted loudModule
+  pure unit
 
 writeGuests :: Aff Unit
 writeGuests = do
@@ -290,7 +299,7 @@ codeOf = case _ of
 -- Cases ---------------------------------------------------------------------------------------
 
 spec :: Spec Unit
-spec = describe "steam session, loading and invoking" do
+spec = describe "steam session, loading and invoking" $ requiring guestsCompiled \_ -> do
   it "writes the fixture" do
     writeGuests
 

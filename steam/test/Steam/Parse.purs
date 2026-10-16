@@ -16,11 +16,13 @@ import Prim as P
 
 import Data.Argonaut.Core (fromNumber, fromObject, fromString, jsonEmptyObject, stringify)
 import Data.Array as Array
+import Data.Bifunctor (lmap)
 import Data.Either (Either(..))
 import Data.Foldable (foldMap, foldl, for_)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Set as Set
 import Data.String as String
+import Data.Tuple (Tuple(..))
 import Control.Monad.Error.Class (throwError)
 import Effect.Aff (Aff)
 import Effect.Exception (error)
@@ -59,9 +61,9 @@ import Stella.Compiler.TypedCore (Kind(..), DecisionTree(..), Decl(..), Export(.
 import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, stringTy, unitCtor, unitTy)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Steam.Command (manifestPath, pathOf, writeModules)
+import Test.Steam.Command (manifestPath, pathOf, requiring, writeModules)
 import Test.Steam.InProcess (openInProcess)
-import Test.Steam.SessionGuest (steamWith, writeGuests)
+import Test.Steam.SessionGuest (guestsCompiled, steamWith, writeGuests)
 import Test.Steam.Session (hello, node, opened, streams)
 
 -- Core, written short ---------------------------------------------------------------------
@@ -250,7 +252,7 @@ forgedModule =
                 [ ap (g "Failure" []) [ ap (g "Position" []) [ lit 1, lit 1 ], g "Nil" [ string ], g "Nil" [ string ] ] ]
             )
             ( ap (Global 0 (forged "Wrap") [])
-                [ lam "c" (TCon guestCommandTy []) $
+                [ Lam 0 (Ident "c") (TCon guestCommandTy []) kernel $
                     Let 0 (Ident "answer") (TCon guestAnswerTy [])
                       (Perform 0 (EffectKey kernelEffect) commandOp [] (var "c"))
                       (var "failed")
@@ -261,7 +263,8 @@ forgedModule =
   where
   forged = Qualified forgedName <<< Ident
   ty' n = TCon (Qualified forgedName (TyName n)) []
-  asks = fn (TCon guestCommandTy []) (TRowExtend (RowEffectEntry kernelEffect []) TRowEmpty) (app "Reply" syntaxTerm)
+  kernel = TRowExtend (RowEffectEntry kernelEffect []) TRowEmpty
+  asks = fn (TCon guestCommandTy []) kernel (app "Reply" syntaxTerm)
   dataOf n field = DeclData 0
     { name: TyName n
     , kindVars: []
@@ -290,29 +293,25 @@ compileAgainst syntax extend m = case declareAnnotated (extend syntax.signature)
         Left err -> Left ("does not lower: " <> show err)
         Right out -> Right out.dmo
 
-writeParsers :: Compiled -> Aff Unit
-writeParsers syntax = do
+-- | The modules the parsers are loaded with, each by its name, compiled against
+-- | what it imports: `Base.Array`, `Parsers`, `Forged`, and `Base.Int`; or why
+-- | one does not compile.
+parserModules :: Compiled -> Either P.String (P.Array (Tuple P.String Dmo))
+parserModules syntax = do
+  array <- lmap (\err -> "Base.Array does not declare: " <> show err.error) (declareAnnotated syntax.signature (baseModule 0 arrayModule))
+  arrayDmo <- lmap ("Base.Array " <> _) (compileAgainst syntax identity (baseModule 0 arrayModule))
+  parsers <- lmap ("Parsers " <> _) (compileAgainst syntax (const array.signature) parsersModule)
+  elab <- Guest.bundle
+  declared <- lmap (\err -> "Stella.Elab does not declare: " <> show err.error) (declareAnnotated (elab.withSignature syntax.signature) elab.module)
+  forged <- lmap ("Forged " <> _) (compileAgainst syntax (const declared.signature) forgedModule)
+  base <- maybe (Left "no Base.Int") Right (Array.head syntax.modules)
+  pure [ Tuple "Base.Array" arrayDmo, Tuple "Parsers" parsers, Tuple "Forged" (forging forged), Tuple "Base.Int" base ]
+
+writeParsers :: P.Array (Tuple P.String Dmo) -> Aff Unit
+writeParsers modules = do
   writeModules
   writeGuests
-  case declareAnnotated syntax.signature (baseModule 0 arrayModule) of
-    Left err -> fail ("Base.Array does not declare: " <> show err.error)
-    Right array -> do
-      case compileAgainst syntax identity (baseModule 0 arrayModule) of
-        Left err -> fail ("Base.Array " <> err)
-        Right dmo -> write "Base.Array" dmo
-      case compileAgainst syntax (const array.signature) parsersModule of
-        Left err -> fail ("Parsers " <> err)
-        Right dmo -> write "Parsers" dmo
-  case Guest.bundle of
-    Left err -> fail err
-    Right elab -> case declareAnnotated (elab.withSignature syntax.signature) elab.module of
-      Left err -> fail ("Stella.Elab does not declare: " <> show err.error)
-      Right declared -> case compileAgainst syntax (const declared.signature) forgedModule of
-        Left err -> fail ("Forged " <> err)
-        Right dmo -> write "Forged" (forging dmo)
-  case Array.head syntax.modules of
-    Just base -> write "Base.Int" base
-    Nothing -> fail "no Base.Int"
+  for_ modules \(Tuple name dmo) -> write name dmo
   where
   write name dmo = case encode dmo of
     Left err -> fail ("could not encode " <> name <> ": " <> show err)
@@ -388,8 +387,8 @@ reasonOf = case _ of
 spec :: Spec Unit
 spec = describe "steam session, parsing" case compiled of
   Left err -> it "compiles Stella.Syntax" (fail err)
-  Right syntax -> do
-    it "writes the fixture" (writeParsers syntax)
+  Right syntax -> requiring (guestsCompiled *> parserModules syntax) \modules -> do
+    it "writes the fixture" (writeParsers modules)
 
     describe "opening" do
       it "installs Base.Int and then Stella.Syntax through the loader, before it is ready" do
