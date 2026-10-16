@@ -60,12 +60,14 @@ module Stella.Compiler.Elaborate.Surface.Module
   , elaborateModule
   , elaborateValues
   , settleBodies
+  , cellRecords
+  , escapedCells
   ) where
 
 import Prelude
 import Prim hiding (Type)
 
-import Control.Monad.Except (ExceptT, runExceptT, throwError)
+import Control.Monad.Except (ExceptT, catchError, runExceptT, throwError)
 import Control.Monad.State (State, get, gets, modify_, put, runState, state)
 import Control.Monad.Trans.Class (lift)
 import Data.Array as Array
@@ -74,6 +76,7 @@ import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..), either)
 import Data.Foldable (foldl, for_)
 import Data.Traversable (traverse)
+import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Set (Set)
@@ -102,9 +105,9 @@ import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverSta
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..))
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
-import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, substitute, substituteKind)
+import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, UnifyError(..), substitute, substituteKind)
 import Stella.Compiler.Elaborate.Surface.Match (Witness)
-import Stella.Compiler.Elaborate.Surface.Expr (ExpressionHole, PendingCase, UncoveredMatch, Parameter(..), asArrow, checkDefinition, elaborateComputation, elaborateValue, expandable, inferDefinition, references, runSurf)
+import Stella.Compiler.Elaborate.Surface.Expr (CellReference, CellRegion, ExpressionHole, PendingCase, UncoveredMatch, Parameter(..), asArrow, checkDefinition, elaborateComputation, elaborateValue, expandable, inferDefinition, references, runSurf)
 import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported(..), Wildcard, elaborateComputationSignature, elaborateSignature, elaborateValueSignature, schemeOf, settledScheme)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..), Warning)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
@@ -233,6 +236,8 @@ type Elaborating =
   , expressionHoles :: Array ExpressionHole
   , uncovered :: Array UncoveredMatch
   , pending :: Array PendingCase
+  , regions :: Array CellRegion
+  , references :: Array CellReference
   }
 
 -- | A data declaration elaborated, and where it stands.
@@ -580,7 +585,7 @@ elaborateValues imports surface importedEntries m =
     ComputationBody body -> attemptBody acc v (elaborateComputation internal withFinal v.declared.name v.declared.origin v.scheme body)
   attemptBody acc v elaborating =
     case runAttempt session (runSurf elaborating) acc.state of
-      Tuple (Done (Right built)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, spine: v.spine, body: built.value, holes: built.holes, wildcards: built.wildcards, unwritten: built.unwritten, expressionHoles: built.expressionHoles, uncovered: built.uncovered, pending: built.pending } }
+      Tuple (Done (Right built)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, spine: v.spine, body: built.value, holes: built.holes, wildcards: built.wildcards, unwritten: built.unwritten, expressionHoles: built.expressionHoles, uncovered: built.uncovered, pending: built.pending, regions: built.regions, references: built.references } }
       Tuple (Done (Left problem)) _ -> acc { errors = Array.snoc acc.errors (Unsupported problem) }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
   unchecked acc v = acc { errors = Array.snoc acc.errors (LeftUnchecked v.declared.origin v.declared.name) }
@@ -644,7 +649,7 @@ settleBodies
   -> { values :: Array ElaboratedValue, errors :: Array ElaborationError }
 settleBodies session attempter state bodies =
   { values: Array.catMaybes (map snd finished)
-  , errors: loopErrors <> Array.concatMap fst finished
+  , errors: map (escapedCells (cellRecords (map (\b -> { name: b.name, regions: b.regions, references: b.references }) bodies))) (loopErrors <> Array.concatMap fst finished)
   }
   where
   componentErrors c = case c.outcome of
@@ -1008,6 +1013,13 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
     let
       inGroup = surface { bindings = foldl (\b (Tuple u t) -> Map.insert u.name (provisional u t) b) surface.bindings (Array.zip members types) }
     built <- traverse (\(Tuple u t) -> elaborated inGroup expanded u t) (Array.zip members types)
+    escaping built (afterBuilt expanded built)
+
+  -- what the bodies built come to, a cell's region escaping reported as such
+  escaping built = flip catchError \failures ->
+    throwError (map (\f -> f { error = escapedCells (cellRecords (map (\b -> { name: b.unsigned.name, regions: b.regions, references: b.references }) built)) f.error }) failures)
+
+  afterBuilt expanded built = do
     report <- step (runAttempting attempter)
     throwIfAny (stoppedAt report.result)
     asked <- gets \s -> Set.fromFoldable (map _.unsigned.name (Array.filter (expansionAsked expanded s) built))
@@ -1048,7 +1060,7 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
           for_ noted \n -> equate site { kind: XKType, left: n.value.type, right: t }
           pure (map (\n -> n { value = n.value.expr }) noted)
     case runAttempt session (atLevel topLevel body) s of
-      Tuple (Done (Right n)) s' -> put s' $> { unsigned: u, expr: n.value, type: t, holes: n.holes, wildcards: n.wildcards, unwritten: n.unwritten, expressionHoles: n.expressionHoles, uncovered: n.uncovered, pending: n.pending }
+      Tuple (Done (Right n)) s' -> put s' $> { unsigned: u, expr: n.value, type: t, holes: n.holes, wildcards: n.wildcards, unwritten: n.unwritten, expressionHoles: n.expressionHoles, uncovered: n.uncovered, pending: n.pending, regions: n.regions, references: n.references }
       Tuple (Done (Left problem)) s' -> put s' *> throwError [ { error: Unsupported problem, names: [ u.name ] } ]
       Tuple outcome s' -> put s' *> throwError [ attemptFailure [ u.name ] outcome ]
 
@@ -1281,6 +1293,31 @@ diagnosticDeclarations = case _ of
   SynthesisFailed s -> [ declarationOf s.goal.origin ]
   RowNotContained o _ -> [ declarationOf o ]
   BoundaryNotContained o _ -> [ declarationOf o ]
+  CellEscapes e -> [ declarationOf e.reference ]
+
+-- | What each body noted of its cells, by its declaration: the regions it
+-- | opened, and the references to their cells, in the order met.
+type CellRecords = Map (Qualified Ident) { regions :: Array CellRegion, references :: Array CellReference }
+
+cellRecords :: Array { name :: Qualified Ident, regions :: Array CellRegion, references :: Array CellReference } -> CellRecords
+cellRecords = Map.fromFoldable <<< map (\b -> Tuple b.name { regions: b.regions, references: b.references })
+
+-- | An error as reported. **An equation failing because a cell's region would
+-- | escape is the escape of the cell** where the declaration it fails in noted
+-- | that region, whichever constraint the solver found it at: named by the
+-- | first reference to a cell of the region and by the expression declaring
+-- | the cells. Anything else is as it is.
+escapedCells :: CellRecords -> ElaborationError -> ElaborationError
+escapedCells records = case _ of
+  Rejected (EquationFailed site (EscapingRegion _ region)) | Just escape <- escapeOf site region -> Rejected escape
+  e -> e
+  where
+  escapeOf site region = do
+    let declaration = declarationOf site
+    noted <- Map.lookup declaration records
+    owner <- Array.find (\r -> r.region == region) noted.regions
+    first <- Array.find (\r -> r.region == region) noted.references
+    pure (CellEscapes { reference: AtSource { declaration, origin: first.origin }, boundary: AtSource { declaration, origin: owner.boundary }, cell: first.cell, region })
 
 failure :: forall a. Outcome a -> ElaborationError
 failure = case _ of

@@ -57,6 +57,8 @@ module Stella.Compiler.Elaborate.Surface.Expr
   , ExpressionHole
   , UncoveredMatch
   , PendingCase
+  , CellRegion
+  , CellReference
   , tagsOf
   , runSurf
   , elaborateValue
@@ -75,6 +77,7 @@ import Prim hiding (Symbol, Type)
 import Data.Array as Array
 import Data.Either (Either(..), either)
 import Data.Foldable (foldM, foldMap, foldl, foldr, for_)
+import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Set (Set)
@@ -83,7 +86,7 @@ import Data.String (Pattern(..))
 import Data.String as String
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..), snd)
-import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext, lookupVar)
+import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKindVars, bindRegion, bindTyVar, bindVar, emptyXContext, lookupVar)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..), fromCoreKind)
 import Stella.Compiler.Elaborate.CorePlus.Row (rebuild, xnf)
 import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId, PendingCaseId, XDecisionTree(..), XExpr(..), XOpClause(..), isValueForm)
@@ -96,17 +99,17 @@ import Stella.Compiler.Elaborate.Environment.Imported (operationArgument)
 import Stella.Compiler.Interface.Operation (operationElement, operationKey, operationRest, operationRow)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, break, closeBoundary, currentMetas, currentLevel, equate, freshCoverage, freshBinderName, freshIdent, freshJoin, freshPendingCase, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, recursiveRef, require)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, break, closeBoundary, currentMetas, currentLevel, equate, freshCoverage, freshBinderName, freshIdent, freshJoin, freshPendingCase, freshRegionName, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, recursiveRef, require)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), MetaBinding(..), MetaContext, lookupMeta, substitute)
 import Stella.Compiler.Elaborate.Surface.Match as Match
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..))
 import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported(..), Wildcard, elaborateLocalSignature, elaborateType, xFunction)
-import Stella.Compiler.Surface.Expr (Alternative, AlternativeBody(..), Binder(..), ClauseForm(..), Expr(..), Group, GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..), exprOrigin)
-import Stella.Compiler.Surface.Name (BindingId, LocalVar(..))
+import Stella.Compiler.Surface.Expr (Alternative, AlternativeBody(..), Binder(..), CellDeclaration, ClauseForm(..), Expr(..), Group, GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..), exprOrigin)
+import Stella.Compiler.Surface.Name (BindingId, CellVar(..), LocalVar(..))
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.TypedCore.Name (Ident(..), KindVar, Qualified, Symbol(..), TyVar(..))
+import Stella.Compiler.TypedCore.Name (Ident(..), KindVar, Qualified, RegionName, Symbol(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (booleanTy, functionTy, litType, recordTy, unitCtor, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
@@ -119,8 +122,8 @@ newtype Surf a = Surf (Elab (Either Unsupported (Noted a)))
 
 -- | What was built, and the typed holes, the wildcards, the kinds a local
 -- | signature leaves unwritten, the expression holes, the matches that leave
--- | values uncovered, and the `case`s left pending, noted on the way, in the
--- | order met.
+-- | values uncovered, the `case`s left pending, and the regions of cells opened
+-- | and the references to their cells, noted on the way, in the order met.
 type Noted a =
   { value :: a
   , holes :: Array TypeHole
@@ -129,7 +132,17 @@ type Noted a =
   , expressionHoles :: Array ExpressionHole
   , uncovered :: Array UncoveredMatch
   , pending :: Array PendingCase
+  , regions :: Array CellRegion
+  , references :: Array CellReference
   }
+
+-- | A region a handling expression declaring cells opens, with where the
+-- | expression stands.
+type CellRegion = { region :: RegionName, boundary :: Surface.Origin }
+
+-- | A reference to a cell, by the cell's name, with its region and where it
+-- | stands.
+type CellReference = { region :: RegionName, cell :: Ident, origin :: Surface.Origin }
 
 -- | An expression hole where it is written, by its name, the type it stands
 -- | at, and the locals in scope there that source can name, each at its type.
@@ -160,37 +173,37 @@ instance Apply Surf where
   apply = ap
 
 instance Applicative Surf where
-  pure a = Surf (pure (Right { value: a, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [], pending: [] }))
+  pure a = Surf (pure (Right { value: a, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [], pending: [], regions: [], references: [] }))
 
 instance Bind Surf where
   bind (Surf e) k = Surf
     ( e >>= case _ of
         Left problem -> pure (Left problem)
-        Right a -> map (map (\b -> b { holes = a.holes <> b.holes, wildcards = a.wildcards <> b.wildcards, unwritten = a.unwritten <> b.unwritten, expressionHoles = a.expressionHoles <> b.expressionHoles, uncovered = a.uncovered <> b.uncovered, pending = a.pending <> b.pending })) (runSurf (k a.value))
+        Right a -> map (map (\b -> b { holes = a.holes <> b.holes, wildcards = a.wildcards <> b.wildcards, unwritten = a.unwritten <> b.unwritten, expressionHoles = a.expressionHoles <> b.expressionHoles, uncovered = a.uncovered <> b.uncovered, pending = a.pending <> b.pending, regions = a.regions <> b.regions, references = a.references <> b.references })) (runSurf (k a.value))
     )
 
 instance Monad Surf
 
 lift :: forall a. Elab a -> Surf a
-lift = Surf <<< map (\a -> Right { value: a, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [], pending: [] })
+lift = Surf <<< map (\a -> Right { value: a, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [], pending: [], regions: [], references: [] })
 
 outside :: forall a. Unsupported -> Surf a
 outside = Surf <<< pure <<< Left
 
 -- | Note the typed holes and the wildcards an annotation holds.
 note :: forall r. { holes :: Array TypeHole, wildcards :: Array Wildcard | r } -> Surf Unit
-note read = Surf (pure (Right { value: unit, holes: read.holes, wildcards: read.wildcards, unwritten: [], expressionHoles: [], uncovered: [], pending: [] }))
+note read = Surf (pure (Right { value: unit, holes: read.holes, wildcards: read.wildcards, unwritten: [], expressionHoles: [], uncovered: [], pending: [], regions: [], references: [] }))
 
 -- | Note what a local signature holds: its typed holes and wildcards, and the
 -- | kinds it leaves unwritten, which nothing local generalizes.
 noteSignature :: Elaborated -> Surf Unit
-noteSignature e = Surf (pure (Right { value: unit, holes: e.holes, wildcards: e.wildcards, unwritten: e.unwritten, expressionHoles: [], uncovered: [], pending: [] }))
+noteSignature e = Surf (pure (Right { value: unit, holes: e.holes, wildcards: e.wildcards, unwritten: e.unwritten, expressionHoles: [], uncovered: [], pending: [], regions: [], references: [] }))
 
 -- | An expression hole at the type given, noted with the locals in scope where
 -- | it stands: a value form that performs nothing. Every occurrence is a hole
 -- | of its own, its name a label of what is reported.
 hole :: Scope -> Surface.Origin -> String -> XType -> Surf (XExpr Surface.Origin)
-hole scope origin name ty = Surf (pure (Right { value: EHole origin ty, holes: [], wildcards: [], unwritten: [], expressionHoles: [ { origin, name, type: ty, context } ], uncovered: [], pending: [] }))
+hole scope origin name ty = Surf (pure (Right { value: EHole origin ty, holes: [], wildcards: [], unwritten: [], expressionHoles: [ { origin, name, type: ty, context } ], uncovered: [], pending: [], regions: [], references: [] }))
   where
   -- a name with `#` is one the compiler made
   context = Array.mapMaybe
@@ -202,13 +215,16 @@ hole scope origin name ty = Surf (pure (Right { value: EHole origin ty, holes: [
 -- | the compiler's desugarings refer to that no catalog holds, and what the
 -- | surface elaborator reads of the imports and of the module: the synonyms its
 -- | annotations are read through, and the values taking a synthesized argument;
--- | and, in the body of a `full` clause, the continuation `resume` applies.
+-- | the cells in reach, each by its binding, with its region, its key, and its
+-- | type; and, in the body of a `full` clause, the continuation `resume`
+-- | applies.
 type Scope =
   { declaration :: Qualified Ident
   , context :: XContext
   , ambient :: XType
   , internal :: Internal
   , surface :: SurfaceEnv
+  , cells :: Map BindingId { region :: RegionName, name :: Ident, key :: RowKey, type :: XType }
   , resume :: Maybe { name :: Ident, type :: XType }
   }
 
@@ -281,7 +297,7 @@ inferDefinition internal surface declaration origin params body expand = case pa
   [] -> infer scope body
   _ -> infer scope (ExprLambda origin params body)
   where
-  scope = { declaration, context: emptyXContext, ambient: XRowEmpty, internal, surface, resume: Nothing }
+  scope = { declaration, context: emptyXContext, ambient: XRowEmpty, internal, surface, cells: Map.empty, resume: Nothing }
   at = exprOrigin body
 
 -- | Whether a definition's body is one η-expansion may move under a `λ`: one
@@ -302,7 +318,7 @@ checkDefinition :: Internal -> SurfaceEnv -> Qualified Ident -> Surface.Origin -
 checkDefinition internal surface declaration origin scheme params body =
   boundary scope0 origin XRowEmpty \scope -> abstractions origin true false Written scope params body scheme.body
   where
-  scope0 = { declaration, context: bindKindVars emptyXContext scheme.kindVars, ambient: XRowEmpty, internal, surface, resume: Nothing }
+  scope0 = { declaration, context: bindKindVars emptyXContext scheme.kindVars, ambient: XRowEmpty, internal, surface, cells: Map.empty, resume: Nothing }
 
 -- | A parameter a definition binds: one written, or a computation's thunk,
 -- | whose `Unit` nothing names.
@@ -710,7 +726,14 @@ infer scope expr = case expr of
       applyTo scope (exprOrigin f) (exprOrigin expr) f' \argument -> check scope x Derived argument
   ExprHandle o cells items body
     | Array.null cells -> handling scope o items body
-    | otherwise -> outside (OutsideSubset o "a handling expression declaring cells")
+    | otherwise -> cellRegion scope o cells items body
+  ExprCellRead o (CellVar c) -> do
+    cell <- cellOf scope o c.id
+    pure { expr: EReadCell o cell.region cell.key, type: cell.type }
+  ExprCellWrite o (CellVar c) value -> do
+    cell <- cellOf scope o c.id
+    written <- check scope value Derived cell.type
+    pure { expr: EWriteCell o cell.region cell.key written, type: XCon unitTy [] }
   ExprOperation o at name label -> operation scope { origin: o, at, name, label, arguments: [] }
   ExprTyped _ inner t -> do
     annotation <- lift (elaborateType scope.surface.synonyms scope.declaration scope.context t)
@@ -912,7 +935,8 @@ operation scope call = case Map.lookup call.name scope.surface.operations of
     (Tuple o f)
     arguments
 
--- | A handling expression without cells, its items from the outermost
+-- | The items of a handling expression, from the outermost, around its
+-- | computation, inside the region of its cells where it declares any
 -- | ([Effect Handlers](../../../../../docs/technical-references/02-Surface-Language/02-Effect-Handlers.md)).
 -- | **A group is a `handle` of what the items after it make of the
 -- | computation**, and a handler written as an item is applied to the thunk of
@@ -990,6 +1014,44 @@ handlerGroup scope g computation = case Map.lookup g.effect scope.surface.effect
         ClauseReifiable _ -> outside (OutsideSubset c.origin "a `reifiable full` clause")
 
   tyVarText (TyVar v) = v
+
+-- | A handling expression declaring cells: one region around its items, its
+-- | initial values evaluated before it in the order declared, under the row
+-- | ambient. **Each cell is at the type its initial value has**, whose
+-- | metavariables, as the answer's, are created outside the region, so no type
+-- | that outlives the region holds it; the items and the computation stand
+-- | under the row ambient extended by the region.
+cellRegion :: Scope -> Surface.Origin -> Array CellDeclaration -> Array HandlerItem -> Expr -> Surf { expr :: XExpr Surface.Origin, type :: XType }
+cellRegion scope o cells items computation = do
+  initials <- traverse (\c -> infer scope c.initial) cells
+  name <- lift (freshRegionName (Map.keys scope.context.regions) "r")
+  answer <- lift (freshTypeMeta scope.context XKType)
+  let
+    declared = Array.zipWith (\c i -> { binding: bindingOf c.cell, name: nameOf c.cell, key: keyOf c.cell, type: i.type }) cells initials
+    inner = scope
+      { context = bindRegion scope.context name (Map.fromFoldable (map (\d -> Tuple d.key d.type) declared))
+      , ambient = XRowExtend (XRowRegionEntry name) scope.ambient
+      , cells = Map.union (Map.fromFoldable (map (\d -> Tuple d.binding { region: name, name: d.name, key: d.key, type: d.type }) declared)) scope.cells
+      }
+  noteRegion { region: name, boundary: o }
+  handled <- handling inner o items computation
+  lift (equate (siteAt scope o) { kind: XKType, left: handled.type, right: answer })
+  pure { expr: ERegion o name (map (\d -> { key: d.key, ty: d.type }) declared) (map _.expr initials) handled.expr, type: answer }
+  where
+  bindingOf (CellVar c) = c.id
+  nameOf (CellVar c) = c.name
+  keyOf (CellVar c) = case c.name of
+    Ident n -> SymbolKey (Symbol n)
+
+-- | The cell a reference reaches, the row ambient required to hold its region
+-- | by a demanding fit placed where the reference stands.
+cellOf :: Scope -> Surface.Origin -> BindingId -> Surf { region :: RegionName, name :: Ident, key :: RowKey, type :: XType }
+cellOf scope o binding = case Map.lookup binding scope.cells of
+  Nothing -> lift (break (CellUnbound (AtSource { declaration: scope.declaration, origin: o })))
+  Just cell -> do
+    _ <- lift (placeFit (siteAt scope o) Demanding (XRowExtend (XRowRegionEntry cell.region) XRowEmpty) scope.ambient)
+    noteReference { region: cell.region, cell: cell.name, origin: o }
+    pure cell
 
 -- | A binder bound at the type given, as a parameter is: a variable by its
 -- | name, and anything else by a name the compiler makes, matched against the
@@ -1317,11 +1379,19 @@ caseOf scope origin scrutinees alternatives expected result = do
 
 -- | Note a `case` left pending.
 notePending :: PendingCase -> Surf Unit
-notePending p = Surf (pure (Right { value: unit, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [], pending: [ p ] }))
+notePending p = Surf (pure (Right { value: unit, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [], pending: [ p ], regions: [], references: [] }))
+
+-- | Note a region a handling expression declaring cells opens.
+noteRegion :: CellRegion -> Surf Unit
+noteRegion r = Surf (pure (Right { value: unit, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [], pending: [], regions: [ r ], references: [] }))
+
+-- | Note a reference to a cell.
+noteReference :: CellReference -> Surf Unit
+noteReference r = Surf (pure (Right { value: unit, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [], pending: [], regions: [], references: [ r ] }))
 
 -- | Note a match that leaves values uncovered.
 noteUncovered :: UncoveredMatch -> Surf Unit
-noteUncovered m = Surf (pure (Right { value: unit, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [ m ], pending: [] }))
+noteUncovered m = Surf (pure (Right { value: unit, holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [ m ], pending: [], regions: [], references: [] }))
 
 -- | A pattern checked against the type of the value it matches, as the
 -- | compiler of matches reads it, and the variables it binds, each at its

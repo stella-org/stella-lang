@@ -234,16 +234,16 @@ handle e with var c̄ := ē ; i1 ; … ; in
 
   ⟹  region [ℓ] ( c̄ : σ̄ ) @ ( ē ) in  ⟦i1⟧ ( … ⟦in⟧ ( e ) … )
 
-  ⟦g⟧ ( e' ) = handle e' with g                          a group written in place
-  ⟦h⟧ ( e' ) = h ( openEff [( region ℓ )] (\_ -> e') )    a handler applied as an item
+  ⟦g⟧ ( e' ) = handle e' with g      a group written in place
+  ⟦h⟧ ( e' ) = h (\_ -> e')          a handler applied as an item
 ```
 
 - **`ℓ` is a fresh region name**, the elaborator's and not the author's. A region name is bound by `region` alone and is never quantified, so nothing outside the expression names it.
 - **`x!` and `x := e` become `readCell ℓ.x` and `writeCell ℓ.x e`**, `ℓ` being the region of the expression the reference resolves to. A reference names its region and not only a key, so a region inside it declaring the same key does not capture it.
-- **The thunk handed to a handler applied as an item is widened by `openEff [( region ℓ )]`**, so it stands at a row holding `region ℓ`: the groups inside it reach the region, and the handler instantiates its residual row with that row. A group takes no thunk, its `handle` standing inside the region as it is.
+- **The thunk handed to a handler applied as an item is typed as any `λ` is**, inside the region: its row holds `region ℓ` where a group inside it reaches a cell, and the handler's argument fits it as any argument fits what it is given, the handler instantiating its residual row with that row. No `openEff [( region ℓ )]` is placed around it, which would add to the thunk an element its row may hold already. A group takes no thunk, its `handle` standing inside the region as it is.
 - **A handling expression with no `var` opens no region.**
 
-A handler declaration desugars to a function whose body is the region around its `handle`.
+A handler declaration desugars to a function whose body is the region around its `handle`. **Its thunk is a parameter, given from outside the region**, whose row cannot hold `region ℓ`, so there the region is added to it by `openEff [( region ℓ )]`; a handling expression's thunk is a `λ` built inside the region, and takes none.
 
 ```text
 Main.counter
@@ -474,6 +474,7 @@ A cell problem names the cell and where cells stand.
 - The same written where a cell of that name is closed — in an initial value, a `return` clause, the computation handled, or a handler applied as an item — names the part it stands in rather than treating the cell as undeclared
 - Two `var` declarations of one name are reported where the second is written, as a name bound twice
 - A `var` after a group or a handler of a handling expression, or after a clause of a handler declaration, names the cell and says that every `var` stands ahead of them
+- A region that would be carried beyond the handling expression declaring its cells — by a function reading one of them handed out as the answer, or in it — is reported at two places: the first reference, in the order elaborated, to a cell of the region, which stands for the region and need not be the cell the function reads, and the handling expression the cells cannot outlive ([Elaboration](01-Elaboration.md#cells))
 
 ## What reaches Core
 

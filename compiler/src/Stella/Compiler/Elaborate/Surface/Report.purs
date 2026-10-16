@@ -97,6 +97,7 @@ diagnosticOrigins = case _ of
   SynthesisFailed s -> sourceOf s.goal.origin
   RowNotContained o _ -> sourceOf o
   BoundaryNotContained o _ -> sourceOf o
+  CellEscapes e -> sourceOf e.reference <> sourceOf e.boundary
 
 sourceOf :: Origin -> Array Surface.Origin
 sourceOf = case _ of
@@ -237,6 +238,7 @@ printDiagnostic = case _ of
   SynthesisFailed _ -> "A synthesizer failed here"
   RowNotContained _ r -> fmt @"This performs `{s}`, which is not among the effects allowed here" { s: printEffectRow (rebuild r.source) }
   BoundaryNotContained _ r -> fmt @"This performs `{s}` beyond the effects expected here, which this version of the compiler does not resolve with an implicit handler yet" { s: printEffectRow (rebuild r.source) }
+  CellEscapes e -> fmt @"The cell `{cell}` is the first cell referenced in a region that would be carried beyond the handling expression declaring its cells; a cell lives only as long as that expression" { cell: case e.cell of Ident n -> n }
 
 -- | Why a row's sharpness does not hold: the key or the row variables it is
 -- | about.

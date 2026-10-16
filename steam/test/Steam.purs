@@ -11,6 +11,7 @@ import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess)
 import Test.Steam.Arrays as Arrays
 import Test.Steam.Calls as Calls
+import Test.Steam.Cells as Cells
 import Test.Steam.Drive as Drive
 import Test.Steam.Eval as Eval
 import Test.Steam.Facade as Facade
@@ -42,6 +43,7 @@ main = do
     Handlers.spec
     Matches.spec
     Handling.spec
+    Cells.spec
     Records.spec
     Root.spec
     Fixtures.spec fixtures

@@ -494,21 +494,22 @@ Cells are prompt-local (D36): a cell belongs to the handling expression that dec
 
 - **A cell is found by lexical scope, never by inference.** Name resolution binds `x!` and `x := e` to the region binder of the handling expression declaring `x` and to the cell's position; a reference no enclosing expression declares is an error there, whatever the ambient row.
 - **An open row is no evidence that a cell exists.** Reading or writing a cell needs its resolved binding and the element `region ℓ` in the ambient row. The elaborator places `fit(( region ℓ ), ρ)`, wrapping nothing: the containment is what Core's rule for `readCell` and `writeCell` asks, and an equation `ρ ≡ ( region ℓ | ?rest )` would leave the tail of a local function's row with nothing to decide it.
-- **A region enters the ambient row only by the region binder**, which a handling expression with cells produces, and inside it by the `openEff [( region ℓ )]` its desugaring places around each thunk it hands a handler applied as an item ([Effect Handlers](02-Effect-Handlers.md#what-reaches-core)). A fit adapts a function to a region already ambient; it creates no region and no cell binding, and neither a fit nor closing removes a region element.
-- **A region name is never generalized.** A type or term carrying `region ℓ` out of its region is an escape: the metavariable it would be assigned to was created outside the region and has no `ℓ` in its scope, so the assignment fails. The failure is reported where the cell is referenced, with the escaping function or the answer boundary as a secondary location.
+- **A region enters the ambient row only by the region binder**, which a handling expression declaring cells produces: its items and its computation stand under `( region ℓ | ρ )`. A thunk it hands a handler applied as an item is typed as any `λ` is, its row holding `region ℓ` where a group inside it reaches a cell, and no `openEff [( region ℓ )]` is placed around it ([Effect Handlers](02-Effect-Handlers.md#what-reaches-core)). A fit adapts a function to a region already ambient; it creates no region and no cell binding, and neither a fit nor closing removes a region element.
+- **A cell is at the type its initial value has.** The initial values are inferred in the order declared, under the row ambient where the expression stands, outside the region, and so are the metavariables of their types, which what the clauses read and write may decide; one nothing decides is reported as any undetermined type is. A write checks its value against the cell's type, and is at `Unit`.
+- **A region name is never generalized.** A type or term carrying `region ℓ` out of its region is an escape: the metavariable it would be assigned to was created outside the region and has no `ℓ` in its scope, so the assignment fails. The expression's answer is such a metavariable, equated with what its items give, and the rows of the functions its clauses make are narrowed to its scope by that equation, so the constraint an escape is found at is wherever the solver decides it — often the fit of a reference. **An escape is reported by its region, not by that constraint**: at the first reference, in the order elaborated, to a cell of the region, which stands for the region and need not be the cell the escaping function reads, and at the handling expression declaring the cells, beyond which they would be carried. Only a region the declaration it fails in opened is reported so; an escape no such region covers is reported as the equation that failed.
 - **A term metavariable and a synthesis goal keep the region scope of the place they were created**, so no solution reading a cell is assigned to one created outside that cell's region.
 
 ```stella
-handler h :: E ~> e where
+handle program with
   var n := 0
-  fast | op x -> let f = \_ -> n! in f ()
+  E fast | op x -> let f = \_ -> n! in f ()
 ```
 
 ```text
-the clause's ambient row is ( region ℓ | e )
-f's row ?e; n! gives fit(( region ℓ ), ?e); f () gives fit(?e, ( region ℓ | e ))
-rule 1: ?e := ( region ℓ ); the second fit is Widen e
-Core:  let f : Unit -{( region ℓ )}-> Int = λ _. readCell ℓ.n in ( openEff [e] f ) Prim.Unit
+under ρ, the clause's ambient row is ( region ℓ | ρ )
+f's row ?e; n! gives fit(( region ℓ ), ?e); f () gives fit(?e, ( region ℓ | ρ ))
+rule 1: ?e := ( region ℓ ); the second fit is Widen ρ
+Core:  let f : Unit -{( region ℓ )}-> Int = λ _. readCell ℓ.n in ( openEff [ρ] f ) Prim.Unit
 ```
 
 ### Closing
@@ -766,7 +767,7 @@ f d x = x                                         λ d. Λ a. λ (x : a). x
 
 **Every equation is stated where the node it is about stands**, and is decided at once where it can be. One that cannot be decided yet becomes an equality job and the body goes on ([Elaborator API](03-Elaborator-API.md#an-equation-the-surface-elaborator-cannot-decide-yet-becomes-a-job)).
 
-**This version elaborates a subset**: locals, globals, constructors, literals, application, `λ`, annotations, expression holes, `let` blocks and `where`s, with a signature or without, the `case`s [described below](#a-case), the patterns [a binding is written as](#patterns-a-binding-is-written-as), [records and tuples](#records-and-tuples), including field selection, [tags](#tags), [operations](#operations), and [handling expressions](#handling-expressions) declaring no cell. A pattern a recursive group binds is outside it, and so is a local signature taking a synthesized argument or binding a kind variable of its own. A checking boundary whose body performs what the row expected of it cannot hold asks for an implicit handler, which this version does not seek: it is reported as outside the subset where the boundary stands, rather than as a mismatch the language may resolve. A reference to a value whose scheme takes a synthesized argument, from the module or from an import, is outside it, a goal being what supplies the argument. Every other form is reported as outside it where it stands, and the declaration holding one is not elaborated further.
+**This version elaborates a subset**: locals, globals, constructors, literals, application, `λ`, annotations, expression holes, `let` blocks and `where`s, with a signature or without, the `case`s [described below](#a-case), the patterns [a binding is written as](#patterns-a-binding-is-written-as), [records and tuples](#records-and-tuples), including field selection, [tags](#tags), [operations](#operations), and [handling expressions](#handling-expressions). A pattern a recursive group binds is outside it, and so is a local signature taking a synthesized argument or binding a kind variable of its own. A checking boundary whose body performs what the row expected of it cannot hold asks for an implicit handler, which this version does not seek: it is reported as outside the subset where the boundary stands, rather than as a mismatch the language may resolve. A reference to a value whose scheme takes a synthesized argument, from the module or from an import, is outside it, a goal being what supplies the argument. Every other form is reported as outside it where it stands, and the declaration holding one is not elaborated further.
 
 ### A `case`
 
@@ -870,7 +871,7 @@ ask () 1          (openEff [( Ask )] (perform Ask.ask [] Prim.Unit)) 1
 
 ### Handling expressions
 
-**A handling expression installs its items from the top, the first outermost** ([Effect Handlers](02-Effect-Handlers.md#applying-a-handler)): a group written in place is a `handle` of what the items after it make of the computation, and a handler is applied to the thunk of it, `h (\_ -> …)` elaborated as an application written so is — the thunk checked against the argument the handler's type gives it, which instantiation gives and so is no checking boundary. **This version elaborates one declaring no cell**, and no `reifiable full` clause; each is outside it where it stands.
+**A handling expression installs its items from the top, the first outermost** ([Effect Handlers](02-Effect-Handlers.md#applying-a-handler)): a group written in place is a `handle` of what the items after it make of the computation, and a handler is applied to the thunk of it, `h (\_ -> …)` elaborated as an application written so is — the thunk checked against the argument the handler's type gives it, which instantiation gives and so is no checking boundary. **One declaring cells is a region around what its items make of the computation** ([Cells](#cells)), its initial values evaluated before the region in the order declared, and its answer a metavariable created outside the region. **This version elaborates no `reifiable full` clause**; one is outside it where it stands.
 
 **A group handles one element, which extends the row ambient where it stands.** Under `ρ` ambient, a group headed by `E` handles `E ?ā`, and one headed by a label `label : E ?ā`, the effect's parameters at fresh metavariables that what the computation performs decides. `ρ` must lack the element's key, required where the group's head stands, so a group handling what `ρ` holds already is reported there. The computation is inferred under `( ent | ρ )`, at `α`; the return clause binds its pattern at `α` and is inferred under `ρ`, at the answer `β`, and one not written is the identity, `β` being `α`. **A handling expression is only inferred**: where a type is expected, it is inferred and its type equated with that type, as a record literal's is ([Records and tuples](#records-and-tuples)).
 

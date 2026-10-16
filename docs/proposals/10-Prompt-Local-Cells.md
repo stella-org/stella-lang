@@ -461,7 +461,7 @@ handle e with var c̄ := ē ; i1 ; … ; in
 A handler declaration writes its cells in its block, ahead of its clauses.
 
 ```stella
-handler h :: E ~> e where
+handler h :: (Unit -> a / {| E, ...e |}) -> a / {| ...e |} where
   var n := 0
 
   fast | op x ->

@@ -24,7 +24,7 @@ import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.CorePlus.Row (rebuild, xnf)
 import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId(..), PendingCaseId(..), XDecisionTree(..), XExpr(..))
-import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), fromCore)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
 import Stella.Compiler.Elaborate.Driver.Synthesis (attemptJob)
 import Stella.Compiler.Elaborate.Protocol.Facade as F
@@ -32,10 +32,10 @@ import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Environment.Imported (importedCatalog, importedSignature, sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Surface (importedSurface)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), closeBoundary, createSynthesis, equate, freshTypeMeta, initialState, openBoundary, placeFit)
-import Stella.Compiler.Elaborate.Mechanism.Unify (KindMetaBinding(..), MetaBinding(..), lookupMeta)
+import Stella.Compiler.Elaborate.Mechanism.Unify (KindMetaBinding(..), MetaBinding(..), UnifyError(..), lookupMeta)
 import Stella.Compiler.Elaborate.Surface.Types (readTypes)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
-import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), elaborateModule, settleBodies)
+import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), cellRecords, elaborateModule, escapedCells, settleBodies)
 import Stella.Compiler.Elaborate.Surface.Report (elaborationOrigins, printElaborationError, printType)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
@@ -50,7 +50,7 @@ import Stella.Compiler.Surface.Origin (rangeOf)
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, DecisionTree(..), Export(..), Expr(..), Module, OpClause(..), primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), OpName(..), Qualified(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), OpName(..), Qualified(..), RegionName(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy, unitCtor, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Type (RowEntry(..), RowKey(..), Type(..))
 import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
@@ -215,6 +215,7 @@ at = case _ of
   Rejected (EquationFailed (AtSource s) _) -> located s.origin <> " rejected"
   Rejected (SynthesisFailed { goal: { origin: AtSource s } }) -> located s.origin <> " synthesis failed"
   Rejected (ObligationRejected { obligation: AtSource s }) -> located s.origin <> " obligation rejected"
+  Rejected (CellEscapes { reference: AtSource r, boundary: AtSource b, cell: Ident c }) -> located r.origin <> " " <> c <> " escapes " <> located b.origin
   Rejected _ -> "rejected"
   EquationUndecided _ -> "undecided"
   TypeUndetermined o -> located o <> " type undetermined"
@@ -1445,15 +1446,149 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask | fast ask _ -> get ()" ]) \r ->
         map spanned r.errors `shouldEqual` [ "13:3 outside: implicit-handler resolution at this checking boundary" ]
 
-    it "is outside this version where it declares cells" do
-      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  var n := 0", "  Ask | fast ask _ -> n!" ]) \r ->
-        map at r.errors `shouldEqual` [ "13:14 outside: a handling expression declaring cells" ]
-
     it "is outside this version where a clause is `reifiable full`, and so is a handler declaration" do
       elaboratingUnder "module M where\nimport Base.Continuation" (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask reifiable full | ask _ k -> 1" ]) \r ->
         map at r.errors `shouldEqual` [ "15:24 outside: a `reifiable full` clause" ]
       elaborating (effects <> [ "handler h :: Ask ~> () where", "  fast | ask _ -> 1" ]) \r ->
         map at r.errors `shouldEqual` [ "12:9 outside: this declaration" ]
+  describe "a handling expression declaring cells" do
+    let
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+      effects =
+        [ "effect Ask where"
+        , "  ask :: Unit ->* Int"
+        , "effect Tick where"
+        , "  tick :: Unit ->* Int"
+        , "effect Peek where"
+        , "  peek :: Unit ->* Int"
+        ]
+
+    it "opens one region around its items, its initial values before it in the order declared, which its clauses read and write" do
+      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle tick () with", "  var n := 0", "  var m := 1", "  Tick fast | tick _ -> let v = n! in let _ = n := m! in v" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ _ (Region _ region [ n, m ] [ Lit _ (LitInt 0), Lit _ (LitInt 1) ] (Handle _ _ { opClauses: [ FastClause clause ] }))) -> do
+            map _.key [ n, m ] `shouldEqual` [ SymbolKey (Symbol "n"), SymbolKey (Symbol "m") ]
+            case clause.body of
+              Let _ _ _ (ReadCell _ r1 (SymbolKey (Symbol "n"))) (Let _ _ _ (WriteCell _ r2 (SymbolKey (Symbol "n")) (ReadCell _ r3 (SymbolKey (Symbol "m")))) _)
+                | r1 == region && r2 == region && r3 == region -> pure unit
+              other -> fail ("not read and written: " <> show other)
+          other -> fail ("not one region: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "shares its cells between its groups, and lets a function a clause makes read one" do
+      elaborating
+        ( effects <>
+            [ "f :: Unit -> Int"
+            , "f _ = handle (let _ = tick () in peek ()) with"
+            , "  var n := 0"
+            , "  Tick fast | tick _ -> let _ = n := 1 in 0"
+            , "  Peek fast | peek _ -> let g = \\_ -> n! in g ()"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "evaluates its initial values outside the region, at the row it stands at" do
+      elaborating (effects <> [ "f :: Unit -> Int / {| Ask |}", "f _ = handle tick () with", "  var n := ask ()", "  Tick fast | tick _ -> n!" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "keeps the cells of a function applied as an item apart, and reaches an outer cell from a clause of an inner expression" do
+      elaborating
+        ( effects <>
+            [ "runTick :: forall a e. (Unit -> a / {| Tick, ...e |}) -> a / {| ...e |}"
+            , "runTick k = handle k () with"
+            , "  var n := 0"
+            , "  Tick fast | tick _ -> n!"
+            , "apart :: Unit -> Int"
+            , "apart _ = handle (let _ = tick () in peek ()) with"
+            , "  var n := 5"
+            , "  runTick"
+            , "  Peek fast | peek _ -> n!"
+            , "reached :: Unit -> Int"
+            , "reached _ = handle ask () with"
+            , "  var c := 1"
+            , "  Ask fast | ask _ -> let outer = \\_ -> c! in handle ask () with"
+            , "      var c := 0"
+            , "      Ask fast | ask _ -> outer ()"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          checked r \core -> shapes core `shouldEqual` [ "nonrec runTick", "nonrec apart", "nonrec reached" ]
+
+    it "reports a cell carried beyond the expression declaring it at the first reference to it, and at the expression" do
+      elaborating
+        ( effects <>
+            [ "f :: Unit -> Unit -> Int"
+            , "f _ = handle ask () with"
+            , "  var n := 0"
+            , "  Ask | ask _ -> \\_ -> n!"
+            , "    | return x -> \\_ -> x"
+            , "g u = handle ask () with"
+            , "  var n := 0"
+            , "  Ask | ask _ -> \\_ -> n!"
+            , "    | return x -> \\_ -> x"
+            ]
+        )
+        \r -> map at r.errors `shouldEqual` [ "16:24 n escapes 14:14", "12:24 n escapes 10:14" ]
+
+    it "reports, of nested expressions, the one owning the region that escapes" do
+      elaborating
+        ( effects <>
+            [ "inner :: Unit -> Unit -> Int"
+            , "inner _ = handle ask () with"
+            , "  var c := 0"
+            , "  Ask | ask _ -> handle ask () with"
+            , "      var d := 1"
+            , "      Ask | ask _ -> \\_ -> d!"
+            , "        | return x -> \\_ -> x"
+            , "    | return x -> \\_ -> x"
+            , "outer :: Unit -> Unit -> Int"
+            , "outer _ = handle ask () with"
+            , "  var c := 0"
+            , "  Ask | ask _ -> handle ask () with"
+            , "      var d := 1"
+            , "      Ask | ask _ -> \\_ -> c!"
+            , "        | return x -> \\_ -> x"
+            , "    | return x -> \\_ -> x"
+            ]
+        )
+        \r -> map at r.errors `shouldEqual` [ "14:28 d escapes 12:25", "22:28 c escapes 18:18" ]
+
+    it "reports the first reference to a cell of the region, in the order elaborated, whichever reaches beyond it" do
+      elaborating
+        ( effects <>
+            [ "f :: Unit -> Unit -> Int"
+            , "f _ = handle ask () with"
+            , "  var n := 0"
+            , "  var m := 1"
+            , "  Ask | ask _ -> let _ = n := 2 in \\_ -> m!"
+            , "    | return x -> \\_ -> x"
+            ]
+        )
+        \r -> map at r.errors `shouldEqual` [ "13:26 n escapes 10:14" ]
+
+    it "reports a region escaping as a cell's only where the declaration it fails in noted the region" do
+      let
+        line l = Surface.FromSource (inSource { line: l, column: 1 } { line: l, column: 2 })
+        region = RegionName "r#0"
+        failed name = Rejected (EquationFailed (AtSource { declaration: inM name, origin: line 9 }) (EscapingRegion (MetaVar 0) region))
+        records = cellRecords
+          [ { name: inM "f"
+            , regions: [ { region, boundary: line 3 } ]
+            , references: [ { region, cell: Ident "n", origin: line 5 }, { region, cell: Ident "m", origin: line 7 } ]
+            }
+          ]
+      map at [ escapedCells records (failed "f"), escapedCells records (failed "g"), escapedCells (cellRecords []) (failed "f") ]
+        `shouldEqual` [ "5:1 n escapes 3:1", "9:1 rejected", "9:1 rejected" ]
+
+    it "reports a value written to a cell not of the cell's type where the value stands" do
+      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle tick () with", "  var n := 0", "  Tick fast | tick _ -> let _ = n := \"x\" in 1" ]) \r ->
+        map spanned r.errors `shouldEqual` [ "12:38-12:41 rejected" ]
+
   describe "what a quantifier encloses" do
     let
       bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == Qualified (ModuleName "M") (Ident name)) values)
@@ -2274,4 +2409,4 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     )
   inM = Qualified (ModuleName "M") <<< Ident
   siteIn name line = { context: emptyXContext, origin: AtSource { declaration: inM name, origin: origin line } }
-  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, spine: plainScheme { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1), holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [], pending: [] }
+  body (Tuple name line) = { name: inM name, origin: origin line, ordinal: line, attributes: [], scheme: { kindVars: [], body: int }, spine: plainScheme { kindVars: [], body: int }, body: ELit (origin line) (LitInt 1), holes: [], wildcards: [], unwritten: [], expressionHoles: [], uncovered: [], pending: [], regions: [], references: [] }

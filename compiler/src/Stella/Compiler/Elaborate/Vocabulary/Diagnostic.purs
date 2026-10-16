@@ -69,6 +69,17 @@ data Diagnostic
       , basis :: Basis
       , breach :: Breach
       }
+  -- | A cell's region that would outlive the handling expression declaring the
+  -- | cell. **Two places are named, and neither is where the solver failed**,
+  -- | which the order constraints are decided in moves: `reference` is the
+  -- | first read or write of a cell of the region, and `boundary` the
+  -- | expression its cells cannot be carried beyond.
+  | CellEscapes
+      { reference :: Origin
+      , boundary :: Origin
+      , cell :: Ident
+      , region :: RegionName
+      }
   -- | A term metavariable's solution that mentions what its scope excludes, or
   -- | would contain the metavariable itself, reported at the site assigning it.
   | TermAssignmentFailed Origin TermError
@@ -299,6 +310,9 @@ data Defect
   -- | A group without a clause for an operation of its effect, which name
   -- | resolution reports.
   | HandlerClauseMissing Origin (Qualified Ident)
+  -- | A reference to a cell no handling expression around it declares, name
+  -- | resolution having bound it to one.
+  | CellUnbound Origin
   -- | `Ψ` holding, once a group is generalized, a metavariable the group retired.
   | RetiredMetavariableHeld
   -- | A group committed other than as it was planned: its members not those

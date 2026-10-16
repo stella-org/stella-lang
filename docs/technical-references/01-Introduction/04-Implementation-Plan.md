@@ -1166,7 +1166,7 @@ These belong with elaboration and are written once a surface language exists ([E
 
 ### Cells (step 7)
 
-The rows on where a cell is reached are the resolver's. The rows on what a cell becomes belong with elaboration, and are written once the elaboration of cells exists ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md), [Name Resolution](../02-Surface-Language/06-Name-Resolution.md)).
+The rows on where a cell is reached are the resolver's, and the rows on what a cell becomes elaboration's; those on a handler declaration wait on its elaboration ([Elaboration](../02-Surface-Language/01-Elaboration.md#cells), [Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md), [Name Resolution](../02-Surface-Language/06-Name-Resolution.md)).
 
 | Input | Expected |
 | --- | --- |
@@ -1178,15 +1178,22 @@ The rows on where a cell is reached are the resolver's. The rows on what a cell 
 | A `var` after a clause of a handler declaration | Rejected as `CellAfterClause`, and left out |
 | A handling expression in a clause, declaring `n` and reading an outer `m` | Its clauses reach its own `n` and the outer `m`. Its own `n` hides an outer `n` throughout the expression, so in its initial values and its handled computation `n!` is closed rather than reaching the outer cell |
 | `x` alone, where `x` names a cell | Never denotes the cell; it denotes a local `x` where one stands and is unbound otherwise. A `var x` and a value `x` stand together. No value stands for a cell, which is what keeps one from being stored or returned |
-| A handling expression with cells | `region [ℓ] ( c̄ : σ̄ ) @ ( ē ) in i1 (\_ -> … in (\_ -> e))`, `ℓ` fresh, keys and initial values in the order written, and `c!` and `c := e` in a clause `readCell ℓ.c` and `writeCell ℓ.c e`. The write is `Unit`, which a clause binds as it binds any other result |
+| A handling expression with cells | `region [ℓ] ( c̄ : σ̄ ) @ ( ē ) in ⟦i1⟧ ( … ⟦in⟧ ( e ) … )`, `ℓ` fresh, keys and initial values in the order written, each group a `handle` and each handler applied to a thunk, and `c!` and `c := e` in a clause `readCell ℓ.c` and `writeCell ℓ.c e`. The write is `Unit`, which a clause binds as it binds any other result. Accepted by the Core checker |
 | A handling expression with no `var` | Opens no region |
-| A thunk handed to an item of an expression with cells | Stands at a row holding `region ℓ`, so the groups inside it reach the region and a handler applied as an item instantiates its residual row with that row |
+| A thunk handed to a handler applied as an item of an expression with cells, a group inside it reading a cell | Typed as any `λ` is, its row holding `region ℓ`, and fitted to the handler's argument, which instantiates its residual row with that row; no `openEff [( region ℓ )]` placed. One placed would add `region ℓ` to a row holding it, which the disjointness `openEff` asks refuses |
+| `var n := ask ()` under `{\| Ask \|}`, and `n := "x"` where `n` is at `Int` | The first accepted, the initial value inferred outside the region at the row the expression stands at, and the cell at its type; the second reported at `"x"` |
 | A handler declaration with `var` declarations | A function whose body is the `region` around its `handle`, its scheme mentioning no region: the residual row variable is bound outside `ℓ` and lacks `RegionKey ℓ` |
 | One such handler applied twice, or applied again inside its own clause | Two regions. The initial values are evaluated at each application, so two computations run under it count separately |
 | A declared handler with a cell applied as an item of a handling expression with a cell of its own | Neither reaches the other's. The handler's clauses reach its own cells, and the expression's groups the expression's; two layouts never join |
 | A handler with cells applied in a clause of another handler with cells, explicitly or by insertion | Accepted. Each region has its own key, so nesting is unrestricted and no constraint is generated for it |
 | A clause body standing in a region reaching a global | Widened through the region, the clauses standing at `( region ℓ \| e )` where an expression without cells leaves them at `e`. A curried function is widened **once for each argument it is passed**, every stage being an arrow at the empty row standing where the region is ambient (D8) |
-| A clause handing out a local function over a cell — as the answer, or part of it | Rejected by the escape condition, the function's type carrying `region ℓ`. Calling it inside the clause is accepted |
+| A clause handing out a local function over a cell — as the answer, or part of it | Rejected by the escape condition, the function's type carrying `region ℓ`, and reported as its region escaping: at the first reference to a cell of the region and at the handling expression declaring the cells, with a signature or without. Calling it inside the clause is accepted |
+| The same in an expression nested in another, of the inner expression's cell and of the outer one's | Each reported at the expression owning the region that escapes, the inner one and the outer one |
+| A function reading `m` handed out where `n := 2` was written before it in the clause | Reported at `n`, the first reference to a cell of the region in the order elaborated, which stands for the region. Where the solver found the escape — often a reference's own fit — moves with the order it decides constraints in |
+| An escape of a region the declaration it fails in opened no record of, or one only another declaration did | Reported as the equation that failed. A region name another declaration made is not read as this one's |
+| On Steam: a counter and a state kept in cells, and two groups of one expression reaching one cell | `[Z, S Z, S (S Z)]`, `S (S Z)`, and both groups reading the other's writes |
+| On Steam: a choice resumed twice handled outside a region holding a state, and the same handled inside it | Each resumption on a copy of the cell, `[Z, Z]`; and both on the one cell, the resumption with `false`, evaluated first, leaving it for the one with `true`, `[S Z, Z]` |
+| On Steam: a function declaring a cell applied as an item of an expression declaring one of the same name, and a function an outer clause makes over its cell called in a clause of an inner expression whose cell hides the name | Neither reaching the other's cell; and the outer cell reached |
 | `implicit` on a handler one of whose initial values does not elaborate to a value form | Rejected where it is declared. An initial value runs whenever the handler is applied, and an inserted application stands where nothing is written |
 
 ### Fits (step 7, division 2)
