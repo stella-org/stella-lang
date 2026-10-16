@@ -51,7 +51,7 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | `resume` anywhere | `resume` outside the immediate body of a `full` clause, a lambda, a local function, a `case _ of`, or a handling expression inside the body included; `resume` other than applied, `resume e` |
 | any patterns after a clause's operation | other than one per argument of the operation, followed for a `reifiable full` clause by the continuation it keeps; a refutable one |
 | any name after a clause's `\|` | one naming no operation of the effect handled; in a group headed by a label, operations of several effects, or none |
-| any number of clauses for one operation | a second clause for one operation, a second `return` clause; no clause for an operation of the effect handled, which the Core type checker rejects |
+| any number of clauses for one operation | a second clause for one operation, a second `return` clause; no clause for an operation of the effect handled, which name resolution reports with the others missing |
 | `var` anywhere among the items of a handling expression or a handler declaration | one after a group or a handler of a handling expression, or after a clause of a handler declaration; two of one name in one expression or declaration |
 | any type name or label at the head of a group | a type name that is no effect |
 | a `reifiable full` clause in any module | one in a module that does not import `Base.Continuation`, which its desugaring depends on |

@@ -125,7 +125,7 @@ marker ::= "full" | "fast" | "reifiable" "full"
 
 **A clause names an operation of the effect its handler handles, looked up among that effect's operations**, so a handler of `E` needs `E` in scope and not its operations, and a local value of an operation's name does not hide it. A qualified name is looked up in scope and must name an operation of that effect. A group headed by a label names no effect: its clauses name operations in scope, local values aside, and the effect they all belong to is the one it handles ([Name Resolution](06-Name-Resolution.md)).
 
-**A clause binds one pattern per argument of its operation**, followed for a `reifiable full` clause by its continuation, and the patterns are irrefutable, a clause having no other to fall through to. A handler has one clause per operation and one return clause at most. One for every operation of the effect is what a handler accepted in the end has: name resolution rejects a second clause for an operation, and the Core type checker a handler missing one.
+**A clause binds one pattern per argument of its operation**, followed for a `reifiable full` clause by its continuation, and the patterns are irrefutable, a clause having no other to fall through to. A handler has one clause per operation and one return clause at most. A handler has one for every operation of its effect: name resolution rejects a second clause for an operation, and reports the operations no clause names, once, in the order the effect declares them ([Name Resolution](06-Name-Resolution.md)).
 
 An operation declared with several arguments binds them one by one, the record Core packs them into being surface sugar ([Effects](../03-Typed-Core/03-Effects.md)).
 
@@ -232,12 +232,15 @@ handle program with
 ```text
 handle e with var c̄ := ē ; i1 ; … ; in
 
-  ⟹  region [ℓ] ( c̄ : σ̄ ) @ ( ē ) in  i1 (\_ -> … in (\_ -> e))
+  ⟹  region [ℓ] ( c̄ : σ̄ ) @ ( ē ) in  ⟦i1⟧ ( … ⟦in⟧ ( e ) … )
+
+  ⟦g⟧ ( e' ) = handle e' with g                          a group written in place
+  ⟦h⟧ ( e' ) = h ( openEff [( region ℓ )] (\_ -> e') )    a handler applied as an item
 ```
 
 - **`ℓ` is a fresh region name**, the elaborator's and not the author's. A region name is bound by `region` alone and is never quantified, so nothing outside the expression names it.
 - **`x!` and `x := e` become `readCell ℓ.x` and `writeCell ℓ.x e`**, `ℓ` being the region of the expression the reference resolves to. A reference names its region and not only a key, so a region inside it declaring the same key does not capture it.
-- **A thunk handed to an item stands at a row holding `region ℓ`**, so the groups inside it reach the region, and a handler applied as an item instantiates its residual row with that row.
+- **The thunk handed to a handler applied as an item is widened by `openEff [( region ℓ )]`**, so it stands at a row holding `region ℓ`: the groups inside it reach the region, and the handler instantiates its residual row with that row. A group takes no thunk, its `handle` standing inside the region as it is.
 - **A handling expression with no `var` opens no region.**
 
 A handler declaration desugars to a function whose body is the region around its `handle`.
@@ -288,7 +291,7 @@ A handler is applied like any other function, to a thunk.
 runConsole (\_ -> program)
 ```
 
-**A handling expression writes the same application without the thunk.** `handle e with …` and `using … handle e` take a list of handlers and groups written in place, installed from the top down, the first outermost; the list desugars to `item₁ (\_ -> item₂ (\_ -> … (\_ -> e)))`, a group being a handler built where it stands ([Syntax](05-Syntax.md)). Cells the list declares ahead of its items open a region around the whole of it ([Cells](#cells)).
+**A handling expression writes the same application without the thunk.** `handle e with …` and `using … handle e` take a list of handlers and groups written in place, installed from the top down, the first outermost ([Syntax](05-Syntax.md)): a handler is applied to the thunk of what the items after it make of the computation, and a group is a `handle` of it, so `handle e with h ; g` is `h (\_ -> handle e with g)` and `handle e with g ; h` is `handle (h (\_ -> e)) with g`. Cells the list declares ahead of its items open a region around the whole of it ([Cells](#cells)).
 
 ```stella
 handle program with
@@ -298,7 +301,7 @@ handle program with
     | set _ -> resume ()
 ```
 
-Neither form is a construct of its own: what reaches Core is the application, and the `handle` of Core appears only inside the handlers applied.
+A handling expression is no construct of its own: what reaches Core is the applications of its handlers and the `handle`s of its groups ([Elaboration](01-Elaboration.md#handling-expressions)).
 
 **The thunk is what defers the computation.** An argument reaches a value before the function it is applied to, and before anything the callee does (D35), so a handler taking the computation itself would receive one that had already run — outside the `handle` meant to enclose it, with its operations reaching whatever handler was installed there instead. The `λ` is what puts that evaluation inside. This is why every application the desugaring and the insertion below produce has a value in argument position: a thunk, a variable, or `Prim.Unit`, never a computation.
 

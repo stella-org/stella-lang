@@ -220,18 +220,21 @@ In surface syntax:
 
 ```purescript
 toMaybe :: (Unit -> a / {| Partial, ... |}) -> Maybe a / {| ... |}
+toMaybe thunk = handle thunk () with
+  Partial | abort _ -> Nothing
+    | return x -> Just x
 ```
 
 Both anonymous spreads denote the same variable, so "remove `Partial`, leave the rest" reads directly. Neither `forall` nor `∉` is written, though the Core above has both.
 
-This handler stays effect-polymorphic because it abandons the continuation rather than sequencing a native action before it. A terminal interpreter producing `IO` takes a closed row instead:
+This handler stays effect-polymorphic because it abandons the continuation rather than sequencing a native action before it. A terminal interpreter producing `IO` takes a closed row instead, and keeps the continuation beyond its clause, handing it to `Base.IO.bind`, so its clause is `reifiable full` ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md#clause-forms)):
 
 ```purescript
+import Base.Continuation as Continuation
+
 runConsoleIO :: forall a. (Unit -> a / {| Console |}) -> IO a
-runConsoleIO thunk =
-  handle (thunk ()) with
-    { handles Console
-    ; return x        -> Base.IO.pure x
-    ; log (s, k)      -> Base.IO.bind (Js.Console.log s) (\_ -> k ())
-    }
+runConsoleIO thunk = handle thunk () with
+  Console
+    | reifiable full log s k -> Base.IO.bind (Js.Console.log s) (Continuation.continue k)
+    | return x -> Base.IO.pure x
 ```

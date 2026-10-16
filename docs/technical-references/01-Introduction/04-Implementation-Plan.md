@@ -1388,6 +1388,32 @@ Operations called as functions ([Elaboration](../02-Surface-Language/01-Elaborat
 | `B` importing `A` and calling `get ()`, `writeAt 0`, and `pick` | Built through lowering |
 | An interface giving an operation no argument | Called with one, at `Unit` |
 
+### Handling expressions (step 7)
+
+Handling expressions declaring no cell ([Elaboration](../02-Surface-Language/01-Elaboration.md#handling-expressions), [Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md#applying-a-handler)).
+
+| Input | Required outcome |
+| --- | --- |
+| A group of `E` with no clause for `get` or `put`, one of `Own` with none for `tick`, and one headed by a label whose clause for `put` binds one pattern | Each reported once, its missing operations in the order the effect declares them, where its head stands; the last for its arity and for `get` alone, a clause reported for its patterns still naming its operation |
+| A handler declaration with no clause for `get` | Reported where its signature stands |
+| A clause binding one pattern for an imported operation its interface gives no argument, and one binding none | The first accepted, and elaborated at `Unit` the Core checker accepts; the second reported for its arity. Reading the arity off the interface's empty list would refuse the first and accept the second |
+| `handle ask () with Ask \| fast ask _ -> 1` | One `handle` of `Ask` around the `perform`, its clause `fast`, accepted by the Core checker |
+| `handle ask () with Ask \| ask _ -> resume 1`, and a `choose` handled with a return clause | The continuation applied where `resume` stands; the identity where no return clause is written |
+| `handle choose () with runAsk; Choose \| …`, and the two items the other way round | `runAsk` applied to the thunk of the group's `handle`; and the group's `handle` of `runAsk` applied to the thunk of the computation. Accepted by the Core checker |
+| A group of `State` writing `put` before `get` | The clauses in the order `State` declares them |
+| `\| fast writeAt line text -> …` | The two patterns matched as a tuple pattern against the record of the two positions, accepted by the Core checker |
+| A group of `Choose` in a `full` clause of `Ask`, its own clause resuming | The inner clause's continuation applied, not the outer one's |
+| `n :: Int; n = handle ask () with …` | Accepted, the expression inferred and its type equated with `Int` |
+| `Ask` handled under `{\| Ask \|}` | An obligation broken where the group's head stands |
+| A `fast` clause of `ask` answering `"x"`, and a `full` one where the answer is `Int` | Each reported at `"x"` |
+| A clause performing `get ()` under a boundary at `()` | Outside the subset, an implicit handler asked for at the boundary |
+| A handling expression declaring a cell, a `reifiable full` clause, and a handler declaration | Each outside this version |
+| On Steam: `ask` answered by a `fast` clause, and `abort` by a `full` one returning `Nil` beside a return clause | `42`, and `Nil`: the return clause is not reached |
+| On Steam: `choose` resumed with `true` and `false`, the answers appended, once and with a second `choose` after the first | `[1, 2]`, and `[1, 2, 3]`: the handler is deep |
+| On Steam: a group of `Choose` over one of `Ask` abandoning with `9`, and the same two the other way round | `[9, 0]`, and `[9]`: the first item is outermost |
+| On Steam: a handler applied as an item, two labelled instances of `State`, and a clause binding `emit`'s two arguments | `5`, `Pair(1, 2)`, and `[1, 2]` |
+| On Steam: `emit (note 1) (note 2)`, each `note` gathered as it is performed | `[2, 1]`: an operation's arguments are evaluated from the right |
+
 ### Binding groups and generalization (step 7)
 
 [Elaboration](../02-Surface-Language/01-Elaboration.md#generalization) and the state of [Elaborator API](../02-Surface-Language/03-Elaborator-API.md#inference-state).

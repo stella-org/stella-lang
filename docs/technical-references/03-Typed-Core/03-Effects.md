@@ -398,9 +398,9 @@ Changing an effect row and introducing names are the work of a binder, like `let
 runConsoleIO (\_ -> body)      -- an ordinary application
 ```
 
-`handle` appears only inside the definition of an interpreter, of which a library has few.
+`handle` stands where an interpreter is defined, of which a library has few, and where a group of clauses is written in place.
 
-The details of surface syntax are left to parser design: whether to spell it `handle e with { … }`, whether to place the handler first, and whether sugar such as `with runConsoleIO do …` hides the thunk's `\_ ->`. A syntax macro may provide the spelling. What is fixed here is only that **`handle` exists as a Core construct**.
+**The surface spells it as a handling expression**, `handle e with …` or `using … handle e`, its items installed from the top: a group written in place is a `handle`, and a handler written as an item is applied to the thunk of what follows it, so `handle body with runConsoleIO` is `runConsoleIO (\_ -> body)` ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md#applying-a-handler)). What is fixed here is that **`handle` exists as a Core construct**, which both reach.
 
 ### Coexistence with classical monads
 
@@ -534,14 +534,15 @@ effect Console where
 -- Js.Console supplies the native leaf for one target
 foreign log :: String -> IO Unit
 
+-- the interpreter, in a module importing Base.Continuation as Continuation
 runConsoleIO :: forall a. (Unit -> a / {| Console |}) -> IO a
-runConsoleIO thunk =
-  handle (thunk ()) with
-    { handles Console
-    ; return x        -> Base.IO.pure x
-    ; log (s, k)      -> Base.IO.bind (Js.Console.log s) (\_ -> k ())
-    }
+runConsoleIO thunk = handle thunk () with
+  Console
+    | reifiable full log s k -> Base.IO.bind (Js.Console.log s) (Continuation.continue k)
+    | return x -> Base.IO.pure x
 ```
+
+The clause hands its continuation to `Base.IO.bind`, beyond the clause, so it is `reifiable full` ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md#clause-forms)).
 
 The clause's result type is already `IO a`, so `Base.IO.bind` composes there naturally. **No lift of the form `IO a -> a / {| Console |}` is needed.**
 
@@ -569,12 +570,10 @@ program :: Unit / {| LiftIO |}
 program = liftIO (Js.Console.log "Hello")    -- builds an IO value; writes nothing
 
 main :: IO Unit
-main =
-  handle program with
-    { handles LiftIO
-    ; return x        -> Base.IO.pure x
-    ; liftIO (act, k) -> Base.IO.bind act k
-    }
+main = handle program with
+  LiftIO
+    | reifiable full liftIO act k -> Base.IO.bind act (Continuation.continue k)
+    | return x -> Base.IO.pure x
 ```
 
 That clause keeps `k` and runs it after `act`, and it typechecks for the same reason `runConsoleIO`'s does.
