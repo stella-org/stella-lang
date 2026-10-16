@@ -1,8 +1,8 @@
 -- | What the surface elaborator reads of the imports and the module beyond the
 -- | signature and the catalog: the type synonyms types are read through, the
--- | operations with the arguments they are written with, the values whose
--- | schemes take a synthesized argument, and the schemes of the module's values
--- | without a signature
+-- | operations with the arguments they are written with, the effects with their
+-- | operations in order, the values whose schemes take a synthesized argument,
+-- | and the schemes of the module's values without a signature
 -- | ([Elaboration](../../../../../docs/technical-references/02-Surface-Language/01-Elaboration.md)).
 -- |
 -- | **Neither is the kernel's.** A synonym is expanded before any type reaches
@@ -31,14 +31,15 @@ import Stella.Compiler.Interface.Scheme (Scheme, SchemeBody(..))
 import Stella.Compiler.TypedCore.Name (Ident, Qualified(..))
 import Stella.Compiler.TypedCore.Type (TypeScheme)
 import Stella.Compiler.Elaborate.CorePlus.Type (XType)
-import Stella.Compiler.Elaborate.Environment.Operations (OperationEnv, importedOperations)
+import Stella.Compiler.Elaborate.Environment.Operations (EffectEnv, OperationEnv, importedEffects, importedOperations)
 
--- | The synonyms, the operations, the values taking a synthesized argument, and
--- | the module's values without a signature, each by the qualified name of its
--- | declaration.
+-- | The synonyms, the operations, the effects, the values taking a synthesized
+-- | argument, and the module's values without a signature, each by the qualified
+-- | name of its declaration.
 type SurfaceEnv =
   { synonyms :: SynonymEnv
   , operations :: OperationEnv
+  , effects :: EffectEnv
   , synthesizing :: Set (Qualified Ident)
   , bindings :: Map (Qualified Ident) SurfaceBinding
   }
@@ -55,13 +56,14 @@ data SurfaceBinding
   | ProvisionalScheme
 
 emptySurface :: SurfaceEnv
-emptySurface = { synonyms: emptySynonyms, operations: Map.empty, synthesizing: Set.empty, bindings: Map.empty }
+emptySurface = { synonyms: emptySynonyms, operations: Map.empty, effects: Map.empty, synthesizing: Set.empty, bindings: Map.empty }
 
 -- | What the modules the imports reach declare.
 importedSurface :: BuildEnvironment -> ModuleView -> SurfaceEnv
 importedSurface env view =
   { synonyms: importedSynonyms env view
   , operations: importedOperations env view
+  , effects: importedEffects env view
   , synthesizing: Set.fromFoldable (Array.concatMap synthesizingOf (Set.toUnfoldable (reachable view)))
   , bindings: Map.empty
   }

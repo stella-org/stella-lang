@@ -95,6 +95,7 @@ import Stella.Compiler.Elaborate.Driver.Generalize (Commitment(..), Finalization
 import Stella.Compiler.Elaborate.Driver.Close (Closing(..), Undoing(..), closeRows)
 import Stella.Compiler.Elaborate.Environment.Catalog (CatalogEntry, EntrySort(..))
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
+import Stella.Compiler.Elaborate.Environment.Operations (HandledEffect)
 import Stella.Compiler.Interface.Operation (Operation, operationOf, operationScheme)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv, takesSynthesized)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, atLevel, equate, freshTypeMeta, initialState)
@@ -255,6 +256,12 @@ localOperations m e = Array.zipWith
   where
   identOf (OpName n) = Ident n
 
+-- | An effect the module declares, as a handler reads it.
+localEffect :: ModuleName -> ElaboratedEffect -> Tuple (Qualified EffName) HandledEffect
+localEffect m e = Tuple e.name { params: e.decl.params, operations: map (\o -> Qualified m (identOf o.name)) e.decl.operations }
+  where
+  identOf (OpName n) = Ident n
+
 -- | A foreign type elaborated: where it stands, its attributes, its name, and
 -- | its kind scheme.
 type ElaboratedForeignType = { origin :: Surface.Origin, attributes :: Array Surface.Attribute, name :: Qualified TyName, kind :: KindScheme }
@@ -339,11 +346,12 @@ elaborateValues imports surface importedEntries m =
   -- the effects the module declares
   signature = foldl addEffect (foldl addForeignType (foldl (addData m.name) imports (map _.decl elaboratedData)) types.foreignTypes) types.effects
   dataErrors = typesRead.errors <> map Unsupported types.unsupported
-  -- the synonyms the values' types are read through and the operations they
-  -- call: the imports', and the module's own
+  -- the synonyms the values' types are read through, the operations they
+  -- call, and the effects they handle: the imports', and the module's own
   withSynonyms = surface
     { synonyms = Map.union (Map.fromFoldable (map (\s -> Tuple s.name s.entry) types.synonyms)) surface.synonyms
     , operations = Map.union (Map.fromFoldable (Array.concatMap (localOperations m.name) types.effects)) surface.operations
+    , effects = Map.union (Map.fromFoldable (map (localEffect m.name) types.effects)) surface.effects
     }
   -- the entries the compiler's desugarings refer to, read off it
   Tuple internal internalErrors = case internalEntries signature of

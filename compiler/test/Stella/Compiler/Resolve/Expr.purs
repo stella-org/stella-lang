@@ -50,8 +50,9 @@ inA = Qualified moduleA
 -- | Cons Int List`, the effect `E` with its operations `get :: Int ->* Int` and
 -- | `put :: Int -> Int ->* Int`, and the operators
 -- | `+` (`infixl 6 plus`), `*` (`infixl 7 times`), `<>` (`infixr 6 append`),
--- | `==` (`infix 4 eq`), and `:|` (`infixr 5 Cons`). `B` declares `len`, and
--- | `Base.Continuation` nothing. `A` also declares `type Effects = {| E |}`.
+-- | `==` (`infix 4 eq`), and `:|` (`infixr 5 Cons`). `B` declares `len`, and the
+-- | effect `E` with its operation `ping`, which its interface gives no argument,
+-- | and `Base.Continuation` nothing. `A` also declares `type Effects = {| E |}`.
 environment :: BuildEnvironment
 environment = case addInterface interfaceA initialEnvironment >>= addInterface interfaceB >>= addInterface continuation of
   Right env -> env
@@ -70,7 +71,7 @@ environment = case addInterface interfaceA initialEnvironment >>= addInterface i
         , Tuple ":|" { associativity: AssociateRight, precedence: 5, target: FixityConstructor (inA (Ident "Cons")) }
         ]
     }
-  interfaceB = interfaceOf moduleB { values: [ "len" ], computations: [], types: [], operations: [], operators: [] }
+  interfaceB = interfaceOf moduleB { values: [ "len" ], computations: [], types: [], operations: [ Tuple "ping" 0 ], operators: [] }
   continuation = interfaceOf (ModuleName "Base.Continuation") { values: [], computations: [], types: [], operations: [], operators: [] }
   -- `type Effects = {| E |}`, a row synonym.
   withEffects i = i
@@ -143,7 +144,7 @@ interfaceOf name d =
   declared :: forall a. a -> { entity :: a, via :: Via }
   declared e = { entity: e, via: Declared }
 
-type Ran = { result :: String, reasons :: Array ResolveReason, warnings :: Array String }
+type Ran = { result :: String, reasons :: Array ResolveReason, sites :: Array String, warnings :: Array String }
 
 -- | The definition of `f` in the module `M`, which imports `A` unqualified
 -- | and as `M`, and `B` lazily as `L`, and declares the computation `c`, the
@@ -190,6 +191,7 @@ inModule imports body pick resolve k = case parseModule (joinWith "\n" (header <
       k
         { result: ran.result
         , reasons: map (\(ResolveError _ reason) -> reason) ran.errors
+        , sites: map (\(ResolveError r _) -> fmt @"{line}:{column}" r.start) ran.errors
         , warnings: map warningName ran.warnings
         }
   where
@@ -338,26 +340,26 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
 
   describe "groups written in place" do
     it "headed by an effect name its operations among the effect's, whatever is in scope" do
-      shows [ "f get = handle x with", "  E fast | get _ -> get", "  x" ]
-        "(handle A.x with A.E{fast A.get _ -> get#0}, A.x)"
+      shows [ "f get = handle x with", "  E fast | get _ -> get", "    | put _ _ -> 0", "  x" ]
+        "(handle A.x with A.E{fast A.get _ -> get#0; fast A.put _ _ -> 0}, A.x)"
         []
-      shows [ "f = handle x with", "  E | M.get a -> a", "    | return r -> r" ]
-        "(handle A.x with A.E{full A.get a#0 -> a#0; return r#1 -> r#1})"
+      shows [ "f = handle x with", "  E | M.get a -> a", "    | put _ _ -> 0", "    | return r -> r" ]
+        "(handle A.x with A.E{full A.get a#0 -> a#0; full A.put _ _ -> 0; return r#1 -> r#1})"
         []
 
     it "headed by an effect report a clause naming no operation of it, and leave the clause out" do
-      shows [ "f = handle x with", "  E | tick _ -> 0", "    | M.x _ -> 0", "    | get _ -> 1" ]
-        "(handle A.x with A.E{full A.get _ -> 1})"
+      shows [ "f = handle x with", "  E | tick _ -> 0", "    | M.x _ -> 0", "    | get _ -> 1", "    | put _ _ -> 1" ]
+        "(handle A.x with A.E{full A.get _ -> 1; full A.put _ _ -> 1})"
         [ NotAnOperationOf "tick" "E", NotAnOperationOf "M.x" "E" ]
 
     it "headed by a label handle the effect of the operations in scope they name" do
-      shows [ "f get = handle x with", "  cache full | get _ -> resume 0" ]
-        "(handle A.x with cache:A.E{full A.get _ -> (resume 0)})"
+      shows [ "f get = handle x with", "  cache full | get _ -> resume 0", "    | put _ _ -> resume 0" ]
+        "(handle A.x with cache:A.E{full A.get _ -> (resume 0); full A.put _ _ -> (resume 0)})"
         []
 
     it "headed by a label report clauses of several effects, and one with no operation clause" do
-      shows [ "f = handle x with", "  cache | get _ -> 0", "        | tick _ -> 0" ]
-        "(handle A.x with cache:A.E{full A.get _ -> 0})"
+      shows [ "f = handle x with", "  cache | get _ -> 0", "        | tick _ -> 0", "        | put _ _ -> 0" ]
+        "(handle A.x with cache:A.E{full A.get _ -> 0; full A.put _ _ -> 0})"
         [ OperationOfOtherEffect "tick" "Own" "E" ]
       shows [ "f = handle x with", "  cache | return r -> r", "  x" ] "(handle A.x with A.x)" [ LabelledGroupEmpty "cache" ]
       shows [ "f = handle x with", "  cache | nope _ -> 0", "  x" ] "(handle A.x with A.x)" [ UnknownOperation "nope" ]
@@ -375,28 +377,46 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
         [ RefutablePattern, BoundTwice "a" ]
 
     it "report a second clause for one operation and a second return clause" do
-      shows [ "f = handle x with", "  E | get _ -> 0", "    | M.get _ -> 1", "    | return r -> r", "    | return s -> s" ]
-        "(handle A.x with A.E{full A.get _ -> 0; return r#0 -> r#0})"
+      shows [ "f = handle x with", "  E | get _ -> 0", "    | M.get _ -> 1", "    | put _ _ -> 2", "    | return r -> r", "    | return s -> s" ]
+        "(handle A.x with A.E{full A.get _ -> 0; full A.put _ _ -> 2; return r#0 -> r#0})"
         [ ClauseTwice "M.get", ReturnTwice ]
 
     it "take a `reifiable full` clause's continuation as its last pattern where `Base.Continuation` is imported" do
-      definitionIn [ "import Base.Continuation" ] [ "f = handle x with", "  E reifiable full | get a k -> a" ] \r -> do
-        r.result `shouldEqual` "(handle A.x with A.E{reifiable A.get a#0 k#1 -> a#0})"
+      definitionIn [ "import Base.Continuation" ] [ "f = handle x with", "  E reifiable full | get a k -> a", "    | put _ _ k -> k" ] \r -> do
+        r.result `shouldEqual` "(handle A.x with A.E{reifiable A.get a#0 k#1 -> a#0; reifiable A.put _ _ k#2 -> k#2})"
         r.reasons `shouldEqual` []
-      definitionIn [ "import lazy Base.Continuation as C" ] [ "f = handle x with", "  E reifiable full | get a k -> a" ] \r ->
+      definitionIn [ "import lazy Base.Continuation as C" ] [ "f = handle x with", "  E reifiable full | get a k -> a", "    | put _ _ k -> k" ] \r ->
         r.reasons `shouldEqual` []
-      shows [ "f = handle x with", "  E reifiable full | get a -> a" ] "(handle A.x with A.E{})"
-        [ ContinuationNotImported, ClauseArity "get" 1 1 true ]
+      shows [ "f = handle x with", "  E reifiable full | get a -> a", "    | put _ _ k -> k" ] "(handle A.x with A.E{reifiable A.put _ _ k#1 -> k#1})"
+        [ ContinuationNotImported, ClauseArity "get" 1 1 true, ContinuationNotImported ]
+
+    it "bind one pattern for an operation an interface gives no argument, as the surface calls it with `Unit`" do
+      definitionIn [ "import B as K" ] [ "f = handle x with", "  K.E | ping _ -> 0" ] \r -> do
+        r.result `shouldEqual` "(handle A.x with B.E{full B.ping _ -> 0})"
+        r.reasons `shouldEqual` []
+      definitionIn [ "import B as K" ] [ "f = handle x with", "  K.E | ping -> 0" ] \r ->
+        r.reasons `shouldEqual` [ ClauseArity "ping" 1 0 false ]
+
+    it "report the operations no clause names together, in the order the effect declares them, where the head stands" do
+      definition [ "f = handle x with", "  E | return r -> r" ] \r -> do
+        r.reasons `shouldEqual` [ ClauseMissing "E" [ "get", "put" ] ]
+        r.sites `shouldEqual` [ "12:3" ]
+      definition [ "f = handle x with", "  Own | return r -> r" ] \r ->
+        r.reasons `shouldEqual` [ ClauseMissing "Own" [ "tick" ] ]
+      -- a clause reported for its patterns still names its operation
+      definition [ "f = handle x with", "  cache | put a -> a" ] \r -> do
+        r.reasons `shouldEqual` [ ClauseMissing "E" [ "get" ], ClauseArity "put" 2 1 false ]
+        r.sites `shouldEqual` [ "12:3", "12:11" ]
 
   describe "cells" do
     it "are one group, open in the operation clauses, beside a value of their name" do
-      shows [ "f n = handle x with", "  var n := n", "  var n := 1", "  E", "    | fast get _ -> n := n! + n" ]
-        "(handle A.x with var n#1 := n#0, var n#2 := 1, A.E{fast A.get _ -> (n#1 := <A.plus n#1! n#0>)})"
+      shows [ "f n = handle x with", "  var n := n", "  var n := 1", "  E", "    | fast get _ -> n := n! + n", "    | fast put _ _ -> 0" ]
+        "(handle A.x with var n#1 := n#0, var n#2 := 1, A.E{fast A.get _ -> (n#1 := <A.plus n#1! n#0>); fast A.put _ _ -> 0})"
         [ BoundTwice "n" ]
 
     it "are reached from the operation clauses of every group of their expression" do
-      shows [ "f = handle x with", "  var n := 0", "  E", "    | fast get _ -> n!", "  Own", "    | fast tick _ -> n := 1" ]
-        "(handle A.x with var n#0 := 0, A.E{fast A.get _ -> n#0!}, M.Own{fast M.tick _ -> (n#0 := 1)})"
+      shows [ "f = handle x with", "  var n := 0", "  E", "    | fast get _ -> n!", "    | fast put _ _ -> 0", "  Own", "    | fast tick _ -> n := 1" ]
+        "(handle A.x with var n#0 := 0, A.E{fast A.get _ -> n#0!; fast A.put _ _ -> 0}, M.Own{fast M.tick _ -> (n#0 := 1)})"
         []
 
     it "are closed in the rest of their expression, and unknown outside it" do
@@ -407,9 +427,10 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
         , "  \\_ -> a!"
         , "  E"
         , "    | get _ -> a!"
+        , "    | put _ _ -> 0"
         , "    | return r -> a!"
         ]
-        "(handle ! with var a#0 := 0, var b#1 := !, (\\_ -> !), A.E{full A.get _ -> a#0!; return r#2 -> !})"
+        "(handle ! with var a#0 := 0, var b#1 := !, (\\_ -> !), A.E{full A.get _ -> a#0!; full A.put _ _ -> 0; return r#2 -> !})"
         [ CellClosedHere "a" InInitialValue
         , CellClosedHere "a" InHandlerApplied
         , CellClosedHere "a" InReturnClause
@@ -428,13 +449,14 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
         , "      var k := n!"
         , "      Own"
         , "        | fast tick _ -> n! + m!"
+        , "    | fast put _ _ -> 0"
         ]
-        "(handle A.x with var n#0 := 0, var m#1 := 0, A.E{fast A.get _ -> (handle ! with var n#2 := m#1!, var k#3 := !, M.Own{fast M.tick _ -> <A.plus n#2! m#1!>})})"
+        "(handle A.x with var n#0 := 0, var m#1 := 0, A.E{fast A.get _ -> (handle ! with var n#2 := m#1!, var k#3 := !, M.Own{fast M.tick _ -> <A.plus n#2! m#1!>}); fast A.put _ _ -> 0})"
         [ CellClosedHere "n" InInitialValue, CellClosedHere "n" InHandledComputation ]
 
     it "stand ahead of the groups and handlers, and one after them is reported" do
-      shows [ "f = handle x with", "  E", "    | fast get _ -> 0", "  var n := 0" ]
-        "(handle A.x with A.E{fast A.get _ -> 0})"
+      shows [ "f = handle x with", "  E", "    | fast get _ -> 0", "    | fast put _ _ -> 0", "  var n := 0" ]
+        "(handle A.x with A.E{fast A.get _ -> 0; fast A.put _ _ -> 0})"
         [ CellAfterItem "n" ]
 
   describe "`resume`" do
@@ -458,20 +480,20 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
         [ ResumeMisplaced InsideLambda, ResumeMisplaced InsideLocalFunction, ResumeMisplaced InsideHandling, ResumeMisplaced InsideHandling ]
 
     it "of a `full` clause of a group inside a clause is that clause's own" do
-      shows [ "f = handle x with", "  E | get _ -> handle x with", "      Own | tick _ -> resume ()" ]
-        "(handle A.x with A.E{full A.get _ -> (handle A.x with M.Own{full M.tick _ -> (resume Prim.Unit)})})"
+      shows [ "f = handle x with", "  E | get _ -> handle x with", "      Own | tick _ -> resume ()", "    | put _ _ -> 0" ]
+        "(handle A.x with A.E{full A.get _ -> (handle A.x with M.Own{full M.tick _ -> (resume Prim.Unit)}); full A.put _ _ -> 0})"
         []
 
     it "is reported where it is not applied" do
-      shows [ "f = handle x with", "  E | get _ -> let k = resume in plus resume 1" ]
-        "(handle A.x with A.E{full A.get _ -> (let k#0 = ! in ((A.plus !) 1))})"
+      shows [ "f = handle x with", "  E | get _ -> let k = resume in plus resume 1", "    | put _ _ -> 0" ]
+        "(handle A.x with A.E{full A.get _ -> (let k#0 = ! in ((A.plus !) 1)); full A.put _ _ -> 0})"
         [ ResumeNotApplied, ResumeNotApplied ]
 
   describe "handler declarations" do
     it "handle the left of `~>`, or the one element a signature in full removes" do
-      handles [ "handler h :: E ~> () where", "  fast | get _ -> 0" ] "A.E{fast A.get _ -> 0}" []
-      handles [ "handler h :: (Unit -> a / {| E |}) -> a where", "  | get _ -> resume 0" ] "A.E{full A.get _ -> (resume 0)}" []
-      handles [ "handler h :: (Unit -> a / {| E, Own, ... |}) -> a / {| Own, ... |} where", "  | return r -> r" ] "A.E{return r#1 -> r#1}" []
+      handles [ "handler h :: E ~> () where", "  fast | get _ -> 0", "  fast | put _ _ -> 0" ] "A.E{fast A.get _ -> 0; fast A.put _ _ -> 0}" []
+      handles [ "handler h :: (Unit -> a / {| E |}) -> a where", "  | get _ -> resume 0", "  | put _ _ -> resume 0" ] "A.E{full A.get _ -> (resume 0); full A.put _ _ -> (resume 0)}" []
+      handles [ "handler h :: (Unit -> a / {| E, Own, ... |}) -> a / {| Own, ... |} where", "  | get _ -> 0", "  | put _ _ -> 0", "  | return r -> r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}" []
 
     it "report a signature in full the effect handled is not read from" do
       handles [ "handler h :: Int -> Int where", "  | return r -> r" ] "?{return r#0 -> r#0}" [ HandledEffect HandlerShape ]
@@ -485,16 +507,18 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
         [ "type Program = {| E, Own |}"
         , "type Runtime = {| Own |}"
         , "handler h :: (Unit -> a / Program) -> a / Runtime where"
+        , "  | get _ -> 0"
+        , "  | put _ _ -> 0"
         , "  | return r -> r"
         ]
-        "A.E{return r#1 -> r#1}"
+        "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}"
         []
-      handles [ "type Program = {| ...Effects, Own |}", "handler h :: (Unit -> a / {| ...Program, ... |}) -> a / {| Own, ... |} where", "  | return r -> r" ]
-        "A.E{return r#1 -> r#1}"
+      handles [ "type Program = {| ...Effects, Own |}", "handler h :: (Unit -> a / {| ...Program, ... |}) -> a / {| Own, ... |} where", "  | get _ -> 0", "  | put _ _ -> 0", "  | return r -> r" ]
+        "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}"
         []
-      handles [ "handler h :: (Unit -> a / Effects) -> a where", "  | return r -> r" ] "A.E{return r#1 -> r#1}" []
-      handles [ "type Program = ({| E |} :: Row Effect)", "handler h :: (Unit -> a / Program) -> a where", "  | return r -> r" ] "A.E{return r#1 -> r#1}" []
-      handles [ "type Program = ({| E |} :: Row Effect)", "handler h :: (Unit -> a / {| ...Program |}) -> a where", "  | return r -> r" ] "A.E{return r#1 -> r#1}" []
+      handles [ "handler h :: (Unit -> a / Effects) -> a where", "  | get _ -> 0", "  | put _ _ -> 0", "  | return r -> r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}" []
+      handles [ "type Program = ({| E |} :: Row Effect)", "handler h :: (Unit -> a / Program) -> a where", "  | get _ -> 0", "  | put _ _ -> 0", "  | return r -> r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}" []
+      handles [ "type Program = ({| E |} :: Row Effect)", "handler h :: (Unit -> a / {| ...Program |}) -> a where", "  | get _ -> 0", "  | put _ _ -> 0", "  | return r -> r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}" []
 
     it "do not read a row a synonym with parameters names, nor one naming itself" do
       handles [ "type P x = {| E |}", "handler h :: (Unit -> a / (P Int)) -> a where", "  | return r -> r" ] "?{return r#1 -> r#1}" [ HandledEffect HandlerShape ]
@@ -502,17 +526,22 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
         [ HandledEffect HandlerShape ]
 
     it "see their parameters in every initial value and clause, and report a `var` after a clause" do
-      handles [ "handler h (n :: Int) :: E ~> () where", "  var c := n", "  fast | get _ -> n", "  var d := 0", "  | return r -> c!" ]
-        "A.E{var c#1 := n#0; fast A.get _ -> n#0; return r#2 -> !}"
+      handles [ "handler h (n :: Int) :: E ~> () where", "  var c := n", "  fast | get _ -> n", "  fast | put _ _ -> n", "  var d := 0", "  | return r -> c!" ]
+        "A.E{var c#1 := n#0; fast A.get _ -> n#0; fast A.put _ _ -> n#0; return r#2 -> !}"
         [ CellAfterClause "d", CellClosedHere "c" InReturnClause ]
-      handles [ "handler h (Just n) :: E ~> () where", "  fast | get _ -> n" ] "A.E{fast A.get _ -> n#0}" [ RefutablePattern ]
+      handles [ "handler h (Just n) :: E ~> () where", "  fast | get _ -> n", "  fast | put _ _ -> n" ] "A.E{fast A.get _ -> n#0; fast A.put _ _ -> n#0}" [ RefutablePattern ]
+
+    it "report the operations no clause names where the signature stands" do
+      handlerDeclaration [ "handler h :: E ~> () where", "  fast | put _ _ -> 0" ] \r -> do
+        r.reasons `shouldEqual` [ ClauseMissing "E" [ "get" ] ]
+        r.sites `shouldEqual` [ "11:14" ]
 
   describe "row synonyms" do
     it "stand for a whole row, or are spread into one, and are no effect, in a row or on either side of `~>`" do
       shows [ "type Program = {| E |}", "f = (x :: Unit -> Int / Program, x :: Unit -> Int / {| Own, ...Program |})" ] "((A.x :: τ), (A.x :: τ))" []
       shows [ "type Program = {| E |}", "f = (x :: Unit -> Int / {| Program |})" ] "(A.x :: τ)" [ SynonymAsEffect "Program" ]
       handles [ "type S = {| E |}", "handler h :: S ~> () where", "  | return r -> r" ] "?{return r#0 -> r#0}" [ SynonymAtCapability "S" ]
-      handles [ "type S = {| E |}", "handler h :: E ~> ( S ) where", "  | return r -> r" ] "A.E{return r#0 -> r#0}" [ SynonymAtCapability "S" ]
+      handles [ "type S = {| E |}", "handler h :: E ~> ( S ) where", "  | get _ -> 0", "  | put _ _ -> 0", "  | return r -> r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#0 -> r#0}" [ SynonymAtCapability "S" ]
 
   describe "`case _ of`" do
     it "is a λ around the `case`, a parameter for each anonymous scrutinee from the left" do
@@ -522,8 +551,8 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
       shows [ "f = case (_), ((_)) of", "  _, _ -> 1" ] "(\\case#0#0 case#1#1 -> (case case#0#0, case#1#1 of _, _ -> 1))" []
 
     it "reports `resume` inside it within a clause" do
-      shows [ "f = handle x with", "  E | get _ -> case _ of", "    _ -> resume 1" ]
-        "(handle A.x with A.E{full A.get _ -> (\\case#0#0 -> (case case#0#0 of _ -> (! 1)))})"
+      shows [ "f = handle x with", "  E | put _ _ -> 0", "    | get _ -> case _ of", "      _ -> resume 1" ]
+        "(handle A.x with A.E{full A.put _ _ -> 0; full A.get _ -> (\\case#0#0 -> (case case#0#0 of _ -> (! 1)))})"
         [ ResumeMisplaced InsideAnonymousCase ]
 
   describe "what is not supported yet" do

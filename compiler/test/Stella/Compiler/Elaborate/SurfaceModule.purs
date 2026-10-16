@@ -47,7 +47,7 @@ import Stella.Compiler.Interface.Scheme (plainScheme)
 import Stella.Compiler.Resolve.Module (resolveModule)
 import Stella.Compiler.Surface.Origin (rangeOf)
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, DecisionTree(..), Export(..), Expr(..), Module, primSignature)
+import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, DecisionTree(..), Export(..), Expr(..), Module, OpClause(..), primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), OpName(..), Qualified(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy, unitCtor, unitTy, variantTy)
@@ -65,16 +65,18 @@ int = TCon intTy []
 -- | `Lib`: `inc : Int -> Int`, `id : forall a. a -> a`, and
 -- | `const : forall a b. a -> b -> a`; `data Tuple a b = Tuple a b` and
 -- | `snd : forall a b. Tuple a b -> b`; and `foreign type Phantom` at
--- | `forall k. Type`; and `attribute label (text :: String)`.
+-- | `forall k. Type`; `attribute label (text :: String)`; and `effect Ping` with
+-- | its operation `ping`, which the interface gives no argument.
 libInterface :: ModuleInterface
 libInterface =
   { name: lib
   , imports: []
   , exports: emptyExports
-      { values = Map.fromFoldable (map (\n -> Tuple n { entity: Qualified lib (Ident n), via: Declared }) [ "inc", "id", "const", "snd", "Tuple" ])
+      { values = Map.fromFoldable (map (\n -> Tuple n { entity: Qualified lib (Ident n), via: Declared }) [ "inc", "id", "const", "snd", "Tuple", "ping" ])
       , types = Map.fromFoldable
           [ Tuple "Phantom" { entity: TypeEntity (Qualified lib (TyName "Phantom")), via: Declared, members: [] }
           , Tuple "Tuple" { entity: TypeEntity (Qualified lib (TyName "Tuple")), via: Declared, members: [ Ident "Tuple" ] }
+          , Tuple "Ping" { entity: EffectEntity (Qualified lib (EffName "Ping")), via: Declared, members: [ Ident "ping" ] }
           ]
       , attributes = Map.singleton "label" { entity: Qualified lib (Ident "label"), via: Declared }
       }
@@ -85,6 +87,7 @@ libInterface =
           , value "const" (TForall a KType (TForall b KType (pureFn (TVar a) (pureFn (TVar b) (TVar a)))))
           , value "snd" (TForall a KType (TForall b KType (pureFn (tuple (TVar a) (TVar b)) (TVar b))))
           , Tuple (Ident "Tuple") { sort: SortConstructor (Qualified lib (TyName "Tuple")), scheme: plainScheme (monoScheme (TForall a KType (TForall b KType (pureFn (TVar a) (pureFn (TVar b) (tuple (TVar a) (TVar b))))))), attributes: [] }
+          , Tuple (Ident "ping") { sort: SortOperation (Qualified lib (EffName "Ping")), scheme: plainScheme (monoScheme (pureFn (TCon unitTy []) int)), attributes: [] }
           ]
       , types = Map.fromFoldable
           [ Tuple (TyName "Phantom") { kind: { kindVars: [ KindVar "k" ], body: KType }, sort: ForeignType, attributes: [] }
@@ -95,6 +98,7 @@ libInterface =
               }
           ]
       , attributes = Map.singleton (Ident "label") { positional: [ TCon stringTy [] ], keyword: [] }
+      , effects = Map.singleton (EffName "Ping") { params: [], operations: [ { name: Ident "ping", binders: [], arguments: [], resumesWith: int } ], attributes: [] }
       }
   , implicitHandlers: []
   , catalogOnly: Set.empty
@@ -106,8 +110,13 @@ libInterface =
   value n ty = Tuple (Ident n) { sort: SortForeign MayObserve, scheme: plainScheme (monoScheme ty), attributes: [] }
   tuple x y = TApp (TApp (TCon (Qualified lib (TyName "Tuple")) []) x) y
 
+-- | `Base.Continuation`, declaring nothing: what a `reifiable full` clause
+-- | needs its module to import.
+continuationInterface :: ModuleInterface
+continuationInterface = libInterface { name = ModuleName "Base.Continuation", exports = emptyExports, declarations = emptyDeclarations }
+
 environment :: Either String BuildEnvironment
-environment = case addInterface libInterface initialEnvironment of
+environment = case addInterface libInterface initialEnvironment >>= addInterface continuationInterface of
   Right env -> Right env
   Left err -> Left (show err)
 
@@ -233,6 +242,7 @@ spanned = case _ of
   Rejected (EquationFailed (AtSource s) _) -> spanOf s.origin <> " rejected"
   Rejected (ObligationRejected { obligation: AtSource s }) -> spanOf s.origin <> " obligation rejected"
   Rejected (RowNotContained (AtSource s) _) -> spanOf s.origin <> " row not contained"
+  Rejected (ObligationBroken { obligation: AtSource s }) -> spanOf s.origin <> " obligation broken"
   e -> at e
   where
   spanOf o = let r = rangeOf o in fmt @"{startLine}:{startColumn}-{endLine}:{endColumn}" { startLine: r.start.line, startColumn: r.start.column, endLine: r.end.line, endColumn: r.end.column }
@@ -1282,6 +1292,153 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (state <> logs <> [ "f :: Unit -> Int / {| Log |}", "f _ = get ()", "loud = get ()" ]) \r ->
         map spanned r.errors `shouldEqual` [ "10:8-10:11 row not contained", "9:3 outside: implicit-handler resolution at this checking boundary" ]
 
+  describe "a handling expression" do
+    let
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+      effects =
+        [ "effect Ask where"
+        , "  ask :: Unit ->* Int"
+        , "effect Choose where"
+        , "  choose :: Unit ->* Boolean"
+        , "effect State s where"
+        , "  get :: Unit ->* s"
+        , "  put :: s ->* Unit"
+        , "effect Log where"
+        , "  writeAt :: Int -> String ->* Unit"
+        ]
+      inEffect n = Qualified (ModuleName "M") (EffName n)
+
+    it "handles a group's element in the computation, under the row ambient, a `fast` clause at what the operation resumes with" do
+      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask | fast ask _ -> 1" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ _ (Handle _ (Perform _ (EffectKey e) _ _ _) h)) | e == inEffect "Ask" -> do
+            h.element `shouldEqual` RowEffectEntry (inEffect "Ask") []
+            case h.opClauses of
+              [ FastClause _ ] -> pure unit
+              other -> fail ("not a fast clause: " <> show other)
+          other -> fail ("not handled: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "applies a `full` clause's continuation where it resumes, and returns what the return clause gives, or the computation's value" do
+      elaborating
+        ( effects <>
+            [ "f :: Unit -> Int"
+            , "f _ = handle (case choose () of"
+            , "    true -> 1"
+            , "    false -> 2) with"
+            , "  Choose | choose _ -> resume true"
+            , "    | return x -> x"
+            , "g :: Unit -> Int"
+            , "g _ = handle ask () with"
+            , "  Ask | ask _ -> resume 1"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          case bodyOf "g" r.values of
+            Just (Lam _ _ _ _ (Handle _ _ { returnClause: { binder: x, body: Var _ x' }, opClauses: [ FullClause { contBinder: k, body: App _ (Var _ k') (Lit _ (LitInt 1)) } ] })) | x == x' && k.name == k' -> pure unit
+            other -> fail ("not resumed: " <> show other)
+          checked r \core -> shapes core `shouldEqual` [ "nonrec f", "nonrec g" ]
+
+    it "installs its items from the top, the first outermost, a group as a `handle` and a handler applied to the thunk of what is left" do
+      elaborating
+        ( effects <>
+            [ "runAsk :: forall e. (Unit -> Boolean / {| Ask, ...e |}) -> Boolean / {| ...e |}"
+            , "runAsk k = handle k () with"
+            , "  Ask | fast ask _ -> 1"
+            , "f :: Unit -> Boolean"
+            , "f _ = handle choose () with"
+            , "  runAsk"
+            , "  Choose | fast choose _ -> true"
+            , "g :: Unit -> Boolean"
+            , "g _ = handle choose () with"
+            , "  Choose | fast choose _ -> true"
+            , "  runAsk"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          case bodyOf "f" r.values of
+            Just (Lam _ _ _ _ (App _ _ (Lam _ _ _ _ (Handle _ (Perform _ _ _ _ _) _)))) -> pure unit
+            other -> fail ("not the handler applied outside the group: " <> show other)
+          case bodyOf "g" r.values of
+            Just (Lam _ _ _ _ (Handle _ (App _ _ (Lam _ _ _ _ (Perform _ _ _ _ _))) _)) -> pure unit
+            other -> fail ("not the group outside the handler applied: " <> show other)
+          checked r \core -> shapes core `shouldEqual` [ "nonrec runAsk", "nonrec f", "nonrec g" ]
+
+    it "gives Core its clauses in the order the effect declares the operations, each binding the patterns written for its arguments" do
+      elaborating
+        ( effects <>
+            [ "f :: Unit -> Int"
+            , "f _ = handle 0 with"
+            , "  State fast | put _ -> ()"
+            , "    | get _ -> 1"
+            , "w :: Unit -> Unit"
+            , "w _ = handle writeAt 1 \"a\" with"
+            , "  Log | fast writeAt line text -> const () (Tuple line text)"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          case bodyOf "f" r.values of
+            Just (Lam _ _ _ _ (Handle _ _ { opClauses: [ FastClause { op: OpName "get" }, FastClause { op: OpName "put" } ] })) -> pure unit
+            other -> fail ("not in the order declared: " <> show other)
+          checked r \core -> shapes core `shouldEqual` [ "nonrec f", "nonrec w" ]
+
+    it "resumes, in a group written inside a `full` clause, that group's own continuation" do
+      elaborating
+        ( effects <>
+            [ "f :: Unit -> Int"
+            , "f _ = handle ask () with"
+            , "  Ask | ask _ -> handle (case choose () of"
+            , "          true -> 1"
+            , "          false -> 2) with"
+            , "        Choose | choose _ -> resume false"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          case bodyOf "f" r.values of
+            Just (Lam _ _ _ _ (Handle _ _ { opClauses: [ FullClause outer ] })) -> case outer.body of
+              Handle _ _ { opClauses: [ FullClause inner ] } -> case inner.body of
+                App _ (Var _ k) _ | k == inner.contBinder.name && k /= outer.contBinder.name -> pure unit
+                other -> fail ("not the inner continuation: " <> show other)
+              other -> fail ("not handled inside: " <> show other)
+            other -> fail ("not handled: " <> show other)
+          checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "binds one pattern, at `Unit`, for an imported operation its interface gives no argument" do
+      elaborating [ "f :: Unit -> Int", "f _ = handle ping () with", "  Ping | fast ping _ -> 1" ] \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "is inferred where a type is expected, and the type expected equated with what it gives" do
+      elaborating (effects <> [ "n :: Int", "n = handle ask () with", "  Ask | fast ask _ -> 1" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec n" ]
+
+    it "reports a group whose element the row ambient holds already, where the group's head stands" do
+      elaborating (effects <> [ "f :: Unit -> Int / {| Ask |}", "f _ = handle ask () with", "  Ask | fast ask _ -> 1" ]) \r ->
+        map spanned r.errors `shouldEqual` [ "14:3-14:6 obligation broken" ]
+
+    it "reports a clause body not of the type its form gives it" do
+      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask | fast ask _ -> \"x\"", "g :: Unit -> Int", "g _ = handle ask () with", "  Ask | ask _ -> \"x\"" ]) \r ->
+        map spanned r.errors `shouldEqual` [ "14:23-14:26 rejected", "17:18-17:21 rejected" ]
+
+    it "reports a clause performing what the row ambient does not hold as asking for a handler, under a boundary" do
+      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask | fast ask _ -> get ()" ]) \r ->
+        map spanned r.errors `shouldEqual` [ "13:3 outside: implicit-handler resolution at this checking boundary" ]
+
+    it "is outside this version where it declares cells" do
+      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  var n := 0", "  Ask | fast ask _ -> n!" ]) \r ->
+        map at r.errors `shouldEqual` [ "13:14 outside: a handling expression declaring cells" ]
+
+    it "is outside this version where a clause is `reifiable full`, and so is a handler declaration" do
+      elaboratingUnder "module M where\nimport Base.Continuation" (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask reifiable full | ask _ k -> 1" ]) \r ->
+        map at r.errors `shouldEqual` [ "15:24 outside: a `reifiable full` clause" ]
+      elaborating (effects <> [ "handler h :: Ask ~> () where", "  fast | ask _ -> 1" ]) \r ->
+        map at r.errors `shouldEqual` [ "12:9 outside: this declaration" ]
   describe "what a quantifier encloses" do
     let
       bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == Qualified (ModuleName "M") (Ident name)) values)

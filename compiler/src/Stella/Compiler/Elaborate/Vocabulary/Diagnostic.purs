@@ -293,6 +293,12 @@ data Defect
   -- | A reference to an operation no effect the module reaches declares, name
   -- | resolution having resolved it to one.
   | OperationUnknown Origin (Qualified Ident)
+  -- | A group handling an effect no module the module reaches declares, name
+  -- | resolution having resolved it to one.
+  | HandledEffectUnknown Origin (Qualified EffName)
+  -- | A group without a clause for an operation of its effect, which name
+  -- | resolution reports.
+  | HandlerClauseMissing Origin (Qualified Ident)
   -- | `Ψ` holding, once a group is generalized, a metavariable the group retired.
   | RetiredMetavariableHeld
   -- | A group committed other than as it was planned: its members not those

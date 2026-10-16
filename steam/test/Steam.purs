@@ -17,6 +17,7 @@ import Test.Steam.Facade as Facade
 import Test.Steam.Fixtures as Fixtures
 import Test.Steam.Foreign as Foreign
 import Test.Steam.Handlers as Handlers
+import Test.Steam.Handling as Handling
 import Test.Steam.Load as Load
 import Test.Steam.Marshal as Marshal
 import Test.Steam.Matches as Matches
@@ -40,6 +41,7 @@ main = do
     Foreign.spec
     Handlers.spec
     Matches.spec
+    Handling.spec
     Records.spec
     Root.spec
     Fixtures.spec fixtures

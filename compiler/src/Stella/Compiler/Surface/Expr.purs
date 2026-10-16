@@ -219,11 +219,12 @@ data HandlerItem
   -- | A group written in place.
   | HandlerGroup Group
 
--- | A group of clauses written in place. A group headed by a label handles that
--- | instance of the effect its operations belong to; one headed by an effect
--- | handles the element the effect keys.
+-- | A group of clauses written in place, with where its head is written. A
+-- | group headed by a label handles that instance of the effect its operations
+-- | belong to; one headed by an effect handles the element the effect keys.
 type Group =
   { origin :: Origin
+  , head :: Origin
   , label :: Maybe Symbol
   , effect :: Qualified EffName
   , body :: HandlerBody

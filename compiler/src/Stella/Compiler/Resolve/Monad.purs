@@ -77,19 +77,22 @@ import Data.List (List(..), (:))
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set (Set)
 import Data.Set as Set
+import Data.String (joinWith)
 import Data.Tuple (Tuple(..))
+import Fmt (fmt)
 import Stella.Compiler.CST.Types (Decl(..), Fixity(..), Name, SourceRange)
 import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Interface.Environment (BuildEnvironment, ModuleView, viewFor)
 import Stella.Compiler.Interface.Environment as Environment
 import Stella.Compiler.Interface.Module (Export, TypeEntity(..), TypeExport, TypeSort(..), ValueSort(..), isComputation)
+import Stella.Compiler.Interface.Operation as Operation
 import Stella.Compiler.TypedCore.Decl (Constant)
 import Stella.Compiler.Resolve.Group (Declaration(..), GroupReason, GroupedModule, printGroupReason)
 import Stella.Compiler.Resolve.Scope (Names, Scope, ScopedModule, emptyNames)
 import Stella.Compiler.Surface.Decl (Associativity(..), FixityTarget(..))
 import Stella.Compiler.Surface.Name (BindingId(..), CellVar(..), LocalVar(..), OperatorName(..), TypeVar(..))
 import Stella.Compiler.Surface.Type (TypeOperatorTarget(..))
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), OpName(..), Qualified(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Type as Core
 
 -- | What resolving a module's declarations reads of the module as a whole:
@@ -98,9 +101,10 @@ import Stella.Compiler.TypedCore.Type as Core
 -- | bodies as written, the fixity of each type operator it declares,
 -- | the fixity of each operator it declares, each constructor it declares
 -- | under the identity it is declared with, each operation it declares with
--- | its effect and the number of its arguments, which of its values are
--- | computations, the parameters of each attribute it declares, and whether it
--- | is or imports `Base.Continuation`.
+-- | its effect, the number of its arguments, and its position among the
+-- | effect's operations, which of its values are computations, the parameters
+-- | of each attribute it declares, and whether it is or imports
+-- | `Base.Continuation`.
 type Context =
   { module :: ModuleName
   , scope :: Scope
@@ -109,7 +113,7 @@ type Context =
   , ownTypeOperators :: Map String { associativity :: Associativity, precedence :: Int, target :: Name }
   , ownOperators :: Map String { associativity :: Associativity, precedence :: Int, target :: Name }
   , ownConstructors :: Map Ident Constructor
-  , ownOperations :: Map Ident { effect :: EffName, arity :: Int }
+  , ownOperations :: Map Ident { effect :: EffName, arity :: Int, position :: Int }
   , ownComputations :: Set Ident
   , ownAttributes :: Map Ident (Array CST.AttributeParameter)
   , continuation :: Boolean
@@ -322,6 +326,9 @@ data ResolveReason
   | ClauseArity String Int Int Boolean
   -- | A second clause for one operation.
   | ClauseTwice String
+  -- | A handler without a clause for some operations of its effect: the
+  -- | effect, and the operations, in the order it declares them.
+  | ClauseMissing String (Array String)
   -- | A second return clause.
   | ReturnTwice
   -- | A `reifiable full` clause in a module that does not import
@@ -480,6 +487,8 @@ printResolveReason = case _ of
       <> show written
       <> " pattern(s)"
   ClauseTwice n -> "The operation `" <> n <> "` has a clause already"
+  ClauseMissing e ops ->
+    fmt @"The handler of `{effect}` has no clause for {operations}; a handler has one for every operation of its effect" { effect: e, operations: joinWith ", " (map (\o -> "`" <> o <> "`") ops) }
   ReturnTwice -> "This handler has a return clause already"
   ContinuationNotImported -> "A `reifiable full` clause depends on `Base.Continuation`, which this module does not import"
   UnknownAttribute n -> "There is no attribute `" <> n <> "` in scope"
@@ -549,7 +558,7 @@ contextOf env g scoped =
     _ -> Nothing
   operations = case _ of
     DeclarationOther _ (DeclEffect e _ ops) ->
-      map (\op -> Tuple (Ident op.name.name) { effect: EffName e.name, arity: arityOf op.type }) ops
+      Array.mapWithIndex (\position op -> Tuple (Ident op.name.name) { effect: EffName e.name, arity: arityOf op.type, position }) ops
     _ -> []
   computation = case _ of
     DeclarationValue _ v | v.computation -> Just (Ident v.name.name)
@@ -698,21 +707,38 @@ operationOf q@(Qualified owner name) = do
         SortOperation effect -> do
           e <- Environment.lookupEffect effect view
           op <- Array.find (\o -> o.name == name) e.operations
-          pure { effect, arity: Array.length op.arguments }
+          pure { effect, arity: importedArity effect e.params op }
         _ -> Nothing
 
--- | The operations an effect declares, each by its name and the number of its
--- | arguments.
+-- | The operations an effect declares, in the order it declares them, each by
+-- | its name and the number of its arguments.
 operationsOf :: Qualified EffName -> Resolve (Array { name :: Ident, arity :: Int })
 operationsOf e@(Qualified owner name) = do
   ctx <- context
   pure
     if owner == ctx.module then
-      Array.mapMaybe (\(Tuple i op) -> if op.effect == name then Just { name: i, arity: op.arity } else Nothing)
-        (Map.toUnfoldable ctx.ownOperations)
+      map _.op
+        ( Array.sortWith _.position
+            ( Array.mapMaybe (\(Tuple i op) -> if op.effect == name then Just { position: op.position, op: { name: i, arity: op.arity } } else Nothing)
+                (Map.toUnfoldable ctx.ownOperations)
+            )
+        )
     else case ctx.view >>= Environment.lookupEffect e of
-      Just entry -> map (\op -> { name: op.name, arity: Array.length op.arguments }) entry.operations
+      Just entry -> map (\op -> { name: op.name, arity: importedArity e entry.params op }) entry.operations
       Nothing -> []
+
+-- | The number of arguments an imported operation is written with, as the
+-- | surface calls it and its clauses bind them: at least one, an interface
+-- | giving none giving it `Unit` (`Stella.Compiler.Interface.Operation`).
+importedArity
+  :: Qualified EffName
+  -> Array Core.TyBinder
+  -> { name :: Ident, binders :: Array Core.TyBinder, arguments :: Array Core.Type, resumesWith :: Core.Type }
+  -> Int
+importedArity effect params op =
+  Array.length (Operation.operationOf effect params { name: opName op.name, binders: op.binders, arguments: op.arguments, resumesWith: op.resumesWith }).arguments
+  where
+  opName (Ident n) = OpName n
 
 -- | Runs a resolution with the cells given open, each hiding a cell of its
 -- | name.

@@ -86,26 +86,27 @@ import Data.Tuple (Tuple(..), snd)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext, bindKindVars, bindTyVar, bindVar, emptyXContext, lookupVar)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..), fromCoreKind)
 import Stella.Compiler.Elaborate.CorePlus.Row (rebuild, xnf)
-import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId, PendingCaseId, XDecisionTree(..), XExpr(..), isValueForm)
+import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId, PendingCaseId, XDecisionTree(..), XExpr(..), XOpClause(..), isValueForm)
 import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal)
 import Stella.Compiler.Elaborate.Surface.Group (groups)
 import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Environment.Constructors (lookupConstructor)
+import Stella.Compiler.Elaborate.Environment.Imported (operationArgument)
 import Stella.Compiler.Interface.Operation (operationElement, operationKey, operationRest, operationRow)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, break, closeBoundary, currentMetas, currentLevel, equate, freshCoverage, freshIdent, freshJoin, freshPendingCase, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, recursiveRef, require)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, break, closeBoundary, currentMetas, currentLevel, equate, freshCoverage, freshBinderName, freshIdent, freshJoin, freshPendingCase, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, recursiveRef, require)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), MetaBinding(..), MetaContext, lookupMeta, substitute)
 import Stella.Compiler.Elaborate.Surface.Match as Match
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..))
 import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported(..), Wildcard, elaborateLocalSignature, elaborateType, xFunction)
-import Stella.Compiler.Surface.Expr (Alternative, AlternativeBody(..), Binder(..), Expr(..), GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..), exprOrigin)
+import Stella.Compiler.Surface.Expr (Alternative, AlternativeBody(..), Binder(..), ClauseForm(..), Expr(..), Group, GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..), exprOrigin)
 import Stella.Compiler.Surface.Name (BindingId, LocalVar(..))
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.TypedCore.Name (Ident(..), KindVar, Qualified, Symbol(..))
+import Stella.Compiler.TypedCore.Name (Ident(..), KindVar, Qualified, Symbol(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (booleanTy, functionTy, litType, recordTy, unitCtor, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
@@ -200,8 +201,16 @@ hole scope origin name ty = Surf (pure (Right { value: EHole origin ty, holes: [
 -- | context its node stands in, the row its evaluation may perform, the entries
 -- | the compiler's desugarings refer to that no catalog holds, and what the
 -- | surface elaborator reads of the imports and of the module: the synonyms its
--- | annotations are read through, and the values taking a synthesized argument.
-type Scope = { declaration :: Qualified Ident, context :: XContext, ambient :: XType, internal :: Internal, surface :: SurfaceEnv }
+-- | annotations are read through, and the values taking a synthesized argument;
+-- | and, in the body of a `full` clause, the continuation `resume` applies.
+type Scope =
+  { declaration :: Qualified Ident
+  , context :: XContext
+  , ambient :: XType
+  , internal :: Internal
+  , surface :: SurfaceEnv
+  , resume :: Maybe { name :: Ident, type :: XType }
+  }
 
 -- | Where a type an expression is checked against comes from. **An arrow a
 -- | signature or an annotation writes is a checking boundary**, and so is every
@@ -272,7 +281,7 @@ inferDefinition internal surface declaration origin params body expand = case pa
   [] -> infer scope body
   _ -> infer scope (ExprLambda origin params body)
   where
-  scope = { declaration, context: emptyXContext, ambient: XRowEmpty, internal, surface }
+  scope = { declaration, context: emptyXContext, ambient: XRowEmpty, internal, surface, resume: Nothing }
   at = exprOrigin body
 
 -- | Whether a definition's body is one η-expansion may move under a `λ`: one
@@ -293,7 +302,7 @@ checkDefinition :: Internal -> SurfaceEnv -> Qualified Ident -> Surface.Origin -
 checkDefinition internal surface declaration origin scheme params body =
   boundary scope0 origin XRowEmpty \scope -> abstractions origin true false Written scope params body scheme.body
   where
-  scope0 = { declaration, context: bindKindVars emptyXContext scheme.kindVars, ambient: XRowEmpty, internal, surface }
+  scope0 = { declaration, context: bindKindVars emptyXContext scheme.kindVars, ambient: XRowEmpty, internal, surface, resume: Nothing }
 
 -- | A parameter a definition binds: one written, or a computation's thunk,
 -- | whose `Unit` nothing names.
@@ -690,11 +699,18 @@ infer scope expr = case expr of
     applyTo scope o o thunk \argument -> subsume scope o { expr: EGlobal o unitCtor [], type: XCon unitTy [] } argument
   ExprLiteral o literal -> pure { expr: ELit o literal, type: fromCore (litType literal) }
   -- an operation is called with the arguments of the whole application at once
+  -- `resume` applies the continuation of the `full` clause it stands in
+  ExprApp o (ExprResume at) x -> case scope.resume of
+    Just k -> applyTo scope at o { expr: EVar at k.name, type: k.type } \argument -> check scope x Derived argument
+    Nothing -> outside (OutsideSubset at "`resume` outside the body of a `full` clause")
   ExprApp _ f x -> case operationSpine expr of
     Just call -> operation scope call
     Nothing -> do
       f' <- infer scope f
       applyTo scope (exprOrigin f) (exprOrigin expr) f' \argument -> check scope x Derived argument
+  ExprHandle o cells items body
+    | Array.null cells -> handling scope o items body
+    | otherwise -> outside (OutsideSubset o "a handling expression declaring cells")
   ExprOperation o at name label -> operation scope { origin: o, at, name, label, arguments: [] }
   ExprTyped _ inner t -> do
     annotation <- lift (elaborateType scope.surface.synonyms scope.declaration scope.context t)
@@ -895,6 +911,102 @@ operation scope call = case Map.lookup call.name scope.surface.operations of
     (\(Tuple at g) a -> Tuple a.origin <$> applyTo scope at a.origin g \t -> check scope a.argument Derived t)
     (Tuple o f)
     arguments
+
+-- | A handling expression without cells, its items from the outermost
+-- | ([Effect Handlers](../../../../../docs/technical-references/02-Surface-Language/02-Effect-Handlers.md)).
+-- | **A group is a `handle` of what the items after it make of the
+-- | computation**, and a handler written as an item is applied to the thunk of
+-- | it, as an application written so is.
+handling :: Scope -> Surface.Origin -> Array HandlerItem -> Expr -> Surf { expr :: XExpr Surface.Origin, type :: XType }
+handling scope o items computation = case Array.uncons items of
+  Nothing -> infer scope computation
+  Just { head: HandlerApplied h, tail } -> infer scope (ExprApp o h (ExprLambda o [ BinderWildcard o ] (inner tail)))
+  Just { head: HandlerGroup g, tail } -> handlerGroup scope g (inner tail)
+  where
+  inner tail
+    | Array.null tail = computation
+    | otherwise = ExprHandle o [] tail computation
+
+-- | A group written in place, handling the computation given. **The element it
+-- | handles extends the row ambient where it stands**, which must lack its key:
+-- | the effect's parameters at fresh metavariables, decided by what the
+-- | computation performs. The computation is inferred under that row, and the
+-- | return clause, the identity where none is written, and the operation
+-- | clauses under the row ambient; what the return clause gives is the answer.
+-- | The clauses stand in the order the effect declares its operations, each
+-- | binding the operation's own variables apart and the one argument Core gives
+-- | it, matched against the patterns written, one per argument: a `fast` one is
+-- | at the type the operation resumes with, and a `full` one at the answer, its
+-- | continuation resuming under the row ambient with the answer.
+handlerGroup :: Scope -> Group -> Expr -> Surf { expr :: XExpr Surface.Origin, type :: XType }
+handlerGroup scope g computation = case Map.lookup g.effect scope.surface.effects of
+  Nothing -> lift (break (HandledEffectUnknown (AtSource { declaration: scope.declaration, origin: g.head }) g.effect))
+  Just effect -> do
+    params <- traverse (\b -> lift (freshTypeMeta scope.context (fromCoreKind b.kind))) effect.params
+    let
+      element = case g.label of
+        Just l -> XRowLabelledEffectEntry l g.effect params
+        Nothing -> XRowEffectEntry g.effect params
+      key = maybe (EffectKey g.effect) SymbolKey g.label
+    lift (require (siteAt scope g.head) (XLacks key scope.ambient))
+    handled <- infer (scope { ambient = XRowExtend element scope.ambient }) computation
+    returned <- case g.body.return of
+      Just r -> do
+        bound <- binderBound scope r.binder handled.type
+        result <- infer bound.scope r.body
+        pure { clause: { binder: bound.name, ty: handled.type, body: bound.wrap result.expr }, answer: result.type }
+      Nothing -> do
+        x <- lift (freshIdent (Map.keys scope.context.vars) "x")
+        pure { clause: { binder: x, ty: handled.type, body: EVar g.origin x }, answer: handled.type }
+    clauses <- traverse (clauseFor params returned.answer) effect.operations
+    pure
+      { expr: EHandle g.origin handled.expr { element, returnClause: returned.clause, opClauses: clauses }
+      , type: returned.answer
+      }
+  where
+  clauseFor params answer name = case Array.find (\c -> c.operation == name) g.body.operations, Map.lookup name scope.surface.operations of
+    Nothing, _ -> lift (break (HandlerClauseMissing (AtSource { declaration: scope.declaration, origin: g.head }) name))
+    _, Nothing -> lift (break (OperationUnknown (AtSource { declaration: scope.declaration, origin: g.head }) name))
+    Just c, Just op -> do
+      variables <- traverse (\b -> lift (freshBinderName (Map.keys scope.context.tyVars) (tyVarText b.name))) op.binders
+      let
+        binders = Array.zipWith (\b v -> { name: v, kind: fromCoreKind b.kind }) op.binders variables
+        instantiate = substituteTyVars (Map.fromFoldable (Array.zip (map _.name op.params) params <> Array.zip (map _.name op.binders) (map XVar variables))) Map.empty <<< fromCore
+        argument = instantiate (operationArgument op.arguments)
+        resumes = instantiate op.resumesWith
+        opened = scope { context = foldl (\ctx b -> bindTyVar ctx b.name b.kind) scope.context binders, resume = Nothing }
+      bound <- case c.arguments of
+        [ one ] -> binderBound opened one argument
+        several -> binderBound opened (BinderTuple c.origin several) argument
+      case c.form of
+        ClauseFast -> do
+          body <- check bound.scope c.body Derived resumes
+          pure (XFastClause { op: op.name, tyBinders: binders, argBinder: { name: bound.name, ty: argument }, body: bound.wrap body })
+        ClauseFull -> do
+          k <- lift (freshIdent (Map.keys bound.scope.context.vars) "k")
+          let continuation = xFunction resumes scope.ambient answer
+          body <- check (bound.scope { context = bindVar bound.scope.context k continuation, resume = Just { name: k, type: continuation } }) c.body Derived answer
+          pure (XFullClause { op: op.name, tyBinders: binders, argBinder: { name: bound.name, ty: argument }, contBinder: { name: k, ty: continuation }, body: bound.wrap body })
+        ClauseReifiable _ -> outside (OutsideSubset c.origin "a `reifiable full` clause")
+
+  tyVarText (TyVar v) = v
+
+-- | A binder bound at the type given, as a parameter is: a variable by its
+-- | name, and anything else by a name the compiler makes, matched against the
+-- | pattern around the body the binding encloses.
+binderBound :: Scope -> Binder -> XType -> Surf { name :: Ident, scope :: Scope, wrap :: XExpr Surface.Origin -> XExpr Surface.Origin }
+binderBound scope binder ty = case binder of
+  BinderVar _ (LocalVar v) -> pure { name: v.name, scope: scope { context = bindVar scope.context v.name ty }, wrap: identity }
+  BinderInvalid o -> outside (ReportedAlready o)
+  BinderWildcard _ -> do
+    name <- lift (freshIdent (Map.keys scope.context.vars) "_")
+    pure { name, scope: scope { context = bindVar scope.context name ty }, wrap: identity }
+  _ -> do
+    name <- lift (freshIdent (Map.keys scope.context.vars) "p")
+    let bound = scope { context = bindVar scope.context name ty }
+    typed <- pattern bound binder ty
+    matching <- parametersMatched bound (binderOrigin binder) [ { name, typed } ]
+    pure { name, scope: matching.scope, wrap: matching.wrap }
 
 -- | A record literal, inferred. An extension `k: e` adds a field the record
 -- | lacks, and a replacement `k = e` replaces one of the record spread, at a

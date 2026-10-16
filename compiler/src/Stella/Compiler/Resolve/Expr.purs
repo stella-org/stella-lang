@@ -453,9 +453,10 @@ group cells g = do
       Found _ -> report g.head.range (NotAnEffect (written g.head)) $> HandlesUnknown
       NotFound -> report g.head.range (UnknownType (written g.head)) $> HandlesUnknown
       Ambiguous -> report g.head.range (AmbiguousType (written g.head)) $> HandlesUnknown
-  r <- handlerBody handles cells (map { block: g.marker, clause: _ } g.clauses)
+  r <- handlerBody handles g.head.range cells (map { block: g.marker, clause: _ } g.clauses)
   pure $ r.effect <#> \effect ->
     { origin: originOf (nonEmpty ([ g.head.range ] <> map clauseRange g.clauses))
+    , head: originOf g.head.range
     , label: if isLabel g.head then Just (Symbol g.head.name) else Nothing
     , effect
     , body: r.body
@@ -492,7 +493,7 @@ resolveHandler params t items = do
     withValues r.bound do
       c <- resolveCells (map _.name source.cells)
       initials <- withCellsClosed InInitialValue c.bound (traverse (resolveExpr <<< _.value) source.cells)
-      body <- handlerBody (maybe HandlesUnknown HandlesEffect effect) c.bound source.clauses
+      body <- handlerBody (maybe HandlesUnknown HandlesEffect effect) (typeRange t) c.bound source.clauses
       pure { params: r.binders, signature, effect, cells: cellDeclarations source.cells initials c.cells, body: body.body }
   where
   -- Every `var` stands ahead of the clauses; one after them is reported and
@@ -587,8 +588,11 @@ synonymKeys expanding q
 -- | operation is not decided, one with other than a pattern per argument, and
 -- | a second clause for one operation or a second return clause are reported
 -- | where the problem is not reported already, and left out.
-handlerBody :: Handles -> Array CellVar -> HandlerSource -> Resolve { effect :: Maybe (Qualified EffName), body :: HandlerBody }
-handlerBody handles cells h = do
+-- | The operations of the effect no clause names, a clause left out above still
+-- | naming its operation, are reported together at the range given: a group's
+-- | head, or a declaration's signature.
+handlerBody :: Handles -> CST.SourceRange -> Array CellVar -> HandlerSource -> Resolve { effect :: Maybe (Qualified EffName), body :: HandlerBody }
+handlerBody handles missingAt cells h = do
   heads <- traverse (operationHead <<< _.clause) h
   let
     resolvedHeads = Array.catMaybes heads
@@ -606,6 +610,14 @@ handlerBody handles cells h = do
       report hd.at (OperationOfOtherEffect hd.written (effectWord hd.op.effect) (effectWord e))
       pure Nothing
     other -> pure other
+  -- every operation of the effect has a clause naming it, whatever else is
+  -- wrong with the clause
+  for_ effect \e -> do
+    ops <- operationsOf e
+    let
+      named = map _.name (Array.catMaybes checked)
+      missing = Array.filter (\op -> not (Array.elem (qualifiedLike e op.name) named)) ops
+    unless (Array.null missing) (report missingAt (ClauseMissing (effectWord e) (map (\{ name: Ident n } -> n) missing)))
   ctx <- context
   acc <- foldM (clause ctx cells) { operations: [], seen: [], return: Nothing }
     (Array.zip h checked)
