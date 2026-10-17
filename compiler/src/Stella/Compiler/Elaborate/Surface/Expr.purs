@@ -91,7 +91,7 @@ import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..), fromCoreKind)
 import Stella.Compiler.Elaborate.CorePlus.Row (rebuild, xnf)
 import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId, PendingCaseId, XDecisionTree(..), XExpr(..), XOpClause(..), isValueForm)
 import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..), fromCore)
-import Stella.Compiler.Elaborate.Surface.Internal (Internal)
+import Stella.Compiler.Elaborate.Surface.Internal (Internal, continuationConstructor)
 import Stella.Compiler.Elaborate.Surface.Group (groups)
 import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Environment.Constructors (lookupConstructor)
@@ -961,7 +961,9 @@ handling scope o items computation = case Array.uncons items of
 -- | binding the operation's own variables apart and the one argument Core gives
 -- | it, matched against the patterns written, one per argument: a `fast` one is
 -- | at the type the operation resumes with, and a `full` one at the answer, its
--- | continuation resuming under the row ambient with the answer.
+-- | continuation resuming under the row ambient with the answer. A `reifiable
+-- | full` one is a `full` one whose continuation is matched, wrapped in
+-- | `Continuation`, against the pattern written for it.
 handlerGroup :: Scope -> Group -> Expr -> Surf { expr :: XExpr Surface.Origin, type :: XType }
 handlerGroup scope g computation = case Map.lookup g.effect scope.surface.effects of
   Nothing -> lift (break (HandledEffectUnknown (AtSource { declaration: scope.declaration, origin: g.head }) g.effect))
@@ -1011,7 +1013,24 @@ handlerGroup scope g computation = case Map.lookup g.effect scope.surface.effect
           let continuation = xFunction resumes scope.ambient answer
           body <- check (bound.scope { context = bindVar bound.scope.context k continuation, resume = Just { name: k, type: continuation } }) c.body Derived answer
           pure (XFullClause { op: op.name, tyBinders: binders, argBinder: { name: bound.name, ty: argument }, contBinder: { name: k, ty: continuation }, body: bound.wrap body })
-        ClauseReifiable _ -> outside (OutsideSubset c.origin "a `reifiable full` clause")
+        -- the continuation bound as a `full` clause's, and the pattern written
+        -- for it matched against it wrapped in `Continuation`
+        ClauseReifiable written -> do
+          k <- lift (freshIdent (Map.keys bound.scope.context.vars) "k")
+          let
+            continuation = xFunction resumes scope.ambient answer
+            withK = bound.scope { context = bindVar bound.scope.context k continuation }
+          -- the constructor instantiated as any global is, and applied as any
+          -- function is to the continuation, at the type it takes
+          unless (Map.member continuationConstructor scope.internal) do
+            lift (break (ContinuationAbsent (AtSource { declaration: scope.declaration, origin: c.origin })))
+          constructor <- infer withK (ExprConstructor c.origin continuationConstructor)
+          wrapped <- applyTo withK c.origin c.origin constructor \taken -> do
+            lift (equate (siteAt withK c.origin) { kind: XKType, left: continuation, right: taken })
+            pure (EVar c.origin k)
+          kept <- binderBound withK written wrapped.type
+          body <- check kept.scope c.body Derived answer
+          pure (XFullClause { op: op.name, tyBinders: binders, argBinder: { name: bound.name, ty: argument }, contBinder: { name: k, ty: continuation }, body: bound.wrap (ELet c.origin kept.name wrapped.type wrapped.expr (kept.wrap body)) })
 
   tyVarText (TyVar v) = v
 

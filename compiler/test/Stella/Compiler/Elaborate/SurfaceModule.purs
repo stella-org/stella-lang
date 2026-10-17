@@ -51,7 +51,7 @@ import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, DecisionTree(..), Export(..), Expr(..), Module, OpClause(..), primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), OpName(..), Qualified(..), RegionName(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
-import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy, unitCtor, unitTy, variantTy)
+import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, recordTy, stringTy, unitCtor, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Type (RowEntry(..), RowKey(..), Type(..))
 import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
 import Test.Spec (Spec, describe, it)
@@ -111,13 +111,52 @@ libInterface =
   value n ty = Tuple (Ident n) { sort: SortForeign MayObserve, scheme: plainScheme (monoScheme ty), attributes: [] }
   tuple x y = TApp (TApp (TCon (Qualified lib (TyName "Tuple")) []) x) y
 
--- | `Base.Continuation`, declaring nothing: what a `reifiable full` clause
--- | needs its module to import.
+-- | `Base.Continuation`, as its source compiles: `Continuation` and `continue`
+-- | exported, and the constructor elaboration-only, declared under its internal
+-- | identity and exported by name nowhere.
 continuationInterface :: ModuleInterface
-continuationInterface = libInterface { name = ModuleName "Base.Continuation", exports = emptyExports, declarations = emptyDeclarations }
+continuationInterface = continuationInterfaceHolding (fn (TVar (TyVar "a")) (TVar (TyVar "r")) (TVar (TyVar "b")))
+
+-- | `Base.Continuation`, its constructor holding the one field given, over
+-- | `a`, `b`, and `r`.
+continuationInterfaceHolding :: Type -> ModuleInterface
+continuationInterfaceHolding field = libInterface
+  { name = continuationModule
+  , exports = emptyExports
+      { values = Map.singleton "continue" { entity: Qualified continuationModule (Ident "continue"), via: Declared }
+      , types = Map.singleton "Continuation" { entity: TypeEntity continuationType, via: Declared, members: [] }
+      }
+  , declarations = emptyDeclarations
+      { values = Map.fromFoldable
+          [ Tuple (Ident "continue") { sort: SortValue, scheme: plainScheme (monoScheme (quantified (pureFn continuation (fn (TVar a) (TVar r) (TVar b))))), attributes: [] }
+          , Tuple (Ident "$Continuation") { sort: SortConstructor continuationType, scheme: plainScheme (monoScheme (quantified (pureFn field continuation))), attributes: [] }
+          ]
+      , types = Map.singleton (TyName "Continuation")
+          { kind: monoScheme (KFun KType (KFun KType (KFun (KRow RowEffect) KType)))
+          , sort: DataType
+              { params: [ { name: a, kind: KType }, { name: b, kind: KType }, { name: r, kind: KRow RowEffect } ]
+              , constructors: [ { name: Ident "$Continuation", fields: [ field ] } ]
+              , isNewtype: true
+              }
+          , attributes: []
+          }
+      }
+  }
+  where
+  continuationModule = ModuleName "Base.Continuation"
+  continuationType = Qualified continuationModule (TyName "Continuation")
+  continuation = TApp (TApp (TApp (TCon continuationType []) (TVar a)) (TVar b)) (TVar r)
+  quantified body = TForall a KType (TForall b KType (TForall r (KRow RowEffect) body))
+  a = TyVar "a"
+  b = TyVar "b"
+  r = TyVar "r"
 
 environment :: Either String BuildEnvironment
-environment = case addInterface libInterface initialEnvironment >>= addInterface continuationInterface of
+environment = environmentWith continuationInterface
+
+-- | `Lib` and the `Base.Continuation` given.
+environmentWith :: ModuleInterface -> Either String BuildEnvironment
+environmentWith continuations = case addInterface libInterface initialEnvironment >>= addInterface continuations of
   Right env -> Right env
   Left err -> Left (show err)
 
@@ -133,13 +172,18 @@ elaborating = elaboratingUnder "module M where"
 
 -- | `elaborating`, the module's header the one given.
 elaboratingUnder :: String -> Array String -> (Ran -> Aff Unit) -> Aff Unit
-elaboratingUnder header body k = case environment of
+elaboratingUnder = elaboratingIn environment
+
+-- | `elaboratingUnder`, the modules imported from the environment given.
+elaboratingIn :: Either String BuildEnvironment -> String -> Array String -> (Ran -> Aff Unit) -> Aff Unit
+elaboratingIn built header body k = case built of
   Left err -> fail err
   Right env -> case parseModule (joinWith "\n" ([ header, "import Lib" ] <> body)) of
     Left err -> fail (printSyntaxError err)
     Right cst -> do
       let resolved = resolveModule env cst
-      case resolved.errors, viewFor [ lib ] env of
+      -- the modules the header imports, as a build views them
+      case resolved.errors, viewFor (Array.nub (map _.module resolved.module.imports)) env of
         [], Right view -> case importedSignature env view of
           Left err -> fail (show err)
           Right signature -> do
@@ -1446,9 +1490,42 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask | fast ask _ -> get ()" ]) \r ->
         map spanned r.errors `shouldEqual` [ "13:3 outside: implicit-handler resolution at this checking boundary" ]
 
-    it "is outside this version where a clause is `reifiable full`, and so is a handler declaration" do
-      elaboratingUnder "module M where\nimport Base.Continuation" (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask reifiable full | ask _ k -> 1" ]) \r ->
-        map at r.errors `shouldEqual` [ "15:24 outside: a `reifiable full` clause" ]
+    -- the instance of `Continuation` written at the row a checking boundary
+    -- owns, and `continue` applied to it, its own instantiation row the same
+    it "wraps a `reifiable full` clause's continuation in `Continuation`, bound apart from the argument the operation takes" do
+      elaboratingUnder "module M where\nimport Base.Continuation as Continuation" (effects <> [ "f :: Unit -> Unit", "f _ = handle writeAt 1 \"a\" with", "  Log reifiable full | writeAt line text k -> Continuation.continue k ()" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ _ (Handle _ _ { opClauses: [ FullClause clause ] })) -> do
+            clause.argBinder.ty `shouldEqual` TApp (TCon recordTy []) (TRowExtend (RowTypeEntry (PositionKey 0) (TCon intTy [])) (TRowExtend (RowTypeEntry (PositionKey 1) (TCon stringTy [])) TRowEmpty))
+            clause.contBinder.ty `shouldEqual` pureFn (TCon unitTy []) (TCon unitTy [])
+            case clause.body of
+              Case _ [ Var _ p ] (Bind _ _ (Bind _ _ (Leaf (Let _ k ty (App _ (TyApp _ (TyApp _ (TyApp _ (Global _ wrapper _) _) _) _) (Var _ k0)) (App _ (App _ _ (Var _ k')) _)))))
+                | p == clause.argBinder.name && k0 == clause.contBinder.name && k' == k -> do
+                    wrapper `shouldEqual` Qualified (ModuleName "Base.Continuation") (Ident "$Continuation")
+                    ty `shouldEqual` TApp (TApp (TApp (TCon (Qualified (ModuleName "Base.Continuation") (TyName "Continuation")) []) (TCon unitTy [])) (TCon unitTy [])) TRowEmpty
+              other -> fail ("not wrapped apart from the argument: " <> show other)
+          other -> fail ("not a full clause: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "fits the constructor, applied to the continuation, into the row ambient the clause leaves" do
+      elaboratingUnder "module M where\nimport Base.Continuation as Continuation" (effects <> [ "f :: Unit -> Unit / {| Ask |}", "f _ = handle writeAt 1 \"a\" with", "  Log reifiable full | writeAt line text k -> Continuation.continue k ()" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "f" r.values of
+          Just (Lam _ _ _ _ (Handle _ _ { opClauses: [ FullClause clause ] })) -> case clause.body of
+            Case _ _ (Bind _ _ (Bind _ _ (Leaf (Let _ _ _ (App _ (OpenEff _ _ (TyApp _ (TyApp _ (TyApp _ (Global _ _ _) _) _) _)) (Var _ k0)) _))))
+              | k0 == clause.contBinder.name -> pure unit
+            other -> fail ("not fitted into the row ambient: " <> show other)
+          other -> fail ("not a full clause: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
+
+    it "is refused, its module importing a `Base.Continuation` whose constructor is at another scheme, as the compiler's fault" do
+      elaboratingIn (environmentWith (continuationInterfaceHolding (pureFn (TVar (TyVar "a")) (TVar (TyVar "b"))))) "module M where\nimport Base.Continuation as Continuation" [ "f :: Unit -> Int", "f _ = 1" ] \r ->
+        case r.errors of
+          [ InternalEntryMismatch name ] -> name `shouldEqual` Qualified (ModuleName "Base.Continuation") (Ident "$Continuation")
+          errors -> fail ("not a mismatch: " <> show (map at errors))
+
+    it "is outside this version where it is a handler declaration" do
       elaborating (effects <> [ "handler h :: Ask ~> () where", "  fast | ask _ -> 1" ]) \r ->
         map at r.errors `shouldEqual` [ "12:9 outside: this declaration" ]
   describe "a handling expression declaring cells" do

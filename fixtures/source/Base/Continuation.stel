@@ -1,0 +1,7 @@
+module Base.Continuation (Continuation, continue) where
+
+@[elaborationOnly]
+newtype Continuation a b (r :: Row Effect) = Continuation (a -> b / {| ...r |})
+
+continue :: forall a b r. Continuation a b r -> a -> b / {| ...r |}
+continue (Continuation f) = f

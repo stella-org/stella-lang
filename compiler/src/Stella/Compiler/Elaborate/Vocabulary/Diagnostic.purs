@@ -313,6 +313,10 @@ data Defect
   -- | A reference to a cell no handling expression around it declares, name
   -- | resolution having bound it to one.
   | CellUnbound Origin
+  -- | A `reifiable full` clause where the constructor its continuation is
+  -- | wrapped in is not an entry, name resolution having seen the module
+  -- | declaring it imported.
+  | ContinuationAbsent Origin
   -- | `Ψ` holding, once a group is generalized, a metavariable the group retired.
   | RetiredMetavariableHeld
   -- | A group committed other than as it was planned: its members not those

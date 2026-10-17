@@ -44,13 +44,14 @@ import Stella.Compiler.Resolve.Module (ResolutionError(..))
 import Stella.Compiler.Resolve.Monad (ResolveError(..), ResolveReason(..)) as Resolve
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.Surface.Decl (Observation(..))
-import Stella.Compiler.TypedCore (Constant(..), Decl(..))
+import Stella.Compiler.TypedCore (Constant(..), Decl(..), Export(..))
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (booleanTy, fn, intTy, ioTy, numberTy, pureFn, recordTy, stringTy, unitTy)
 import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), Type(..))
 import Test.Spec (Spec, describe, it)
+import Test.Stella.Compiler.Sources (continuationSource)
 import Test.Spec.Assertions (fail, shouldEqual)
 
 -- The modules imported ---------------------------------------------------------------
@@ -904,6 +905,41 @@ spec = describe "Stella.Compiler.Build" do
           , "4:3 An effect has no kind scheme, so a parameter of it, or a type variable of an operation, stands at a kind with no kind variable"
           ]
         Right _ -> fail "compiled"
+
+  describe "an elaboration-only constructor" do
+    it "is exported by the Core module under its internal identity, once, and from the interface's declarations alone" do
+      source <- liftEffect continuationSource
+      exported <- liftEffect (Ref.new [])
+      let
+        action :: CompilerAction Aff
+        action =
+          { readSource: \_ -> pure (Left "no file")
+          , runParser: \_ q i -> pure (unwrapIdentity (parsers q i))
+          , hooks: defaultHooks { onElaborated = \core -> liftEffect (Ref.write core.exports exported) }
+          }
+      r <- compileModule action defaultSettings environment Map.empty source
+      exports <- liftEffect (Ref.read exported)
+      case r of
+        Left errors -> fail (joinWith "; " (map printCompileError (NonEmptyArray.toArray errors)))
+        Right made -> do
+          let internal = Ident "$Continuation"
+          Array.filter (_ == ExportCtor internal) exports `shouldEqual` [ ExportCtor internal ]
+          Map.member "$Continuation" made.interface.exports.values `shouldEqual` false
+          map _.members (Map.lookup "Continuation" made.interface.exports.types) `shouldEqual` Just []
+          show (map _.sort (Map.lookup internal made.interface.declarations.values)) `shouldEqual` show (Just (SortConstructor (Qualified (ModuleName "Base.Continuation") (TyName "Continuation"))))
+          let
+            a = TyVar "a"
+            b = TyVar "b"
+            row = TyVar "r"
+          show (map _.sort (Map.lookup (TyName "Continuation") made.interface.declarations.types)) `shouldEqual` show
+            ( Just
+                ( DataType
+                    { params: [ { name: a, kind: KType }, { name: b, kind: KType }, { name: row, kind: KRow RowEffect } ]
+                    , constructors: [ { name: internal, fields: [ fn (TVar a) (TVar row) (TVar b) ] } ]
+                    , isNewtype: true
+                    }
+                )
+            )
 
   describe "a foreign and an attribute the module declares" do
     let

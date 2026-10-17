@@ -115,6 +115,7 @@ import Stella.Compiler.Elaborate.Surface.Group (groups)
 import Stella.Compiler.ForeignBoundary (Refused, crossingOf)
 import Stella.Compiler.Interface.Assemble (CoreInterface, CoreTypeSort(..), coreAttribute, reachedFromOutside)
 import Stella.Compiler.Interface.Module (Exports, TypeEntity(..), Via(..))
+import Stella.Compiler.Interface.Prim (primAttribute)
 import Stella.Compiler.Interface.Scheme (Scheme, plainScheme)
 import Stella.Compiler.Surface.Decl (Declaration(..), declarationOrigin)
 import Stella.Compiler.Surface.Decl (Attribute, Module) as Surface
@@ -1427,6 +1428,7 @@ elaborateModule signature surface imported m exports =
     , name: m.name
     , imports: Array.nub (map _.module m.imports)
     , exports: Array.concatMap typeExports elaborated.data
+        <> Array.concatMap elaborationOnlyExports elaborated.data
         <> map (ExportEffect <<< _.decl.name) (Array.filter effectExported elaborated.effects)
         <> map (ExportValue <<< nameOf <<< _.name) (Array.filter (reachedFromOutside m.name exports operators <<< nameOf <<< _.name) values)
         <> map (ExportValue <<< _.decl.name) (Array.filter (reachedFromOutside m.name exports operators <<< _.decl.name) elaborated.foreigns)
@@ -1449,6 +1451,12 @@ elaborateModule signature surface imported m exports =
   typeExports d
     | declaredHere (map (\e -> e.entity == TypeEntity (Qualified m.name d.decl.name) && e.via == Declared) (Map.lookup (tyNameText d.decl.name) exports.types)) =
         [ ExportType d.decl.name ] <> map (ExportCtor <<< _.name) (Array.filter (\c -> exportedValue c.name) d.decl.constructors)
+    | otherwise = []
+  -- a constructor only elaboration names, exported under its internal identity
+  -- apart from the export list, which never names it, and once
+  elaborationOnlyExports d
+    | Array.any (\a -> a.name == primAttribute "elaborationOnly") d.decl.attributes =
+        map (ExportCtor <<< _.name) (Array.filter (\c -> not (exportedValue c.name)) d.decl.constructors)
     | otherwise = []
   -- an effect exported by name, with its operations
   effectExported e = declaredHere (map (\x -> x.entity == EffectEntity e.name && x.via == Declared) (Map.lookup (effNameText e.decl.name) exports.types))

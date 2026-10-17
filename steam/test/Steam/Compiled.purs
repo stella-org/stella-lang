@@ -1,12 +1,14 @@
 -- | A module written in source, compiled and loaded, and its values read as
 -- | the machine holds them once the module is initialized.
-module Test.Steam.Compiled (running) where
+module Test.Steam.Compiled (running, runningAfter) where
 
 import Prelude
 
 import Prim as P
 
+import Control.Monad.Except (ExceptT(..), except, runExceptT)
 import Data.Array as Array
+import Data.Bifunctor (lmap)
 import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
@@ -24,7 +26,7 @@ import Steam.Load (Identities, emptyStore, globalNamed, load, noIdentities)
 import Steam.Value (Value(..))
 import Stella.Compiler.Build (CompilerAction, compileModule, defaultHooks, printCompileError)
 import Stella.Compiler.Bytecode.Module (Key(..))
-import Stella.Compiler.Interface.Environment (initialEnvironment)
+import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment)
 import Stella.Compiler.Macro.Run (ParseOutcome(..), defaultSettings)
 import Stella.Compiler.Macro.Tree (Position(..))
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
@@ -34,13 +36,19 @@ import Test.Spec.Assertions (fail)
 -- | The module `Main` the lines given write, compiled, loaded, and each of its
 -- | globals named rendered.
 running :: P.Array P.String -> P.Array P.String -> (Map.Map P.String P.String -> Aff Unit) -> Aff Unit
-running source globals k = do
-  compiled <- compileModule action defaultSettings initialEnvironment Map.empty (joinWith "\n" source)
+running = runningAfter []
+
+-- | `running`, the modules whose sources are given compiled before `Main`, in
+-- | order, each against the interfaces of those before it, and every one loaded
+-- | into the one store in that order.
+runningAfter :: P.Array P.String -> P.Array P.String -> P.Array P.String -> (Map.Map P.String P.String -> Aff Unit) -> Aff Unit
+runningAfter before source globals k = do
+  compiled <- runExceptT (Array.foldM compiling { env: initialEnvironment, dmos: [] } (Array.snoc before (joinWith "\n" source)))
   case compiled of
-    Left errors -> fail (joinWith "; " (map printCompileError (Array.fromFoldable errors)))
-    Right made -> k =<< liftEffect do
+    Left failure -> fail failure
+    Right { dmos } -> k =<< liftEffect do
       identities <- Ref.new noIdentities
-      stored <- runBaseEffect (Except.runExcept (load (emptyStore emptyTable identities) made.dmo))
+      stored <- runBaseEffect (Except.runExcept (Array.foldM load (emptyStore emptyTable identities) dmos))
       case stored of
         Left err -> pure (Map.singleton "load" (show err))
         Right store -> do
@@ -54,6 +62,13 @@ running source globals k = do
             globals
           pure (Map.fromFoldable held)
   where
+  -- each module compiled against the interfaces of those before it, and its
+  -- own added
+  compiling acc text = do
+    made <- ExceptT (lmap (joinWith "; " <<< map printCompileError <<< Array.fromFoldable) <$> compileModule action defaultSettings acc.env Map.empty text)
+    env <- except (lmap show (addInterface made.interface acc.env))
+    pure { env, dmos: Array.snoc acc.dmos made.dmo }
+
   -- no macro is called, so no parser is run
   action :: CompilerAction Aff
   action =
