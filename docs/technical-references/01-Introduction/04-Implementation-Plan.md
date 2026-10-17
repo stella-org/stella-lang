@@ -1404,7 +1404,7 @@ Operations called as functions ([Elaboration](../02-Surface-Language/01-Elaborat
 
 ### Handling expressions (step 7)
 
-Handling expressions declaring no cell ([Elaboration](../02-Surface-Language/01-Elaboration.md#handling-expressions), [Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md#applying-a-handler)).
+Handling expressions ([Elaboration](../02-Surface-Language/01-Elaboration.md#handling-expressions), [Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md#applying-a-handler)).
 
 | Input | Required outcome |
 | --- | --- |
@@ -1421,12 +1421,25 @@ Handling expressions declaring no cell ([Elaboration](../02-Surface-Language/01-
 | `Ask` handled under `{\| Ask \|}` | An obligation broken where the group's head stands |
 | A `fast` clause of `ask` answering `"x"`, and a `full` one where the answer is `Int` | Each reported at `"x"` |
 | A clause performing `get ()` under a boundary at `()` | Outside the subset, an implicit handler asked for at the boundary |
-| A handling expression declaring a cell, a `reifiable full` clause, and a handler declaration | Each outside this version |
+| A handler declaration | Outside this version |
 | On Steam: `ask` answered by a `fast` clause, and `abort` by a `full` one returning `Nil` beside a return clause | `42`, and `Nil`: the return clause is not reached |
 | On Steam: `choose` resumed with `true` and `false`, the answers appended, once and with a second `choose` after the first | `[1, 2]`, and `[1, 2, 3]`: the handler is deep |
 | On Steam: a group of `Choose` over one of `Ask` abandoning with `9`, and the same two the other way round | `[9, 0]`, and `[9]`: the first item is outermost |
 | On Steam: a handler applied as an item, two labelled instances of `State`, and a clause binding `emit`'s two arguments | `5`, `Pair(1, 2)`, and `[1, 2]` |
 | On Steam: `emit (note 1) (note 2)`, each `note` gathered as it is performed | `[2, 1]`: an operation's arguments are evaluated from the right |
+
+### Continuations (step 7)
+
+`reifiable full` clauses ([Elaboration](../02-Surface-Language/01-Elaboration.md#handling-expressions), [Names only elaboration writes](../02-Surface-Language/01-Elaboration.md#names-only-elaboration-writes), [Modules](../06-Modules/01-Modules.md#an-entry-only-elaboration-names)).
+
+| Input | Required outcome |
+| --- | --- |
+| `Log reifiable full \| writeAt line text k -> Continuation.continue k ()` in `Unit -> Unit` | One `full` clause, its argument the record of the two positions and its continuation `k0` bound apart; `k` a `let` of `$Continuation` applied to `k0`, at `Continuation Unit Unit ()`. Accepted by the Core checker, `continue` instantiated at the row the boundary owns |
+| The same clause in `Unit -> Unit / {\| Ask \|}` | `$Continuation`'s pure arrow fitted into the row the clause leaves, `openEff [( Ask )]` around it; accepted. Applied as it stands, the Core checker refuses it |
+| A module importing a `Base.Continuation` whose `$Continuation` is at another scheme | The compiler's fault, reported for the module |
+| `Base.Continuation` compiled from its source | Its Core exports `$Continuation` once, by `ExportCtor`; its interface exports `Continuation` with no constructor, and declares `$Continuation` at its scheme |
+| On Steam: `choose` resumed with `true` and `false` by `Continuation.continue` in a `reifiable full` clause | `[1, 2]`, as `resume` in a `full` one gives |
+| On Steam: a `reifiable full` clause of `yield` answering `Yielded n k`, each `k` resumed after the handling expression has answered | `[1, 2, 3]`: a continuation taken out of its handling expression resumes under the same handler |
 
 ### Binding groups and generalization (step 7)
 

@@ -373,7 +373,7 @@ Residual computation over an unknown tail takes this shape: `normalizeRow` extra
 
 ## Names only elaboration writes
 
-**The desugaring of a `reifiable full` clause refers to an elaboration-only entry**, the constructor `Base.Continuation.$Continuation` ([Modules](../06-Modules/01-Modules.md)). It wraps the clause's Core continuation in it, so that the clause holds an abstract `Continuation` where Core holds a function ([Effect Handlers](02-Effect-Handlers.md)):
+**The desugaring of a `reifiable full` clause refers to an elaboration-only entry**, the constructor `Base.Continuation.$Continuation` ([Modules](../06-Modules/01-Modules.md)). It wraps the clause's Core continuation in it, so that the clause holds an abstract `Continuation` where Core holds a function ([Effect Handlers](02-Effect-Handlers.md)), typed as [Handling expressions](#handling-expressions) gives:
 
 ```text
 | reifiable full op x k -> e
@@ -381,6 +381,8 @@ Residual computation over an unknown tail takes this shape: `normalizeRow` extra
 ```
 
 **Outside `Base.Continuation`, that desugaring is the one place the constructor is written**, the module's own source writing it under its ordinary name. Name resolution does not resolve it, a macro cannot spell it, and the catalog a synthesizer reads omits it ([Elaborator API](03-Elaborator-API.md)). The module the clause stands in imports `Base.Continuation`, which the desugaring makes a dependency; a clause in a module without the import is reported where it stands.
+
+**The entries a desugaring refers to are read off the signature the module is elaborated against, each at a scheme the compiler lists.** A signature holding a module's type — `Stella.Syntax.OriginRef`, `Base.Continuation.Continuation` — reaches that module, and holds its entries at the schemes listed, `$Continuation` at `∀a b (r : Row Effect). (a -{r}-> b) -> Continuation a b r`; one it lacks, or holds at another scheme, is the compiler's fault, reported for the module. A signature that does not reach a module requires none of its entries, and nothing else of the signature is reached this way.
 
 **The Core type checker checks the reference as it checks any other**, as the application of a newtype constructor, and does not ask who wrote it. That no other term builds a `Continuation` is a guarantee of surface elaboration, and of nothing beneath it.
 
@@ -874,7 +876,7 @@ ask () 1          (openEff [( Ask )] (perform Ask.ask [] Prim.Unit)) 1
 
 ### Handling expressions
 
-**A handling expression installs its items from the top, the first outermost** ([Effect Handlers](02-Effect-Handlers.md#applying-a-handler)): a group written in place is a `handle` of what the items after it make of the computation, and a handler is applied to the thunk of it, `h (\_ -> …)` elaborated as an application written so is — the thunk checked against the argument the handler's type gives it, which instantiation gives and so is no checking boundary. **One declaring cells is a region around what its items make of the computation** ([Cells](#cells)), its initial values evaluated before the region in the order declared, and its answer a metavariable created outside the region. **This version elaborates no `reifiable full` clause**; one is outside it where it stands.
+**A handling expression installs its items from the top, the first outermost** ([Effect Handlers](02-Effect-Handlers.md#applying-a-handler)): a group written in place is a `handle` of what the items after it make of the computation, and a handler is applied to the thunk of it, `h (\_ -> …)` elaborated as an application written so is — the thunk checked against the argument the handler's type gives it, which instantiation gives and so is no checking boundary. **One declaring cells is a region around what its items make of the computation** ([Cells](#cells)), its initial values evaluated before the region in the order declared, and its answer a metavariable created outside the region.
 
 **A group handles one element, which extends the row ambient where it stands.** Under `ρ` ambient, a group headed by `E` handles `E ?ā`, and one headed by a label `label : E ?ā`, the effect's parameters at fresh metavariables that what the computation performs decides. `ρ` must lack the element's key, required where the group's head stands, so a group handling what `ρ` holds already is reported there. The computation is inferred under `( ent | ρ )`, at `α`; the return clause binds its pattern at `α` and is inferred under `ρ`, at the answer `β`, and one not written is the identity, `β` being `α`. **A handling expression is only inferred**: where a type is expected, it is inferred and its type equated with that type, as a record literal's is ([Records and tuples](#records-and-tuples)).
 
@@ -889,6 +891,20 @@ handle (case choose () of true -> 1; false -> 2) with
       { handles Choose
       ; return (x : Int) -> x
       ; full choose (u : Unit, k : Boolean -{ρ}-> Int) -> k true }
+```
+
+**A `reifiable full` clause is a `full` one whose continuation it holds as a `Continuation`** ([Names only elaboration writes](#names-only-elaboration-writes)). It binds Core's continuation `k0 : τ' -{ρ}-> β` apart from the argument, which packs the operation's arguments as any clause's does and never the continuation, and matches the pattern written last, as a parameter is, against `Base.Continuation.$Continuation k0`: the constructor instantiated as any global is, and applied to `k0` as any function is, its pure arrow fitted into `ρ`, so what the pattern binds is at `Continuation τ' β ρ`. Its body is checked against the answer, as a `full` clause's is; it has no `resume`, and `Continuation.continue k` resumes it.
+
+```text
+handle writeAt 1 "a" with
+  Log reifiable full | writeAt line text k -> Continuation.continue k ()
+
+⟹  handle (… perform Log.writeAt [] p …) with
+      { handles Log
+      ; return (x : Unit) -> x
+      ; full writeAt (p : { 0 : Int, 1 : String }, k0 : Unit -{ρ}-> Unit) ->
+          let k : Continuation Unit Unit ρ = (openEff [ρ] ($Continuation [Unit] [Unit] [ρ])) k0 in
+          (openEff [ρ] (Continuation.continue [Unit] [Unit] [ρ])) k Prim.Unit }
 ```
 
 **What a clause performs is ambient as `ρ` is**, a demanding fit of each element it performs into `ρ` ([Operations](#operations)). At an inference position, where `ρ` is flexible, the fit constrains it to hold the element, and only an element it cannot hold — a rigid row, or a constraint already standing against it — is a mismatch of rows, where the operation's name stands; under a checking boundary, what `ρ` cannot hold asks for an implicit handler, outside this version ([Explicit checking boundaries](#explicit-checking-boundaries)).
