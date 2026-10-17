@@ -111,7 +111,7 @@ import Stella.Compiler.Elaborate.Mechanism.Scheduler (Scheduler, create, emptySc
 import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId(..), FitId(..), PendingCaseId(..), RecRefId(..), TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta as TermMeta
-import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XType(..))
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XType(..), metasOf)
 import Stella.Compiler.TypedCore (Ident(..), JoinName(..), KindVar, Qualified, RegionName(..), RowElemKind(..), RowKey, TyVar(..))
 import Stella.Compiler.Elaborate.Vocabulary.Trace (TraceEvent, Tracing(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement, MetaBinding(..), MetaContext, TermBinding(..), UnifyError(..), UnifyProgress, UnifyResult(..), emptyContext, freshMeta, lookupMeta, lookupTermMeta, regionScopeOf, substitute, unifyKind, unifyType)
@@ -738,10 +738,28 @@ runBoundary site goal = do
         Right u -> do
           settled <- equateShared site Set.empty (rebuild u) goal.expected
           case classify settled.source settled.target of
-            Contained _ -> unify site { kind: XKRow RowEffect, left: XMeta goal.boundary, right: goal.expected }
+            Contained _ -> do
+              now <- metaContext
+              -- a row expected that is the boundary's own, through a tail
+              -- identified with it, decides nothing of it: the job waits
+              if Set.member goal.boundary (metasOf (substitute now goal.expected)) then waitOn (Set.singleton goal.boundary)
+              else do
+                releaseBoundary goal.boundary
+                unify site { kind: XKRow RowEffect, left: XMeta goal.boundary, right: goal.expected }
+                -- released and written together, or not at all
+                after <- metaContext
+                case lookupMeta after goal.boundary of
+                  Just (Assigned _) -> pure unit
+                  _ -> break (BoundaryRowUnwritten goal.boundary)
             NotContained remainders -> raiseDiagnostic (BoundaryNotContained site.origin remainders)
             Waiting on -> waitOn on
     _ -> break (BoundaryRowAbsent goal.boundary)
+
+-- | A checking boundary's ambient row given over to unification, which writes
+-- | no boundary's row: its boundary is deciding it.
+releaseBoundary :: MetaVar -> Elab Unit
+releaseBoundary m = Elab \_ s ->
+  Tuple (Done unit) (s { tentative { metas = s.tentative.metas { boundaryRows = Set.delete m s.tentative.metas.boundaryRows } } })
 
 -- | The undecided fits whose target's remainder is the boundary row given
 -- | alone, each with what is left of its rows. Only a fit whose target holds

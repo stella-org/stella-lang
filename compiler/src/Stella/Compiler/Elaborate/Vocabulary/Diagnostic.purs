@@ -327,6 +327,9 @@ data Defect
   -- | A checking boundary whose ambient row `Ψ` does not hold unsolved: only the
   -- | boundary assigns it.
   | BoundaryRowAbsent MetaVar
+  -- | A checking boundary's ambient row its boundary gave over to
+  -- | unification, and left unwritten: released and written are one step.
+  | BoundaryRowUnwritten MetaVar
   -- | A metavariable two owners of the resolution of fits share, which keeps
   -- | their components from being resolved apart.
   | OwnersShareMetavariable MetaVar

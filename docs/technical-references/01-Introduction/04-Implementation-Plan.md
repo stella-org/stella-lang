@@ -1229,6 +1229,12 @@ A fit decided, waited on, resolved by direction, and made Core, and a checking b
 | A boundary's body fitting `( Console )` into `?σ`, closed at `( Console, Clock )` | `?σ := ( Console, Clock )` and the fit `Widen ( Clock )`, with no resolution. The fits inside are decided again against the row expected |
 | A boundary's body fitting `( Console \| ?t1 )` and `( Clock \| ?t2 )`, instantiation rows, closed at `( Console, Clock \| e )` | `?t1 := ( Clock \| e )`, `?t2 := ( Console \| e )`, then `?σ := ρ`. The union is not formed, and the boundary stands in for its fits by `fit(Sᵢ, ρ)` |
 | A boundary's body fitting `( Console, Clock )` into `( Console \| ?σ )`, closed at `( Console )` | Refused, naming `( Clock )`, in this version: no implicit handler is sought before the surface asks for one. A boundary's fits are chosen by their target's remainder |
+| `?r ≡ ?σ` and `?σ ≡ ?r`, `?σ` a boundary's ambient row, bare and as rows | `?r := ?σ` either way, `?σ` unassigned: an ordinary tail takes the row its boundary alone writes |
+| `?σ ≡ ( a : A \| ?r )`, `?σ ≡ ( a : A )`, and `?σ1 ≡ ?σ2` of two boundaries | Each waiting on the boundary's row, neither row written |
+| `?r ≡ ?σ` once the boundary has decided `?σ := ( a : A )` | `?r := ( a : A )`, the row read as any other |
+| A fit `?σ ⊆ ?a` beside the boundary's own `?a ⊆ ?σ`, the boundary closed at `( Console )` | Left undecided, nothing solved: the union holding `?σ` gives `?a` no solution. Rule 1 solving `?a := ?σ` would make the boundary's source row its own row; before the boundary's row was guarded, the resolution stopped on that row being written |
+| A fit `?σ ⊆ ?a`, the boundary's body fitting `( Console )` into `?σ` and closed at `( Console )` | Settled once the boundary decides `?σ := ( Console )`: `?a := ( Console )` |
+| A boundary closed at `?e` with no fit inside, `?e ≡ ?σ` stated | The job waits, `?σ` unwritten and still the boundary's, the component undecided. Releasing `?σ` and unifying it with what is now `?σ` itself would succeed with nothing written, leaving `?σ` unsolved for any later equation to write |
 
 ### Effect-aware expressions (step 7)
 

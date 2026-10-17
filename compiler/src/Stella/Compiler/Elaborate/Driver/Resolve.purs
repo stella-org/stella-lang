@@ -361,6 +361,10 @@ assignmentsOf component boundaries = do
   if not (Array.null identified) then pure (Right { assignments: identified, unformed: Set.empty })
   else do
     rule1 <- for targets \m -> case Array.filter (\f -> lone f.target == Just m) fits of
+      -- a union holding a boundary's row, the row itself or a tail it is
+      -- identified with, waits for the boundary to decide it: the rules read
+      -- it again in a round after
+      into | Array.any (\f -> not (Set.isEmpty (Set.intersection f.source.flexible boundaryRows))) into -> pure (Right [])
       into | Just first <- Array.head into ->
         map (map (\u -> [ { meta: m, solution: rebuild u, site: first.site } ])) (formUnion (map (\f -> { site: f.site, row: f.source }) into))
       _ -> pure (Right [])

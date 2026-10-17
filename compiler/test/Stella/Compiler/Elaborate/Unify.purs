@@ -17,6 +17,7 @@ import Stella.Compiler.Elaborate.Mechanism.Unify (KindMetaBinding(..), KindMetaI
 import Stella.Compiler.TypedCore (EffName(..), KindVar(..), ModuleName(..), Qualified(..), RegionName(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..))
 import Data.Array as Array
 import Data.Either (Either(..))
+import Data.Foldable (for_)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set (Set)
@@ -723,6 +724,44 @@ spec = describe "Stella.Compiler.Elaborate.Mechanism.Unify" do
         result = unifyRow emptyContext row row
       case fst result of
         Solved _ -> pure unit
+        other -> show other `shouldEqual` "Solved"
+
+  describe "a checking boundary's ambient row" do
+    let
+      -- `?r` an ordinary tail and `?s` a boundary's row
+      bounded = let m = twoMetas rowTypeInfo rowTypeInfo in m { ctx = m.ctx { boundaryRows = Set.singleton m.s } }
+      ordinary = rowTypeInfo
+
+    it "is taken by an ordinary tail equated with it alone, whichever way round, and is not written" do
+      let m = bounded
+      for_ [ unifyRow m.ctx (XMeta m.r) (XMeta m.s), unifyRow m.ctx (XMeta m.s) (XMeta m.r), unifyRow m.ctx (XRowUnion (XMeta m.r) XRowEmpty) (XMeta m.s), unifyRow m.ctx (XMeta m.s) (XRowUnion XRowEmpty (XMeta m.r)) ] \result ->
+        case fst result of
+          Solved { metas: ctx } -> do
+            solutionOf ctx m.r `shouldEqual` Just (XMeta m.s)
+            solutionOf ctx m.s `shouldEqual` Nothing
+          other -> show other `shouldEqual` "Solved"
+
+    it "waits, unwritten, where it is equated with a row holding what an ordinary tail cannot take for it" do
+      let m = bounded
+      for_ [ unifyRow m.ctx (XMeta m.s) (field a tA (XMeta m.r)), unifyRow m.ctx (XMeta m.s) (field a tA XRowEmpty) ] \result ->
+        case fst result of
+          Stuck { blockedOn: waiting } -> Set.member m.s waiting `shouldEqual` true
+          other -> show other `shouldEqual` "Stuck"
+
+    it "is not written for another boundary's row, both waited on" do
+      let
+        m = twoMetas ordinary ordinary
+        ctx = m.ctx { boundaryRows = Set.fromFoldable [ m.r, m.s ] }
+      case fst (unifyRow ctx (XMeta m.r) (XMeta m.s)) of
+        Stuck { blockedOn: waiting } -> waiting `shouldEqual` Set.fromFoldable [ m.r, m.s ]
+        other -> show other `shouldEqual` "Stuck"
+
+    it "is read as any row once its boundary has decided it" do
+      let
+        m = bounded
+        decided = m.ctx { bindings = Map.insert m.s (Assigned (field a tA XRowEmpty)) m.ctx.bindings }
+      case fst (unifyRow decided (XMeta m.r) (XMeta m.s)) of
+        Solved { metas: ctx } -> knownKeysOf ctx m.r `shouldEqual` Just [ SymbolKey a ]
         other -> show other `shouldEqual` "Solved"
 
   describe "waiting rather than failing" do

@@ -350,8 +350,38 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Resolve" do
             pure { a, sigma: r.sigma }
         )
         \r resolution after -> do
-          outcomes resolution `shouldEqual` []
+          -- a union holding the boundary's row gives no target, so the
+          -- component is left with nothing solved
+          map ambiguityOf (outcomes resolution) `shouldEqual` [ Just "undecided" ]
           substitute after.tentative.metas r.a `shouldEqual` r.a
+          substitute after.tentative.metas (XMeta r.sigma) `shouldEqual` XMeta r.sigma
+
+    it "leave a checking boundary's ambient row unwritten, and its boundary's, where the row expected of it is that row" do
+      resolving
+        ( do
+            expected <- fresh
+            r <- boundaryWith expected (const [])
+            equate site { kind: rowEffect, left: expected, right: XMeta r.sigma }
+            pure r
+        )
+        \r resolution after -> do
+          -- the boundary waits, deciding nothing, and nothing has broken
+          map ambiguityOf (outcomes resolution) `shouldEqual` [ Just "undecided" ]
+          substitute after.tentative.metas (XMeta r.sigma) `shouldEqual` XMeta r.sigma
+          Set.member r.sigma after.tentative.metas.boundaryRows `shouldEqual` true
+
+    it "give a target from a union holding a checking boundary's ambient row once the boundary has decided it" do
+      resolving
+        ( do
+            a <- fresh
+            r <- boundaryWith (closed [ console ]) (\sigma -> [ Tuple (closed [ console ]) sigma ])
+            _ <- placeFit site Wrapping (XMeta r.sigma) a
+            pure { a, sigma: r.sigma }
+        )
+        \r resolution after -> do
+          outcomes resolution `shouldEqual` [ Settled ]
+          sameRow after (XMeta r.sigma) (closed [ console ])
+          sameRow after r.a (closed [ console ])
 
     it "are an inference row once identified where an inference row is among them" do
       resolving

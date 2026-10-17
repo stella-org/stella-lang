@@ -482,7 +482,7 @@ notes:  pending : [{ id : PendingCaseId, site, closable, assembled }]
 
 **A checking boundary is a job from the moment its body is built**, and its life runs in this order, all inside the attempt that elaborates the boundary's enclosing body ([Elaboration](01-Elaboration.md#explicit-checking-boundaries)):
 
-1. **Opening.** The surface elaborator creates the boundary's ambient row `?σ`, an inference row the resolution of fits does not take as a target to solve.
+1. **Opening.** The surface elaborator creates the boundary's ambient row `?σ`, an inference row the resolution of fits does not take as a target to solve, and **that no equation writes**: it may stand inside a type and an ordinary tail may refer to it, an ordinary tail equated with it alone taking it, but anything else equated with it waits until the job assigns it ([Elaboration](01-Elaboration.md#rigid-and-flexible)). The job gives it over to unification for its own assignment alone.
 2. **The body.** The body is built under `?σ`, its fits taking `?σ` as their target.
 3. **Closing.** Once the body is built, a `JobImplicitHandler` is created and queued holding the boundary: `?σ`, the expected row `ρ`, the thunk of the body, and `Ξ`.
 
@@ -492,7 +492,7 @@ notes:  pending : [{ id : PendingCaseId, site, closable, assembled }]
 
 1. **The source row.** The fits whose target's remainder is `?σ` alone are the boundary's, and their sources' compatible union is the body's complete source row `U`. It is formed with the tails the sources share kept as one: `( Console | ?e )` and `( File | ?e )` form `( Console, File | ?e )`. **Only where the union cannot be formed uniquely** — two distinct flexible tails, say — does the job postpone, on those tails.
 2. **The decision**, `fit(U, ρ)`, cancelling the keys and tails `U` and `ρ` share first:
-   - **`Equal` or `Widen`**: `?σ := ρ` through `assign`, which decides the fits inside again against `ρ` and wakes what they wake. The job is solved with no plan; nothing is placed at the boundary.
+   - **`Equal` or `Widen`**: `?σ := ρ` through `assign`, which decides the fits inside again against `ρ` and wakes what they wake. The job is solved with no plan; nothing is placed at the boundary. **The job gives `?σ` over to unification and writes it as one step**: where `ρ`, as it stands, holds `?σ` itself — an ordinary tail it holds having been identified with `?σ` — the job waits rather than release a row nothing would write, and a release that leaves `?σ` unwritten is the host's defect.
    - **A definite mismatch**: `?σ := U` through `assign`, fixing the body at `U`. The plan is sought over the complete difference ([Effect Handlers](02-Effect-Handlers.md#the-plan)): a unique plan solves the job and is recorded with its result, and the lowering is built from it when the term is made Core; no plan, several, or an undetermined order fails the job as that section reports. `( Console | ?e )` against `( LiftIO | ?e )` is such a mismatch once `?e` cancels.
    - **Undecided once the shared tails cancel**: the job postpones on the flexible tails that remain and can still decide the fit, and `?σ` stays unassigned. A known key of `U` that `ρ` cannot absorb is a mismatch even where `U` keeps a tail of its own, and the plan then fixes that tail: `( Console | ?t )` against `( LiftIO | e )` takes `Console ~> ( LiftIO )`, and the plan's final equality `( LiftIO | ?t ) ≡ ( LiftIO | e )` assigns `?t := e`.
 

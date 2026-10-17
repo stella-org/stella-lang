@@ -984,19 +984,30 @@ refine bound ctx r s d1 d2 r1 r2 =
               , scope: sharedScope
               , level: min infoR.level infoS.level
               }
+
+            -- a boundary's row is no tail to refine: an ordinary tail equated
+            -- with it and nothing else takes it, and anything else waits for
+            -- the boundary to decide it
+            alone = Map.isEmpty d1 && Map.isEmpty d2 && Set.isEmpty r1 && Set.isEmpty r2
+            boundary m = Set.member m ctxK.boundaryRows
           in
-            let
-              Tuple t ctxT = freshMeta freshInfo ctxK
-              -- the tail left is an instantiation row only if both were
-              ctx' =
-                if Set.member r ctxT.instantiationRows && Set.member s ctxT.instantiationRows then ctxT { instantiationRows = Set.insert t ctxT.instantiationRows }
-                else ctxT
-            in
-              case assignRow bound ctx' r (rebuild { known: d2, rigid: r2, flexible: Set.singleton t }) of
-                Stepped ctx'' ->
-                  assignRow bound ctx'' s (rebuild { known: d1, rigid: r1, flexible: Set.singleton t })
-                other ->
-                  other
+            if boundary r || boundary s then
+              if alone && not (boundary r && boundary s) then
+                if boundary s then assignRow bound ctxK r (XMeta s) else assignRow bound ctxK s (XMeta r)
+              else Stuck' ctxK (Set.filter boundary (Set.fromFoldable [ r, s ]))
+            else
+              let
+                Tuple t ctxT = freshMeta freshInfo ctxK
+                -- the tail left is an instantiation row only if both were
+                ctx' =
+                  if Set.member r ctxT.instantiationRows && Set.member s ctxT.instantiationRows then ctxT { instantiationRows = Set.insert t ctxT.instantiationRows }
+                  else ctxT
+              in
+                case assignRow bound ctx' r (rebuild { known: d2, rigid: r2, flexible: Set.singleton t }) of
+                  Stepped ctx'' ->
+                    assignRow bound ctx'' s (rebuild { known: d1, rigid: r1, flexible: Set.singleton t })
+                  other ->
+                    other
 
     Just (Assigned _), _ -> Broke (MetaAlreadyAssigned r)
     Nothing, _ -> Broke (MetaUnbound r)
@@ -1013,8 +1024,25 @@ refine bound ctx r s d1 d2 r1 r2 =
 -- | assignment recorded here is watched by. Reaching for the facts at hand
 -- | instead would prove an obligation from assumptions that do not hold where it
 -- | arose, and refuse one the assumptions that do hold prove.
+-- |
+-- | **A checking boundary's ambient row is assigned by its boundary alone**
+-- | ([Elaboration](../../../../../docs/technical-references/02-Surface-Language/01-Elaboration.md#rigid-and-flexible)).
+-- | It may stand in a type and an ordinary tail may refer to it, but no
+-- | equation writes it: an ordinary tail equated with it alone takes it, which
+-- | way round the equation is written, and anything else waits until the
+-- | boundary has decided it, after which it is read as any other row.
 assignMeta :: MetaContext -> MetaVar -> XType -> Step
-assignMeta ctx m solution =
+assignMeta ctx m solution
+  | Set.member m ctx.boundaryRows = case solution of
+      XMeta n
+        | n /= m
+        , not (Set.member n ctx.boundaryRows)
+        , Just (Unsolved _) <- lookupMeta ctx n -> assignMeta ctx n (XMeta m)
+      _ -> Stuck' ctx (Set.singleton m)
+  | otherwise = assigned ctx m solution
+
+assigned :: MetaContext -> MetaVar -> XType -> Step
+assigned ctx m solution =
   case lookupMeta ctx m of
     Just (Unsolved info) ->
       if occursIn m solution then
