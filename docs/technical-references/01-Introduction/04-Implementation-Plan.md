@@ -1457,6 +1457,12 @@ Synthesized parameters supplied at a reference ([Elaboration](../02-Surface-Lang
 | A spine with a synthesized parameter where the scheme holds a quantifier, one too many, or a rest that is not the scheme's | The host's defect |
 | A goal no synthesizer the build provides fills, and an attempter whose monad stops | The host's defect; the elaboration stopping with the monad, no diagnostic |
 | A module compiled with a host registry, and the same with none, alone and in a build of two modules | Compiled; an internal compiler error naming the synthesizer |
+| `bad :: {{ d :: Int by make }} -> Int` where the module itself declares `make` | Reported where `make` is written, whatever its scheme: a synthesizer comes from a module compiled before; `bad` gives no scheme |
+| A module writing `one :: Handle -> Handle / {\| Kernel \|}` against `Stella.Elab`, and one after it naming `by one` | Compiled, `by one` checked against the interface projected from the bundle the session installs |
+| `stellac build` of `Support`, `A` filling a goal with `Support.seed`, and `Main` at two goals naming `A.one` | `Support`, `A`, `Main` compiled in that order, each loaded on the session once, `Support` before `A`; both values `1` on the machine. A walk that skips `Support`, or a load made twice, fails the build |
+| The same goal filled by a host synthesizer of the same policy | The same Core, annotations dropped |
+| A synthesizer that throws, one that faults, and one that never returns | `A synthesizer failed here` where the goal stands; the build failing against the synthesizer, as faulting, and as having used up its 1,000,000 steps, where the goal stands, with no internal error |
+| An equation carried out by the build's attempter | By the host, no session opened |
 
 ### Binding groups and generalization (step 7)
 

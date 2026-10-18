@@ -338,6 +338,8 @@ protocol `1`, the profile `elaboration`, and the capabilities `modules`, `invoke
 force, and a handshake requiring it so is refused as `capabilityIncomplete`. A request before the handshake, a second handshake, and any request
 once `close` has arrived are protocol errors.
 
+**A build's session holds all four.** `stellac build` offers `modules`, `parse`, `invoke`, and `kernel`, and runs its macros' parsers and its goals' synthesizers on the one session, a request at a time: a module of the build is loaded once, whichever of the two first needs it ([Modules](../06-Modules/01-Modules.md)).
+
 **`ready` means `Stella.Elab` is there**, and `Stella.Syntax` where `parse` is in force. An accepted `hello` is not answered at once:
 the session first installs `Stella.Elab`, the module every guest is written against,
 which the interpreter builds from the compiler it is built with rather than loading
