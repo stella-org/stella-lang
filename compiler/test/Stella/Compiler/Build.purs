@@ -29,6 +29,11 @@ import Stella.Compiler.Elaborate.Environment.Imported (compilationSignature, imp
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..))
 import Stella.Compiler.Elaborate.Surface.Module (ElaborationError(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
+import Stella.Compiler.Elaborate.Driver.Loop (AttempterM)
+import Stella.Compiler.Elaborate.Driver.Synthesis (attemptJob)
+import Stella.Compiler.Elaborate.Kernel.Elab (SessionEnv)
+import Stella.Compiler.Elaborate.Protocol.Facade as F
+import Stella.Compiler.Elaborate.Protocol.Guest (synthesizerType)
 import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment, viewFor)
 import Stella.Compiler.Interface.File (decode, encode)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
@@ -39,7 +44,7 @@ import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (ParseOutcome(..), RunParser, defaultSettings)
 import Stella.Compiler.Macro.Tree (Position(..), Range(..), SyntaxNode(..), Token(..), TokenTree(..))
 import Stella.Compiler.Macro.Tree as Tree
-import Stella.Compiler.Build (BackendProblem(..), BuildError(..), SourceRoot, defaultSourceRoots, CompileError(..), CompileWarning, CompilerAction, EnvironmentProblem(..), PackageFile, SyntaxProblem(..), build, buildMessages, compileModule, defaultHooks, locationsOf, printBuildMessage, printCompileError, warningLocationOf)
+import Stella.Compiler.Build (BackendProblem(..), BuildError(..), SourceRoot, defaultSourceRoots, CompileError(..), CompileWarning, CompilerAction, EnvironmentProblem(..), PackageFile, SyntaxProblem(..), build, buildMessages, compileModule, defaultHooks, locationsOf, printBuildMessage, printCompileError, warningLocationOf, withoutSynthesizers)
 import Stella.Compiler.Resolve.Module (ResolutionError(..))
 import Stella.Compiler.Resolve.Monad (ResolveError(..), ResolveReason(..)) as Resolve
 import Stella.Compiler.Surface.Origin as Surface
@@ -163,6 +168,25 @@ interfaceMarks =
   , arities: Map.empty
   }
 
+-- | `Synth`, declaring the synthesizer `resolve` at the type one is invoked at.
+interfaceSynth :: ModuleInterface
+interfaceSynth =
+  { name: synthModule
+  , imports: []
+  , exports: emptyExports { values = Map.singleton "resolve" { entity: resolve, via: Declared } }
+  , declarations: emptyDeclarations { values = Map.singleton (Ident "resolve") { sort: SortValue, scheme: plainScheme (monoScheme synthesizerType), attributes: [] } }
+  , implicitHandlers: []
+  , catalogOnly: Set.empty
+  , arities: Map.empty
+  }
+
+synthModule :: ModuleName
+synthModule = ModuleName "Synth"
+
+-- | `Synth.resolve`.
+resolve :: Qualified Ident
+resolve = Qualified synthModule (Ident "resolve")
+
 marksModule :: ModuleName
 marksModule = ModuleName "Marks"
 
@@ -179,7 +203,7 @@ moduleA :: ModuleName
 moduleA = ModuleName "Macros"
 
 environment :: BuildEnvironment
-environment = case foldM (flip addInterface) initialEnvironment (syntaxInterfaces <> [ interfaceA, interfaceC, interfaceEffects, interfaceSynonyms, interfaceMarks ]) of
+environment = case foldM (flip addInterface) initialEnvironment (syntaxInterfaces <> [ interfaceA, interfaceC, interfaceEffects, interfaceSynonyms, interfaceMarks, interfaceSynth ]) of
   Right env -> env
   Left _ -> initialEnvironment
 
@@ -216,7 +240,12 @@ compiling = compilingUnder [ "module M where" ]
 
 -- | `compiling`, the module's header the lines given.
 compilingUnder :: Array String -> Array String -> (Ran -> Aff Unit) -> Aff Unit
-compilingUnder header lines k = do
+compilingUnder = compilingBy withoutSynthesizers
+
+-- | `compilingUnder`, each job of the module's elaboration carried out by the
+-- | attempter given.
+compilingBy :: (SessionEnv -> AttempterM Aff) -> Array String -> Array String -> (Ran -> Aff Unit) -> Aff Unit
+compilingBy synthesis header lines k = do
   handed <- liftEffect (Ref.new [])
   let
     note s = liftEffect (Ref.modify_ (\l -> Array.snoc l s) handed)
@@ -225,6 +254,7 @@ compilingUnder header lines k = do
     action =
       { readSource: \_ -> pure (Left "no file")
       , runParser: \_ q i -> pure (unwrapIdentity (parsers q i))
+      , synthesis
       , hooks: defaultHooks
           { onElaborated = \core -> note ("core " <> joinWith " " (Array.mapMaybe bound core.decls))
           , onTranslated = \mid -> note ("mid " <> moduleText mid.name)
@@ -460,28 +490,28 @@ spec = describe "Stella.Compiler.Build" do
     it "makes an arrow pure where it spreads only empty rows, as its normal form says" do
       compiles [ "f :: Int -> Int / {| ...{||}, ...{||} |}", "f x = x" ]
 
-  describe "a synthesized argument" do
+  describe "a synthesized parameter" do
     let
-      dictModule = [ "data Dict a = Dict a", "make :: Int", "make = 1", "showWith :: {{ d :: Dict Int by make }} -> Int -> Int", "showWith d x = x" ]
+      dictModule = [ "import Synth", "data Dict a = Dict a", "showWith :: {{ d :: Dict Int by resolve }} -> Int -> Int", "showWith d x = x" ]
       rendered errors = map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors
 
     it "is a parameter of the definition, the interface publishing it on the spine, through its file" do
-      compilingUnder [ "module M (Dict(..), make, showWith) where" ] dictModule case _ of
+      compilingUnder [ "module M (Dict(..), showWith) where" ] dictModule case _ of
         Left errors -> fail (joinWith "; " (rendered errors))
         Right r -> do
           let dict = TApp (TCon (Qualified (ModuleName "M") (TyName "Dict")) []) int
           map _.scheme (Map.lookup (Ident "showWith") r.interface.declarations.values) `shouldEqual`
-            Just { kindVars: [], body: Synthesized { name: Just (Ident "d"), dictionary: dict, synthesizer: Qualified (ModuleName "M") (Ident "make") } (Plain (pureFn int int)) }
+            Just { kindVars: [], body: Synthesized { name: Just (Ident "d"), dictionary: dict, synthesizer: resolve } (Plain (pureFn int int)) }
           case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
             Right stored -> stored.interface `shouldEqual` r.interface
             Left problem -> fail problem
 
-    it "is followed by a forall the definition opens where it stands, a synthesized argument after it among them" do
+    it "is followed by a forall the definition opens where it stands, a synthesized parameter after it among them" do
       compilingUnder [ "module M (idWith, both) where" ]
         ( dictModule <>
-            [ "idWith :: {{ d :: Dict Int by make }} -> (forall a. a -> a)"
+            [ "idWith :: {{ d :: Dict Int by resolve }} -> (forall a. a -> a)"
             , "idWith d x = x"
-            , "both :: {{ d :: Dict Int by make }} -> (forall a. {{ e :: Dict a by make }} -> a -> a)"
+            , "both :: {{ d :: Dict Int by resolve }} -> (forall a. {{ e :: Dict a by resolve }} -> a -> a)"
             , "both d e x = x"
             ]
         )
@@ -491,21 +521,32 @@ spec = describe "Stella.Compiler.Build" do
             let
               a = TVar (TyVar "a")
               dict t = TApp (TCon (Qualified (ModuleName "M") (TyName "Dict")) []) t
-              parameter name t = { name: Just (Ident name), dictionary: dict t, synthesizer: Qualified (ModuleName "M") (Ident "make") }
+              parameter name t = { name: Just (Ident name), dictionary: dict t, synthesizer: resolve }
               scheme n = map _.scheme (Map.lookup (Ident n) r.interface.declarations.values)
             scheme "idWith" `shouldEqual` Just { kindVars: [], body: Synthesized (parameter "d" int) (Forall (TyVar "a") KType (Plain (pureFn a a))) }
             scheme "both" `shouldEqual` Just { kindVars: [], body: Synthesized (parameter "d" int) (Forall (TyVar "a") KType (Synthesized (parameter "e" a) (Plain (pureFn a a)))) }
 
-    it "keeps a reference to what takes one outside this version, in the module and in one importing it" do
-      compiling (dictModule <> [ "use :: Dict Int -> Int -> Int", "use d x = showWith d x" ]) case _ of
-        Left errors -> rendered errors `shouldEqual` [ "8:11 This version of the compiler does not elaborate a reference to a value taking a synthesized argument yet" ]
+    it "names a synthesizer at the type one is invoked at, reported where it is named" do
+      compiling [ "make :: Int", "make = 1", "bad :: {{ d :: Int by make }} -> Int", "bad d = d" ] case _ of
+        Left errors -> rendered errors `shouldEqual` [ "4:23 `make` names no synthesizer, which is invoked at `Stella.Elab.Handle -> Stella.Elab.Handle / {| Stella.Elab.Kernel |}`" ]
+        Right _ -> fail "compiled"
+
+    it "is supplied where it is referred to by the synthesizers the build provides, and is the build's defect where it provides none" do
+      let
+        lines = [ "import Synth", "showInt :: {{ d :: Int by resolve }} -> Int -> Int", "showInt d x = x", "use :: Int -> Int", "use x = showInt x" ]
+        registry = Map.singleton resolve \_ -> F.rootScope >>= \root -> F.literal root (LitInt 1)
+      compilingBy (\session id s -> pure (attemptJob session registry id s)) [ "module M where" ] lines case _ of
+        Left errors -> fail (joinWith "; " (rendered errors))
+        Right r -> r.handed `shouldEqual` [ "core showInt use", "mid M", "bytecode M" ]
+      compiling lines case _ of
+        Left errors -> rendered errors `shouldEqual` [ " Internal compiler error: (SynthesizerUnavailable (Qualified \"Synth\" \"resolve\"))" ]
         Right _ -> fail "compiled"
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "use :: Dict Int -> Int -> Int", "use d x = showWith d x" ])
-        , Tuple "src/A.stel" (moduleOf "A" [] dictModule)
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "use :: Int -> Int", "use x = showInt x" ])
+        , Tuple "src/A.stel" (moduleOf "A" [] lines)
         ]
         \r -> case r.result of
-          Left err -> map _.message (NonEmptyArray.toArray (buildMessages err)) `shouldEqual` [ "This version of the compiler does not elaborate a reference to a value taking a synthesized argument yet" ]
+          Left err -> map _.message (NonEmptyArray.toArray (buildMessages err)) `shouldEqual` [ "Internal compiler error: (SynthesizerUnavailable (Qualified \"Synth\" \"resolve\"))" ]
           Right _ -> fail "built"
 
   describe "a typed hole in an annotation" do
@@ -915,6 +956,7 @@ spec = describe "Stella.Compiler.Build" do
         action =
           { readSource: \_ -> pure (Left "no file")
           , runParser: \_ q i -> pure (unwrapIdentity (parsers q i))
+          , synthesis: withoutSynthesizers
           , hooks: defaultHooks { onElaborated = \core -> liftEffect (Ref.write core.exports exported) }
           }
       r <- compileModule action defaultSettings environment Map.empty source
@@ -1194,6 +1236,7 @@ buildingUnder roots sources k = do
       , runParser: \built q i -> do
           note (fmt @"parse with {built}" { built: joinWith " " (map moduleText (Array.fromFoldable (Map.keys built))) })
           pure (unwrapIdentity (parsers q i))
+      , synthesis: withoutSynthesizers
       , hooks: defaultHooks
           { onStartCompile = \p f -> note (fmt @"start {current}/{total} {name}" { current: p.current, total: p.total, name: moduleText f.name })
           , onElaborated = \_ -> note "elaborated"

@@ -24,7 +24,7 @@ import Run.Except as Except
 import Steam.Foreign (emptyTable)
 import Steam.Load (Identities, emptyStore, globalNamed, load, noIdentities)
 import Steam.Value (Value(..))
-import Stella.Compiler.Build (CompilerAction, compileModule, defaultHooks, printCompileError)
+import Stella.Compiler.Build (CompilerAction, compileModule, defaultHooks, printCompileError, withoutSynthesizers)
 import Stella.Compiler.Bytecode.Module (Key(..))
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment)
 import Stella.Compiler.Macro.Run (ParseOutcome(..), defaultSettings)
@@ -74,6 +74,7 @@ runningAfter before source globals k = do
   action =
     { readSource: \_ -> pure (Left "no file")
     , runParser: \_ _ _ -> pure (FailedAs { position: Position 0 0, expected: Set.empty, labels: [] })
+    , synthesis: withoutSynthesizers
     , hooks: defaultHooks
     }
   maybe d f = case _ of

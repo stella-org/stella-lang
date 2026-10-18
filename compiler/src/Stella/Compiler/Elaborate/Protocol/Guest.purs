@@ -49,6 +49,7 @@ module Stella.Compiler.Elaborate.Protocol.Guest
   , breachEffect
   , breachedOp
   , elabRow
+  , synthesizerType
   , guestCommandTy
   , guestAnswerTy
   , Operation
@@ -126,6 +127,11 @@ breachedOp = OpName "breached"
 -- | `( Abort, Breach, Kernel )`, the row every operation of the facade runs at.
 elabRow :: Type
 elabRow = effectRow [ abortEffect, breachEffect, kernelEffect ]
+
+-- | The type a synthesizer is invoked at: from the handle of its goal to the
+-- | handle of the term it fills the goal with, answering `Kernel` alone.
+synthesizerType :: Type
+synthesizerType = fn handle (effectRow [ kernelEffect ]) handle
 
 -- | A signature with `Stella.Elab.Handle` in it, which is what checking the module,
 -- | and a guest over it, needs.

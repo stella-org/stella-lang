@@ -79,7 +79,7 @@ spec = describe "Stella.Compiler.CST.Parser" do
       "Proxy (Maybe :: Type -> Type)" `typeIs` "(Proxy (:: Maybe (-> Type Type)))"
     it "reads the shape of a capability translation" do
       "Console ~> ( LiftIO )" `typeIs` "(~> Console (parens LiftIO))"
-    it "reads a synthesized argument" do
+    it "reads a synthesized parameter" do
       "{{ dict :: Show a by Typeclass.resolve }} -> a -> String" `typeIs`
         "(-> (synth dict (Show a) by Typeclass.resolve) (-> a String))"
     it "reads a directive on a type" do

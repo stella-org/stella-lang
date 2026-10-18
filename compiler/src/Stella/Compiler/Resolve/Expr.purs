@@ -506,7 +506,7 @@ resolveHandler params t items = do
     CST.HandlerClauses m cs -> pure acc { clauses = acc.clauses <> map { block: m, clause: _ } cs }
 
 -- | The effect a signature written in full handles: past its quantifiers,
--- | constraints, and synthesized arguments, it is a function from a thunk
+-- | constraints, and synthesized parameters, it is a function from a thunk
 -- | `Unit -> α / ρ` to a result, under `/ ρ'` or pure, and the effect is the
 -- | one element `ρ` holds and `ρ'` does not.
 -- |
@@ -533,7 +533,7 @@ handledBy r t = case afterSpine t of
   afterSpine = case _ of
     TypeForall _ _ body -> afterSpine body
     TypeConstrained _ _ body -> afterSpine body
-    TypeFunction _ (TypeSynthesized _ _ _ _) body Nothing -> afterSpine body
+    TypeFunction _ (TypeSynthesized _ _ _ _ _) body Nothing -> afterSpine body
     other -> other
 
 -- | The key of an element of an effect row: the effect, or the label of an

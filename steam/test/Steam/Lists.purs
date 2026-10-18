@@ -46,7 +46,7 @@ import Steam.Value (CtorId, Value(..))
 import Stella.CLI.Session.Client as Client
 import Stella.CLI.Effect.Process (PROCESS)
 import Stella.CLI.Session.RunParser (ParserRunnerError(..), loadingParser)
-import Stella.Compiler.Build (CompilerAction, build, buildMessages, defaultHooks, defaultSourceRoots, printBuildMessage)
+import Stella.Compiler.Build (CompilerAction, build, buildMessages, defaultHooks, defaultSourceRoots, printBuildMessage, withoutSynthesizers)
 import Stella.Compiler.Bytecode (Dmo, encode, lower)
 import Stella.Compiler.Interface (aritiesOf, importsOf)
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment)
@@ -291,6 +291,7 @@ building unwritten modules globals k = case compiled of
                     Just (Tuple _ body) -> Right body
                     Nothing -> Left "no such file"
                 , runParser: loadingParser loading session syntax.descriptor
+                , synthesis: withoutSynthesizers
                 , hooks: defaultHooks
                     { onLowered = \b -> do
                         liftEffect (Ref.modify_ (\ds -> Array.snoc ds b.dmo) lowered)

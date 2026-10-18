@@ -1,13 +1,13 @@
 -- | What the surface elaborator reads of the imports and the module beyond the
 -- | signature and the catalog: the type synonyms types are read through, the
 -- | operations with the arguments they are written with, the effects with their
--- | operations in order, the values whose schemes take a synthesized argument,
+-- | operations in order, the values whose schemes take a synthesized parameter,
 -- | and the schemes of the module's values without a signature
 -- | ([Elaboration](../../../../../docs/technical-references/02-Surface-Language/01-Elaboration.md)).
 -- |
 -- | **Neither is the kernel's.** A synonym is expanded before any type reaches
--- | the mechanism, and a synthesized argument is a parameter of the
--- | dictionary's type in Core; what a reference to such a value owes is the
+-- | the mechanism, and a synthesized parameter is a parameter of its
+-- | type in Core; what a reference to such a value owes is the
 -- | surface elaborator's to supply. **A value without a signature is in no
 -- | catalog**: the module's synthesizers never read it, generalized or not.
 module Stella.Compiler.Elaborate.Environment.Surface
@@ -22,7 +22,6 @@ import Data.Array as Array
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEnv, emptySynonyms, importedSynonyms)
@@ -34,13 +33,13 @@ import Stella.Compiler.Elaborate.CorePlus.Type (XType)
 import Stella.Compiler.Elaborate.Environment.Operations (EffectEnv, OperationEnv, importedEffects, importedOperations)
 
 -- | The synonyms, the operations, the effects, the values taking a synthesized
--- | argument, and the module's values without a signature, each by the qualified
--- | name of its declaration.
+-- | argument at the spine their interface gives them, and the module's values
+-- | without a signature, each by the qualified name of its declaration.
 type SurfaceEnv =
   { synonyms :: SynonymEnv
   , operations :: OperationEnv
   , effects :: EffectEnv
-  , synthesizing :: Set (Qualified Ident)
+  , synthesizing :: Map (Qualified Ident) SchemeBody
   , bindings :: Map (Qualified Ident) SurfaceBinding
   }
 
@@ -56,7 +55,7 @@ data SurfaceBinding
   | ProvisionalScheme
 
 emptySurface :: SurfaceEnv
-emptySurface = { synonyms: emptySynonyms, operations: Map.empty, effects: Map.empty, synthesizing: Set.empty, bindings: Map.empty }
+emptySurface = { synonyms: emptySynonyms, operations: Map.empty, effects: Map.empty, synthesizing: Map.empty, bindings: Map.empty }
 
 -- | What the modules the imports reach declare.
 importedSurface :: BuildEnvironment -> ModuleView -> SurfaceEnv
@@ -64,17 +63,17 @@ importedSurface env view =
   { synonyms: importedSynonyms env view
   , operations: importedOperations env view
   , effects: importedEffects env view
-  , synthesizing: Set.fromFoldable (Array.concatMap synthesizingOf (Set.toUnfoldable (reachable view)))
+  , synthesizing: Map.fromFoldable (Array.concatMap synthesizingOf (Set.toUnfoldable (reachable view)))
   , bindings: Map.empty
   }
   where
   synthesizingOf m = case lookupInterface m env of
     Nothing -> []
     Just i -> Array.mapMaybe
-      (\(Tuple name entry) -> if takesSynthesized entry.scheme then Just (Qualified m name) else Nothing)
+      (\(Tuple name entry) -> if takesSynthesized entry.scheme then Just (Tuple (Qualified m name) entry.scheme.body) else Nothing)
       (Map.toUnfoldable i.declarations.values)
 
--- | Whether a scheme's spine holds a synthesized argument.
+-- | Whether a scheme's spine holds a synthesized parameter.
 takesSynthesized :: Scheme -> Boolean
 takesSynthesized s = go s.body
   where

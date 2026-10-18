@@ -178,7 +178,7 @@ spec = describe "Stella.Compiler.CST.Lexer" do
       "n ! x" `failsWith` BangNotAfterName
 
   describe "brackets" do
-    it "reads effect rows, synthesized arguments and attributes" do
+    it "reads effect rows, synthesized parameters and attributes" do
       "{| e |} {{ x }} @[test]" `lexesTo`
         [ TokLeftBar, lower "e", TokRightBar, TokLeftSynth, lower "x", TokRightBrace, TokRightBrace, TokLeftAttribute, lower "test", TokRightSquare ]
     it "reads an empty effect row" do

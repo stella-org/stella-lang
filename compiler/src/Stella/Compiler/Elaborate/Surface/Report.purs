@@ -70,6 +70,7 @@ elaborationOrigins = case _ of
   SynthesisUndecided o -> [ o ]
   ConstraintUnwritten o -> [ o ]
   KindUndetermined o -> [ o ]
+  SynthesizerIllTyped o _ -> [ o ]
   Rejected d -> diagnosticOrigins d
   EquationUndecided o -> sourceOf o
   TypeUndetermined o -> [ o ]
@@ -127,6 +128,7 @@ printElaborationError = case _ of
   SynthesisUndecided _ -> "Nothing determines what is synthesized here"
   ConstraintUnwritten _ -> "This needs a condition the declaration's partial signature does not write, and a partial signature gains none; writing it in the signature gives it"
   KindUndetermined _ -> "Nothing here determines the kind of this type"
+  SynthesizerIllTyped _ (Qualified _ (Ident n)) -> fmt @"`{n}` names no synthesizer, which is invoked at `{invoked}`" { n, invoked: "Stella.Elab.Handle -> Stella.Elab.Handle / {| Stella.Elab.Kernel |}" }
   Rejected d -> printDiagnostic d
   EquationUndecided _ -> "Nothing determines the types this equation is about"
   TypeUndetermined _ -> "Nothing determines the type here"

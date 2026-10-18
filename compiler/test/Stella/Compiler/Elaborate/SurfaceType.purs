@@ -487,13 +487,13 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Type" do
   describe "a scheme's spine" do
     let
       synthesizer = Qualified lib (Ident "make")
-      dictionary = TypeSynthesized (at 30) (Just (Ident "d")) (app box (v a)) synthesizer
+      dictionary = TypeSynthesized (at 30) (Just (Ident "d")) (app box (v a)) (at 31) synthesizer
       consoleRow = TypeEffectRow (at 31) [ EffectElement (console 31) ]
       coreConsole = Core.TRowExtend (Core.RowEffectEntry consoleName []) Core.TRowEmpty
       boxA = coreBox (Core.TVar (TyVar "a"))
       parameter = { name: Just (Ident "d"), dictionary: boxA, synthesizer }
 
-    it "holds a synthesized argument where it stands, a parameter of its dictionary's type in Core" do
+    it "holds a synthesized parameter where it stands, a parameter of its type in Core" do
       elaborating [ a ] (TypeFunction (at 4) dictionary (arrow (v a) int) Nothing) \ran -> do
         ran.scheme `shouldEqual` Right { kindVars: [], body: Core.TForall (TyVar "a") Core.KType (pureFn boxA (pureFn (Core.TVar (TyVar "a")) coreInt)) }
         ran.published `shouldEqual` Just { kindVars: [], body: Forall (TyVar "a") Core.KType (Synthesized parameter (Plain (pureFn (Core.TVar (TyVar "a")) coreInt))) }

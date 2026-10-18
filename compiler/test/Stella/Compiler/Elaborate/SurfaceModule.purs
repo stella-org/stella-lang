@@ -26,16 +26,20 @@ import Stella.Compiler.Elaborate.CorePlus.Row (rebuild, xnf)
 import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId(..), PendingCaseId(..), XDecisionTree(..), XExpr(..))
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
-import Stella.Compiler.Elaborate.Driver.Synthesis (attemptJob)
+import Stella.Compiler.Elaborate.Driver.Synthesis (Registry, attemptJob)
+import Stella.Compiler.Elaborate.Driver.Loop (identically)
+import Stella.Compiler.Elaborate.Protocol.Guest (synthesizerType)
 import Stella.Compiler.Elaborate.Protocol.Facade as F
 import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
+import Stella.Compiler.Elaborate.Vocabulary.View (TypeView(..))
 import Stella.Compiler.Elaborate.Environment.Imported (importedCatalog, importedSignature, sessionEnvOf)
-import Stella.Compiler.Elaborate.Environment.Surface (importedSurface)
+import Stella.Compiler.Elaborate.Environment.Surface (SurfaceEnv, importedSurface)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), closeBoundary, createSynthesis, equate, freshTypeMeta, initialState, openBoundary, placeFit)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindMetaBinding(..), MetaBinding(..), UnifyError(..), lookupMeta)
 import Stella.Compiler.Elaborate.Surface.Types (readTypes)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
-import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), cellRecords, elaborateModule, escapedCells, settleBodies)
+import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), cellRecords, elaborateModuleM, escapedCells, settleBodies)
+import Data.Identity (Identity(..))
 import Stella.Compiler.Elaborate.Surface.Report (elaborationOrigins, printElaborationError, printType)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
@@ -44,7 +48,7 @@ import Stella.Compiler.Elaborate.Surface.Expr (tagsOf)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment, viewFor)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
-import Stella.Compiler.Interface.Scheme (plainScheme)
+import Stella.Compiler.Interface.Scheme (SchemeBody(..), plainScheme)
 import Stella.Compiler.Resolve.Module (resolveModule)
 import Stella.Compiler.Surface.Origin (rangeOf)
 import Stella.Compiler.Surface.Origin as Surface
@@ -67,13 +71,20 @@ int = TCon intTy []
 -- | `const : forall a b. a -> b -> a`; `data Tuple a b = Tuple a b` and
 -- | `snd : forall a b. Tuple a b -> b`; and `foreign type Phantom` at
 -- | `forall k. Type`; `attribute label (text :: String)`; and `effect Ping` with
--- | its operation `ping`, which the interface gives no argument.
+-- | its operation `ping`, which the interface gives no argument. The
+-- | synthesizers `resolveDict`, `resolveInt`, `refuse`, `waitFor`, and
+-- | `resolveNoisy`, at the type a synthesizer is invoked at, `noisy : Unit -> Int
+-- | / {| Ping |}`, and what takes an argument they
+-- | synthesize: `shown : forall a. {{ d :: Int by resolveInt }} -> a -> a`,
+-- | `pick : forall a. {{ d :: a by waitFor }} -> Int`, `pickId : forall a.
+-- | {{ d :: a by waitFor }} -> a -> a`, and the computation `counted :: {{ d ::
+-- | Int by resolveInt }} -> Int / {||}`.
 libInterface :: ModuleInterface
 libInterface =
   { name: lib
   , imports: []
   , exports: emptyExports
-      { values = Map.fromFoldable (map (\n -> Tuple n { entity: Qualified lib (Ident n), via: Declared }) [ "inc", "id", "const", "snd", "Tuple", "ping" ])
+      { values = Map.fromFoldable (map (\n -> Tuple n { entity: Qualified lib (Ident n), via: Declared }) [ "inc", "id", "const", "snd", "Tuple", "ping", "resolveDict", "resolveInt", "refuse", "waitFor", "resolveNoisy", "noisy", "shown", "pick", "pickId", "counted" ])
       , types = Map.fromFoldable
           [ Tuple "Phantom" { entity: TypeEntity (Qualified lib (TyName "Phantom")), via: Declared, members: [] }
           , Tuple "Tuple" { entity: TypeEntity (Qualified lib (TyName "Tuple")), via: Declared, members: [ Ident "Tuple" ] }
@@ -89,6 +100,16 @@ libInterface =
           , value "snd" (TForall a KType (TForall b KType (pureFn (tuple (TVar a) (TVar b)) (TVar b))))
           , Tuple (Ident "Tuple") { sort: SortConstructor (Qualified lib (TyName "Tuple")), scheme: plainScheme (monoScheme (TForall a KType (TForall b KType (pureFn (TVar a) (pureFn (TVar b) (tuple (TVar a) (TVar b))))))), attributes: [] }
           , Tuple (Ident "ping") { sort: SortOperation (Qualified lib (EffName "Ping")), scheme: plainScheme (monoScheme (pureFn (TCon unitTy []) int)), attributes: [] }
+          , synthesizer "resolveDict"
+          , synthesizer "resolveInt"
+          , synthesizer "refuse"
+          , synthesizer "waitFor"
+          , synthesizer "resolveNoisy"
+          , Tuple (Ident "noisy") { sort: SortValue, scheme: plainScheme (monoScheme (fn (TCon unitTy []) (TRowExtend (RowEffectEntry (Qualified lib (EffName "Ping")) []) TRowEmpty) int)), attributes: [] }
+          , taker "shown" (Forall a KType (Synthesized (taking int "resolveInt") (Plain (pureFn (TVar a) (TVar a)))))
+          , taker "pick" (Forall a KType (Synthesized (taking (TVar a) "waitFor") (Plain int)))
+          , taker "pickId" (Forall a KType (Synthesized (taking (TVar a) "waitFor") (Plain (pureFn (TVar a) (TVar a)))))
+          , taker "counted" (Synthesized (taking int "resolveInt") (Computation int TRowEmpty))
           ]
       , types = Map.fromFoldable
           [ Tuple (TyName "Phantom") { kind: { kindVars: [ KindVar "k" ], body: KType }, sort: ForeignType, attributes: [] }
@@ -109,6 +130,9 @@ libInterface =
   a = TyVar "a"
   b = TyVar "b"
   value n ty = Tuple (Ident n) { sort: SortForeign MayObserve, scheme: plainScheme (monoScheme ty), attributes: [] }
+  synthesizer n = Tuple (Ident n) { sort: SortValue, scheme: plainScheme (monoScheme synthesizerType), attributes: [] }
+  taker n body = Tuple (Ident n) { sort: SortValue, scheme: { kindVars: [], body }, attributes: [] }
+  taking dictionary n = { name: Just (Ident "d"), dictionary, synthesizer: Qualified lib (Ident n) }
   tuple x y = TApp (TApp (TCon (Qualified lib (TyName "Tuple")) []) x) y
 
 -- | `Base.Continuation`, as its source compiles: `Continuation` and `continue`
@@ -176,7 +200,18 @@ elaboratingUnder = elaboratingIn environment
 
 -- | `elaboratingUnder`, the modules imported from the environment given.
 elaboratingIn :: Either String BuildEnvironment -> String -> Array String -> (Ran -> Aff Unit) -> Aff Unit
-elaboratingIn built header body k = case built of
+elaboratingIn built = elaboratingBy { built, registry: Map.empty, surface: identity }
+
+-- | `elaboratingIn`, each synthesis job carried out by the synthesizer the
+-- | registry given holds, and what the imports give the bodies to read changed
+-- | by the function given.
+elaboratingBy
+  :: { built :: Either String BuildEnvironment, registry :: Registry, surface :: SurfaceEnv -> SurfaceEnv }
+  -> String
+  -> Array String
+  -> (Ran -> Aff Unit)
+  -> Aff Unit
+elaboratingBy how header body k = case how.built of
   Left err -> fail err
   Right env -> case parseModule (joinWith "\n" ([ header, "import Lib" ] <> body)) of
     Left err -> fail (printSyntaxError err)
@@ -187,11 +222,37 @@ elaboratingIn built header body k = case built of
         [], Right view -> case importedSignature env view of
           Left err -> fail (show err)
           Right signature -> do
-            let elaborated = elaborateModule signature (importedSurface env view) (importedCatalog env view) resolved.module resolved.exports
+            let Identity elaborated = elaborateModuleM (\session -> identically (attemptJob session how.registry)) signature (how.surface (importedSurface env view)) (importedCatalog env view) resolved.module resolved.exports
             k case elaborated.result of
               Left errors -> { values: elaborated.values, errors: NonEmptyArray.toArray errors, module: Nothing }
               Right made -> { values: elaborated.values, errors: [], module: Just { core: made.core, declared: made.declared } }
         errors, _ -> fail ("not resolved: " <> show errors)
+
+-- | The synthesizers `Lib` names: `resolveDict` answers `M.Dict 1`,
+-- | `resolveInt` answers `1`, `refuse` fails, `waitFor` waits for the type of
+-- | its goal to be decided, and `resolveNoisy` answers `noisy ()`, which performs.
+synthesizers :: Registry
+synthesizers = Map.fromFoldable
+  [ Tuple (Qualified lib (Ident "resolveDict")) \_ -> do
+      root <- F.rootScope
+      dict <- F.globalRef root (Qualified (ModuleName "M") (Ident "Dict")) []
+      one <- F.literal root (LitInt 1)
+      F.termApply root dict one
+  , Tuple (Qualified lib (Ident "resolveInt")) \_ -> F.rootScope >>= \root -> F.literal root (LitInt 1)
+  , Tuple (Qualified lib (Ident "refuse")) \_ -> F.throw [ TextPart "no" ]
+  , Tuple (Qualified lib (Ident "waitFor")) \goal -> F.goalType goal >>= F.viewType >>= case _ of
+      MetaType m -> F.postpone [ m ]
+      _ -> F.throw [ TextPart "decided" ]
+  , Tuple (Qualified lib (Ident "resolveNoisy")) \_ -> do
+      root <- F.rootScope
+      noisy <- F.globalRef root (Qualified lib (Ident "noisy")) []
+      unit <- F.globalRef root unitCtor []
+      F.termApply root noisy unit
+  ]
+
+-- | `elaboratingUnder`, each synthesis job carried out by `synthesizers`.
+synthesizing :: Array String -> (Ran -> Aff Unit) -> Aff Unit
+synthesizing = elaboratingBy { built: environment, registry: synthesizers, surface: identity } "module M where"
 
 -- | The Core module made, which the Core checker accepted.
 checked :: Ran -> (Module Surface.Origin -> Aff Unit) -> Aff Unit
@@ -254,6 +315,7 @@ at = case _ of
   SignatureNeeded o _ -> located o <> " signature needed"
   ConstraintEscapes o _ -> located o <> " constraint escapes"
   SynthesisUndecided o -> located o <> " synthesis undecided"
+  SynthesizerIllTyped o (Qualified _ (Ident n)) -> located o <> " " <> n <> " names no synthesizer"
   ConstraintUnwritten o -> located o <> " constraint unwritten"
   KindUndetermined o -> located o <> " kind undetermined"
   Rejected (EquationFailed (AtSource s) _) -> located s.origin <> " rejected"
@@ -2000,9 +2062,9 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map at r.errors `shouldEqual` [ "rejected" ]
         map _.name r.values `shouldEqual` [ inM' "apply", inM' "both" ]
 
-    it "is outside this version where its spine takes a synthesized argument, and in a foreign's" do
+    it "is outside this version where its spine takes a synthesized parameter, and in a foreign's" do
       elaborating [ "data Dict a = Dict a", "make :: Int", "make = 1", "sd :: {{ d :: Dict Int by make }} -> _", "sd d = 1" ] \r ->
-        map at r.errors `shouldEqual` [ "7:1 outside: a partial signature taking a synthesized argument" ]
+        map at r.errors `shouldEqual` [ "7:1 outside: a partial signature taking a synthesized parameter" ]
       elaborating [ "foreign blob :: _ -> Int" ] \r ->
         map at r.errors `shouldEqual` [ "3:17 outside: a wildcard" ]
 
@@ -2186,7 +2248,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (effects <> [ "o2 :: forall r. Unit -> Unit / {| ...r |}", "o2 u = let", "      h :: Unit -> Unit / {| Console, ...r |}", "      h v = v", "    in u" ]) \r ->
         map at r.errors `shouldEqual` [ "7:27 obligation rejected" ]
 
-    it "is outside this version where it binds a kind variable of its own or takes a synthesized argument" do
+    it "is outside this version where it binds a kind variable of its own or takes a synthesized parameter" do
       elaborating [ "kv :: Int", "kv = let", "      q :: forall (f :: k -> Type). Int", "      q = 1", "    in q" ] \r ->
         map at r.errors `shouldEqual` [ "5:20 outside: a kind variable a local signature binds" ]
       -- reported before anything of the type is read, a kind it would equate
@@ -2195,7 +2257,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map at r.errors `shouldEqual` [ "5:20 outside: a kind variable a local signature binds" ]
 
       elaborating [ "data Dict a = Dict a", "make :: Int", "make = 1", "sy :: Int", "sy = let", "      s :: {{ d :: Dict Int by make }} -> Int", "      s d = 1", "    in 1" ] \r ->
-        map at r.errors `shouldEqual` [ "9:7 outside: a local signature taking a synthesized argument" ]
+        map at r.errors `shouldEqual` [ "9:7 outside: a local signature taking a synthesized parameter" ]
 
   describe "a computation declaration" do
     let
@@ -2239,17 +2301,124 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating [ "effect Console where", "  log :: Int ->* Unit", "loud :: Int / {| Console |}", "loud = 1", "w :: Int", "w = loud" ] \r ->
         map at r.errors `shouldEqual` [ "8:1 outside: implicit-handler resolution at this checking boundary" ]
 
-    it "taking a synthesized argument is read and published to the other bodies, its own body outside this version" do
-      elaborating
-        [ "data Dict a = Dict a"
-        , "make :: Int"
-        , "make = 1"
-        , "sc :: {{ d :: Dict Int by make }} -> Int / {||}"
+    it "taking a synthesized parameter is read and published to the other bodies, its own body outside this version" do
+      synthesizing
+        [ "sc :: {{ d :: Int by resolveInt }} -> Int / {||}"
         , "sc = 1"
         , "use :: Int"
         , "use = sc"
         ]
-        \r -> map at r.errors `shouldEqual` [ "7:1 outside: a computation taking a synthesized argument", "9:7 outside: a reference to a value taking a synthesized argument" ]
+        \r -> map at r.errors `shouldEqual` [ "4:1 outside: a computation taking a synthesized parameter" ]
+
+  describe "a reference to a value taking a synthesized parameter" do
+    let
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+      dictionary = [ "data Dict = Dict Int", "showWith :: {{ d :: Dict by resolveDict }} -> Int -> Int", "showWith d x = x" ]
+      broken r k = case r.errors of
+        [ Broken d ] -> k d
+        errors -> fail ("not broken: " <> show (map at errors))
+
+    it "is applied, where it stands, to the term the synthesizer its spine names fills the goal with, under the empty row" do
+      synthesizing (dictionary <> [ "use :: Int -> Int", "use x = showWith x" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "use" r.values of
+          Just (Lam _ _ _ _ (App _ (App _ (Global _ g _) (App _ (Lam _ _ _ TRowEmpty (App _ (Global _ c _) (Lit _ (LitInt 1)))) (Global _ u _))) (Var _ _)))
+            | g == inM "showWith" && c == inM "Dict" && u == unitCtor -> pure unit
+          other -> fail ("not applied to the term synthesized: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec showWith", "nonrec use" ]
+
+    it "fits the thunk the term synthesized stands in, and the global applied to it, into the row ambient" do
+      synthesizing (dictionary <> [ "loud :: Int -> Int / {| Ping |}", "loud x = showWith x" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "loud" r.values of
+          Just (Lam _ _ _ _ (App _ (OpenEff _ _ (App _ (OpenEff _ _ (Global _ g _)) (App _ (OpenEff _ _ (Lam _ _ _ TRowEmpty (App _ (Global _ c _) (Lit _ (LitInt 1))))) (Global _ u _)))) (Var _ _)))
+            | g == inM "showWith" && c == inM "Dict" && u == unitCtor -> pure unit
+          other -> fail ("not fitted: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec showWith", "nonrec loud" ]
+
+    it "is refused by the Core checker where the term synthesized performs, the thunk it stands in being of no row" do
+      synthesizing [ "loudDict :: {{ d :: Int by resolveNoisy }} -> Int", "loudDict d = d", "k :: Int / {| Ping |}", "k = loudDict" ] \r ->
+        map at r.errors `shouldEqual` [ "the Core checker refused it" ]
+
+    it "takes the goals of its spine from the left, each at the type of its synthesized parameter past the quantifiers and constraints before it" do
+      synthesizing
+        ( dictionary <>
+            [ "two :: forall r. {{ d :: Dict by resolveDict }} -> (forall a. {{ e :: Int by resolveInt }} -> { x :: Int, ...r } -> a -> a)"
+            , "two d e r y = y"
+            , "useTwo :: Int"
+            , "useTwo = two { x: 1 } 5"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          case bodyOf "useTwo" r.values of
+            Just (App _ (App _ (App _ (TyApp _ (App _ (ConstraintApp _ (TyApp _ (Global _ g _) _)) (App _ (Lam _ _ _ _ (App _ (Global _ c _) _)) _)) _) (App _ (Lam _ _ _ _ (Lit _ (LitInt 1))) _)) _) (Lit _ (LitInt 5)))
+              | g == inM "two" && c == inM "Dict" -> pure unit
+            other -> fail ("not in the order of the spine: " <> show other)
+          checked r \core -> shapes core `shouldEqual` [ "nonrec showWith", "nonrec two", "nonrec useTwo" ]
+
+    it "is supplied where it is imported, a computation forced once supplied, under the row ambient as anywhere" do
+      synthesizing [ "n :: Int", "n = counted", "m :: Int", "m = shown 3", "loud :: Int / {| Ping |}", "loud = counted" ] \r -> do
+        map at r.errors `shouldEqual` []
+        bodyOf "n" r.values `shouldEqual` Just (App unit (App unit (Global unit (Qualified lib (Ident "counted")) []) (App unit (Lam unit (Ident "_#0") (TCon unitTy []) TRowEmpty (Lit unit (LitInt 1))) (Global unit unitCtor []))) (Global unit unitCtor []))
+        case bodyOf "loud" r.values of
+          Just (Lam _ _ _ _ (App _ (OpenEff _ _ (App _ (OpenEff _ _ (Global _ g _)) (App _ (OpenEff _ _ (Lam _ _ _ TRowEmpty (Lit _ (LitInt 1)))) _))) _))
+            | g == Qualified lib (Ident "counted") -> pure unit
+          other -> fail ("not supplied under the row ambient: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec n", "nonrec m", "nonrec loud" ]
+
+    it "reports a goal its synthesizer refuses where the value is referred to" do
+      synthesizing [ "refused :: {{ d :: Int by refuse }} -> Int", "refused d = d", "r1 :: Int", "r1 = refused" ] \r ->
+        map at r.errors `shouldEqual` [ "6:6 synthesis failed" ]
+
+    it "reports a goal nothing decides where the value is referred to" do
+      synthesizing [ "u :: Int", "u = pick" ] \r ->
+        map at r.errors `shouldEqual` [ "4:5 synthesis undecided" ]
+
+    it "asks for a signature where a value without one would generalize over what its goal is at" do
+      synthesizing [ "s x = pickId x" ] \r ->
+        map at r.errors `shouldEqual` [ "3:1 signature needed" ]
+
+    it "names a synthesizer at the type one is invoked at, and a signature naming another gives no scheme" do
+      synthesizing [ "make :: Int", "make = 1", "bad :: {{ d :: Int by make }} -> Int", "bad d = d", "useBad :: Int", "useBad = bad" ] \r ->
+        map at r.errors `shouldEqual` [ "5:23 make names no synthesizer", "8:1 left unchecked" ]
+
+    it "is the host's defect where the spine its interface gives and the scheme the catalog holds disagree" do
+      let
+        spined name spine = elaboratingBy { built: environment, registry: synthesizers, surface: \s -> s { synthesizing = Map.insert (Qualified lib (Ident name)) spine s.synthesizing } } "module M where"
+        taking = { name: Nothing, dictionary: int, synthesizer: Qualified lib (Ident "resolveInt") }
+        a = TyVar "a"
+        amiss name = case _ of
+          SynthesizedSpineAmiss _ n -> n `shouldEqual` Qualified lib (Ident name)
+          other -> fail ("not amiss: " <> show other)
+      -- a synthesized parameter where the scheme holds a quantifier
+      spined "id" (Synthesized taking (Plain int)) [ "n :: Int", "n = id 1" ] \r ->
+        broken r (amiss "id")
+      -- one synthesized parameter too many, where the scheme takes another
+      spined "shown" (Forall a KType (Synthesized taking (Synthesized taking (Plain (pureFn (TVar a) (TVar a)))))) [ "n :: Int", "n = shown 3" ] \r ->
+        broken r (amiss "shown")
+      -- the rest not the scheme's, an ordinary argument taken for a synthesized one
+      spined "shown" (Forall a KType (Synthesized taking (Plain int))) [ "n :: Int", "n = shown 3" ] \r ->
+        broken r (amiss "shown")
+
+    it "is the host's defect where no synthesizer the attempter holds is the one its spine names" do
+      elaboratingBy { built: environment, registry: Map.empty, surface: identity } "module M where" [ "n :: Int", "n = counted" ] \r ->
+        broken r (_ `shouldEqual` SynthesizerUnavailable (Qualified lib (Ident "resolveInt")))
+
+    it "stops where the monad the attempter carries its attempts out in stops, and no diagnostic is made of it" do
+      case environment of
+        Left err -> fail err
+        Right env -> case parseModule (joinWith "\n" [ "module M where", "import Lib", "n :: Int", "n = counted" ]) of
+          Left err -> fail (printSyntaxError err)
+          Right cst -> do
+            let resolved = resolveModule env cst
+            case viewFor (Array.nub (map _.module resolved.module.imports)) env of
+              Left err -> fail (show err)
+              Right view -> case importedSignature env view of
+                Left err -> fail (show err)
+                Right signature ->
+                  map (const unit) (elaborateModuleM (\_ _ _ -> Left "stopped") signature (importedSurface env view) (importedCatalog env view) resolved.module resolved.exports)
+                    `shouldEqual` Left "stopped"
 
   describe "the Core module" do
     it "binds each value after what it refers to, the one written first taken first, and a recursive group as one" do

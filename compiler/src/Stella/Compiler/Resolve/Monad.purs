@@ -432,7 +432,7 @@ printResolveReason = case _ of
     "`" <> n <> "` is a type synonym, and the source of `~>` and each target on its right name one effect applied to its arguments, written directly"
   RowItemMisplaced -> "This item cannot stand in a row of this bracket"
   SynthesizedMisplaced ->
-    "A synthesized argument stands on the spine of a signature, before any ordinary parameter"
+    "A synthesized parameter stands on the spine of a signature, before any ordinary parameter"
   CapabilityMisplaced -> "`~>` stands only as the signature of a handler declaration, under its quantifiers"
   CapabilityTargetMalformed -> "What `~>` translates into is a list of effects, such as `( Console )` or `()`"
   UnknownConstructor n -> "There is no constructor `" <> n <> "` in scope"

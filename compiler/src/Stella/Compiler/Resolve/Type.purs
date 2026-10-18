@@ -246,7 +246,7 @@ signatureScope s = s.implicit <> spineBinders s.body
   spineBinders = case _ of
     TypeForall _ bs body -> scopeOf bs <> spineBinders body
     TypeConstrained _ _ body -> spineBinders body
-    TypeFunction _ (TypeSynthesized _ _ _ _) body Nothing -> spineBinders body
+    TypeFunction _ (TypeSynthesized _ _ _ _ _) body Nothing -> spineBinders body
     _ -> []
 
 computationScope :: Signature ComputationType -> Array TypeVar
@@ -274,7 +274,7 @@ quantify t body = do
   fresh n = freshBinding <#> \id -> TypeVar { id, name: TyVar n.name }
 
 -- | The spine of a signature: its quantifiers, its constraints, and its
--- | synthesized arguments, then the type it ends in. A synthesized argument
+-- | synthesized parameters, then the type it ends in. A synthesized parameter
 -- | stands here and nowhere else, behind a pure arrow.
 spine :: CST.Type -> Resolve Type
 spine t = case t of
@@ -298,7 +298,7 @@ synthesized t = case t of
   CST.TypeSynthesized n dictionary f -> do
     dictionary' <- resolveType dictionary
     lookupValue f >>= case _ of
-      Found q -> pure (TypeSynthesized o (map (Ident <<< _.name) n) dictionary' q)
+      Found q -> pure (TypeSynthesized o (map (Ident <<< _.name) n) dictionary' (originOf f.range) q)
       NotFound -> report f.range (UnknownValue (written f)) $> TypeInvalid o
       Ambiguous -> report f.range (AmbiguousValue (written f)) $> TypeInvalid o
   _ -> resolveType t

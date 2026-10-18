@@ -92,8 +92,9 @@ data Type
   | TypeVariant Origin (Array VariantRowItem)
   | TypeEffectRow Origin (Array EffectRowItem)
   -- | `{{ name :: τ by f }}`: the parameter a constraint desugars to, filled by
-  -- | the synthesizer `f`. The name is written for the reader and binds nothing.
-  | TypeSynthesized Origin (Maybe Ident) Type (Qualified Ident)
+  -- | the synthesizer `f`, with where `f` is written. The name is written for
+  -- | the reader and binds nothing.
+  | TypeSynthesized Origin (Maybe Ident) Type Origin (Qualified Ident)
   -- | Where resolution reported an error.
   | TypeInvalid Origin
 
@@ -114,7 +115,7 @@ typeOrigin = case _ of
   TypeRecord o _ -> o
   TypeVariant o _ -> o
   TypeEffectRow o _ -> o
-  TypeSynthesized o _ _ _ -> o
+  TypeSynthesized o _ _ _ _ -> o
   TypeInvalid o -> o
 
 -- | What a type operator is another name for: an entity of the type namespace.
@@ -169,7 +170,7 @@ type Signature a =
   }
 
 -- | The signature of a computation declaration, `forall ā. C => τ / ρ`: its
--- | spine — quantifiers, constraints, and synthesized arguments — in the order
+-- | spine — quantifiers, constraints, and synthesized parameters — in the order
 -- | written, then the type of what it produces and the row it performs.
 type ComputationType =
   { origin :: Origin

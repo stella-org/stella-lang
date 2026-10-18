@@ -46,7 +46,7 @@
 -- | variables, `_`, as-patterns, constructors, literals, or-patterns,
 -- | annotated patterns, and record and tuple patterns, and those a parameter, a
 -- | binding of a block, or a guard block's binding is written as always match;
--- | a recursive group binds variables alone. A synthesized argument of the
+-- | a recursive group binds variables alone. A synthesized parameter of the
 -- | declaration's own is a parameter like any other; a
 -- | reference to a value taking one is outside the subset, a goal being what
 -- | supplies the argument. Anything else is reported where it stands, and the
@@ -97,9 +97,10 @@ import Stella.Compiler.Elaborate.Environment.Catalog (lookupEntry)
 import Stella.Compiler.Elaborate.Environment.Constructors (lookupConstructor)
 import Stella.Compiler.Elaborate.Environment.Imported (operationArgument)
 import Stella.Compiler.Interface.Operation (operationElement, operationKey, operationRest, operationRow)
+import Stella.Compiler.Interface.Scheme (SchemeBody(..), coreBody)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, break, closeBoundary, currentMetas, currentLevel, equate, freshCoverage, freshBinderName, freshIdent, freshJoin, freshPendingCase, freshRegionName, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, recursiveRef, require)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, assume, break, closeBoundary, createSynthesis, currentMetas, currentLevel, equate, freshCoverage, freshBinderName, freshIdent, freshJoin, freshPendingCase, freshRegionName, freshInstantiationRow, freshKindMeta, freshTypeMeta, openBoundary, placeFit, recursiveRef, require)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindRequirement(..), MetaBinding(..), MetaContext, lookupMeta, substitute)
@@ -214,7 +215,7 @@ hole scope origin name ty = Surf (pure (Right { value: EHole origin ty, holes: [
 -- | context its node stands in, the row its evaluation may perform, the entries
 -- | the compiler's desugarings refer to that no catalog holds, and what the
 -- | surface elaborator reads of the imports and of the module: the synonyms its
--- | annotations are read through, and the values taking a synthesized argument;
+-- | annotations are read through, and the values taking a synthesized parameter;
 -- | the cells in reach, each by its binding, with its region, its key, and its
 -- | type; and, in the body of a `full` clause, the continuation `resume`
 -- | applies.
@@ -341,7 +342,7 @@ boundary scope origin expected inside = do
 -- | gives, its body under the arrow's row; then the body at what is left.
 -- | Quantifiers and constraints are opened in front of the first variable and
 -- | wherever variables remain, so a `forall` following a parameter, a
--- | synthesized argument's among them, is opened where it stands; one left
+-- | synthesized parameter's among them, is opened where it stands; one left
 -- | once every variable is bound is the body's to meet. A `λ` at an arrow that
 -- | is written is a checking boundary at the arrow's row. What a `Λ` or a
 -- | constraint abstraction encloses is built at `()`, as a value form.
@@ -563,7 +564,7 @@ letBlock scope origin bindings = do
       case Array.head e.unsupported of
         Just problem -> outside problem
         Nothing
-          | not (Array.null e.synthesized) -> outside (OutsideSubset v.origin "a local signature taking a synthesized argument")
+          | not (Array.null e.synthesized) -> outside (OutsideSubset v.origin "a local signature taking a synthesized parameter")
           | otherwise -> do
               noteSignature e
               pure { origin: v.origin, bindings: [ l.id ], bound: Right l.name, vars: [ { name: l.name, type: e.type } ], params: v.params, body: v.body, type: e.type, signed: true }
@@ -829,13 +830,14 @@ infer scope expr = case expr of
       Just ProvisionalScheme -> outside (OutsideSubset o "a recursive reference to a value whose partial signature is a scheme")
       _ -> case lookupScheme env.session.catalog name of
         Nothing -> outside (OutsideSubset o "a global the catalog does not hold")
-        -- a synthesized argument is supplied by a goal, which this version
-        -- does not create
-        Just _ | Set.member name scope.surface.synthesizing -> outside (OutsideSubset o "a reference to a value taking a synthesized argument")
         Just scheme -> do
           kinds <- lift (traverse (\_ -> freshKindMeta scope.context.kindVars (Set.singleton Quantifiable)) scheme.kindVars)
-          let ty = substituteKindVars (Map.fromFoldable (Array.zip scheme.kindVars kinds)) scheme.body
-          instantiated o (EGlobal o name kinds) ty
+          let
+            kindsOf = Map.fromFoldable (Array.zip scheme.kindVars kinds)
+            ty = substituteKindVars kindsOf scheme.body
+          case Map.lookup name scope.surface.synthesizing of
+            Nothing -> instantiated o (EGlobal o name kinds) ty
+            Just spine -> synthesized o name (substituteKindVars kindsOf <<< fromCore) spine Map.empty (EGlobal o name kinds) ty
 
   lookupScheme catalog name = case lookupEntry catalog name, Map.lookup name scope.surface.bindings of
     Just entry, _ -> Just entry.scheme
@@ -844,14 +846,49 @@ infer scope expr = case expr of
 
   instantiated o e = case _ of
     XForall a k rest -> do
-      m <- lift case k of
-        XKRow RowEffect -> freshInstantiationRow scope.context
-        _ -> freshTypeMeta scope.context k
+      m <- lift (instanceAt k)
       instantiated o (ETyApp o e m) (substituteTyVars (Map.singleton a m) Map.empty rest)
     XConstrained c rest -> do
       lift (require (siteAt scope o) c)
       instantiated o (EConstraintApp o e) rest
     ty -> pure { expr: e, type: ty }
+
+  instanceAt = case _ of
+    XKRow RowEffect -> freshInstantiationRow scope.context
+    k -> freshTypeMeta scope.context k
+
+  -- a global taking a synthesized parameter instantiated along the spine its
+  -- interface gives it, which the scheme the catalog holds must be: each
+  -- synthesized parameter a goal of the type of the argument it takes, made
+  -- where the global stands and filled by the synthesizer named, from the
+  -- left. **The synthesized argument is evaluated under the empty row**, the
+  -- body of a thunk of no row fitted into the row ambient and applied at
+  -- once, so a synthesizer builds it alike wherever the goal stands:
+  -- `(openEff [ρ] (λ (_ : Unit) / (). ?m)) Prim.Unit`
+  synthesized o name core spine variables e ty = case spine, ty of
+    Forall a _ rest, XForall b k body -> do
+      m <- lift (instanceAt k)
+      synthesized o name core rest (Map.insert a m variables) (ETyApp o e m) (substituteTyVars (Map.singleton b m) Map.empty body)
+    Constrained _ rest, XConstrained c body -> do
+      lift (require (siteAt scope o) c)
+      synthesized o name core rest variables (EConstraintApp o e) body
+    Synthesized p rest, _
+      | Just taking <- asArrow ty
+      , taking.row == XRowEmpty
+      , taking.argument == written p.dictionary -> do
+          Tuple _ goal <- lift (createSynthesis (siteAt scope o) taking.argument p.synthesizer)
+          unused <- lift (freshIdent (Map.keys scope.context.vars) "_")
+          thunked <- lift (placeFit (siteAt scope o) Wrapping XRowEmpty scope.ambient)
+          let evidence = EApp o (EFit o thunked (ELam o unused (XCon unitTy []) XRowEmpty (ETermMeta o goal))) (EGlobal o unitCtor [])
+          -- applied as any function is, its pure arrow fitted into the row
+          -- ambient
+          fit <- lift (placeFit (siteAt scope o) Wrapping taking.row scope.ambient)
+          synthesized o name core rest variables (EApp o (EFit o fit e) evidence) taking.result
+    Plain t, _ | ty == written t -> pure { expr: e, type: ty }
+    Computation result row, _ | ty == written (coreBody (Computation result row)) -> pure { expr: e, type: ty }
+    _, _ -> lift (break (SynthesizedSpineAmiss (AtSource { declaration: scope.declaration, origin: o }) name))
+    where
+    written = substituteTyVars variables Map.empty <<< core
 
 -- | An operation referred to where it is written, its name and its label, and
 -- | the arguments it is applied to from the left, each with the application

@@ -83,7 +83,7 @@ spec = describe "Stella.Compiler.CST.Check" do
       , "  fast | op _ -> 0"
       ] `reports` []
 
-    it "reads `/` after the arrow of a synthesized argument, which is pure, as a computation type" do
+    it "reads `/` after the arrow of a synthesized parameter, which is pure, as a computation type" do
       [ "f :: {{ d :: Show Int by show }} -> Int / {| E |}"
       , "g :: {{ d :: Show Int by show }} -> Int -> Int / {| E |}"
       , "foreign h :: {{ d :: Show Int by show }} -> Int / {| E |}"

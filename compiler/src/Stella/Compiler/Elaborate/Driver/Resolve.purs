@@ -39,7 +39,9 @@ module Stella.Compiler.Elaborate.Driver.Resolve
   , Resolved
   , Resolution(..)
   , resolveByDirection
+  , resolveByDirectionM
   , resolveOwners
+  , resolveOwnersM
   ) where
 
 import Prelude
@@ -51,7 +53,7 @@ import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowNormalForm, rebuild)
 import Stella.Compiler.Elaborate.CorePlus.Term (FitId)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType(..), metasOf)
-import Stella.Compiler.Elaborate.Driver.Loop (Attempter, RunResult(..), runAttempting)
+import Stella.Compiler.Elaborate.Driver.Loop (Attempter, AttempterM, RunResult(..), identically, runAttemptingM)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), SessionEnv, SolverState, atLevel, boundaryFits, currentMetas, fitRemainders, formUnion, runElabIn, unify)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitRecord, FitState(..))
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Entry, ObligationId, watchedBy)
@@ -59,7 +61,10 @@ import Stella.Compiler.Elaborate.Mechanism.Pending (HandlerGoal, Job(..), Pendin
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, isInstantiationRow, lookupMeta, substitute)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic, Warning)
 import Stella.Compiler.TypedCore (RowElemKind(..))
+import Control.Monad.Rec.Class (class MonadRec, tailRecM)
+import Control.Monad.Rec.Class as Rec
 import Data.Array as Array
+import Data.Identity (Identity(..))
 import Data.Either (Either(..), either)
 import Data.Foldable (foldl, for_)
 import Data.Generic.Rep (class Generic)
@@ -143,19 +148,30 @@ type Assignment =
 resolveByDirection :: forall k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> (k -> P.Int) -> SolverState -> Tuple (Resolution k) SolverState
 resolveByDirection session attempter owner levelOf = resolveOwners session attempter owner levelOf (const true)
 
+-- | `resolveByDirection`, each job carried out in the monad the attempter
+-- | given carries its attempts out in.
+resolveByDirectionM :: forall m k. MonadRec m => Ord k => SessionEnv -> AttempterM m -> (Origin -> k) -> (k -> P.Int) -> SolverState -> m (Tuple (Resolution k) SolverState)
+resolveByDirectionM session attempter owner levelOf = resolveOwnersM session attempter owner levelOf (const true)
+
 -- | `resolveByDirection`, for the components of the owners the predicate given
 -- | admits alone.
 resolveOwners :: forall k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> (k -> P.Int) -> (k -> P.Boolean) -> SolverState -> Tuple (Resolution k) SolverState
-resolveOwners session attempter owner levelOf admitted s0 = case componentsOf owner s0 of
-  Left defect -> Tuple (ResolutionHalted defect) s0
-  Right components -> foldl step (Tuple (Resolution { components: [], warnings: [] }) s0) (Array.filter (admitted <<< _.owner) components)
+resolveOwners session attempter owner levelOf admitted s0 = case resolveOwnersM session (identically attempter) owner levelOf admitted s0 of
+  Identity result -> result
+
+-- | `resolveOwners`, each job carried out in the monad the attempter given
+-- | carries its attempts out in.
+resolveOwnersM :: forall m k. MonadRec m => Ord k => SessionEnv -> AttempterM m -> (Origin -> k) -> (k -> P.Int) -> (k -> P.Boolean) -> SolverState -> m (Tuple (Resolution k) SolverState)
+resolveOwnersM session attempter owner levelOf admitted s0 = case componentsOf owner s0 of
+  Left defect -> pure (Tuple (ResolutionHalted defect) s0)
+  Right components -> Array.foldRecM step (Tuple (Resolution { components: [], warnings: [] }) s0) (Array.filter (admitted <<< _.owner) components)
   where
   step acc component = case acc of
-    Tuple (Resolution r) s -> case resolveComponent session attempter (levelOf component.owner) component s of
+    Tuple (Resolution r) s -> resolveComponent session attempter (levelOf component.owner) component s <#> case _ of
       Tuple (Right done) s' ->
         Tuple (Resolution { components: Array.snoc r.components { owner: component.owner, outcome: done.outcome }, warnings: r.warnings <> done.warnings }) s'
       Tuple (Left defect) s' -> Tuple (ResolutionHalted defect) s'
-    halted -> halted
+    halted -> pure halted
 
 -- | The components holding an undecided fit or a waiting boundary, in the
 -- | order the state holds what each is made of.
@@ -240,8 +256,8 @@ connected parts = map (Array.mapMaybe (Array.index parts)) (go Set.empty 0 [])
 
 -- | Resolve one component under a checkpoint of its own, in rounds to a
 -- | fixpoint, each round spending one unit of fuel.
-resolveComponent :: forall k. SessionEnv -> Attempter -> P.Int -> Component k -> SolverState -> Tuple (Either Defect { outcome :: ComponentOutcome, warnings :: P.Array Warning }) SolverState
-resolveComponent session attempter level component s0 = round [] s0
+resolveComponent :: forall m k. MonadRec m => SessionEnv -> AttempterM m -> P.Int -> Component k -> SolverState -> m (Tuple (Either Defect { outcome :: ComponentOutcome, warnings :: P.Array Warning }) SolverState)
+resolveComponent session attempter level component s0 = tailRecM round (Tuple [] s0)
   where
   checkpoint = s0.tentative
   ended outcome warnings s = Tuple (Right { outcome, warnings }) (s { tentative { written = Set.empty } })
@@ -255,33 +271,33 @@ resolveComponent session attempter level component s0 = round [] s0
   -- progress**: an equation of a union, or a job it woke, may still have
   -- assigned something or decided a fit, and a union not formed is waited on
   -- until nothing moves.
-  round warnings s =
-    if s.retained.fuel <= 0 then undecided LeftUndecided warnings s
+  round (Tuple warnings s) =
+    if s.retained.fuel <= 0 then pure (Rec.Done (undecided LeftUndecided warnings s))
     else case runElabIn session s (atLevel level (assignmentsOf component (boundariesOf s))) of
-      Tuple (Done (Left cause)) s1 -> undecided cause warnings s1
+      Tuple (Done (Left cause)) s1 -> pure (Rec.Done (undecided cause warnings s1))
       Tuple (Done (Right found)) s1 -> case runElabIn session s1 (atLevel level (for_ found.assignments \a -> unify a.site { kind: XKRow RowEffect, left: XMeta a.meta, right: a.solution })) of
         Tuple (Done _) s2 ->
-          let
-            Tuple report s3 = runAttempting attempter (s2 { tentative { written = Set.empty }, retained { fuel = s2.retained.fuel - 1 } })
-            warnings' = warnings <> report.warnings
-            settledOr cause =
-              if Array.null (undecidedOrigins s3) then ended Settled warnings' s3
-              else undecided cause warnings' s3
-          in
-            case report.result of
-              Rejected diagnostic -> refused diagnostic warnings' s3
-              Halted defect -> halted defect s3
-              Exhausted _ -> undecided LeftUndecided warnings' s3
-              _
-                | not (Array.null found.assignments) || progressed s s3 -> round warnings' s3
-                | Set.isEmpty found.unformed -> settledOr LeftUndecided
-                | otherwise -> settledOr (UnionNotFormed found.unformed)
-        Tuple (Failed diagnostic) s2 -> refused diagnostic warnings s2
-        Tuple (Broke defect) s2 -> halted defect s2
-        Tuple (Postponed _) s2 -> halted ResolutionPostponed s2
-      Tuple (Failed diagnostic) s1 -> refused diagnostic warnings s1
-      Tuple (Broke defect) s1 -> halted defect s1
-      Tuple (Postponed _) s1 -> halted ResolutionPostponed s1
+          runAttemptingM attempter (s2 { tentative { written = Set.empty }, retained { fuel = s2.retained.fuel - 1 } }) <#> \(Tuple report s3) ->
+            let
+              warnings' = warnings <> report.warnings
+              settledOr cause =
+                if Array.null (undecidedOrigins s3) then ended Settled warnings' s3
+                else undecided cause warnings' s3
+            in
+              case report.result of
+                Rejected diagnostic -> Rec.Done (refused diagnostic warnings' s3)
+                Halted defect -> Rec.Done (halted defect s3)
+                Exhausted _ -> Rec.Done (undecided LeftUndecided warnings' s3)
+                _
+                  | not (Array.null found.assignments) || progressed s s3 -> Rec.Loop (Tuple warnings' s3)
+                  | Set.isEmpty found.unformed -> Rec.Done (settledOr LeftUndecided)
+                  | otherwise -> Rec.Done (settledOr (UnionNotFormed found.unformed))
+        Tuple (Failed diagnostic) s2 -> pure (Rec.Done (refused diagnostic warnings s2))
+        Tuple (Broke defect) s2 -> pure (Rec.Done (halted defect s2))
+        Tuple (Postponed _) s2 -> pure (Rec.Done (halted ResolutionPostponed s2))
+      Tuple (Failed diagnostic) s1 -> pure (Rec.Done (refused diagnostic warnings s1))
+      Tuple (Broke defect) s1 -> pure (Rec.Done (halted defect s1))
+      Tuple (Postponed _) s1 -> pure (Rec.Done (halted ResolutionPostponed s1))
 
   -- something assigned, or a fit of the component decided, since the state
   -- given

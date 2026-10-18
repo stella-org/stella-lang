@@ -58,8 +58,10 @@ module Stella.Compiler.Elaborate.Surface.Module
   , Elaborating
   , ElaboratedModule
   , elaborateModule
+  , elaborateModuleM
   , elaborateValues
   , settleBodies
+  , settleBodiesM
   , cellRecords
   , escapedCells
   ) where
@@ -68,13 +70,15 @@ import Prelude
 import Prim hiding (Type)
 
 import Control.Monad.Except (ExceptT, catchError, runExceptT, throwError)
-import Control.Monad.State (State, get, gets, modify_, put, runState, state)
+import Control.Monad.Rec.Class (class MonadRec)
+import Control.Monad.State (StateT(..), get, gets, modify_, put, runStateT, state)
 import Control.Monad.Trans.Class (lift)
 import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..), either)
 import Data.Foldable (foldl, for_)
+import Data.Identity (Identity(..))
 import Data.Traversable (traverse)
 import Data.Map (Map)
 import Data.Map as Map
@@ -90,13 +94,15 @@ import Stella.Compiler.Elaborate.Surface.Types (readAttributeDeclaration, readTy
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEntry)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal, internalEntries)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
-import Stella.Compiler.Elaborate.Driver.Loop (Attempter, runAttempting)
+import Stella.Compiler.Elaborate.Driver.Loop (Attempter, AttempterM, identically, runAttemptingM)
 import Stella.Compiler.Elaborate.Driver.Loop as Loop
-import Stella.Compiler.Elaborate.Driver.Resolve (ComponentOutcome(..), Resolution(..), resolveByDirection, resolveOwners)
+import Stella.Compiler.Elaborate.Driver.Resolve (ComponentOutcome(..), Resolution(..), resolveByDirectionM, resolveOwnersM)
 import Stella.Compiler.Elaborate.Driver.Generalize (Hindrance(..)) as Hindrance
-import Stella.Compiler.Elaborate.Driver.Generalize (Commitment(..), Finalization(..), Hindrance, Preparation(..), commitGeneralization, finalizeGeneralization, prepareGeneralization)
-import Stella.Compiler.Elaborate.Driver.Close (Closing(..), Undoing(..), closeRows)
-import Stella.Compiler.Elaborate.Environment.Catalog (CatalogEntry, EntrySort(..))
+import Stella.Compiler.Elaborate.Driver.Generalize (Commitment(..), Finalization(..), Hindrance, Preparation(..), commitGeneralization, finalizeGeneralization, prepareGeneralizationM)
+import Stella.Compiler.Elaborate.Driver.Close (Closing(..), Undoing(..), closeRowsM)
+import Stella.Compiler.Elaborate.Environment.Catalog (CatalogEntry, EntrySort(..), XScheme)
+import Stella.Compiler.Elaborate.CorePlus.Row (rebuild, xnf)
+import Stella.Compiler.Elaborate.Protocol.Guest (synthesizerType)
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Operations (HandledEffect)
 import Stella.Compiler.Interface.Operation (Operation, operationOf, operationScheme)
@@ -104,7 +110,7 @@ import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), Surfac
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, atLevel, equate, freshTypeMeta, initialState)
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..))
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
-import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
+import Stella.Compiler.Elaborate.Mechanism.Pending (Job(JobSynthesis), Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, UnifyError(..), substitute, substituteKind)
 import Stella.Compiler.Elaborate.Surface.Match (Witness)
 import Stella.Compiler.Elaborate.Surface.Expr (CellReference, CellRegion, ExpressionHole, PendingCase, UncoveredMatch, Parameter(..), asArrow, checkDefinition, elaborateComputation, elaborateValue, expandable, inferDefinition, references, runSurf)
@@ -146,6 +152,10 @@ data ElaborationError
   | ConstraintEscapes Surface.Origin TyVar
   -- | A synthesis nothing decided, where it is asked for.
   | SynthesisUndecided Surface.Origin
+  -- | A synthesizer named by a synthesized parameter, where it is written, whose
+  -- | scheme is not the one a synthesizer is invoked at: `Stella.Elab.Handle
+  -- | -{( Stella.Elab.Kernel )}-> Stella.Elab.Handle`.
+  | SynthesizerIllTyped Surface.Origin (Qualified Ident)
   -- | A condition a declaration whose signature is partial needs, which the
   -- | signature does not write, where it arose: a partial signature gains none.
   | ConstraintUnwritten Surface.Origin
@@ -288,19 +298,45 @@ elaborateValues
   -> Array CatalogEntry
   -> Surface.Module
   -> { data :: Array ElaboratedData, synonyms :: Array ElaboratedSynonym, foreignTypes :: Array ElaboratedForeignType, effects :: Array ElaboratedEffect, foreigns :: Array ElaboratedForeign, attributes :: Array ElaboratedAttribute, values :: Array ElaboratedValue, errors :: Array ElaborationError, warnings :: Array Warning }
-elaborateValues imports surface importedEntries m =
-  if Array.null dataErrors then
-    { data: elaboratedData
-    , synonyms: types.synonyms
-    , foreignTypes: types.foreignTypes
-    , effects: types.effects
-    , foreigns: crossing.foreigns
-    , attributes: attributesRead.declared
-    , values: Array.sortWith _.ordinal (generalized.values <> settled'.values)
-    , errors: internalErrors <> unsupported <> signatureErrors <> partialErrors <> crossing.errors <> attributesRead.errors <> generalized.errors <> attributeErrors <> bodyErrors <> settled'.errors
-    , warnings: generalized.warnings
-    }
-  else { data: [], synonyms: [], foreignTypes: [], effects: [], foreigns: [], attributes: [], values: [], errors: dataErrors <> unsupported, warnings: [] }
+elaborateValues imports surface importedEntries m = case elaborateValuesM (identically <<< attemptPending) imports surface importedEntries m of
+  Identity result -> result
+
+-- | `elaborateValues`, each job carried out in the monad the attempter the
+-- | function given makes of the module's session carries its attempts out in.
+elaborateValuesM
+  :: forall m
+   . MonadRec m
+  => (SessionEnv -> AttempterM m)
+  -> Signature
+  -> SurfaceEnv
+  -> Array CatalogEntry
+  -> Surface.Module
+  -> m { data :: Array ElaboratedData, synonyms :: Array ElaboratedSynonym, foreignTypes :: Array ElaboratedForeignType, effects :: Array ElaboratedEffect, foreigns :: Array ElaboratedForeign, attributes :: Array ElaboratedAttribute, values :: Array ElaboratedValue, errors :: Array ElaborationError, warnings :: Array Warning }
+elaborateValuesM attempterOf imports surface importedEntries m =
+  if Array.null dataErrors then do
+    generalized <- Array.foldRecM generalizeOne
+      { state: attributesRead.state
+      , bindings: Map.empty
+      , values: []
+      , unavailable: Set.union unread (Set.fromFoldable (Array.mapMaybe (either (Just <<< _.name) (const Nothing)) unsignedRead))
+      , errors: Array.mapMaybe (either (Just <<< _.error) (const Nothing)) unsignedRead
+      , warnings: []
+      }
+      (groups (map (\u -> Set.fromFoldable (Array.mapMaybe (\n -> Map.lookup n unsignedIndex) (Array.fromFoldable (references u.body)))) unsigned))
+    let bodies = bodiesOf generalized
+    settled' <- settleBodiesM session attempter bodies.state bodies.bodies
+    pure
+      { data: elaboratedData
+      , synonyms: types.synonyms
+      , foreignTypes: types.foreignTypes
+      , effects: types.effects
+      , foreigns: crossing.foreigns
+      , attributes: attributesRead.declared
+      , values: Array.sortWith _.ordinal (generalized.values <> settled'.values)
+      , errors: internalErrors <> unsupported <> signatureErrors <> partialErrors <> crossing.errors <> attributesRead.errors <> generalized.errors <> attributeErrorsOf generalized <> bodies.errors <> settled'.errors
+      , warnings: generalized.warnings
+      }
+  else pure { data: [], synonyms: [], foreignTypes: [], effects: [], foreigns: [], attributes: [], values: [], errors: dataErrors <> unsupported, warnings: [] }
   where
   initial0 = initialState (SessionId 0) 1_000_000
 
@@ -430,11 +466,11 @@ elaborateValues imports surface importedEntries m =
   settled = map (\(Tuple d e) -> Tuple d (map (\scheme -> { scheme, spine: schemeOf e scheme }) (settledScheme read.state.tentative.metas e))) (Array.filter (not <<< isPartial <<< snd) read.read)
   -- a declaration whose signature is partial is inferred with the values
   -- without one, its scheme published once its group is committed; a
-  -- synthesized argument on its spine is supplied by a goal, which this
+  -- synthesized parameter on its spine is supplied by a goal, which this
   -- version does not create
   partialRead = Array.filter (isPartial <<< snd) read.read
   partialErrors = Array.mapMaybe
-    (\(Tuple d e) -> if Array.null e.synthesized then Nothing else Just (Unsupported (OutsideSubset d.origin "a partial signature taking a synthesized argument")))
+    (\(Tuple d e) -> if Array.null e.synthesized then Nothing else Just (Unsupported (OutsideSubset d.origin "a partial signature taking a synthesized parameter")))
     partialRead
   partials = Array.mapMaybe
     ( \(Tuple d e) -> case d.definition of
@@ -445,11 +481,22 @@ elaborateValues imports surface importedEntries m =
     partialRead
   schemes = Array.mapMaybe
     ( \(Tuple d s) -> case s of
-        Right r -> Just { declared: d, scheme: r.scheme, spine: r.spine }
-        Left _ -> Nothing
+        Right r | not (Set.member d.name illNamed) -> Just { declared: d, scheme: r.scheme, spine: r.spine }
+        _ -> Nothing
     )
     settled
-  signatureErrors = read.errors <> Array.concatMap
+  -- a synthesized parameter names a synthesizer at the type one is invoked
+  -- at, where it is written; a signature naming another gives no scheme
+  illTyped = Array.concatMap
+    (\(Tuple d e) -> map (\mark -> { name: d.name, error: SynthesizerIllTyped mark.at mark.synthesizer }) (Array.filter (not <<< invokable) e.synthesized))
+    (Array.filter (not <<< isPartial <<< snd) read.read)
+  illNamed = Set.fromFoldable (map _.name illTyped)
+  invokable mark = maybe false isSynthesizerScheme (Map.lookup mark.synthesizer synthesizers)
+  synthesizers = Map.fromFoldable
+    ( map (\entry -> Tuple entry.name entry.scheme) imported
+        <> Array.mapMaybe (\(Tuple d s) -> either (const Nothing) (\r -> Just (Tuple d.name { kindVars: r.scheme.kindVars, body: fromCore r.scheme.body })) s) settled
+    )
+  signatureErrors = read.errors <> map _.error illTyped <> Array.concatMap
     ( \(Tuple _ s) -> case s of
         Left places -> map KindUndetermined (NonEmptyArray.toArray places)
         Right _ -> []
@@ -483,17 +530,17 @@ elaborateValues imports surface importedEntries m =
   -- an attribute on a declaration with no Core form is checked here, once
   -- the scheme of every value and foreign of the module is known, a constant
   -- naming one, and every attribute declaration of the module
-  attributeSignature =
+  attributeSignature generalized =
     foldl (\s a -> s { attributes = Map.insert (Qualified m.name a.decl.name) { positional: a.decl.positional, keyword: a.decl.keyword } s.attributes })
       ( foldl (\s v -> s { values = Map.insert v.name { scheme: v.scheme, isForeign: false } s.values })
           (foldl (\s v -> s { values = Map.insert v.declared.name { scheme: v.scheme, isForeign: isForeignDefinition v.declared.definition } s.values }) signature schemes)
           generalized.values
       )
       attributesRead.declared
-  attributeErrors = Array.concatMap
+  attributeErrorsOf generalized = Array.concatMap
     ( \d -> Array.mapMaybe
         ( \a -> case coreAttribute a of
-            Right attribute -> either (Just <<< AttributeRejected d.origin) (const Nothing) (checkAttribute attributeSignature attribute)
+            Right attribute -> either (Just <<< AttributeRejected d.origin) (const Nothing) (checkAttribute (attributeSignature generalized) attribute)
             Left _ -> Nothing
         )
         d.attributes
@@ -506,8 +553,8 @@ elaborateValues imports surface importedEntries m =
   own = map (\v -> { name: v.declared.name, sort: if isForeignDefinition v.declared.definition then ForeignEntry else ValueEntry, scheme: { kindVars: v.scheme.kindVars, body: fromCore v.scheme.body }, attributes: v.declared.attributes }) schemes
   session = sessionEnvOf signature (imported <> own)
   -- what the bodies read beyond: the module's values taking a synthesized
-  -- argument among those the imports declare
-  withOwn = withSynonyms { synthesizing = withSynonyms.synthesizing <> Set.fromFoldable (map _.declared.name (Array.filter (takesSynthesized <<< _.spine) schemes)) }
+  -- argument, at their spines, among those the imports declare
+  withOwn = withSynonyms { synthesizing = Map.union (Map.fromFoldable (map (\v -> Tuple v.declared.name v.spine.body) (Array.filter (takesSynthesized <<< _.spine) schemes))) withSynonyms.synthesizing }
 
   -- the values without a signature
   unsignedRead = Array.catMaybes (Array.mapWithIndex unsignedOf m.declarations)
@@ -539,15 +586,7 @@ elaborateValues imports surface importedEntries m =
   -- signature is elaborated, and published whole once committed; one
   -- referring to a value with no scheme — one without a signature its group
   -- did not generalize, or one whose signature gave none — is left unchecked
-  generalized = foldl generalizeOne
-    { state: attributesRead.state
-    , bindings: Map.empty
-    , values: []
-    , unavailable: Set.union unread (Set.fromFoldable (Array.mapMaybe (either (Just <<< _.name) (const Nothing)) unsignedRead))
-    , errors: Array.mapMaybe (either (Just <<< _.error) (const Nothing)) unsignedRead
-    , warnings: []
-    }
-    (groups (map (\u -> Set.fromFoldable (Array.mapMaybe (\n -> Map.lookup n unsignedIndex) (Array.fromFoldable (references u.body)))) unsigned))
+  attempter = attempterOf session
   generalizeOne acc g =
     let
       members = Array.mapMaybe (Array.index unsigned) g.members
@@ -556,13 +595,11 @@ elaborateValues imports surface importedEntries m =
       -- a group a member of which refers to what has no scheme is not
       -- elaborated, none of its members being generalizable without it
       case NonEmptyArray.fromArray members of
-        Nothing -> acc
+        Nothing -> pure acc
         Just _ | Array.any (\u -> meets (references u.body) acc.unavailable) members ->
-          acc { unavailable = Set.union acc.unavailable named, errors = acc.errors <> map (\u -> LeftUnchecked u.origin u.name) members }
+          pure acc { unavailable = Set.union acc.unavailable named, errors = acc.errors <> map (\u -> LeftUnchecked u.origin u.name) members }
         Just group ->
-          let
-            done = generalizeGroup session (attemptPending session) internal (withOwn { bindings = acc.bindings }) (\n -> Map.member n signature.ctors) group acc.state
-          in
+          generalizeGroup session attempter internal (withOwn { bindings = acc.bindings }) (\n -> Map.member n signature.ctors) group acc.state <#> \done ->
             case done.result of
               Left errors -> acc { state = done.state, unavailable = Set.union acc.unavailable named, errors = acc.errors <> errors }
               Right r -> acc
@@ -574,25 +611,22 @@ elaborateValues imports surface importedEntries m =
 
   -- every body, as one attempt each, a body that does not elaborate leaving
   -- nothing behind; one referring to a value with no scheme is left unchecked
-  withFinal = withOwn { bindings = generalized.bindings }
-  bodies = foldl bodyOne { state: generalized.state, bodies: [], errors: [] } defined
-  bodyOne acc v = case v.definition of
+  bodiesOf generalized = foldl (bodyOne generalized) { state: generalized.state, bodies: [], errors: [] } defined
+  bodyOne generalized acc v = case v.definition of
     ValueBody _ body | meets (references body) generalized.unavailable -> unchecked acc v
     ComputationBody body | meets (references body) generalized.unavailable -> unchecked acc v
-    ValueBody params body -> attemptBody acc v (elaborateValue internal withFinal v.declared.name v.declared.origin v.scheme params body)
-    -- a synthesized argument is supplied by a goal, which this version does
+    ValueBody params body -> attemptBody acc v (elaborateValue internal (withFinal generalized) v.declared.name v.declared.origin v.scheme params body)
+    -- a synthesized parameter is supplied by a goal, which this version does
     -- not create, and a computation has no parameter to bind it to
-    ComputationBody _ | takesSynthesized v.spine -> acc { errors = Array.snoc acc.errors (Unsupported (OutsideSubset v.declared.origin "a computation taking a synthesized argument")) }
-    ComputationBody body -> attemptBody acc v (elaborateComputation internal withFinal v.declared.name v.declared.origin v.scheme body)
+    ComputationBody _ | takesSynthesized v.spine -> acc { errors = Array.snoc acc.errors (Unsupported (OutsideSubset v.declared.origin "a computation taking a synthesized parameter")) }
+    ComputationBody body -> attemptBody acc v (elaborateComputation internal (withFinal generalized) v.declared.name v.declared.origin v.scheme body)
   attemptBody acc v elaborating =
     case runAttempt session (runSurf elaborating) acc.state of
       Tuple (Done (Right built)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, spine: v.spine, body: built.value, holes: built.holes, wildcards: built.wildcards, unwritten: built.unwritten, expressionHoles: built.expressionHoles, uncovered: built.uncovered, pending: built.pending, regions: built.regions, references: built.references } }
       Tuple (Done (Left problem)) _ -> acc { errors = Array.snoc acc.errors (Unsupported problem) }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
   unchecked acc v = acc { errors = Array.snoc acc.errors (LeftUnchecked v.declared.origin v.declared.name) }
-  bodyErrors = bodies.errors
-
-  settled' = settleBodies session (attemptPending session) bodies.state bodies.bodies
+  withFinal generalized = withOwn { bindings = generalized.bindings }
 
 -- | A signature with a data type the module declares, and its constructors.
 addData :: ModuleName -> Signature -> DataDecl -> Signature
@@ -648,10 +682,31 @@ settleBodies
   -> SolverState
   -> Array Elaborating
   -> { values :: Array ElaboratedValue, errors :: Array ElaborationError }
-settleBodies session attempter state bodies =
-  { values: Array.catMaybes (map snd finished)
-  , errors: map (escapedCells (cellRecords (map (\b -> { name: b.name, regions: b.regions, references: b.references }) bodies))) (loopErrors <> Array.concatMap fst finished)
-  }
+settleBodies session attempter state bodies = case settleBodiesM session (identically attempter) state bodies of
+  Identity result -> result
+
+-- | `settleBodies`, each job carried out in the monad the attempter given
+-- | carries its attempts out in.
+settleBodiesM
+  :: forall m
+   . MonadRec m
+  => SessionEnv
+  -> AttempterM m
+  -> SolverState
+  -> Array Elaborating
+  -> m { values :: Array ElaboratedValue, errors :: Array ElaborationError }
+settleBodiesM session attempter state bodies = do
+  Tuple report quiet <- runAttemptingM attempter state
+  -- at quiescence: the fits left undecided resolved by direction, the
+  -- variants pending `case`s leave open closed for their sake and each such
+  -- `case` replaced by its match, each declaration's rows nothing needs
+  -- closed, the fits resolved again and the loop run to what it then waits
+  -- on, every state handed on to the next
+  Tuple settledBy after <- case report.result of
+    Loop.Completed -> settling quiet
+    Loop.Blocked _ -> settling quiet
+    _ -> pure (Tuple Nothing quiet)
+  pure (concluded report settledBy after)
   where
   componentErrors c = case c.outcome of
     Settled -> []
@@ -662,33 +717,31 @@ settleBodies session attempter state bodies =
   -- undone is the declaration's report, the rows decided again without it
   -- need not fail as it did
   closing acc b = case acc of
-    { defect: Nothing, state: s, undone } -> case closeRows session attempter declarationOf b.name 0 [ { site: { context: emptyXContext, origin: InDeclaration b.name }, term: b.body, types: [] } ] s of
+    { defect: Nothing, state: s, undone } -> closeRowsM session attempter declarationOf b.name 0 [ { site: { context: emptyXContext, origin: InDeclaration b.name }, term: b.body, types: [] } ] s <#> case _ of
       Tuple (Left d) s' -> { defect: Just d, state: s', undone }
       Tuple (Right { closing: Undone u }) s' -> { defect: Nothing, state: s', undone: Map.insert b.name u.cause undone }
       Tuple (Right _) s' -> { defect: Nothing, state: s', undone }
-    stopped -> stopped
+    stopped -> pure stopped
 
   -- the variants the pending `case`s leave open closed for their sake, the
   -- loop run and the fits resolved by direction again, until none is left to
   -- close
   bounded s = case closableTails s.tentative.metas (Array.concatMap _.pending bodies) of
-    Left d -> Tuple (Left (brokenBy d)) s
-    Right [] -> Tuple (Right unit) s
+    Left d -> pure (Tuple (Left (brokenBy d)) s)
+    Right [] -> pure (Tuple (Right unit) s)
     Right ts -> case closeTails session 0 ts s of
-      Tuple (Done _) s1 ->
-        let
-          Tuple again s2 = runAttempting attempter s1
-        in
-          case again.result of
-            Loop.Rejected d -> Tuple (Left (rejectedBy d)) s2
-            Loop.Exhausted p -> Tuple (Left { errors: [ EquationUndecided p.origin ], names: Just (Set.singleton (declarationOf p.origin)) }) s2
-            Loop.Halted d -> Tuple (Left (brokenBy d)) s2
-            _ -> case resolveByDirection session attempter declarationOf (const 0) s2 of
-              Tuple (ResolutionHalted d) s3 -> Tuple (Left (brokenBy d)) s3
-              Tuple (Resolution _) s3 -> bounded s3
-      Tuple (Failed d) s1 -> Tuple (Left (rejectedBy d)) s1
-      Tuple (Broke d) s1 -> Tuple (Left (brokenBy d)) s1
-      Tuple outcome s1 -> Tuple (Left { errors: [ failure outcome ], names: Just (Set.fromFoldable (map (declarationOf <<< _.site.origin) ts)) }) s1
+      Tuple (Done _) s1 -> do
+        Tuple again s2 <- runAttemptingM attempter s1
+        case again.result of
+          Loop.Rejected d -> pure (Tuple (Left (rejectedBy d)) s2)
+          Loop.Exhausted p -> pure (Tuple (Left { errors: [ EquationUndecided p.origin ], names: Just (Set.singleton (declarationOf p.origin)) }) s2)
+          Loop.Halted d -> pure (Tuple (Left (brokenBy d)) s2)
+          _ -> resolveByDirectionM session attempter declarationOf (const 0) s2 >>= case _ of
+            Tuple (ResolutionHalted d) s3 -> pure (Tuple (Left (brokenBy d)) s3)
+            Tuple (Resolution _) s3 -> bounded s3
+      Tuple (Failed d) s1 -> pure (Tuple (Left (rejectedBy d)) s1)
+      Tuple (Broke d) s1 -> pure (Tuple (Left (brokenBy d)) s1)
+      Tuple outcome s1 -> pure (Tuple (Left { errors: [ failure outcome ], names: Just (Set.fromFoldable (map (declarationOf <<< _.site.origin) ts)) }) s1)
 
   -- what stops the settling: a refusal names the declarations its diagnostic
   -- is about, and a defect leaves nothing to trust
@@ -703,91 +756,88 @@ settleBodies session attempter state bodies =
       Tuple (Left e) s' -> Tuple (Left { errors: [ e ], names: Just (Set.singleton b.name) }) s'
       Tuple (Right r) s' -> Tuple (Right (Array.snoc done b { body = r.term, uncovered = b.uncovered <> r.uncovered, pending = [] })) s'
 
-  Tuple report quiet = runAttempting attempter state
+  settling quiet = resolveByDirectionM session attempter declarationOf (const 0) quiet >>= case _ of
+    Tuple (ResolutionHalted d) s1 -> pure (Tuple (Just (Left (brokenBy d))) s1)
+    Tuple (Resolution _) s1 -> bounded s1 >>= case _ of
+      Tuple (Left e) s2 -> pure (Tuple (Just (Left e)) s2)
+      Tuple (Right _) s2 -> case foldl placed (Tuple (Right []) s2) bodies of
+        Tuple (Left e) s3 -> pure (Tuple (Just (Left e)) s3)
+        Tuple (Right settledBodies) s3 -> Array.foldRecM closing { defect: Nothing, state: s3, undone: Map.empty } settledBodies >>= case _ of
+          { defect: Just d, state: s4 } -> pure (Tuple (Just (Left (brokenBy d))) s4)
+          { state: s4, undone } -> do
+            Tuple resolution s5 <- resolveByDirectionM session attempter declarationOf (const 0) s4
+            Tuple left s6 <- runAttemptingM attempter s5
+            pure (Tuple (Just (Right { resolution, left, undone, bodies: settledBodies })) s6)
 
-  -- at quiescence: the fits left undecided resolved by direction, the
-  -- variants pending `case`s leave open closed for their sake and each such
-  -- `case` replaced by its match, each declaration's rows nothing needs
-  -- closed, the fits resolved again and the loop run to what it then waits
-  -- on, every state handed on to the next
-  Tuple settledBy after = case report.result of
-    Loop.Completed -> settling
-    Loop.Blocked _ -> settling
-    _ -> Tuple Nothing quiet
+  -- the values and the errors the settling comes to
+  concluded report settledBy after =
+    { values: Array.catMaybes (map snd finished)
+    , errors: map (escapedCells (cellRecords (map (\b -> { name: b.name, regions: b.regions, references: b.references }) bodies))) (loopErrors <> Array.concatMap fst finished)
+    }
     where
-    settling = case resolveByDirection session attempter declarationOf (const 0) quiet of
-      Tuple (ResolutionHalted d) s1 -> Tuple (Just (Left (brokenBy d))) s1
-      Tuple (Resolution _) s1 -> case bounded s1 of
-        Tuple (Left e) s2 -> Tuple (Just (Left e)) s2
-        Tuple (Right _) s2 -> case foldl placed (Tuple (Right []) s2) bodies of
-          Tuple (Left e) s3 -> Tuple (Just (Left e)) s3
-          Tuple (Right settledBodies) s3 -> case foldl closing { defect: Nothing, state: s3, undone: Map.empty } settledBodies of
-            { defect: Just d, state: s4 } -> Tuple (Just (Left (brokenBy d))) s4
-            { state: s4, undone } ->
-              let
-                Tuple resolution s5 = resolveByDirection session attempter declarationOf (const 0) s4
-                Tuple left s6 = runAttempting attempter s5
-              in
-                Tuple (Just (Right { resolution, left, undone, bodies: settledBodies })) s6
+    -- what the loop, the resolution, and the closing stopped at, and the
+    -- declarations they name; `Nothing` at a defect, which leaves nothing to
+    -- trust
+    Tuple loopErrors named = case report.result, settledBy of
+      Loop.Rejected d, _ -> Tuple [ rejected d ] (Just (Set.fromFoldable (diagnosticDeclarations d)))
+      Loop.Exhausted p, _ -> Tuple [ EquationUndecided p.origin ] (Just (Set.singleton (declarationOf p.origin)))
+      Loop.Halted d, _ -> Tuple [ Broken d ] Nothing
+      _, Just (Left stop) -> Tuple stop.errors stop.names
+      _, Just (Right { resolution: ResolutionHalted d }) -> Tuple [ Broken d ] Nothing
+      _, Just (Right { resolution: Resolution r, left, undone }) ->
+        let
+          closings = map (\(Tuple name cause) -> { error: undoneError cause, names: [ name ] }) (Map.toUnfoldable undone :: Array (Tuple (Qualified Ident) Undoing))
+          components = closings <> Array.concatMap componentErrors (Array.filter (\c -> not (Map.member c.owner undone)) r.components)
+          resolvedNames = Set.fromFoldable (Array.concatMap _.names components)
+          -- a goal still waiting is a synthesis nothing decided, and any other
+          -- job an equation
+          undecided p = case p.job, sourceOrigin p.origin of
+            JobSynthesis _, Just o -> SynthesisUndecided o
+            _, _ -> EquationUndecided p.origin
+          -- a job of a declaration the resolution reported is reported by that
+          stillWaiting = case left.result of
+            Loop.Blocked waiting -> Array.filter (\p -> not (Set.member (declarationOf p.origin) resolvedNames)) (NonEmptyArray.toArray waiting)
+            _ -> []
+        in
+          Tuple (map _.error components <> map undecided stillWaiting)
+            (Just (Set.union resolvedNames (Set.fromFoldable (map (\p -> declarationOf p.origin) stillWaiting))))
+      _, Nothing -> Tuple [] (Just Set.empty)
 
-  -- what the loop, the resolution, and the closing stopped at, and the
-  -- declarations they name; `Nothing` at a defect, which leaves nothing to
-  -- trust
-  Tuple loopErrors named = case report.result, settledBy of
-    Loop.Rejected d, _ -> Tuple [ rejected d ] (Just (Set.fromFoldable (diagnosticDeclarations d)))
-    Loop.Exhausted p, _ -> Tuple [ EquationUndecided p.origin ] (Just (Set.singleton (declarationOf p.origin)))
-    Loop.Halted d, _ -> Tuple [ Broken d ] Nothing
-    _, Just (Left stop) -> Tuple stop.errors stop.names
-    _, Just (Right { resolution: ResolutionHalted d }) -> Tuple [ Broken d ] Nothing
-    _, Just (Right { resolution: Resolution r, left, undone }) ->
+    -- the declarations a job still waits for
+    waiting = Set.fromFoldable (map (\p -> declarationOf p.site.origin) (Map.values after.tentative.scheduler.pending))
+
+    -- the bodies with their pending `case`s replaced where the loop reached
+    -- quiescence; one holding a `case` left pending otherwise is unchecked
+    finished = map finish case settledBy of
+      Just (Right r) -> r.bodies
+      _ -> bodies
+    finish b = case named of
+      Nothing -> Tuple [] Nothing
+      Just names
+        | Set.member b.name names -> Tuple [] Nothing
+        | Set.member b.name waiting || not (Array.null b.pending) -> Tuple [ LeftUnchecked b.origin b.name ] Nothing
+        | otherwise -> settled b
+
+    -- a settled body holding a typed hole, an expression hole, or a wildcard not
+    -- wholly decided, is no value: each hole is reported, and each such wildcard
+    -- where it is written, and nothing these stand for undecided is reported
+    -- again where the term holds it
+    settled b =
       let
-        closings = map (\(Tuple name cause) -> { error: undoneError cause, names: [ name ] }) (Map.toUnfoldable undone :: Array (Tuple (Qualified Ident) Undoing))
-        components = closings <> Array.concatMap componentErrors (Array.filter (\c -> not (Map.member c.owner undone)) r.components)
-        resolvedNames = Set.fromFoldable (Array.concatMap _.names components)
-        -- a job of a declaration the resolution reported is reported by that
-        stillWaiting = case left.result of
-          Loop.Blocked waiting -> Array.filter (\p -> not (Set.member (declarationOf p.origin) resolvedNames)) (NonEmptyArray.toArray waiting)
-          _ -> []
+        metas = after.tentative.metas
+        { reported, covered } = annotated metas b.holes b.wildcards b.unwritten b.expressionHoles b.uncovered
       in
-        Tuple (map _.error components <> map (\p -> EquationUndecided p.origin) stillWaiting)
-          (Just (Set.union resolvedNames (Set.fromFoldable (map (\p -> declarationOf p.origin) stillWaiting))))
-    _, Nothing -> Tuple [] (Just Set.empty)
-
-  -- the declarations a job still waits for
-  waiting = Set.fromFoldable (map (\p -> declarationOf p.site.origin) (Map.values after.tentative.scheduler.pending))
-
-  -- the bodies with their pending `case`s replaced where the loop reached
-  -- quiescence; one holding a `case` left pending otherwise is unchecked
-  finished = map finish case settledBy of
-    Just (Right r) -> r.bodies
-    _ -> bodies
-  finish b = case named of
-    Nothing -> Tuple [] Nothing
-    Just names
-      | Set.member b.name names -> Tuple [] Nothing
-      | Set.member b.name waiting || not (Array.null b.pending) -> Tuple [ LeftUnchecked b.origin b.name ] Nothing
-      | otherwise -> settled b
-
-  -- a settled body holding a typed hole, an expression hole, or a wildcard not
-  -- wholly decided, is no value: each hole is reported, and each such wildcard
-  -- where it is written, and nothing these stand for undecided is reported
-  -- again where the term holds it
-  settled b =
-    let
-      metas = after.tentative.metas
-      { reported, covered } = annotated metas b.holes b.wildcards b.unwritten b.expressionHoles b.uncovered
-    in
-      case asCore (zonkExpr metas b.body) of
-        Right core
-          | Array.null reported -> Tuple [] (Just { name: b.name, origin: b.origin, ordinal: b.ordinal, attributes: b.attributes, scheme: b.scheme, spine: b.spine, body: core.body, initialization: core.initialization })
-          | otherwise -> Tuple reported Nothing
-        Left residues -> case Array.findMap defectOf (Array.filter (not <<< covered) (NonEmptyArray.toArray residues)) of
-          -- every fit is decided or reported, every recursive reference made
-          -- ordinary, and every place a match leaves uncovered noted, before a
-          -- body is made Core
-          Just defect -> Tuple [ Broken defect ] Nothing
-          -- a place is reported once, however many undecided types stand there
-          Nothing -> Tuple (reported <> map TypeUndetermined (Array.nubEq (map residueOrigin (Array.filter (not <<< covered) (NonEmptyArray.toArray residues))))) Nothing
+        case asCore (zonkExpr metas b.body) of
+          Right core
+            | Array.null reported -> Tuple [] (Just { name: b.name, origin: b.origin, ordinal: b.ordinal, attributes: b.attributes, scheme: b.scheme, spine: b.spine, body: core.body, initialization: core.initialization })
+            | otherwise -> Tuple reported Nothing
+          Left residues -> case Array.findMap defectOf (Array.filter (not <<< covered) (NonEmptyArray.toArray residues)) of
+            -- every fit is decided or reported, every recursive reference made
+            -- ordinary, and every place a match leaves uncovered noted, before a
+            -- body is made Core
+            Just defect -> Tuple [ Broken defect ] Nothing
+            -- a place is reported once, however many undecided types stand there
+            Nothing -> Tuple (reported <> map TypeUndetermined (Array.nubEq (map residueOrigin (Array.filter (not <<< covered) (NonEmptyArray.toArray residues))))) Nothing
 
 -- | The typed holes and the wildcards an annotation holds, and the expression
 -- | holes a body holds, settled: each hole reported, whatever is decided of
@@ -953,7 +1003,7 @@ type Failure = { error :: ElaborationError, names :: Array (Qualified Ident) }
 
 -- | Generalizing one group: what keeps it from being generalized, over the
 -- | solver state.
-type Generalizing = ExceptT (Array Failure) (State SolverState)
+type Generalizing m = ExceptT (Array Failure) (StateT SolverState m)
 
 -- | A group of values without a signature, generalized
 -- | ([Elaboration](../../../../../docs/technical-references/02-Surface-Language/01-Elaboration.md#the-procedure)):
@@ -978,16 +1028,18 @@ type Generalizing = ExceptT (Array Failure) (State SolverState)
 -- | group starts over once, every such body expanded and nothing of the first
 -- | build kept. One that asks for it the second time round is a defect.
 generalizeGroup
-  :: SessionEnv
-  -> Attempter
+  :: forall m
+   . MonadRec m
+  => SessionEnv
+  -> AttempterM m
   -> Internal
   -> SurfaceEnv
   -> (Qualified Ident -> Boolean)
   -> NonEmptyArray Unsigned
   -> SolverState
-  -> { result :: Either (Array ElaborationError) { values :: Array ElaboratedValue, warnings :: Array Warning }, state :: SolverState }
+  -> m { result :: Either (Array ElaborationError) { values :: Array ElaboratedValue, warnings :: Array Warning }, state :: SolverState }
 generalizeGroup session attempter internal surface isConstructor group s0 =
-  case runState (runExceptT (attempt Set.empty)) s0 of
+  runStateT (runExceptT (attempt Set.empty)) s0 <#> case _ of
     Tuple (Left failures) s ->
       let
         named = Set.fromFoldable (Array.concatMap _.names failures)
@@ -1008,7 +1060,7 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
   -- what fails where the mechanism does names every member
   defect d = { error: Broken d, names }
 
-  attempt :: Set (Qualified Ident) -> Generalizing { values :: Array ElaboratedValue, warnings :: Array Warning }
+  attempt :: Set (Qualified Ident) -> Generalizing m { values :: Array ElaboratedValue, warnings :: Array Warning }
   attempt expanded = do
     types <- monomorphic
     let
@@ -1021,7 +1073,7 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
     throwError (map (\f -> f { error = escapedCells (cellRecords (map (\b -> { name: b.unsigned.name, regions: b.regions, references: b.references }) built)) f.error }) failures)
 
   afterBuilt expanded built = do
-    report <- step (runAttempting attempter)
+    report <- stepM (runAttemptingM attempter)
     throwIfAny (stoppedAt report.result)
     asked <- gets \s -> Set.fromFoldable (map _.unsigned.name (Array.filter (expansionAsked expanded s) built))
     if Set.isEmpty asked then settle built report.warnings
@@ -1066,17 +1118,17 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
       Tuple outcome s' -> put s' *> throwError [ attemptFailure [ u.name ] outcome ]
 
   settle unbounded loopWarnings = do
-    resolution <- step (resolveOwners session attempter groupOwner (const topLevel) (_ == key))
+    resolution <- stepM (resolveOwnersM session attempter groupOwner (const topLevel) (_ == key))
     resolutionWarnings <- resolvedBy resolution
     boundWarnings <- variantsBounded (Array.concatMap _.pending unbounded)
     built <- traverse settledPending unbounded
     generalizing <- gets \s -> map (\b -> { key: b.unsigned.name, name: b.unsigned.name, type: b.type, body: b.expr, valueForm: isSettledValueForm isConstructor (zonkExpr s.tentative.metas b.expr), written: isJust b.unsigned.signature }) built
-    prepared <- step (prepareGeneralization attempter memberOwner topLevel generalizing)
+    prepared <- stepM (prepareGeneralizationM attempter memberOwner topLevel generalizing)
     draft <- case prepared.preparation of
       Drafted d -> pure d
       Hindered hindrances -> hindered built hindrances
       PreparationStopped result -> throwError (stoppedAt result)
-    closed <- step (closeRows session attempter groupOwner key topLevel (map (\b -> { site: { context: emptyXContext, origin: InDeclaration b.unsigned.name }, term: b.expr, types: [ b.type ] }) built))
+    closed <- stepM (closeRowsM session attempter groupOwner key topLevel (map (\b -> { site: { context: emptyXContext, origin: InDeclaration b.unsigned.name }, term: b.expr, types: [ b.type ] }) built))
     closingWarnings <- case closed of
       Left d -> throwError [ defect d ]
       Right { closing: Undone c } -> throwError [ undone c.cause ]
@@ -1117,9 +1169,9 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
         case closed of
           Done _ -> pure unit
           outcome -> throwError [ attemptFailure names outcome ]
-        report <- step (runAttempting attempter)
+        report <- stepM (runAttemptingM attempter)
         throwIfAny (stoppedAt report.result)
-        resolution <- step (resolveOwners session attempter groupOwner (const topLevel) (_ == key))
+        resolution <- stepM (resolveOwnersM session attempter groupOwner (const topLevel) (_ == key))
         warnings <- resolvedBy resolution
         more <- variantsBounded pending
         pure (report.warnings <> warnings <> more)
@@ -1160,7 +1212,7 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
   judged metas b = (annotated metas b.holes b.wildcards (maybe [] _.unwritten b.unsigned.signature <> b.unwritten) b.expressionHoles b.uncovered).reported
 
   -- each member's hindrances, where the residues of its body place them
-  hindered :: forall r x. Array { unsigned :: Unsigned, expr :: XExpr Surface.Origin | r } -> Array (Hindrance (Qualified Ident)) -> Generalizing x
+  hindered :: forall r x. Array { unsigned :: Unsigned, expr :: XExpr Surface.Origin | r } -> Array (Hindrance (Qualified Ident)) -> Generalizing m x
   hindered built hindrances = do
     metas <- gets _.tentative.metas
     throwError
@@ -1201,8 +1253,12 @@ generalizeGroup session attempter internal surface isConstructor group s0 =
     Refused d -> Just d
     _ -> Nothing
 
-  step :: forall x. (SolverState -> Tuple x SolverState) -> Generalizing x
+  step :: forall x. (SolverState -> Tuple x SolverState) -> Generalizing m x
   step f = lift (state f)
+
+  -- a step carried out in the monad the attempter carries its attempts out in
+  stepM :: forall x. (SolverState -> m (Tuple x SolverState)) -> Generalizing m x
+  stepM f = lift (StateT f)
 
   throwIfAny errors = unless (Array.null errors) (throwError errors)
 
@@ -1368,10 +1424,36 @@ elaborateModule
   -> Surface.Module
   -> Exports
   -> ElaboratedModule
-elaborateModule signature surface imported m exports =
+elaborateModule signature surface imported m exports = case elaborateModuleM (identically <<< attemptPending) signature surface imported m exports of
+  Identity result -> result
+
+-- | `elaborateModule`, each job carried out in the monad the attempter the
+-- | function given makes of the module's session carries its attempts out
+-- | in; what that monad stops with is the caller's, and no diagnostic.
+elaborateModuleM
+  :: forall m
+   . MonadRec m
+  => (SessionEnv -> AttempterM m)
+  -> Signature
+  -> SurfaceEnv
+  -> Array CatalogEntry
+  -> Surface.Module
+  -> Exports
+  -> m ElaboratedModule
+elaborateModuleM attempterOf signature surface imported m exports =
+  elaborateValuesM attempterOf signature surface imported m <#> assembled signature m exports
+
+-- | The Core module, its declarations judged and checked, made of what the
+-- | module's declarations elaborated to.
+assembled
+  :: Signature
+  -> Surface.Module
+  -> Exports
+  -> { data :: Array ElaboratedData, synonyms :: Array ElaboratedSynonym, foreignTypes :: Array ElaboratedForeignType, effects :: Array ElaboratedEffect, foreigns :: Array ElaboratedForeign, attributes :: Array ElaboratedAttribute, values :: Array ElaboratedValue, errors :: Array ElaborationError, warnings :: Array Warning }
+  -> ElaboratedModule
+assembled signature m exports elaborated =
   { result, values: elaborated.values }
   where
-  elaborated = elaborateValues signature surface imported m
   values = elaborated.values
 
   ordinalOf = Map.fromFoldable (Array.mapWithIndex (\i v -> Tuple v.name i) values)
@@ -1498,3 +1580,14 @@ elaborateModule signature surface imported m exports =
 -- | Whether the two sets share a member.
 meets :: forall x. Ord x => Set x -> Set x -> Boolean
 meets a b = not (Set.isEmpty (Set.intersection a b))
+
+-- | Whether a scheme is the one a synthesizer is invoked at, its row taken by
+-- | its normal form. It binds nothing, so no binder is told apart.
+isSynthesizerScheme :: XScheme -> Boolean
+isSynthesizerScheme s = Array.null s.kindVars && case asArrow s.body, asArrow (fromCore synthesizerType) of
+  Just given, Just wanted -> given.argument == wanted.argument && given.result == wanted.result && sameRow given.row wanted.row
+  _, _ -> false
+  where
+  sameRow a b = case xnf a, xnf b of
+    Right x, Right y -> rebuild x == rebuild y
+    _, _ -> false

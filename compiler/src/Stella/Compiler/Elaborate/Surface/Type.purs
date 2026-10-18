@@ -212,9 +212,10 @@ type Elaborated =
   , wildcards :: Array Wildcard
   }
 
--- | A synthesized argument on a signature's spine, its dictionary's type read
--- | with the rest of the type: the name written for it, and its synthesizer.
-type SynthesizedMark = { name :: Maybe Ident, synthesizer :: Qualified Ident }
+-- | A synthesized parameter on a signature's spine, the type of the argument it
+-- | takes read with the rest of the type: the name written for it, and its
+-- | synthesizer with where it is written.
+type SynthesizedMark = { name :: Maybe Ident, at :: Surface.Origin, synthesizer :: Qualified Ident }
 
 -- | What a type is read under: the declaration it belongs to, the kind
 -- | variables in scope, the kind of each type variable bound, the type
@@ -304,8 +305,9 @@ elaborateComputationSignature synonyms declaration signature =
   elaborateSpine { computation: true, partial: true, around: Nothing } synonyms declaration { implicit: signature.implicit, body: computationAsType signature.body }
 
 -- | A signature read, a computation's where the flags say it is one, each
--- | synthesized argument on its spine read as the type of its dictionary, and
--- | a wildcard and a typed hole read where they say it may be partial.
+-- | synthesized parameter on its spine read as the type of the argument it
+-- | takes, and a wildcard and a typed hole read where they say it may be
+-- | partial.
 elaborateSpine :: { computation :: Boolean, partial :: Boolean, around :: Maybe XContext } -> SynonymEnv -> Qualified Ident -> Signature Type -> Elab Elaborated
 elaborateSpine { computation, partial, around } synonyms declaration signature =
   case around of
@@ -549,7 +551,7 @@ readType scope t = case t of
   TypeInvalid o -> unsupported (ReportedAlready o)
   TypeSynonym o name -> expandSynonym scope { origin: o, name, arguments: [] }
   TypeConstrained o _ _ -> unsupported (OutsideSubset o "a constraint")
-  TypeSynthesized o _ _ _ -> unsupported (OutsideSubset o "a synthesized argument")
+  TypeSynthesized o _ _ _ _ -> unsupported (OutsideSubset o "a synthesized parameter")
   TypeWildcard o -> case scope.annotation of
     Just context -> wildcard scope context o =<< freshKindMeta scope.kindVars Set.empty
     Nothing -> unsupported (OutsideSubset o "a wildcard")
@@ -986,7 +988,7 @@ typeParts = case _ of
         EffectSpread _ t -> Array.fromFoldable t
     )
     items
-  TypeSynthesized _ _ t _ -> [ t ]
+  TypeSynthesized _ _ t _ _ -> [ t ]
   _ -> []
 
 -- | The Core scheme of a signature once its kinds are decided: every
@@ -1003,20 +1005,20 @@ settledScheme metas e =
   where
   undetermined u = not (Set.isEmpty (kindMetasOf (substituteKind metas u.kind)))
 
--- | A signature's spine with each synthesized argument on it read as the type
--- | of its dictionary, behind the pure arrow it stands behind, and the
--- | arguments in the order written. A synthesized argument stands only where
--- | quantifiers, constraints, and other synthesized arguments are all that
+-- | A signature's spine with each synthesized parameter on it read as the type
+-- | of the argument it takes, behind the pure arrow it stands behind, and the
+-- | parameters in the order written. A synthesized parameter stands only where
+-- | quantifiers, constraints, and other synthesized parameters are all that
 -- | stands before it.
 synthesizedOnSpine :: Type -> { type :: Type, marks :: Array SynthesizedMark }
 synthesizedOnSpine t = case t of
   TypeForall o binders body -> let r = synthesizedOnSpine body in r { type = TypeForall o binders r.type }
   TypeConstrained o c body -> let r = synthesizedOnSpine body in r { type = TypeConstrained o c r.type }
-  TypeFunction o (TypeSynthesized _ name dictionary synthesizer) rest Nothing ->
+  TypeFunction o (TypeSynthesized _ name dictionary at synthesizer) rest Nothing ->
     let
       r = synthesizedOnSpine rest
     in
-      { type: TypeFunction o dictionary r.type Nothing, marks: Array.cons { name, synthesizer } r.marks }
+      { type: TypeFunction o dictionary r.type Nothing, marks: Array.cons { name, at, synthesizer } r.marks }
   _ -> { type: t, marks: [] }
 
 -- | A computation type written as the type it is in Core: its spine, then a
@@ -1030,7 +1032,7 @@ computationAsType c = foldr prefixed (TypeFunction c.origin (TypeConstructor c.o
     PrefixSynthesized synthesized -> TypeFunction (typeOrigin synthesized) synthesized rest Nothing
 
 -- | The scheme an interface publishes of a signature, from its Core scheme:
--- | each quantifier and constraint on the spine, each synthesized argument
+-- | each quantifier and constraint on the spine, each synthesized parameter
 -- | where its arrow stands, and a computation's thunk as the computation it is.
 schemeOf :: Elaborated -> TypeScheme -> Scheme
 schemeOf e s = { kindVars: s.kindVars, body: go e.synthesized s.body }

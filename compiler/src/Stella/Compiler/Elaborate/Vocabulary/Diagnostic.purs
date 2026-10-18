@@ -317,6 +317,11 @@ data Defect
   -- | wrapped in is not an entry, name resolution having seen the module
   -- | declaring it imported.
   | ContinuationAbsent Origin
+  -- | A reference to a global whose spine, as the interface gives it, and its
+  -- | scheme, as the catalog holds it, disagree: a synthesized parameter where
+  -- | the scheme has no pure arrow, an arrow taking another type than the
+  -- | parameter, or a rest that is not the same type.
+  | SynthesizedSpineAmiss Origin (Qualified Ident)
   -- | `Ψ` holding, once a group is generalized, a metavariable the group retired.
   | RetiredMetavariableHeld
   -- | A group committed other than as it was planned: its members not those

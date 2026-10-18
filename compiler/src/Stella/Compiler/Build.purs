@@ -53,6 +53,7 @@ module Stella.Compiler.Build
   , BuiltModules
   , CompilerHooks
   , defaultHooks
+  , withoutSynthesizers
   , build
   , compileModule
   , module Stella.Compiler.Build.Report
@@ -87,7 +88,10 @@ import Stella.Compiler.CST.Types (Import(..), Item(..), Module(..))
 import Stella.Compiler.Elaborate.Environment.Imported (compilationSignature, importedCatalog)
 import Stella.Compiler.Elaborate.Surface.Group (groups)
 import Stella.Compiler.Elaborate.Environment.Surface (importedSurface)
-import Stella.Compiler.Elaborate.Surface.Module (elaborateModule)
+import Stella.Compiler.Elaborate.Surface.Module (elaborateModuleM)
+import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending)
+import Stella.Compiler.Elaborate.Driver.Loop (AttempterM)
+import Stella.Compiler.Elaborate.Kernel.Elab (SessionEnv)
 import Stella.Compiler.Interface (Imports, aritiesOf, importsOf)
 import Stella.Compiler.Interface.Assemble (CoreInterface, SurfaceInterface, assemble, surfaceInterface)
 import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, lookupInterface, reachable, viewFor)
@@ -113,15 +117,26 @@ defaultSourceRoots = [ { prefix: [], dir: [ "src" ] }, { prefix: [ "Test" ], dir
 -- | many.
 type Progress = { current :: Int, total :: Int }
 
--- | What the host does for a build: read a file, run a macro's parser, and
--- | take what each phase of a module makes as the phase ends — to show it, or
--- | to write it. A parser is run with the modules of the build compiled so far
--- | in hand, which a macro of the build is declared by.
+-- | What the host does for a build: read a file, run a macro's parser, carry
+-- | out the jobs of a module's elaboration, and take what each phase of a
+-- | module makes as the phase ends — to show it, or to write it. A parser is run
+-- | with the modules of the build compiled so far in hand, which a macro of the
+-- | build is declared by. A job is carried out by the attempter made of the
+-- | module's session, which runs a synthesis job by the synthesizers the host
+-- | provides; what that attempter stops with in `m` is the host's, and no
+-- | diagnostic of the module.
 type CompilerAction m =
   { readSource :: String -> m (Either String String)
   , runParser :: BuiltModules -> RunParser m
+  , synthesis :: SessionEnv -> AttempterM m
   , hooks :: CompilerHooks m
   }
+
+-- | The attempter of a build that provides no synthesizer: every job the
+-- | host's, and a synthesis job a defect of the build, there being nothing to
+-- | run it by.
+withoutSynthesizers :: forall m. Applicative m => SessionEnv -> AttempterM m
+withoutSynthesizers session id s = pure (attemptPending session id s)
 
 -- | The modules of the build compiled so far, each by its interface.
 type BuiltModules = Map ModuleName ModuleInterface
@@ -329,7 +344,7 @@ compileAll action settings env0 paths order = tailRecM step { env: env0, built: 
 -- | modules of the build given, neither of which it changes.
 compileOne
   :: forall m
-   . Monad m
+   . MonadRec m
   => CompilerAction m
   -> ExpansionSettings
   -> BuildEnvironment
@@ -381,7 +396,7 @@ type Compiled =
 -- | earlier phase made and no later one reads is no longer held.
 compileModule
   :: forall m
-   . Monad m
+   . MonadRec m
   => CompilerAction m
   -> ExpansionSettings
   -> BuildEnvironment
@@ -414,27 +429,29 @@ type Checked =
 -- | alone of what resolving it gave.
 elaborated
   :: forall m
-   . Monad m
+   . MonadRec m
   => CompilerAction m
   -> BuildEnvironment
   -> Resolved
   -> Phase m Compiled
-elaborated action env resolved = checkedCore env resolved >>= checked action resolved.warnings
+elaborated action env resolved = checkedCore action env resolved >>= checked action resolved.warnings
 
 checkedCore
   :: forall m
-   . Monad m
-  => BuildEnvironment
+   . MonadRec m
+  => CompilerAction m
+  -> BuildEnvironment
   -> Resolved
   -> Phase m Checked
-checkedCore env resolved = do
+checkedCore action env resolved = do
   resolved.errors # failingWith Resolution
   let m = resolved.module
   -- a module resolved without error holds no invalid constant
   surface <- except (maybe (Left (pure (Backend SurfaceInterfaceMissing))) Right (surfaceInterface m resolved.exports))
   view <- viewFor (map _.module m.imports) env # orFailWith (pure <<< Environment <<< ViewRefused)
   signature <- compilationSignature env view m.name # orFailWith (pure <<< Environment <<< ImportsRefused)
-  made <- (elaborateModule signature (importedSurface env view) (importedCatalog env view) m resolved.exports).result # orFailWith (map Elaboration)
+  elaboratedModule <- lift (elaborateModuleM action.synthesis signature (importedSurface env view) (importedCatalog env view) m resolved.exports)
+  made <- elaboratedModule.result # orFailWith (map Elaboration)
   imports <- importsOf (Array.mapMaybe (\n -> lookupInterface n env) (Set.toUnfoldable (reachable view)))
     # orFailWith (pure <<< Environment <<< InterfacesRefused)
   pure { core: made.core, declared: made.declared, imports, decided: { surface, core: made.interface } }

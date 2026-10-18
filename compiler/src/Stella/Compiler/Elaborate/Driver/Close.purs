@@ -20,6 +20,7 @@ module Stella.Compiler.Elaborate.Driver.Close
   ( Closing(..)
   , Undoing(..)
   , closeRows
+  , closeRowsM
   ) where
 
 import Prelude
@@ -30,8 +31,8 @@ import Stella.Compiler.Elaborate.CorePlus.Context (Origin)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.CorePlus.Term (XExpr, standingTypesOfTerm, typesOfTerm)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XType(..), metaOccurrences, metasOf)
-import Stella.Compiler.Elaborate.Driver.Loop (Attempter, PendingReport, RunResult(..), runAttempting)
-import Stella.Compiler.Elaborate.Driver.Resolve (ComponentOutcome(..), Resolution(..), resolveOwners)
+import Stella.Compiler.Elaborate.Driver.Loop (Attempter, AttempterM, PendingReport, RunResult(..), identically, runAttemptingM)
+import Stella.Compiler.Elaborate.Driver.Resolve (ComponentOutcome(..), Resolution(..), resolveOwnersM)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverState, atLevel, runElabIn, unify)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitState(..))
 import Stella.Compiler.Elaborate.Mechanism.Obligation (ResidualAtom(..), residualAtoms)
@@ -40,7 +41,9 @@ import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), lookupMeta, regionScopeOf, substitute, substituteKind)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic, Warning)
 import Stella.Compiler.TypedCore (RowElemKind(..))
+import Control.Monad.Rec.Class (class MonadRec)
 import Data.Array as Array
+import Data.Identity (Identity(..))
 import Data.Either (Either(..))
 import Data.Foldable (for_)
 import Data.Traversable (traverse)
@@ -88,30 +91,34 @@ instance Show Closing where
 -- | first whose term or types write it, or else the fit or the obligation that
 -- | found it, so that what closing it breaks is that member's.
 closeRows :: forall a k. Ord k => SessionEnv -> Attempter -> (Origin -> k) -> k -> P.Int -> P.Array { site :: Site, term :: XExpr a, types :: P.Array XType } -> SolverState -> Tuple (Either Defect { closing :: Closing, warnings :: P.Array Warning }) SolverState
-closeRows session attempter owner key level members s0 =
-  if Set.isEmpty closable then Tuple (Right { closing: NothingClosed, warnings: [] }) s0
+closeRows session attempter owner key level members s0 = case closeRowsM session (identically attempter) owner key level members s0 of
+  Identity result -> result
+
+-- | `closeRows`, each job run again carried out in the monad the attempter
+-- | given carries its attempts out in.
+closeRowsM :: forall m a k. MonadRec m => Ord k => SessionEnv -> AttempterM m -> (Origin -> k) -> k -> P.Int -> P.Array { site :: Site, term :: XExpr a, types :: P.Array XType } -> SolverState -> m (Tuple (Either Defect { closing :: Closing, warnings :: P.Array Warning }) SolverState)
+closeRowsM session attempter owner key level members s0 =
+  if Set.isEmpty closable then pure (Tuple (Right { closing: NothingClosed, warnings: [] }) s0)
   else case traverse (\m -> map (Tuple m) (siteOf m)) (Set.toUnfoldable closable :: P.Array MetaVar) of
     -- every candidate was found where some member, fit, or obligation stands
-    Nothing -> Tuple (Left (ClosingSiteAbsent (Set.toUnfoldable (Set.filter (isNothing <<< siteOf) closable)))) s0
+    Nothing -> pure (Tuple (Left (ClosingSiteAbsent (Set.toUnfoldable (Set.filter (isNothing <<< siteOf) closable)))) s0)
     Just sited -> closeAt sited
   where
   closeAt sited = case runElabIn session s0 (atLevel level (for_ sited \(Tuple m site) -> unify site { kind: XKRow RowEffect, left: XMeta m, right: XRowEmpty })) of
-    Tuple (Done _) s1 ->
-      let
-        Tuple report s2 = runAttempting attempter (s1 { tentative { written = Set.empty } })
-      in
-        case report.result of
-          Halted defect -> Tuple (Left defect) (undo s2)
-          Rejected d -> Tuple (Right { closing: Undone { closed: closable, cause: UndoneBy d }, warnings: [] }) (undo s2)
-          Exhausted p -> Tuple (Right { closing: Undone { closed: closable, cause: UndoneWaiting p }, warnings: [] }) (undo s2)
-          _ -> case resolveOwners session attempter owner (const level) (_ == key) s2 of
-            Tuple (ResolutionHalted defect) s3 -> Tuple (Left defect) (undo s3)
-            Tuple (Resolution r) s3 -> case Array.findMap refusal r.components of
-              Just d -> Tuple (Right { closing: Undone { closed: closable, cause: UndoneBy d }, warnings: [] }) (undo s3)
-              Nothing -> Tuple (Right { closing: Closed closable, warnings: report.warnings <> r.warnings }) s3
-    Tuple (Broke defect) s1 -> Tuple (Left defect) (undo s1)
-    Tuple (Postponed _) s1 -> Tuple (Left ResolutionPostponed) (undo s1)
-    Tuple (Failed d) s1 -> Tuple (Right { closing: Undone { closed: closable, cause: UndoneBy d }, warnings: [] }) (undo s1)
+    Tuple (Done _) s1 -> do
+      Tuple report s2 <- runAttemptingM attempter (s1 { tentative { written = Set.empty } })
+      case report.result of
+        Halted defect -> pure (Tuple (Left defect) (undo s2))
+        Rejected d -> pure (Tuple (Right { closing: Undone { closed: closable, cause: UndoneBy d }, warnings: [] }) (undo s2))
+        Exhausted p -> pure (Tuple (Right { closing: Undone { closed: closable, cause: UndoneWaiting p }, warnings: [] }) (undo s2))
+        _ -> resolveOwnersM session attempter owner (const level) (_ == key) s2 <#> case _ of
+          Tuple (ResolutionHalted defect) s3 -> Tuple (Left defect) (undo s3)
+          Tuple (Resolution r) s3 -> case Array.findMap refusal r.components of
+            Just d -> Tuple (Right { closing: Undone { closed: closable, cause: UndoneBy d }, warnings: [] }) (undo s3)
+            Nothing -> Tuple (Right { closing: Closed closable, warnings: report.warnings <> r.warnings }) s3
+    Tuple (Broke defect) s1 -> pure (Tuple (Left defect) (undo s1))
+    Tuple (Postponed _) s1 -> pure (Tuple (Left ResolutionPostponed) (undo s1))
+    Tuple (Failed d) s1 -> pure (Tuple (Right { closing: Undone { closed: closable, cause: UndoneBy d }, warnings: [] }) (undo s1))
 
   undo s = s { tentative = s0.tentative }
 

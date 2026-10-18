@@ -154,7 +154,7 @@ printGroupReason = case _ of
 
 -- | Whether a signature makes its declaration a computation: a computation
 -- | type at the end of its spine, after its quantifiers, constraints, and
--- | synthesized arguments. The arrow after a synthesized argument is pure, so a
+-- | synthesized parameters. The arrow after a synthesized parameter is pure, so a
 -- | `/` following it belongs to the computation type. Parentheses around the
 -- | rest of the spine change nothing, there being no arrow for them to part it
 -- | from.

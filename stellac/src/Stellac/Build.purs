@@ -42,7 +42,7 @@ import Stella.CLI.Effect.Log as Log
 import Stella.CLI.Effect.Process (Output(..), PROCESS)
 import Stella.CLI.Session.Client as Client
 import Stella.CLI.Session.RunParser (ParserRunnerError, openingParser)
-import Stella.Compiler.Build (BuildError, CompilerAction, build, buildMessages, defaultHooks, defaultSourceRoots, printBuildMessage, warningMessage)
+import Stella.Compiler.Build (BuildError, CompilerAction, build, buildMessages, defaultHooks, defaultSourceRoots, printBuildMessage, warningMessage, withoutSynthesizers)
 import Stella.Compiler.Bytecode (encode)
 import Stella.Compiler.Bytecode.Bytes (Bytes)
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment)
@@ -118,6 +118,7 @@ cmd opts = do
     action =
       { readSource: FS.readText
       , runParser: openingParser session { command: steam.command, args: steam.args, output: Inherit, hello: parsing } syntax.descriptor loading
+      , synthesis: withoutSynthesizers
       , hooks: defaultHooks
           { onStartCompile = \progress file ->
               Log.info (fmt @"[{current}/{total}] Compiling {name} ({path})" { current: progress.current, total: progress.total, name: moduleText file.name, path: file.path })

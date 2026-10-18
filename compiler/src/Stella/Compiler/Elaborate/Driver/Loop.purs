@@ -18,6 +18,7 @@ module Stella.Compiler.Elaborate.Driver.Loop
   , submitEquality
   , runAttemptingM
   , runAttempting
+  , identically
   , runWith
   , run
   ) where
@@ -214,6 +215,7 @@ runAttempting :: Attempter -> SolverState -> Tuple RunReport SolverState
 runAttempting attempter s0 = case runAttemptingM (identically attempter) s0 of
   Identity result -> result
 
+-- | An attempter over `Identity`, as the drivers over any monad take one.
 identically :: Attempter -> AttempterM Identity
 identically attempter id s = Identity (attempter id s)
 

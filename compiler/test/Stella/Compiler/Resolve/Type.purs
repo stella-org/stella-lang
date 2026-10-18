@@ -257,7 +257,7 @@ spec = describe "Stella.Compiler.Resolve.Type" do
         "[] (Prim.Unit -> Prim.Int / {| A.Both Prim.Int Prim.Int Prim.String, s :: A.Both Prim.Int A.T Prim.Int Prim.Int |})"
         []
 
-  describe "synthesized arguments" do
+  describe "synthesized parameters" do
     it "stand on the spine, behind quantifiers, constraints, and one another" do
       shows [ "f :: forall a. T => {{ d :: Show a by show }} -> {{ _ :: Show T by show }} -> a" ]
         "[] (forall a#0. (A.T => ({{d :: (A.Show a#0) by A.show}} -> ({{_ :: (A.Show A.T) by A.show}} -> a#0))))"
@@ -290,7 +290,7 @@ spec = describe "Stella.Compiler.Resolve.Type" do
         (map (map (renderVars <<< computationScope) <<< resolveComputationSignature) <<< signatureOf "f")
         \r -> r.result `shouldEqual` "r#0 a#1 b#2"
 
-    it "hold synthesized arguments on the spine, the arrow after one being pure" do
+    it "hold synthesized parameters on the spine, the arrow after one being pure" do
       resolving [ "f :: forall a. T => {{ d :: Show a by show }} -> ({{ _ :: Show T by show }} -> a / {| E |})" ]
         (map (map renderComputation <<< resolveComputationSignature) <<< signatureOf "f")
         \r -> do
@@ -445,7 +445,7 @@ renderType = case _ of
   TypeRecord _ items -> "{ " <> joinWith ", " (map record items) <> " }"
   TypeVariant _ items -> "[ " <> joinWith ", " (map variant items) <> " ]"
   TypeEffectRow _ items -> "{| " <> joinWith ", " (map effect items) <> " |}"
-  TypeSynthesized _ n t f ->
+  TypeSynthesized _ n t _ f ->
     "{{" <> maybe "_" (\(Ident i) -> i) n <> " :: " <> renderType t <> " by " <> qualifiedIdent f <> "}}"
   TypeInvalid _ -> "!"
   where

@@ -25,6 +25,7 @@ module Stella.Compiler.Elaborate.Driver.Generalize
   , Preparation(..)
   , Finalization(..)
   , prepareGeneralization
+  , prepareGeneralizationM
   , finalizeGeneralization
   , FinalizedMember
   , FinalizedGroup
@@ -36,7 +37,9 @@ import Prelude
 
 import Prim as P
 
+import Control.Monad.Rec.Class (class MonadRec)
 import Data.Array as Array
+import Data.Identity (Identity(..))
 import Data.Either (Either(..))
 import Data.Foldable (foldl, foldr)
 import Data.Generic.Rep (class Generic)
@@ -51,7 +54,7 @@ import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), XContext)
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind(..), kindMetasOf, kindVarsOf)
 import Stella.Compiler.Elaborate.CorePlus.Term (FitId, RecRefId, TermMetaVar, XExpr(..), freeVarsOf, metasOfTerm, typeVarsOfTerm, typeVarsOfType, typesOfTerm, xExprAnnotation)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XType(..), freeKindVars, freeRigids, kindMetasOfType, metaOccurrences, metasOf)
-import Stella.Compiler.Elaborate.Driver.Loop (Attempter, RunResult(..), runAttempting)
+import Stella.Compiler.Elaborate.Driver.Loop (Attempter, AttempterM, RunResult(..), identically, runAttemptingM)
 import Stella.Compiler.Elaborate.Kernel.Elab (SolverState)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitState(..))
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach, ObligationId, ResidualAtom(..), atomConstraint, release, residualAtoms)
@@ -174,13 +177,19 @@ instance Show k => Show (Finalization k) where
 -- | loop is undecided. What the goals attempted again warned of is given with
 -- | what preparing came to.
 prepareGeneralization :: forall k a. Ord k => Attempter -> (Origin -> k) -> P.Int -> P.Array (Member k a) -> SolverState -> Tuple { preparation :: Preparation k, warnings :: P.Array Warning } SolverState
-prepareGeneralization attempter owner level members s0 =
+prepareGeneralization attempter owner level members s0 = case prepareGeneralizationM (identically attempter) owner level members s0 of
+  Identity result -> result
+
+-- | `prepareGeneralization`, the goals attempted again carried out in the monad
+-- | the attempter given carries its attempts out in.
+prepareGeneralizationM :: forall m k a. MonadRec m => Ord k => AttempterM m -> (Origin -> k) -> P.Int -> P.Array (Member k a) -> SolverState -> m (Tuple { preparation :: Preparation k, warnings :: P.Array Warning } SolverState)
+prepareGeneralizationM attempter owner level members s0 =
   case touching of
-    [] -> case report.result of
-      Completed -> settled
-      Blocked _ -> settled
+    [] -> runAttemptingM attempter retried <#> \(Tuple report ran) -> case report.result of
+      Completed -> settled report ran
+      Blocked _ -> settled report ran
       other -> Tuple { preparation: PreparationStopped other, warnings: report.warnings } ran
-    _ -> Tuple { preparation: Hindered (map (\g -> GoalTouchesQuantifier g.key g.origin g.id) touching), warnings: [] } restrictedState
+    _ -> pure (Tuple { preparation: Hindered (map (\g -> GoalTouchesQuantifier g.key g.origin g.id) touching), warnings: [] } restrictedState)
   where
   ctx0 = s0.tentative.metas
   keys = Set.fromFoldable (map _.key members)
@@ -218,10 +227,9 @@ prepareGeneralization attempter owner level members s0 =
     (Array.fromFoldable (Map.values s0.tentative.scheduler.pending))
   touching = Array.filter (\g -> not (Set.isEmpty (Set.intersection (quantifiedOf g.key) (metasOf (substitute lowered g.type))))) goals
 
-  Tuple report ran = runAttempting attempter
-    (restrictedState { tentative { scheduler = foldl (\s g -> requeue g.id s) restrictedState.tentative.scheduler goals } })
+  retried = restrictedState { tentative { scheduler = foldl (\s g -> requeue g.id s) restrictedState.tentative.scheduler goals } }
 
-  settled = case Array.filter (\g -> Map.member g.id ran.tentative.scheduler.pending) goals of
+  settled report ran = case Array.filter (\g -> Map.member g.id ran.tentative.scheduler.pending) goals of
     [] -> Tuple { preparation: Drafted { level, provisional, restricted }, warnings: report.warnings } ran
     waiting -> Tuple { preparation: Hindered (map (\g -> SynthesisUndecided g.key g.origin g.id) waiting), warnings: report.warnings } ran
 
