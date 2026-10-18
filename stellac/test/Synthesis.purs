@@ -125,6 +125,7 @@ options dir =
   , traceOpt: Nothing
   , emitCore: false
   , steamCmd: "steam"
+  , dependencies: Nothing
   }
 
 -- | Run on the disk and on real processes, `steam` started as the development

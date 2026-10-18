@@ -69,8 +69,9 @@ jobs:
       # Steam's read those bytes, and a stale fixture fails here, naming itself,
       # rather than passing there. Regenerate with STELLA_UPDATE_FIXTURES=1.
       # Steam's tests over a child process or a session's protocol are a suite of
-      # their own, run here as every change's; those over inputs as deep and as
-      # long as stack safety is tested at are the Stress workflow's.
+      # their own, run here as every change's, and so are stellac's over a child
+      # process; those over inputs as deep and as long as stack safety is tested
+      # at are the Stress workflow's.
       - name: Test
         run: |
           spago test -p compiler --pure
@@ -78,6 +79,7 @@ jobs:
           spago test -p steam --pure
           spago test -p steam -m Test.Steam.Integration --pure
           spago test -p stellac --pure
+          spago test -p stellac -m Test.Stellac.Integration --pure
           spago test -p backend-js --pure
 
       - name: Format check

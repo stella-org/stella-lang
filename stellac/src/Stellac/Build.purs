@@ -8,8 +8,9 @@
 -- | synthesizer run on one compile-time session, opened at the first of them,
 -- | a macro or a synthesizer of the package run from the bytecode written for
 -- | its module; and what each phase makes written as the phase ends. The
--- | modules are built against `Prim` and the modules the compiler carries,
--- | `Base.Int`, `Stella.Syntax`, and `Stella.Elab`.
+-- | modules are built against `Prim`, the modules the compiler carries,
+-- | `Base.Int`, `Stella.Syntax`, and `Stella.Elab`, and the interfaces a
+-- | dependency map names ([Dependencies](Dependencies.purs)).
 -- |
 -- | **A synthesizer that faults or uses up its budget fails the build where the
 -- | goal it was solving stands**, against the synthesizer: it says nothing of
@@ -63,6 +64,8 @@ import Stella.Compiler.Interface.File as Interface
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (defaultSettings)
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
+import Stellac.Dependencies (printDependencyError)
+import Stellac.Dependencies as Dependencies
 import Stellac.Paths (buildDirectory, builtPath)
 import Stellac.Options (BuildOptions)
 import Type.Row (type (+))
@@ -75,8 +78,15 @@ cmd :: forall r. BuildOptions -> Run (FS + LOG + PROCESS + EXCEPT String + EFFEC
 cmd opts = do
   syntax <- either (\why -> throw (internal ("the modules the compiler carries do not compile: " <> why))) pure compiled
   elab <- either (\why -> throw (internal ("`Stella.Elab` does not describe its types: " <> why))) pure Guest.bundle
-  env <- either (\err -> throw (internal ("the modules the compiler carries do not make an environment: " <> show err))) pure
+  carried <- either (\err -> throw (internal ("the modules the compiler carries do not make an environment: " <> show err))) pure
     (foldM (flip addInterface) initialEnvironment syntax.moduleInterfaces)
+  env <- case opts.dependencies of
+    Nothing -> pure carried
+    -- a relative map is under the package's root, as a relative output is
+    Just given -> do
+      absolute <- FS.isAbsolute given
+      Dependencies.dependedOn (if absolute then given else underRoot given) carried
+        >>= either (\errs -> for_ errs (Log.error <<< printDependencyError) *> throw "The build failed") (pure <<< _.environment)
   found <- FS.glob opts.workdir patterns >>= either (\why -> throw (fmt @"The source files could not be listed: {why}" { why })) pure
   when (Array.null found) do
     throw (fmt @"No source file matches {patterns}" { patterns: joinWith ", " patterns })

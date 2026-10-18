@@ -194,6 +194,7 @@
         "core": {
           "dependencies": [
             "aff",
+            "argonaut-core",
             "argparse-basic",
             "arrays",
             "bifunctors",
@@ -204,6 +205,8 @@
             "either",
             "fmt",
             "foldable-traversable",
+            "foreign-object",
+            "integers",
             "maybe",
             "node-process",
             "ordered-collections",
@@ -211,6 +214,7 @@
             "refs",
             "run",
             "strings",
+            "tuples",
             "typelevel-prelude"
           ]
         },
@@ -219,6 +223,10 @@
             "dodo-printer",
             "effect",
             "exceptions",
+            "node-buffer",
+            "node-child-process",
+            "node-execa",
+            "node-fs",
             "spec",
             "spec-node",
             "steam",

@@ -17,3 +17,5 @@ steam/.test-dmo
 .sessions
 # the packages the stellac synthesis tests build
 stellac/.test-build
+# the packages the stellac integration tests build
+stellac/.test-integration

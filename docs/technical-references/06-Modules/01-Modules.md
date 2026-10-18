@@ -464,10 +464,26 @@ No pass rewrites a module yet, so the optimizer stops before a first round, and 
 | `--trace-opt` | a module whose optimizer rounds are traced |
 | `--emit-core` | each module's Typed Core as `<M>.core.json`, which this version does not write and warns of |
 | `--steam-cmd` | the Steam executable a compile-time session is started with, `steam` by default |
+| `--dependencies` | a dependency map naming the interfaces of modules built elsewhere ([below](#the-dependency-map)); a relative path is under the root. Where none is given, the build is compiled against `Prim` and the modules the compiler provides alone |
 
 **It writes `<output>/_build/<M>.dmo` and `<output>/_build/<M>.dmi` for each module, as a pair**, once the module is compiled: a module whose pair could not be written in full leaves neither file of it. It writes `<output>/_build/<M>.mir`, the optimizer's trace, for the module `--trace-opt` names. The modules are built against `Prim` and the modules the compiler carries, `Base.Int`, `Stella.Syntax`, and `Stella.Elab` ([Prim and Base](02-Prim-and-Base.md)). One compile-time session runs the package's macros' parsers and its goals' synthesizers alike: it is started where the first of them is run, and none where none is, and it is closed once the modules are built. **A macro or a synthesizer of the package runs from the bytecode the build wrote for its module**: before it is run, the session loads that module, after each module of the package it reaches through its imports, and each once; one whose module's pair could not be written is not run, and stops the build. Each run of a synthesizer, every attempt of a goal being one, may take 1,000,000 steps of the machine.
 
 **A build succeeds only where all it was to write was written.** A file a phase could not write fails the build once the modules are built, so that what an earlier build left in the build directory is never taken for what this one made; a session that did not close cleanly fails it too. A build that fails says why, each error at the file and the place it is about, and ends with a status other than zero. Where a place names where what it covers was written, that follows the message as `(written at <file>:<line>:<column>)`, the file being the path of a module of the package, or, for a module the build is compiled against, the module's name.
+
+#### The dependency map
+
+**A dependency map is how a build is given modules it does not build**, as the files another build wrote. It is a provisional format for whatever drives the compiler, a package manager among them, and is no part of what a package publishes.
+
+```json
+{ "formatVersion": 0,
+  "modules": [ { "module": "Lib.Core", "interface": "lib/Lib.Core.dmi", "object": "lib/Lib.Core.dmo" } ] }
+```
+
+- **`formatVersion` is required and is `0`**; a map without it, or with another, is refused. Every entry has `module`, `interface`, and `object`, and a relative path in one is resolved against the directory the map stands in. Nothing is searched for: a module the map does not list is not in the build environment.
+- **Only the interfaces are read.** Each is decoded, as any `.dmi` is ([Interface](../05-Backend/03-Interface.md)), and must be the interface of the module its entry names. The bytecode paths are resolved and kept, and not read.
+- **The map is one consistent set of interfaces, whatever order it lists them in.** Every interface it lists is checked, whether or not the build imports it, and each is added to the build environment after every module it imports, so each imports only modules the map lists and modules the compiler provides. A module listed twice, a module the compiler provides, an import neither listed nor provided, and listed modules importing one another are refused; a module that merely imports one of the last is not itself reported. A module of the build the map lists as well is refused as any module the environment holds is (above).
+- **What the map lists, every module of the build may import.** Source is not yet confined to the modules of the package and of its direct dependencies.
+- **Compatibility is guaranteed only between files written and read by the same compiler build.** The format and ABI versions an interface carries are checked as its reader always checks them, and an interface that decodes is not thereby one this build can use.
 
 ## Declaration typing and the entry point
 

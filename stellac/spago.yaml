@@ -3,6 +3,7 @@ package:
   description: The Stella Compiler CLI
   dependencies:
     - aff
+    - argonaut-core
     - argparse-basic
     - arrays
     - bifunctors
@@ -13,6 +14,8 @@ package:
     - either
     - fmt
     - foldable-traversable
+    - foreign-object
+    - integers
     - maybe
     - node-process
     - ordered-collections
@@ -20,6 +23,7 @@ package:
     - refs
     - run
     - strings
+    - tuples
     - typelevel-prelude
   run:
     main: Stellac.JS
@@ -29,6 +33,10 @@ package:
       - dodo-printer
       - effect
       - exceptions
+      - node-buffer
+      - node-child-process
+      - node-execa
+      - node-fs
       - spec
       - spec-node
       - steam

@@ -71,6 +71,7 @@ defaults =
   , traceOpt: Nothing
   , emitCore: false
   , steamCmd: "steam"
+  , dependencies: Nothing
   }
 
 runBuild :: Ref (Map String File) -> Faults -> Ref (Array String) -> Run (FS + LOG + PROCESS + EXCEPT String + EFFECT + AFF + ()) Unit -> Aff (Either String Unit)
@@ -166,6 +167,41 @@ spec = describe "stellac build" do
     building (_ { workdir = "pkg", output = "/out" }) noFaults [ Tuple "pkg/src/Main.stel" (snd mainModule) ] \r -> do
       r.result `shouldEqual` Right unit
       Map.member "/out/_build/Main.dmo" r.files `shouldEqual` true
+
+  describe "a build against a dependency map" do
+    let
+      depsMap = Tuple "deps.json" (Text """{ "formatVersion": 0, "modules": [ { "module": "Data.Util", "interface": "lib/Data.Util.dmi", "object": "lib/Data.Util.dmo" } ] }""")
+      util = source "src/Data/Util.stel" [ "module Data.Util where", "data Box a = Box a", "k :: Int", "k = 2" ]
+      -- `Data.Util` built from source, its interface kept as `lib/Data.Util.dmi`
+      withLibrary k = building identity noFaults [ util ] \lib -> case Map.lookup "output/_build/Data.Util.dmi" lib.files of
+        Just dmi -> k (Tuple "lib/Data.Util.dmi" dmi)
+        Nothing -> liftEffect (throwException (error "the library was not built"))
+
+    it "compiles a module against the interfaces the map names, the map under --workdir" do
+      withLibrary \dmi ->
+        building (_ { workdir = "pkg", dependencies = Just "deps.json" }) noFaults
+          [ Tuple "pkg/deps.json" (snd depsMap)
+          , Tuple "pkg/lib/Data.Util.dmi" (snd dmi)
+          , Tuple "pkg/src/Main.stel" (Text (joinWith "\n" [ "module Main where", "import Data.Util", "n :: Box Int", "n = Box k" ]))
+          ]
+          \r -> do
+            r.result `shouldEqual` Right unit
+            written r `shouldEqual` [ "pkg/output/_build/Main.dmi", "pkg/output/_build/Main.dmo" ]
+
+    it "refuses a module of the package the map names as well" do
+      withLibrary \dmi ->
+        building (_ { dependencies = Just "deps.json" }) noFaults
+          [ depsMap, dmi, source "src/Data/Util.stel" [ "module Data.Util where", "k :: Int", "k = 3" ] ]
+          \r -> do
+            r.result `shouldEqual` Left "The build failed"
+            Array.elem "src/Data/Util.stel: This file holds `Data.Util`, which names a module the build is compiled against" r.said `shouldEqual` true
+            written r `shouldEqual` []
+
+    it "reports a map it cannot use, and builds nothing" do
+      building (_ { dependencies = Just "deps.json" }) noFaults [ depsMap, mainModule ] \r -> do
+        r.result `shouldEqual` Left "The build failed"
+        Array.elem "The interface of `Data.Util`, `lib/Data.Util.dmi`, could not be read: no such file" r.said `shouldEqual` true
+        written r `shouldEqual` []
 
   describe "a build that fails" do
     it "reports a module that does not compile where it stands" do

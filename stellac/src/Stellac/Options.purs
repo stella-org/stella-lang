@@ -20,6 +20,7 @@ type BuildOptions =
   , traceOpt :: Maybe ModuleName
   , emitCore :: Boolean
   , steamCmd :: String
+  , dependencies :: Maybe FilePath
   }
 
 data Command = Build BuildOptions
@@ -85,6 +86,11 @@ options =
           "Emit optimizer trace of specified module.\n\
           \Useful to inspect how module is simplified through optimizaion."
           # moduleName
+          # ArgParser.optional
+    , dependencies:
+        ArgParser.argument [ "--dependencies" ]
+          "A JSON file naming, for each module the build is compiled against\n\
+          \but does not build, its interface and its bytecode"
           # ArgParser.optional
     }
 
