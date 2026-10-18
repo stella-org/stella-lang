@@ -1575,3 +1575,21 @@ Synthesized parameters supplied at a reference ([Elaboration](../02-Surface-Lang
 | The same value without a signature | A row mismatch: the right-hand side is an inference position, and nothing is inserted |
 | A boundary rolled back with the attempt that built its body | Its job is gone with it; nothing of the boundary survives the rollback |
 | A position whose expected row nothing fixes — a λ with no expected type, a top-level value without a signature | No insertion |
+
+### Toolchain builds and the compile-time seed (step 7)
+
+A build compiling modules of its environment anew ([Modules](../06-Modules/01-Modules.md#how-a-build-proceeds)), and what the compile-time session of [`stellac build`](../06-Modules/01-Modules.md#stellac-build) loads.
+
+| Input | Required outcome |
+| --- | --- |
+| A toolchain build naming `Base.Int`, its source the nine entries the ABI places in it as foreigns, and a module importing it and `Stella.Syntax` | Compiled; the interface the one the compiler carries |
+| The same `Base.Int` lacking `toString` | Refused at its file, naming `Stella.Syntax` and the kept module reaching `Base.Int` through it; nothing written |
+| A module compiled anew that no kept module imports, and two compiled anew, one importing the other | Compiled, the interfaces changed |
+| `Base.Int` compiled anew importing `Stella.Syntax` | Refused: the build holds no `Base.Int` for it |
+| An ordinary build holding `Base.Int`; a toolchain build holding `Stella.Syntax`, which it does not name; one naming `Prim`, a module the environment does not hold, or one no file holds | Refused before any module is compiled |
+| `stellac build --toolchain-rebuild Base.Int` with no macro run | Compiled, no session opened |
+| The same with `Pass`, a macro importing `Base.Int` and `Stella.Syntax`, and `Main` calling it | Compiled, the macro run on the seed and the package's `Base.Int` never sent; `Main.n` `3` on the machine over the `Base.Int` the build wrote. A walk going past the seed fails the build |
+| `--toolchain-rebuild Stella.Elab` with a `Stella.Elab` of another interface, and a macro module importing it | The build failing against `Stella.Elab`, neither the program's error nor the compiler's |
+| A macro and a synthesizer of modules a dependency map lists, both importing a third the map lists | Each run from the bytecode the map names, the third loaded first and once; `2` and `7` on the machine |
+| A toolchain build naming `Base.Int` against a map listing a module that imports it | Refused with `Base.Int` lacking `toString`, naming the module the map lists and `Stella.Syntax`; compiled with the full `Base.Int` |
+| The modules the compiler carries, as the session holds them from its opening | Closed under imports |
