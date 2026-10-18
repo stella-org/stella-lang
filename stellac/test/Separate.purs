@@ -13,30 +13,26 @@ import Prelude
 
 import Data.Array as Array
 import Data.Either (Either(..))
-import Data.Maybe (maybe)
 import Data.String (Pattern(..), contains)
-import Data.String as String
 import Data.Traversable (for_)
 import Fmt (DefaultConfig, SetOpenClose, fmt, fmtWith)
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
 import Node.Buffer as Buffer
 import Node.Encoding (Encoding(..))
-import Node.ChildProcess.Types (Exit(..))
 import Node.FS.Aff as FS
-import Node.FS.Perms as Perms
 import Node.FS.Sync as Sync
-import Node.Library.Execa (execa)
 import Stella.Compiler.Bytecode (decode)
 import Stella.Compiler.Bytecode.Bytes (Bytes)
 import Stella.Compiler.Interface.File as Interface
 import Stella.Compiler.TypedCore (ModuleName(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
+import Test.Stellac.Process (Outcome, copyArtifacts, removeTree, stellac, writeFiles)
 
 -- | Where this suite's files stand, written afresh for each run.
 dir :: String
-dir = "stellac/.test-integration"
+dir = "stellac/.test-integration/separate"
 
 sources :: Array { path :: String, text :: String }
 sources =
@@ -92,34 +88,15 @@ mapOf modules = fmtWith @(SetOpenClose "<" ">" DefaultConfig) @"""{ "formatVersi
   where
   entry m = fmtWith @(SetOpenClose "<" ">" DefaultConfig) @"""{ "module": "<m>", "interface": "store/<m>.dmi", "object": "store/<m>.dmo" }""" { m }
 
-type Outcome = { status :: Int, err :: String }
-
-stellac :: Array String -> Aff Outcome
-stellac args = do
-  result <- execa "node" ([ "stellac/index.dev.js", "build" ] <> args) identity >>= _.getResult
-  pure
-    { status: case result.exit of
-        Normally code -> code
-        BySignal _ -> -1
-    , err: result.stderr
-    }
-
 -- | The library built, its artifacts in `store`, and its sources gone.
 setUp :: Aff Unit
 setUp = do
-  FS.rm' dir { force: true, maxRetries: 0, recursive: true, retryDelay: 0 }
-  for_ sources \s -> do
-    let path = fmt @"{dir}/{path}" { dir, path: s.path }
-    FS.mkdir' (parentOf path) { recursive: true, mode: Perms.mkPerms Perms.all Perms.all Perms.all }
-    FS.writeTextFile UTF8 path s.text
+  removeTree dir
+  writeFiles dir sources
   lib <- stellac [ "--workdir", dir <> "/lib" ]
   when (lib.status /= 0) (fail ("the library did not build: " <> lib.err))
-  FS.mkdir' (dir <> "/store") { recursive: true, mode: Perms.mkPerms Perms.all Perms.all Perms.all }
-  for_ libModules \m -> for_ [ "dmo", "dmi" ] \ext ->
-    FS.copyFile (fmt @"{dir}/lib/output/_build/{m}.{ext}" { dir, m, ext }) (fmt @"{dir}/store/{m}.{ext}" { dir, m, ext })
-  FS.rm' (dir <> "/lib") { force: false, maxRetries: 0, recursive: true, retryDelay: 0 }
-  where
-  parentOf path = maybe path (\i -> String.take i path) (String.lastIndexOf (Pattern "/") path)
+  copyArtifacts { from: dir <> "/lib/output/_build", to: dir <> "/store", modules: libModules }
+  removeTree (dir <> "/lib")
 
 bytesOf :: String -> Aff Bytes
 bytesOf path = FS.readFile path >>= liftEffect <<< Buffer.toArray
