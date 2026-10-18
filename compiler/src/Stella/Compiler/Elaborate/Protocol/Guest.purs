@@ -147,7 +147,8 @@ guestModule =
   , name: elabModule
   , imports: []
   , exports:
-      map (ExportType <<< TyName) (map _.name types)
+      [ ExportType (TyName "Handle") ]
+        <> map (ExportType <<< TyName) (map _.name types)
         <> map (ExportCtor <<< Ident) (Array.concatMap (map ctorName <<< _.ctors) types)
         <> map ExportEffect [ EffName "Kernel", EffName "Abort", EffName "Breach" ]
         <> map (ExportValue <<< Ident) (map _.name operations <> [ "transact", "synthesizer" ])

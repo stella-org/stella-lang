@@ -33,6 +33,7 @@ module Stella.Compiler.Build.Report
   , WrittenFile(..)
   , buildMessages
   , warningMessage
+  , originMessage
   , printBuildMessage
   ) where
 
@@ -306,6 +307,11 @@ buildMessages = case _ of
 -- | build given.
 warningMessage :: Map ModuleName String -> String -> CompileWarning -> BuildMessage
 warningMessage paths path w = { path: Just path, locations: [ located paths path (warningLocationOf w) ], message: printCompileWarning w }
+
+-- | A message about the file given, located where the origin given stands, the
+-- | path of each module of the build given.
+originMessage :: Map ModuleName String -> String -> Surface.Origin -> String -> BuildMessage
+originMessage paths path origin message = { path: Just path, locations: [ located paths path (fromOrigin origin) ], message }
 
 -- | A place in the file given, where it was written named by the path of a
 -- | module of the build, or by the module's name.

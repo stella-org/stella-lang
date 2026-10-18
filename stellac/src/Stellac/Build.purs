@@ -4,11 +4,17 @@
 -- |
 -- | **The build is the compiler's driver, `Stella.Compiler.Build`, given what
 -- | this command does for it**: the files the patterns name under the package's
--- | root, read as the driver asks; each macro's parser run on a compile-time
--- | session, opened at the first one, a macro of the package run from the
--- | bytecode written for its module; and what each phase makes written as the
--- | phase ends. The modules are built against `Prim` and the modules the
--- | compiler carries, `Base.Int` and `Stella.Syntax`.
+-- | root, read as the driver asks; each macro's parser and each goal's
+-- | synthesizer run on one compile-time session, opened at the first of them,
+-- | a macro or a synthesizer of the package run from the bytecode written for
+-- | its module; and what each phase makes written as the phase ends. The
+-- | modules are built against `Prim` and the modules the compiler carries,
+-- | `Base.Int`, `Stella.Syntax`, and `Stella.Elab`.
+-- |
+-- | **A synthesizer that faults or uses up its budget fails the build where the
+-- | goal it was solving stands**, against the synthesizer: it says nothing of
+-- | whether the goal has a solution, so it is neither the program's error nor
+-- | the compiler's.
 -- |
 -- | **A build succeeds only where everything it was to write was written**: a
 -- | file a phase could not write fails the build once the modules are built, so
@@ -26,10 +32,12 @@ import Data.Array.NonEmpty as NonEmptyArray
 import Data.Bifunctor (lmap)
 import Data.Either (Either(..), either)
 import Data.Foldable (foldM, for_)
+import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set as Set
 import Data.String (Pattern(..), joinWith, split)
 import Data.Traversable (for)
+import Effect.Aff (Milliseconds(..))
 import Effect.Ref as Ref
 import Fmt (fmt)
 import Run (AFF, EFFECT, Run, expand, liftEffect)
@@ -40,27 +48,33 @@ import Stella.CLI.Effect.FS as FS
 import Stella.CLI.Effect.Log (LOG)
 import Stella.CLI.Effect.Log as Log
 import Stella.CLI.Effect.Process (Output(..), PROCESS)
+import Stella.CLI.Session.Broker (SessionHealth(..), newCancellation)
 import Stella.CLI.Session.Client as Client
-import Stella.CLI.Session.RunParser (ParserRunnerError, openingParser)
-import Stella.Compiler.Build (BuildError, CompilerAction, build, buildMessages, defaultHooks, defaultSourceRoots, printBuildMessage, warningMessage, withoutSynthesizers)
+import Stella.CLI.Session.CompileTime (CompileTimeError(..))
+import Stella.CLI.Session.RunParser (openingParser)
+import Stella.CLI.Session.Synthesis (defaultSynthesisSettings, openingSynthesis)
+import Stella.Compiler.Build (BuildError, BuildMessage, CompilerAction, build, buildMessages, defaultHooks, defaultSourceRoots, originMessage, printBuildMessage, warningMessage)
 import Stella.Compiler.Bytecode (encode)
 import Stella.Compiler.Bytecode.Bytes (Bytes)
+import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
+import Stella.Compiler.Elaborate.Protocol.Guest as Guest
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment)
 import Stella.Compiler.Interface.File as Interface
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (defaultSettings)
-import Stella.Compiler.TypedCore (ModuleName(..))
+import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
 import Stellac.Paths (buildDirectory, builtPath)
 import Stellac.Options (BuildOptions)
 import Type.Row (type (+))
 
 -- | Where a build runs: the files, the log, and the session, a failure of the
 -- | session thrown.
-type Building = Run (EXCEPT ParserRunnerError + FS + LOG + PROCESS + AFF + EFFECT + ())
+type Building = Run (EXCEPT CompileTimeError + FS + LOG + PROCESS + AFF + EFFECT + ())
 
 cmd :: forall r. BuildOptions -> Run (FS + LOG + PROCESS + EXCEPT String + EFFECT + AFF + r) Unit
 cmd opts = do
   syntax <- either (\why -> throw (internal ("the modules the compiler carries do not compile: " <> why))) pure compiled
+  elab <- either (\why -> throw (internal ("`Stella.Elab` does not describe its types: " <> why))) pure Guest.bundle
   env <- either (\err -> throw (internal ("the modules the compiler carries do not make an environment: " <> show err))) pure
     (foldM (flip addInterface) initialEnvironment syntax.moduleInterfaces)
   found <- FS.glob opts.workdir patterns >>= either (\why -> throw (fmt @"The source files could not be listed: {why}" { why })) pure
@@ -78,6 +92,12 @@ cmd opts = do
   -- the modules whose pair was written, and those the session loaded
   paired <- liftEffect (Ref.new Set.empty)
   loaded <- liftEffect (Ref.new Set.empty)
+  -- the path of each module begun, which a failure of a synthesizer is reported in
+  paths <- liftEffect (Ref.new Map.empty)
+  -- what the synthesizers of the build run with, every one on the one session
+  cancellation <- liftEffect (newCancellation (Milliseconds 1000.0))
+  attempts <- liftEffect (Ref.new 0)
+  health <- liftEffect (Ref.new Reusable)
   let
     files = map (\within -> { path: underRoot within, within: split (Pattern "/") within }) found
 
@@ -117,10 +137,20 @@ cmd opts = do
     action :: CompilerAction Building
     action =
       { readSource: FS.readText
-      , runParser: openingParser session { command: steam.command, args: steam.args, output: Inherit, hello: parsing } syntax.descriptor loading
-      , synthesis: withoutSynthesizers
+      , runParser: openingParser session launch syntax.descriptor loading
+      , synthesis: openingSynthesis
+          { held: session
+          , launch
+          , descriptor: elab.descriptor
+          , loading
+          , budget: defaultSynthesisSettings.budget
+          , cancellation
+          , attempts
+          , health
+          }
       , hooks: defaultHooks
-          { onStartCompile = \progress file ->
+          { onStartCompile = \progress file -> do
+              liftEffect (Ref.modify_ (Map.insert file.name file.path) paths)
               Log.info (fmt @"[{current}/{total}] Compiling {name} ({path})" { current: progress.current, total: progress.total, name: moduleText file.name, path: file.path })
           , onElaborated = \core -> do
               when opts.emitCore do
@@ -150,7 +180,13 @@ cmd opts = do
   opened <- liftEffect (Ref.read session)
   closed <- for opened Client.close
   case outcome of
-    Left failure -> throw (internal (fmt @"the compile-time session failed: {failure}" { failure: show failure }))
+    Left failure -> do
+      known <- liftEffect (Ref.read paths)
+      case synthesizerFailure known failure of
+        Just message -> do
+          Log.error (printBuildMessage message)
+          throw "The build failed"
+        Nothing -> throw (internal (fmt @"the compile-time session failed: {failure}" { failure: show failure }))
     Right result -> do
       for_ closed case _ of
         Left failure -> Log.error (internal (fmt @"the compile-time session did not close cleanly: {failure}" { failure: show failure }))
@@ -173,7 +209,9 @@ cmd opts = do
     | otherwise = fmt @"{root}/{path}" { root: opts.workdir, path }
 
   steam = { command: opts.steamCmd, args: [ "session" ] }
-  parsing = { protocol: 1, profile: "elaboration", offers: [ "modules", "parse" ], requires: [] }
+  -- the session runs the build's parsers and synthesizers alike
+  compileTime = { protocol: 1, profile: "elaboration", offers: [ "modules", "parse", "invoke", "kernel" ], requires: [] }
+  launch = { command: steam.command, args: steam.args, output: Inherit, hello: compileTime }
 
   closedBadly = case _ of
     Just (Left _) -> true
@@ -182,6 +220,35 @@ cmd opts = do
   traceText chunks
     | Array.length chunks <= 2 = joinWith "\n" chunks <> "\n(no optimizer rounds)\n"
     | otherwise = joinWith "\n" chunks <> "\n"
+
+-- | A synthesizer that faulted, or used up its budget, said where the goal it
+-- | was solving stands, the path of each module begun given: the build fails on
+-- | it, and the program is not said to be wrong.
+synthesizerFailure :: Map.Map ModuleName String -> CompileTimeError -> Maybe BuildMessage
+synthesizerFailure paths = case _ of
+  SynthesizerFaulted r -> Just (at r.goal (fmt @"The synthesizer `{f}` faulted while solving this goal: {detail}" { f: qualifiedText r.synthesizer, detail: r.detail }))
+  SynthesizerBudgetExhausted r -> Just (at r.goal (fmt @"The synthesizer `{f}` exhausted its execution budget of {budget} steps while solving this goal" { f: qualifiedText r.synthesizer, budget: grouped r.budget }))
+  _ -> Nothing
+  where
+  at goal message = case goal of
+    AtSource { declaration: Qualified m _, origin } | Just path <- Map.lookup m paths -> originMessage paths path origin message
+    InDeclaration (Qualified m _) | Just path <- Map.lookup m paths -> { path: Just path, locations: [], message }
+    _ -> { path: Nothing, locations: [], message }
+
+-- | A count with its digits grouped by threes: `1,000,000`.
+grouped :: Int -> String
+grouped n
+  | n < 0 = "-" <> grouped (negate n)
+  | n < 1000 = show n
+  | otherwise = grouped (n / 1000) <> "," <> padded (n `mod` 1000)
+      where
+      padded k
+        | k < 10 = "00" <> show k
+        | k < 100 = "0" <> show k
+        | otherwise = show k
+
+qualifiedText :: Qualified Ident -> String
+qualifiedText (Qualified (ModuleName m) (Ident n)) = m <> "." <> n
 
 -- | A build's errors, each where it stands.
 reported :: forall r. BuildError -> Run (LOG + r) Unit

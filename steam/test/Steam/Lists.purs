@@ -45,7 +45,8 @@ import Steam.Load (emptyStore, globalNamed, load, noIdentities)
 import Steam.Value (CtorId, Value(..))
 import Stella.CLI.Session.Client as Client
 import Stella.CLI.Effect.Process (PROCESS)
-import Stella.CLI.Session.RunParser (ParserRunnerError(..), loadingParser)
+import Stella.CLI.Session.CompileTime (CompileTimeError(..))
+import Stella.CLI.Session.RunParser (loadingParser)
 import Stella.Compiler.Build (CompilerAction, build, buildMessages, defaultHooks, defaultSourceRoots, printBuildMessage, withoutSynthesizers)
 import Stella.Compiler.Bytecode (Dmo, encode, lower)
 import Stella.Compiler.Interface (aritiesOf, importsOf)
@@ -285,7 +286,7 @@ building unwritten modules globals k = case compiled of
                     if Set.member name names then Just (pathOf (moduleText name)) else Nothing
                 }
 
-              action :: CompilerAction (Run (EXCEPT ParserRunnerError + PROCESS + AFF + EFFECT + ()))
+              action :: CompilerAction (Run (EXCEPT CompileTimeError + PROCESS + AFF + EFFECT + ()))
               action =
                 { readSource: \path -> pure case Array.find (\(Tuple p _) -> p == path) sources of
                     Just (Tuple _ body) -> Right body

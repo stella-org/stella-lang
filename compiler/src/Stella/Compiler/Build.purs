@@ -79,7 +79,7 @@ import Data.String (Pattern(..), joinWith, stripSuffix)
 import Data.String.CodeUnits as SCU
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.Build.Report (BackendProblem(..), BuildError(..), BuildMessage, SourceRoot, CompileError(..), CompileWarning, DiagnosticLocation, EnvironmentProblem(..), MessageLocation, SyntaxProblem(..), WrittenFile(..), WrittenLocation, WrittenSource(..), buildMessages, locationOf, locationsOf, primaryLocationOf, printBuildMessage, printCompileError, printCompileWarning, warningLocationOf, warningMessage)
+import Stella.Compiler.Build.Report (BackendProblem(..), BuildError(..), BuildMessage, SourceRoot, CompileError(..), CompileWarning, DiagnosticLocation, EnvironmentProblem(..), MessageLocation, SyntaxProblem(..), WrittenFile(..), WrittenLocation, WrittenSource(..), buildMessages, locationOf, locationsOf, originMessage, primaryLocationOf, printBuildMessage, printCompileError, printCompileWarning, warningLocationOf, warningMessage)
 import Stella.Compiler.Bytecode.Lower (lower)
 import Stella.Compiler.Bytecode.Module (Debug, Dmo) as Bytecode
 import Stella.Compiler.CST (parseHeader, parseModule)
@@ -121,22 +121,22 @@ type Progress = { current :: Int, total :: Int }
 -- | out the jobs of a module's elaboration, and take what each phase of a
 -- | module makes as the phase ends — to show it, or to write it. A parser is run
 -- | with the modules of the build compiled so far in hand, which a macro of the
--- | build is declared by. A job is carried out by the attempter made of the
--- | module's session, which runs a synthesis job by the synthesizers the host
--- | provides; what that attempter stops with in `m` is the host's, and no
--- | diagnostic of the module.
+-- | build is declared by. A job is carried out by the attempter made of those
+-- | modules and the module's session, which runs a synthesis job by the
+-- | synthesizers the host provides, one of the build among them; what that
+-- | attempter stops with in `m` is the host's, and no diagnostic of the module.
 type CompilerAction m =
   { readSource :: String -> m (Either String String)
   , runParser :: BuiltModules -> RunParser m
-  , synthesis :: SessionEnv -> AttempterM m
+  , synthesis :: BuiltModules -> SessionEnv -> AttempterM m
   , hooks :: CompilerHooks m
   }
 
 -- | The attempter of a build that provides no synthesizer: every job the
 -- | host's, and a synthesis job a defect of the build, there being nothing to
 -- | run it by.
-withoutSynthesizers :: forall m. Applicative m => SessionEnv -> AttempterM m
-withoutSynthesizers session id s = pure (attemptPending session id s)
+withoutSynthesizers :: forall m. Applicative m => BuiltModules -> SessionEnv -> AttempterM m
+withoutSynthesizers _ session id s = pure (attemptPending session id s)
 
 -- | The modules of the build compiled so far, each by its interface.
 type BuiltModules = Map ModuleName ModuleInterface
@@ -407,7 +407,7 @@ compileModule action settings env built text = runExceptT do
   cst <- parseModule text # orFailWith (pure <<< Syntax <<< Unparsed)
   checkModule cst # failingWith (Syntax <<< IllFormed)
   resolved <- lift (resolveModuleExpanding (action.runParser built) settings env cst)
-  elaborated action env resolved
+  elaborated action env built resolved
 
 -- | What a phase of a module gives, or the errors it stops at.
 type Phase m = ExceptT (NonEmptyArray CompileError) m
@@ -432,25 +432,27 @@ elaborated
    . MonadRec m
   => CompilerAction m
   -> BuildEnvironment
+  -> BuiltModules
   -> Resolved
   -> Phase m Compiled
-elaborated action env resolved = checkedCore action env resolved >>= checked action resolved.warnings
+elaborated action env built resolved = checkedCore action env built resolved >>= checked action resolved.warnings
 
 checkedCore
   :: forall m
    . MonadRec m
   => CompilerAction m
   -> BuildEnvironment
+  -> BuiltModules
   -> Resolved
   -> Phase m Checked
-checkedCore action env resolved = do
+checkedCore action env built resolved = do
   resolved.errors # failingWith Resolution
   let m = resolved.module
   -- a module resolved without error holds no invalid constant
   surface <- except (maybe (Left (pure (Backend SurfaceInterfaceMissing))) Right (surfaceInterface m resolved.exports))
   view <- viewFor (map _.module m.imports) env # orFailWith (pure <<< Environment <<< ViewRefused)
   signature <- compilationSignature env view m.name # orFailWith (pure <<< Environment <<< ImportsRefused)
-  elaboratedModule <- lift (elaborateModuleM action.synthesis signature (importedSurface env view) (importedCatalog env view) m resolved.exports)
+  elaboratedModule <- lift (elaborateModuleM (action.synthesis built) signature (importedSurface env view) (importedCatalog env view) m resolved.exports)
   made <- elaboratedModule.result # orFailWith (map Elaboration)
   imports <- importsOf (Array.mapMaybe (\n -> lookupInterface n env) (Set.toUnfoldable (reachable view)))
     # orFailWith (pure <<< Environment <<< InterfacesRefused)

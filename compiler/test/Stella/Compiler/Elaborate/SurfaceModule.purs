@@ -316,6 +316,7 @@ at = case _ of
   ConstraintEscapes o _ -> located o <> " constraint escapes"
   SynthesisUndecided o -> located o <> " synthesis undecided"
   SynthesizerIllTyped o (Qualified _ (Ident n)) -> located o <> " " <> n <> " names no synthesizer"
+  SynthesizerNotBuilt o (Qualified _ (Ident n)) -> located o <> " " <> n <> " not built"
   ConstraintUnwritten o -> located o <> " constraint unwritten"
   KindUndetermined o -> located o <> " kind undetermined"
   Rejected (EquationFailed (AtSource s) _) -> located s.origin <> " rejected"
@@ -2380,8 +2381,12 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map at r.errors `shouldEqual` [ "3:1 signature needed" ]
 
     it "names a synthesizer at the type one is invoked at, and a signature naming another gives no scheme" do
+      synthesizing [ "bad :: {{ d :: Int by id }} -> Int", "bad d = d", "useBad :: Int", "useBad = bad" ] \r ->
+        map at r.errors `shouldEqual` [ "3:23 id names no synthesizer", "6:1 left unchecked" ]
+
+    it "names a synthesizer a module compiled before declares, and a signature naming one of its own gives no scheme" do
       synthesizing [ "make :: Int", "make = 1", "bad :: {{ d :: Int by make }} -> Int", "bad d = d", "useBad :: Int", "useBad = bad" ] \r ->
-        map at r.errors `shouldEqual` [ "5:23 make names no synthesizer", "8:1 left unchecked" ]
+        map at r.errors `shouldEqual` [ "5:23 make not built", "8:1 left unchecked" ]
 
     it "is the host's defect where the spine its interface gives and the scheme the catalog holds disagree" do
       let

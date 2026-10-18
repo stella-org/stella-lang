@@ -156,6 +156,10 @@ data ElaborationError
   -- | scheme is not the one a synthesizer is invoked at: `Stella.Elab.Handle
   -- | -{( Stella.Elab.Kernel )}-> Stella.Elab.Handle`.
   | SynthesizerIllTyped Surface.Origin (Qualified Ident)
+  -- | A synthesizer named by a synthesized parameter, where it is written, that the
+  -- | module being compiled declares: a synthesizer runs from a module compiled
+  -- | before this one.
+  | SynthesizerNotBuilt Surface.Origin (Qualified Ident)
   -- | A condition a declaration whose signature is partial needs, which the
   -- | signature does not write, where it arose: a partial signature gains none.
   | ConstraintUnwritten Surface.Origin
@@ -485,17 +489,19 @@ elaborateValuesM attempterOf imports surface importedEntries m =
         _ -> Nothing
     )
     settled
-  -- a synthesized parameter names a synthesizer at the type one is invoked
-  -- at, where it is written; a signature naming another gives no scheme
+  -- a synthesized parameter names a synthesizer an import reaches, at the type
+  -- one is invoked at, where it is written: one this module declares has no
+  -- bytecode to run yet. A signature naming either gives no scheme
   illTyped = Array.concatMap
-    (\(Tuple d e) -> map (\mark -> { name: d.name, error: SynthesizerIllTyped mark.at mark.synthesizer }) (Array.filter (not <<< invokable) e.synthesized))
+    (\(Tuple d e) -> Array.mapMaybe (\mark -> map (\error -> { name: d.name, error }) (refusal mark)) e.synthesized)
     (Array.filter (not <<< isPartial <<< snd) read.read)
   illNamed = Set.fromFoldable (map _.name illTyped)
-  invokable mark = maybe false isSynthesizerScheme (Map.lookup mark.synthesizer synthesizers)
-  synthesizers = Map.fromFoldable
-    ( map (\entry -> Tuple entry.name entry.scheme) imported
-        <> Array.mapMaybe (\(Tuple d s) -> either (const Nothing) (\r -> Just (Tuple d.name { kindVars: r.scheme.kindVars, body: fromCore r.scheme.body })) s) settled
-    )
+  refusal mark = case mark.synthesizer of
+    Qualified owner _
+      | owner == m.name -> Just (SynthesizerNotBuilt mark.at mark.synthesizer)
+      | maybe false isSynthesizerScheme (Map.lookup mark.synthesizer synthesizers) -> Nothing
+      | otherwise -> Just (SynthesizerIllTyped mark.at mark.synthesizer)
+  synthesizers = Map.fromFoldable (map (\entry -> Tuple entry.name entry.scheme) imported)
   signatureErrors = read.errors <> map _.error illTyped <> Array.concatMap
     ( \(Tuple _ s) -> case s of
         Left places -> map KindUndetermined (NonEmptyArray.toArray places)

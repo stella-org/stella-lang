@@ -44,7 +44,7 @@ import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (ParseOutcome(..), RunParser, defaultSettings)
 import Stella.Compiler.Macro.Tree (Position(..), Range(..), SyntaxNode(..), Token(..), TokenTree(..))
 import Stella.Compiler.Macro.Tree as Tree
-import Stella.Compiler.Build (BackendProblem(..), BuildError(..), SourceRoot, defaultSourceRoots, CompileError(..), CompileWarning, CompilerAction, EnvironmentProblem(..), PackageFile, SyntaxProblem(..), build, buildMessages, compileModule, defaultHooks, locationsOf, printBuildMessage, printCompileError, warningLocationOf, withoutSynthesizers)
+import Stella.Compiler.Build (BackendProblem(..), BuildError(..), BuiltModules, SourceRoot, defaultSourceRoots, CompileError(..), CompileWarning, CompilerAction, EnvironmentProblem(..), PackageFile, SyntaxProblem(..), build, buildMessages, compileModule, defaultHooks, locationsOf, printBuildMessage, printCompileError, warningLocationOf, withoutSynthesizers)
 import Stella.Compiler.Resolve.Module (ResolutionError(..))
 import Stella.Compiler.Resolve.Monad (ResolveError(..), ResolveReason(..)) as Resolve
 import Stella.Compiler.Surface.Origin as Surface
@@ -168,13 +168,19 @@ interfaceMarks =
   , arities: Map.empty
   }
 
--- | `Synth`, declaring the synthesizer `resolve` at the type one is invoked at.
+-- | `Synth`, declaring the synthesizer `resolve` at the type one is invoked at,
+-- | and `make :: Int`, a value at another type.
 interfaceSynth :: ModuleInterface
 interfaceSynth =
   { name: synthModule
   , imports: []
-  , exports: emptyExports { values = Map.singleton "resolve" { entity: resolve, via: Declared } }
-  , declarations: emptyDeclarations { values = Map.singleton (Ident "resolve") { sort: SortValue, scheme: plainScheme (monoScheme synthesizerType), attributes: [] } }
+  , exports: emptyExports { values = Map.fromFoldable [ Tuple "resolve" { entity: resolve, via: Declared }, Tuple "make" { entity: Qualified synthModule (Ident "make"), via: Declared } ] }
+  , declarations: emptyDeclarations
+      { values = Map.fromFoldable
+          [ Tuple (Ident "resolve") { sort: SortValue, scheme: plainScheme (monoScheme synthesizerType), attributes: [] }
+          , Tuple (Ident "make") { sort: SortValue, scheme: plainScheme (monoScheme int), attributes: [] }
+          ]
+      }
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
@@ -244,7 +250,7 @@ compilingUnder = compilingBy withoutSynthesizers
 
 -- | `compilingUnder`, each job of the module's elaboration carried out by the
 -- | attempter given.
-compilingBy :: (SessionEnv -> AttempterM Aff) -> Array String -> Array String -> (Ran -> Aff Unit) -> Aff Unit
+compilingBy :: (BuiltModules -> SessionEnv -> AttempterM Aff) -> Array String -> Array String -> (Ran -> Aff Unit) -> Aff Unit
 compilingBy synthesis header lines k = do
   handed <- liftEffect (Ref.new [])
   let
@@ -527,15 +533,29 @@ spec = describe "Stella.Compiler.Build" do
             scheme "both" `shouldEqual` Just { kindVars: [], body: Synthesized (parameter "d" int) (Forall (TyVar "a") KType (Synthesized (parameter "e" a) (Plain (pureFn a a)))) }
 
     it "names a synthesizer at the type one is invoked at, reported where it is named" do
-      compiling [ "make :: Int", "make = 1", "bad :: {{ d :: Int by make }} -> Int", "bad d = d" ] case _ of
-        Left errors -> rendered errors `shouldEqual` [ "4:23 `make` names no synthesizer, which is invoked at `Stella.Elab.Handle -> Stella.Elab.Handle / {| Stella.Elab.Kernel |}`" ]
+      compiling [ "import Synth", "bad :: {{ d :: Int by make }} -> Int", "bad d = d" ] case _ of
+        Left errors -> rendered errors `shouldEqual` [ "3:23 `make` names no synthesizer, which is invoked at `Stella.Elab.Handle -> Stella.Elab.Handle / {| Stella.Elab.Kernel |}`" ]
         Right _ -> fail "compiled"
+
+    it "names a synthesizer a module compiled before declares, reported where it is named" do
+      compiling [ "make :: Int", "make = 1", "bad :: {{ d :: Int by make }} -> Int", "bad d = d" ] case _ of
+        Left errors -> rendered errors `shouldEqual` [ "4:23 The synthesizer `make` is declared in the module being compiled; a synthesizer must come from an already compiled module" ]
+        Right _ -> fail "compiled"
+
+    it "names a synthesizer source writes against `Stella.Elab`, compiled in a module before" do
+      building
+        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "showInt :: {{ d :: Int by one }} -> Int -> Int", "showInt d x = x" ])
+        , Tuple "src/A.stel" (moduleOf "A" [ "Stella.Elab" ] [ "one :: Handle -> Handle / {| Kernel |}", "one = synthesizer (\\_ -> literal (rootScope ()) (LitInt 1))" ])
+        ]
+        \r -> case r.result of
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+          Right built -> built `shouldEqual` [ "A", "B" ]
 
     it "is supplied where it is referred to by the synthesizers the build provides, and is the build's defect where it provides none" do
       let
         lines = [ "import Synth", "showInt :: {{ d :: Int by resolve }} -> Int -> Int", "showInt d x = x", "use :: Int -> Int", "use x = showInt x" ]
         registry = Map.singleton resolve \_ -> F.rootScope >>= \root -> F.literal root (LitInt 1)
-      compilingBy (\session id s -> pure (attemptJob session registry id s)) [ "module M where" ] lines case _ of
+      compilingBy (\_ session id s -> pure (attemptJob session registry id s)) [ "module M where" ] lines case _ of
         Left errors -> fail (joinWith "; " (rendered errors))
         Right r -> r.handed `shouldEqual` [ "core showInt use", "mid M", "bytecode M" ]
       compiling lines case _ of

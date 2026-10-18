@@ -103,6 +103,26 @@ spec = describe "Stella.Compiler.Interface.FromCore" do
       interfaceWith (Map.singleton (Ident "hidden") 1) `shouldEqual` Left (ArityNotOwn (Ident "hidden"))
       interfaceWith (Map.singleton (Ident "ext") 0) `shouldEqual` Left (ArityBelowOne (Ident "ext") 0)
 
+  describe "Stella.Elab" do
+    it "is an interface an environment admits, `Handle` a type with no constructor, and `synthesizer` a value of it" do
+      case compiled of
+        Left err -> fail err
+        Right carried -> do
+          let elabName = ModuleName "Stella.Elab"
+          case Array.find (\i -> i.name == elabName) carried.moduleInterfaces of
+            Just i -> do
+              map (show <<< _.sort) (Map.lookup (TyName "Handle") i.declarations.types) `shouldEqual` Just (show (Intrinsic CanonicalOpaque))
+              map _.members (Map.lookup "Handle" i.exports.types) `shouldEqual` Just []
+              Array.filter (\n -> Map.member n i.exports.values) [ "synthesizer", "transact", "rootScope", "literal" ] `shouldEqual` [ "synthesizer", "transact", "rootScope", "literal" ]
+            Nothing -> fail "no Stella.Elab"
+          case foldM (flip addInterface) initialEnvironment carried.moduleInterfaces of
+            Left err -> fail (show err)
+            Right env -> case viewFor [ elabName ] env of
+              Left err -> fail (show err)
+              Right view -> case importedSignature env view of
+                Left err -> fail (show err)
+                Right _ -> pure unit
+
   describe "Stella.Syntax and the module it depends on" do
     it "are interfaces an environment admits, and a module importing them is checked against" do
       case compiled of

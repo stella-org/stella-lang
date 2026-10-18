@@ -15,3 +15,5 @@ _draft
 # bytecode the steam command tests write and run
 steam/.test-dmo
 .sessions
+# the packages the stellac synthesis tests build
+stellac/.test-build

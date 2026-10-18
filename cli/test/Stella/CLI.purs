@@ -10,6 +10,7 @@ import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess)
 import Test.Stella.CLI.Session as Session
 import Test.Stella.CLI.Session.Attempter as Attempter
+import Test.Stella.CLI.Session.Synthesis as Synthesis
 import Test.Stella.CLI.Session.Broker as Broker
 import Test.Stella.CLI.Session.BrokerCodec as BrokerCodec
 import Test.Stella.CLI.Session.Client as Client
@@ -25,3 +26,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   BrokerCodec.spec
   Broker.spec
   Attempter.spec
+  Synthesis.spec

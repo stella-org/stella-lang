@@ -221,6 +221,7 @@
             "exceptions",
             "spec",
             "spec-node",
+            "steam",
             "tuples"
           ]
         }

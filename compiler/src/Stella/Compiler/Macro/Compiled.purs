@@ -1,6 +1,12 @@
--- | `Stella.Syntax` compiled, with the one module it depends on: what a
--- | compile-time session loads before it runs a parser, and what a module
--- | declaring a parser is compiled against.
+-- | The modules the compiler carries, as a build compiles against them:
+-- | `Stella.Syntax` and the one module it depends on, `Base.Int`, which a
+-- | compile-time session loads before it runs a parser, and `Stella.Elab`,
+-- | whose interface a module writing a synthesizer is compiled against.
+-- |
+-- | **`Stella.Elab` is the session's own to install**, so its bytecode is no
+-- | module here: what is here of it is the interface alone, projected from the
+-- | Typed Core its bundle holds, which the session installs from the same
+-- | bundle.
 -- |
 -- | **`Base.Int` is compiled from the ABI table** ([Primitive](../Primitive.purs))
 -- | as any `Base` module is, so the session loads it as it loads every module,
@@ -23,6 +29,7 @@ import Data.Array as Array
 import Data.Map (Map)
 import Data.Map as Map
 import Stella.Compiler.Bytecode (Dmo, lower)
+import Stella.Compiler.Elaborate.Protocol.Guest as Guest
 import Stella.Compiler.Elaborate.Protocol.Guest.Shape (Descriptor)
 import Stella.Compiler.Interface (aritiesOf, importsOf)
 import Stella.Compiler.Interface.FromCore (interfaceOfCore)
@@ -36,11 +43,12 @@ import Stella.Compiler.TypedCore.Name (Ident, ModuleName(..), Qualified(..))
 -- | What a translation reads of a module it is compiled against.
 type Interface = { name :: ModuleName, imports :: Array ModuleName, arities :: Map Ident Int }
 
--- | The modules in the order they load, `Base.Int` first; the signature holding
--- | both, `IssuedOrigin` among its types; what a translation reads of each; the
--- | interface of each, which a module importing them is resolved and
--- | elaborated against; and the descriptor of the types a value crossing to the
--- | host has.
+-- | The modules a session loads, in the order they load, `Base.Int` first and
+-- | `Stella.Syntax` after it; the signature holding both, `IssuedOrigin` among
+-- | its types; what a translation reads of each; the interface of each of the
+-- | three, `Stella.Elab` last, which a module importing them is resolved and
+-- | elaborated against; and the descriptor of the types a value of
+-- | `Stella.Syntax` crossing to the host has.
 type Compiled =
   { modules :: Array Dmo
   , signature :: Signature
@@ -49,18 +57,20 @@ type Compiled =
   , descriptor :: Descriptor
   }
 
--- | The two modules compiled, or why they could not be: a failure here is a
--- | defect of the compiler.
+-- | The modules compiled, or why they could not be: a failure here is a defect
+-- | of the compiler.
 compiled :: Either String Compiled
 compiled = do
   syntax <- bundle
   base <- compile (withBaseTypes primSignature) [] (baseModule unit (ModuleName "Base.Int"))
   own <- compile (syntax.withSignature base.signature) [ base.interface ] syntax.module
+  guest <- Guest.bundle
+  elab <- compile (guest.withSignature primSignature) [] guest.module
   pure
     { modules: [ base.dmo, own.dmo ]
     , signature: own.signature
     , interfaces: [ base.interface, own.interface ]
-    , moduleInterfaces: [ base.moduleInterface, unexported syntax.unexported own.moduleInterface ]
+    , moduleInterfaces: [ base.moduleInterface, unexported syntax.unexported own.moduleInterface, elab.moduleInterface ]
     , descriptor: syntax.descriptor
     }
 
