@@ -156,7 +156,7 @@ operatorName ::= OPERATOR | QUAL_OPERATOR | "/"
 **The words of the second list in [Keywords](04-Lexical-Structure.md#keywords) are names wherever the grammar does not give them a meaning**, and `ident` says which. **A record label may be any word, a keyword included.** Two words are narrower than the rest:
 
 - **`var` is reserved.** An item of a handling expression may declare a cell, `var n := 0`, where a name would otherwise read as the label heading a group or as a handler applied.
-- **`by` is not a type variable**, since it closes a synthesized argument, `{{ d :: Show a by f }}`, where a type application would otherwise take it.
+- **`by` is not a type variable**, since it closes a synthesized parameter, `{{ d :: Show a by f }}`, where a type application would otherwise take it.
 
 ## Modules
 
@@ -295,13 +295,13 @@ typeAtom ::= "_" | HOLE | typeVar | qualProperName
 rowItem ::= label "::" type | TAG "::" type | type | "..." typeAtom?
 ```
 
-- **`/` follows the last arrow of a chain and belongs to it.** `Int -> String -> Unit / {| Console |}` is `Int -> (String -> Unit / {| Console |})`, the effect on the second arrow. With no arrow before it, `Int / {| Random |}`, it is a computation type ([Top-level Computation Declaration](../../proposals/05-Toplevel-Computation-Declaration.md)). The arrow after a synthesized argument is pure and takes no `/`, so one following it with no other arrow between is a computation type too: `{{ d :: Show a by show }} -> a / {| Console |}` is a computation taking a synthesized argument.
+- **`/` follows the last arrow of a chain and belongs to it.** `Int -> String -> Unit / {| Console |}` is `Int -> (String -> Unit / {| Console |})`, the effect on the second arrow. With no arrow before it, `Int / {| Random |}`, it is a computation type ([Top-level Computation Declaration](../../proposals/05-Toplevel-Computation-Declaration.md)). The arrow after a synthesized parameter is pure and takes no `/`, so one following it with no other arrow between is a computation type too: `{{ d :: Show a by show }} -> a / {| Console |}` is a computation taking a synthesized parameter.
 - **`()` is `Unit`**; a parenthesized list of two or more is a tuple.
 - **Braces hold a record's row, `{| |}` an effect row, and brackets a variant's**, each row written by one element grammar ([Rows](../03-Typed-Core/02-Rows.md)): a labelled element `name :: τ`, a tag `'Ok :: τ`, an element standing alone such as an effect `State Int`, and a spread `...r`, `...`.
 - **A type synonym may name an effect row**, and stands for the whole row: after `/`, `Unit / ProgramEffects`, and spread into another, `{| Trace, ...ProgramEffects |}`. It is no element of a row, so `{| ProgramEffects |}` is rejected ([Name Resolution](06-Name-Resolution.md)).
 - **A type operator binds tighter than an arrow and looser than application**, and every one is read at one precedence and associates to the left, in the order written; declared fixities rebracket the chain afterwards, as they do an expression's. `/` is the grammar's and no type operator, so `a + b / ρ` is the computation type of `a + b`.
 - **`E ~> ρ` is the shape of a capability translation** ([Effect Handlers](02-Effect-Handlers.md)), and stands as a handler declaration's signature alone, under any `forall` written in front of it: `forall s. State s ~> ()`.
-- **`{{ d :: C τ by f }}` is a synthesized argument**, the parameter a constraint desugars to. `d` names it for the reader and binds nothing; the definition binds the parameter as it binds any other. It stands on the spine of a signature, where nothing but quantifiers, constraints, and other synthesized arguments stands before it, and nowhere else ([Modules](../06-Modules/01-Modules.md)).
+- **`{{ d :: C τ by f }}` is a synthesized parameter** ([Elaboration](01-Elaboration.md#synthesis-goals)), the parameter a constraint desugars to. `d` names it for the reader and binds nothing; the definition binds the parameter as it binds any other. It stands on the spine of a signature, where nothing but quantifiers, constraints, and other synthesized parameters stands before it, and nowhere else ([Modules](../06-Modules/01-Modules.md)).
 
 ## Expressions
 

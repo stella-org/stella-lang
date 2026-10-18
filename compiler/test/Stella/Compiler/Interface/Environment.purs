@@ -159,7 +159,7 @@ spec = describe "Stella.Compiler.Interface.Environment" do
       isComputation s `shouldEqual` true
       (coreScheme s).body `shouldEqual` TForall (TyVar "e") (KRow RowEffect) (fn (TCon unitTy []) row tInt)
 
-    it "stands for a parameter of the dictionary's type where it takes a synthesized argument" do
+    it "stands for a parameter of its type where it takes a synthesized parameter" do
       let s = { kindVars: [], body: Forall a KType (Synthesized synthesized (Plain (pureFn (TVar a) tInt))) }
       isComputation s `shouldEqual` false
       (coreScheme s).body `shouldEqual` TForall a KType (pureFn dictionary (pureFn (TVar a) tInt))

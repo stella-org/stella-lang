@@ -118,7 +118,7 @@ elaborates to the Core type
 M.eq : forall (a : Type). Record ( eq : a -> a -> Boolean ) -> a -> a -> Boolean
 ```
 
-Neither `{{…}}` nor `by` survives. An argument omitted at the call site is filled by an ordinary term that `Typeclass.resolve` constructed, applied with `App`. The Core type checker does not know that the term is a dictionary, and does not need to.
+Neither `{{…}}` nor `by` survives. An argument omitted at the call site is filled by an ordinary term that `Typeclass.resolve` constructed, applied with `App`. The Core type checker does not know that the term is a synthesized argument — here a type-class dictionary — and does not need to.
 
 This is the necessary condition, on the Core side, for type classes to be implementable as a library.
 

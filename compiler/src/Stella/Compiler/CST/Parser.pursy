@@ -209,7 +209,7 @@ ident:
   | t = HIDING   { B.name t }
   | t = MACRO_WORD { B.name t }
 
--- A type variable. `by` closes a synthesized argument, `{{ … by f }}`, and so
+-- A type variable. `by` closes a synthesized parameter, `{{ … by f }}`, and so
 -- names none.
 typeVarIdent:
   | t = LOWER    { B.name t }

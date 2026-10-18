@@ -80,7 +80,7 @@ Wasm IR ──► WebAssembly modules      its input, Mid IR or a .dmo, is not y
 
 **Surface AST** is expanded and resolved: it holds no macro invocation and no unresolved name. It carries source-oriented information: implicit arguments, holes, source locations, expansion provenance, and hygiene scopes. It is not a stable optimization interface.
 
-**Typed Core** defines the semantics of the language. It makes explicit: type abstraction and application, evidence and dictionary arguments, record and variant operations, the decision structure of pattern matching, effect operations and handlers, and evaluation order wherever it is observable. The rest of these documents specify it.
+**Typed Core** defines the semantics of the language. It makes explicit: type abstraction and application, evidence and synthesized arguments, record and variant operations, the decision structure of pattern matching, effect operations and handlers, and evaluation order wherever it is observable. The rest of these documents specify it.
 
 **Mid IR** retains useful type information and invariants while depending on no particular backend. It expresses closure construction and application, algebraic data construction and destruction, join points and tail calls, primitive operations, explicit control flow, handler and continuation operations, and abstracted allocation. JavaScript functions and objects, Wasm GC structs, and linear-memory layouts must not leak into this stage. It is an A-normal form, and [Mid IR](../04-MiddleEnd/01-Mid-IR.md) specifies it.
 

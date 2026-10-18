@@ -81,7 +81,7 @@ handler toMaybe :: forall a. (Unit -> a / {| Partial, ... |}) -> Maybe a / {| ..
   | full abort _ -> Nothing
 ```
 
-**The effect handled is read off the signature.** Past its quantifiers, constraints, and synthesized arguments, the signature is a function from a thunk `Unit -> α / ρ` to a result, `β / ρ'` or a pure `β`, and the effect is the one element `ρ` holds and `ρ'` does not, elements being told apart by their keys: the effect, or the label of an instance.
+**The effect handled is read off the signature.** Past its quantifiers, constraints, and synthesized parameters, the signature is a function from a thunk `Unit -> α / ρ` to a result, `β / ρ'` or a pure `β`, and the effect is the one element `ρ` holds and `ρ'` does not, elements being told apart by their keys: the effect, or the label of an instance.
 
 - **A row is written `{| … |}`, or named by a type synonym without parameters**, which is read through. A spread contributes the elements of the row it names: a synonym's, and none for a variable or `...` left open.
 - **Exactly one unlabelled element is removed.** A signature removing none, several, or a labelled instance is rejected, as is one whose rows are read neither way: a handler declaration handles one effect, and a labelled instance is handled in place by a group headed by its label.

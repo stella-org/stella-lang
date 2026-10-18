@@ -67,7 +67,7 @@ These are reserved wherever a name may stand, except as a record field. Some oth
 | `implicit` | before a handler declaration |
 | `return` | a handler clause |
 | `otherwise` | a guard |
-| `by` | a synthesized argument, `{{ … by f }}`; it is not a type variable |
+| `by` | a synthesized parameter, `{{ … by f }}`; it is not a type variable |
 | `Type`, `Effect`, `Row` | a kind |
 
 ## Operators
@@ -106,7 +106,7 @@ operator ::= opChar+
 ```
 
 - **`{|` is `{` and `|` with no space between.** `|}` is a lone `|` followed with no space by `}`: `||}` is `||` and `}`. `{||}` is `{|` and `|}`, the empty effect row.
-- **`{{` opens a synthesized argument and closes with two `}`**, so that it never meets the `}}` of nested records.
+- **`{{` opens a synthesized parameter and closes with two `}`**, so that it never meets the `}}` of nested records.
 - **`@[` opens an attribute** where `@` alone is followed by `[`. `@@[` is the operator `@@` and `[`.
 - **`M.(` opens a local open** of the module `M`, closed by `)`.
 

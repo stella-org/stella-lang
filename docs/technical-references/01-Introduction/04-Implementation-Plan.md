@@ -825,7 +825,7 @@ What a signature, a field, and an annotation write, read into Core⁺ ([Elaborat
 | `{{ d :: Box a by make }} -> a -> Int` | Core `forall a. Box a -> a -> Int`; the interface publishes `Synthesized` on the spine where the arrow stands. The Core scheme alone would lose that a goal fills the parameter |
 | `forall a. {{ d :: Box a by make }} -> a / {\| Console \|}`, a computation declaration's | Core `forall a. Box a -> Unit -{( Console )}-> a`, published as `Forall`, `Synthesized`, then `Computation` |
 | `f :: {{ d :: D Int by make }} -> (forall a. {{ e :: D a by make }} -> a -> a)`, `f d e x = x` | `λ d. Λ a. λ e. λ x. x`, accepted by Core. The spine is opened again after each parameter, a synthesized one's included |
-| A reference to a value taking a synthesized argument, of the module or of an import | Outside the subset, where the reference stands. Nothing yet creates the goal that supplies the argument |
+| A reference to a value taking a synthesized parameter, of the module or of an import | Outside the subset, where the reference stands. Nothing yet creates the goal that supplies the argument |
 | `WithConsole e` where `type WithConsole e = {\| Console, ...e \|}`, and `Shadowing e` where `type Shadowing e = forall e. Unit -> Unit / {\| Console, ...e \|}` | Outside the subset, and expanded. The first needs a condition of what it is given; in the second the row is the `forall`'s, which carries it |
 | `(inc :: _ -> Int)`, `(k :: Unit -> Int / _)`, and `(t :: _ Int Int)` | Accepted. Each wildcard is a metavariable at the kind its place asks for — `Type`, and `Row Effect` as an inference row — and the head of `_ Int Int` one at a kind metavariable of its own |
 | `(id :: _)`, nothing deciding the `?t` of the `?t -> ?t` it becomes | Reported once, where `_` is written. Not where the term's type applications hold `?t`, and not generalized |
@@ -1283,7 +1283,7 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | `n :: Int / {\|\|}; n = 1`, and `v :: Int; v = n` | `n = λ(u : Unit). 1` at `Unit -> Int`, published as `Computation`; `v = n Prim.Unit` |
 | `w :: Int; w = loud`, `loud :: Int / {\| Console \|}` | Outside the subset where `w`'s right-hand side stands, a boundary at `()`. Not at the reference, whose fit is decided against the boundary's row |
 | An imported value `v : Unit -> Int` and an imported computation `c :: Int / {\|\|}`, of one Core type | `c` forced to `Int`, and `v` a function. What the interface marks a computation decides the forcing, and nothing in its Core type |
-| A computation whose spine takes a synthesized argument | Outside the subset where it is declared, its scheme still entered into the module-local catalog before every body. The thunk's λ would otherwise take the dictionary's arrow |
+| A computation whose spine takes a synthesized parameter | Outside the subset where it is declared, its scheme still entered into the module-local catalog before every body. The thunk's λ would otherwise take the synthesized parameter's arrow |
 | `again :: Int / {\| Console \|}; again = again` | A `DeclRec`, the reference standing under the thunk's λ |
 
 ### Pattern matching (step 7)

@@ -175,7 +175,7 @@ data Token
   | TokLeftBar
   -- | `|}`, closing an effect row.
   | TokRightBar
-  -- | `{{`, opening a synthesized argument. It closes with two `}`.
+  -- | `{{`, opening a synthesized parameter. It closes with two `}`.
   | TokLeftSynth
   -- | `@[`, opening an attribute.
   | TokLeftAttribute
@@ -503,7 +503,7 @@ data Type
   | TypeSynthesized (Maybe Name) Type Name
   | TypeDirective Directive Type
 
--- | Whether a type is a synthesized argument, `{{ … }}`, in parentheses or not.
+-- | Whether a type is a synthesized parameter, `{{ … }}`, in parentheses or not.
 isSynthesized :: Type -> Boolean
 isSynthesized = case _ of
   TypeSynthesized _ _ _ -> true

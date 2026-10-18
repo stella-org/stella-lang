@@ -376,18 +376,18 @@ The rule runs both ways, which is what it is for: a tool finds the file of a mod
 
 ### A scheme as an interface holds it
 
-**An interface holds a declaration's surface scheme, and its Core scheme is derived from it.** Two things a surface signature says are gone from Core: a synthesized argument, which is an ordinary parameter of the dictionary's type in Core (D11) and which an importer must know a goal fills, and a computation type `τ / ρ`, which is a thunk `Unit -{ρ}-> τ` in Core and which a reference forces ([Top-level Computation Declaration](../../proposals/05-Toplevel-Computation-Declaration.md)). Both stand on the **spine** of the scheme — the sequence of its quantifiers, constraints, and synthesized arguments, then what the scheme ends in — and below the spine everything is a Core type.
+**An interface holds a declaration's surface scheme, and its Core scheme is derived from it.** Two things a surface signature says are gone from Core: a synthesized parameter, which is an ordinary parameter of its type in Core (D11) and which an importer must know a goal fills, and a computation type `τ / ρ`, which is a thunk `Unit -{ρ}-> τ` in Core and which a reference forces ([Top-level Computation Declaration](../../proposals/05-Toplevel-Computation-Declaration.md)). Both stand on the **spine** of the scheme — the sequence of its quantifiers, constraints, and synthesized parameters, then what the scheme ends in — and below the spine everything is a Core type.
 
 ```text
 spine ::= τ                      a Core type, headed by no forall and no constraint
         | τ / ρ                  a computation type
         | forall (a : κ). spine
         | C => spine
-        | {{ d :: C τ̄ by f }} -> spine     a synthesized argument, behind a pure arrow
+        | {{ d :: C τ̄ by f }} -> spine     a synthesized parameter, behind a pure arrow
 ```
 
-- **The Core scheme is derived, never stored beside it**: a computation type becomes `Unit -{ρ}-> τ`, and a synthesized argument a pure arrow from the dictionary's type. The two cannot disagree.
-- **A synthesized argument stands on the spine and nowhere else.** One inside the type of an argument, or after an ordinary parameter, is an error where the signature is resolved.
+- **The Core scheme is derived, never stored beside it**: a computation type becomes `Unit -{ρ}-> τ`, and a synthesized parameter a pure arrow from its type. The two cannot disagree.
+- **A synthesized parameter stands on the spine and nowhere else.** One inside the type of an argument, or after an ordinary parameter, is an error where the signature is resolved.
 - **A type synonym a type mentions is expanded** in what an interface holds — a scheme, a constructor's fields, an operation's signature, a synonym's own body — so those are read without another module's synonyms. A synonym's declaration stays among the declarations, with its parameters and its expanded body, for a module downstream to expand a reference to it.
 
 ### The environment
@@ -578,7 +578,7 @@ Value declarations are folded from `Σ_decl` leftwards.
 
 The right-hand side of `nonrec x : σκ = e` must not refer to `x` itself or to any later value declaration; every cycle belongs to a `rec` group. Elaboration performs the dependency analysis, gathers strongly connected components into `rec` groups, and emits them in topological order. This invariant lets the fold close in a single left-to-right pass.
 
-**The fold is the rule for Core, and the order it folds is settled after elaboration rather than before it.** Elaboration reads a catalog of every name, attribute, and scheme it may resolve against — the imported interfaces and this module's own declarations — assembled before any right-hand side is elaborated, which is what a synthesis goal woken between two binding groups requires. The dependency edges are a separate matter: a synthesizer inserts a reference to the dictionary it found, and an inserted handler is another such reference, neither of which stands in any right-hand side as written. So the strongly connected components and the topological order are computed once elaboration has solved every goal, over the `Global` references the committed right-hand sides actually carry ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)). What the catalog says exists and what a right-hand side refers to are separate, and only the second decides the order.
+**The fold is the rule for Core, and the order it folds is settled after elaboration rather than before it.** Elaboration reads a catalog of every name, attribute, and scheme it may resolve against — the imported interfaces and this module's own declarations — assembled before any right-hand side is elaborated, which is what a synthesis goal woken between two binding groups requires. The dependency edges are a separate matter: a synthesized argument refers to what its synthesizer found, and an inserted handler is another such reference, neither of which stands in any right-hand side as written. So the strongly connected components and the topological order are computed once elaboration has solved every goal, over the `Global` references the committed right-hand sides actually carry ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)). What the catalog says exists and what a right-hand side refers to are separate, and only the second decides the order.
 
 A design collecting signatures first and permitting forward references is also possible. Stella takes the form of CoreFn's binding groups, in which order carries meaning, because order being readable from the term is what makes Core determine its semantics uniquely.
 

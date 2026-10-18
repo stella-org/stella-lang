@@ -2,8 +2,8 @@
 -- | with what the surface says beyond Core kept on its spine.
 -- |
 -- | Two things a surface signature says are gone from its Core scheme. A
--- | synthesized argument, `{{ d :: C τ̄ by f }}`, is an ordinary parameter of
--- | the dictionary's type in Core (D11), and a module importing the declaration
+-- | synthesized parameter, `{{ d :: C τ̄ by f }}`, is an ordinary parameter of
+-- | its type in Core (D11), and a module importing the declaration
 -- | needs to know that a goal fills it. A computation, `τ / ρ`, is a thunk
 -- | `Unit -{ρ}-> τ` in Core, and a reference to it is forced where it stands
 -- | (proposal 05). Both stand on the spine of a scheme, under its quantifiers and
@@ -53,8 +53,8 @@ data SchemeBody
   -- | pure arrow.
   | Synthesized SynthesizedParameter SchemeBody
 
--- | A synthesized argument: the name written for it, which binds nothing, the
--- | type of the dictionary it is, and the synthesizer that fills it.
+-- | A synthesized parameter: the name written for it, which binds nothing, the
+-- | type of the argument it takes, and the synthesizer that fills it.
 type SynthesizedParameter =
   { name :: Maybe Ident
   , dictionary :: Type
@@ -76,7 +76,7 @@ coreScheme :: Scheme -> TypeScheme
 coreScheme s = { kindVars: s.kindVars, body: coreBody s.body }
 
 -- | The Core type a spine stands for: a computation is a thunk, and a
--- | synthesized argument an ordinary parameter of the dictionary's type.
+-- | synthesized parameter an ordinary parameter of its type.
 coreBody :: SchemeBody -> Type
 coreBody = case _ of
   Plain t -> t

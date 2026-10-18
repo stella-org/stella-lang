@@ -283,7 +283,7 @@ form. An optional part is `0` for none, or `1` followed by it; a boolean is `0` 
 | row entry | `0` a key and a type, `1` an effect and its arguments, `2` a labelled effect instance |
 | row key | `0` a symbol, `1` a tag, `2` a position, `3` an effect |
 | constraint | `0` `k ∉ ρ`, `1` `ρ1 # ρ2` |
-| scheme body | `0` a type, `1` a computation's result and row, `2` `forall`, `3` a constraint, `4` a synthesized parameter — its name if written, its dictionary type, its synthesizer |
+| scheme body | `0` a type, `1` a computation's result and row, `2` `forall`, `3` a constraint, `4` a synthesized parameter — its name if written, the type of the argument it takes, its synthesizer |
 | value sort | `0` a value, `1` a foreign then its observation, `2` a handler, `3` a constructor then its type, `4` an operation then its effect |
 | observation | `0` it may observe, `1` `#observ(none)` |
 | type sort | `0` a data type — parameters, constructors, and whether it is a newtype — `1` a synonym, `2` a foreign type, `3` an intrinsic and its canonical class |

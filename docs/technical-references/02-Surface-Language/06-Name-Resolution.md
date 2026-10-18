@@ -222,7 +222,7 @@ g xs = A.( length xs )           -- length is A.length
 
 **A signature quantifies implicitly** the type variables it mentions that nothing around it binds, outermost and in the order they first appear: `f :: b -> a -> b` is `forall b a. b -> a -> b`. A signature is that of a value, a computation, a foreign, a handler, or a `let` binding.
 
-**The variables a signature quantifies are in scope in what it is the signature of**: in the parameters and the body of the definition, its `where` among them, and in the signatures and annotations nested there, which quantify only the variables they mention beyond those. They are the ones it quantifies implicitly and those the `forall`s on its spine bind, wherever they stand among its constraints and synthesized arguments, and, for a capability translation, the `forall`s in front of `~>`.
+**The variables a signature quantifies are in scope in what it is the signature of**: in the parameters and the body of the definition, its `where` among them, and in the signatures and annotations nested there, which quantify only the variables they mention beyond those. They are the ones it quantifies implicitly and those the `forall`s on its spine bind, wherever they stand among its constraints and synthesized parameters, and, for a capability translation, the `forall`s in front of `~>`.
 
 ```stella
 f :: forall a. a -> a

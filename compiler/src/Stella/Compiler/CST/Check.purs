@@ -219,7 +219,7 @@ operationArrows = case _ of
   t -> foldMap operationArrows (subtypes t)
 
 -- | Every `τ / ρ` in a type whose `/` belongs to no arrow. A `/` belongs to the
--- | arrow it follows directly, unless that arrow follows a synthesized argument,
+-- | arrow it follows directly, unless that arrow follows a synthesized parameter,
 -- | which is pure; parentheses between the two make the parenthesized type a
 -- | computation type of its own.
 computationTypes :: Type -> Array CheckError

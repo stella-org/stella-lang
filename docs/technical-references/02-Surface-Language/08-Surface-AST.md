@@ -62,11 +62,11 @@ Origin = FromSource range
 
 | Written | Stands | Held as |
 | --- | --- | --- |
-| `forall ā. C => {{ d :: C τ̄ by f }} -> τ / ρ` | at the end of the spine of a computation declaration's signature | `ComputationType`: its spine — quantifiers, constraints, and synthesized arguments (`PrefixSynthesized`) — in the order written, the result, and the row |
+| `forall ā. C => {{ d :: C τ̄ by f }} -> τ / ρ` | at the end of the spine of a computation declaration's signature | `ComputationType`: its spine — quantifiers, constraints, and synthesized parameters (`PrefixSynthesized`) — in the order written, the result, and the row |
 | `forall b̄. σ̄ ->* τ` | as an operation's signature | `OperationSignature`: its own type variables, the arguments, and the type it resumes with (D21) |
 | `forall ā. E ~> ( t̄ )` | as a handler declaration's signature, under its quantifiers | `HandlerSignature`'s `Capability`: the binders of each `forall` in front of `~>`, a group apiece in the order written, then the source and the targets, each an effect application |
 
-**An arrow holds the row `/` puts on it.** `τ1 -> τ2 / ρ` is a `TypeFunction` with the row, and an arrow with none is pure. The arrow after a synthesized argument is pure and takes no row; a `/` after it is the computation type its spine ends in.
+**An arrow holds the row `/` puts on it.** `τ1 -> τ2 / ρ` is a `TypeFunction` with the row, and an arrow with none is pure. The arrow after a synthesized parameter is pure and takes no row; a `/` after it is the computation type its spine ends in.
 
 **A type operator is applied to its two operands**, rebracketed by fixity: `TypeOperator` holds the operator, as the entity it names — a type constructor, a type synonym, or an effect — with the origin of where it was written, and then the operands. One naming an effect stands as the effect application it is where one is called for — an element of an effect row, the source or a target of `~>` — its arguments being its two operands and then any an application adds, `(a & b) c`; anywhere else it is a `TypeOperator` like any other, and kinding judges it. The arrow, the `/` of a computation type, and `~>` are no type operators, and keep the forms above.
 
@@ -182,9 +182,9 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | `DeclTypeFixity` | a type fixity declaration |
 | `KindName`, `KindApp` | `KindType`, `KindEffect`, and `KindRow`; any other name or application is invalid |
 | `TypeOp` | `TypeOperator`, rebracketed by fixity; where it names an effect and stands where an effect application is called for — an element or an instance of an effect row, the source or a target of `~>` — an `EffectApplication`, any arguments an application adds following its two operands |
-| `TypeArrow` | `TypeFunction`, with the row where its result is a `TypeEffect`; one from a synthesized argument is pure, a `TypeFunction` with no row in a value's signature and a `PrefixSynthesized` on the spine of a computation declaration's signature |
+| `TypeArrow` | `TypeFunction`, with the row where its result is a `TypeEffect`; one from a synthesized parameter is pure, a `TypeFunction` with no row in a value's signature and a `PrefixSynthesized` on the spine of a computation declaration's signature |
 | `TypeForall`, `TypeConstrained` | `TypeForall` and `TypeConstrained`; on the spine of a computation declaration's signature, a `PrefixForall` and a `PrefixConstraint`; in front of `~>`, a `forall` is a group of `Capability`'s quantifiers |
-| `TypeEffect` | at the end of the spine of a computation declaration's signature, the result and the row of its `ComputationType`; after an arrow other than one from a synthesized argument, the row of that arrow; anywhere else invalid |
+| `TypeEffect` | at the end of the spine of a computation declaration's signature, the result and the row of its `ComputationType`; after an arrow other than one from a synthesized parameter, the row of that arrow; anywhere else invalid |
 | `TypeOperationArrow` | as an operation's signature, its `OperationSignature`; anywhere else invalid |
 | `TypeCapability` | as a handler declaration's signature, under its `forall`s, `HandlerSignature`'s `Capability`; anywhere else invalid |
 | `TypeParens`, `TypeUnit` | the type it encloses, and `Prim.Unit` |
