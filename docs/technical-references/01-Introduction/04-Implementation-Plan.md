@@ -822,10 +822,10 @@ What a signature, a field, and an annotation write, read into Core⁺ ([Elaborat
 | `op :: (forall (a :: k). a -> a) ->* Unit`, and `op :: forall (b :: k). b -> b ->* b` | Refused where the operation is declared, before its types are read. Read first, `k ≡ Type` would fail and say nothing of the kind variable |
 | `effect F a where op :: Unit ->* Unit` | `a`'s kind asked for where it stands. Nothing generalizes an effect's parameter, now or later |
 | `op :: { a :: Int, ...r } ->* Unit` under `effect G r`, `op :: { a :: Int, ... } ->* Unit`, and `op :: (forall s. { a :: Int, ...s } -> Int) ->* Unit` | Refused where the row stands; refused, nothing quantifying the row; admitted, the inner `forall` carrying its atom |
-| `{{ d :: Box a by make }} -> a -> Int` | Core `forall a. Box a -> a -> Int`; the interface publishes `Synthesized` on the spine where the arrow stands. The Core scheme alone would lose that a goal fills the parameter |
-| `forall a. {{ d :: Box a by make }} -> a / {\| Console \|}`, a computation declaration's | Core `forall a. Box a -> Unit -{( Console )}-> a`, published as `Forall`, `Synthesized`, then `Computation` |
-| `f :: {{ d :: D Int by make }} -> (forall a. {{ e :: D a by make }} -> a -> a)`, `f d e x = x` | `λ d. Λ a. λ e. λ x. x`, accepted by Core. The spine is opened again after each parameter, a synthesized one's included |
-| A reference to a value taking a synthesized parameter, of the module or of an import | Outside the subset, where the reference stands. Nothing yet creates the goal that supplies the argument |
+| `{{ d :: Box a by resolve }} -> a -> Int` | Core `forall a. Box a -> a -> Int`; the interface publishes `Synthesized` on the spine where the arrow stands. The Core scheme alone would lose that a goal fills the parameter |
+| `forall a. {{ d :: Box a by resolve }} -> a / {\| Console \|}`, a computation declaration's | Core `forall a. Box a -> Unit -{( Console )}-> a`, published as `Forall`, `Synthesized`, then `Computation` |
+| `f :: {{ d :: D Int by resolve }} -> (forall a. {{ e :: D a by resolve }} -> a -> a)`, `f d e x = x` | `λ d. Λ a. λ e. λ x. x`, accepted by Core. The spine is opened again after each parameter, a synthesized one's included |
+| A reference to a value taking a synthesized parameter, of the module or of an import | Supplied by a goal its synthesizer fills, where the reference stands ([Synthesis goals](#synthesis-goals-step-7)) |
 | `WithConsole e` where `type WithConsole e = {\| Console, ...e \|}`, and `Shadowing e` where `type Shadowing e = forall e. Unit -> Unit / {\| Console, ...e \|}` | Outside the subset, and expanded. The first needs a condition of what it is given; in the second the row is the `forall`'s, which carries it |
 | `(inc :: _ -> Int)`, `(k :: Unit -> Int / _)`, and `(t :: _ Int Int)` | Accepted. Each wildcard is a metavariable at the kind its place asks for — `Type`, and `Row Effect` as an inference row — and the head of `_ Int Int` one at a kind metavariable of its own |
 | `(id :: _)`, nothing deciding the `?t` of the `?t -> ?t` it becomes | Reported once, where `_` is written. Not where the term's type applications hold `?t`, and not generalized |
@@ -1440,6 +1440,23 @@ Handling expressions ([Elaboration](../02-Surface-Language/01-Elaboration.md#han
 | `Base.Continuation` compiled from its source | Its Core exports `$Continuation` once, by `ExportCtor`; its interface exports `Continuation` with no constructor, and declares `$Continuation` at its scheme |
 | On Steam: `choose` resumed with `true` and `false` by `Continuation.continue` in a `reifiable full` clause | `[1, 2]`, as `resume` in a `full` one gives |
 | On Steam: a `reifiable full` clause of `yield` answering `Yielded n k`, each `k` resumed after the handling expression has answered | `[1, 2, 3]`: a continuation taken out of its handling expression resumes under the same handler |
+
+### Synthesis goals (step 7)
+
+Synthesized parameters supplied at a reference ([Elaboration](../02-Surface-Language/01-Elaboration.md#synthesis-goals), [Elaborator API](../02-Surface-Language/03-Elaborator-API.md#the-loop)), the goals filled by a registry of the host's synthesizers.
+
+| Input | Required outcome |
+| --- | --- |
+| `use x = showWith x`, `showWith :: {{ d :: Dict by resolveDict }} -> Int -> Int`, `resolveDict` answering `Dict 1` | `showWith ((λ (_ : Unit) / (). Dict 1) Prim.Unit) x`, accepted by the Core checker |
+| The same in `Int -> Int / {\| Ping \|}` | The thunk fitted into `( Ping )`, and the global applied to it fitted likewise; accepted. Placed as it stands, `Dict 1` would be refused there, its constructor's arrow pure |
+| A synthesizer answering `noisy ()`, `noisy : Unit -> Int / {\| Ping \|}`, in `Int / {\| Ping \|}` | Refused by the Core checker: the thunk the argument stands in is of no row |
+| `two { x: 1 } 5`, `two :: forall r. {{ d :: Dict by resolveDict }} -> (forall a. {{ e :: Int by resolveInt }} -> { x :: Int, ...r } -> a -> a)` | The two goals made from the left, each past the quantifiers and the constraint before it; accepted |
+| An imported computation `counted :: {{ d :: Int by resolveInt }} -> Int / {\|\|}`, referred to in `Int` and in `Int / {\| Ping \|}` | Forced once supplied, through the same thunk under either row |
+| A goal its synthesizer refuses, one waiting on what nothing decides, and `s x = pickId x` | The synthesis failed, and undecided, each where the reference stands; a signature asked for where `s` is declared |
+| `bad :: {{ d :: Int by make }} -> Int` with `make :: Int`, and a reference to `bad` | Reported where `make` is written; the reference left unchecked, `bad` giving no scheme |
+| A spine with a synthesized parameter where the scheme holds a quantifier, one too many, or a rest that is not the scheme's | The host's defect |
+| A goal no synthesizer the build provides fills, and an attempter whose monad stops | The host's defect; the elaboration stopping with the monad, no diagnostic |
+| A module compiled with a host registry, and the same with none, alone and in a build of two modules | Compiled; an internal compiler error naming the synthesizer |
 
 ### Binding groups and generalization (step 7)
 

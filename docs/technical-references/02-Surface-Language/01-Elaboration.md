@@ -271,6 +271,28 @@ The elaborator turns this into the constraint `Synth ?m τ f` and places `?m` in
 
 The compiler holds no algorithm specific to type classes. That is a statement about what it knows and not about how little it records: the scheduler keeps a goal record, because re-running a goal has to put it back in the context it was created in, and every field of that record is a fact about a goal rather than about a class, an instance, or a dictionary ([Elaborator API](03-Elaborator-API.md)).
 
+**A reference instantiates the spine its interface gives, a goal at each synthesized parameter.** From the left, each quantifier is instantiated and each constraint required, as any global's are ([Inference](#inference)), and each synthesized parameter is a goal at the type of the argument it takes, made where the reference stands and filled by the synthesizer it names; a computation is forced once its synthesized arguments are supplied. The scheme the catalog holds is the spine's Core scheme: a synthesized parameter where it has no pure arrow, an arrow taking another type, or a rest that is not the same type is the host's defect.
+
+**A synthesized argument is evaluated under the empty row.** It stands as the body of a thunk of no row, fitted into the row `ρ` ambient where the goal stands as any function is and applied at once, and the global it is given to is fitted likewise:
+
+```text
+?m : τ        (openEff [ρ] (λ (_ : Unit) / (). ?m)) Prim.Unit
+
+showWith :: {{ d :: Dict by resolveDict }} -> Int -> Int
+loud :: Int -> Int / {| Ping |}
+loud x = showWith x
+
+⟹  λ x. ( openEff [( Ping )] ( ( openEff [( Ping )] M.showWith )
+                                 ( ( openEff [( Ping )] (λ (_ : Unit) / (). ?m) ) Prim.Unit ) ) ) x
+    ?m := M.Dict 1
+```
+
+**A synthesizer's solution is a term of the goal's type that the empty row admits.** A synthesizer builds it alike wherever the goal stands — a local, a global, a constructor applied — and one that performs is refused by the Core type checker, as the body of a thunk of no row. Fitting the row ambient is the surface elaborator's, once, and no synthesizer's: the kernel does not follow the ambient row ([Elaborator API](03-Elaborator-API.md#effects-handlers-and-regions)), and a synthesizer observes none.
+
+**A synthesizer is invoked at one type.** `by f` names a global at `Stella.Elab.Handle -{( Stella.Elab.Kernel )}-> Stella.Elab.Handle`, the type `synthesizer` makes of a policy ([Elaborator API](03-Elaborator-API.md#a-guests-attempt-brokered)), its row taken by its normal form; it binds nothing, so no binder is told apart. A signature naming a global at another scheme, or one with none, a value without a signature among them, is reported where `f` is written, and gives no scheme: a reference to the declaration is left unchecked. A synthesizer an import names was checked where it was declared.
+
+**A goal nothing fills is reported where the reference stands**: one its synthesizer refuses as the synthesis failed, and one still waiting once the loop is quiescent as undecided. A goal of a value without a signature at a type that holds a quantifier its group would make asks for a signature where the value is declared ([Generalization](#generalization)).
+
 ## Scheduling synthesis
 
 ```text
@@ -681,7 +703,7 @@ What a `Λ` or a constraint abstraction encloses must be a value form, and a ref
 
 **A computation's definition binds its thunk's `Unit`**: it is elaborated as a value's is, at its Core scheme, its one parameter the `Unit` — bound under a name no source writes — and the λ binding it the [checking boundary](#explicit-checking-boundaries) at `ρ`, inside the right-hand side's at `()`. A computation referring to itself is grouped as any value is ([The Core module](#the-core-module)), the reference standing under that λ, so the group binds a function value. **A reference is forced as an application is**: the computation is instantiated, its constraints applied, `Prim.Unit` checked against the argument its thunk takes, and the thunk fitted on its function side into the row ambient where the reference stands. A reference to a computation is a node of its own, which name resolution gives for a computation the module declares, by its declaration, and for one an import reaches, where the scheme its interface publishes ends in a computation type ([Modules](../06-Modules/01-Modules.md)); a value of the Core type `Unit -> τ` is no computation, and is not forced.
 
-**A computation whose spine takes a synthesized parameter is outside what this version elaborates**, where it is declared. Its signature is read and its scheme entered into the catalog as any other's, and the other bodies are read against it, a reference to it outside the subset as one to any value taking a synthesized parameter is. Its own body is not elaborated: a computation has no parameter its synthesized argument could be bound to, and the thunk is not one.
+**A computation whose spine takes a synthesized parameter is outside what this version elaborates**, where it is declared. Its signature is read and its scheme entered into the catalog as any other's, and the other bodies are read against it, a reference to it supplied as any value's taking one is ([Synthesis goals](#synthesis-goals)). Its own body is not elaborated: a computation has no parameter its synthesized argument could be bound to, and the thunk is not one.
 
 **Forcing a computation at a top-level value's right-hand side**, where `()` is ambient, succeeds where its row is `()`. A computation with a row that is not empty is a row mismatch where the value has no signature, the right-hand side then being an inference position; where it has one, the right-hand side is a [checking boundary](#explicit-checking-boundaries) at `()`, and a unique plan of implicit handlers taking the row to `()` forces it. This version reports such a value outside the subset where its right-hand side's boundary stands, and not where the computation is referred to ([A module's values](#a-modules-values)).
 
@@ -774,7 +796,7 @@ f d x = x                                         λ d. Λ a. λ (x : a). x
 
 **Every equation is stated where the node it is about stands**, and is decided at once where it can be. One that cannot be decided yet becomes an equality job and the body goes on ([Elaborator API](03-Elaborator-API.md#an-equation-the-surface-elaborator-cannot-decide-yet-becomes-a-job)).
 
-**This version elaborates a subset**: locals, globals, constructors, literals, application, `λ`, annotations, expression holes, `let` blocks and `where`s, with a signature or without, the `case`s [described below](#a-case), the patterns [a binding is written as](#patterns-a-binding-is-written-as), [records and tuples](#records-and-tuples), including field selection, [tags](#tags), [operations](#operations), and [handling expressions](#handling-expressions). A pattern a recursive group binds is outside it, and so is a local signature taking a synthesized parameter or binding a kind variable of its own. A checking boundary whose body performs what the row expected of it cannot hold asks for an implicit handler, which this version does not seek: it is reported as outside the subset where the boundary stands, rather than as a mismatch the language may resolve. A reference to a value whose scheme takes a synthesized parameter, from the module or from an import, is outside it, a goal being what supplies the argument. Every other form is reported as outside it where it stands, and the declaration holding one is not elaborated further.
+**This version elaborates a subset**: locals, globals — one taking a synthesized parameter among them, supplied by a goal ([Synthesis goals](#synthesis-goals)) — constructors, literals, application, `λ`, annotations, expression holes, `let` blocks and `where`s, with a signature or without, the `case`s [described below](#a-case), the patterns [a binding is written as](#patterns-a-binding-is-written-as), [records and tuples](#records-and-tuples), including field selection, [tags](#tags), [operations](#operations), and [handling expressions](#handling-expressions). A pattern a recursive group binds is outside it, and so is a local signature taking a synthesized parameter or binding a kind variable of its own. A checking boundary whose body performs what the row expected of it cannot hold asks for an implicit handler, which this version does not seek: it is reported as outside the subset where the boundary stands, rather than as a mismatch the language may resolve. Every other form is reported as outside it where it stands, and the declaration holding one is not elaborated further.
 
 ### A `case`
 

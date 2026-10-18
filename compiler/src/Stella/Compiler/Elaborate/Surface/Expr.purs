@@ -47,10 +47,10 @@
 -- | annotated patterns, and record and tuple patterns, and those a parameter, a
 -- | binding of a block, or a guard block's binding is written as always match;
 -- | a recursive group binds variables alone. A synthesized parameter of the
--- | declaration's own is a parameter like any other; a
--- | reference to a value taking one is outside the subset, a goal being what
--- | supplies the argument. Anything else is reported where it stands, and the
--- | declaration holding it is not elaborated further.
+-- | declaration's own is a parameter like any other, and a reference to a
+-- | value taking one is given the synthesized argument a goal fills. Anything
+-- | else is reported where it stands, and the declaration holding it is not
+-- | elaborated further.
 module Stella.Compiler.Elaborate.Surface.Expr
   ( Surf
   , Noted
