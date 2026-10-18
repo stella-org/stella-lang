@@ -41,7 +41,7 @@ inA = Qualified moduleA
 
 -- | `A` declares the value `x`, the computation `comp`, `data Maybe = Nothing
 -- | | Just Int`, `attribute priority Int`, and `attribute tag (level :: Int =
--- | 3)`. `Stella.Elab` declares `attribute synthesizedBy`.
+-- | 3)`. `Stella.Elab` declares `attribute synthesizedBy`, an ordinary attribute.
 environment :: BuildEnvironment
 environment = case addInterface interfaceA initialEnvironment >>= addInterface elab of
   Right env -> env
@@ -210,7 +210,6 @@ spec = describe "Stella.Compiler.Resolve.Module" do
         , "attribute flag"
         , "@[macro]"
         , "data T = T"
-        , "@[E.synthesizedBy]"
         , "effect Ask where"
         , "  ask :: Unit ->* Int"
         , "@[entrypoint]"
@@ -218,7 +217,19 @@ spec = describe "Stella.Compiler.Resolve.Module" do
         , "main = 1"
         ]
         [ "infix M.+++ value A.x", "attribute M.flag 0 []", "data M.T (M.T)", "effect M.Ask (M.ask)", "value M.main @Prim.entrypoint" ]
-        [ "AttributeMisplaced priority", "AttributeMisplaced priority", "AttributeMisplaced macro", "AttributeMisplaced E.synthesizedBy", "AttributeTwice entrypoint" ]
+        [ "AttributeMisplaced priority", "AttributeMisplaced priority", "AttributeMisplaced macro", "AttributeTwice entrypoint" ]
+
+    it "hold `Stella.Elab.synthesizedBy` as an ordinary attribute, which the compiler reads on no declaration" do
+      shows
+        [ "@[E.synthesizedBy]"
+        , "@[E.synthesizedBy]"
+        , "data T = T"
+        , "@[E.synthesizedBy]"
+        , "effect Ask where"
+        , "  ask :: Unit ->* Int"
+        ]
+        [ "data M.T (M.T) @Stella.Elab.synthesizedBy @Stella.Elab.synthesizedBy", "effect M.Ask (M.ask) @Stella.Elab.synthesizedBy" ]
+        []
 
     it "leave `elaborationOnly` the scope refused out, unreported again, and keep it where the compiler lists the declaration" do
       shows [ "@[elaborationOnly]", "data T = T" ] [ "data M.T (M.T)" ] [ "ElaborationOnlyNotAllowed" ]

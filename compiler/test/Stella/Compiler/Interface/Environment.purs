@@ -147,8 +147,8 @@ spec = describe "Stella.Compiler.Interface.Environment" do
       a = TyVar "a"
       row = TVar (TyVar "e")
       lacks = Lacks (SymbolKey (Symbol "n")) row
-      dictionary = TApp (TCon (Qualified moduleA (TyName "Show")) []) (TVar a)
-      synthesized = { name: Just (Ident "d"), dictionary, synthesizer: Qualified moduleA (Ident "resolve") }
+      argumentType = TApp (TCon (Qualified moduleA (TyName "Show")) []) (TVar a)
+      synthesized = { name: Just (Ident "d"), argumentType, synthesizer: Qualified moduleA (Ident "resolve") }
 
     it "takes the quantifiers and constraints of a Core type onto its spine" do
       plainBody (TForall a KType (TConstrained lacks (TVar a)))
@@ -162,7 +162,7 @@ spec = describe "Stella.Compiler.Interface.Environment" do
     it "stands for a parameter of its type where it takes a synthesized parameter" do
       let s = { kindVars: [], body: Forall a KType (Synthesized synthesized (Plain (pureFn (TVar a) tInt))) }
       isComputation s `shouldEqual` false
-      (coreScheme s).body `shouldEqual` TForall a KType (pureFn dictionary (pureFn (TVar a) tInt))
+      (coreScheme s).body `shouldEqual` TForall a KType (pureFn argumentType (pureFn (TVar a) tInt))
 
     it "is read as the scheme it was made from, where it says nothing beyond Core" do
       let t = { kindVars: [], body: TForall a KType (pureFn (TVar a) (TVar a)) }

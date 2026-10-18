@@ -71,7 +71,6 @@ compilerRead =
   [ { attribute: prim "macro", on: [ OnValue ] }
   , { attribute: prim "entrypoint", on: [ OnValue, OnComputation ] }
   , { attribute: elaborationOnly, on: [ OnData, OnNewtype ] }
-  , { attribute: Qualified (ModuleName "Stella.Elab") (Ident "synthesizedBy"), on: [ OnData, OnNewtype, OnSynonym, OnForeignType ] }
   ]
   where
   prim = Qualified (ModuleName "Prim") <<< Ident

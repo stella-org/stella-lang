@@ -104,7 +104,7 @@ rich =
     Forall a (KVar (KindVar "k"))
       ( Constrained (Lacks (EffectKey (inM (EffName "E"))) (TVar (TyVar "e")))
           ( Constrained (Disjoint (TVar (TyVar "e")) TRowEmpty)
-              ( Synthesized { name: Just (Ident "d"), dictionary: TApp (TCon (inM (TyName "T")) [ KType ]) (TVar a), synthesizer: inM (Ident "resolve") }
+              ( Synthesized { name: Just (Ident "d"), argumentType: TApp (TCon (inM (TyName "T")) [ KType ]) (TVar a), synthesizer: inM (Ident "resolve") }
                   ( Plain
                       ( TForall (TyVar "r") (KRow RowType)
                           ( TRowExtend (RowTypeEntry (SymbolKey (Symbol "s")) int)

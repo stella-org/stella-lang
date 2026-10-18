@@ -2,7 +2,7 @@
 -- | with what the surface says beyond Core kept on its spine.
 -- |
 -- | Two things a surface signature says are gone from its Core scheme. A
--- | synthesized parameter, `{{ d :: C τ̄ by f }}`, is an ordinary parameter of
+-- | synthesized parameter, `{{ d :: τ by f }}`, is an ordinary parameter of
 -- | its type in Core (D11), and a module importing the declaration
 -- | needs to know that a goal fills it. A computation, `τ / ρ`, is a thunk
 -- | `Unit -{ρ}-> τ` in Core, and a reference to it is forced where it stands
@@ -49,7 +49,7 @@ data SchemeBody
   | Computation Type Type
   | Forall TyVar K.Kind SchemeBody
   | Constrained Constraint SchemeBody
-  -- | `{{ d :: C τ̄ by f }} -> σ`, a parameter a synthesis goal fills, behind a
+  -- | `{{ d :: τ by f }} -> σ`, a parameter a synthesis goal fills, behind a
   -- | pure arrow.
   | Synthesized SynthesizedParameter SchemeBody
 
@@ -57,7 +57,7 @@ data SchemeBody
 -- | type of the argument it takes, and the synthesizer that fills it.
 type SynthesizedParameter =
   { name :: Maybe Ident
-  , dictionary :: Type
+  , argumentType :: Type
   , synthesizer :: Qualified Ident
   }
 
@@ -83,7 +83,7 @@ coreBody = case _ of
   Computation result row -> fn (TCon unitTy []) row result
   Forall a k body -> TForall a k (coreBody body)
   Constrained c body -> TConstrained c (coreBody body)
-  Synthesized p body -> pureFn p.dictionary (coreBody body)
+  Synthesized p body -> pureFn p.argumentType (coreBody body)
 
 derive instance Eq SchemeBody
 derive instance Generic SchemeBody _

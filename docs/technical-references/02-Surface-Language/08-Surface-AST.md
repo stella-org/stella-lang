@@ -62,7 +62,7 @@ Origin = FromSource range
 
 | Written | Stands | Held as |
 | --- | --- | --- |
-| `forall ā. C => {{ d :: C τ̄ by f }} -> τ / ρ` | at the end of the spine of a computation declaration's signature | `ComputationType`: its spine — quantifiers, constraints, and synthesized parameters (`PrefixSynthesized`) — in the order written, the result, and the row |
+| `forall ā. C => {{ d :: σ by f }} -> τ / ρ` | at the end of the spine of a computation declaration's signature | `ComputationType`: its spine — quantifiers, constraints, and synthesized parameters (`PrefixSynthesized`) — in the order written, the result, and the row |
 | `forall b̄. σ̄ ->* τ` | as an operation's signature | `OperationSignature`: its own type variables, the arguments, and the type it resumes with (D21) |
 | `forall ā. E ~> ( t̄ )` | as a handler declaration's signature, under its quantifiers | `HandlerSignature`'s `Capability`: the binders of each `forall` in front of `~>`, a group apiece in the order written, then the source and the targets, each an effect application |
 
@@ -83,7 +83,7 @@ Origin = FromSource range
 - **An effect element and an instance hold an effect application**, a declared effect and its arguments. A name standing for an effect is written at the head of one and nowhere else; anywhere else it is no type, and an error ([Name Resolution](06-Name-Resolution.md)). The head of an effect row's element is a declared effect (D16), and a type synonym cannot stand for one: an effect declaration is the only declaration producing `Effect`, and a synonym produces none (D24).
 - **A spread with no operand is the anonymous one**, which every anonymous spread of one signature shares per row kind ([Rows](../03-Typed-Core/02-Rows.md)).
 
-**`{{ d :: C τ̄ by f }}` binds nothing.** `d` is a name written for the reader and for diagnostics; the parameter the synthesized argument is passed in is bound where the definition binds its parameters, as any other is.
+**`{{ d :: τ by f }}` binds nothing.** `d` is a name written for the reader and for diagnostics; the parameter the synthesized argument is passed in is bound where the definition binds its parameters, as any other is.
 
 ## Expressions and patterns
 

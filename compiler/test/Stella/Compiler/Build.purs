@@ -501,7 +501,7 @@ spec = describe "Stella.Compiler.Build" do
         Right r -> do
           let dict = TApp (TCon (Qualified (ModuleName "M") (TyName "Dict")) []) int
           map _.scheme (Map.lookup (Ident "showWith") r.interface.declarations.values) `shouldEqual`
-            Just { kindVars: [], body: Synthesized { name: Just (Ident "d"), dictionary: dict, synthesizer: resolve } (Plain (pureFn int int)) }
+            Just { kindVars: [], body: Synthesized { name: Just (Ident "d"), argumentType: dict, synthesizer: resolve } (Plain (pureFn int int)) }
           case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
             Right stored -> stored.interface `shouldEqual` r.interface
             Left problem -> fail problem
@@ -521,7 +521,7 @@ spec = describe "Stella.Compiler.Build" do
             let
               a = TVar (TyVar "a")
               dict t = TApp (TCon (Qualified (ModuleName "M") (TyName "Dict")) []) t
-              parameter name t = { name: Just (Ident name), dictionary: dict t, synthesizer: resolve }
+              parameter name t = { name: Just (Ident name), argumentType: dict t, synthesizer: resolve }
               scheme n = map _.scheme (Map.lookup (Ident n) r.interface.declarations.values)
             scheme "idWith" `shouldEqual` Just { kindVars: [], body: Synthesized (parameter "d" int) (Forall (TyVar "a") KType (Plain (pureFn a a))) }
             scheme "both" `shouldEqual` Just { kindVars: [], body: Synthesized (parameter "d" int) (Forall (TyVar "a") KType (Synthesized (parameter "e" a) (Plain (pureFn a a)))) }

@@ -383,7 +383,7 @@ spine ::= τ                      a Core type, headed by no forall and no constr
         | τ / ρ                  a computation type
         | forall (a : κ). spine
         | C => spine
-        | {{ d :: C τ̄ by f }} -> spine     a synthesized parameter, behind a pure arrow
+        | {{ d :: τ by f }} -> spine       a synthesized parameter, behind a pure arrow
 ```
 
 - **The Core scheme is derived, never stored beside it**: a computation type becomes `Unit -{ρ}-> τ`, and a synthesized parameter a pure arrow from its type. The two cannot disagree.

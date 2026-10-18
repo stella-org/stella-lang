@@ -10,7 +10,7 @@ Two choices distinguish Stella from PureScript. Both follow from a single observ
 
 **Rows are a first-class structure in the type system, not something manipulated through type classes.** A dedicated row solver normalizes open rows without closing them. Structural relationships between rows are constraints the solver discharges, not instances a search procedure finds.
 
-**Type classes are a library, not a compiler builtin.** The compiler provides one general synthesis hook. The standard library implements class declarations as syntax macros and dictionary synthesis as an ordinary elaborator.
+**Type classes are a library, not a compiler builtin.** The compiler provides one general synthesis hook, which knows nothing of classes. A library builds type classes on that hook, and how a class and an instance are represented is that library's design ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
 
 ## What Stella inherits from PureScript
 
@@ -45,7 +45,7 @@ PureScript's type class resolution serves several purposes at once. Stella gives
 | Type-level evaluation | Evaluate explicit type functions |
 | Syntax macros | Transform syntax into syntax, hygienically |
 | Elaborator | Build typed Core terms from expected types and the environment |
-| Type class resolver | A library elaborator that synthesizes dictionary terms |
+| Type class resolver | A library synthesizer, built on the general synthesis hook |
 
 In particular, type class resolution is not a substitute for row computation or for general compile-time computation.
 
@@ -117,7 +117,7 @@ Effect handlers are the one place where backends differ in what conforming costs
 | --- | --- |
 | A | Lexer, parser, source spans and diagnostics, name resolution, kind checking, type inference, Typed Core, Mid IR, JavaScript backend |
 | B | Hygienic syntax objects, quotation and antiquotation, declaration attributes, typed reflection, metavariable and goal APIs, transactional elaboration, synthesis scheduling |
-| C | Library-defined type classes: dictionary record macros, instance declaration macros, the standard resolver, recursive instance search, coherence and ambiguity rules, search trace diagnostics |
+| C | Library-defined type classes, designed on the general synthesis API: the representation of classes and instances, the standard resolver, instance search, coherence and ambiguity rules, search trace diagnostics |
 | D | Native row programming: canonical open-row representation, row unification and normalization, structural constraints, reflection over known row fragments, residual computation over unknown tails |
 | E | Effects and WebAssembly: effect rows in Core, first-order operations and handlers, higher-order and scoped effects, JavaScript runtime strategy, Wasm GC backend, browser interoperability |
 

@@ -1014,11 +1014,11 @@ synthesizedOnSpine :: Type -> { type :: Type, marks :: Array SynthesizedMark }
 synthesizedOnSpine t = case t of
   TypeForall o binders body -> let r = synthesizedOnSpine body in r { type = TypeForall o binders r.type }
   TypeConstrained o c body -> let r = synthesizedOnSpine body in r { type = TypeConstrained o c r.type }
-  TypeFunction o (TypeSynthesized _ name dictionary at synthesizer) rest Nothing ->
+  TypeFunction o (TypeSynthesized _ name argumentType at synthesizer) rest Nothing ->
     let
       r = synthesizedOnSpine rest
     in
-      { type: TypeFunction o dictionary r.type Nothing, marks: Array.cons { name, at, synthesizer } r.marks }
+      { type: TypeFunction o argumentType r.type Nothing, marks: Array.cons { name, at, synthesizer } r.marks }
   _ -> { type: t, marks: [] }
 
 -- | A computation type written as the type it is in Core: its spine, then a
@@ -1041,7 +1041,7 @@ schemeOf e s = { kindVars: s.kindVars, body: go e.synthesized s.body }
     Core.TForall a k body, _, _ -> Forall a k (go marks body)
     Core.TConstrained c body, _, _ -> Constrained c (go marks body)
     _, Just { head, tail }, Just f | f.row == Core.TRowEmpty ->
-      Synthesized { name: head.name, dictionary: f.argument, synthesizer: head.synthesizer } (go tail f.result)
+      Synthesized { name: head.name, argumentType: f.argument, synthesizer: head.synthesizer } (go tail f.result)
     _, Nothing, Just f | e.computation -> Computation f.result f.row
     _, _, _ -> Plain t
 

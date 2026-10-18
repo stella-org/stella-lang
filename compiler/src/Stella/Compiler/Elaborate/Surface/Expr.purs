@@ -875,7 +875,7 @@ infer scope expr = case expr of
     Synthesized p rest, _
       | Just taking <- asArrow ty
       , taking.row == XRowEmpty
-      , taking.argument == written p.dictionary -> do
+      , taking.argument == written p.argumentType -> do
           Tuple _ goal <- lift (createSynthesis (siteAt scope o) taking.argument p.synthesizer)
           unused <- lift (freshIdent (Map.keys scope.context.vars) "_")
           thunked <- lift (placeFit (siteAt scope o) Wrapping XRowEmpty scope.ambient)

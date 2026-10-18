@@ -487,14 +487,14 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Type" do
   describe "a scheme's spine" do
     let
       synthesizer = Qualified lib (Ident "make")
-      dictionary = TypeSynthesized (at 30) (Just (Ident "d")) (app box (v a)) (at 31) synthesizer
+      synthesized = TypeSynthesized (at 30) (Just (Ident "d")) (app box (v a)) (at 31) synthesizer
       consoleRow = TypeEffectRow (at 31) [ EffectElement (console 31) ]
       coreConsole = Core.TRowExtend (Core.RowEffectEntry consoleName []) Core.TRowEmpty
       boxA = coreBox (Core.TVar (TyVar "a"))
-      parameter = { name: Just (Ident "d"), dictionary: boxA, synthesizer }
+      parameter = { name: Just (Ident "d"), argumentType: boxA, synthesizer }
 
     it "holds a synthesized parameter where it stands, a parameter of its type in Core" do
-      elaborating [ a ] (TypeFunction (at 4) dictionary (arrow (v a) int) Nothing) \ran -> do
+      elaborating [ a ] (TypeFunction (at 4) synthesized (arrow (v a) int) Nothing) \ran -> do
         ran.scheme `shouldEqual` Right { kindVars: [], body: Core.TForall (TyVar "a") Core.KType (pureFn boxA (pureFn (Core.TVar (TyVar "a")) coreInt)) }
         ran.published `shouldEqual` Just { kindVars: [], body: Forall (TyVar "a") Core.KType (Synthesized parameter (Plain (pureFn (Core.TVar (TyVar "a")) coreInt))) }
 
@@ -502,7 +502,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Type" do
       let
         computation prefix = { origin: at 32, prefix, result: v a, row: consoleRow }
         binderA = { origin: at 33, var: a, kind: Just (KindType (at 33)) }
-      elaboratingBy (elaborateComputationSignature libSynonyms declaration { implicit: [], body: computation [ PrefixForall (at 33) [ binderA ], PrefixSynthesized dictionary ] }) \ran -> do
+      elaboratingBy (elaborateComputationSignature libSynonyms declaration { implicit: [], body: computation [ PrefixForall (at 33) [ binderA ], PrefixSynthesized synthesized ] }) \ran -> do
         ran.scheme `shouldEqual` Right { kindVars: [], body: Core.TForall (TyVar "a") Core.KType (pureFn boxA (fn (Core.TCon unitTy []) coreConsole (Core.TVar (TyVar "a")))) }
         ran.published `shouldEqual` Just { kindVars: [], body: Forall (TyVar "a") Core.KType (Synthesized parameter (Computation (Core.TVar (TyVar "a")) coreConsole)) }
       elaboratingBy (elaborateComputationSignature libSynonyms declaration { implicit: [], body: { origin: at 32, prefix: [], result: int, row: consoleRow } }) \ran ->

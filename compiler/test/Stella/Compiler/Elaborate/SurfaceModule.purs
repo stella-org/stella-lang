@@ -132,7 +132,7 @@ libInterface =
   value n ty = Tuple (Ident n) { sort: SortForeign MayObserve, scheme: plainScheme (monoScheme ty), attributes: [] }
   synthesizer n = Tuple (Ident n) { sort: SortValue, scheme: plainScheme (monoScheme synthesizerType), attributes: [] }
   taker n body = Tuple (Ident n) { sort: SortValue, scheme: { kindVars: [], body }, attributes: [] }
-  taking dictionary n = { name: Just (Ident "d"), dictionary, synthesizer: Qualified lib (Ident n) }
+  taking argumentType n = { name: Just (Ident "d"), argumentType, synthesizer: Qualified lib (Ident n) }
   tuple x y = TApp (TApp (TCon (Qualified lib (TyName "Tuple")) []) x) y
 
 -- | `Base.Continuation`, as its source compiles: `Continuation` and `continue`
@@ -2313,13 +2313,13 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
   describe "a reference to a value taking a synthesized parameter" do
     let
       bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
-      dictionary = [ "data Dict = Dict Int", "showWith :: {{ d :: Dict by resolveDict }} -> Int -> Int", "showWith d x = x" ]
+      showWithSource = [ "data Dict = Dict Int", "showWith :: {{ d :: Dict by resolveDict }} -> Int -> Int", "showWith d x = x" ]
       broken r k = case r.errors of
         [ Broken d ] -> k d
         errors -> fail ("not broken: " <> show (map at errors))
 
     it "is applied, where it stands, to the term the synthesizer its spine names fills the goal with, under the empty row" do
-      synthesizing (dictionary <> [ "use :: Int -> Int", "use x = showWith x" ]) \r -> do
+      synthesizing (showWithSource <> [ "use :: Int -> Int", "use x = showWith x" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "use" r.values of
           Just (Lam _ _ _ _ (App _ (App _ (Global _ g _) (App _ (Lam _ _ _ TRowEmpty (App _ (Global _ c _) (Lit _ (LitInt 1)))) (Global _ u _))) (Var _ _)))
@@ -2328,7 +2328,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         checked r \core -> shapes core `shouldEqual` [ "nonrec showWith", "nonrec use" ]
 
     it "fits the thunk the term synthesized stands in, and the global applied to it, into the row ambient" do
-      synthesizing (dictionary <> [ "loud :: Int -> Int / {| Ping |}", "loud x = showWith x" ]) \r -> do
+      synthesizing (showWithSource <> [ "loud :: Int -> Int / {| Ping |}", "loud x = showWith x" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "loud" r.values of
           Just (Lam _ _ _ _ (App _ (OpenEff _ _ (App _ (OpenEff _ _ (Global _ g _)) (App _ (OpenEff _ _ (Lam _ _ _ TRowEmpty (App _ (Global _ c _) (Lit _ (LitInt 1))))) (Global _ u _)))) (Var _ _)))
@@ -2342,7 +2342,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
 
     it "takes the goals of its spine from the left, each at the type of its synthesized parameter past the quantifiers and constraints before it" do
       synthesizing
-        ( dictionary <>
+        ( showWithSource <>
             [ "two :: forall r. {{ d :: Dict by resolveDict }} -> (forall a. {{ e :: Int by resolveInt }} -> { x :: Int, ...r } -> a -> a)"
             , "two d e r y = y"
             , "useTwo :: Int"
@@ -2386,7 +2386,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     it "is the host's defect where the spine its interface gives and the scheme the catalog holds disagree" do
       let
         spined name spine = elaboratingBy { built: environment, registry: synthesizers, surface: \s -> s { synthesizing = Map.insert (Qualified lib (Ident name)) spine s.synthesizing } } "module M where"
-        taking = { name: Nothing, dictionary: int, synthesizer: Qualified lib (Ident "resolveInt") }
+        taking = { name: Nothing, argumentType: int, synthesizer: Qualified lib (Ident "resolveInt") }
         a = TyVar "a"
         amiss name = case _ of
           SynthesizedSpineAmiss _ n -> n `shouldEqual` Qualified lib (Ident name)

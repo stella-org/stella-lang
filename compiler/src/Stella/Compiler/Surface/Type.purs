@@ -91,9 +91,9 @@ data Type
   | TypeRecord Origin (Array RecordRowItem)
   | TypeVariant Origin (Array VariantRowItem)
   | TypeEffectRow Origin (Array EffectRowItem)
-  -- | `{{ name :: τ by f }}`: the parameter a constraint desugars to, filled by
-  -- | the synthesizer `f`, with where `f` is written. The name is written for
-  -- | the reader and binds nothing.
+  -- | `{{ name :: τ by f }}`: a synthesized parameter, which a goal at `τ` that
+  -- | the synthesizer `f` fills supplies, with where `f` is written. The name is
+  -- | written for the reader and binds nothing.
   | TypeSynthesized Origin (Maybe Ident) Type Origin (Qualified Ident)
   -- | Where resolution reported an error.
   | TypeInvalid Origin
@@ -182,7 +182,7 @@ type ComputationType =
 data SignaturePrefix
   = PrefixForall Origin (Array TypeVarBinder)
   | PrefixConstraint Type
-  -- | `{{ d :: C τ̄ by f }} ->`, behind a pure arrow: a `TypeSynthesized`, or
+  -- | `{{ d :: τ by f }} ->`, behind a pure arrow: a `TypeSynthesized`, or
   -- | `TypeInvalid` where resolution reported an error.
   | PrefixSynthesized Type
 

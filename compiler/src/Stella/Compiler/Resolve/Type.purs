@@ -295,10 +295,10 @@ spine t = case t of
 synthesized :: CST.Type -> Resolve Type
 synthesized t = case t of
   CST.TypeParens inner -> synthesized inner
-  CST.TypeSynthesized n dictionary f -> do
-    dictionary' <- resolveType dictionary
+  CST.TypeSynthesized n argumentType f -> do
+    argumentType' <- resolveType argumentType
     lookupValue f >>= case _ of
-      Found q -> pure (TypeSynthesized o (map (Ident <<< _.name) n) dictionary' (originOf f.range) q)
+      Found q -> pure (TypeSynthesized o (map (Ident <<< _.name) n) argumentType' (originOf f.range) q)
       NotFound -> report f.range (UnknownValue (written f)) $> TypeInvalid o
       Ambiguous -> report f.range (AmbiguousValue (written f)) $> TypeInvalid o
   _ -> resolveType t

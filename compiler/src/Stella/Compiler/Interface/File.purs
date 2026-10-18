@@ -493,10 +493,10 @@ schemeBody = case _ of
     pure (u8 3 <> c' <> body')
   Synthesized p body -> do
     name <- optional (str <<< identText) p.name
-    dictionary <- type_ p.dictionary
+    argumentType <- type_ p.argumentType
     synthesizer <- qname identText p.synthesizer
     body' <- schemeBody body
-    pure (u8 4 <> name <> dictionary <> synthesizer <> body')
+    pure (u8 4 <> name <> argumentType <> synthesizer <> body')
 
 -- Reading ----------------------------------------------------------------------------
 
@@ -851,7 +851,7 @@ schemeBodyR ss = do
     3 -> Constrained <$> constraintR ss <*> schemeBodyR ss
     4 -> do
       name <- optionalR (Ident <$> strR ss)
-      dictionary <- typeR ss
+      argumentType <- typeR ss
       synthesizer <- qnameR ss Ident
-      Synthesized { name, dictionary, synthesizer } <$> schemeBodyR ss
+      Synthesized { name, argumentType, synthesizer } <$> schemeBodyR ss
     _ -> unknown SchemeTag t
