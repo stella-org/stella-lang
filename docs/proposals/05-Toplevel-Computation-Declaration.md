@@ -58,7 +58,7 @@ Note:
       = Λ(ā : κ̄). Λ(_ : C). λ(_ : Unit). e
     ```
 
-    Here `C` stands for row constraints. A type class constraint becomes a dictionary parameter `λ(dict : D)` in its place, ahead of the `Unit` parameter (see rule 2).
+    Here `C` stands for row constraints. A synthesized parameter on the spine becomes an ordinary parameter `λ(d : σ)` in its place, ahead of the `Unit` parameter (see rule 2).
 
     In particular, a computation declaration `e :: τ / ρ` with neither a quantifier nor a constraint corresponds simply to the nullary thunk
 
@@ -70,7 +70,7 @@ Note:
 
 2. Name resolution tells references apart as `ResolvedValueRef x` and `ResolvedComputationRef x`, and leaves the distinction in the resolved AST. The elaborator lowers the latter to `x ⟨type arguments⟩ Prim.Unit`. Since the application is built after the type arguments are instantiated, even a polymorphic computation declaration does not depend on the expected type.
 
-    Where a constraint in `C` is a type class constraint, it is not a Core constraint but a dictionary argument, supplied by synthesis. The reference then lowers to `x ⟨type arguments⟩ ⟨dictionaries⟩ Prim.Unit`: after the type arguments are instantiated, a synthesis goal is created for each dictionary, and `Prim.Unit` is applied last. A row constraint in `C` (`Lacks`, `Disjoint`) stays a Core constraint, applied as any other.
+    Where the spine holds a synthesized parameter, the reference lowers to `x ⟨type arguments⟩ ⟨synthesized arguments⟩ Prim.Unit`: after the type arguments are instantiated, a synthesis goal is created for each synthesized parameter, and `Prim.Unit` is applied last. A constraint in `C` (`Lacks`, `Disjoint`) is a Core constraint, applied as any other.
 
 3. The surface scheme (`τ / ρ`), the lowered Core scheme (`Unit -{ρ}-> τ`), and the kind of declaration (value / computation / foreign / constructor …) are kept apart. An importer type-checks `x` as a computation against the surface scheme, and uses the lowered scheme when it builds the Core global. Care must be taken not to replace the scheme in the existing catalog with `τ / ρ`.
 
@@ -84,10 +84,12 @@ Note:
     runIO (\_ -> randomInt)  -- passed as a thunk
     ```
 
-    The entry-point stub is generated as surface syntax, `runIO (\_ -> main)`: the thunk is
-    the lambda written there, and the reference to main inside it is forced as any other.
-    Implicit handlers are inserted at the lambda's body by the ordinary rules, so nothing
-    specific to the entry point is needed beyond generating the stub.
+    The entry-point stub is generated as surface syntax,
+    `Base.IO.Effect.runIO ((\_ -> main) :: Unit -> Unit / {| LiftIO |})`: the thunk is the
+    lambda written there, and the reference to main inside it is forced as any other. The
+    annotation makes the lambda a checking boundary, so implicit handlers are inserted at its
+    body by the ordinary rules, and nothing specific to the entry point is needed beyond
+    generating the stub ([Implicit Effect Runner](./01-Implicit-Effect-Runner.md)).
 
 5. **An empty row is admitted.** `x :: Int / {||}` is an explicitly pure nullary computation,
     evaluated again at each reference. Forbidding it would make whether a declaration is admitted
