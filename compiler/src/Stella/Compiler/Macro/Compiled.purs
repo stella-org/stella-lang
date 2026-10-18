@@ -28,6 +28,7 @@ import Data.Either (Either(..))
 import Data.Array as Array
 import Data.Map (Map)
 import Data.Map as Map
+import Data.Tuple (Tuple(..))
 import Stella.Compiler.Bytecode (Dmo, lower)
 import Stella.Compiler.Elaborate.Protocol.Guest as Guest
 import Stella.Compiler.Elaborate.Protocol.Guest.Shape (Descriptor)
@@ -47,13 +48,16 @@ type Interface = { name :: ModuleName, imports :: Array ModuleName, arities :: M
 -- | `Stella.Syntax` after it; the signature holding both, `IssuedOrigin` among
 -- | its types; what a translation reads of each; the interface of each of the
 -- | three, `Stella.Elab` last, which a module importing them is resolved and
--- | elaborated against; and the descriptor of the types a value of
--- | `Stella.Syntax` crossing to the host has.
+-- | elaborated against; the interface of each module a compile-time session
+-- | opened with `parse` in force holds before a build loads anything, which is
+-- | each of the three, closed under imports; and the descriptor of the types a
+-- | value of `Stella.Syntax` crossing to the host has.
 type Compiled =
   { modules :: Array Dmo
   , signature :: Signature
   , interfaces :: Array Interface
   , moduleInterfaces :: Array ModuleInterface
+  , preloaded :: Map ModuleName ModuleInterface
   , descriptor :: Descriptor
   }
 
@@ -66,11 +70,13 @@ compiled = do
   own <- compile (syntax.withSignature base.signature) [ base.interface ] syntax.module
   guest <- Guest.bundle
   elab <- compile (guest.withSignature primSignature) [] guest.module
+  let moduleInterfaces = [ base.moduleInterface, unexported syntax.unexported own.moduleInterface, elab.moduleInterface ]
   pure
     { modules: [ base.dmo, own.dmo ]
     , signature: own.signature
     , interfaces: [ base.interface, own.interface ]
-    , moduleInterfaces: [ base.moduleInterface, unexported syntax.unexported own.moduleInterface, elab.moduleInterface ]
+    , moduleInterfaces
+    , preloaded: Map.fromFoldable (map (\i -> Tuple i.name i) moduleInterfaces)
     , descriptor: syntax.descriptor
     }
 

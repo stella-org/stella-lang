@@ -21,6 +21,7 @@ module Stella.Compiler.Interface.Environment
   , EnvironmentError(..)
   , initialEnvironment
   , addInterface
+  , withoutInterface
   , lookupInterface
   , abiOf
   , ModuleView
@@ -83,6 +84,12 @@ addInterface i env
   | otherwise = case Array.find (\m -> not (Map.member m env.interfaces)) i.imports of
       Just missing -> Left (ImportNotAdded i.name missing)
       Nothing -> Right env { interfaces = Map.insert i.name i env.interfaces }
+
+-- | The environment without the interface of the module given, where it holds
+-- | one: what a toolchain build compiles that module against, and adds the
+-- | module's new interface to ([Build](../Build.purs)).
+withoutInterface :: ModuleName -> BuildEnvironment -> BuildEnvironment
+withoutInterface m env = env { interfaces = Map.delete m env.interfaces }
 
 lookupInterface :: ModuleName -> BuildEnvironment -> Maybe ModuleInterface
 lookupInterface m env = Map.lookup m env.interfaces

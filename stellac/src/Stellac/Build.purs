@@ -9,8 +9,16 @@
 -- | a macro or a synthesizer of the package run from the bytecode written for
 -- | its module; and what each phase makes written as the phase ends. The
 -- | modules are built against `Prim`, the modules the compiler carries,
--- | `Base.Int`, `Stella.Syntax`, and `Stella.Elab`, and the interfaces a
--- | dependency map names ([Dependencies](Dependencies.purs)).
+-- | `Base.Int`, `Stella.Syntax`, and `Stella.Elab`, which the session holds
+-- | from its opening and is never sent, and the interfaces a dependency map
+-- | names ([Dependencies](Dependencies.purs)).
+-- | A macro or a synthesizer of a module the map lists runs from the bytecode
+-- | the map names for it, after each module it reaches.
+-- |
+-- | **`--toolchain-rebuild` names modules the compiler carries that the package
+-- | compiles anew**, which a build of no such name refuses to hold. The session
+-- | still runs the ones the compiler carries; what the build writes of them is
+-- | for a later toolchain.
 -- |
 -- | **A synthesizer that faults or uses up its budget fails the build where the
 -- | goal it was solving stands**, against the synthesizer: it says nothing of
@@ -34,6 +42,7 @@ import Data.Bifunctor (lmap)
 import Data.Either (Either(..), either)
 import Data.Foldable (foldM, for_)
 import Data.Map as Map
+import Data.Tuple (Tuple(..))
 import Data.Maybe (Maybe(..))
 import Data.Set as Set
 import Data.String (Pattern(..), joinWith, split)
@@ -59,7 +68,7 @@ import Stella.Compiler.Bytecode (encode)
 import Stella.Compiler.Bytecode.Bytes (Bytes)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
 import Stella.Compiler.Elaborate.Protocol.Guest as Guest
-import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment)
+import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment, lookupInterface)
 import Stella.Compiler.Interface.File as Interface
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (defaultSettings)
@@ -80,13 +89,19 @@ cmd opts = do
   elab <- either (\why -> throw (internal ("`Stella.Elab` does not describe its types: " <> why))) pure Guest.bundle
   carried <- either (\err -> throw (internal ("the modules the compiler carries do not make an environment: " <> show err))) pure
     (foldM (flip addInterface) initialEnvironment syntax.moduleInterfaces)
-  env <- case opts.dependencies of
-    Nothing -> pure carried
+  linked <- case opts.dependencies of
+    Nothing -> pure { environment: carried, dependencies: [] }
     -- a relative map is under the package's root, as a relative output is
     Just given -> do
       absolute <- FS.isAbsolute given
       Dependencies.dependedOn (if absolute then given else underRoot given) carried
-        >>= either (\errs -> for_ errs (Log.error <<< printDependencyError) *> throw "The build failed") (pure <<< _.environment)
+        >>= either (\errs -> for_ errs (Log.error <<< printDependencyError) *> throw "The build failed") pure
+  let
+    env = linked.environment
+    -- the bytecode of each module the map lists, which the session loads it from
+    objects = Map.fromFoldable (map (\d -> Tuple d.module d.object) linked.dependencies)
+  for_ (Array.find (\name -> not (Array.any (\i -> i.name == name) syntax.moduleInterfaces)) opts.toolchainRebuild) \name ->
+    throw (fmt @"`{name}` is not a module the compiler carries, and cannot be compiled anew" { name: moduleText name })
   found <- FS.glob opts.workdir patterns >>= either (\why -> throw (fmt @"The source files could not be listed: {why}" { why })) pure
   when (Array.null found) do
     throw (fmt @"No source file matches {patterns}" { patterns: joinWith ", " patterns })
@@ -138,10 +153,13 @@ cmd opts = do
         Right _ -> pure unit
 
     loading =
-      { loaded
+      { seed: syntax.preloaded
+      , importsOf: \name -> if Map.member name objects then map _.imports (lookupInterface name env) else Nothing
+      , loaded
       , locate: \name -> do
           written <- liftEffect (Ref.read paired)
-          pure if Set.member name written then Just (builtPath output name "dmo") else Nothing
+          -- what this build wrote first, then what the map lists
+          pure if Set.member name written then Just (builtPath output name "dmo") else Map.lookup name objects
       }
 
     action :: CompilerAction Building
@@ -186,13 +204,13 @@ cmd opts = do
     traced name label = when (Just name == opts.traceOpt) do
       liftEffect (Ref.modify_ (\chunks -> Array.snoc chunks (fmt @"=== {label} ===" { label })) trace)
 
-  outcome <- expand (Except.runExcept (build action defaultSettings env defaultSourceRoots files))
+  outcome <- expand (Except.runExcept (build action defaultSettings { environment: env, rebuilding: Set.fromFoldable opts.toolchainRebuild } defaultSourceRoots files))
   opened <- liftEffect (Ref.read session)
   closed <- for opened Client.close
   case outcome of
     Left failure -> do
       known <- liftEffect (Ref.read paths)
-      case synthesizerFailure known failure of
+      case compileTimeFailure known failure of
         Just message -> do
           Log.error (printBuildMessage message)
           throw "The build failed"
@@ -231,13 +249,16 @@ cmd opts = do
     | Array.length chunks <= 2 = joinWith "\n" chunks <> "\n(no optimizer rounds)\n"
     | otherwise = joinWith "\n" chunks <> "\n"
 
--- | A synthesizer that faulted, or used up its budget, said where the goal it
--- | was solving stands, the path of each module begun given: the build fails on
--- | it, and the program is not said to be wrong.
-synthesizerFailure :: Map.Map ModuleName String -> CompileTimeError -> Maybe BuildMessage
-synthesizerFailure paths = case _ of
+-- | A failure of compile-time execution that is neither the program's error
+-- | nor the compiler's, said where it stands, the path of each module begun
+-- | given: a synthesizer that faulted, or used up its budget, where the goal it
+-- | was solving stands; and a module compiled anew that the session runs the
+-- | carried one of in its place, with another interface.
+compileTimeFailure :: Map.Map ModuleName String -> CompileTimeError -> Maybe BuildMessage
+compileTimeFailure paths = case _ of
   SynthesizerFaulted r -> Just (at r.goal (fmt @"The synthesizer `{f}` faulted while solving this goal: {detail}" { f: qualifiedText r.synthesizer, detail: r.detail }))
   SynthesizerBudgetExhausted r -> Just (at r.goal (fmt @"The synthesizer `{f}` exhausted its execution budget of {budget} steps while solving this goal" { f: qualifiedText r.synthesizer, budget: grouped r.budget }))
+  RebuiltDiffersFromSeed name -> Just { path: Map.lookup name paths, locations: [], message: fmt @"`{name}` is compiled anew with an interface that differs from the one of the module the compiler carries, which the macros and synthesizers of the build run on" { name: moduleText name } }
   _ -> Nothing
   where
   at goal message = case goal of

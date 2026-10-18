@@ -47,7 +47,7 @@ import Stella.CLI.Session.Client as Client
 import Stella.CLI.Effect.Process (PROCESS)
 import Stella.CLI.Session.CompileTime (CompileTimeError(..))
 import Stella.CLI.Session.RunParser (loadingParser)
-import Stella.Compiler.Build (CompilerAction, build, buildMessages, defaultHooks, defaultSourceRoots, printBuildMessage, withoutSynthesizers)
+import Stella.Compiler.Build (CompilerAction, build, ordinary, buildMessages, defaultHooks, defaultSourceRoots, printBuildMessage, withoutSynthesizers)
 import Stella.Compiler.Bytecode (Dmo, encode, lower)
 import Stella.Compiler.Interface (aritiesOf, importsOf)
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment)
@@ -281,7 +281,9 @@ building unwritten modules globals k = case compiled of
             let
               sources = map (\(Tuple name lines) -> Tuple (fmt @"src/{path}.stel" { path: String.replaceAll (String.Pattern ".") (String.Replacement "/") name }) (joinWith "\n" ([ fmt @"module {name} where" { name } ] <> lines))) modules
               loading =
-                { loaded: inSession
+                { seed: syntax.preloaded
+                , importsOf: const Nothing
+                , loaded: inSession
                 , locate: \name -> liftEffect (Ref.read written) <#> \names ->
                     if Set.member name names then Just (pathOf (moduleText name)) else Nothing
                 }
@@ -301,7 +303,7 @@ building unwritten modules globals k = case compiled of
                           liftEffect (Ref.modify_ (Set.insert b.dmo.name) written)
                     }
                 }
-            outcome <- node (Except.runExcept (build action defaultSettings env defaultSourceRoots (map (\(Tuple path _) -> { path, within: String.split (String.Pattern "/") path }) sources)))
+            outcome <- node (Except.runExcept (build action defaultSettings (ordinary env) defaultSourceRoots (map (\(Tuple path _) -> { path, within: String.split (String.Pattern "/") path }) sources)))
             void (node (Client.close session))
             built <- liftEffect (Ref.read lowered)
             case outcome of

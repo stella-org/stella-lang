@@ -10,7 +10,7 @@ import Fmt (fmt)
 import Data.Array as Array
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Bifunctor (lmap)
-import Data.Either (Either(..))
+import Data.Either (Either(..), either)
 import Data.Foldable (foldM, for_)
 import Data.Identity (Identity(..))
 import Data.Map as Map
@@ -44,7 +44,7 @@ import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (ParseOutcome(..), RunParser, defaultSettings)
 import Stella.Compiler.Macro.Tree (Position(..), Range(..), SyntaxNode(..), Token(..), TokenTree(..))
 import Stella.Compiler.Macro.Tree as Tree
-import Stella.Compiler.Build (BackendProblem(..), BuildError(..), BuiltModules, SourceRoot, defaultSourceRoots, CompileError(..), CompileWarning, CompilerAction, EnvironmentProblem(..), PackageFile, SyntaxProblem(..), build, buildMessages, compileModule, defaultHooks, locationsOf, printBuildMessage, printCompileError, warningLocationOf, withoutSynthesizers)
+import Stella.Compiler.Build (BackendProblem(..), BuildError(..), BuildInputs, BuiltModules, ordinary, SourceRoot, defaultSourceRoots, CompileError(..), CompileWarning, CompilerAction, EnvironmentProblem(..), PackageFile, SyntaxProblem(..), build, buildMessages, compileModule, defaultHooks, locationsOf, printBuildMessage, printCompileError, warningLocationOf, withoutSynthesizers)
 import Stella.Compiler.Resolve.Module (ResolutionError(..))
 import Stella.Compiler.Resolve.Monad (ResolveError(..), ResolveReason(..)) as Resolve
 import Stella.Compiler.Surface.Origin as Surface
@@ -1240,7 +1240,11 @@ building = buildingUnder defaultSourceRoots
 
 -- | `building`, the package's source directories the ones given.
 buildingUnder :: Array SourceRoot -> Array (Tuple String String) -> ({ result :: Either BuildError (Array String), log :: Array String } -> Aff Unit) -> Aff Unit
-buildingUnder roots sources k = do
+buildingUnder = buildingAgainst (ordinary environment)
+
+-- | `buildingUnder`, against the inputs given.
+buildingAgainst :: BuildInputs -> Array SourceRoot -> Array (Tuple String String) -> ({ result :: Either BuildError (Array String), log :: Array String } -> Aff Unit) -> Aff Unit
+buildingAgainst inputs roots sources k = do
   log <- liftEffect (Ref.new [])
   let
     note s = liftEffect (Ref.modify_ (\l -> Array.snoc l s) log)
@@ -1267,7 +1271,7 @@ buildingUnder roots sources k = do
           , onModuleDone = \m -> note ("done " <> moduleText m.name)
           }
       }
-  result <- build action defaultSettings environment roots (files :: Array PackageFile)
+  result <- build action defaultSettings inputs roots (files :: Array PackageFile)
   logged <- liftEffect (Ref.read log)
   k { result: map (map (moduleText <<< _.name)) result, log: logged }
 
@@ -1278,6 +1282,21 @@ moduleText (ModuleName m) = m
 -- | then `n = 1`, or the lines given.
 moduleOf :: String -> Array String -> Array String -> String
 moduleOf name imports body = joinWith "\n" ([ fmt @"module {name} where" { name } ] <> map ("import " <> _) imports <> body)
+
+-- | `Base.Int` written in source: the entries the ABI places in it, as
+-- | foreigns.
+baseIntLines :: Array String
+baseIntLines =
+  [ "foreign add :: Int -> Int -> Int"
+  , "foreign sub :: Int -> Int -> Int"
+  , "foreign mul :: Int -> Int -> Int"
+  , "foreign quot :: Int -> Int -> Int"
+  , "foreign rem :: Int -> Int -> Int"
+  , "foreign eq :: Int -> Int -> Boolean"
+  , "foreign lt :: Int -> Int -> Boolean"
+  , "foreign toNumber :: Int -> Number"
+  , "foreign toString :: Int -> String"
+  ]
 
 valueModule :: String -> Array String -> String
 valueModule name imports = moduleOf name imports [ "n :: Int", "n = 1" ]
@@ -1369,6 +1388,64 @@ buildSpec = describe "a build" do
         Left (NameInEnvironment e) -> e.path `shouldEqual` "src/Macros.stel"
         _ -> fail "not refused"
       r.log `shouldEqual` []
+
+  describe "a toolchain build" do
+    let
+      baseInt = Tuple "src/Base/Int.stel" (moduleOf "Base.Int" [] baseIntLines)
+      rebuilding names = { environment, rebuilding: Set.fromFoldable (map ModuleName names) }
+      outcome r = lmap (map _.message <<< NonEmptyArray.toArray <<< buildMessages) r.result
+      failure r = either identity (const []) (outcome r)
+
+    it "compiles a module of the environment it names anew, which modules importing the old interface are then compiled with" do
+      buildingAgainst (rebuilding [ "Base.Int" ]) defaultSourceRoots
+        [ baseInt, Tuple "src/B.stel" (moduleOf "B" [ "Base.Int (add)", "Stella.Syntax (Parser)" ] [ "n :: Int", "n = add 1 2" ]) ]
+        \r -> do
+          outcome r `shouldEqual` Right [ "Base.Int", "B" ]
+          Array.filter (String.contains (String.Pattern "lowered Base.Int")) r.log `shouldEqual` [ "lowered Base.Int, exporting add eq lt mul quot rem sub toNumber toString" ]
+
+    it "refuses an interface compiled anew that differs from the old one while a module kept imports it, read through the modules between" do
+      buildingAgainst (rebuilding [ "Base.Int" ]) defaultSourceRoots [ Tuple "src/Base/Int.stel" (moduleOf "Base.Int" [] (Array.dropEnd 1 baseIntLines)) ] \r -> do
+        case r.result of
+          Left (RebuiltDiverges e) -> do
+            e.path `shouldEqual` "src/Base/Int.stel"
+            map moduleText (NonEmptyArray.toArray e.observers) `shouldEqual` [ "Macros", "Stella.Syntax" ]
+          _ -> fail "not refused"
+        Array.filter (String.contains (String.Pattern "lowered")) r.log `shouldEqual` []
+
+    it "changes an interface freely where no module kept imports it" do
+      buildingAgainst (rebuilding [ "Ill" ]) defaultSourceRoots [ Tuple "src/Ill.stel" (valueModule "Ill" []) ] \r ->
+        outcome r `shouldEqual` Right [ "Ill" ]
+
+    it "changes an interface where every module importing it is compiled anew too" do
+      buildingAgainst (rebuilding [ "Stella.Syntax", "Macros" ]) defaultSourceRoots
+        [ Tuple "src/Stella/Syntax.stel" (valueModule "Stella.Syntax" []), Tuple "src/Macros.stel" (valueModule "Macros" [ "Stella.Syntax" ]) ]
+        \r -> outcome r `shouldEqual` Right [ "Stella.Syntax", "Macros" ]
+
+    it "compiles a module anew against an environment without its old interface, which a module it imports may not reach" do
+      buildingAgainst (rebuilding [ "Base.Int" ]) defaultSourceRoots [ Tuple "src/Base/Int.stel" (moduleOf "Base.Int" [ "Stella.Syntax" ] baseIntLines) ] \r ->
+        failure r `shouldEqual` [ "The module `Base.Int` is not available to this build" ]
+
+    it "refuses a module of the environment the build does not name, as an ordinary build does" do
+      buildingAgainst (rebuilding [ "Base.Int" ]) defaultSourceRoots [ baseInt, Tuple "src/Stella/Syntax.stel" (valueModule "Stella.Syntax" []) ] \r ->
+        case r.result of
+          Left (NameInEnvironment e) -> e.name `shouldEqual` ModuleName "Stella.Syntax"
+          _ -> fail "not refused"
+
+    it "refuses an ordinary build declaring a module of the environment" do
+      building [ baseInt ] \r -> case r.result of
+        Left (NameInEnvironment e) -> e.name `shouldEqual` ModuleName "Base.Int"
+        _ -> fail "not refused"
+
+    it "names to compile anew only modules of the environment, `Prim` not among them, that a file of the build holds" do
+      buildingAgainst (rebuilding [ "Prim" ]) defaultSourceRoots [ Tuple "src/Prim.stel" (valueModule "Prim" []) ] \r ->
+        failure r `shouldEqual` [ "`Prim` cannot be compiled anew: the build is compiled against no module of that name that source may declare" ]
+      buildingAgainst (rebuilding [ "Nowhere" ]) defaultSourceRoots [ Tuple "src/Nowhere.stel" (valueModule "Nowhere" []) ] \r ->
+        case r.result of
+          Left (NotRebuildable m) -> m `shouldEqual` ModuleName "Nowhere"
+          _ -> fail "not refused"
+      buildingAgainst (rebuilding [ "Base.Int" ]) defaultSourceRoots [ Tuple "src/A.stel" (valueModule "A" []) ] \r -> do
+        failure r `shouldEqual` [ "`Base.Int` is to be compiled anew, and no file of the build holds it" ]
+        r.log `shouldEqual` []
 
   it "reports a module importing itself before compiling any, a module being compiled against no interface of its own" do
     building [ Tuple "src/A.stel" (valueModule "A" [ "A" ]) ] \r -> do

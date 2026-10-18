@@ -30,6 +30,15 @@
 -- | the module's own functions into themselves — so no module of the build may
 -- | be named as one the environment holds already.
 -- |
+-- | **A toolchain build names modules of the environment it compiles anew from
+-- | the package's source**, and those alone may share a name with one the
+-- | environment holds. Each is compiled against the environment without it, and
+-- | its new interface takes the old one's place. Until then the old one stays, for
+-- | the modules the environment holds that import it; where any of them is kept,
+-- | the new interface must be the old one, which is what they were compiled
+-- | against. Which modules import it is read off the environment the build
+-- | starts from, so that a module rebuilt earlier hides nothing.
+-- |
 -- | **Within a module, a phase's result is held no longer than the next phase
 -- | reads it**: it is handed to the host as the phase ends, and what the next
 -- | phase is given is what it reads, with what each stage decides of the
@@ -50,6 +59,8 @@ module Stella.Compiler.Build
   , defaultSourceRoots
   , Progress
   , CompilerAction
+  , BuildInputs
+  , ordinary
   , BuiltModules
   , CompilerHooks
   , defaultHooks
@@ -74,6 +85,7 @@ import Data.Foldable (foldl, for_)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), maybe)
+import Data.Set (Set)
 import Data.Set as Set
 import Data.String (Pattern(..), joinWith, stripSuffix)
 import Data.String.CodeUnits as SCU
@@ -94,7 +106,7 @@ import Stella.Compiler.Elaborate.Driver.Loop (AttempterM)
 import Stella.Compiler.Elaborate.Kernel.Elab (SessionEnv)
 import Stella.Compiler.Interface (Imports, aritiesOf, importsOf)
 import Stella.Compiler.Interface.Assemble (CoreInterface, SurfaceInterface, assemble, surfaceInterface)
-import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, lookupInterface, reachable, viewFor)
+import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, lookupInterface, reachable, viewFor, withoutInterface)
 import Stella.Compiler.Interface.Module (ModuleInterface)
 import Stella.Compiler.Macro.Run (ExpansionSettings, RunParser)
 import Stella.Compiler.MiddleEnd.IR (Debug, Module) as MIR
@@ -103,6 +115,7 @@ import Stella.Compiler.Resolve.Module (Resolved, resolveModuleExpanding)
 import Stella.Compiler.Surface.Origin (Origin) as Surface
 import Stella.Compiler.TypedCore (Declared, Module) as Core
 import Stella.Compiler.TypedCore.Name (ModuleName(..))
+import Stella.Compiler.TypedCore.Prim (primModule)
 
 -- | A file of the package: the path the host reads it by, and its path from
 -- | the package's root, one segment each.
@@ -140,6 +153,40 @@ withoutSynthesizers _ session id s = pure (attemptPending session id s)
 
 -- | The modules of the build compiled so far, each by its interface.
 type BuiltModules = Map ModuleName ModuleInterface
+
+-- | What a build is compiled against: the build environment, and the modules
+-- | of it the build compiles anew from the package's source. A build compiling
+-- | any anew is a toolchain build.
+type BuildInputs =
+  { environment :: BuildEnvironment
+  , rebuilding :: Set ModuleName
+  }
+
+-- | An ordinary build against the environment given: no module of it compiled
+-- | anew.
+ordinary :: BuildEnvironment -> BuildInputs
+ordinary environment = { environment, rebuilding: Set.empty }
+
+-- | What a toolchain build keeps of its inputs as it goes: the modules it
+-- | compiles anew, the environment it started from, and, for each of those
+-- | modules, the modules of that environment it keeps whose imports reach it.
+type Rebuild =
+  { rebuilding :: Set ModuleName
+  , before :: BuildEnvironment
+  , observers :: Map ModuleName (Array ModuleName)
+  }
+
+rebuildOf :: BuildInputs -> Rebuild
+rebuildOf inputs =
+  { rebuilding: inputs.rebuilding
+  , before: inputs.environment
+  , observers: Map.fromFoldable (map (\r -> Tuple r (Array.filter (reaches r) kept)) (Array.fromFoldable inputs.rebuilding))
+  }
+  where
+  kept = Array.filter (\m -> not (Set.member m inputs.rebuilding)) (Array.fromFoldable (Map.keys inputs.environment.interfaces))
+  reaches r m = case lookupInterface m inputs.environment of
+    Just i | Right view <- viewFor i.imports inputs.environment -> Set.member r (reachable view)
+    _ -> false
 
 -- | What the host is handed as a build goes. `onStartCompile` comes as a
 -- | module's compiling begins; each phase hook as the phase ends, with what it
@@ -180,25 +227,30 @@ type Header =
   , imports :: Array { module :: ModuleName, at :: DiagnosticLocation }
   }
 
--- | Build the files given against the build environment, in an order their
--- | imports allow. The modules built, in the order built.
+-- | Build the files given against the inputs given, in an order their imports
+-- | allow. The modules built, in the order built.
 build
   :: forall m
    . MonadRec m
   => CompilerAction m
   -> ExpansionSettings
-  -> BuildEnvironment
+  -> BuildInputs
   -> Array SourceRoot
   -> Array PackageFile
   -> m (Either BuildError (Array { path :: String, name :: ModuleName }))
-build action settings env roots files = runExceptT do
+build action settings inputs roots files = runExceptT do
   except (rootsApart roots)
   named <- except (placed roots files)
-  for_ (Array.find (\f -> Map.member f.name env.interfaces) named) (throwError <<< NameInEnvironment)
+  let
+    env = inputs.environment
+    rebuilt = Array.fromFoldable inputs.rebuilding
+  for_ (Array.find (\r -> r == primModule || not (Map.member r env.interfaces)) rebuilt) (throwError <<< NotRebuildable)
+  for_ (Array.find (\r -> not (Array.any (\f -> f.name == r) named)) rebuilt) (throwError <<< RebuildNotDeclared)
+  for_ (Array.find (\f -> Map.member f.name env.interfaces && not (Set.member f.name inputs.rebuilding)) named) (throwError <<< NameInEnvironment)
   let paths = Map.fromFoldable (map (\f -> Tuple f.name f.path) named)
   headers <- headersOf action paths named
   order <- except (ordered headers)
-  compileAll action settings env paths order
+  compileAll action settings (rebuildOf inputs) env paths order
 
 -- | Every file given its module's name, read off its path; no file given twice,
 -- | and no module named twice.
@@ -320,25 +372,37 @@ ordered headers = case Array.findMap cycleOf grouped of
     | otherwise = Nothing
 
 -- | Every module in the order given, one at a time, each against the build
--- | environment with the modules before it committed.
+-- | environment with the modules before it committed, and a module compiled
+-- | anew against that environment without it.
 compileAll
   :: forall m
    . MonadRec m
   => CompilerAction m
   -> ExpansionSettings
+  -> Rebuild
   -> BuildEnvironment
   -> Map ModuleName String
   -> Array Header
   -> ExceptT BuildError m (Array { path :: String, name :: ModuleName })
-compileAll action settings env0 paths order = tailRecM step { env: env0, built: Map.empty, done: [], i: 0 }
+compileAll action settings rebuild env0 paths order = tailRecM step { env: env0, built: Map.empty, done: [], i: 0 }
   where
   total = Array.length order
   step { env, built, done, i } = case Array.index order i of
     Nothing -> pure (Done done)
     Just header -> do
-      made <- compileOne action settings env built paths { current: i + 1, total } header
-      committed <- commit action paths header env built made
+      let against = if Set.member header.name rebuild.rebuilding then withoutInterface header.name env else env
+      made <- compileOne action settings against built paths { current: i + 1, total } header
+      for_ (diverging rebuild header made.interface) throwError
+      committed <- commit action paths header against built made
       pure (Loop { env: committed.env, built: committed.built, done: Array.snoc done { path: header.path, name: header.name }, i: i + 1 })
+
+-- | A module compiled anew whose interface is not the one it replaces, while
+-- | modules the build keeps import that one.
+diverging :: Rebuild -> Header -> ModuleInterface -> Maybe BuildError
+diverging rebuild header made = do
+  observers <- NonEmptyArray.fromArray =<< Map.lookup header.name rebuild.observers
+  old <- lookupInterface header.name rebuild.before
+  if old == made then Nothing else Just (RebuiltDiverges { path: header.path, name: header.name, observers })
 
 -- | A module of the build read and compiled against the environment and the
 -- | modules of the build given, neither of which it changes.

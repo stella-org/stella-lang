@@ -19,6 +19,8 @@ import Stella.Compiler.Elaborate.Surface.Internal (internalEntries)
 import Stella.Compiler.Macro.Bundle (bundle, syntaxModule, syntaxModuleName, withSyntax)
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Tree (Delimiter, Failure, IssuedOrigin, OriginRef, Position, Range, Result, Syntax, SyntaxItem, SyntaxNode, Token, TokenKind, TokenTree, Trivia)
+import Stella.Compiler.TypedCore.Name (ModuleName(..))
+import Stella.Compiler.TypedCore.Prim (primModule)
 import Stella.Compiler.TypedCore (Ident(..), Qualified(..), TyName(..), Type(..), declare, declareAnnotated, primSignature)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -182,3 +184,11 @@ spec = describe "Stella.Compiler.Macro.Bundle" do
         internalEntries c.signature { ctors = Map.delete quotedOrigin c.signature.ctors } `shouldEqual` Left quotedOrigin
         -- a signature that does not reach Stella.Syntax holds none
         map Map.isEmpty (internalEntries primSignature) `shouldEqual` Right true
+
+  it "names as what a session holds before a build loads anything a set closed under imports, which a build stops at" do
+    case compiled of
+      Left e -> fail e
+      Right c -> do
+        let outside = Array.filter (\m -> m /= primModule && not (Map.member m c.preloaded)) (Array.concatMap _.imports (Array.fromFoldable (Map.values c.preloaded)))
+        outside `shouldEqual` []
+        Array.fromFoldable (Map.keys c.preloaded) `shouldEqual` map ModuleName [ "Base.Int", "Stella.Elab", "Stella.Syntax" ]

@@ -72,6 +72,7 @@ defaults =
   , emitCore: false
   , steamCmd: "steam"
   , dependencies: Nothing
+  , toolchainRebuild: []
   }
 
 runBuild :: Ref (Map String File) -> Faults -> Ref (Array String) -> Run (FS + LOG + PROCESS + EXCEPT String + EFFECT + AFF + ()) Unit -> Aff (Either String Unit)
@@ -222,3 +223,55 @@ spec = describe "stellac build" do
         Array.elem "`output/_build/Main.dmi` could not be written: the disk is full" r.said `shouldEqual` true
         written r `shouldEqual` []
 
+  describe "a toolchain build" do
+    let
+      baseInt = source "src/Base/Int.stel" baseIntLines
+      baseIntLines =
+        [ "module Base.Int where"
+        , "foreign add :: Int -> Int -> Int"
+        , "foreign sub :: Int -> Int -> Int"
+        , "foreign mul :: Int -> Int -> Int"
+        , "foreign quot :: Int -> Int -> Int"
+        , "foreign rem :: Int -> Int -> Int"
+        , "foreign eq :: Int -> Int -> Boolean"
+        , "foreign lt :: Int -> Int -> Boolean"
+        , "foreign toNumber :: Int -> Number"
+        , "foreign toString :: Int -> String"
+        ]
+
+    it "compiles a module the compiler carries anew from the package's source, opening no session where nothing runs a macro" do
+      building (_ { toolchainRebuild = [ ModuleName "Base.Int" ] }) noFaults [ baseInt ] \r -> do
+        r.result `shouldEqual` Right unit
+        written r `shouldEqual` [ "output/_build/Base.Int.dmi", "output/_build/Base.Int.dmo" ]
+
+    it "is what alone lets a package hold a module the compiler carries" do
+      building identity noFaults [ baseInt ] \r -> do
+        r.result `shouldEqual` Left "The build failed"
+        Array.elem "src/Base/Int.stel: This file holds `Base.Int`, which names a module the build is compiled against" r.said `shouldEqual` true
+        written r `shouldEqual` []
+
+    it "names modules the compiler carries alone" do
+      building (_ { toolchainRebuild = [ ModuleName "Main" ] }) noFaults [ mainModule ] \r -> do
+        r.result `shouldEqual` Left "`Main` is not a module the compiler carries, and cannot be compiled anew"
+        written r `shouldEqual` []
+
+    describe "against a dependency map" do
+      let
+        depsMap = Tuple "deps.json" (Text """{ "formatVersion": 0, "modules": [ { "module": "Lib.Util", "interface": "lib/Lib.Util.dmi", "object": "lib/Lib.Util.dmo" } ] }""")
+        -- `Lib.Util`, importing `Base.Int`, built from source, its interface
+        -- kept as `lib/Lib.Util.dmi`
+        withLibrary k = building identity noFaults [ source "src/Lib/Util.stel" [ "module Lib.Util where", "import Base.Int (add)", "k :: Int", "k = add 1 2" ] ] \lib ->
+          case Map.lookup "output/_build/Lib.Util.dmi" lib.files of
+            Just dmi -> k (Tuple "lib/Lib.Util.dmi" dmi)
+            Nothing -> liftEffect (throwException (error "the library was not built"))
+        rebuilding = _ { dependencies = Just "deps.json", toolchainRebuild = [ ModuleName "Base.Int" ] }
+
+      it "keeps a module the map lists as one compiled against the module compiled anew, whose interface must then be the old one" do
+        withLibrary \dmi -> do
+          building rebuilding noFaults [ depsMap, dmi, source "src/Base/Int.stel" (Array.dropEnd 1 baseIntLines) ] \r -> do
+            r.result `shouldEqual` Left "The build failed"
+            Array.elem "src/Base/Int.stel: This file compiles `Base.Int` anew with an interface that differs from the one `Lib.Util`, `Stella.Syntax` are compiled against, which the build keeps" r.said `shouldEqual` true
+            written r `shouldEqual` []
+          building rebuilding noFaults [ depsMap, dmi, baseInt ] \r -> do
+            r.result `shouldEqual` Right unit
+            written r `shouldEqual` [ "output/_build/Base.Int.dmi", "output/_build/Base.Int.dmo" ]

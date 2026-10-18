@@ -4,8 +4,15 @@
 -- |
 -- | **A module of the build runs from the bytecode the build wrote.** Before a
 -- | parser or a synthesizer it declares is run, the module is loaded into the
--- | session, after each module of the build it reaches through its imports,
--- | and each only once; a module from outside the build is the session's own.
+-- | session, after each module it reaches through its imports, and each only
+-- | once.
+-- |
+-- | **What the session holds from its opening is never loaded, and the walk
+-- | stops at it.** That set — the seed — is closed under imports, so nothing past
+-- | it is the build's to load. A build that compiles a module of the seed anew
+-- | still runs the one the session holds, its own being for a later session;
+-- | so a module reaching it must have been compiled against that one's
+-- | interface, and the interface the build made must be it.
 -- |
 -- | **What keeps the session from answering is a failure of compile-time
 -- | execution, and no error of the module compiled.** It stops the compiling,
@@ -23,10 +30,12 @@ module Stella.CLI.Session.CompileTime
 
 import Prelude
 
+import Control.Alt ((<|>))
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (foldl, for_)
 import Data.Generic.Rep (class Generic)
+import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set (Set)
@@ -42,6 +51,7 @@ import Stella.CLI.Session.Client as Client
 import Stella.CLI.Session.Guest (LoadFailure)
 import Stella.Compiler.Build (BuiltModules)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin)
+import Stella.Compiler.Interface.Module (ModuleInterface)
 import Stella.Compiler.TypedCore.Name (Ident, ModuleName, Qualified)
 import Type.Row (type (+))
 
@@ -68,16 +78,24 @@ data CompileTimeError
   -- | The session lost, or the interpreter's own defect, while a synthesizer
   -- | ran.
   | SessionBroke String
+  -- | A module of the seed the build compiled anew, reached by a module the
+  -- | session runs, with an interface other than the one of the module the
+  -- | session holds.
+  | RebuiltDiffersFromSeed ModuleName
 
 derive instance Generic CompileTimeError _
 
 instance Show CompileTimeError where
   show = genericShow
 
--- | What loading the modules of a build takes: the modules the session has
--- | loaded, and where the build wrote a module's bytecode, where it did.
+-- | What loading the modules of a build takes: the seed, by the interface of
+-- | each of its modules; the imports of a module from outside the build whose
+-- | bytecode the session is to load; the modules the build has loaded; and
+-- | where the bytecode of a module to load is.
 type Loading r =
-  { loaded :: Ref (Set ModuleName)
+  { seed :: Map ModuleName ModuleInterface
+  , importsOf :: ModuleName -> Maybe (Array ModuleName)
+  , loaded :: Ref (Set ModuleName)
   , locate :: ModuleName -> Run (EXCEPT CompileTimeError + AFF + EFFECT + r) (Maybe String)
   }
 
@@ -91,11 +109,17 @@ opened held launch = liftEffect (Ref.read held) >>= case _ of
     Left failure -> throw (SessionNotOpened failure)
     Right session -> session <$ liftEffect (Ref.write (Just session) held)
 
--- | The module given loaded into the session, after each module of the build
--- | it reaches, each once.
+-- | The module given loaded into the session, after each module it reaches,
+-- | each once; a module of the seed it reaches checked to be the one the build
+-- | compiled it against.
 ensureLoaded :: forall r. Loading r -> Session -> BuiltModules -> ModuleName -> Run (EXCEPT CompileTimeError + AFF + EFFECT + r) Unit
-ensureLoaded loading session built declaring =
-  for_ (reached built declaring) \m -> do
+ensureLoaded loading session built declaring = do
+  let walk = reached (\m -> map _.imports (Map.lookup m built) <|> loading.importsOf m) (Map.keys loading.seed) declaring
+  for_ walk.seedsReached \m ->
+    for_ (Map.lookup m built) \rebuilt ->
+      when (Map.lookup m loading.seed /= Just rebuilt) do
+        throw (RebuiltDiffersFromSeed m)
+  for_ walk.load \m -> do
     loaded <- liftEffect (Ref.read loading.loaded)
     unless (Set.member m loaded) do
       path <- loading.locate m >>= case _ of
@@ -106,17 +130,21 @@ ensureLoaded loading session built declaring =
         Right (Left failure) -> throw (ModuleNotLoaded { module: m, failure })
         Right (Right _) -> liftEffect (Ref.modify_ (Set.insert m) loading.loaded)
 
--- | The modules of the build a module reaches through its imports, itself
--- | among them where it is one, each after those it imports.
-reached :: BuiltModules -> ModuleName -> Array ModuleName
-reached built = _.order <<< visit { seen: Set.empty, order: [] }
+-- | What a module reaches through its imports, by the imports given of each
+-- | module that has bytecode to load, the seed given: the modules to load,
+-- | itself among them where it is one, each after those it imports; and the
+-- | modules of the seed reached, past which nothing is walked.
+reached :: (ModuleName -> Maybe (Array ModuleName)) -> Set ModuleName -> ModuleName -> { load :: Array ModuleName, seedsReached :: Set ModuleName }
+reached importsOf seed = done <<< visit { seen: Set.empty, order: [], seeds: Set.empty }
   where
+  done acc = { load: acc.order, seedsReached: acc.seeds }
   visit acc m
     | Set.member m acc.seen = acc
-    | otherwise = case Map.lookup m built of
+    | Set.member m seed = acc { seen = Set.insert m acc.seen, seeds = Set.insert m acc.seeds }
+    | otherwise = case importsOf m of
         Nothing -> acc
-        Just i ->
+        Just imports ->
           let
-            after = foldl visit (acc { seen = Set.insert m acc.seen }) i.imports
+            after = foldl visit (acc { seen = Set.insert m acc.seen }) imports
           in
             after { order = Array.snoc after.order m }

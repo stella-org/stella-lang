@@ -82,7 +82,7 @@ synthesizing held = liftEffect do
     { held
     , launch: { command: "false", args: [], output: Inherit, hello: { protocol: 1, profile: "elaboration", offers: [], requires: [] } }
     , descriptor
-    , loading: { loaded, locate: \_ -> pure Nothing }
+    , loading: { seed: Map.empty, importsOf: const Nothing, loaded, locate: \_ -> pure Nothing }
     , budget: 1000
     , cancellation
     , attempts
