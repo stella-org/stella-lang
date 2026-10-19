@@ -1,0 +1,14 @@
+-- The `Int` entries of `stella-base-0.1`: operations the runtime carries out
+-- itself, each declared at the scheme the ABI declares it at. `quot` and `rem`
+-- fault on a zero divisor; no other entry faults.
+module Base.Int where
+
+foreign add :: Int -> Int -> Int
+foreign sub :: Int -> Int -> Int
+foreign mul :: Int -> Int -> Int
+foreign quot :: Int -> Int -> Int
+foreign rem :: Int -> Int -> Int
+foreign eq :: Int -> Int -> Boolean
+foreign lt :: Int -> Int -> Boolean
+foreign toNumber :: Int -> Number
+foreign toString :: Int -> String
