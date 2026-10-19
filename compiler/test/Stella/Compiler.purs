@@ -6,6 +6,7 @@ import Effect (Effect)
 import Test.Stella.Compiler.TypedCore as TypedCore
 import Test.Stella.Compiler.Primitive as Primitive
 import Test.Stella.Compiler.Bootstrap as Bootstrap
+import Test.Stella.Compiler.BaseSources as BaseSources
 import Test.Stella.Compiler.Interface as Interface
 import Test.Stella.Compiler.Interface.Environment as InterfaceEnvironment
 import Test.Stella.Compiler.Elaborate.Imported as ElaborateImported
@@ -124,6 +125,7 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   MidEffects.spec
   Primitive.spec
   Bootstrap.spec
+  BaseSources.spec
   BytecodeLower.spec
   BytecodeEffects.spec
   BytecodeSerialize.spec

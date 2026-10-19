@@ -14,8 +14,16 @@
 -- | imports it; a bytecode path is resolved and kept, and not read. The
 -- | interfaces are added to the build environment in the order their imports
 -- | give, whatever order the map lists them in, so each imports only modules of
--- | the map and modules the compiler provides. Artifacts are supported only
--- | where the compiler build reading them is the one that wrote them.
+-- | the map and modules the compiler provides.
+-- |
+-- | **A module the compiler carries may be listed, with the interface it
+-- | carries**: the build is compiled against the module the compiler carries,
+-- | and its bytecode path is kept for running the program, not loaded into the
+-- | compile-time session in place of the module it holds. Listed with another
+-- | interface, it is refused, and `Prim` is refused whatever it is listed with.
+-- | The interfaces are compared whole, as decoded. That they are equal says
+-- | nothing of the bytecode: artifacts are supported only where the compiler
+-- | build reading them is the one that wrote them.
 module Stellac.Dependencies
   ( Dependency
   , Loaded
@@ -60,6 +68,7 @@ import Stella.Compiler.Interface.Environment (BuildEnvironment, EnvironmentError
 import Stella.Compiler.Interface.File as Interface
 import Stella.Compiler.Interface.Module (ModuleInterface)
 import Stella.Compiler.TypedCore (ModuleName(..))
+import Stella.Compiler.TypedCore.Prim (primModule)
 import Type.Row (type (+))
 
 -- | A module the map lists, with its two paths.
@@ -79,7 +88,11 @@ data DependencyError
   -- | A file holding the interface of another module than the one listed, the
   -- | second name.
   | InterfaceOfAnother Dependency ModuleName
+  -- | `Prim`, which no map lists.
   | ProvidedByCompiler ModuleName
+  -- | A module the compiler carries, listed with another interface than the
+  -- | one it carries.
+  | DiffersFromCarried ModuleName
   -- | An import of a listed module, the second name, that is neither listed nor
   -- | in the environment the map extends.
   | ImportUnlisted ModuleName ModuleName
@@ -124,16 +137,28 @@ parse path source = do
     json <- note (malformed (fmt @"an entry of `modules` has no `{name}`" { name })) (Object.lookup name fields)
     note (malformed (fmt @"`{name}` is not a string" { name })) (toString json)
 
--- | The environment given, with the interfaces added by `addInterface` in the
--- | order their imports give. A listed module is ready once the environment
--- | holds every module it imports, or holds the module itself, which
--- | `addInterface` then refuses; the modules ready together are added in order
--- | of their names. Where none is ready, an import of a module neither listed
--- | nor in the environment is reported, and so is each set of listed modules
--- | importing one another; a module that only imports one of those is not.
+-- | The environment given, the compiler's, with the interfaces added by
+-- | `addInterface` in the order their imports give. A module listed more than
+-- | once is refused. A listed module the environment holds is not added: it is
+-- | accepted where it is no `Prim` and its interface is the one the environment
+-- | holds. Of the others, a module is ready once the environment holds every
+-- | module it imports, or holds the module itself, which `addInterface` then
+-- | refuses; the modules ready together are added in order of their names.
+-- | Where none is ready, an import of a module neither listed nor in the
+-- | environment is reported, and so is each set of listed modules importing
+-- | one another; a module that only imports one of those is not.
 extend :: BuildEnvironment -> Array Loaded -> Either (NonEmptyArray DependencyError) BuildEnvironment
-extend base loaded = go base [] (Array.sortWith _.dependency.module loaded)
+extend base loaded = go base (twice <> Array.mapMaybe carriedOne provided) listed
   where
+  sorted = Array.sortWith _.interface.name loaded
+  twice = map (\g -> ListedTwice (NonEmptyArray.head g).interface.name) (Array.filter (\g -> NonEmptyArray.length g > 1) (Array.groupBy (\a b -> a.interface.name == b.interface.name) sorted))
+  { yes: provided, no: listed } = Array.partition (\l -> Map.member l.interface.name base.interfaces) sorted
+
+  carriedOne l
+    | l.interface.name == primModule = Just (ProvidedByCompiler primModule)
+    | Map.lookup l.interface.name base.interfaces == Just l.interface = Nothing
+    | otherwise = Just (DiffersFromCarried l.interface.name)
+
   go env errors pending = case Array.partition (ready env) pending of
     { yes: [], no: [] } -> finish env errors
     { yes: [], no: waiting } -> finish env (errors <> stuck env waiting)
@@ -154,9 +179,7 @@ extend base loaded = go base [] (Array.sortWith _.dependency.module loaded)
     Left err -> acc { errors = Array.snoc acc.errors (refused l err) }
 
   refused l = case _ of
-    ModuleTwice m
-      | Map.member m base.interfaces -> ProvidedByCompiler m
-      | otherwise -> ListedTwice m
+    ModuleTwice m -> ListedTwice m
     ImportNotAdded m missing -> ImportUnlisted m missing
     NotInEnvironment missing -> ImportUnlisted l.interface.name missing
 
@@ -239,6 +262,7 @@ printDependencyError = case _ of
   InterfaceRejected d err -> fmt @"The interface of `{m}`, `{path}`, is not one this compiler reads: {why}" { m: text d.module, path: d.interface, why: show err }
   InterfaceOfAnother d other -> fmt @"The dependency map gives `{path}` as the interface of `{m}`, but it is the interface of `{other}`" { path: d.interface, m: text d.module, other: text other }
   ProvidedByCompiler m -> fmt @"The dependency map lists `{m}`, which the compiler provides" { m: text m }
+  DiffersFromCarried m -> fmt @"The dependency map lists `{m}` with an interface that differs from the one of the module the compiler carries" { m: text m }
   ImportUnlisted m missing -> fmt @"The interface of `{m}` imports `{missing}`, which the dependency map does not list" { m: text m, missing: text missing }
   ImportCycle members -> fmt @"These modules of the dependency map import one another: {names}" { names: String.joinWith ", " (map text (NonEmptyArray.toArray members)) }
   where

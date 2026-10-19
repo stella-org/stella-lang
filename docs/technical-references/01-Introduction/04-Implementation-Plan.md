@@ -1627,3 +1627,15 @@ A `foreign` the ABI fixes, against one a host implements ([Prim and Base](../06-
 | The facade's operations and `transact` on the machine, over the bytecode the compiler carries | Each operation asks its request and gives back what the answer it expects carries, and ends with its goal on any other; a candidate failing in the innermost transaction answers `Nothing` there and the one around it commits |
 | `Stella.Syntax` declaring `spliced` at `Int`, or not at all; `Base.Continuation` declaring its constructor at another scheme | Refused where the declaration stands, or at the module, in the build compiling it: the declaring module's error, not the compiler's |
 | The hand-written `Base.Int` the Core fixtures compile | The Core, the interface, and the bytecode the file gives. It is watched while those fixtures stand for the module, and goes with them |
+
+### The `Base` package from its sources, given by a dependency map (step 7)
+
+`stella-packages/base`, its modules against the ABI catalog, and a build given its files by the map `npm run build:base` writes ([Modules](../06-Modules/01-Modules.md#the-dependency-map)).
+
+| Input | Required outcome |
+| --- | --- |
+| Each module the catalog names an entry or a type of | A source in `stella-packages/base/src`, compiling to an interface that declares every entry of the module as a foreign at the scheme and of the arity the catalog gives, every type as a foreign type of the kind it gives, and no other foreign |
+| A map listing a module the compiler carries with the interface it carries, with another interface, `Prim`, and a module listed twice, carried or not | The first accepted, the environment holding the module the compiler carries; the others refused |
+| The package built by the script | Every module of `stella-packages/base/src` built, `Base.Continuation` among them, and listed by the map |
+| A program against the map importing `Base.IO`, `Base.String`, `Base.Int`, and `Base.Continuation` beside a module of host foreigns, handling an effect by a `reifiable full` clause | Built; run by `steam run` over the bytecode the map names, the actions composed by `Base.IO.bind`, printing `built apart`, `12`, and `6`, the sum of what the generator yields, each continuation resumed by `Base.Continuation.continue` |
+| The same program against a map listing `Base.Int` with another interface, `Prim`, or `Base.String` and `Base.Int` twice | Refused, each with its message |

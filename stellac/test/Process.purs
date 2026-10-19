@@ -1,10 +1,12 @@
 -- | The commands the integration tests run as processes, from the root of the
--- | repository: `stellac build`, and `steam run` as its command line stands.
--- | Both are the development entry points, which need the packages built.
+-- | repository: `stellac build`, `steam run` as its command line stands, and the
+-- | script building the `Base` package. All run the development entry points,
+-- | which need the packages built.
 module Test.Stellac.Process
   ( Outcome
   , stellac
   , steamRun
+  , buildBase
   , writeFiles
   , removeTree
   , copyArtifacts
@@ -47,6 +49,11 @@ stellac args = run "stellac/index.dev.js" ([ "build" ] <> args)
 -- | dependency order.
 steamRun :: { manifest :: String, entry :: String, modules :: Array String } -> Aff Outcome
 steamRun p = run "steam/index.dev.js" ([ "run", "--manifest", p.manifest, "--entry", p.entry ] <> p.modules)
+
+-- | `npm run build:base`, the development script building the `Base` package
+-- | and writing its dependency map, with the arguments given.
+buildBase :: Array String -> Aff Outcome
+buildBase = run "scripts/build-base.mjs"
 
 -- | Each file written under the directory given, with the directories above it.
 writeFiles :: String -> Array { path :: String, text :: String } -> Aff Unit

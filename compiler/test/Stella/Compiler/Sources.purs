@@ -1,10 +1,8 @@
--- | The Stella sources the tests of several packages share, in
--- | `fixtures/source`, and the sources of the modules the compiler carries.
+-- | The Stella sources the tests read from the repository: the modules of the
+-- | `Base` package and the modules the compiler carries.
 module Test.Stella.Compiler.Sources (continuationSource, readRepositoryFile, baseIntPath, syntaxPath, elabPath) where
 
 import Effect (Effect)
-
-foreign import readSource :: String -> Effect String
 
 -- | A file of the repository, by its path from the root.
 foreign import readRepositoryFile :: String -> Effect String
@@ -12,7 +10,7 @@ foreign import readRepositoryFile :: String -> Effect String
 -- | `Base.Continuation` as the Modules reference writes it, its constructor
 -- | elaboration-only.
 continuationSource :: Effect String
-continuationSource = readSource "Base/Continuation.stel"
+continuationSource = readRepositoryFile "stella-packages/base/src/Base/Continuation.stel"
 
 -- | The source of `Base.Int`.
 baseIntPath :: String

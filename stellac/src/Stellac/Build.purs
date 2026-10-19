@@ -13,7 +13,8 @@
 -- | from its opening and is never sent, and the interfaces a dependency map
 -- | names ([Dependencies](Dependencies.purs)).
 -- | A macro or a synthesizer of a module the map lists runs from the bytecode
--- | the map names for it, after each module it reaches.
+-- | the map names for it, after each module it reaches; a module the compiler
+-- | carries that the map lists as well runs as the compiler carries it.
 -- |
 -- | **`--toolchain-rebuild` names modules the compiler carries that the package
 -- | compiles anew**, which a build of no such name refuses to hold. The session
@@ -96,8 +97,9 @@ cmd opts = do
         >>= either (\errs -> for_ errs (Log.error <<< printDependencyError) *> throw "The build failed") pure
   let
     env = linked.environment
-    -- the bytecode of each module the map lists, which the session loads it from
-    objects = Map.fromFoldable (map (\d -> Tuple d.module d.object) linked.dependencies)
+    -- the bytecode of each module the map lists, which the session loads it
+    -- from; a module the compiler carries is never loaded from the map
+    objects = Map.fromFoldable (map (\d -> Tuple d.module d.object) (Array.filter (\d -> not (Map.member d.module carried.interfaces)) linked.dependencies))
   for_ (Array.find (\name -> not (Array.any (\i -> i.name == name) syntax.moduleInterfaces)) opts.toolchainRebuild) \name ->
     throw (fmt @"`{name}` is not a module the compiler carries, and cannot be compiled anew" { name: moduleText name })
   found <- FS.glob opts.workdir patterns >>= either (\why -> throw (fmt @"The source files could not be listed: {why}" { why })) pure

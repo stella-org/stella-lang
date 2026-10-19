@@ -8,6 +8,6 @@
     "compiler"
   ],
   "scripts": {
-    "build:base": "node stellac/index.dev.js build --workdir stella-packages/base --toolchain-rebuild Base.Int"
+    "build:base": "node scripts/build-base.mjs"
   }
 }

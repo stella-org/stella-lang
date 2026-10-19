@@ -10,6 +10,7 @@ import Prelude
 import Data.Array as Array
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..), either)
+import Data.Foldable (for_)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
@@ -26,7 +27,7 @@ import Stella.Compiler.Bytecode.Bytes (Bytes)
 import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment)
 import Stella.Compiler.Interface.File as Interface
 import Stella.Compiler.Interface.Module (ModuleInterface, emptyDeclarations, emptyExports)
-import Stella.Compiler.TypedCore (ModuleName(..))
+import Stella.Compiler.TypedCore (Ident(..), ModuleName(..))
 import Stellac.Dependencies (Dependency, DependencyError(..), dependedOn, extend, parse)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -146,12 +147,22 @@ spec = describe "the dependency map" do
       extended [ loaded "A" [ "B" ], loaded "B" [ "A" ], loaded "C" [ "Gone" ], loaded "E" [ "C" ] ]
         `shouldEqual` Left [ ImportUnlisted (ModuleName "C") (ModuleName "Gone"), ImportCycle (names "A" [ "B" ]) ]
 
-    it "refuses a module the compiler provides" do
-      extended [ loaded "Base.Int" [], loaded "Prim" [] ]
-        `shouldEqual` Left [ ProvidedByCompiler (ModuleName "Base.Int"), ProvidedByCompiler (ModuleName "Prim") ]
+    it "accepts a module the compiler carries, listed with the interface it carries" do
+      extended [ loaded "A" [ "Base.Int" ], loaded "Base.Int" [] ] `shouldEqual` Right [ "A", "Base.Int", "Prim" ]
 
-    it "refuses a module listed twice" do
-      extended [ loaded "A" [], loaded "A" [] ] `shouldEqual` Left [ ListedTwice (ModuleName "A") ]
+    it "refuses a module the compiler carries, listed with another interface" do
+      extended [ (loaded "Base.Int" []) { interface { arities = Map.singleton (Ident "add") 2 } } ]
+        `shouldEqual` Left [ DiffersFromCarried (ModuleName "Base.Int") ]
+
+    it "refuses `Prim`, whatever it is listed with" do
+      for_ (Map.lookup (ModuleName "Prim") initialEnvironment.interfaces) \prim ->
+        extended [ { dependency: (loaded "Prim" []).dependency, interface: prim } ]
+          `shouldEqual` Left [ ProvidedByCompiler (ModuleName "Prim") ]
+      extended [ loaded "Prim" [] ] `shouldEqual` Left [ ProvidedByCompiler (ModuleName "Prim") ]
+
+    it "refuses a module listed twice, whether or not the compiler carries it" do
+      extended [ loaded "A" [], loaded "Base.Int" [], loaded "A" [], loaded "Base.Int" [] ]
+        `shouldEqual` Left [ ListedTwice (ModuleName "A"), ListedTwice (ModuleName "Base.Int") ]
 
   describe "reading the files" do
     let

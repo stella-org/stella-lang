@@ -10,6 +10,7 @@ import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess)
 import Test.Stellac.Abi as Abi
 import Test.Stellac.Base as Base
+import Test.Stellac.BasePackage as BasePackage
 import Test.Stellac.CompilerLib as CompilerLib
 import Test.Stellac.Run as Run
 import Test.Stellac.Separate as Separate
@@ -20,4 +21,5 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   Run.spec
   Abi.spec
   Base.spec
+  BasePackage.spec
   CompilerLib.spec
