@@ -1,5 +1,5 @@
 {
-  "description": "Main compiled from Core and then changed to call the foreign Base.Int.add, beside a Base.Int changed to export nothing called add",
+  "description": "Main built from source and then changed to call the foreign Base.Int.add, beside a Base.Int changed to export nothing called add",
   "modules": ["Base.Int", "Main"],
   "outcome": {"refusedAtLoad": {"mentions": "add"}},
   "observe": []

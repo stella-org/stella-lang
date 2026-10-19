@@ -1,0 +1,14 @@
+{
+  "description": "What no source writes, in Core: a join point two leaves share and one jumping to itself, 100000 times over among them; restrict and merge; and a Number dispatch by literal identity",
+  "modules": ["Base.Int", "Main"],
+  "outcome": {"loads": true},
+  "observe": [
+    {"global": "Main.joined", "value": {"int": 101}},
+    {"global": "Main.looped", "value": {"int": 5050}},
+    {"global": "Main.loopedDeep", "value": {"int": 705082704}},
+    {"global": "Main.recordShape", "value": {"record": [{"key": {"field": "y"}, "value": {"boolean": true}}]}},
+    {"global": "Main.negZero", "value": {"int": 2}},
+    {"global": "Main.posZero", "value": {"int": 2}},
+    {"global": "Main.nanCase", "value": {"int": 1}}
+  ]
+}

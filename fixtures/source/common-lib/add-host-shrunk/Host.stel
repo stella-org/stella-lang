@@ -1,0 +1,5 @@
+-- `Host` with `add` declared at arity one: a module compiled against the
+-- first calls it with a count its declaration does not admit.
+module Host (add) where
+
+foreign add :: Int -> Int

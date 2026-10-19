@@ -1,0 +1,3 @@
+module Host (add) where
+
+foreign add :: Int -> Int -> Int

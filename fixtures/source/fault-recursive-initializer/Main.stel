@@ -1,0 +1,8 @@
+-- `Base.Int.quot` by zero initializing a recursive group nothing refers to:
+-- a recursive group is initialized where it stands.
+module Main where
+
+import Base.Int as Int
+
+faulted :: { self :: Int -> Int }
+faulted = let z = Int.quot 1 0 in { self: \n -> faulted.self n }

@@ -1,0 +1,44 @@
+-- The host's foreigns `io` reaches: each value kind crossing in and out, an
+-- action of each kind, and an opaque value handed back.
+module Host
+  ( Handle
+  , say
+  , tick
+  , parse
+  , add
+  , half
+  , nextChar
+  , shout
+  , flip
+  , note
+  , negZero
+  , open
+  , same
+  , readInt
+  , readNumber
+  , readChar
+  , readString
+  , readBool
+  , readHandle
+  ) where
+
+foreign type Handle :: Type
+
+foreign say :: String -> IO Unit
+foreign tick :: Unit -> Int
+foreign parse :: String -> Int
+foreign add :: Int -> Int -> Int
+foreign half :: Number -> Number
+foreign nextChar :: Char -> Char
+foreign shout :: String -> String
+foreign flip :: Boolean -> Boolean
+foreign note :: Int -> Unit
+foreign negZero :: Unit -> Int
+foreign open :: Int -> Handle
+foreign same :: Handle -> Boolean
+foreign readInt :: Int -> IO Int
+foreign readNumber :: Unit -> IO Number
+foreign readChar :: Unit -> IO Char
+foreign readString :: Unit -> IO String
+foreign readBool :: Unit -> IO Boolean
+foreign readHandle :: Unit -> IO Handle

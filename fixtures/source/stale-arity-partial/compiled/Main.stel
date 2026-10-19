@@ -1,0 +1,8 @@
+-- Applies `Lib.addTo` to one argument, a partial application under the first
+-- `Lib`'s interface.
+module Main (addPartial) where
+
+import Lib (addTo)
+
+addPartial :: Int
+addPartial = let p = addTo 1 in p 41

@@ -1,0 +1,7 @@
+-- Calls `Lib.addTo` with the two arguments the first `Lib`'s interface gives it.
+module Main (addCalled) where
+
+import Lib (addTo)
+
+addCalled :: Int
+addCalled = addTo 1 2

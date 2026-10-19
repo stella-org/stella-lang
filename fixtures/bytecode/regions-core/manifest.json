@@ -1,0 +1,13 @@
+{
+  "description": "What no source writes, in Core: which cells a resumption shares or copies, a computation reading the region around it inside and outside a handler resuming twice, a continuation resumed while a copy runs, and a closure made before a capture or carried through an operation; and a function opening a region applied inside its own clause, whose polymorphic recursion needs a written constraint",
+  "modules": ["Base.Int", "Main"],
+  "outcome": {"loads": true},
+  "observe": [
+    {"global": "Main.choiceState", "value": {"int": 111}},
+    {"global": "Main.stateChoice", "value": {"int": 112}},
+    {"global": "Main.recursed", "value": {"int": 21}},
+    {"global": "Main.nestedCopy", "value": {"int": 1023}},
+    {"global": "Main.closureBefore", "value": {"int": 102}},
+    {"global": "Main.stashed", "value": {"int": 101}}
+  ]
+}

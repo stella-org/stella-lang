@@ -1,0 +1,14 @@
+-- `Lib` whose one constructor is called `Crate`: a module importing `Lib.Box`
+-- reaches a constructor no module declares.
+module Lib (Box(..), unbox, addTo) where
+
+import Base.Int as Int
+
+data Box = Crate Int
+
+unbox :: Box -> Int
+unbox b = case b of
+  Crate x -> x
+
+addTo :: Int -> Int -> Int
+addTo n m = Int.add n m

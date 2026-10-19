@@ -1,0 +1,7 @@
+-- `Base.Char.fromCodePoint` of a surrogate.
+module Main where
+
+import Base.Char as Char
+
+faulted :: Char
+faulted = Char.fromCodePoint 55296

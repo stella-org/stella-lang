@@ -1,0 +1,11 @@
+-- The scale stack safety is tested at.
+module Scale (list, count, parity) where
+
+list :: Int
+list = 100000
+
+count :: Int
+count = 1000000
+
+parity :: Int
+parity = 100001

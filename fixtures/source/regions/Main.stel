@@ -1,0 +1,51 @@
+-- Which region a cell reaches: two groups sharing the cells of one handling
+-- expression, a clause building a function over a cell and calling it, and a
+-- function opening a region of its own applied inside another declaring the
+-- same name.
+module Main (sharedGroups, localClosure, declaredApart) where
+
+import Base.Int as Int
+
+effect A where
+  a :: Unit ->* Int
+
+effect B where
+  b :: Unit ->* Int
+
+effect Bump where
+  bump :: Unit ->* Int
+
+effect Counter where
+  next :: Unit ->* Int
+
+effect Ask where
+  ask :: Unit ->* Int
+
+-- Both groups reach the one cell: `a` makes it 1, `b` 10, and `a` 11, so
+-- 10 * 100 + 11. Cells of each group's own give 1, 0, and 2.
+sharedGroups :: Int
+sharedGroups = handle (let x = a () in let y = b () in let z = a () in Int.add (Int.mul y 100) z) with
+  var n := 0
+  A fast | a _ -> let v = Int.add n! 1 in let _ = n := v in v
+  B fast | b _ -> let v = Int.mul n! 10 in let _ = n := v in v
+
+-- The function the clause builds reads the cell it was built over: 6 and 7,
+-- so 607.
+localClosure :: Int
+localClosure = handle (let x = bump () in let y = bump () in Int.add (Int.mul x 100) y) with
+  var n := 5
+  Bump fast | bump _ -> let f = \_ -> n! in let _ = n := Int.add (f ()) 1 in f ()
+
+-- A function of a thunk opening a region of its own.
+counting :: (Unit -> Int / {| Counter, Ask |}) -> Int / {| Ask |}
+counting thunk = handle thunk () with
+  var n := 0
+  Counter fast | next _ -> let v = n! in let _ = n := Int.add v 1 in v
+
+-- `counting` opens a region declaring `n` too, and each clause reaches its
+-- own: 0, 1, and 100, so 10010. A clause reaching the other's cell gives
+-- anything else.
+declaredApart :: Int
+declaredApart = handle counting (\_ -> let x = next () in let y = next () in let c = ask () in Int.add (Int.add x (Int.mul y 10)) (Int.mul c 100)) with
+  var n := 100
+  Ask fast | ask _ -> let v = n! in let _ = n := Int.add v 1 in v

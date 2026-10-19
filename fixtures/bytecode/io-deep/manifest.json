@@ -1,6 +1,6 @@
 {
   "description": "The entry point of io with its left-nested chain of bind 20000 deep, the depth stack safety is tested at",
-  "modules": ["Base.Int", "Base.IO", "Host", "Main"],
+  "modules": ["Base.Int", "Depth", "Host", "Base.IO", "Main"],
   "outcome": {"runs": {"entry": "Main.main", "result": {"record": [{"key": {"field": "deep"}, "value": {"int": 20000}}, {"key": {"field": "read"}, "value": {"int": 70}}, {"key": {"field": "number"}, "value": {"number": "2.0"}}, {"key": {"field": "char"}, "value": {"char": 128512}}, {"key": {"field": "string"}, "value": {"string": "ok"}}, {"key": {"field": "boolean"}, "value": {"boolean": true}}, {"key": {"field": "added"}, "value": {"int": 3}}, {"key": {"field": "doubled"}, "value": {"int": 10}}, {"key": {"field": "halved"}, "value": {"number": "2.0"}}, {"key": {"field": "next"}, "value": {"char": 128513}}, {"key": {"field": "shouted"}, "value": {"string": "a😀!"}}, {"key": {"field": "flipped"}, "value": {"boolean": false}}, {"key": {"field": "noted"}, "value": {"data": "Prim.Unit", "fields": []}}, {"key": {"field": "zero"}, "value": {"number": "0.0"}}, {"key": {"field": "sameGiven"}, "value": {"boolean": true}}, {"key": {"field": "sameBack"}, "value": {"boolean": true}}]}, "effects": [
     "say:start",
     "tick:undefined:1",

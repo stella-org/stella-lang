@@ -1,0 +1,8 @@
+-- `Base.Int.add 1 2`, which the compiler carries out as an operation; a
+-- fixture changes that into a call of the foreign `Base.Int.add`.
+module Main (added) where
+
+import Base.Int as Int
+
+added :: Int
+added = Int.add 1 2

@@ -1,11 +1,10 @@
 {
-  "description": "The programs at the depths stack safety is tested at: a non-tail recursion 100000 deep, a self tail call a million times over, a group of closures tail calling 100001 deep, and a join point jumping to itself 100000 times",
-  "modules": ["Base.Int", "Lib", "Main"],
+  "description": "The programs at the depths stack safety is tested at: a non-tail recursion 100000 deep, a self tail call a million times over, and a group of closures tail calling 100001 deep",
+  "modules": ["Base.Int", "Scale", "Lib", "Data.List", "Data.Maybe", "Main"],
   "outcome": {"loads": true},
   "observe": [
     {"global": "Main.deepSum", "value": {"int": 705082704}},
     {"global": "Main.counted", "value": {"int": 1000000}},
-    {"global": "Main.evenOdd", "value": {"boolean": false}},
-    {"global": "Main.looped", "value": {"int": 705082704}}
+    {"global": "Main.evenOdd", "value": {"boolean": false}}
   ]
 }

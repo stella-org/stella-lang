@@ -1,0 +1,7 @@
+-- `Base.String.slice` with a negative start, which is not counted from the end.
+module Main where
+
+import Base.String as String
+
+faulted :: String
+faulted = String.slice -1 2 "abc"

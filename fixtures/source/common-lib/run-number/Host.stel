@@ -1,0 +1,6 @@
+-- `say`, and a `culprit` owing a value of the kind number, which each `run-*`
+-- fixture of that kind implements as it faults.
+module Host (say, culprit) where
+
+foreign say :: String -> IO Unit
+foreign culprit :: Unit -> Number

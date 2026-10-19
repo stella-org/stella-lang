@@ -1,0 +1,9 @@
+-- An entry point that runs `Host.say` and then the action `Host.culprit`
+-- returns.
+module Main (main) where
+
+import Base.IO as IO
+import Host (say, culprit)
+
+main :: IO Int
+main = IO.bind (say "before") \_ -> culprit ()

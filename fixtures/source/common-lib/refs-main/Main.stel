@@ -1,0 +1,11 @@
+-- A module reading `Lib.unbox` as a value and dispatching on `Lib.Box`.
+module Main (held, peek) where
+
+import Lib (Box(..), unbox)
+
+held :: Box -> Int
+held = unbox
+
+peek :: Box -> Int
+peek b = case b of
+  Box x -> x

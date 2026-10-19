@@ -1,16 +1,10 @@
 {
-  "description": "Which frame a cell reaches and which cells a resumption shares or copies: handlers in one region, a region inside and outside a handler resuming twice, a function opening a region applied inside its own clause, a continuation resumed while a copy runs, and a closure made before a capture or carried through an operation",
+  "description": "Which region a cell reaches: two groups sharing the cells of one handling expression, a clause building a function over a cell, and a function opening a region of its own applied inside another declaring the same name",
   "modules": ["Base.Int", "Main"],
   "outcome": {"loads": true},
   "observe": [
     {"global": "Main.sharedGroups", "value": {"int": 1011}},
-    {"global": "Main.choiceState", "value": {"int": 111}},
-    {"global": "Main.stateChoice", "value": {"int": 112}},
     {"global": "Main.localClosure", "value": {"int": 607}},
-    {"global": "Main.declaredApart", "value": {"int": 10010}},
-    {"global": "Main.recursed", "value": {"int": 21}},
-    {"global": "Main.nestedCopy", "value": {"int": 1023}},
-    {"global": "Main.closureBefore", "value": {"int": 102}},
-    {"global": "Main.stashed", "value": {"int": 101}}
+    {"global": "Main.declaredApart", "value": {"int": 10010}}
   ]
 }

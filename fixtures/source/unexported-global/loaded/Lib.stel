@@ -1,0 +1,13 @@
+-- `Lib` exporting no `unbox`.
+module Lib (Box(..), addTo) where
+
+import Base.Int as Int
+
+data Box = Box Int
+
+unbox :: Box -> Int
+unbox b = case b of
+  Box x -> x
+
+addTo :: Int -> Int -> Int
+addTo n m = Int.add n m

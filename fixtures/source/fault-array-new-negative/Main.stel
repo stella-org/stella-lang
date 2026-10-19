@@ -1,0 +1,8 @@
+-- `Base.Array.unsafeNew` with a negative count.
+module Main where
+
+import Base.Array as Array
+import Base.Array (Array)
+
+faulted :: Array Int
+faulted = Array.unsafeNew -1

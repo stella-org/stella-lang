@@ -1,0 +1,3 @@
+module Host (greet) where
+
+foreign greet :: Int -> Int

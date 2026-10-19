@@ -1,0 +1,14 @@
+-- `Base.Array.unsafeIndex` at an index outside the array.
+module Main where
+
+import Base.Array as Array
+import Base.Array (Array)
+
+faulted :: Int
+faulted =
+  let
+    xs :: Array Int
+    xs = Array.unsafeNew 1
+  in
+    let _ = Array.unsafeSet 0 5 xs in
+    Array.unsafeIndex xs 1

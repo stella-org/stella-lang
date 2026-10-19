@@ -1,0 +1,14 @@
+-- A module another is compiled against: a constructor, a known function over
+-- it, and a function of two arguments.
+module Lib (Box(..), unbox, addTo) where
+
+import Base.Int as Int
+
+data Box = Box Int
+
+unbox :: Box -> Int
+unbox b = case b of
+  Box x -> x
+
+addTo :: Int -> Int -> Int
+addTo n m = Int.add n m

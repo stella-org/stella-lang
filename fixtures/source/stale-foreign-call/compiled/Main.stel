@@ -1,0 +1,7 @@
+-- Calls `Host.add` with the two arguments `Host`'s interface gave it.
+module Main (added) where
+
+import Host (add)
+
+added :: Int
+added = add 1 2

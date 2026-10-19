@@ -1,0 +1,7 @@
+-- `Base.String.slice` with its end past the length.
+module Main where
+
+import Base.String as String
+
+faulted :: String
+faulted = String.slice 0 4 "abc"

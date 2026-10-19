@@ -1,0 +1,14 @@
+-- `Base.IO.bind` applied short of its arity and saturated afterwards, with
+-- `Base.IO.pure` handed over unapplied as the function it binds, reaching no
+-- host.
+module Main (main) where
+
+import Base.IO as IO
+
+main :: IO Int
+main =
+  let
+    later :: (Int -> IO Int) -> IO Int
+    later = IO.bind (IO.pure 7)
+  in
+    later IO.pure

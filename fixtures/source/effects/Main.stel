@@ -1,0 +1,181 @@
+-- Handlers, `perform` in both clause forms, continuations resumed once and
+-- twice, cells carried in a continuation, and where a
+-- fast clause's body runs. Each value's comment says what Core's rules give
+-- it, and what an implementation lacking the property gives instead.
+module Main
+  ( counted
+  , resumedTwice
+  , resumedOnce
+  , abandoned
+  , innermost
+  , forwarded
+  , foldedOrder
+  , chainedOrder
+  , regionForked
+  , ownedFork
+  , askedOutside
+  , readOutside
+  , writtenOutside
+  , installedByBody
+  , forkedTwice
+  ) where
+
+import Base.Int as Int
+
+effect Counter where
+  next :: Unit ->* Int
+
+effect Ask where
+  ask :: Unit ->* Int
+
+effect Trigger where
+  go :: Unit ->* Int
+
+effect Fork where
+  fork :: Unit ->* Int
+
+-- Two `next`s under a counting handler, whose fast clause answers with the
+-- cell and leaves it one higher: 0 and 1, so 1.
+counted :: Int
+counted = handle (let a = next () in let b = next () in Int.add a b) with
+  var n := 0
+  Counter fast | next _ -> let v = n! in let _ = n := Int.add v 1 in v
+
+-- Each application of the continuation resumes from the `perform`: 1 + 2.
+resumedTwice :: Int
+resumedTwice = handle fork () with
+  Fork | fork _ -> let first = resume 1 in let second = resume 2 in Int.add first second
+
+-- A resumption in tail position: the body gives 6, the return clause 1006.
+resumedOnce :: Int
+resumedOnce = handle Int.add (fork ()) 1 with
+  Fork | fork _ -> resume 5
+    | return x -> Int.add x 1000
+
+-- A clause answering without resuming: the return clause, which only a value
+-- of the body reaches, never runs. 42, where running it gives 1042.
+abandoned :: Int
+abandoned = handle Int.add (fork ()) 1 with
+  Fork | fork _ -> 42
+    | return x -> Int.add x 1000
+
+-- Handles `Ask` itself, and is pure to its caller.
+innerAsk :: Unit -> Int
+innerAsk _ = handle ask () with
+  Ask fast | ask _ -> 2
+
+-- The `ask` inside `innerAsk` reaches the handler `innerAsk` installs above
+-- this one, 2, and the one after it this handler, 1: 3. Answering the first at
+-- the outer handler gives 2.
+innermost :: Int
+innermost = handle (let a = innerAsk () in let b = ask () in Int.add a b) with
+  Ask fast | ask _ -> 1
+
+-- The inner handler does not handle `Ask`, so its `perform` reaches the outer
+-- one: 1 + 10.
+forwarded :: Int
+forwarded = handle (handle (let a = ask () in let b = go () in Int.add a b) with
+    Trigger fast | go _ -> 10) with
+  Ask fast | ask _ -> 1
+
+-- Of definitional arity two: a saturated application of it folds into one
+-- call.
+subtract :: Int -> Int -> Int
+subtract n y = Int.sub y n
+
+-- Of definitional arity one: applying it to two arguments is a call of one and
+-- then an application of what comes back.
+curried :: Int -> Int -> Int
+curried n = subtract n
+
+-- An application evaluates its argument before its function, so the second
+-- argument performs first and gets 0, the first gets 1, and `y - n` is
+-- `0 - 1`: -1, where the other order gives 1. Folding the spine into one call
+-- moves no effect.
+foldedOrder :: Int
+foldedOrder = handle subtract (next ()) (next ()) with
+  var n := 0
+  Counter fast | next _ -> let v = n! in let _ = n := Int.add v 1 in v
+
+chainedOrder :: Int
+chainedOrder = handle curried (next ()) (next ()) with
+  var n := 0
+  Counter fast | next _ -> let v = n! in let _ = n := Int.add v 1 in v
+
+-- The continuation of `fork` holds the `Counter` handler and its cell, which
+-- holds 11 at the capture. Each resumption starts from that cell: `c` is 12
+-- both times, so 13 + 14 = 27. A cell the two resumptions shared gives 28.
+regionForked :: Int
+regionForked = handle (handle (let a = next () in let b = fork () in let c = next () in Int.add c b) with
+    var n := 10
+    Counter fast | next _ -> let v = Int.add n! 1 in let _ = n := v in v) with
+  Fork | fork _ -> Int.add (resume 1) (resume 2)
+
+-- The cell stands below the handler and stays behind when the continuation is
+-- taken, so the clause's writes persist between the resumptions: the first
+-- gives 101, the second 111, and the cell ends at 11, so 223.
+ownedFork :: Int
+ownedFork = handle Int.add (fork ()) 100 with
+  var n := 0
+  Fork | fork _ ->
+    let _ = n := Int.add n! 1 in
+    let a = resume n! in
+    let _ = n := Int.add n! 10 in
+    let b = resume n! in
+    Int.add (Int.add a b) n!
+
+-- A fast clause's body runs outside the handler and outside what stands
+-- between the handler and the `perform`. Each function below installs
+-- something there: a handler of another effect, or a cell of the same name.
+
+shadowAsk :: Unit -> Int / {| Trigger |}
+shadowAsk _ = handle go () with
+  Ask fast | ask _ -> 100
+
+shadowCell :: Unit -> Int / {| Trigger |}
+shadowCell _ = handle go () with
+  var n := 42
+  Ask fast | ask _ -> n!
+
+shadowWrite :: Unit -> Int / {| Trigger |}
+shadowWrite _ = handle (let _ = go () in ask ()) with
+  var n := 42
+  Ask fast | ask _ -> n!
+
+-- The `Trigger` clause's `ask` reaches the `Ask` handler outside, 1, and not
+-- the one `shadowAsk` installed, 100.
+askedOutside :: Int
+askedOutside = handle (handle shadowAsk () with
+    Trigger fast | go _ -> ask ()) with
+  Ask fast | ask _ -> 1
+
+-- The clause reads the cell it names, 7, and not `shadowCell`'s, 42.
+readOutside :: Int
+readOutside = handle shadowCell () with
+  var n := 7
+  Trigger fast | go _ -> n!
+
+-- Inside `shadowWrite` the clause sets its own cell to 5 and leaves the inner
+-- one at 42, so `a = 42`; the second `go` reads the 5 the first wrote, so
+-- `b = 5`: 47. A write reaching the inner cell gives 12.
+writtenOutside :: Int
+writtenOutside = handle (let a = shadowWrite () in let b = go () in Int.add a b) with
+  var n := 7
+  Trigger fast | go _ -> let old = n! in let _ = n := 5 in old
+
+-- What the body installs stands above its boundary and is found as usual, 9.
+installedByBody :: Int
+installedByBody = handle shadowCell () with
+  Trigger fast | go _ -> handle ask () with
+    var n := 9
+    Ask fast | ask _ -> n!
+
+-- The continuation of `fork` carries the `Trigger` clause's boundary, the
+-- `Trigger` handler, and what `shadowCell` installed, and re-pushes them twice.
+-- Each resumption continues the clause, which reads its own cell: 1 + 7 and
+-- 2 + 7, so 17. Reading the cell inside gives 87.
+forkedTwice :: Int
+forkedTwice = handle (handle shadowCell () with
+    var n := 7
+    Trigger fast | go _ -> let f = fork () in Int.add f n!) with
+  Fork | fork _ -> Int.add (resume 1) (resume 2)

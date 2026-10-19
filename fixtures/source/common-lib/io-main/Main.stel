@@ -1,0 +1,47 @@
+-- An entry point run to the value it produces: actions a foreign returns,
+-- performed in order; a left-nested chain of `bind` as deep as `Depth` says;
+-- every value kind crossing in and out, and an action of each kind; an opaque
+-- value handed back; a partial application of a foreign another module
+-- declares; and a foreign the entry module declares itself.
+module Main (main) where
+
+import Base.Int as Int
+import Base.IO as IO
+import Depth as Depth
+import Host as Host
+
+foreign twice :: Int -> Int
+
+step :: Int -> IO Int
+step x = IO.pure (Int.add x 1)
+
+-- Each round nests the chain built so far on the left.
+chain :: Int -> IO Int -> IO Int
+chain n acc = case n of
+  0 -> acc
+  _ -> chain (Int.sub n 1) (IO.bind acc step)
+
+main :: IO { deep :: Int, read :: Int, number :: Number, char :: Char, string :: String, boolean :: Boolean, added :: Int, doubled :: Int, halved :: Number, next :: Char, shouted :: String, flipped :: Boolean, noted :: Unit, zero :: Number, sameGiven :: Boolean, sameBack :: Boolean }
+main =
+  IO.bind (Host.say "start") \_ ->
+  IO.bind (Host.say (Int.toString (Host.tick ()))) \_ ->
+  IO.bind (chain Depth.depth (IO.pure 0)) \deep ->
+  IO.bind (Host.readInt (Host.parse "7")) \read ->
+  IO.bind (Host.readNumber ()) \number ->
+  IO.bind (Host.readChar ()) \char ->
+  IO.bind (Host.readString ()) \string ->
+  IO.bind (Host.readBool ()) \boolean ->
+  let given = Host.open 3 in
+  IO.bind (Host.readHandle ()) \back ->
+  let partial = Host.add 1 in
+  let added = partial 2 in
+  let doubled = twice 5 in
+  let halved = Host.half 4.0 in
+  let next = Host.nextChar '😀' in
+  let shouted = Host.shout "a😀" in
+  let flipped = Host.flip true in
+  let noted = Host.note 1 in
+  let zero = Int.toNumber (Host.negZero ()) in
+  let sameGiven = Host.same given in
+  let sameBack = Host.same back in
+  IO.pure { deep, read, number, char, string, boolean, added, doubled, halved, next, shouted, flipped, noted, zero, sameGiven, sameBack }

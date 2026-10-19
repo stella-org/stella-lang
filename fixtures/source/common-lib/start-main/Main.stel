@@ -1,0 +1,10 @@
+-- An action `main`, and an `answer` that is no action.
+module Main (main, answer) where
+
+import Base.IO as IO
+
+main :: IO Unit
+main = IO.pure ()
+
+answer :: Int
+answer = 42

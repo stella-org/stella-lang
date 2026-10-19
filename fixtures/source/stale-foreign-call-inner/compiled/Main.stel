@@ -1,0 +1,8 @@
+-- Calls `Host.add` with the two arguments `Host`'s interface gave it, where
+-- the call is not in tail position: its value goes into a record.
+module Main (boxed) where
+
+import Host (add)
+
+boxed :: { x :: Int }
+boxed = { x: add 1 2 }

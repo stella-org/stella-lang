@@ -1,0 +1,219 @@
+-- Every operation of stella-base-0.1, each value computing one from literals,
+-- including inputs where a host's own operator gives another answer, and
+-- operations applied short of their arity and saturated later.
+module Main
+  ( intAddWraps
+  , intSubWraps
+  , intMulWraps
+  , intMulWide
+  , quotOverflows
+  , remOverflows
+  , quotTruncates
+  , remTakesDividendSign
+  , intEq
+  , intLt
+  , intToNumber
+  , intToStringMin
+  , numberAdd
+  , subZero
+  , negateZero
+  , divideByZero
+  , numberMul
+  , eqNaN
+  , eqZeros
+  , ltNaN
+  , floorNegative
+  , ceilPositive
+  , truncNegative
+  , toIntNaN
+  , toIntLarge
+  , toIntNegative
+  , toStringExponent
+  , toStringPositional
+  , toStringSmall
+  , toStringTenth
+  , toStringNegativeZero
+  , stringLength
+  , codePointAtAstral
+  , appendStrings
+  , sliceScalars
+  , singletonAstral
+  , stringEq
+  , ltAstral
+  , ltPrefix
+  , ltSame
+  , charRoundTrip
+  , arrayReadBack
+  , arrayLength
+  , arraySetLater
+  , numberAddLater
+  ) where
+
+import Base.Array as Array
+import Base.Array (Array)
+import Base.Char as Char
+import Base.Int as Int
+import Base.Number as Number
+import Base.String as String
+
+-- No literal is a NaN: dividing zero by zero makes one.
+nan :: Number
+nan = Number.divide 0.0 0.0
+
+intAddWraps :: Int
+intAddWraps = Int.add 2147483647 1
+
+intSubWraps :: Int
+intSubWraps = Int.sub -2147483648 1
+
+intMulWraps :: Int
+intMulWraps = Int.mul 65536 65536
+
+-- The exact product needs more than 53 bits; `(a * b) | 0` would give 0.
+intMulWide :: Int
+intMulWide = Int.mul 2147483647 2147483647
+
+quotOverflows :: Int
+quotOverflows = Int.quot -2147483648 -1
+
+remOverflows :: Int
+remOverflows = Int.rem -2147483648 -1
+
+quotTruncates :: Int
+quotTruncates = Int.quot 7 -2
+
+remTakesDividendSign :: Int
+remTakesDividendSign = Int.rem -7 2
+
+intEq :: Boolean
+intEq = Int.eq 3 3
+
+intLt :: Boolean
+intLt = Int.lt 3 2
+
+intToNumber :: Number
+intToNumber = Int.toNumber -5
+
+-- Negating first would overflow and print a second minus sign or none.
+intToStringMin :: String
+intToStringMin = Int.toString -2147483648
+
+numberAdd :: Number
+numberAdd = Number.add 0.1 0.2
+
+subZero :: Number
+subZero = Number.sub 0.0 0.0
+
+negateZero :: Number
+negateZero = Number.negate 0.0
+
+divideByZero :: Number
+divideByZero = Number.divide 1.0 0.0
+
+numberMul :: Number
+numberMul = Number.mul 0.1 3.0
+
+eqNaN :: Boolean
+eqNaN = Number.eq nan nan
+
+eqZeros :: Boolean
+eqZeros = Number.eq 0.0 -0.0
+
+ltNaN :: Boolean
+ltNaN = Number.lt nan 1.0
+
+floorNegative :: Number
+floorNegative = Number.floor -0.5
+
+ceilPositive :: Number
+ceilPositive = Number.ceil 0.2
+
+truncNegative :: Number
+truncNegative = Number.trunc -0.5
+
+toIntNaN :: Int
+toIntNaN = Number.toInt nan
+
+-- Saturating; a conversion by `| 0` gives 1410065408.
+toIntLarge :: Int
+toIntLarge = Number.toInt 1.0e10
+
+toIntNegative :: Int
+toIntNegative = Number.toInt -2.9
+
+toStringExponent :: String
+toStringExponent = Number.toString 1.0e21
+
+toStringPositional :: String
+toStringPositional = Number.toString 1.0e20
+
+toStringSmall :: String
+toStringSmall = Number.toString 1.0e-7
+
+toStringTenth :: String
+toStringTenth = Number.toString 0.1
+
+toStringNegativeZero :: String
+toStringNegativeZero = Number.toString -0.0
+
+stringLength :: Int
+stringLength = String.length "a😀bc"
+
+codePointAtAstral :: Char
+codePointAtAstral = String.codePointAt 1 "a😀bc"
+
+appendStrings :: String
+appendStrings = String.append "ab" "c"
+
+sliceScalars :: String
+sliceScalars = String.slice 1 3 "a😀bc"
+
+singletonAstral :: String
+singletonAstral = String.singleton (Char.fromCodePoint 128512)
+
+stringEq :: Boolean
+stringEq = String.eq "a" "a"
+
+-- By scalar value; JavaScript's `<` over code units says false.
+ltAstral :: Boolean
+ltAstral = String.lt "\u{E000}" "😀"
+
+ltPrefix :: Boolean
+ltPrefix = String.lt "ab" "abc"
+
+ltSame :: Boolean
+ltSame = String.lt "abc" "abc"
+
+charRoundTrip :: Int
+charRoundTrip = Char.toCodePoint (Char.fromCodePoint 128512)
+
+-- Every slot written before one is read, so the precondition of
+-- `unsafeIndex` holds.
+arrayReadBack :: Int
+arrayReadBack =
+  let
+    xs :: Array Int
+    xs = Array.unsafeNew 2
+  in
+    let _ = Array.unsafeSet 0 10 xs in
+    let _ = Array.unsafeSet 1 20 xs in
+    Array.unsafeIndex xs 1
+
+arrayLength :: Int
+arrayLength = Array.length (Array.unsafeNew 3 :: Array Int)
+
+-- An operation applied short of its arity is carried out once, when the last
+-- argument arrives.
+arraySetLater :: Int
+arraySetLater =
+  let
+    setFirst :: Int -> Array Int -> Unit
+    setFirst = Array.unsafeSet 0
+    xs :: Array Int
+    xs = Array.unsafeNew 1
+  in
+    let _ = setFirst 7 xs in
+    Array.unsafeIndex xs 0
+
+numberAddLater :: Number
+numberAddLater = let plus = Number.add 1.5 in plus 1.0

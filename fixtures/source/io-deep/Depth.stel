@@ -1,0 +1,6 @@
+-- How deep `io-deep`'s chain of `bind` goes, the depth stack safety is
+-- tested at.
+module Depth (depth) where
+
+depth :: Int
+depth = 20000

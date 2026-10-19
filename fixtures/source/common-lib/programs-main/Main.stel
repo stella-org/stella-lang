@@ -1,0 +1,239 @@
+-- Calls, tail calls, partial and over-application, closures, records,
+-- variants, literal dispatch on strings and characters, recursive groups, and
+-- references into another module and the shared libraries. How far the values that recurse and loop go is `Scale`'s.
+module Main
+  ( summed
+  , deepSum
+  , counted
+  , listValue
+  , overApplied
+  , papApplied
+  , ctorPap
+  , captured
+  , evenOdd
+  , recordArith
+  , restricted
+  , variantCase
+  , stringCase
+  , charCase
+  , unitValue
+  , unboxed
+  , boxMatched
+  , addCalled
+  , overAppliedU
+  , addPartial
+  , dictTwice
+  , mutualPair
+  , localDict
+  , localPair
+  , localMixed
+  , listMapped
+  , listFoldedLeft
+  , listFoldedRight
+  , listLength
+  , maybeJust
+  , maybeNothing
+  ) where
+
+import Base.Int as Int
+import Data.List (List(..))
+import Data.List as List
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Lib (Box(..), unbox, addTo)
+import Scale as Scale
+
+-- A recursive function, a constructor dispatch, a field, an operation.
+sum :: List Int -> Int
+sum xs = case xs of
+  Nil -> 0
+  Cons x ys -> Int.add x (sum ys)
+
+-- A self tail call building a list.
+build :: Int -> List Int -> List Int
+build n acc = case n of
+  0 -> acc
+  _ -> build (Int.sub n 1) (Cons n acc)
+
+-- A self tail call counting.
+count :: Int -> Int -> Int
+count n acc = case n of
+  0 -> acc
+  _ -> count (Int.sub n 1) (Int.add acc 1)
+
+subtract :: Int -> Int -> Int
+subtract n y = Int.sub y n
+
+-- Of definitional arity one: its body is a partial application.
+curried :: Int -> Int -> Int
+curried n = subtract n
+
+summed :: Int
+summed = sum (Cons 1 (Cons 2 (Cons 3 Nil)))
+
+deepSum :: Int
+deepSum = sum (build Scale.list Nil)
+
+counted :: Int
+counted = count Scale.count 0
+
+listValue :: List Int
+listValue = build 3 Nil
+
+-- A known call of the callee's arity, then an application of the partial
+-- application it returns.
+overApplied :: Int
+overApplied = curried 10 3
+
+papApplied :: Int
+papApplied = let p = subtract 1 in p 10
+
+ctorPap :: Int
+ctorPap = let c = Cons 1 in sum (c Nil)
+
+-- `k` is computed rather than a literal, so the closure captures it.
+captured :: Int
+captured = let k = Int.add 2 3 in let add5 = \x -> Int.add x k in add5 3
+
+-- A recursive group of closures capturing each other.
+evenOdd :: Boolean
+evenOdd =
+  let
+    even :: Int -> Boolean
+    even = \n -> case n of
+      0 -> true
+      _ -> odd (Int.sub n 1)
+    odd :: Int -> Boolean
+    odd = \n -> case n of
+      0 -> false
+      _ -> even (Int.sub n 1)
+  in
+    even Scale.parity
+
+recordArith :: Int
+recordArith = let r = { x: 1, y: 2 } in Int.add { y = 5, ...r }.y r.x
+
+-- A record without the key a pattern takes from it, the rest it binds.
+dropX :: forall a r. { x :: a, ...r } -> { ...r }
+dropX { x, ...rest } = rest
+
+restricted :: { y :: Boolean }
+restricted = dropX { x: 1, y: true }
+
+-- An injection and a dispatch on its tag.
+variantCase :: Int
+variantCase =
+  let
+    v :: [ 'Ok :: Int, 'Err :: Int ]
+    v = 'Ok 5
+  in
+    case v of
+      'Ok p -> Int.add p 1
+      'Err q -> q
+
+stringCase :: Int
+stringCase = case "b" of
+  "a" -> 1
+  "b" -> 2
+  _ -> 3
+
+charCase :: Int
+charCase = case 'b' of
+  'a' -> 1
+  'b' -> 2
+  _ -> 3
+
+unitValue :: ()
+unitValue = ()
+
+unboxed :: Int
+unboxed = unbox (Box 7)
+
+boxMatched :: Int
+boxMatched = case Box 9 of
+  Box x -> x
+
+addPartial :: Int
+addPartial = let p = addTo 1 in p 41
+
+addCalled :: Int
+addCalled = addTo 1 2
+
+-- Hands both arguments at once to whatever it is given.
+apply2 :: (Int -> Int -> Int) -> Int
+apply2 f = f 10 3
+
+-- An unknown call supplying two arguments to a function of arity one.
+overAppliedU :: Int
+overAppliedU = apply2 curried
+
+-- A recursive group of records whose closures read the group, which
+-- initializing them does not.
+dict :: { twice :: Int -> Int, once :: Int -> Int }
+dict = { twice: \n -> dict.once (dict.once n), once: \n -> Int.add n 1 }
+
+dictTwice :: Int
+dictTwice = dict.twice 5
+
+first :: { k :: Int, other :: Int -> Int }
+first = { k: 1, other: \n -> Int.add n second.k }
+
+second :: { k :: Int, other :: Int -> Int }
+second = { k: 2, other: \n -> Int.add n first.k }
+
+mutualPair :: Int
+mutualPair = Int.add (first.other 10) (second.other 20)
+
+-- The same groups bound locally, each member that is no function a by-need
+-- cell, and a function and a cell capturing each other.
+localDict :: Int
+localDict =
+  let
+    dict' :: { twice :: Int -> Int, once :: Int -> Int }
+    dict' = { twice: \n -> dict'.once (dict'.once n), once: \n -> Int.add n 1 }
+  in
+    dict'.twice 5
+
+localPair :: Int
+localPair =
+  let
+    first' :: { k :: Int, other :: Int -> Int }
+    first' = { k: 1, other: \n -> Int.add n second'.k }
+    second' :: { k :: Int, other :: Int -> Int }
+    second' = { k: 2, other: \n -> Int.add n first'.k }
+  in
+    Int.add (first'.other 10) (second'.other 20)
+
+localMixed :: Int
+localMixed =
+  let
+    go :: Int -> Int
+    go = \n -> Int.add table.base n
+    table = { base: 40, step: go }
+  in
+    table.step 2
+
+-- The functions of `Data.List` and `Data.Maybe`, each observed where an order
+-- or a branch decides what it gives.
+
+-- [1, 2] appended to [3], each times ten, reversed: [30, 20, 10].
+listMapped :: List Int
+listMapped = List.reverse (List.map (\x -> Int.mul x 10) (List.append (Cons 1 (Cons 2 Nil)) (Cons 3 Nil)))
+
+-- From the left, ((100 - 30) - 20) - 10: 40.
+listFoldedLeft :: Int
+listFoldedLeft = List.foldl Int.sub 100 listMapped
+
+-- From the right, 30 - (20 - (10 - 0)): 20.
+listFoldedRight :: Int
+listFoldedRight = List.foldr Int.sub 0 listMapped
+
+listLength :: Int
+listLength = List.length listMapped
+
+-- The function applied to what is there: 42.
+maybeJust :: Int
+maybeJust = maybe 0 (\x -> Int.add x 1) (Just 41)
+
+-- The default where nothing is: 7.
+maybeNothing :: Int
+maybeNothing = fromMaybe 7 Nothing

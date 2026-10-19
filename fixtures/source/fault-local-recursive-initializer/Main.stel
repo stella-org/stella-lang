@@ -1,0 +1,13 @@
+-- `Base.Int.quot` by zero initializing a local recursive group its body does
+-- not read: a local group is initialized where it stands, before its body.
+module Main where
+
+import Base.Int as Int
+
+faulted :: Int
+faulted =
+  let
+    bad :: { self :: Int -> Int }
+    bad = let z = Int.quot 1 0 in { self: \n -> bad.self n }
+  in
+    0

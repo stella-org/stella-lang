@@ -1,0 +1,9 @@
+{
+  "description": "What no source writes, in Core: a continuation applied to two arguments, and one held captured while a second resumption runs through the same activation",
+  "modules": ["Base.Int", "Main"],
+  "outcome": {"loads": true},
+  "observe": [
+    {"global": "Main.contOverApplied", "value": {"int": 34}},
+    {"global": "Main.interleaved", "value": {"int": 3}}
+  ]
+}

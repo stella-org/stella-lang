@@ -1,0 +1,8 @@
+-- Applies `Host.add` to one argument, a partial application under the
+-- interface it was compiled against, and the result to another.
+module Main (added) where
+
+import Host (add)
+
+added :: Int
+added = let p = add 1 in p 2

@@ -1,5 +1,5 @@
 {
-  "description": "Main compiled from Core and then the second cell of Main's region entry changed to the first, at the same KEYS index",
+  "description": "Main built from source and then the second cell of Main's region entry changed to the first, at the same KEYS index",
   "modules": ["Base.Int", "Main"],
   "outcome": {"refusedAtLoad": {"mentions": "reading"}},
   "observe": []

@@ -1,0 +1,7 @@
+-- `Base.Int.quot` by zero, which faults as `faulted` is initialized.
+module Main where
+
+import Base.Int as Int
+
+faulted :: Int
+faulted = Int.quot 1 0

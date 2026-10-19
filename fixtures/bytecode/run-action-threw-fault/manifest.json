@@ -1,6 +1,6 @@
 {
   "description": "An entry point that runs Host.say and then reaches an action throwing the runtime's own Fault",
-  "modules": ["Base.IO", "Host", "Main"],
+  "modules": ["Host", "Base.IO", "Main"],
   "outcome": {"faultsAtRun": {"entry": "Main.main", "kind": "actionThrew", "message": "a fault the action made", "effects": [
     "say:before"
   ]}},

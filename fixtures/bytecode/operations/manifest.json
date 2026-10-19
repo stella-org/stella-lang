@@ -1,6 +1,6 @@
 {
   "description": "Every operation of stella-base-0.1, including inputs where a host's own operator gives another answer, and operations applied short of their arity and saturated later",
-  "modules": ["Base.Int", "Base.Number", "Base.String", "Base.Char", "Base.Array", "Main"],
+  "modules": ["Base.Int", "Base.Array", "Base.Char", "Base.Number", "Base.String", "Main"],
   "outcome": {"loads": true},
   "observe": [
     {"global": "Main.intAddWraps", "value": {"int": -2147483648}},

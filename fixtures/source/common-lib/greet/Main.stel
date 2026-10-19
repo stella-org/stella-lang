@@ -1,0 +1,7 @@
+-- Calls `Host.greet` as its one global is initialized.
+module Main (greeted) where
+
+import Host (greet)
+
+greeted :: Int
+greeted = greet 1

@@ -1,0 +1,11 @@
+-- The usual scale.
+module Scale (list, count, parity) where
+
+list :: Int
+list = 100
+
+count :: Int
+count = 1000
+
+parity :: Int
+parity = 101

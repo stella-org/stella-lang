@@ -1,0 +1,15 @@
+-- `Lib` with `addTo` of definitional arity one: its body is a partial
+-- application, so a module compiled against the first `Lib` calls it with a
+-- count its entry does not admit.
+module Lib (Box(..), unbox, addTo) where
+
+import Base.Int as Int
+
+data Box = Box Int
+
+unbox :: Box -> Int
+unbox b = case b of
+  Box x -> x
+
+addTo :: Int -> Int -> Int
+addTo n = Int.add n
