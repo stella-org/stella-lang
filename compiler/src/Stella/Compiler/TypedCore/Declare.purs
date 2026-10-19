@@ -40,7 +40,7 @@ import Stella.Compiler.TypedCore.Kinding (KindError, checkKind, producesType, qu
 import Stella.Compiler.TypedCore.Name (EffName, Ident, KindVar, ModuleName, OpName, Qualified(..), TyName)
 import Stella.Compiler.TypedCore.Prim (asFunction, primModule, primSignature, pureFn)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
-import Stella.Compiler.TypedCore.Row (nf)
+import Stella.Compiler.TypedCore.Equality (typeEquiv)
 import Stella.Compiler.TypedCore.Signature (AttributeInfo, CtorInfo, EffectInfo, Signature, TyConInfo(..), ValueInfo, lookupAttribute, tyConKind)
 import Stella.Compiler.TypedCore.AttributeCheck (AttributeError, checkAttribute, checkAttributeDecl)
 import Stella.Compiler.TypedCore.Term (Expr)
@@ -520,11 +520,9 @@ entryImpureArrow = case _ of
   -- A region carries only its name, through which nothing crosses.
   RowRegionEntry _ -> Nothing
 
--- | Whether a row's normal form holds no element and no tail.
+-- | Whether a row holds no element and no tail.
 isEmptyRow :: Type -> P.Boolean
-isEmptyRow row = case nf row of
-  Right normal -> Map.isEmpty normal.known && Set.isEmpty normal.tail
-  Left _ -> false
+isEmptyRow row = typeEquiv row TRowEmpty
 
 -- | Value declarations are in dependency order: a `nonrec` refers neither to
 -- | itself nor to a later value declaration, and every cycle is contained in a

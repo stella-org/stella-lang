@@ -51,7 +51,7 @@ import Stella.Compiler.TypedCore.Kind (Kind(..))
 import Stella.Compiler.TypedCore.Kinding (KindError, checkKind)
 import Stella.Compiler.TypedCore.Name (Ident, KindVar, Qualified, TyName, TyVar)
 import Stella.Compiler.TypedCore.Prim (booleanTy, charTy, intTy, numberTy, recordTy, stringTy)
-import Stella.Compiler.TypedCore.Row (RowError, fromNormalForm, nf)
+import Stella.Compiler.TypedCore.Row (RowError, fromNormalForm, nfSharp)
 import Stella.Compiler.TypedCore.Signature (AttributeInfo, Signature, TyConInfo(..), lookupAttribute, lookupCtor, lookupTyCon, lookupValue)
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.TypedCore.Type (RowKey(..), RowPayload(..), Type(..), TypeScheme, substituteKindsInType, substituteType)
@@ -127,7 +127,7 @@ checkConstant sig expected c = case c of
       _ -> mismatch
   ConstantRecord fields -> case spine expected [] of
     Just { name, arguments: [ row ] } | name == recordTy -> do
-      normal <- lmap MalformedRow (nf row)
+      normal <- lmap MalformedRow (nfSharp row)
       let
         labels = map (\f -> SymbolKey f.label) fields
         keys = Array.fromFoldable (Map.keys normal.known)
@@ -145,9 +145,7 @@ checkConstant sig expected c = case c of
   mismatch :: forall b. Either AttributeError b
   mismatch = Left (ConstantNotOfType c expected)
 
-  same t = do
-    equal <- lmap MalformedRow (typeEquiv t expected)
-    if equal then pure unit else mismatch
+  same t = if typeEquiv t expected then pure unit else mismatch
 
   -- A constructor is a `ConstantConstructor`, applied to as many constants as
   -- it has fields, and never a value.
@@ -205,9 +203,7 @@ match vars kindVars = go
   go s p t = case p, t of
     TVar a, _ | Set.member a vars -> case Map.lookup a s.types of
       Nothing -> Just s { types = Map.insert a t s.types }
-      Just bound -> case typeEquiv bound t of
-        Right true -> Just s
-        _ -> Nothing
+      Just bound -> if typeEquiv bound t then Just s else Nothing
     TCon n ks, TCon n' ks' | n == n' && Array.length ks == Array.length ks' ->
       foldM (\acc (Tuple k k') -> goKind acc k k') s (Array.zip ks ks')
     TApp f a, TApp f' a' -> go s f f' >>= \s' -> go s' a a'
@@ -224,7 +220,7 @@ match vars kindVars = go
 
   -- The keys the pattern's row holds are matched by key, and a variable that
   -- is the pattern's whole tail takes what the type's row holds beyond them.
-  row s p t = case nf p, nf t of
+  row s p t = case nfSharp p, nfSharp t of
     Right np, Right nt -> do
       s' <- foldM (payload nt) s (Map.toUnfoldable np.known :: P.Array (Tuple RowKey RowPayload))
       case Set.toUnfoldable np.tail :: P.Array TyVar of

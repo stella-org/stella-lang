@@ -3,7 +3,7 @@
 Once this specification is settled, the target of Phase A is determined.
 
 1. **Define the Core AST** ([Kinds and Types](../03-Typed-Core/01-Kinds-and-Types.md), [Terms and Matching](../03-Typed-Core/04-Terms-and-Matching.md), [Modules](../06-Modules/01-Modules.md))
-2. **Row normalization `nf`, the entailment decision `Γ ⊨ C`, and row unification** ([Rows](../03-Typed-Core/02-Rows.md), [Elaboration](../02-Surface-Language/01-Elaboration.md)) — the first target for unit tests and property tests
+2. **Canonical forms and type equality, the sharp normal form `nf`, the entailment decision `Γ ⊨ C`, and row unification** ([Rows](../03-Typed-Core/02-Rows.md), [Elaboration](../02-Surface-Language/01-Elaboration.md)) — the first target for unit tests and property tests
 3. **The Core type checker** ([Core Type Checker](../03-Typed-Core/07-Core-Type-Checker.md))
 4. **Hand-write the Core module of the vertical slice** ([Examples](../03-Typed-Core/08-Examples.md)) and run it through step 3 — the type checker's first end-to-end test
 5. **Lowering to Mid IR**: the erasures of [Semantics](../03-Typed-Core/06-Semantics.md), and the mapping of decision trees and join points
@@ -14,11 +14,13 @@ Steps 2 and 4 precede step 7 because the type checker can run before the parser 
 
 ## Notes on step 2
 
-Row unification is where subtle errors concentrate, and two properties deserve explicit regression tests.
+Row unification is where subtle errors concentrate, and three properties deserve explicit regression tests, the last of which concerns equality rather than unification.
 
 **Two-sided refinement.** A constraint such as `{ a : A | ?r } ≡ { b : B | ?s }` cannot be solved by substituting into one side; it requires a fresh variable substituted into both. A one-sided substitution either produces an incorrect solution or fails an occurs check and rejects a solvable constraint.
 
 **The rigid/flexible distinction.** A rigid row variable is not assignable but can be absorbed by a flexible tail on the other side. Case analysis that only checks whether a tail is empty gets this wrong.
+
+**Equality is total, and stable under substitution.** It compares canonical forms, which every type has, so `r ⊎ r ≡ r` still means something once `( x : Int )` is substituted for `r`. An equality defined through the finite-map normal form fails there, and a test that only compares sharp rows does not notice.
 
 ## Notes on step 5
 
@@ -161,6 +163,9 @@ The heading of each group names the step of the plan that the group belongs to.
 | `⟨∅;{?r,?s}⟩ ≡ ⟨{a↦A};∅⟩` | Stuck, not failure. Two solutions exist, so the constraint waits |
 | A solved `?r := D ⊎ ?t` where `k ∉ ?r` was required | The obligation that named `?r` names `?t` once its constraint is zonked, and `k ∉ dom(D)` is decided again. Omitting either produces Core that is not well-kinded |
 | `r ⊎ r` | Ill-kinded. The disjointness side condition rejects it before normalization |
+| `( x : Int ) ⊎ ( x : Int ) ≡ ( x : Int )` | Succeeds. A row is a set of entries, so equal entries collapse; this is `r ⊎ r ≡ r` with `( x : Int )` substituted for `r`, and an equality defined only on sharp rows would leave it without meaning |
+| `( x : Int ) ⊎ ( x : String )` against `( x : Int )` | Fails, and is decided: two payloads at one key stay apart in the canonical form rather than leaving the row with none |
+| `τ1 ≡ τ2`, then `τ1[σ] ≡ τ2[σ]` for any `σ` | Succeeds, with no kinding or consistency premise. Equality compares total canonical forms |
 
 ### Kinds and constraints (step 3)
 
@@ -180,7 +185,11 @@ The heading of each group names the step of the plan that the group belongs to.
 | `forall (f : Type -> k). …` | Rejected. `k` may be instantiated with a row kind |
 | A `Σ` entry `MkRow : Type -> Row Type`, used as `Record (MkRow Int)` | Rejected at the occurrence. Kinding does not trust the table for this |
 | `(name ∉ r) => Record ( name : String \| r )` | **Accepted.** The constraint is assumed while the body is kinded; without it the row is not sharp |
-| `(name ∉ ( name : String )) => Int` | Rejected. `Γ, C` requires `C` to be satisfiable |
+| `(name ∉ ( name : String )) => Int` | **Accepted.** `Γ, C` requires `C` to be well formed, not satisfiable |
+| `( Λ (r : Row Type). Λ (_ : name ∉ r). v ) [ ( name : Int ) ]` | **Accepted**, and the abstraction it steps to, assuming `name ∉ ( name : Int )`, has the same type. Refusing an unsatisfiable assumption would leave that reduct untypable. Its `[•]` is rejected in a consistent context: `e [•]` alone asks entailment |
+| `( name : String \| r )` and `r ⊎ r` under the assumption `name ∉ ( name : Int )` | Accepted. A sharpness premise is an entailment, and an inconsistent context entails every constraint |
+| `Int Int`, or an unbound type variable, under the same assumption | Rejected. Ex falso reaches entailment and nothing else |
+| `k ∉ r ⊨ k ∉ r`, then `Int` substituted for `r` | `k ∉ Int ⊨ k ∉ Int`. A fact is about a canonical tail, an opaque one included, so entailment is preserved by every substitution with no admissibility premise; facts kept of row variables alone lose this one |
 
 ### Row keys (step 3)
 

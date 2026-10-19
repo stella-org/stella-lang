@@ -16,6 +16,7 @@ import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XConstraint(..), XRowEntry(..), XType(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), MetaContext, MetaInfo, emptyContext, freshMeta, substitute)
 import Stella.Compiler.TypedCore (ModuleName(..), RowElemKind(..), RowKey(..), Symbol(..), TyName(..), TyVar(..), Qualified(..))
+import Stella.Compiler.TypedCore.Canonical (Canonical(..), VarRef(..))
 import Stella.Compiler.TypedCore.Entailment (AtomicFacts, noFacts)
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
@@ -74,6 +75,10 @@ solvedTo ty =
   m = fst flexibleTail
   ctx = snd flexibleTail
 
+-- | A rigid variable as the canonical tail a fact is about.
+rigidTail :: TyVar -> Canonical
+rigidTail t = CVar (Free t)
+
 factsOf :: MetaContext -> XContext -> Either FactsError AtomicFacts
 factsOf ctx = facts (substitute ctx)
 
@@ -87,8 +92,9 @@ spec = describe "Elaborate.Context" do
     it "derives k ∉ r from a Lacks whose tail is rigid" do
       factsOf emptyContext (assuming [ XLacks keyA (XVar rigidR) ])
         `shouldEqual` Right
-          { lacks: Map.singleton rigidR (Set.singleton keyA)
+          { lacks: Map.singleton (rigidTail rigidR) (Set.singleton keyA)
           , disjoint: Set.empty
+          , inconsistent: false
           }
 
     it "derives nothing from a Lacks whose tail is flexible" do
@@ -104,8 +110,9 @@ spec = describe "Elaborate.Context" do
             ]
         )
         `shouldEqual` Right
-          { lacks: Map.singleton rigidR (Set.singleton keyB)
+          { lacks: Map.singleton (rigidTail rigidR) (Set.singleton keyB)
           , disjoint: Set.empty
+          , inconsistent: false
           }
 
     it "derives the keys of each side against the rigid tail of the other" do
@@ -115,18 +122,20 @@ spec = describe "Elaborate.Context" do
         )
         `shouldEqual` Right
           { lacks: Map.fromFoldable
-              [ Tuple rigidR (Set.singleton keyB)
-              , Tuple rigidS (Set.singleton keyA)
+              [ Tuple (rigidTail rigidR) (Set.singleton keyB)
+              , Tuple (rigidTail rigidS) (Set.singleton keyA)
               ]
           , disjoint: Set.fromFoldable
-              [ Tuple rigidR rigidS, Tuple rigidS rigidR ]
+              [ Tuple (rigidTail rigidR) (rigidTail rigidS), Tuple (rigidTail rigidS) (rigidTail rigidR) ]
+          , inconsistent: false
           }
 
     it "records a disjointness of two rigid tails in both directions" do
       factsOf emptyContext (assuming [ XDisjoint (XVar rigidR) (XVar rigidS) ])
         `shouldEqual` Right
           { lacks: Map.empty
-          , disjoint: Set.fromFoldable [ Tuple rigidR rigidS, Tuple rigidS rigidR ]
+          , disjoint: Set.fromFoldable [ Tuple (rigidTail rigidR) (rigidTail rigidS), Tuple (rigidTail rigidS) (rigidTail rigidR) ]
+          , inconsistent: false
           }
 
     it "rejects a Lacks the known part of its row contradicts" do
@@ -145,8 +154,9 @@ spec = describe "Elaborate.Context" do
       factsOf (solvedTo (field keyB tB (XVar rigidS)))
         (assuming [ XLacks keyA (XMeta (fst flexibleTail)) ])
         `shouldEqual` Right
-          { lacks: Map.singleton rigidS (Set.singleton keyA)
+          { lacks: Map.singleton (rigidTail rigidS) (Set.singleton keyA)
           , disjoint: Set.empty
+          , inconsistent: false
           }
 
     it "rejects the same assumption where the solution carries the key" do

@@ -9,7 +9,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore (Constraint(..), DecomposeError(..), EffName(..), Ident(..), Kind(..), KindVar(..), ModuleName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), monoScheme)
+import Stella.Compiler.TypedCore (Constraint(..), EffName(..), Ident(..), Kind(..), KindVar(..), ModuleName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), monoScheme)
 import Stella.Compiler.TypedCore.Context (Context, assume, bindKindVars, bindTyVar, emptyContext)
 import Stella.Compiler.TypedCore.Kinding (KindError(..), Synthesized(..), checkKind, kindOf, wellFormedConstraint)
 import Stella.Compiler.TypedCore.Prim (intTy, ioTy, primSignature, recordTy, stringTy, variantTy)
@@ -113,11 +113,9 @@ rowCtx =
     effRowVar
     (KRow RowEffect)
 
--- | `Γ` extended with one assumption, which these cases keep satisfiable.
+-- | `Γ` extended with one assumption.
 assuming :: Constraint -> (Context -> Spec Unit) -> Spec Unit
-assuming constraint body = case assume rowCtx constraint of
-  Left err -> it "assumes the constraint" (show err `shouldEqual` "a satisfiable assumption")
-  Right ctx -> body ctx
+assuming constraint body = body (assume rowCtx constraint)
 
 nameSym :: Symbol
 nameSym = Symbol "name"
@@ -317,14 +315,28 @@ spec = describe "TypedCore.Kinding" do
       kindOf sig rowCtx (record (field (SymbolKey nameSym) string (TVar rowVar)))
         `shouldEqual` Left (NotSharp (SymbolKey nameSym) (TVar rowVar))
 
-    it "refuses an assumption that contradicts itself" do
-      -- `Γ, C` holds satisfiable constraints only, so a contradiction is
-      -- rejected where it is assumed rather than carried to a use site
+    it "admits an assumption that contradicts itself, which need only be well formed" do
+      -- a type application may substitute a row that makes what a constraint
+      -- abstraction assumes false, so `Γ, C` does not ask `C` to be satisfiable
       kindOf sig rowCtx
         ( TConstrained (Lacks (SymbolKey nameSym) (field (SymbolKey nameSym) string TRowEmpty))
             int
         )
-        `shouldEqual` Left (EntailmentError (LacksContradiction (SymbolKey nameSym)))
+        `shouldEqual` Right (Kinded KType)
+
+    assuming (Lacks (SymbolKey nameSym) (field (SymbolKey nameSym) int TRowEmpty)) \ctx -> do
+      it "discharges a sharpness premise under an inconsistent assumption" do
+        -- sharpness is an entailment, and an inconsistent context entails all
+        kindOf sig ctx (field (SymbolKey nameSym) string (TVar rowVar))
+          `shouldEqual` Right (Kinded (KRow RowType))
+        kindOf sig ctx (TRowUnion (TVar rowVar) (TVar rowVar))
+          `shouldEqual` Right (Kinded (KRow RowType))
+
+      it "makes nothing else well formed there" do
+        kindOf sig ctx (TApp int int) `shouldEqual` Left (AppliedNonConstructor int)
+        kindOf sig ctx (TVar (TyVar "unbound")) `shouldEqual` Left (UnboundTyVar (TyVar "unbound"))
+        kindOf sig ctx (TRowUnion (TVar rowVar) (TVar effRowVar))
+          `shouldEqual` Left (ExpectedKind (TVar effRowVar) (KRow RowType) (Kinded (KRow RowEffect)))
 
     it "requires the constraint itself to be well formed" do
       kindOf sig rowCtx (TConstrained (Lacks (TagKey (Tag "Ok")) (TVar effRowVar)) int)

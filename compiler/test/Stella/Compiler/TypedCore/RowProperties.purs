@@ -10,12 +10,16 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore (Constraint(..), EffName(..), ModuleName(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), decompose, entails, nf, rowEquiv)
+import Stella.Compiler.TypedCore (Constraint(..), EffName(..), ModuleName(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), decompose, entails, nfSharp, typeEquiv)
+import Stella.Compiler.TypedCore.Type (substituteConstraint, substituteType)
 import Data.Array as Array
 import Data.Array.NonEmpty as NEA
-import Data.Either (Either(..), isRight)
+import Data.Either (isRight)
 import Data.Foldable (all)
+import Data.Map (Map)
+import Data.Map as Map
 import Data.Traversable (sequence)
+import Data.Tuple (Tuple(..))
 import Effect.Class (liftEffect)
 import Test.QuickCheck (Result, quickCheck, withHelp, (<?>))
 import Test.QuickCheck.Gen (Gen, arrayOf, chooseInt, elements, oneOf, resize, sized, suchThat)
@@ -59,7 +63,7 @@ genPayloadType = elements
       [ TCon (Qualified prim (TyName "String")) [] ]
   )
 
--- | A row whose known keys are sharp, so that `nf` succeeds on it.
+-- | A row whose known keys are sharp, so that `nfSharp` succeeds on it.
 -- |
 -- | This is weaker than well-kindedness, which the generators do not establish:
 -- | `r ⊎ r` normalizes, and so does `( name : Int | r )` with nothing to
@@ -67,7 +71,7 @@ genPayloadType = elements
 -- | generating the side-condition facts alongside them. What the properties
 -- | below need is that normalization succeeds.
 normalizable :: Type -> P.Boolean
-normalizable = isRight <<< nf
+normalizable = isRight <<< nfSharp
 
 -- | A normalizable row at `Row Type`. The size bounds how many extensions and
 -- | unions are built, so generation terminates.
@@ -130,27 +134,25 @@ genContext = do
   n <- chooseInt 0 4
   sequence (Array.replicate n genConstraint)
 
--- | `decompose Γ = Right Γ*` and `C ∈ Γ` imply `Γ* ⊨ C`.
+-- | `C ∈ Γ` implies `Γ* ⊨ C`.
 -- |
--- | An assumption entails itself. A context whose assumptions contradict a
--- | known key fails to decompose and is excluded, having no `Γ*`.
+-- | An assumption entails itself, a contradictory one among them: a context
+-- | whose assumptions contradict a known key is inconsistent and entails
+-- | every constraint.
 assumptionEntailsItself :: Gen Result
 assumptionEntailsItself = do
   context <- genContext
-  pure case decompose context of
-    Left _ ->
-      withHelp true "a contradictory context is excluded"
-    Right facts ->
-      all (\c -> entails facts c == Right true) context
+  let facts = decompose context
+  pure
+    ( all (entails facts) context
         <?> ("an assumption is not entailed by the context it came from: " <> show context)
+    )
 
 -- | A row is equal to itself.
 rowEqualToItself :: Gen Result
 rowEqualToItself = do
   row <- genRow
-  pure case rowEquiv row row of
-    Right true -> withHelp true "reflexive"
-    other -> withHelp false ("a row is not equal to itself: " <> show row <> " gave " <> show other)
+  pure (typeEquiv row row <?> ("a row is not equal to itself: " <> show row))
 
 -- | Deciding equality does not depend on the order the two sides are given in.
 rowEqualitySymmetric :: Gen Result
@@ -158,9 +160,76 @@ rowEqualitySymmetric = do
   left <- genRow
   right <- genRow
   pure
-    ( (rowEquiv left right == rowEquiv right left)
+    ( (typeEquiv left right == typeEquiv right left)
         <?> ("the decision is not symmetric: " <> show left <> " against " <> show right)
     )
+
+-- | A row with no sharpness asked of it, at either row kind.
+genAnyRow :: Gen Type
+genAnyRow = oneOf (NEA.cons' rawRecordRow [ rawEffectRow ])
+
+-- | A substitution of rows for the alphabet's variables, sharp or not.
+genSubstitution :: Gen (Map TyVar Type)
+genSubstitution = do
+  pairs <- arrayOf (Tuple <$> genTyVar <*> genAnyRow)
+  pure (Map.fromFoldable pairs)
+
+-- | Union is idempotent, commutative, and associative under equality, before
+-- | and after any substitution. Every row here is canonicalized whatever it
+-- | holds, two payloads at one key included.
+unionLaws :: Gen Result
+unionLaws = do
+  a <- genAnyRow
+  b <- genAnyRow
+  c <- genAnyRow
+  sub <- genSubstitution
+  let
+    laws =
+      [ Tuple (TRowUnion a a) a
+      , Tuple (TRowUnion a b) (TRowUnion b a)
+      , Tuple (TRowUnion (TRowUnion a b) c) (TRowUnion a (TRowUnion b c))
+      , Tuple (TRowUnion a TRowEmpty) a
+      ]
+    holds (Tuple l r) = typeEquiv l r && typeEquiv (substituteType sub l) (substituteType sub r)
+  pure
+    ( all holds laws
+        <?> ("a union law fails of " <> show [ a, b, c ] <> " under " <> show sub)
+    )
+
+-- | `τ1 ≡ τ2` implies `τ1[σ] ≡ τ2[σ]`, with no kinding or consistency premise.
+equalityStableUnderSubstitution :: Gen Result
+equalityStableUnderSubstitution = do
+  left <- genAnyRow
+  right <- genAnyRow
+  sub <- genSubstitution
+  pure
+    if typeEquiv left right then
+      typeEquiv (substituteType sub left) (substituteType sub right)
+        <?> ("equality is lost under " <> show sub <> " of " <> show left <> " and " <> show right)
+    else withHelp true "unequal"
+
+-- | A substitution of rows and of types that are no row for the alphabet's
+-- | variables. A type that is no row stands as an opaque tail where it lands.
+genIllKindedSubstitution :: Gen (Map TyVar Type)
+genIllKindedSubstitution = do
+  pairs <- arrayOf (Tuple <$> genTyVar <*> oneOf (NEA.cons' genAnyRow [ genPayloadType ]))
+  pure (Map.fromFoldable pairs)
+
+-- | `Γ ⊨ C` implies `Γ[σ] ⊨ C[σ]`, with no kinding or admissibility premise.
+-- | The goal is drawn from the context half the time, so that it is entailed
+-- | often.
+entailmentStableUnderSubstitution :: Gen Result
+entailmentStableUnderSubstitution = do
+  context <- genContext
+  drawn <- genConstraint
+  goal <- oneOf (NEA.cons' (pure drawn) [ elements (NEA.cons' drawn context) ])
+  sub <- genIllKindedSubstitution
+  let substituted = map (substituteConstraint sub) context
+  pure
+    if entails (decompose context) goal then
+      entails (decompose substituted) (substituteConstraint sub goal)
+        <?> ("entailment of " <> show goal <> " from " <> show context <> " is lost under " <> show sub)
+    else withHelp true "not entailed"
 
 spec :: Spec Unit
 spec = describe "Stella.Compiler.TypedCore.Row properties" do
@@ -172,3 +241,12 @@ spec = describe "Stella.Compiler.TypedCore.Row properties" do
 
   it "decides row equality independently of the order of the two sides" do
     liftEffect (quickCheck rowEqualitySymmetric)
+
+  it "makes union idempotent, commutative, and associative, under any substitution" do
+    liftEffect (quickCheck unionLaws)
+
+  it "keeps equal types equal under any substitution" do
+    liftEffect (quickCheck equalityStableUnderSubstitution)
+
+  it "keeps an entailed constraint entailed under any substitution, ill-kinded ones included" do
+    liftEffect (quickCheck entailmentStableUnderSubstitution)

@@ -7,6 +7,8 @@
 -- |
 -- | The row constraints it assumes are kept decomposed, since entailment reads
 -- | atomic facts about row variables rather than the assumptions as written.
+-- | What a `region` binder records of the row variables bound before it is kept
+-- | apart from them: those are facts freshness gives, not assumptions.
 module Stella.Compiler.TypedCore.Context
   ( Context
   , emptyContext
@@ -19,17 +21,17 @@ module Stella.Compiler.TypedCore.Context
   , lookupRegion
   , kindVarInScope
   , assume
+  , factsOf
   ) where
 
 import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore.Entailment (AtomicFacts, DecomposeError, addAssumption, addLacks, forget, noFacts)
+import Stella.Compiler.TypedCore.Entailment (AtomicFacts, addAssumption, addLacks, forget, noFacts, unionFacts)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..))
 import Stella.Compiler.TypedCore.Name (Ident, KindVar, RegionName, TyVar)
 import Stella.Compiler.TypedCore.Type (Constraint, RowKey(..), Type)
-import Data.Either (Either)
 import Data.Foldable (foldr)
 import Data.Map (Map)
 import Data.Map as Map
@@ -38,13 +40,15 @@ import Data.Set (Set)
 import Data.Set as Set
 
 -- | `regions` holds the region names in scope, each with its layout: the type of
--- | every cell, by key.
+-- | every cell, by key. `assumed` holds what the constraint abstractions in
+-- | scope assume, and `fresh` what the `region` binders in scope record.
 type Context =
   { kindVars :: Set KindVar
   , tyVars :: Map TyVar Kind
   , vars :: Map Ident Type
   , regions :: Map RegionName (Map RowKey Type)
-  , facts :: AtomicFacts
+  , assumed :: AtomicFacts
+  , fresh :: AtomicFacts
   }
 
 emptyContext :: Context
@@ -53,8 +57,13 @@ emptyContext =
   , tyVars: Map.empty
   , vars: Map.empty
   , regions: Map.empty
-  , facts: noFacts
+  , assumed: noFacts
+  , fresh: noFacts
   }
+
+-- | `Γ*`, the facts entailment is decided against.
+factsOf :: Context -> AtomicFacts
+factsOf ctx = unionFacts ctx.assumed ctx.fresh
 
 -- | Bind the kind variables of a declaration's scheme. A kind variable enters
 -- | `Γ` here and nowhere else: neither grammar has a kind quantifier (D3).
@@ -67,7 +76,11 @@ bindKindVars ctx vars =
 -- | nothing of the inner one.
 bindTyVar :: Context -> TyVar -> Kind -> Context
 bindTyVar ctx name kind =
-  ctx { tyVars = Map.insert name kind ctx.tyVars, facts = forget name ctx.facts }
+  ctx
+    { tyVars = Map.insert name kind ctx.tyVars
+    , assumed = forget name ctx.assumed
+    , fresh = forget name ctx.fresh
+    }
 
 lookupTyVar :: Context -> TyVar -> Maybe Kind
 lookupTyVar ctx name = Map.lookup name ctx.tyVars
@@ -90,7 +103,7 @@ bindRegion :: Context -> RegionName -> Map RowKey Type -> Context
 bindRegion ctx name layout =
   ctx
     { regions = Map.insert name layout ctx.regions
-    , facts = foldr (addLacks (RegionKey name)) ctx.facts effectRowVars
+    , fresh = foldr (addLacks (RegionKey name)) ctx.fresh effectRowVars
     }
   where
   effectRowVars = Map.keys (Map.filter (_ == KRow RowEffect) ctx.tyVars)
@@ -101,10 +114,10 @@ lookupRegion ctx name = Map.lookup name ctx.regions
 kindVarInScope :: Context -> KindVar -> P.Boolean
 kindVarInScope ctx name = Set.member name ctx.kindVars
 
--- | Assume a row constraint.
+-- | Assume a row constraint, which the caller has found well formed.
 -- |
--- | An assumption that contradicts itself is rejected here rather than carried,
--- | so what `Γ*` holds is always satisfiable.
-assume :: Context -> Constraint -> Either DecomposeError Context
+-- | An assumption need not be satisfiable: one that contradicts itself makes
+-- | the context inconsistent, and the context then entails every constraint.
+assume :: Context -> Constraint -> Context
 assume ctx constraint =
-  ctx { facts = _ } <$> addAssumption ctx.facts constraint
+  ctx { assumed = addAssumption ctx.assumed constraint }

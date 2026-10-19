@@ -452,6 +452,29 @@ spec = describe "TypedCore.Check" do
       checkAt TRowEmpty (TConstrained expected int) abstraction
         `shouldEqual` Left (ConstraintMismatch expected assumed)
 
+  describe "a constraint abstraction a type application makes unsatisfiable" do
+    -- `( Λ r. Λ (_ : name ∉ r). λ (x : Record r). extend name 1 x ) [ ( name : Int ) ]`
+    -- steps to an abstraction assuming `name ∉ ( name : Int )`, which must keep
+    -- the redex's type
+    let
+      r = TyVar "r"
+      named = TRowExtend (RowTypeEntry nameKey int) TRowEmpty
+      abstraction row =
+        ConstraintLam unit (Lacks nameKey row)
+          (Lam unit (Ident "x") (record row) TRowEmpty (RecordExtend unit nameKey oneLit (var "x")))
+      redex = TyApp unit (TyLam unit r (KRow RowType) (abstraction (TVar r))) named
+      reduct = abstraction named
+
+    it "types the reduct at the type of the redex" do
+      inferAt TRowEmpty reduct `shouldEqual` inferAt TRowEmpty redex
+      case inferAt TRowEmpty redex of
+        Right (TConstrained c _) -> c `shouldEqual` Lacks nameKey named
+        other -> show other `shouldEqual` "Right (TConstrained …)"
+
+    it "still asks entailment of its application" do
+      inferAt TRowEmpty (ConstraintApp unit redex)
+        `shouldEqual` Left (NotEntailed (Lacks nameKey named))
+
   describe "records" do
     it "selects what was extended" do
       inferAt TRowEmpty
@@ -930,8 +953,7 @@ spec = describe "TypedCore.Check" do
       let
         r = TyVar "r"
         withFact =
-          either (const env) (\context -> env { context = context })
-            (assume (bindTyVar emptyContext r (KRow RowType)) (Lacks sizeKey (TVar r)))
+          env { context = assume (bindTyVar emptyContext r (KRow RowType)) (Lacks sizeKey (TVar r)) }
         annotation =
           TForall r (KRow RowType)
             (pureFn (record (TVar r)) (record (TRowExtend (RowTypeEntry sizeKey int) (TVar r))))

@@ -25,15 +25,15 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore.Context (Context, assume, bindRegion, bindTyVar, bindVar, lookupRegion, lookupTyVar, lookupVar)
-import Stella.Compiler.TypedCore.Entailment (DecomposeError, entails)
+import Stella.Compiler.TypedCore.Context (Context, assume, bindRegion, bindTyVar, bindVar, factsOf, lookupRegion, lookupTyVar, lookupVar)
+import Stella.Compiler.TypedCore.Entailment (entails)
 import Stella.Compiler.TypedCore.Equality (constraintEquiv, typeEquiv)
 import Stella.Compiler.TypedCore.Initialization (localViolations)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..))
 import Stella.Compiler.TypedCore.Kinding (KindError(..), checkKind, quantifiableKind, wellFormedConstraint, wellFormedKey)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, JoinName, OpName, Qualified, RegionName, TyName, TyVar)
 import Stella.Compiler.TypedCore.Prim (asFunction, booleanTy, fn, litType, recordTy, unitTy, variantTy)
-import Stella.Compiler.TypedCore.Row (RowError, RowNormalForm, fromNormalForm, nf)
+import Stella.Compiler.TypedCore.Row (RowError, RowNormalForm, fromNormalForm, nfSharp)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), CtorInfo, EffectInfo, Signature, TyConInfo(..), lookupCtor, lookupEffect, lookupOperation, lookupTyCon, lookupValue)
 import Stella.Compiler.TypedCore.Term (Binding, DecisionTree(..), Expr(..), Cell, Handler, OpClause(..), Occurrence(..), Param, exprAnnotation, opClauseOp, withAnnotation)
 import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), RowPayload(..), TyBinder, Type(..), TypeScheme, freeRegionNames, rowEntryKey, rowEntryPayload, substituteKindsInType, substituteType)
@@ -180,8 +180,9 @@ data CheckError
   | NoLeaf
   -- | A type written in a term whose kind the rules do not derive.
   | IllKindedType KindError
+  -- | A row where a payload is read at a key, as of a sharp row, that has no
+  -- | one payload there or is no row.
   | NotARowType RowError
-  | UndecidedConstraint DecomposeError
   -- | A `region` given a number of initial values its layout does not declare,
   -- | as expected and actual.
   | CellCount P.Int P.Int
@@ -256,7 +257,7 @@ infer env rho expr = case expr of
   ConstraintLam at constraint body -> do
     kinded at (wellFormedConstraint env.signature env.context constraint)
     valueForm at env body
-    inner <- assuming at env constraint
+    let inner = assuming env constraint
     body' <- infer (abstracted inner) TRowEmpty body
     Right (ConstraintLam (at' at (TConstrained constraint (typeOf body'))) constraint body')
 
@@ -478,7 +479,7 @@ check env rho expected expr = case expr of
       kinded at (wellFormedConstraint env.signature env.context constraint)
       sameConstraint at expectedConstraint constraint
       valueForm at env body
-      assumed <- assuming at env constraint
+      let assumed = assuming env constraint
       body' <- check (abstracted assumed) TRowEmpty inner body
       Right (ConstraintLam (at' at expected) constraint body')
     other -> Left { at, error: NotConstrained other }
@@ -717,10 +718,9 @@ clauseEnv env tyBinders argBinder =
       tyBinders
 
 sameConstraint :: forall a. a -> Constraint -> Constraint -> Either (CheckFailure a) Unit
-sameConstraint at expected actual = case constraintEquiv expected actual of
-  Left err -> Left { at, error: NotARowType err }
-  Right true -> Right unit
-  Right false -> Left { at, error: ConstraintMismatch expected actual }
+sameConstraint at expected actual
+  | constraintEquiv expected actual = Right unit
+  | otherwise = Left { at, error: ConstraintMismatch expected actual }
 
 -- | `Γ;Δ;Ω ⊢ dt : τ ! ρ`.
 -- |
@@ -1249,33 +1249,30 @@ joinInfo at env name = case Map.lookup name env.joins of
   Just info -> Right info
   Nothing -> Left { at, error: UnboundJoin name }
 
-assuming :: forall a. a -> Env -> Constraint -> Either (CheckFailure a) Env
-assuming at env constraint = case assume env.context constraint of
-  Left err -> Left { at, error: UndecidedConstraint err }
-  Right context -> Right env { context = context }
+-- | `Γ, C`. A constraint abstraction needs its constraint well formed and not
+-- | satisfiable: a type application may substitute a row that makes it false.
+assuming :: Env -> Constraint -> Env
+assuming env constraint = env { context = assume env.context constraint }
 
 -- Decisions the rules delegate ------------------------------------------------
 
 require :: forall a. a -> Env -> Constraint -> Either (CheckFailure a) Unit
-require at env constraint = case entails env.context.facts constraint of
-  Left err -> Left { at, error: UndecidedConstraint err }
-  Right true -> Right unit
-  Right false -> Left { at, error: NotEntailed constraint }
+require at env constraint
+  | entails (factsOf env.context) constraint = Right unit
+  | otherwise = Left { at, error: NotEntailed constraint }
 
 equalTypes :: forall a. a -> Type -> Type -> Either (CheckFailure a) Unit
-equalTypes at expected actual = case typeEquiv expected actual of
-  Left err -> Left { at, error: NotARowType err }
-  Right true -> Right unit
-  Right false -> Left { at, error: TypeMismatch expected actual }
+equalTypes at expected actual
+  | typeEquiv expected actual = Right unit
+  | otherwise = Left { at, error: TypeMismatch expected actual }
 
 sameRow :: forall a. a -> Type -> Type -> Either (CheckFailure a) Unit
-sameRow at expected actual = case typeEquiv expected actual of
-  Left err -> Left { at, error: NotARowType err }
-  Right true -> Right unit
-  Right false -> Left { at, error: RowMismatch expected actual }
+sameRow at expected actual
+  | typeEquiv expected actual = Right unit
+  | otherwise = Left { at, error: RowMismatch expected actual }
 
 normalize :: forall a. a -> Type -> Either (CheckFailure a) RowNormalForm
-normalize at row = case nf row of
+normalize at row = case nfSharp row of
   Left err -> Left { at, error: NotARowType err }
   Right normal -> Right normal
 

@@ -38,7 +38,7 @@ Only the following are trusted.
 ```text
 the Core AST definition
 the kind checker
-row normalization, nf
+canonical forms, can, and the sharp normal form, nf
 the entailment decision, Γ ⊨ C
 the type equality decision, ≡
 term type checking
