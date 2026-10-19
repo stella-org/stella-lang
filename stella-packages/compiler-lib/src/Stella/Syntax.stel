@@ -1,0 +1,484 @@
+-- A macro parser, which is a value of type `Parser (Syntax c)`.
+-- It processes the token tree of a macro call to produce syntax of category `c`.
+--
+-- Structurally, a parser is a state function that tracks:
+--   * The remaining token trees at the current nesting level
+--   * The consumption count at this level
+--   * The boundary/end of the current level
+--
+-- On success, it returns the parsed value and the updated state. On failure, 
+-- it returns the furthest position reached, the expected tokens at that position, 
+-- and the active context labels. Duplicate expected items are handled gracefully, 
+-- as the host treats them as a set. `orElse` attempts a fallback parser from 
+-- the initial state. If both fail, it retains the failure that advanced further, 
+-- merging their expected items if they failed at the exact same position.
+--
+-- `layout` handles block parsing by analyzing "trivia" (whitespace/comments):
+--   * The column of the first token of the first item defines the block's indentation.
+--   * A token starting a new line at this column begins a new item.
+--   * Any token to the left of this column terminates the block.
+--   * Any token to the right continues the current item.
+-- A token is considered to start a line if it is preceded by a newline character 
+-- or a multi-line block comment within its trivia.
+--
+-- The `Origin` tracking is used solely for diagnostics to pinpoint where a token 
+-- or node originated:
+--   * A macro invocation input, identified by an unforgeable reference issued by the host.
+--   * A quotation, identified by its declaring module and source range.
+-- `OriginRef` is exported as an abstract type.
+
+module Stella.Syntax
+  ( List(..)
+  , Maybe(..)
+  , Position(..)
+  , Range(..)
+  , Trivia(..)
+  , TokenKind(..)
+  , OriginRef
+  , Token(..)
+  , Delimiter(..)
+  , TokenTree(..)
+  , SyntaxNode(..)
+  , SyntaxItem(..)
+  , Syntax(..)
+  , Term
+  , Failure(..)
+  , State(..)
+  , Reply(..)
+  , Parser(..)
+  , Result(..)
+  , LayoutItem(..)
+  , Block(..)
+  , ItemRun(..)
+  , append
+  , spansLines
+  , hasNewline
+  , firstToken
+  , startOf
+  , originOf
+  , columnOf
+  , beginsLine
+  , positionAt
+  , before
+  , merge
+  , consumed
+  , run
+  , pure
+  , bind
+  , map
+  , orElse
+  , fail
+  , label
+  , satisfy
+  , anyTree
+  , isLeaf
+  , isComma
+  , notComma
+  , token
+  , tree
+  , comma
+  , end
+  , complete
+  , within
+  , group
+  , isParen
+  , isBracket
+  , isBrace
+  , parens
+  , brackets
+  , braces
+  , many
+  , sepBy
+  , itemRun
+  , blockAt
+  , items
+  , layout
+  , runParser
+  , nodeOf
+  , nodesOf
+  , foldr
+  , foldl
+  ) where
+
+import Base.Int as Int
+
+data List a = Nil | Cons a (List a)
+
+data Maybe a = Nothing | Just a
+
+data Position = Position Int Int
+
+data Range = Range Position Position
+
+data Trivia
+  = Spaces String Range
+  | Newline String Range
+  | LineComment String Range
+  | BlockComment String Range
+
+data TokenKind
+  = GroupBracket
+  | Comma
+  | Backslash
+  | Underscore
+  | LowerName (Maybe String) String
+  | UpperName (Maybe String) String
+  | DiscriminatorName (Maybe String) String
+  | OperatorName (Maybe String) String
+  | OperatorValue (Maybe String) String
+  | InfixName (Maybe String) String
+  | HoleName String
+  | TagName String
+  | DirectiveName String
+  | MacroName (Maybe String) String
+  | IntLiteral Int
+  | NumberLiteral Number
+  | CharLiteral String
+  | StringLiteral String
+
+-- A reference the host issues for a token of a call's input.
+foreign type IssuedOrigin :: Type
+
+@[elaborationOnly]
+data OriginRef = InputOrigin IssuedOrigin | QuotedOrigin String Position Position
+
+data Token = Token TokenKind String Range (List Trivia) OriginRef
+
+data Delimiter
+  = Paren
+  | Bracket
+  | Brace
+  | EffectRow
+  | Synthesized
+  | AttributeBracket
+  | LocalOpen String
+
+data TokenTree = Leaf Token | Group Delimiter Token (List TokenTree) (List Token)
+
+data SyntaxNode
+  = SyntaxToken Token
+  | SyntaxGroup OriginRef Delimiter Token (List SyntaxNode) (List Token)
+  | SyntaxLayout OriginRef (List SyntaxItem)
+
+data SyntaxItem = SyntaxItem OriginRef (List SyntaxNode)
+
+data Syntax (c :: Type) = Syntax (List SyntaxNode)
+
+data Term
+
+data Failure = Failure Position (List String) (List String)
+
+data State = State (List TokenTree) Int Position
+
+data Reply a = Ok a State | Err Failure
+
+data Parser a = Parser (State -> Reply a)
+
+data Result a = Parsed a | Failed Failure
+
+data LayoutItem = LayoutItem (List TokenTree) Position
+
+data Block = Block (List LayoutItem) (List TokenTree)
+
+data ItemRun = ItemRun (List TokenTree) (List TokenTree)
+
+append :: forall a. List a -> List a -> List a
+append xs ys = case xs of
+  Nil -> ys
+  Cons x rest -> Cons x (append rest ys)
+
+-- Whether a range ends on a later line than it begins, as a block comment
+-- holding a line break does.
+spansLines :: Range -> Boolean
+spansLines range = case range of
+  Range (Position from _) (Position to _) -> case Int.eq from to of
+    true -> false
+    false -> true
+
+hasNewline :: List Trivia -> Boolean
+hasNewline trivia = case trivia of
+  Nil -> false
+  Cons (Newline _ _) _ -> true
+  Cons (BlockComment _ range) rest -> case spansLines range of
+    true -> true
+    false -> hasNewline rest
+  Cons _ rest -> hasNewline rest
+
+-- The first token of a tree: a leaf's, or a group's opening one.
+firstToken :: TokenTree -> Token
+firstToken t = case t of
+  Leaf tok -> tok
+  Group _ open _ _ -> open
+
+startOf :: Token -> Position
+startOf tok = case tok of
+  Token _ _ (Range start _) _ _ -> start
+
+originOf :: Token -> OriginRef
+originOf tok = case tok of
+  Token _ _ _ _ origin -> origin
+
+columnOf :: TokenTree -> Int
+columnOf t = case startOf (firstToken t) of
+  Position _ column -> column
+
+-- Whether a tree's first token begins a line.
+beginsLine :: TokenTree -> Boolean
+beginsLine t = case firstToken t of
+  Token _ _ _ leading _ -> hasNewline leading
+
+-- Where the next token stands, or the limit of the level where none is left.
+positionAt :: State -> Position
+positionAt s = case s of
+  State Nil _ limit -> limit
+  State (Cons t _) _ _ -> startOf (firstToken t)
+
+-- Whether one position stands before another.
+before :: Position -> Position -> Boolean
+before p q = case p, q of
+  Position pl pc, Position ql qc -> case Int.lt pl ql of
+    true -> true
+    false -> case Int.eq pl ql of
+      true -> Int.lt pc qc
+      false -> false
+
+-- The farther of two failures, and where both stopped at one position, what
+-- each expected and the labels of each.
+merge :: Failure -> Failure -> Failure
+merge f h = case f, h of
+  Failure fp fe fl, Failure hp he hl -> case before fp hp of
+    true -> h
+    false -> case before hp fp of
+      true -> f
+      false -> Failure fp (append fe he) (append fl hl)
+
+consumed :: State -> Int
+consumed s = case s of
+  State _ n _ -> n
+
+run :: forall a. Parser a -> State -> Reply a
+run p s = case p of
+  Parser f -> f s
+
+pure :: forall a. a -> Parser a
+pure x = Parser \s -> Ok x s
+
+bind :: forall a b. Parser a -> (a -> Parser b) -> Parser b
+bind p k = Parser \s -> case run p s of
+  Ok x next -> run (k x) next
+  Err f -> Err f
+
+map :: forall a b. (a -> b) -> Parser a -> Parser b
+map f p = bind p \x -> pure (f x)
+
+orElse :: forall a. Parser a -> Parser a -> Parser a
+orElse p q = Parser \s -> case run p s of
+  Ok x next -> Ok x next
+  Err f -> case run q s of
+    Ok y after -> Ok y after
+    Err h -> Err (merge f h)
+
+fail :: forall a. String -> Parser a
+fail what = Parser \s -> Err (Failure (positionAt s) (Cons what Nil) Nil)
+
+label :: forall a. String -> Parser a -> Parser a
+label context p = Parser \s -> case run p s of
+  Ok x next -> Ok x next
+  Err (Failure at expected labels) -> Err (Failure at expected (Cons context labels))
+
+-- The next tree, where it is one the predicate admits.
+satisfy :: String -> (TokenTree -> Boolean) -> Parser TokenTree
+satisfy what admits = Parser \s -> case s of
+  State (Cons t rest) n limit -> case admits t of
+    true -> Ok t (State rest (Int.add n 1) limit)
+    false -> Err (Failure (positionAt s) (Cons what Nil) Nil)
+  State Nil _ limit -> Err (Failure limit (Cons what Nil) Nil)
+
+anyTree :: TokenTree -> Boolean
+anyTree = \_ -> true
+
+isLeaf :: TokenTree -> Boolean
+isLeaf t = case t of
+  Leaf _ -> true
+  _ -> false
+
+isComma :: TokenTree -> Boolean
+isComma t = case t of
+  Leaf (Token Comma _ _ _ _) -> true
+  _ -> false
+
+notComma :: TokenTree -> Boolean
+notComma t = case isComma t of
+  true -> false
+  false -> true
+
+token :: Parser Token
+token = bind (satisfy "a token" isLeaf) \t -> case t of
+  Leaf tok -> pure tok
+  _ -> fail "a token"
+
+tree :: Parser TokenTree
+tree = satisfy "a token" anyTree
+
+comma :: Parser TokenTree
+comma = satisfy "`,`" isComma
+
+end :: Parser ()
+end = Parser \s -> case s of
+  State Nil _ _ -> Ok () s
+  _ -> Err (Failure (positionAt s) (Cons "the end" Nil) Nil)
+
+-- A parser that reads the whole of its level.
+complete :: forall a. Parser a -> Parser a
+complete p = bind p \x -> map (\_ -> x) end
+
+-- A parser run on the trees given, to the limit of the position given.
+within :: forall a. Parser a -> List TokenTree -> Position -> Reply a
+within p trees limit = run (complete p) (State trees 0 limit)
+
+-- The next tree where it is a group the predicate admits, its contents read
+-- whole by the parser given.
+group :: forall a. String -> (Delimiter -> Boolean) -> Parser a -> Parser a
+group what admits p = Parser \s -> case s of
+  State (Cons (Group d _ inner closes) rest) n limit -> case admits d of
+    true -> case within p inner (closingAt closes limit) of
+      Ok x _ -> Ok x (State rest (Int.add n 1) limit)
+      Err f -> Err f
+    false -> Err (Failure (positionAt s) (Cons what Nil) Nil)
+  State (Cons _ _) _ _ -> Err (Failure (positionAt s) (Cons what Nil) Nil)
+  State Nil _ limit -> Err (Failure limit (Cons what Nil) Nil)
+
+-- Where a group's contents limit: at its closing token, or at the limit of the
+-- level where it has none.
+closingAt :: List Token -> Position -> Position
+closingAt closes limit = case closes of
+  Cons close _ -> startOf close
+  Nil -> limit
+
+isParen :: Delimiter -> Boolean
+isParen d = case d of
+  Paren -> true
+  _ -> false
+
+isBracket :: Delimiter -> Boolean
+isBracket d = case d of
+  Bracket -> true
+  _ -> false
+
+isBrace :: Delimiter -> Boolean
+isBrace d = case d of
+  Brace -> true
+  _ -> false
+
+parens :: forall a. Parser a -> Parser a
+parens p = group "`(`" isParen p
+
+brackets :: forall a. Parser a -> Parser a
+brackets p = group "`[`" isBracket p
+
+braces :: forall a. Parser a -> Parser a
+braces p = group "`{`" isBrace p
+
+many :: forall a. Parser a -> Parser (List a)
+many p = Parser \s -> case run p s of
+  Err _ -> Ok Nil s
+  Ok x next -> case Int.eq (consumed next) (consumed s) of
+    true -> Err (Failure (positionAt s) (Cons "progress: `many` repeats a parser that read nothing" Nil) Nil)
+    false -> case run (many p) next of
+      Ok xs after -> Ok (Cons x xs) after
+      Err f -> Err f
+
+sepBy :: forall a b. Parser a -> Parser b -> Parser (List a)
+sepBy p sep = orElse (bind p \x -> map (\xs -> Cons x xs) (many (bind sep \_ -> p))) (pure Nil)
+
+-- The trees continuing an item: up to a tree beginning a line at or left of
+-- the block's column.
+itemRun :: Int -> List TokenTree -> ItemRun
+itemRun column trees = case trees of
+  Nil -> ItemRun Nil Nil
+  Cons t rest -> case endsItem column t of
+    true -> ItemRun Nil trees
+    false -> case itemRun column rest of
+      ItemRun more after -> ItemRun (Cons t more) after
+
+-- Whether a tree begins a line at or left of the column given.
+endsItem :: Int -> TokenTree -> Boolean
+endsItem column t = case beginsLine t of
+  true -> case Int.lt column (columnOf t) of
+    true -> false
+    false -> true
+  false -> false
+
+-- The items of a block at a column, each with where it ends, and the trees
+-- after the block.
+blockAt :: Int -> Position -> List TokenTree -> Block
+blockAt column limit trees = case trees of
+  Nil -> Block Nil Nil
+  Cons t rest -> case endsBlock column t of
+    true -> Block Nil trees
+    false -> case itemRun column rest of
+      ItemRun more after -> case blockAt column limit after of
+        Block done left -> Block (Cons (LayoutItem (Cons t more) (positionAt (State after 0 limit))) done) left
+
+-- Whether a tree begins a line left of the column given.
+endsBlock :: Int -> TokenTree -> Boolean
+endsBlock column t = case beginsLine t of
+  true -> Int.lt (columnOf t) column
+  false -> false
+
+-- Each item read whole by the parser given.
+items :: forall a. Parser a -> List LayoutItem -> Result (List a)
+items p pending = case pending of
+  Nil -> Parsed Nil
+  Cons (LayoutItem trees limit) rest -> case within p trees limit of
+    Err f -> Failed f
+    Ok x _ -> case items p rest of
+      Parsed xs -> Parsed (Cons x xs)
+      Failed f -> Failed f
+
+layout :: forall a. Parser a -> Parser (List a)
+layout p = Parser \s -> case s of
+  State Nil _ _ -> Ok Nil s
+  State trees@(Cons t _) n limit -> case blockAt (columnOf t) limit trees of
+    Block block left -> case items p block of
+      Parsed xs -> Ok xs (State left (Int.add n 1) limit)
+      Failed f -> Err f
+
+-- What the host calls: a parser run on a call's trees, to the position its
+-- input ends at.
+runParser :: forall a. Parser a -> List TokenTree -> Position -> Result a
+runParser p trees limit = case within p trees limit of
+  Ok x _ -> Parsed x
+  Err f -> Failed f
+
+-- A tree as syntax, its tokens and origins kept.
+nodeOf :: TokenTree -> SyntaxNode
+nodeOf t = case t of
+  Leaf tok -> SyntaxToken tok
+  Group d open inner closes -> SyntaxGroup (originOf open) d open (nodesOf inner) closes
+
+nodesOf :: List TokenTree -> List SyntaxNode
+nodesOf ts = case ts of
+  Nil -> Nil
+  Cons t rest -> Cons (nodeOf t) (nodesOf rest)
+
+foldr :: forall a b. (a -> b -> b) -> b -> List a -> b
+foldr f z xs = case xs of
+  Nil -> z
+  Cons x rest -> f x (foldr f z rest)
+
+foldl :: forall a b. (b -> a -> b) -> b -> List a -> b
+foldl f z xs = case xs of
+  Nil -> z
+  Cons x rest -> foldl f (f z x) rest
+
+-- Syntax spliced into a quotation, in parentheses standing where the origin
+-- given does, the trivia given before them.
+@[elaborationOnly]
+spliced :: forall c. OriginRef -> List Trivia -> Syntax c -> SyntaxNode
+spliced o leading s = case s of
+  Syntax nodes -> SyntaxGroup o Paren (bracket o "(" leading) nodes (Cons (bracket o ")" Nil) Nil)
+
+-- A bracket token the splice makes up, standing where the origin given does.
+bracket :: OriginRef -> String -> List Trivia -> Token
+bracket o text leading = Token GroupBracket text (Range (Position 0 0) (Position 0 0)) leading o
