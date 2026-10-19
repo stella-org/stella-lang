@@ -51,16 +51,16 @@ v ::= c
     | λ (x : τ) / ρ . e
     | Λ (a : κ) . v
     | Λ (_ : C) . v
-    | M.Ctor ς                 a constructor spine
+    | M.Ctor [[κ̄]] ᾱ            a constructor's chain, its value arguments values
     | {} | extend k v1 v2
     | inject k [ρ] v
 ```
 
-`ς` is the spine of arguments the constructor has accumulated: kind, type, and constraint instantiations together with values, in whatever order the declared type calls for. [Semantics](06-Semantics.md) gives the full value grammar, which adds the forms that arise only during reduction.
+`M.Ctor [[κ̄]] ᾱ` is an **application chain**, the constructor under its type, constraint, and value arguments in whatever order the declared type calls for; it is an ordinary term, typed by its own rule ([Typing Rules](05-Typing-Rules.md#chains-of-a-constructor-or-a-foreign)), and no other form stands for a constructor's value. [Semantics](06-Semantics.md) gives the full value grammar, which adds a foreign's unsaturated chain and the forms that arise only during reduction. **Every value form is a value there**: `Λ (a : Type). M.Cons [a] v1 v2` is a value as it stands, and reduction never enters the `Λ`.
 
 **A constructor application need not be saturated.** Data constructors have curried function types, so `Main.Cons [Int] 1 : List Int -> List Int` is a legitimate term. Were it not a value form, it would be neither a value nor reducible, since a constructor, unlike a lambda, has no body to reduce.
 
-With `|v̄| = arity` it is a completed structure; with `|v̄| < arity` it is a value that behaves as a function. Both are value forms and evaluation stops at them.
+With `|values(ᾱ)| = arity` it is a completed structure; with `|values(ᾱ)| < arity` it is a value that behaves as a function. Both are value forms and evaluation stops at them.
 
 **The body of a type or constraint abstraction must be a value form** (the value restriction). This makes `Λ`, `[τ]`, and `[•]` fully erasable and removes any question of evaluation order at type application. The elaborator eta-expands where necessary.
 

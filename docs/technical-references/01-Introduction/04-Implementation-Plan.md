@@ -137,7 +137,7 @@ Extending the generator to `foreign` declarations is worthwhile once the FFI sur
 
 **Machine-checked or paper proofs are deferred.** They become worth revisiting if the work is to be published, or if one subsystem keeps producing subtle bugs that property testing does not catch.
 
-**Conformance of the global environment** is a premise of every property above, not something they establish. A test harness supplies `G` and must therefore guarantee `Σ ⊨ G` itself: global definitions are well-typed values, and each `δ_f` returns either a value of the instantiated result type — the one the spine judgement gives — or a permitted fault, performs no proper effect and runs no reified computation it constructs, applies no Stella function value, terminates, and has no observational effect — faulting among them — where the declaration asserts `#observ(none)` ([Semantics](../03-Typed-Core/06-Semantics.md)).
+**Conformance of the global environment** is a premise of every property above, not something they establish. A test harness supplies `G` and must therefore guarantee `Σ ⊨ G` itself: global definitions are well-typed values, and each `δ_f` returns either a value of the instantiated result type — the one the typing of its chain gives — or a permitted fault, performs no proper effect and runs no reified computation it constructs, applies no Stella function value, terminates, and has no observational effect — faulting among them — where the declaration asserts `#observ(none)` ([Semantics](../03-Typed-Core/06-Semantics.md)).
 
 **The separate Core-modelled premise is the other thing the generator has to respect, and it is the easier of the two to miss.** It is not a clause of `Σ ⊨ G` and is not implied by it: it asks that returning an outcome the arguments fix be the **whole** of what a saturated call does, so no hidden read, no write, and no identity the arguments do not determine. A harness whose `δ_f` reads a counter or a clock, or writes to a cell the next call reads, invalidates the property rather than testing it, and it does so silently — the run completes and the assertion passes. **Faulting is not what the premise excludes**: a `δ_f` that faults on an argument it always faults on satisfies it, which is what keeps `Base.String.codePointAt` and the fault branch of progress inside the properties. A generator that produces a hidden read or a write is producing a term the relation gives no step to.
 
@@ -243,8 +243,11 @@ The heading of each group names the step of the plan that the group belongs to.
 | A handler omitting an operation of `E` | Rejected. `handle` removes the keyed element, so an operation without a clause has nowhere to go |
 | A handler clause that does not respect an operation's own `forall b̄` | Rejected |
 | An interpreter sequencing a native action before resuming a continuation, the residual row not being closed | Rejected. That continuation is `a -{ρ}-> IO r`, which the pure arrow of `Base.IO.bind` does not take. Abandoning the continuation, or resuming it first, is admitted |
-| A pure global applied where the ambient row is not empty, as `Base.Int.add n 1` is under `( State Int \| e )` | Rejected without `openEff`. An application requires the arrow to carry the ambient row and containment is never inserted (D8); currying makes it one `openEff` per argument consumed |
-| A data constructor applied in a handler clause, the row outside the handle not being empty | Rejected for the same reason. Constructor arrows are pure by declaration, so one is widened like any other pure global. An instantiation such as `Prelude.Nothing [a]` needs no widening, applying nothing |
+| A foreign applied where the ambient row is not empty, as `Base.Int.add n 1` is under `( State Int \| e )` | Accepted without `openEff`. A foreign's chain consumes pure arrows alone, and its value arguments are checked at the ambient row of the whole chain |
+| A data constructor applied in a handler clause, the row outside the handle not being empty | Accepted without widening, as a foreign's chain is. Constructor arrows are pure by the exact scheme |
+| A defined global of pure arrows applied where the ambient row is not empty | Rejected without `openEff`. Its application is the rule for `e1 e2`, whose arrow carries the ambient row, and containment is never inserted (D8); currying makes it one `openEff` per argument consumed |
+| `M.id [Int -> Int] f x` with `foreign id : forall a. a -> a`, where the ambient row is not empty | Rejected without `openEff`. The chain ends at `f`, saturated at the declared remainder `a`, and `x` is an ordinary application of the `Int -> Int` it returns |
+| `Λ (a : Type). M.Just [Maybe a] (M.Nothing [a])` | A value form, its body a constructor's chain of values, and a value of the reduction relation as it stands |
 | `handle (perform E.op v) with h` at ambient row `()` | **Accepted.** Effect safety is not "no operation is performed" |
 | A `λ` whose body jumps to a join point bound outside it | Rejected. The join point context is discarded at a lambda |
 | A `letjoin` in argument position whose definition jumps to itself | Accepted. The root of a definition is in tail position wherever the `letjoin` stands |
@@ -324,9 +327,10 @@ The heading of each group names the step of the plan that the group belongs to.
 | --- | --- |
 | `let x = (openEff [( E )] f) 0 in perform E.op Prim.Unit` with `f : Int -> Int` | Steps to `let x = openEffC [( E )] (f 0) in …`. Discarding the coercion leaves the two parts of the `let` with no common ambient row |
 | `id [Int -> Int] f 0` with `foreign id : forall a. a -> a` | `δ_id(f)` runs and returns `f`, and `0` is applied to the result. Testing the substituted type instead absorbs `0` and calls `δ_id(f, 0)` |
-| `foreign clock : IO Time`, an arity-zero foreign | Steps to `δ_clock()`. The spine is saturated as soon as it is formed |
+| `foreign clock : IO Time`, an arity-zero foreign | Steps to `δ_clock()`. Its bare reference is a saturated chain |
 | `M.f v` for a unary foreign | Steps. The final value argument must fire the implementation |
-| `Base.IO.pure [Int]` | Steps. A polymorphic foreign accumulates the type argument on its spine |
+| `Base.IO.pure [Int]` | A value, an unsaturated foreign's chain. No step forms a call out of the reference |
+| `openEffC [ρ] (M.Just [Int] 1)` | Steps to `M.Just [Int] 1`, typed at the widened row as the redex was. A constructor's chain of values has every row |
 | `letjoin j (x : Int) : Int = e1 in let y = (λz.z) 1 in jump j y` | The body reduces before the jump fires |
 | `letrec { f = λx. … } in e` | Unfolds only in elimination position. No term steps to itself |
 | `switchKey` on a value wrapped in `weaken` | Dispatches on the key actually injected. `weaken` is a value form and is looked through |
@@ -366,7 +370,7 @@ The heading of each group names the step of the plan that the group belongs to.
 | --- | --- |
 | A saturated call to a pure global under a non-empty ambient row, wrapped in one `openEff` per argument consumed | One `callk`. Peeling the spine looks through `openEff`, `TyApp`, and `ConstraintApp`; stopping at the first of them emits a chain of `callu`s where one known call belongs |
 | `Main.Nil [Int]` | The atom `const Main.Nil`. A saturated constructor of arity 0 allocates nothing |
-| A `foreign` of arity 0, referenced bare | `ffi f []`, which **calls the implementation**. The spine is saturated as soon as it is formed, so treating the reference as a value leaves the call unmade |
+| A `foreign` of arity 0, referenced bare | `ffi f []`, which **calls the implementation**. Its bare reference is a saturated chain, so treating it as a value leaves the call unmade |
 | A `foreign` of arity `n > 0`, referenced bare | `pap f []`. It is a value, not a call and not an atom |
 | A top-level value referenced bare | The atom `global M.x`, which is a load |
 | A constructor applied below its arity | `pap`. Over-application does not arise, a constructor's declared result never being an arrow |

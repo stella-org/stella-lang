@@ -48,7 +48,7 @@ rules, taken together over a group; being a fixed point of sets, it is the same 
 is computed in.
 
 **The default rule** is that of the three forms the tables below leave out: an application that
-is no constructor's or foreign's spine, a `perform`, and a `writeCell`. Each of their immediate
+is no constructor's or foreign's chain, a `perform`, and a `writeCell`. Each of their immediate
 subexpressions `s̄` is evaluated, and the form may apply anything one of them holds, or, for a
 `writeCell`, store it where it is read back and applied:
 
@@ -73,7 +73,7 @@ apart a value without running what it holds, and the control forms:
 | `M.x [[κ̄]]`, `c`, `recordEmpty`, `readCell ℓ.k` | `∅` | `∅` |
 | `λ(y : τ) / r. e` | `∅` | `imm(e) ∪ lat(e)`, with `ρ(y) = ∅` |
 | `Λ (a : κ). e`, `e [σ]`, `Λ (_ : C). e`, `e [•]`, `openEff [ρ] e` | `imm(e)` | `lat(e)` |
-| `M.c ē`, a spine whose head is a data constructor or a foreign, through type and constraint applications, with no more arguments than its arity | `⋃ imm(eₖ)` | `⋃ lat(eₖ)` |
+| `M.c [[κ̄]] ᾱ`, an application chain whose head is a data constructor or a foreign, with no more value arguments `ē` than its arity | `⋃ imm(eₖ)` | `⋃ lat(eₖ)` |
 | `extend k e₁ e₂`, `update k e₁ e₂`, `merge e₁ e₂`, `inject k [ρ] e` | `⋃ imm(eₖ)` | `⋃ lat(eₖ)` |
 | `select k e`, `restrict k e`, `weaken k [τ] e`, `absurd [τ] e` | `imm(e)` | `lat(e)` |
 | `let y : τ = e₁ in e₂` | `imm(e₁) ∪ imm(e₂)`, with `ρ(y) = lat(e₁)` | `lat(e₂)` |

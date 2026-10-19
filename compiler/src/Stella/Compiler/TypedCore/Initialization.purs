@@ -388,9 +388,9 @@ rootOf = case _ of
   OccRecordField o _ -> rootOf o
   OccVariantPayload o _ -> rootOf o
 
--- | Whether an application is part of a constructor's or a foreign's spine,
--- | no deeper than its arity: what builds a value, or a foreign that may carry
--- | a function but not apply one.
+-- | Whether an application is part of a constructor's or a foreign's chain,
+-- | with no more value arguments than its arity: what builds a value, or a
+-- | foreign that may carry a function but not apply one.
 building :: forall a. Env -> Expr a -> P.Boolean
 building env e = case spine e 0 of
   Just { name, depth } -> case arityOf name of

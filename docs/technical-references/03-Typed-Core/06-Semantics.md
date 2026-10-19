@@ -54,10 +54,10 @@ After `e2` and `e1` are evaluated to values, the value form of `e1` determines w
 | Value form of `e1` | Behaviour |
 | --- | --- |
 | `λ (x : τ) / ρ . e` | β-reduction: evaluate `e[x := v2]` |
-| `M.Ctor [τ̄] v̄` with `\|v̄\| < arity` | append the argument, giving `M.Ctor [τ̄] (v̄, v2)`. **The result is again a value; no computation occurs** |
-| an application of `foreign f` | call the implementation, a primitive step, which yields a value or a fault. That it reaches the **world** nowhere is a conformance obligation on the implementation and not a consequence of D23 alone; a world effect happens when the runtime executes the returned `IO`. An **observational** effect is a separate matter and the call may have one, unless the declaration asserts `#observ(none)` (D41) |
+| an unsaturated chain of a constructor, `M.Ctor [[κ̄]] ᾱ` | nothing: `M.Ctor [[κ̄]] ᾱ v2` is again a constructor's chain of values, and so a value as it stands. **No step is taken and no computation occurs** |
+| an unsaturated chain of a foreign, `M.f [[κ̄]] ᾱ` | nothing while `M.f [[κ̄]] ᾱ v2` is unsaturated, which is then a value as it stands. Once it is saturated it is a redex, and the step `δ_f` calls the implementation, a primitive step, which yields a value or a fault ([below](#chains-of-a-constructor-or-a-foreign)). That it reaches the **world** nowhere is a conformance obligation on the implementation and not a consequence of D23 alone; a world effect happens when the runtime executes the returned `IO`. An **observational** effect is a separate matter and the call may have one, unless the declaration asserts `#observ(none)` (D41) |
 
-A saturated constructor application does not have a function type and so never appears in the position of `e1`.
+A saturated constructor's chain does not have a function type and so never appears in the position of `e1`.
 
 **Consequence for backends.** A partially applied constructor may be passed around as a value, so a backend must be able to represent one. Whether it generates curried functions or a partial-application object carrying the arity and the collected arguments is the backend's choice; Mid IR retains constructor application in a form that lowers to either.
 
@@ -163,7 +163,7 @@ A global name reduces by looking itself up, which is also where a kind scheme is
 
 This preserves the type: `M.x [[κ̄]] : σ[k̄ := κ̄]`, and `v` has type `σ` under `k̄`.
 
-A constructor spine is already a value, saturated or not, so it needs no unfolding rule of its own; the spine formation rule below turns the atomic reference into one.
+A constructor and a foreign have nothing to unfold to. A reference to one heads an application chain, which is a value or a redex as it stands ([Chains of a constructor or a foreign](#chains-of-a-constructor-or-a-foreign)).
 
 ### Module initialization
 
@@ -266,9 +266,9 @@ The third class is what a mutable array behind a pure interface is: `Base.Array.
       that is, a global definition is a well-typed value with no effects,
       reaching only the by-need cells Γ_N types
 
-  (3) for each (M.f : σκ = δ_f) ∈ G, and for every spine ς that is saturated
-      for M.f with cursorΣ(M.f, ς) = ⟨ σ ; θ ⟩  (see The spine cursor below),
-      writing v̄ = values(ς), and **where the ABI preconditions of M.f hold**:
+  (3) for each (M.f : σκ = δ_f) ∈ G, and for every saturated chain M.f [[κ̄]] ᾱ
+      of values with cursorΣ(M.f [[κ̄]] ᾱ) = ⟨ σ ; θ ⟩  (Typing Rules),
+      writing v̄ = values(ᾱ), and **where the ABI preconditions of M.f hold**:
         δ_f(v̄) is defined
         δ_f(v̄) is either a value of type θ(σ) or a fault
         δ_f(v̄) performs no proper effect, and runs no reified computation
@@ -313,8 +313,8 @@ The properties below are stated of a conforming environment. **During the fold t
 **`Σ ⊨ G` is what every implementation owes, and it is not what this relation needs.** A second condition sits beside it, and the two are kept apart because they bind different parties: conformance is owed by whoever supplies a `δ_f`, while the one below says which environments the rules below describe at all.
 
 ```text
-G is Core-modelled   when for each (M.f : σκ = δ_f) ∈ G, and for every spine ς
-                     that is saturated for M.f, writing v̄ = values(ς):
+G is Core-modelled   when for each (M.f : σκ = δ_f) ∈ G, and for every saturated
+                     chain M.f [[κ̄]] ᾱ of values, writing v̄ = values(ᾱ):
                        returning an outcome — a value or a fault — is the whole
                               of what δ_f(v̄) does
                        v̄ determines that outcome, and nothing else
@@ -360,7 +360,7 @@ e respects preconditions under G
 
 Condition (2) applies to the entries a `rec` group installs as well. Each `v_i` is checked under its own `k̄_i` and refers to its neighbours through `Σ`, which the declaration rules populated before any value declaration was checked.
 
-Condition (3) is stated through the cursor because the result type of a polymorphic foreign depends on the instantiation the spine carries. Applying `forall a. a -> a` at `[Int]` obliges `δ_f` to return an `Int`, and the raw declared type does not say so.
+Condition (3) is stated through the cursor because the result type of a polymorphic foreign depends on the instantiation the chain carries. Applying `forall a. a -> a` at `[Int]` obliges `δ_f` to return an `Int`, and the raw declared type does not say so.
 
 **A `δ_f` may carry a function value but may not apply one.** That restriction is what lets the requirements above hold together. The rule for a saturated `foreign` is one atomic step to a value or a fault, so a `δ_f` applying a Stella function would step to neither where that application diverges — Core claims nowhere that a function terminates — and progress would fail for a term that is not stuck but running. **Where the function came from makes no difference**, so the condition names none: an argument, a field of a record or of a constructor among the arguments, a closure retained from an earlier call, or one reached through a global are one case, as D23 treats every runtime-bearing position of a declared type alike. Carrying one is untouched by this: `Base.IO.bind` takes `a -> IO b` and stores it in the `IO` value it builds, and what applies it is the runtime executing that value, which is outside this reduction relation (D25).
 
@@ -376,7 +376,7 @@ An entry with observational effects reads and writes memory, and **the relation 
 
 **The state is not in the term.** A mutable array is an `opaque ω [τ]`, and a `writeCell`-like write performed inside `δ_f` leaves that `ω` as it was: the term after the write is the term before it. So `Base.Array.unsafeSet` writes state the configuration does not record, and `Base.Array.unsafeIndex` **reads** it — the `ω` it is handed names an array whose current contents are nowhere in `v̄`, so the same arguments give different values according to which writes preceded them. Neither is the function of `v̄` that the rule below reads `δ_f` as. **Any argument that the state "is really in the payload" is wrong**, and an earlier draft of this section made it.
 
-**What follows is that the step is not defined, and not merely that it is not deterministic.** The rule is `M.f ς → δ_f(values(ς))`, which reads `δ_f` as a function of `values(ς)`. For an entry that reads hidden state it is not one, so **that rule gives such an entry no step at all**: there is nothing here to be non-deterministic, because there is nothing here.
+**What follows is that the step is not defined, and not merely that it is not deterministic.** The rule is `M.f [[κ̄]] ᾱ → δ_f(values(ᾱ))`, which reads `δ_f` as a function of `values(ᾱ)`. For an entry that reads hidden state it is not one, so **that rule gives such an entry no step at all**: there is nothing here to be non-deterministic, because there is nothing here.
 
 **Being Core-modelled is the line, and it is not the line `#observ(none)` draws.** It is a condition of its own beside `Σ ⊨ G` and not a clause within it, because the two bind different parties: conformance is what an implementer owes and admits `unsafeSet`, while being Core-modelled is what these rules need and does not. The relation is defined against a `G` that is both, and every property below carries both as premises.
 
@@ -405,15 +405,15 @@ v ::= c
     | λ (x : τ) / ρ . e
     | Λ (a : κ) . v
     | Λ (_ : C) . v
-    | M.Ctor ς                 a constructor spine
-    | M.f ς                    a foreign spine that is not saturated
+    | M.Ctor [[κ̄]] ᾱ            a constructor's chain, saturated or not
+    | M.f [[κ̄]] ᾱ               a foreign's chain that is not saturated
     | {} | extend k v1 v2
     | inject k [ρ] v
     | weaken k [τ] v          a value of a wider variant
     | openEff [ρ] v           a function value at a wider effect row
     | opaque ω [τ]            a value of an intrinsic type, produced by a foreign
 
-ς ::= ·  |  ς, [[κ̄]]  |  ς, [τ]  |  ς, [•]  |  ς, v      an argument spine
+ᾱ ::= ·  |  ᾱ [τ]  |  ᾱ [•]  |  ᾱ v       the arguments of a chain of values
 ```
 
 ### Opaque values
@@ -422,7 +422,7 @@ A `foreign` returns a value of its instantiated result type, and what shape that
 
 | Result type | The value `δ_f` returns |
 | --- | --- |
-| a data type | a constructor spine |
+| a data type | a constructor's chain |
 | an intrinsic type | the canonical form of `Σ(T)`'s class ([Prim and Base](../06-Modules/02-Prim-and-Base.md)) |
 
 The second row covers more than one case. A `foreign` whose result is `Int` returns a literal, one whose result is a function type returns a function value — `foreign make : forall a. a` instantiated at `Int -> Int` does exactly that, below — and one whose result is a `Record` returns `{}` or an `extend`. Only the `intrinsic opaque` class is left without a form of its own.
@@ -449,11 +449,11 @@ Erasure keeps the payload, which carries the run-time content, and drops the typ
 ⌊opaque ω [τ]⌋ = opaque ω
 ```
 
-A global constructor or foreign accumulates its arguments on a **single ordered spine**. Each entry is a kind, type, or constraint instantiation, or a value, and the order is whatever the declared type calls for; nothing requires the erased entries to precede the values. `values(ς)` is the subsequence of value arguments, which is what erasure keeps and what `δ_f` receives.
+A constructor's or a foreign's arguments stand on its application chain ([Chains of a constructor or a foreign](#chains-of-a-constructor-or-a-foreign)): kind, type, and constraint instantiations and values, in the order the declared type calls for. `values(ᾱ)` is the subsequence of value arguments, which is what erasure keeps and what `δ_f` receives.
 
-Without a spine, a polymorphic `foreign` could not be used at all: `Base.IO.pure : forall a. a -> IO a` requires `Base.IO.pure [Int]`, and the rule for type application applies only to a `Λ`.
+A polymorphic `foreign` is used through its chain as a constructor is. `Base.IO.pure [Int]`, with `Base.IO.pure : forall a. a -> IO a`, is an unsaturated chain and a value, though the rule for type application reduces only a `Λ`.
 
-A **constructor spine is always a value**, saturated or not: a saturated one is a completed structure, an unsaturated one behaves as a function. A **foreign spine is a value only while it is unsaturated**; once saturated it is a redex that invokes `δ_f`.
+A **constructor's chain of values is always a value**, saturated or not: a saturated one is a completed structure, an unsaturated one behaves as a function. A **foreign's chain of values is a value only while it is unsaturated**; once saturated it is a redex that invokes `δ_f`.
 
 `weaken` and `openEff` are **value forms, not redexes**. Reducing them away would change the type — `weaken k [τ] v : Variant ( k : τ | r )` while `v : Variant r` — and D8 provides no subtyping to identify the two. They are consumed by the constructs that examine them: pattern matching looks through `weaken`, and application looks through `openEff`.
 
@@ -514,114 +514,34 @@ An `Evaluating` cell's initializer is the term a `fill ν e` stands for, typed w
 
 **One name may label several frames.** A continuation copies its segment as it stands, frames and names included, so applying one twice puts two frames named `ℓ` into the term. Every frame of a name descends from one opening and carries a `θ` typed against the one layout `Γ_R(ℓ)`. Which of them a reference reaches is settled with the rules for cells ([Cells](#cells)).
 
-### The spine cursor
+### Chains of a constructor or a foreign
 
-Reduction carries no `Γ`, so saturation must be decidable from the declaration and the spine alone. `cursorΣ` is a partial function that walks the **declared** type, consuming one spine entry at a time. It performs no well-formedness checking.
+**A constructor or a foreign is applied through its application chain, and reduction reads the term the typing rules read.** There is no run-time form of the call beside the chain and no step that forms one: the spine view, `cursorΣ`, saturation, and the rule typing a chain are those of [Typing Rules](05-Typing-Rules.md#chains-of-a-constructor-or-a-foreign). Reduction carries no `Γ` and needs none, saturation being decided from the declaration and the chain alone.
+
+A constructor's chain of values is a value, saturated or not; a foreign's is a value while it is unsaturated, and a redex once it is saturated:
 
 ```text
-cursorΣ(M.g, ς)  =  ⟨ σ ; θ ⟩       σ is the unconsumed remainder of the declared type
-                                     θ is the accumulated kind and type substitution
+  M.f [[κ̄]] ᾱ   →  δ_f( values(ᾱ) )     when M.f [[κ̄]] ᾱ is saturated, every value
+                                         argument in ᾱ is a value, G is Core-modelled,
+                                         and the ABI preconditions of M.f hold
 ```
 
-```text
-cursorΣ(M.g, ·)            = ⟨ σκ ; id ⟩              where ( M.g : σκ ) ∈ Σ
-cursorΣ(M.g, (ς, [[κ̄]]))   = ⟨ σ ; θ[k̄ := κ̄] ⟩        where cursorΣ(M.g, ς) = ⟨ forall k̄. σ ; θ ⟩
-cursorΣ(M.g, (ς, [τ]))     = ⟨ σ ; θ[a := τ] ⟩        where cursorΣ(M.g, ς) = ⟨ forall (a : κ). σ ; θ ⟩
-cursorΣ(M.g, (ς, [•]))     = ⟨ σ ; θ ⟩                where cursorΣ(M.g, ς) = ⟨ C => σ ; θ ⟩
-cursorΣ(M.g, (ς, w))       = ⟨ τ2 ; θ ⟩               where cursorΣ(M.g, ς) = ⟨ τ1 -{()}-> τ2 ; θ ⟩
-```
+**The premises on the rule are not decoration, and the last two say different things.** `δ_f( values(ᾱ) )` names the outcome the arguments determine, so the rule says nothing where they determine nothing (above): an implementation reading hidden state is one this rule gives no step to, and that is the whole of what "outside the relation" means. The precondition premise is narrower and fails at one call rather than for a whole environment — a `Base.Array.unsafeIndex` reading a slot nothing wrote has a step taken in any real machine and no step here, because what that step yields is what the ABI declined to fix. Both are written on this rule because this is the one rule where either bites; every rule is read against such a `G` and such a term.
 
-It is undefined in every other case. At most one clause applies at each step, since the shape of the unconsumed declared type distinguishes them.
+**The evaluation contexts reach every argument of a chain, and nothing else needs to.** `e Ev` evaluates the value arguments right to left (D35), and `Ev v`, `Ev [τ]`, and `Ev [•]` descend to the head through the arguments already values. Every prefix of an unsaturated chain is itself an unsaturated chain and a value, so no context finds a redex inside a chain of values, and the step above, at the root of a saturated foreign's chain, is the only one there is.
 
-Nothing constrains the order of entries: a declared type may interleave quantifiers, constraints, and arrows freely, and the cursor follows it. A type such as `Int -> forall a. a -> a` is therefore usable, with `[String]` supplied after the first value argument.
+**A saturated foreign's chain steps before anything further is applied to it.** A chain ends where it is saturated, so in `M.id [Int -> Int] f 0` the chain `M.id [Int -> Int] f` stands in the context `Ev 0` and reduces to `δ_id(f)` first; the result is then applied to `0` by the ordinary rule for application, rather than `0` being absorbed into a call `δ_id(f, 0)`.
 
-The arrow consumed by the last clause is pure. A constructor's arrows are pure by its exact scheme, and a `foreign`'s by D23; `Σ ok` holds both of every entry, an imported one included ([Typing Rules](05-Typing-Rules.md)).
+The rule is also what makes an arity-zero `foreign` work. A declaration such as `foreign clock : IO Time` is saturated by its bare reference, so `M.clock` steps to `δ_clock()` rather than sitting as a term that is neither reducible nor complete.
 
-A kind instantiation `[[κ̄]]` consumes the whole vector at once and can occur at most once, since kind schemes are prenex (D3).
+A saturated **constructor**'s chain is a value and does not reduce; a saturated **foreign**'s is a redex. The difference is that a constructor has an implementation nowhere but in its own structure.
 
-#### Saturation is a position in the declared type
+**Every value form of [Terms and Matching](04-Terms-and-Matching.md) is a value here.** `Λ (a : Type). M.Cons [a] v1 v2` is a value form, its body a constructor's chain of values, and it is a value of this relation as it stands: no evaluation context enters a `Λ`, and none needs to. The converse does not hold, and need not: an unsaturated foreign's chain of values is a value though no value form.
 
-**A spine is saturated** when `cursorΣ(M.g, ς) = ⟨ σ ; θ ⟩` and the **unconsumed declared type `σ`** is not a `forall`, a constraint arrow, or a function type.
-
-The test is on `σ`, not on `θ(σ)`. Substitution can introduce arrows that the declaration never called for, and treating those as argument positions would absorb arguments that do not belong to the foreign.
+Erasure keeps the head and the value arguments, by the rules of [Erasure](#erasure):
 
 ```text
-foreign id : forall a. a -> a
-
-M.id ·                       ⟨ forall a. a -> a ; id ⟩         expects a type
-M.id ([Int -> Int])          ⟨ a -> a ; [a := Int -> Int] ⟩     expects one value
-M.id ([Int -> Int], f)       ⟨ a ; [a := Int -> Int] ⟩          saturated
-```
-
-The last line is saturated because the declared remainder is the variable `a`, even though `θ(a) = Int -> Int` is a function type. So `δ_id(f)` runs and returns `f`, and the application `(M.id ([Int -> Int], f)) 0` proceeds as an ordinary application of the returned function. Testing `θ(σ)` instead would have absorbed `0` into the spine and called `δ_id(f, 0)`.
-
-`foreign make : forall a. a` instantiated at a function type behaves the same way: `M.make ([Int -> Int])` is saturated at once, and whatever function `δ_make()` returns is applied normally.
-
-**Arity is a static property of the declaration.** The number of value-argument positions is the number of arrows on the declared type's spine, which is what the cursor walks and what substitution never changes. Erasure therefore preserves it: after type arguments are gone, a backend still calls `δ_f` with exactly that many run-time arguments.
-
-### Typing a spine
-
-Typing a spine is the cursor together with the well-formedness of each entry.
-
-```text
-  cursorΣ(M.g, ς) = ⟨ σ ; θ ⟩       every entry of ς is well formed, as below
-  ────────────────────────────────────────────────────────────────────────
-  Γ;Δ ⊢ M.g ς : θ(σ) ! ρ
-```
-
-An entry is well formed when, writing `⟨ σ' ; θ' ⟩` for the cursor **before** it is consumed:
-
-| Entry | Condition |
-| --- | --- |
-| `[[κ̄]]` | `Γ ⊢ κ̄ qkind` and `\|κ̄\| = \|k̄\|` |
-| `[τ]` | `Γ ⊢ τ : θ'(κ)`, where `σ' = forall (a : κ). …` |
-| `[•]` | `Γ ⊨ θ'(C)`, where `σ' = C => …` |
-| `w` | `Γ;Δ ⊢ w : θ'(τ1) ! ρ`, where `σ' = τ1 -{()}-> τ2` |
-
-Separating the two is what lets reduction proceed without a `Γ`. **Saturation and the reduction rules consult `cursorΣ` alone**; the conditions in the table are discharged once, when the term is type checked. In particular the entailment `Γ ⊨ θ'(C)` for a `[•]` entry is a type-checking obligation and is never re-examined at run time, consistently with constraints carrying no run-time content.
-
-### Forming and reducing a spine
-
-The atomic global reference forms the initial spine. A defined global unfolds to a value instead; a constructor and a foreign have nothing to unfold to.
-
-```text
-  ( M.Ctor ) ∈ G  with  ( M.Ctor : σκ ) ∈ Σ
-  or  ( M.f : σκ = δ_f ) ∈ G
-  ─────────────────────────────────────────────
-  G ⊢ M.g [[κ̄]] → M.g ([[κ̄]])
-```
-
-Where the kind scheme is empty, `[[κ̄]]` is elided on both sides and the rule reads `M.g → M.g ·`.
-
-An unsaturated spine absorbs the argument its cursor calls for; a saturated foreign invokes its implementation.
-
-```text
-α ::= [τ]  |  [•]  |  v            a spine argument after formation
-```
-
-```text
-  (M.g ς) α                →  M.g (ς, α)           when ς is not saturated for M.g
-                                                    and cursorΣ(M.g, (ς, α)) is defined
-
-  M.f ς                    →  δ_f( values(ς) )     when ς is saturated for M.f,
-                                                    G is Core-modelled, and the
-                                                    ABI preconditions of M.f hold
-```
-
-**The premises on the second rule are not decoration, and the two say different things.** `δ_f( values(ς) )` names the outcome the arguments determine, so the rule says nothing where they determine nothing (above): an implementation reading hidden state is one this rule gives no step to, and that is the whole of what "outside the relation" means. The precondition premise is narrower and fails at one call rather than for a whole environment — a `Base.Array.unsafeIndex` reading a slot nothing wrote has a step taken in any real machine and no step here, because what that step yields is what the ABI declined to fix. Both are written on this rule because this is the one rule where either bites; every rule is read against such a `G` and such a term.
-
-`[[κ̄]]` is absent from `α` because the whole kind vector is consumed at formation and a kind scheme is prenex, so no second kind instantiation can arise.
-
-The two rules do not overlap. A saturated foreign spine reduces to `δ_f` **before** it can be applied to anything further, so a result that happens to be a function is applied by the ordinary rule for application rather than being absorbed.
-
-The second rule is also what makes an arity-zero `foreign` work. A declaration such as `foreign clock : IO Time` forms a spine that is saturated immediately, so it steps to `δ_clock()` rather than sitting as a value that is neither reducible nor complete.
-
-A saturated **constructor** spine is a value and does not reduce; a saturated **foreign** spine is a redex. The difference is that a constructor has an implementation nowhere but in its own structure. A constructor's declared result is `T ā`, never an arrow, so the question of absorbing further arguments does not arise for it.
-
-Erasure discards the erased entries and keeps the values.
-
-```text
-⌊M.g ς⌋ = M.g ⌊values(ς)⌋
+⌊M.g [[κ̄]] ᾱ⌋ = M.g ⌊values(ᾱ)⌋
 ```
 
 ### Evaluation contexts
@@ -717,7 +637,7 @@ let x : Int = (openEff [( E )] f) 0 in perform E.op Prim.Unit
 
 The whole term is typed at ambient row `( E )`, and the rule for `let` requires both its parts to share that row. Rewriting the bound expression to `f 0` would give it row `()`, which no longer matches the body, and no common ambient row exists. Widening the type of the function value is therefore replaced by widening the **ambient row of the resulting computation**, which `openEffC` records. Once that computation reaches a value, the coercion is discharged: a value is pure, so `openEffC [ρ] v → v` keeps both the type and the row.
 
-**Foreign and constructor application** is given by the spine rules above. A foreign reduces once its spine is saturated, and `δ_f` yields a value or a fault.
+**Foreign and constructor application** is given by the rule for chains above. A foreign's chain reduces once it is saturated, and `δ_f` yields a value or a fault.
 
 **Recursive bindings** allocate by-need cells, held in a store `N` the configuration carries alongside the term. A cell is `Suspended e`, its initializer not yet run; `Evaluating`, the initializer running; or `Ready v`. Every other rule leaves `N` as it is and is written without it. `N` is the reduction's own state and holds nothing a `δ_f` writes, so what [An observational effect is outside what this relation models](#an-observational-effect-is-outside-what-this-relation-models) says is untouched.
 

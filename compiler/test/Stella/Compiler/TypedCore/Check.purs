@@ -168,8 +168,21 @@ fixtures =
           , isNewtype: false
           , attributes: []
           }
+      -- `foreign id : forall a. a -> a`, and a defined global of the same
+      -- type, which no chain rule types
+      , DeclForeign unit { name: Ident "id", scheme: { kindVars: [], body: identityType }, attributes: [] }
+      , DeclNonRec unit
+          { name: Ident "ident"
+          , scheme: { kindVars: [], body: identityType }
+          , value: TyLam unit (TyVar "a") KType (lam "x" (TVar (TyVar "a")) (var "x"))
+          , attributes: []
+          }
       ]
   }
+
+-- | `forall a. a -> a`
+identityType :: Type
+identityType = TForall (TyVar "a") KType (pureFn (TVar (TyVar "a")) (TVar (TyVar "a")))
 
 sig :: Signature
 sig = either (const primSignature) identity (declare primSignature fixtures)
@@ -451,6 +464,47 @@ spec = describe "TypedCore.Check" do
         abstraction = ConstraintLam unit assumed oneLit
       checkAt TRowEmpty (TConstrained expected int) abstraction
         `shouldEqual` Left (ConstraintMismatch expected assumed)
+
+  describe "an application chain of a constructor or a foreign" do
+    let
+      just ty x = App unit (TyApp unit (Global unit (value "Just") []) ty) x
+      nothing ty = TyApp unit (Global unit (value "Nothing") []) ty
+      chainOf name ty x = App unit (TyApp unit (Global unit (value name) []) ty) x
+      logs = Perform unit (EffectKey consoleEff) (OpName "log") [] (Lit unit (strLit "x"))
+
+    it "is typed at any ambient row, the arrows it consumes being pure" do
+      -- a constructor's value stands where effects may occur, as the value
+      -- `openEffC [ρ] v` steps to does
+      inferAt consoleRow (just int oneLit) `shouldEqual` Right (maybeOf int)
+      inferAt consoleRow (chainOf "id" int oneLit) `shouldEqual` Right int
+
+    it "checks its value arguments at the ambient row of the whole chain" do
+      inferAt consoleRow (just unitT logs) `shouldEqual` Right (maybeOf unitT)
+
+    it "ends where the declared type is saturated, an arrow an instantiation brings in being none" do
+      -- `Main.id [Int -> Int] f` is saturated at the declared remainder `a`,
+      -- so `x` is an ordinary application of what it returns
+      let chain = App unit (chainOf "id" (pureFn int int) (var "f")) (var "x")
+      inferIn applied TRowEmpty chain `shouldEqual` Right int
+      inferIn applied consoleRow chain `shouldEqual` Left (RowMismatch consoleRow TRowEmpty)
+
+    it "leaves a defined global to the ordinary rule for application" do
+      inferAt TRowEmpty (chainOf "ident" int oneLit) `shouldEqual` Right int
+      inferAt consoleRow (chainOf "ident" int oneLit) `shouldEqual` Left (RowMismatch consoleRow TRowEmpty)
+
+    it "refuses a constructor applied past saturation" do
+      inferAt TRowEmpty (App unit (just int oneLit) oneLit) `shouldEqual` Left (NotAFunction (maybeOf int))
+
+    it "refuses an argument of another sort than the declared type calls for" do
+      inferAt TRowEmpty (App unit (Global unit (value "Just") []) oneLit)
+        `shouldEqual` Left (NotAFunction (TForall (TyVar "a") KType (pureFn (TVar (TyVar "a")) (maybeOf (TVar (TyVar "a"))))))
+
+    it "is a value form beneath a Λ, saturated or not" do
+      let a = TVar (TyVar "a")
+      inferAt TRowEmpty (TyLam unit (TyVar "a") KType (just (maybeOf a) (nothing a)))
+        `shouldEqual` Right (TForall (TyVar "a") KType (maybeOf (maybeOf a)))
+      inferAt TRowEmpty (TyLam unit (TyVar "a") KType (TyApp unit (Global unit (value "Just") []) a))
+        `shouldEqual` Right (TForall (TyVar "a") KType (pureFn a (maybeOf a)))
 
   describe "a constraint abstraction a type application makes unsatisfiable" do
     -- `( Λ r. Λ (_ : name ∉ r). λ (x : Record r). extend name 1 x ) [ ( name : Int ) ]`

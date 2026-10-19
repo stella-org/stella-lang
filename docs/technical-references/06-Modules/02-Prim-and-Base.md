@@ -221,7 +221,7 @@ Having no constructors, an intrinsic type gets its values another way. Which way
 | Class | Type constructors | Canonical form | What examines one |
 | --- | --- | --- | --- |
 | `intrinsic literal` | `Int`, `Number`, `String`, `Char`, `Boolean` | a literal | `switchLit`, `guard` |
-| `intrinsic function` | `Function` | `λ`, an unsaturated spine, `openEff` | application |
+| `intrinsic function` | `Function` | `λ`, an unsaturated chain of a constructor or a foreign, `openEff` | application |
 | `intrinsic record` | `Record` | `{}`, `extend` | `select`, `restrict`, `update`, `merge` |
 | `intrinsic variant` | `Variant` | `inject`, `weaken` | `switchKey`, `absurd` |
 | `intrinsic opaque` | `IO`, and every manifest intrinsic | `opaque ω [τ]` | nothing |

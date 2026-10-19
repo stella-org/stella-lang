@@ -216,6 +216,8 @@ envOf signature context =
 -- | `Γ;Δ ⊢ e : τ ! ρ`, synthesizing the type.
 infer :: forall a. Env -> Type -> Expr a -> Either (CheckFailure a) (Expr (Typed a))
 infer env rho expr = case expr of
+  chain | Just view <- declaredChain env.signature chain -> inferChain env rho view
+
   Var at name -> case lookupVar env.context name of
     Just ty -> Right (Var (at' at ty) name)
     Nothing -> Left { at, error: UnboundVar name }
@@ -237,10 +239,7 @@ infer env rho expr = case expr of
 
   App at f x -> do
     f' <- infer (notTail env) rho f
-    parts <- functionParts at (typeOf f')
-    sameRow at rho parts.row
-    x' <- check (notTail env) rho parts.argument x
-    Right (App (at' at parts.result) f' x')
+    applied env rho rho at f' x
 
   TyLam at name kind body -> do
     freshTypeBinder at env name
@@ -252,11 +251,7 @@ infer env rho expr = case expr of
 
   TyApp at e ty -> do
     e' <- infer (notTail env) rho e
-    case typeOf e' of
-      TForall name kind body -> do
-        kinded at (checkKind env.signature env.context ty kind)
-        Right (TyApp (at' at (substituteType (Map.singleton name ty) body)) e' ty)
-      other -> Left { at, error: NotAForall other }
+    instantiated env at e' ty
 
   ConstraintLam at constraint body -> do
     kinded at (wellFormedConstraint env.signature env.context constraint)
@@ -267,11 +262,7 @@ infer env rho expr = case expr of
 
   ConstraintApp at e -> do
     e' <- infer (notTail env) rho e
-    case typeOf e' of
-      TConstrained constraint body -> do
-        require at env constraint
-        Right (ConstraintApp (at' at body) e')
-      other -> Left { at, error: NotConstrained other }
+    discharged env at e'
 
   Let at name ty value body -> do
     kinded at (checkKind env.signature env.context ty KType)
@@ -876,6 +867,92 @@ instantiateKinds at env name kinds scheme = do
   traverse_ (\kind -> kinded at (quantifiableKind env.context kind)) kinds
   Right (substituteKindsInType (Map.fromFoldable (Array.zip scheme.kindVars kinds)) scheme.body)
 
+-- | `e1 e2` with `e1` typed, its arrow at the row given and its argument
+-- | checked at the ambient row.
+applied :: forall a. Env -> Type -> Type -> a -> Expr (Typed a) -> Expr a -> Either (CheckFailure a) (Expr (Typed a))
+applied env rho arrowRow at f' x = do
+  parts <- functionParts at (typeOf f')
+  sameRow at arrowRow parts.row
+  x' <- check (notTail env) rho parts.argument x
+  Right (App (at' at parts.result) f' x')
+
+-- | `e [σ]` with `e` typed.
+instantiated :: forall a. Env -> a -> Expr (Typed a) -> Type -> Either (CheckFailure a) (Expr (Typed a))
+instantiated env at e' ty = case typeOf e' of
+  TForall name kind body -> do
+    kinded at (checkKind env.signature env.context ty kind)
+    Right (TyApp (at' at (substituteType (Map.singleton name ty) body)) e' ty)
+  other -> Left { at, error: NotAForall other }
+
+-- | `e [•]` with `e` typed.
+discharged :: forall a. Env -> a -> Expr (Typed a) -> Either (CheckFailure a) (Expr (Typed a))
+discharged env at e' = case typeOf e' of
+  TConstrained constraint body -> do
+    require at env constraint
+    Right (ConstraintApp (at' at body) e')
+  other -> Left { at, error: NotConstrained other }
+
+-- | An argument of an application chain.
+data ChainArg a
+  = ChainType a Type
+  | ChainConstraint a
+  | ChainValue a (Expr a)
+
+-- | The spine view of an application chain headed by a constructor or a
+-- | foreign: the head, its kind arguments, and its other arguments in written
+-- | order, at least one.
+type Chain a =
+  { at :: a
+  , name :: Qualified Ident
+  , kinds :: P.Array Kind
+  , args :: P.Array (ChainArg a)
+  }
+
+declaredChain :: forall a. Signature -> Expr a -> Maybe (Chain a)
+declaredChain sig = go []
+  where
+  go args = case _ of
+    App at f x -> go (Array.cons (ChainValue at x) args) f
+    TyApp at e ty -> go (Array.cons (ChainType at ty) args) e
+    ConstraintApp at e -> go (Array.cons (ChainConstraint at) args) e
+    Global at name kinds
+      | not (Array.null args) && declared name -> Just { at, name, kinds, args }
+    _ -> Nothing
+
+  declared name = case lookupGlobal sig name of
+    Just (GlobalCtor _) -> true
+    Just (GlobalValue info) -> info.isForeign
+    Nothing -> false
+
+-- | `M.g [[κ̄]] ā`, typed through `cursorΣ`.
+-- |
+-- | The cursor walks the declared scheme, and the chain is saturated where
+-- | the declared remainder is no binder: an arrow an instantiation brings in
+-- | is no argument position. Every arrow the cursor consumes is pure (`Σ ok`),
+-- | so a value argument is checked at the ambient row of the whole chain
+-- | rather than at the arrow's. An argument past saturation is an ordinary
+-- | application of the result.
+inferChain :: forall a. Env -> Type -> Chain a -> Either (CheckFailure a) (Expr (Typed a))
+inferChain env rho chain = do
+  scheme <- globalScheme chain.at env.signature chain.name
+  head <- infer (notTail env) rho (Global chain.at chain.name chain.kinds)
+  result <- foldM step { expr: head, declared: Just scheme.body } chain.args
+  Right result.expr
+  where
+  step state arg = do
+    let following = state.declared >>= consumed
+    expr <- case arg of
+      ChainType at ty -> instantiated env at state.expr ty
+      ChainConstraint at -> discharged env at state.expr
+      ChainValue at x -> applied env rho (if isJust following then TRowEmpty else rho) at state.expr x
+    Right { expr, declared: following }
+
+  -- the declared remainder past one entry, where the remainder is a binder
+  consumed = case _ of
+    TForall _ _ body -> Just body
+    TConstrained _ body -> Just body
+    ty -> map _.result (asFunction ty)
+
 -- | Every scheme of a recursive group is registered before any right-hand side
 -- | is checked, each under no join point and out of tail position, `Δ = ·`: an
 -- | initializer jumping out would leave its group half initialized. **The group
@@ -1204,8 +1281,12 @@ operationSubstitution at env op params args binders tyArgs = do
 
 -- | `v`.
 -- |
--- | A constructor spine is a value form saturated or not: a constructor has no
--- | body to reduce, so an unsaturated one is a value that behaves as a function.
+-- | A constructor's application chain of values is a value form, saturated or
+-- | not: a constructor has no body to reduce, so an unsaturated one is a value
+-- | that behaves as a function. Every value form is a value of the reduction
+-- | relation, which needs no step beneath a `Λ`: the chain under one is a
+-- | value already. An unsaturated foreign's chain is a value there as well,
+-- | and is no value form here.
 isValueForm :: forall a. Signature -> Expr a -> P.Boolean
 isValueForm sig = case _ of
   Lit _ _ -> true

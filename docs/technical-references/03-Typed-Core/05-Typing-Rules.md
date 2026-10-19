@@ -84,7 +84,7 @@ The distinction is also the unit of **separate compilation**. `Σ` is what a mod
 - Every scheme `forall k̄. σ` has `·, k̄ ⊢ σ : Type`.
 - Every arrow of a foreign's type standing where a value passes through is pure (D23), the payload of a row element included. A constraint carries no value, so the arrows inside one are not held to it.
 
-**The exact shape of a constructor is what dispatch relies on.** `switchCtor` instantiates a constructor's fields at the type arguments of the occurrence it takes apart, and construction instantiates them at the arguments the scheme was applied to. The two agree only because the scheme's result is the owner applied to its own parameters. A constructor of `T : Type -> Type` declared `C : forall (a : Type). a -> T Int` breaks that: `C [String] s` has type `T Int`, and a branch taking it apart types the field at `Int` while the value carries a `String`. Under `Σ wf` a field obtained by dispatch is well kinded at the occurrence's own kind and type arguments, and `cursorΣ` may take every arrow of a constructor or a foreign to be pure ([Semantics](06-Semantics.md)).
+**The exact shape of a constructor is what dispatch relies on.** `switchCtor` instantiates a constructor's fields at the type arguments of the occurrence it takes apart, and construction instantiates them at the arguments the scheme was applied to. The two agree only because the scheme's result is the owner applied to its own parameters. A constructor of `T : Type -> Type` declared `C : forall (a : Type). a -> T Int` breaks that: `C [String] s` has type `T Int`, and a branch taking it apart types the field at `Int` while the value carries a `String`. Under `Σ wf` a field obtained by dispatch is well kinded at the occurrence's own kind and type arguments, and `cursorΣ` may take every arrow of a constructor or a foreign to be pure ([Chains of a constructor or a foreign](#chains-of-a-constructor-or-a-foreign)).
 
 `Σ prim` holds when `Σ` holds `Σ_Prim` exactly as [Prim and Base](../06-Modules/02-Prim-and-Base.md) fixes it, and holds nothing else under `Prim`:
 
@@ -132,8 +132,9 @@ attribute Prim.macro, attribute Prim.entrypoint, attribute Prim.elaborationOnly 
   Γ;Δ ⊢ λ(x : τ1) / ρ'. e : τ1 -{ρ'}-> τ2 ! ρ           ← Δ is discarded
 
   Γ;Δ ⊢ e1 : τ1 -{ρ}-> τ2 ! ρ    Γ;Δ ⊢ e2 : τ1 ! ρ
-  ────────────────────────────────────────────────   ← the arrow's row equals the ambient row
-  Γ;Δ ⊢ e1 e2 : τ2 ! ρ
+  ────────────────────────────────────────────────   ← the arrow's row equals the ambient row;
+  Γ;Δ ⊢ e1 e2 : τ2 ! ρ                                  a chain of a constructor or a foreign
+                                                        has a rule of its own, below
 
   Γ ⊢ κ qkind    Γ, a : κ; · ⊢ v : τ ! ()    v is a value form
   ────────────────────────────────────────────────────────────
@@ -180,6 +181,75 @@ initialization has no effect to order beside what it reads ([Initialization Safe
 **Binder freshness is a well-formedness condition on the checker's input, not a rule of the language.** Core is a language of terms up to α-equivalence, and in it a term written with a shadowing binder is the same term as its renamed form. What the checker receives is a representation, and it requires that representation to follow the unique-binder convention for the binders of terms that bind a type-level name: no `Λ`, type binder of an operation clause, or `region` binds a name already bound where it stands, and the type binders of one clause are distinct. The checker rejects a representation that breaks it — `TypeBinderShadows` for a type binder, `RegionBinderShadows` for a region binder — rather than renaming it: elaboration generates fresh names, so such an input is an elaborator defect. Accepting it would let a type binder shadowing an outer variable be read with the wrong meaning, and a region binder shadowing an outer one make a reference to the outer region read the inner. Types are not held to the convention and are scoped lexically ([Kinds and Types](01-Kinds-and-Types.md)). Reduction keeps the convention: opening a region introduces a globally fresh name, and type substitution renames a binder it would capture ([Semantics](06-Semantics.md)).
 
 The rules for global names instantiate a kind scheme with `κ̄'`, which is **pure substitution**: `κ̄'` is written in the term, so the checker neither guesses nor searches for it. It verifies only that the arity matches and that each `κ'` is a quantifiable kind. Where a global name has an empty scheme, `[[]]` is omitted and the rule reads as `(M.x : σ) ∈ Σ`, which is the case for most of Core.
+
+## Chains of a constructor or a foreign
+
+**A constructor or a foreign is applied through its application chain, and Core has no other form of the call.** `M.Cons [Int] 1 xs` is the global `M.Cons` under a type application and two applications, and reduction reads that same term ([Semantics](06-Semantics.md#chains-of-a-constructor-or-a-foreign)). The **spine view** decomposes such a term into its head, with its kind arguments, and its other arguments in written order:
+
+```text
+M.g [[κ̄]] α1 … αn         M.g a constructor or a foreign of Σ
+α ::= [τ]  |  [•]  |  e     a type, a constraint, or a value argument
+values(ᾱ)                   the value arguments of ᾱ, in order
+```
+
+The arguments come in whatever order the declared type calls for: a declared type may interleave quantifiers, constraints, and arrows, and nothing requires the erased arguments to precede the values. A type such as `Int -> forall a. a -> a` is therefore usable, with `[String]` supplied after the first value argument.
+
+### The cursor
+
+`cursorΣ` is a partial function that walks the **declared** type through the view, consuming one argument at a time. It performs no well-formedness checking.
+
+```text
+cursorΣ(M.g [[κ̄]] ᾱ)  =  ⟨ σ ; θ ⟩    σ is the unconsumed remainder of the declared type
+                                       θ is the accumulated kind and type substitution
+```
+
+```text
+cursorΣ(M.g [[κ̄]])         = ⟨ σ ; [k̄ := κ̄] ⟩    where ( M.g : forall k̄. σ ) ∈ Σ
+cursorΣ(M.g [[κ̄]] ᾱ [τ])   = ⟨ σ ; θ[a := τ] ⟩    where cursorΣ(M.g [[κ̄]] ᾱ) = ⟨ forall (a : κ). σ ; θ ⟩
+cursorΣ(M.g [[κ̄]] ᾱ [•])   = ⟨ σ ; θ ⟩            where cursorΣ(M.g [[κ̄]] ᾱ) = ⟨ C => σ ; θ ⟩
+cursorΣ(M.g [[κ̄]] ᾱ e)     = ⟨ τ2 ; θ ⟩           where cursorΣ(M.g [[κ̄]] ᾱ) = ⟨ τ1 -{()}-> τ2 ; θ ⟩
+```
+
+It is undefined in every other case. At most one clause applies at each step, since the shape of the unconsumed declared type distinguishes them. The arrow the last clause consumes is pure: a constructor's arrows are pure by its exact scheme, and a `foreign`'s by D23, `Σ ok` holding both of every entry, an imported one included.
+
+**A chain is saturated** when `cursorΣ(M.g [[κ̄]] ᾱ) = ⟨ σ ; θ ⟩` and the **unconsumed declared type `σ`** is not a `forall`, a constraint arrow, or a function type, so that no clause extends it. The test is on `σ`, not on `θ(σ)`. Substitution can introduce arrows that the declaration never called for, and treating those as argument positions would absorb arguments that do not belong to the global.
+
+```text
+foreign id : forall a. a -> a
+
+M.id                       ⟨ forall a. a -> a ; id ⟩          expects a type
+M.id [Int -> Int]          ⟨ a -> a ; [a := Int -> Int] ⟩      expects one value
+M.id [Int -> Int] f        ⟨ a ; [a := Int -> Int] ⟩           saturated
+```
+
+The last line is saturated because the declared remainder is the variable `a`, even though `θ(a) = Int -> Int` is a function type. **A chain ends where it is saturated**, and an argument beyond is an ordinary application of what the chain returns: `M.id [Int -> Int] f 0` is the application of the chain `M.id [Int -> Int] f` to `0`, typed by the rule for `e1 e2`. `foreign make : forall a. a` instantiated at a function type behaves the same way: `M.make [Int -> Int]` is saturated at once. A constructor's declared result is `T ᾱ`, never an arrow, so nothing applies a saturated one.
+
+**Arity is a static property of the declaration.** The number of value-argument positions is the number of arrows on the declared type's spine, which is what the cursor walks and what substitution never changes. Erasure therefore preserves it: after type arguments are gone, a backend still calls `δ_f` with exactly that many run-time arguments.
+
+### Typing a chain
+
+```text
+  M.g a constructor or a foreign      Γ ⊢ κ̄ qkind    |κ̄| = |k̄|
+  cursorΣ(M.g [[κ̄]] α1 … αn) = ⟨ σ ; θ ⟩    n ≥ 1    each αi well formed, as below
+  ──────────────────────────────────────────────────────────────────────────────
+  Γ;Δ ⊢ M.g [[κ̄]] α1 … αn : θ(σ) ! ρ
+```
+
+An argument is well formed when, writing `⟨ σ' ; θ' ⟩` for the cursor **before** it is consumed:
+
+| Argument | Condition |
+| --- | --- |
+| `[τ]` | `Γ ⊢ τ : θ'(κ)`, where `σ' = forall (a : κ). …` |
+| `[•]` | `Γ ⊨ θ'(C)`, where `σ' = C => …` |
+| `e` | `Γ;Δ ⊢ e : θ'(τ1) ! ρ`, where `σ' = τ1 -{()}-> τ2` |
+
+**The value arguments stand at the ambient row of the whole chain.** An arrow the cursor consumes is pure, so the call itself performs nothing: building a constructor's value runs nothing it is given, and a saturated foreign steps to a value or a fault and performs no proper effect ([Semantics](06-Semantics.md)). What an argument's evaluation performs is bounded by the row ambient where the chain stands, as it would be beside any other pure form. The rule for `e1 e2` would instead ask the arrow's row `()` to be the ambient row, and an `openEff` per argument where it is not.
+
+**Preservation needs the rule, and does not merely admit it.** A widened computation ends in `openEffC [ρ] v → v` ([Semantics](06-Semantics.md)), and where `v` is `M.Just [Int] 1` the term after the step stands at the widened row, which the rule for `e1 e2` does not type it at. The rule gives a chain of values every row, as a `λ` has every row.
+
+**A chain's arrows are those of the declaration, and only a constructor's and a foreign's chains have the rule.** A top-level value's scheme may carry an effectful arrow, and its body is unfolded and evaluated as written ([Semantics](06-Semantics.md)), so a defined global is applied by the rule for `e1 e2`. The checker types a constructor's or a foreign's chain by this rule; one typed at `()` by the rules for application alone has the same type.
+
+`openEff` is still what widens a pure **function value** — a variable, a `λ`, a defined global, or a chain passed where a wider arrow is expected — since the function's type, not the place it is applied, is what changes there.
 
 ## Records and variants
 
@@ -288,7 +358,7 @@ A `fast` clause's premise names neither `k_i` nor `β`, and that absence is the 
 
 **What the rule establishes is about the clause, not about the program containing it.** The body may diverge, it may fault, and it may perform an operation of `ρ` whose own handler declines to resume, or resumes more than once and so runs the rest of the handled computation again ([Effects](03-Effects.md)). The two forms are otherwise alike, both binding the operation's own type variables `b̄_i` and both checked with `Δ` discarded ([Terms and Matching](04-Terms-and-Matching.md)).
 
-`openEff` is required where a pure function is used in an effectful context.
+`openEff` is required where a pure function is used in an effectful context, a constructor or a foreign applied through its chain aside ([Chains of a constructor or a foreign](#chains-of-a-constructor-or-a-foreign)).
 
 ```text
 -- f : Int -> Int                        (pure)
