@@ -1,0 +1,6 @@
+-- The `IO` entries of `stella-base-0.1`: the two the runtime builds `IO`
+-- values with, each declared at the scheme the ABI declares it at.
+module Base.IO where
+
+foreign pure :: forall a. a -> IO a
+foreign bind :: forall a b. IO a -> (a -> IO b) -> IO b

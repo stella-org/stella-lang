@@ -1,0 +1,7 @@
+-- The `Char` entries of `stella-base-0.1`: operations the runtime carries out
+-- itself, each declared at the scheme the ABI declares it at. `fromCodePoint`
+-- faults on what is no Unicode scalar value; `toCodePoint` does not fault.
+module Base.Char where
+
+foreign toCodePoint :: Char -> Int
+foreign fromCodePoint :: Int -> Char

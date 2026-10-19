@@ -1,0 +1,17 @@
+-- The `Number` entries of `stella-base-0.1`: operations the runtime carries
+-- out itself, each declared at the scheme the ABI declares it at. No entry
+-- faults.
+module Base.Number where
+
+foreign add :: Number -> Number -> Number
+foreign sub :: Number -> Number -> Number
+foreign mul :: Number -> Number -> Number
+foreign divide :: Number -> Number -> Number
+foreign negate :: Number -> Number
+foreign eq :: Number -> Number -> Boolean
+foreign lt :: Number -> Number -> Boolean
+foreign floor :: Number -> Number
+foreign ceil :: Number -> Number
+foreign trunc :: Number -> Number
+foreign toInt :: Number -> Int
+foreign toString :: Number -> String

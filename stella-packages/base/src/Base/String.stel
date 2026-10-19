@@ -1,0 +1,12 @@
+-- The `String` entries of `stella-base-0.1`: operations the runtime carries
+-- out itself, each declared at the scheme the ABI declares it at.
+-- `codePointAt` and `slice` fault out of range; no other entry faults.
+module Base.String where
+
+foreign length :: String -> Int
+foreign codePointAt :: Int -> String -> Char
+foreign append :: String -> String -> String
+foreign slice :: Int -> Int -> String -> String
+foreign singleton :: Char -> String
+foreign eq :: String -> String -> Boolean
+foreign lt :: String -> String -> Boolean

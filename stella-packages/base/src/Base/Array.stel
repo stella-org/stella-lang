@@ -1,0 +1,11 @@
+-- The `Array` entries of `stella-base-0.1`: the type the ABI supplies, and the
+-- operations the runtime carries out on it itself, each declared at the kind
+-- or the scheme the ABI declares it at. `unsafeNew` faults on a negative
+-- count, `unsafeSet` and `unsafeIndex` out of range; `length` does not fault.
+module Base.Array where
+
+foreign type Array :: Type -> Type
+foreign length :: forall a. Array a -> Int
+foreign unsafeNew :: forall a. Int -> Array a
+foreign unsafeSet :: forall a. Int -> a -> Array a -> Unit
+foreign unsafeIndex :: forall a. Array a -> Int -> a
