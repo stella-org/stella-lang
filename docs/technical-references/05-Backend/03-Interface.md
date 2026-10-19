@@ -362,7 +362,7 @@ speak of one module.** An interface is made only where the checks pass.
 
 ### A module written in Core
 
-**A module written in Core has a canonical interface, read off the module and its checked signature.** Such a module has no source and so no surface part: `Stella.Syntax` and `Stella.Elab`, which the compiler writes in Core, and the modules a test writes in Core, the hand-written `Base` fixtures among them. Its interface is `Stella.Compiler.Interface.FromCore` applied to the module, what checking it declared, and the arities of its translation. It is a projection of what Core holds, and no inverse of a surface part: what Core keeps nothing of is given one value.
+**A module written in Core has a canonical interface, read off the module and its checked signature.** Such a module has no source and so no surface part: `Stella.Elab`, which the compiler writes in Core, and the modules a test writes in Core, the hand-written `Base` fixtures among them. Its interface is `Stella.Compiler.Interface.FromCore` applied to the module, what checking it declared, and the arities of its translation. It is a projection of what Core holds, and no inverse of a surface part: what Core keeps nothing of is given one value.
 
 | What | In the interface |
 | --- | --- |
@@ -370,12 +370,10 @@ speak of one module.** An interface is made only where the checks pass.
 | a foreign | a foreign that may observe, Core holding no `#observ(none)` |
 | a data type, its constructors | a data type with its parameters, and its constructors in the order of their tags |
 | an effect, its operations | an effect, each operation taking its one Core argument as its one argument, and at the scheme an operation declared with that one argument is called at |
-| an intrinsic type the signature holds under the module's name | an intrinsic type of the module, with its canonical class: `Stella.Syntax`'s `IssuedOrigin` |
+| an intrinsic type the signature holds under the module's name | an intrinsic type of the module, with its canonical class: `Stella.Elab`'s `Handle` |
 | an attribute declaration | an attribute declaration |
 | an exported value carrying `Prim.macro` | a macro exported in the macro namespace, and no value exported; declared as any value is |
 | fixities, implicit handlers, entries published to the catalog alone, synonyms, foreign types | none |
-
-**What such a module keeps from source is in no export of its interface**, though its Core exports it for a linker: `Stella.Syntax` exports `OriginRef` abstract, its constructor `InputOrigin` being the host's alone, and its elaboration-only entries `$QuotedOrigin` and `$spliced` in no export table ([Modules](../06-Modules/01-Modules.md)).
 
 **What the module owns is what the checked signature holds under its name**, and nothing of an import or of `Prim` is. An intrinsic type the signature holds under the module's name is the module's as a declared type is; a data type there must have the module's Core declaration behind it. **A projection is refused** where a data type in the signature has no declaration of the module, where an export names nothing the module declares, and where an arity is of a value no module downstream reaches or is below one, as an assembled interface's arities are checked. **A module written in source is never projected so**: its interface is assembled from the three parts above, which hold what Core has lost.
 

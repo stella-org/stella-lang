@@ -1609,15 +1609,19 @@ A `foreign` the ABI fixes, against one a host implements ([Prim and Base](../06-
 | A foreign of a `Base` module the catalog does not name, taking a function, a type variable, or an `IO` | Refused as a host foreign is (D44) |
 | A package with `Base.IO` and `Base.Array` in source and a module of host foreigns, built by `stellac build` and run by `steam run` over a manifest naming that module alone | Run, the runtime carrying out the `Base` entries |
 
-### `Base.Int` from its source (step 7)
+### The modules the compiler carries, from their sources (step 7)
 
-The module the compiler carries, compiled from `stella-packages/base/src/Base/Int.stel` ([Modules](../06-Modules/01-Modules.md#stellac-build)).
+`Base.Int` and `Stella.Syntax`, compiled from `stella-packages/base/src/Base/Int.stel` and `stella-packages/compiler-lib/src/Stella/Syntax.stel`, and the entries only elaboration names ([Modules](../06-Modules/01-Modules.md#stellac-build)).
 
 | Input | Required outcome |
 | --- | --- |
-| The text the compiler holds, and the file | The same text |
-| The `Base.Int` the compiler carries | The interface and the bytecode the text compiles to as a build compiles a module, against `Prim` alone |
-| The file, copied as it stands into a package of its own, built with `--toolchain-rebuild Base.Int` | Built; its `.dmi` the interface the compiler carries, and its `.dmo` the same bytes |
-| An ordinary package importing `Base.Int` and a module of host foreigns, run by `steam run` over that `.dmo` | Run, `add 1 2` printed as `3` |
-| A toolchain build of the file beside a macro importing `Base.Int`, and one of the file without `toString` | As for any toolchain build of a module the compiler carries: compiled, the macro run on the module the compiler carries; refused, naming the module kept |
+| The two files, compiled by the compiler as it stands, the second against the first | The interface files and the bytecode files the compiler holds, to the byte |
+| The modules the compiler carries | Those files decoded |
+| Each file, copied as it stands into a package of its own, built with `--toolchain-rebuild` naming its module | Built; its `.dmi` the interface the compiler carries, and its `.dmo` the same bytes |
+| An ordinary package importing `Base.Int` and a module of host foreigns, run by `steam run` over the `.dmo` of `Base.Int` | Run, `add 1 2` printed as `3` |
+| A toolchain build of `Base.Int` beside a macro importing it, and one of `Base.Int` without `toString` | As for any toolchain build of a module the compiler carries: compiled, the macro run on the module the compiler carries; refused, naming the module kept |
+| `Stella.Syntax` as the compiler carries it | `OriginRef` exported abstract; `$QuotedOrigin` and `$spliced` in no export of the interface and with no arity, `$spliced` exported by the bytecode; the descriptor read off the interface mirroring the host's types constructor for constructor |
+| `@[elaborationOnly]` on `OriginRef` in `Stella.Syntax`, its constructors `InputOrigin` and `QuotedOrigin` in that order | `QuotedOrigin` takes `$QuotedOrigin`, `InputOrigin` keeps its name and its membership; another order, or another set of constructors, refused |
+| `@[elaborationOnly]` on `spliced` in `Stella.Syntax`, on another value there, and on `spliced` in another module | The first takes `$spliced`, and an export list naming it is refused; the others refused |
+| `Stella.Syntax` declaring `spliced` at `Int`, or not at all; `Base.Continuation` declaring its constructor at another scheme | Refused where the declaration stands, or at the module, in the build compiling it: the declaring module's error, not the compiler's |
 | The hand-written `Base.Int` the Core fixtures compile | The Core, the interface, and the bytecode the file gives. It is watched while those fixtures stand for the module, and goes with them |
