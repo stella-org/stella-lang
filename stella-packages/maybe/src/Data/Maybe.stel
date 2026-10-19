@@ -1,0 +1,21 @@
+-- Optional values: nothing, or just a value.
+module Data.Maybe
+  ( Maybe(..)
+  , maybe
+  , fromMaybe
+  ) where
+
+data Maybe a = Nothing | Just a
+
+-- The function applied to the value where there is one, and the default
+-- where there is none.
+maybe :: forall a b. b -> (a -> b) -> Maybe a -> b
+maybe z f m = case m of
+  Nothing -> z
+  Just x -> f x
+
+-- The value where there is one, and the default where there is none.
+fromMaybe :: forall a. a -> Maybe a -> a
+fromMaybe z m = case m of
+  Nothing -> z
+  Just x -> x

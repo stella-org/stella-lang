@@ -1,0 +1,48 @@
+-- Lists: a list is empty, or an element before a list.
+module Data.List
+  ( List(..)
+  , append
+  , map
+  , foldr
+  , foldl
+  , reverse
+  , length
+  ) where
+
+import Base.Int as Int
+
+data List a = Nil | Cons a (List a)
+
+-- The elements of the first list, then those of the second.
+append :: forall a. List a -> List a -> List a
+append xs ys = case xs of
+  Nil -> ys
+  Cons x rest -> Cons x (append rest ys)
+
+-- Each element given to the function, in order.
+map :: forall a b. (a -> b) -> List a -> List b
+map f xs = case xs of
+  Nil -> Nil
+  Cons x rest -> Cons (f x) (map f rest)
+
+-- The elements combined from the right: `foldr f z [x1, x2]` is
+-- `f x1 (f x2 z)`.
+foldr :: forall a b. (a -> b -> b) -> b -> List a -> b
+foldr f z xs = case xs of
+  Nil -> z
+  Cons x rest -> f x (foldr f z rest)
+
+-- The elements combined from the left: `foldl f z [x1, x2]` is
+-- `f (f z x1) x2`.
+foldl :: forall a b. (b -> a -> b) -> b -> List a -> b
+foldl f z xs = case xs of
+  Nil -> z
+  Cons x rest -> foldl f (f z x) rest
+
+-- The elements in the opposite order.
+reverse :: forall a. List a -> List a
+reverse xs = foldl (\acc x -> Cons x acc) Nil xs
+
+-- How many elements the list has.
+length :: forall a. List a -> Int
+length xs = foldl (\n _ -> Int.add n 1) 0 xs
