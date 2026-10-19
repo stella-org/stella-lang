@@ -30,6 +30,8 @@ jobs:
               - 'stellac/**'
               - 'js-runtime/**'
               - 'fixtures/**'
+              - 'stella-packages/**'
+              - 'scripts/**'
               - 'package.json'
               - 'package-lock.json'
               - 'spago.yaml'
