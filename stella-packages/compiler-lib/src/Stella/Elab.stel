@@ -1,0 +1,792 @@
+-- What a guest synthesizer running on Steam is written against.
+--
+-- A guest asks the host through one effect operation, `command`, and the
+-- values it sends and receives are data types of this module. They mirror the
+-- kernel's vocabulary constructor for constructor, so that a request a guest
+-- builds is the request a host script makes. Only the control a guest has any
+-- use for is exposed: the attempt is finished by the guest returning, not by a
+-- command, and transactions are opened and closed without the guest ever
+-- holding their tokens.
+--
+-- A guest is written against typed operations, not against `command`. Each
+-- kernel operation has a function of the host facade's name, taking the
+-- request's fields in order and giving back what its answer carries;
+-- `transact` runs a candidate, and `synthesizer` makes a policy into what an
+-- invocation calls. The operations and `transact` run at
+-- `( Abort, Breach, Kernel )`, and so does a policy written with them;
+-- `synthesizer` narrows it to `( Kernel )`, the one effect the root boundary
+-- answers.
+--
+-- `Abort` is how a candidate fails, and `Breach` how a host answers outside
+-- its contract. An operation answered `CandidateFailed` raises `Abort`, which
+-- the innermost `transact` handles; any other answer it does not expect raises
+-- `Breach`, which `transact` leaves for `synthesizer`. Both are raised by the
+-- operations here and handled by `transact` and `synthesizer` alone: a policy
+-- that performs or handles either itself is out of contract, and gains nothing
+-- by it, the host's transactions and the result it finishes with being checked
+-- where it holds them.
+--
+-- The module depends on nothing, so it has lists and optional values of its
+-- own.
+module Stella.Elab
+  ( Handle
+  , List(..)
+  , Maybe(..)
+  , Name(..)
+  , RowElemKind(..)
+  , KindView(..)
+  , RowKey(..)
+  , Literal(..)
+  , PayloadView(..)
+  , ConstraintView(..)
+  , TypeView(..)
+  , EntrySort(..)
+  , Constant(..)
+  , MessagePart(..)
+  , KernelRequest(..)
+  , BuildRequest(..)
+  , TermRequest(..)
+  , TreeRequest(..)
+  , RecordRequest(..)
+  , HandlerRequest(..)
+  , SolveRequest(..)
+  , ObserveRequest(..)
+  , ReportRequest(..)
+  , KernelAnswer(..)
+  , GuestCommand(..)
+  , GuestAnswer(..)
+  , Kernel(..)
+  , Abort(..)
+  , Breach(..)
+  , rootScope
+  , typeVariable
+  , typeConstructor
+  , applyType
+  , emptyRow
+  , extendRow
+  , unionRow
+  , openForall
+  , closeForall
+  , openConstraint
+  , closeConstraint
+  , instantiateForall
+  , instantiateScheme
+  , localVariable
+  , globalRef
+  , literal
+  , termApply
+  , typeApply
+  , constraintApply
+  , openLambda
+  , closeLambda
+  , openTypeAbs
+  , closeTypeAbs
+  , openConstraintAbs
+  , closeConstraintAbs
+  , openLet
+  , closeLet
+  , openLetRec
+  , closeLetRec
+  , openJoin
+  , closeJoin
+  , jump
+  , openCase
+  , closeCase
+  , leaf
+  , guard
+  , openBind
+  , closeBind
+  , recordField
+  , openSwitchCtor
+  , openSwitchLit
+  , openSwitchKey
+  , closeSwitch
+  , recordEmpty
+  , recordExtend
+  , recordSelect
+  , recordRestrict
+  , recordUpdate
+  , recordMerge
+  , variantInject
+  , variantWeaken
+  , variantAbsurd
+  , openEff
+  , perform
+  , openHandle
+  , closeHandle
+  , openRegion
+  , closeRegion
+  , readCell
+  , writeCell
+  , freshMetaType
+  , isAssigned
+  , unify
+  , entails
+  , require
+  , subgoal
+  , goalType
+  , viewType
+  , whnf
+  , normalizeRow
+  , kindOf
+  , typeOf
+  , localContext
+  , localConstraints
+  , lookupGlobal
+  , declsWithAttr
+  , throw
+  , warn
+  , postpone
+  , transact
+  , synthesizer
+  ) where
+
+-- A host token, which nothing a guest writes can take apart.
+foreign type Handle :: Type
+
+data List a = Nil | Cons a (List a)
+
+data Maybe a = Nothing | Just a
+
+-- A qualified name: its module, and its name there.
+data Name = Name String String
+
+data RowElemKind = RowType | RowEffect
+
+data KindView
+  = KindType
+  | KindEffect
+  | KindRow RowElemKind
+  | KindFun KindView KindView
+  | KindVar String
+  | KindAnyRow
+
+data RowKey
+  = SymbolKey String
+  | TagKey String
+  | PositionKey Int
+  | EffectKey Name
+  | RegionKey String
+
+data Literal
+  = LitInt Int
+  | LitNumber Number
+  | LitString String
+  | LitChar Char
+  | LitBoolean Boolean
+
+data PayloadView
+  = TypePayload Handle
+  | EffectPayload Name (List Handle)
+  | RegionPayload String
+
+data ConstraintView
+  = LacksView RowKey Handle
+  | DisjointView Handle Handle
+
+data TypeView
+  = VarType String
+  | MetaType Handle
+  | ConType Name (List KindView)
+  | AppType Handle Handle
+  | ForallType String KindView Handle
+  | ConstrainedType ConstraintView Handle
+  | NormalRow { elementKind :: Maybe RowElemKind, known :: List { key :: RowKey, payload :: PayloadView }, rigid :: List String, flexible :: List { meta :: Handle, type :: Handle } }
+
+data EntrySort = ValueEntry | ForeignEntry | ConstructorEntry
+
+data Constant
+  = ConstantLiteral Literal
+  | ConstantValue Name
+  | ConstantConstructor Name (List Constant)
+  | ConstantRecord (List { label :: String, value :: Constant })
+
+data MessagePart
+  = TextPart String
+  | TypePart Handle
+  | TermPart Handle
+  | NamePart Name
+
+data KernelRequest
+  = BuildRequest BuildRequest
+  | TermRequest TermRequest
+  | TreeRequest TreeRequest
+  | RecordRequest RecordRequest
+  | HandlerRequest HandlerRequest
+  | SolveRequest SolveRequest
+  | ObserveRequest ObserveRequest
+  | ReportRequest ReportRequest
+
+data BuildRequest
+  = RootScope
+  | TypeVariable Handle String
+  | TypeConstructor Handle Name (List KindView)
+  | ApplyType Handle Handle Handle
+  | EmptyRow Handle
+  | ExtendRow Handle RowKey PayloadView Handle
+  | UnionRow Handle Handle Handle
+  | OpenForall Handle String KindView
+  | CloseForall Handle Handle Handle
+  | OpenConstraint Handle ConstraintView
+  | CloseConstraint Handle Handle Handle
+  | InstantiateForall Handle Handle Handle
+  | InstantiateScheme Handle Name (List KindView)
+
+data TermRequest
+  = LocalVariable Handle String
+  | GlobalRef Handle Name (List KindView)
+  | LiteralTerm Handle Literal
+  | TermApply Handle Handle Handle
+  | TypeApply Handle Handle Handle
+  | ConstraintApply Handle Handle
+  | OpenLambda Handle String Handle
+  | CloseLambda Handle Handle Handle Handle
+  | OpenTypeAbs Handle String KindView
+  | CloseTypeAbs Handle Handle Handle
+  | OpenConstraintAbs Handle ConstraintView
+  | CloseConstraintAbs Handle Handle Handle
+  | OpenLet Handle String Handle
+  | CloseLet Handle Handle Handle
+  | OpenLetRec Handle (List { hint :: String, type :: Handle })
+  | CloseLetRec Handle Handle (List Handle) Handle
+  | OpenJoin Handle String (List { hint :: String, type :: Handle }) Handle
+  | CloseJoin Handle Handle Handle Handle
+  | Jump Handle Handle (List Handle)
+
+data TreeRequest
+  = OpenCase Handle (List Handle)
+  | CloseCase Handle Handle (Maybe Handle) Handle
+  | Leaf Handle Handle
+  | Guard Handle Handle Handle Handle
+  | OpenBind Handle Handle String
+  | CloseBind Handle Handle Handle
+  | RecordField Handle Handle RowKey
+  | OpenSwitchCtor Handle Handle (List Name) Boolean
+  | OpenSwitchLit Handle Handle (List Literal)
+  | OpenSwitchKey Handle Handle (List RowKey) Boolean
+  | CloseSwitch Handle Handle (List Handle) (Maybe Handle)
+
+data RecordRequest
+  = RecordEmpty Handle
+  | RecordExtend Handle RowKey Handle Handle
+  | RecordSelect Handle RowKey Handle
+  | RecordRestrict Handle RowKey Handle
+  | RecordUpdate Handle RowKey Handle Handle
+  | RecordMerge Handle Handle Handle
+  | VariantInject Handle RowKey Handle Handle
+  | VariantWeaken Handle RowKey Handle Handle
+  | VariantAbsurd Handle Handle Handle
+  | OpenEff Handle Handle Handle
+
+data HandlerRequest
+  = Perform Handle RowKey PayloadView String (List Handle) Handle
+  | OpenHandle Handle Handle RowKey PayloadView Handle Handle (List { op :: String, full :: Boolean })
+  | CloseHandle Handle Handle Handle (List Handle)
+  | OpenRegion Handle (List { key :: RowKey, type :: Handle })
+  | CloseRegion Handle Handle Handle (List Handle)
+  | ReadCell Handle Handle RowKey
+  | WriteCell Handle Handle RowKey Handle
+
+data SolveRequest
+  = FreshMetaType Handle KindView
+  | IsAssigned Handle
+  | Unify Handle Handle Handle
+  | Entails Handle ConstraintView
+  | Require Handle ConstraintView
+  | Subgoal Handle Handle Name
+
+data ObserveRequest
+  = GoalType Handle
+  | ViewType Handle
+  | Whnf Handle
+  | NormalizeRow Handle
+  | KindOf Handle
+  | TypeOf Handle
+  | LocalContext
+  | LocalConstraints
+  | LookupGlobal Name
+  | DeclsWithAttr Name
+
+data ReportRequest
+  = Throw (List MessagePart)
+  | Warn (List MessagePart)
+  | Postpone (List Handle)
+
+data KernelAnswer
+  = UnitAnswer
+  | HandleAnswer Handle
+  | BooleanAnswer Boolean
+  | TypeViewAnswer TypeView
+  | RowViewAnswer { elementKind :: Maybe RowElemKind, known :: List { key :: RowKey, payload :: PayloadView }, rigid :: List String, flexible :: List { meta :: Handle, type :: Handle } }
+  | KindViewAnswer KindView
+  | ContextAnswer (List { name :: String, type :: Handle })
+  | ConstraintsAnswer (List ConstraintView)
+  | DeclAnswer (Maybe { name :: Name, sort :: EntrySort, kindVars :: List String, scheme :: Handle, attributes :: List { name :: Name, positional :: List Constant, keyword :: List { label :: String, value :: Constant } } })
+  | NamesAnswer (List Name)
+  | BinderAnswer { binder :: Handle, variable :: Handle, bodyScope :: Handle }
+  | AssumptionAnswer { assumption :: Handle, bodyScope :: Handle }
+  | ConstraintAbsAnswer { binder :: Handle, bodyScope :: Handle }
+  | LetRecAnswer { binder :: Handle, variables :: List Handle, bodyScope :: Handle }
+  | JoinAnswer { binder :: Handle, join :: Handle, params :: List Handle, definitionScope :: Handle, bodyScope :: Handle }
+  | CaseAnswer { binder :: Handle, scrutinees :: List Handle, treeScope :: Handle }
+  | SwitchCtorAnswer { binder :: Handle, branches :: List { scope :: Handle, fields :: List Handle }, fallback :: Maybe Handle }
+  | SwitchLitAnswer { binder :: Handle, branches :: List Handle, fallback :: Handle }
+  | SwitchKeyAnswer { binder :: Handle, branches :: List { scope :: Handle, payload :: Handle }, fallback :: Maybe { scope :: Handle, residual :: Handle } }
+  | HandlerAnswer { binder :: Handle, returnClause :: { variable :: Handle, scope :: Handle }, clauses :: List { typeVariables :: List Handle, argument :: Handle, continuation :: Maybe Handle, scope :: Handle } }
+  | RegionAnswer { binder :: Handle, name :: String, bodyScope :: Handle }
+
+data GuestCommand
+  = Kernel KernelRequest
+  | BeginTransaction
+  | CommitTransaction
+
+data GuestAnswer
+  = Returned KernelAnswer
+  | TransactionBegun
+  | TransactionCommitted
+  | CandidateFailed
+
+-- The one operation a guest asks the host through.
+effect Kernel where
+  command :: GuestCommand ->* GuestAnswer
+
+-- A candidate failed, and the innermost `transact` is to answer `Nothing`.
+effect Abort where
+  failed :: forall a. Unit ->* a
+
+-- The host answered as its contract says it never does. Only `synthesizer`
+-- handles it.
+effect Breach where
+  breached :: forall a. Unit ->* a
+
+-- A request performed, and what its answer is where it is `Returned`. A
+-- candidate failure aborts to the innermost `transact`; any other answer is a
+-- breach.
+ask :: KernelRequest -> KernelAnswer / {| Abort, Breach, Kernel |}
+ask request = case command (Kernel request) of
+  Returned carried -> carried
+  CandidateFailed -> failed ()
+  _ -> breached ()
+
+-- The typed operations: each one's request made from its arguments, asked, and
+-- the answer taken apart where it is the one expected. Any other answer is a
+-- breach. `throw` and `postpone` take none back: the host ends the attempt.
+
+rootScope :: Unit -> Handle / {| Abort, Breach, Kernel |}
+rootScope = \_ -> case ask (BuildRequest RootScope) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+typeVariable :: Handle -> String -> Handle / {| Abort, Breach, Kernel |}
+typeVariable x0 x1 = case ask (BuildRequest (TypeVariable x0 x1)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+typeConstructor :: Handle -> Name -> List KindView -> Handle / {| Abort, Breach, Kernel |}
+typeConstructor x0 x1 x2 = case ask (BuildRequest (TypeConstructor x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+applyType :: Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+applyType x0 x1 x2 = case ask (BuildRequest (ApplyType x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+emptyRow :: Handle -> Handle / {| Abort, Breach, Kernel |}
+emptyRow x0 = case ask (BuildRequest (EmptyRow x0)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+extendRow :: Handle -> RowKey -> PayloadView -> Handle -> Handle / {| Abort, Breach, Kernel |}
+extendRow x0 x1 x2 x3 = case ask (BuildRequest (ExtendRow x0 x1 x2 x3)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+unionRow :: Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+unionRow x0 x1 x2 = case ask (BuildRequest (UnionRow x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+openForall :: Handle -> String -> KindView -> { binder :: Handle, variable :: Handle, bodyScope :: Handle } / {| Abort, Breach, Kernel |}
+openForall x0 x1 x2 = case ask (BuildRequest (OpenForall x0 x1 x2)) of
+  BinderAnswer carried -> carried
+  _ -> breached ()
+
+closeForall :: Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+closeForall x0 x1 x2 = case ask (BuildRequest (CloseForall x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+openConstraint :: Handle -> ConstraintView -> { assumption :: Handle, bodyScope :: Handle } / {| Abort, Breach, Kernel |}
+openConstraint x0 x1 = case ask (BuildRequest (OpenConstraint x0 x1)) of
+  AssumptionAnswer carried -> carried
+  _ -> breached ()
+
+closeConstraint :: Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+closeConstraint x0 x1 x2 = case ask (BuildRequest (CloseConstraint x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+instantiateForall :: Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+instantiateForall x0 x1 x2 = case ask (BuildRequest (InstantiateForall x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+instantiateScheme :: Handle -> Name -> List KindView -> Handle / {| Abort, Breach, Kernel |}
+instantiateScheme x0 x1 x2 = case ask (BuildRequest (InstantiateScheme x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+localVariable :: Handle -> String -> Handle / {| Abort, Breach, Kernel |}
+localVariable x0 x1 = case ask (TermRequest (LocalVariable x0 x1)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+globalRef :: Handle -> Name -> List KindView -> Handle / {| Abort, Breach, Kernel |}
+globalRef x0 x1 x2 = case ask (TermRequest (GlobalRef x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+literal :: Handle -> Literal -> Handle / {| Abort, Breach, Kernel |}
+literal x0 x1 = case ask (TermRequest (LiteralTerm x0 x1)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+termApply :: Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+termApply x0 x1 x2 = case ask (TermRequest (TermApply x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+typeApply :: Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+typeApply x0 x1 x2 = case ask (TermRequest (TypeApply x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+constraintApply :: Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+constraintApply x0 x1 = case ask (TermRequest (ConstraintApply x0 x1)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+openLambda :: Handle -> String -> Handle -> { binder :: Handle, variable :: Handle, bodyScope :: Handle } / {| Abort, Breach, Kernel |}
+openLambda x0 x1 x2 = case ask (TermRequest (OpenLambda x0 x1 x2)) of
+  BinderAnswer carried -> carried
+  _ -> breached ()
+
+closeLambda :: Handle -> Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+closeLambda x0 x1 x2 x3 = case ask (TermRequest (CloseLambda x0 x1 x2 x3)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+openTypeAbs :: Handle -> String -> KindView -> { binder :: Handle, variable :: Handle, bodyScope :: Handle } / {| Abort, Breach, Kernel |}
+openTypeAbs x0 x1 x2 = case ask (TermRequest (OpenTypeAbs x0 x1 x2)) of
+  BinderAnswer carried -> carried
+  _ -> breached ()
+
+closeTypeAbs :: Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+closeTypeAbs x0 x1 x2 = case ask (TermRequest (CloseTypeAbs x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+openConstraintAbs :: Handle -> ConstraintView -> { binder :: Handle, bodyScope :: Handle } / {| Abort, Breach, Kernel |}
+openConstraintAbs x0 x1 = case ask (TermRequest (OpenConstraintAbs x0 x1)) of
+  ConstraintAbsAnswer carried -> carried
+  _ -> breached ()
+
+closeConstraintAbs :: Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+closeConstraintAbs x0 x1 x2 = case ask (TermRequest (CloseConstraintAbs x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+openLet :: Handle -> String -> Handle -> { binder :: Handle, variable :: Handle, bodyScope :: Handle } / {| Abort, Breach, Kernel |}
+openLet x0 x1 x2 = case ask (TermRequest (OpenLet x0 x1 x2)) of
+  BinderAnswer carried -> carried
+  _ -> breached ()
+
+closeLet :: Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+closeLet x0 x1 x2 = case ask (TermRequest (CloseLet x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+openLetRec :: Handle -> List { hint :: String, type :: Handle } -> { binder :: Handle, variables :: List Handle, bodyScope :: Handle } / {| Abort, Breach, Kernel |}
+openLetRec x0 x1 = case ask (TermRequest (OpenLetRec x0 x1)) of
+  LetRecAnswer carried -> carried
+  _ -> breached ()
+
+closeLetRec :: Handle -> Handle -> List Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+closeLetRec x0 x1 x2 x3 = case ask (TermRequest (CloseLetRec x0 x1 x2 x3)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+openJoin :: Handle -> String -> List { hint :: String, type :: Handle } -> Handle -> { binder :: Handle, join :: Handle, params :: List Handle, definitionScope :: Handle, bodyScope :: Handle } / {| Abort, Breach, Kernel |}
+openJoin x0 x1 x2 x3 = case ask (TermRequest (OpenJoin x0 x1 x2 x3)) of
+  JoinAnswer carried -> carried
+  _ -> breached ()
+
+closeJoin :: Handle -> Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+closeJoin x0 x1 x2 x3 = case ask (TermRequest (CloseJoin x0 x1 x2 x3)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+jump :: Handle -> Handle -> List Handle -> Handle / {| Abort, Breach, Kernel |}
+jump x0 x1 x2 = case ask (TermRequest (Jump x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+openCase :: Handle -> List Handle -> { binder :: Handle, scrutinees :: List Handle, treeScope :: Handle } / {| Abort, Breach, Kernel |}
+openCase x0 x1 = case ask (TreeRequest (OpenCase x0 x1)) of
+  CaseAnswer carried -> carried
+  _ -> breached ()
+
+closeCase :: Handle -> Handle -> Maybe Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+closeCase x0 x1 x2 x3 = case ask (TreeRequest (CloseCase x0 x1 x2 x3)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+leaf :: Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+leaf x0 x1 = case ask (TreeRequest (Leaf x0 x1)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+guard :: Handle -> Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+guard x0 x1 x2 x3 = case ask (TreeRequest (Guard x0 x1 x2 x3)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+openBind :: Handle -> Handle -> String -> { binder :: Handle, variable :: Handle, bodyScope :: Handle } / {| Abort, Breach, Kernel |}
+openBind x0 x1 x2 = case ask (TreeRequest (OpenBind x0 x1 x2)) of
+  BinderAnswer carried -> carried
+  _ -> breached ()
+
+closeBind :: Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+closeBind x0 x1 x2 = case ask (TreeRequest (CloseBind x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+recordField :: Handle -> Handle -> RowKey -> Handle / {| Abort, Breach, Kernel |}
+recordField x0 x1 x2 = case ask (TreeRequest (RecordField x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+openSwitchCtor :: Handle -> Handle -> List Name -> Boolean -> { binder :: Handle, branches :: List { scope :: Handle, fields :: List Handle }, fallback :: Maybe Handle } / {| Abort, Breach, Kernel |}
+openSwitchCtor x0 x1 x2 x3 = case ask (TreeRequest (OpenSwitchCtor x0 x1 x2 x3)) of
+  SwitchCtorAnswer carried -> carried
+  _ -> breached ()
+
+openSwitchLit :: Handle -> Handle -> List Literal -> { binder :: Handle, branches :: List Handle, fallback :: Handle } / {| Abort, Breach, Kernel |}
+openSwitchLit x0 x1 x2 = case ask (TreeRequest (OpenSwitchLit x0 x1 x2)) of
+  SwitchLitAnswer carried -> carried
+  _ -> breached ()
+
+openSwitchKey :: Handle -> Handle -> List RowKey -> Boolean -> { binder :: Handle, branches :: List { scope :: Handle, payload :: Handle }, fallback :: Maybe { scope :: Handle, residual :: Handle } } / {| Abort, Breach, Kernel |}
+openSwitchKey x0 x1 x2 x3 = case ask (TreeRequest (OpenSwitchKey x0 x1 x2 x3)) of
+  SwitchKeyAnswer carried -> carried
+  _ -> breached ()
+
+closeSwitch :: Handle -> Handle -> List Handle -> Maybe Handle -> Handle / {| Abort, Breach, Kernel |}
+closeSwitch x0 x1 x2 x3 = case ask (TreeRequest (CloseSwitch x0 x1 x2 x3)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+recordEmpty :: Handle -> Handle / {| Abort, Breach, Kernel |}
+recordEmpty x0 = case ask (RecordRequest (RecordEmpty x0)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+recordExtend :: Handle -> RowKey -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+recordExtend x0 x1 x2 x3 = case ask (RecordRequest (RecordExtend x0 x1 x2 x3)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+recordSelect :: Handle -> RowKey -> Handle -> Handle / {| Abort, Breach, Kernel |}
+recordSelect x0 x1 x2 = case ask (RecordRequest (RecordSelect x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+recordRestrict :: Handle -> RowKey -> Handle -> Handle / {| Abort, Breach, Kernel |}
+recordRestrict x0 x1 x2 = case ask (RecordRequest (RecordRestrict x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+recordUpdate :: Handle -> RowKey -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+recordUpdate x0 x1 x2 x3 = case ask (RecordRequest (RecordUpdate x0 x1 x2 x3)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+recordMerge :: Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+recordMerge x0 x1 x2 = case ask (RecordRequest (RecordMerge x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+variantInject :: Handle -> RowKey -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+variantInject x0 x1 x2 x3 = case ask (RecordRequest (VariantInject x0 x1 x2 x3)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+variantWeaken :: Handle -> RowKey -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+variantWeaken x0 x1 x2 x3 = case ask (RecordRequest (VariantWeaken x0 x1 x2 x3)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+variantAbsurd :: Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+variantAbsurd x0 x1 x2 = case ask (RecordRequest (VariantAbsurd x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+openEff :: Handle -> Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+openEff x0 x1 x2 = case ask (RecordRequest (OpenEff x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+perform :: Handle -> RowKey -> PayloadView -> String -> List Handle -> Handle -> Handle / {| Abort, Breach, Kernel |}
+perform x0 x1 x2 x3 x4 x5 = case ask (HandlerRequest (Perform x0 x1 x2 x3 x4 x5)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+openHandle :: Handle -> Handle -> RowKey -> PayloadView -> Handle -> Handle -> List { op :: String, full :: Boolean } -> { binder :: Handle, returnClause :: { variable :: Handle, scope :: Handle }, clauses :: List { typeVariables :: List Handle, argument :: Handle, continuation :: Maybe Handle, scope :: Handle } } / {| Abort, Breach, Kernel |}
+openHandle x0 x1 x2 x3 x4 x5 x6 = case ask (HandlerRequest (OpenHandle x0 x1 x2 x3 x4 x5 x6)) of
+  HandlerAnswer carried -> carried
+  _ -> breached ()
+
+closeHandle :: Handle -> Handle -> Handle -> List Handle -> Handle / {| Abort, Breach, Kernel |}
+closeHandle x0 x1 x2 x3 = case ask (HandlerRequest (CloseHandle x0 x1 x2 x3)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+openRegion :: Handle -> List { key :: RowKey, type :: Handle } -> { binder :: Handle, name :: String, bodyScope :: Handle } / {| Abort, Breach, Kernel |}
+openRegion x0 x1 = case ask (HandlerRequest (OpenRegion x0 x1)) of
+  RegionAnswer carried -> carried
+  _ -> breached ()
+
+closeRegion :: Handle -> Handle -> Handle -> List Handle -> Handle / {| Abort, Breach, Kernel |}
+closeRegion x0 x1 x2 x3 = case ask (HandlerRequest (CloseRegion x0 x1 x2 x3)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+readCell :: Handle -> Handle -> RowKey -> Handle / {| Abort, Breach, Kernel |}
+readCell x0 x1 x2 = case ask (HandlerRequest (ReadCell x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+writeCell :: Handle -> Handle -> RowKey -> Handle -> Handle / {| Abort, Breach, Kernel |}
+writeCell x0 x1 x2 x3 = case ask (HandlerRequest (WriteCell x0 x1 x2 x3)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+freshMetaType :: Handle -> KindView -> Handle / {| Abort, Breach, Kernel |}
+freshMetaType x0 x1 = case ask (SolveRequest (FreshMetaType x0 x1)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+isAssigned :: Handle -> Boolean / {| Abort, Breach, Kernel |}
+isAssigned x0 = case ask (SolveRequest (IsAssigned x0)) of
+  BooleanAnswer carried -> carried
+  _ -> breached ()
+
+unify :: Handle -> Handle -> Handle -> Unit / {| Abort, Breach, Kernel |}
+unify x0 x1 x2 = case ask (SolveRequest (Unify x0 x1 x2)) of
+  UnitAnswer -> ()
+  _ -> breached ()
+
+entails :: Handle -> ConstraintView -> Boolean / {| Abort, Breach, Kernel |}
+entails x0 x1 = case ask (SolveRequest (Entails x0 x1)) of
+  BooleanAnswer carried -> carried
+  _ -> breached ()
+
+require :: Handle -> ConstraintView -> Unit / {| Abort, Breach, Kernel |}
+require x0 x1 = case ask (SolveRequest (Require x0 x1)) of
+  UnitAnswer -> ()
+  _ -> breached ()
+
+subgoal :: Handle -> Handle -> Name -> Handle / {| Abort, Breach, Kernel |}
+subgoal x0 x1 x2 = case ask (SolveRequest (Subgoal x0 x1 x2)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+goalType :: Handle -> Handle / {| Abort, Breach, Kernel |}
+goalType x0 = case ask (ObserveRequest (GoalType x0)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+viewType :: Handle -> TypeView / {| Abort, Breach, Kernel |}
+viewType x0 = case ask (ObserveRequest (ViewType x0)) of
+  TypeViewAnswer carried -> carried
+  _ -> breached ()
+
+whnf :: Handle -> Handle / {| Abort, Breach, Kernel |}
+whnf x0 = case ask (ObserveRequest (Whnf x0)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+normalizeRow :: Handle -> { elementKind :: Maybe RowElemKind, known :: List { key :: RowKey, payload :: PayloadView }, rigid :: List String, flexible :: List { meta :: Handle, type :: Handle } } / {| Abort, Breach, Kernel |}
+normalizeRow x0 = case ask (ObserveRequest (NormalizeRow x0)) of
+  RowViewAnswer carried -> carried
+  _ -> breached ()
+
+kindOf :: Handle -> KindView / {| Abort, Breach, Kernel |}
+kindOf x0 = case ask (ObserveRequest (KindOf x0)) of
+  KindViewAnswer carried -> carried
+  _ -> breached ()
+
+typeOf :: Handle -> Handle / {| Abort, Breach, Kernel |}
+typeOf x0 = case ask (ObserveRequest (TypeOf x0)) of
+  HandleAnswer carried -> carried
+  _ -> breached ()
+
+localContext :: Unit -> List { name :: String, type :: Handle } / {| Abort, Breach, Kernel |}
+localContext = \_ -> case ask (ObserveRequest LocalContext) of
+  ContextAnswer carried -> carried
+  _ -> breached ()
+
+localConstraints :: Unit -> List ConstraintView / {| Abort, Breach, Kernel |}
+localConstraints = \_ -> case ask (ObserveRequest LocalConstraints) of
+  ConstraintsAnswer carried -> carried
+  _ -> breached ()
+
+lookupGlobal :: Name -> Maybe { name :: Name, sort :: EntrySort, kindVars :: List String, scheme :: Handle, attributes :: List { name :: Name, positional :: List Constant, keyword :: List { label :: String, value :: Constant } } } / {| Abort, Breach, Kernel |}
+lookupGlobal x0 = case ask (ObserveRequest (LookupGlobal x0)) of
+  DeclAnswer carried -> carried
+  _ -> breached ()
+
+declsWithAttr :: Name -> List Name / {| Abort, Breach, Kernel |}
+declsWithAttr x0 = case ask (ObserveRequest (DeclsWithAttr x0)) of
+  NamesAnswer carried -> carried
+  _ -> breached ()
+
+throw :: forall a. List MessagePart -> a / {| Abort, Breach, Kernel |}
+throw x0 = case ask (ReportRequest (Throw x0)) of
+  _ -> breached ()
+
+warn :: List MessagePart -> Unit / {| Abort, Breach, Kernel |}
+warn x0 = case ask (ReportRequest (Warn x0)) of
+  UnitAnswer -> ()
+  _ -> breached ()
+
+postpone :: forall a. List Handle -> a / {| Abort, Breach, Kernel |}
+postpone x0 = case ask (ReportRequest (Postpone x0)) of
+  _ -> breached ()
+-- A transaction opened, the candidate run with `Abort` handled, and the
+-- transaction committed where it returns. A failure closes nothing here: the
+-- host has closed the innermost transaction as it answered, which is this one,
+-- the transactions a guest opens being nested as its calls of `transact` are.
+transact :: forall a. (Unit -> a / {| Abort, Breach, Kernel |}) -> Maybe a / {| Abort, Breach, Kernel |}
+transact candidate = case command BeginTransaction of
+  TransactionBegun -> committed candidate
+  _ -> breached ()
+
+-- The candidate run with `Abort` handled, at a row that does not hold `Abort`
+-- itself, and the transaction committed where it returns.
+committed :: forall a. (Unit -> a / {| Abort, Breach, Kernel |}) -> Maybe a / {| Breach, Kernel |}
+committed candidate = handle candidate () with
+  Abort | failed _ -> Nothing
+    | return result -> case command CommitTransaction of
+      TransactionCommitted -> Just result
+      CandidateFailed -> Nothing
+      _ -> breached ()
+
+-- A policy made into what an invocation calls. `Abort` reaching it, a candidate
+-- failing outside every transaction, and `Breach` both end the policy with the
+-- goal it was given, neither of which a conforming host brings about.
+synthesizer :: (Handle -> Handle / {| Abort, Breach, Kernel |}) -> Handle -> Handle / {| Kernel |}
+synthesizer policy goal = handle (handle policy goal with
+    Abort | failed _ -> goal) with
+  Breach | breached _ -> goal
