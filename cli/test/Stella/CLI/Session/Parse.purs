@@ -17,7 +17,8 @@ import Stella.CLI.Session.Parse (ParseAnswer(..), decodeBudgetExceeded, decodeEx
 import Stella.CLI.Session.Syntax (inputOf, positionShape, readAnswer, treesShape)
 import Stella.CLI.Session.Value (WireValue(..), decodeValue, encodeValue)
 import Stella.CLI.Session.Value.Shape (conformsTo)
-import Stella.Compiler.Macro.Bundle (bundle, syntaxModuleName)
+import Stella.Compiler.Macro.Bundle (syntaxModuleName)
+import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Tree (Delimiter(..), IssuedOrigin(..), OriginRef(..), Position(..), Range(..), Syntax(..), SyntaxNode(..), Token(..), TokenKind(..), TokenTree(..), Trivia(..))
 import Stella.Compiler.TypedCore.Domain (scalarString)
 import Stella.Compiler.TypedCore.Name (Ident(..), Qualified(..))
@@ -78,7 +79,7 @@ spec = describe "Stella.CLI.Session.Parse" do
 
   describe "values" do
     it "carry a token tree as one of List TokenTree, and where it ends as a Position" do
-      case bundle, inputOf bracketed (Position 1 8) of
+      case compiled, inputOf bracketed (Position 1 8) of
         Left err, _ -> fail err
         _, Left err -> fail err
         Right b, Right input -> do
@@ -86,7 +87,7 @@ spec = describe "Stella.CLI.Session.Parse" do
           isRight (decodeValue input.end >>= conformsTo b.descriptor positionShape) `shouldEqual` true
 
     it "read what a parser expected as a set, and an origin by the constructor it is, one of the input by the form of its token" do
-      case bundle of
+      case compiled of
         Left err -> fail err
         Right b -> do
           let

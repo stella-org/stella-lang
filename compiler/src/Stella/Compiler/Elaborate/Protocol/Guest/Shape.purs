@@ -11,14 +11,16 @@
 -- |
 -- | **It is derived from the module, not written beside it**, so the two cannot
 -- | disagree: every field of every constructor is read off the data declaration
--- | that declares it.
+-- | that declares it, in the module's Core or in its interface.
 module Stella.Compiler.Elaborate.Protocol.Guest.Shape
   ( Shape(..)
   , FieldShape
   , ConstructorShape
   , TypeShape
   , Descriptor
+  , DataShape
   , describe
+  , describeInterface
   , typeShape
   ) where
 
@@ -36,7 +38,8 @@ import Data.Maybe (Maybe(..))
 import Data.Show.Generic (genericShow)
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.TypedCore (Decl(..), Ident, Module, Qualified(..), RowEntry(..), RowKey(..), Symbol(..), TyName, TyVar, Type(..))
+import Stella.Compiler.Interface.Module (ModuleInterface, TypeSort(..))
+import Stella.Compiler.TypedCore (Decl(..), Ident, Module, ModuleName, Qualified(..), RowEntry(..), RowKey(..), Symbol(..), TyName, TyVar, Type(..))
 import Stella.Compiler.TypedCore.Prim (booleanTy, charTy, intTy, numberTy, recordTy, stringTy)
 
 -- | The shape of one field.
@@ -69,34 +72,52 @@ type TypeShape = { params :: P.Int, constructors :: P.Array ConstructorShape }
 -- | Every data type of the module, by its qualified name.
 type Descriptor = Map (Qualified TyName) TypeShape
 
--- | The descriptor of a module whose data types hold only literals, tokens of the
--- | given type, records, their own parameters, and data types of the same module.
--- | Anything else is refused, naming the field: the descriptor would have no shape
--- | to give it.
+-- | A data type as the descriptor reads it: its name, its parameters, and its
+-- | constructors in the order of their tags, each with its fields.
+type DataShape = { name :: TyName, params :: P.Array TyVar, constructors :: P.Array { name :: Ident, fields :: P.Array Type } }
+
+-- | The descriptor of a module's Core whose data types hold only literals,
+-- | tokens of the given type, records, their own parameters, and data types of
+-- | the same module. Anything else is refused, naming the field: the descriptor
+-- | would have no shape to give it.
 describe :: forall a. Qualified TyName -> Module a -> Either P.String Descriptor
-describe token m = do
-  let
-    datas = Array.mapMaybe
+describe token m = describeTypes token m.name
+  ( Array.mapMaybe
       ( case _ of
-          DeclData _ d -> Just d
+          DeclData _ d -> Just { name: d.name, params: map _.name d.params, constructors: map (\c -> { name: c.name, fields: c.fields }) d.constructors }
           _ -> Nothing
       )
       m.decls
-    arities = Map.fromFoldable
-      (map (\d -> Tuple (Qualified m.name d.name) (Array.length d.params)) datas)
-  foldM
-    ( \acc d -> do
-        let params = map _.name d.params
-        constructors <- traverse
-          ( \c -> do
-              fields <- traverse (shapeOf token arities params) c.fields
-              pure { name: Qualified m.name c.name, fields }
-          )
-          d.constructors
-        pure (Map.insert (Qualified m.name d.name) { params: Array.length params, constructors } acc)
-    )
-    Map.empty
-    datas
+  )
+
+-- | The descriptor of the data types an interface declares that the predicate
+-- | admits, under the rule `describe` holds a module's Core to.
+describeInterface :: Qualified TyName -> (TyName -> P.Boolean) -> ModuleInterface -> Either P.String Descriptor
+describeInterface token admits i = describeTypes token i.name
+  ( Array.mapMaybe
+      ( \(Tuple name entry) -> case entry.sort of
+          DataType d | admits name -> Just { name, params: map _.name d.params, constructors: d.constructors }
+          _ -> Nothing
+      )
+      (Map.toUnfoldable i.declarations.types)
+  )
+
+-- | The descriptor of the data types given, of the module given.
+describeTypes :: Qualified TyName -> ModuleName -> P.Array DataShape -> Either P.String Descriptor
+describeTypes token m datas = foldM
+  ( \acc d -> do
+      constructors <- traverse
+        ( \c -> do
+            fields <- traverse (shapeOf token arities d.params) c.fields
+            pure { name: Qualified m c.name, fields }
+        )
+        d.constructors
+      pure (Map.insert (Qualified m d.name) { params: Array.length d.params, constructors } acc)
+  )
+  Map.empty
+  datas
+  where
+  arities = Map.fromFoldable (map (\d -> Tuple (Qualified m d.name) (Array.length d.params)) datas)
 
 shapeOf
   :: Qualified TyName

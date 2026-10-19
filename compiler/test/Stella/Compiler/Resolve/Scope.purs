@@ -236,6 +236,34 @@ spec = describe "Stella.Compiler.Resolve.Scope" do
         reasons r `shouldEqual` [ ElaborationOnlyNotAllowed ]
         unqualifiedValue "Continuation" r `shouldEqual` [ Qualified (ModuleName "M") (Ident "Continuation") ]
 
+    it "is the one constructor the compiler names of a type it lists whole, the others keeping their own names and their membership" do
+      let syntax = Qualified (ModuleName "Stella.Syntax") <<< Ident
+      resolvedAs "Stella.Syntax" [ "@[elaborationOnly]", "data OriginRef = InputOrigin Int | QuotedOrigin Int" ] \r -> do
+        r.errors `shouldEqual` []
+        unqualifiedValue "QuotedOrigin" r `shouldEqual` [ syntax "$QuotedOrigin" ]
+        unqualifiedValue "InputOrigin" r `shouldEqual` [ syntax "InputOrigin" ]
+        map _.members (Map.lookup "OriginRef" r.scoped.exports.types) `shouldEqual` Just [ Ident "InputOrigin" ]
+      resolvedAs "Stella.Syntax" [ "@[elaborationOnly]", "data OriginRef = QuotedOrigin Int | InputOrigin Int" ] \r -> do
+        reasons r `shouldEqual` [ ElaborationOnlyNotAllowed ]
+        unqualifiedValue "QuotedOrigin" r `shouldEqual` [ syntax "QuotedOrigin" ]
+      resolvedAs "Stella.Syntax" [ "@[elaborationOnly]", "data OriginRef = InputOrigin Int" ] \r ->
+        reasons r `shouldEqual` [ ElaborationOnlyNotAllowed ]
+
+    it "is a value the compiler lists, which no export list may name" do
+      let spliced = [ "@[elaborationOnly]", "spliced :: Int", "spliced = 1" ]
+      resolvedAs "Stella.Syntax" spliced \r -> do
+        r.errors `shouldEqual` []
+        unqualifiedValue "spliced" r `shouldEqual` [ Qualified (ModuleName "Stella.Syntax") (Ident "$spliced") ]
+        Map.member "spliced" r.scoped.exports.values `shouldEqual` false
+      resolvedAs "Stella.Syntax (spliced)" spliced \r ->
+        reasons r `shouldEqual` [ ExportElaborationOnly "spliced" ]
+      resolvedAs "Stella.Syntax" [ "@[elaborationOnly]", "joined :: Int", "joined = 1" ] \r -> do
+        reasons r `shouldEqual` [ ElaborationOnlyNotAllowed ]
+        unqualifiedValue "joined" r `shouldEqual` [ Qualified (ModuleName "Stella.Syntax") (Ident "joined") ]
+      resolved spliced \r -> do
+        reasons r `shouldEqual` [ ElaborationOnlyNotAllowed ]
+        unqualifiedValue "spliced" r `shouldEqual` [ Qualified (ModuleName "M") (Ident "spliced") ]
+
   describe "exports" do
     it "are every declaration of the module and nothing imported, where there is no list" do
       resolved [ "import A", "y = 1", "data U = K", "infixl 6 type U as *" ] \r -> do

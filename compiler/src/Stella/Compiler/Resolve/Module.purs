@@ -32,7 +32,7 @@ import Stella.Compiler.Resolve.Attribute (DeclarationSort(..), resolveAttributeD
 import Stella.Compiler.Resolve.Expr (resolveHandler, resolveTopDefinition)
 import Stella.Compiler.Resolve.Group (Declaration(..), GroupError, GroupedModule, Prefix, ValueDeclaration, attributesOf, directivesOf, groupModule, modifiersOf)
 import Stella.Compiler.Resolve.Monad (Found(..), Resolve, ResolveError, ResolveReason(..), ResolveWarning, TypeReference(..), ValueKind(..), context, contextOf, lookupType, lookupValue, ownValue, report, runResolve, valueKind, withTypeVariables)
-import Stella.Compiler.Resolve.Scope (ScopeError, ScopeWarning, elaborationOnlyEntry, resolveScope)
+import Stella.Compiler.Resolve.Scope (ScopeError, ScopeWarning, elaborationOnlyEntry, elaborationOnlyValue, resolveScope)
 import Stella.Compiler.Resolve.Type (bindTypeVariables, computationScope, resolveComputationSignature, resolveKind, resolveOperationSignature, resolveSignature, resolveType, signatureScope)
 import Stella.Compiler.Surface.Decl (Associativity(..), Declaration(..), FixityTarget(..), Module, Observation(..)) as Surface
 import Stella.Compiler.Surface.Name (OperatorName(..))
@@ -119,10 +119,13 @@ value p v = do
           pure (Just (Surface.DeclComputation { origin, attributes, name, signature, body: d.body }))
       | otherwise -> report v.name.range (ComputationWithParameters v.name.name) $> Nothing
     _, _ -> do
-      attributes <- resolveAttributes OnValue false (attributesOf p)
+      attributes <- resolveAttributes OnValue (isJust (elaborationOnlyValue ctx.module v.name.name)) (attributesOf p)
+      -- the identity the scope gave the value, an elaboration-only one's its
+      -- internal one
+      identity <- ownValue v.name.name
       signature <- traverse resolveSignature v.signature
       d <- withTypeVariables (maybe [] signatureScope signature) (resolveTopDefinition v.binders v.body v.localBindings)
-      pure (Just (Surface.DeclValue { origin, attributes, name, signature, params: d.params, body: d.body }))
+      pure (Just (Surface.DeclValue { origin, attributes, name: identity, signature, params: d.params, body: d.body }))
   where
   origin = originOf (nonEmpty ([ v.name.range, exprRange v.body ] <> map binderRange v.binders))
 

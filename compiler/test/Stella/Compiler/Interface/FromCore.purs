@@ -130,7 +130,8 @@ spec = describe "Stella.Compiler.Interface.FromCore" do
         Right syntax -> do
           case Array.find (\i -> i.name == syntaxModuleName) syntax.moduleInterfaces of
             Just i -> do
-              map (show <<< _.sort) (Map.lookup (TyName "IssuedOrigin") i.declarations.types) `shouldEqual` Just (show (Intrinsic CanonicalOpaque))
+              -- the origin a host issues is an opaque foreign type of the source
+              map (show <<< _.sort) (Map.lookup (TyName "IssuedOrigin") i.declarations.types) `shouldEqual` Just (show ForeignType)
               -- an origin is abstract, and what a quotation is written with in
               -- no export and not published to the catalog
               Array.filter (\n -> Map.member n i.exports.values) [ "InputOrigin", "$QuotedOrigin", "$spliced", "foldr", "foldl" ] `shouldEqual` [ "foldr", "foldl" ]

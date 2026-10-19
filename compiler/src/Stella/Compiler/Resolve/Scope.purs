@@ -38,6 +38,9 @@ module Stella.Compiler.Resolve.Scope
   , declaredMacros
   , elaborationOnlyEntries
   , elaborationOnlyEntry
+  , elaborationOnlyValues
+  , elaborationOnlyValue
+  , isElaborationOnlyValue
   , writtenBare
   , actingUse
   ) where
@@ -206,15 +209,24 @@ printScopeWarning :: ScopeWarning -> String
 printScopeWarning (HidesImport _ ns n) =
   "This declaration hides the imported " <> namespaceWord ns <> " `" <> n <> "`"
 
--- | The declarations that may carry `@[elaborationOnly]`: the module, the type,
--- | whether it is a newtype, its one constructor as source writes it, and the
--- | identity that constructor takes, a name no source grammar spells. A
--- | declaration carrying the attribute is admitted only where it is one of
--- | these exactly, its form and its constructors included.
+-- | The data types and newtypes that may carry `@[elaborationOnly]`: the module,
+-- | the type, whether it is a newtype, its constructors as source writes them,
+-- | the one of them that takes an internal identity, and that identity, a name
+-- | no source grammar spells. A declaration carrying the attribute is admitted
+-- | only where it is one of these exactly, its form and its constructors
+-- | included.
 elaborationOnlyEntries
-  :: Array { module :: ModuleName, type :: String, newtype :: Boolean, constructor :: String, internal :: String }
+  :: Array { module :: ModuleName, type :: String, newtype :: Boolean, constructors :: Array String, constructor :: String, internal :: String }
 elaborationOnlyEntries =
-  [ { module: ModuleName "Base.Continuation", type: "Continuation", newtype: true, constructor: "Continuation", internal: "$Continuation" } ]
+  [ { module: ModuleName "Base.Continuation", type: "Continuation", newtype: true, constructors: [ "Continuation" ], constructor: "Continuation", internal: "$Continuation" }
+  , { module: ModuleName "Stella.Syntax", type: "OriginRef", newtype: false, constructors: [ "InputOrigin", "QuotedOrigin" ], constructor: "QuotedOrigin", internal: "$QuotedOrigin" }
+  ]
+
+-- | The values that may carry `@[elaborationOnly]`: the module, the value as
+-- | source writes it, and the identity it takes.
+elaborationOnlyValues :: Array { module :: ModuleName, value :: String, internal :: String }
+elaborationOnlyValues =
+  [ { module: ModuleName "Stella.Syntax", value: "spliced", internal: "$spliced" } ]
 
 -- | Whether an attribute is written with no argument. `@[macro]` and
 -- | `@[elaborationOnly]` take none, and the scope acts on one only where it is
@@ -233,15 +245,25 @@ actingUse isIt uses = Array.find isIt uses >>= \a -> if writtenBare a then Just 
 
 -- | The entry the compiler lists for a data type or a newtype, where the
 -- | declaration is exactly one: its module, its name, its form, and its
--- | constructors as written.
+-- | constructors as written, in order.
 elaborationOnlyEntry
   :: ModuleName
   -> String
   -> Boolean
   -> Array String
-  -> Maybe { module :: ModuleName, type :: String, newtype :: Boolean, constructor :: String, internal :: String }
+  -> Maybe { module :: ModuleName, type :: String, newtype :: Boolean, constructors :: Array String, constructor :: String, internal :: String }
 elaborationOnlyEntry m t isNewtype ctors =
-  Array.find (\e -> e.module == m && e.type == t && e.newtype == isNewtype && ctors == [ e.constructor ]) elaborationOnlyEntries
+  Array.find (\e -> e.module == m && e.type == t && e.newtype == isNewtype && ctors == e.constructors) elaborationOnlyEntries
+
+-- | Whether a value of the module given is an elaboration-only one under its
+-- | internal identity.
+isElaborationOnlyValue :: ModuleName -> Ident -> Boolean
+isElaborationOnlyValue m (Ident n) = Array.any (\e -> e.module == m && e.internal == n) elaborationOnlyValues
+
+-- | The entry the compiler lists for a value, where the module and the name are
+-- | one.
+elaborationOnlyValue :: ModuleName -> String -> Maybe { module :: ModuleName, value :: String, internal :: String }
+elaborationOnlyValue m n = Array.find (\e -> e.module == m && e.value == n) elaborationOnlyValues
 
 ------------------------------------------------------------------------------
 -- Candidates
@@ -508,7 +530,7 @@ declareAll m attributeOf = foldl declaration { declared: emptyNames, macros: Map
     DeclarationValue p v
       | not v.computation && not (Array.null (carries "macro" p)) ->
           enter MacroNamespace v.name (\st -> st { macros = addCandidate v.name.name (declared (own (Ident v.name.name))) st.macros }) s
-      | otherwise -> value v.name s
+      | otherwise -> valueDeclaration p v.name s
     DeclarationType p _ d -> case d of
       DeclData n _ ctors -> dataType p false n (map _.name ctors) s
       DeclNewtype n _ c _ -> dataType p true n [ c ] s
@@ -526,11 +548,24 @@ declareAll m attributeOf = foldl declaration { declared: emptyNames, macros: Map
       _ -> s
     DeclarationMacro _ _ -> s
 
+  -- A value. One carrying `@[elaborationOnly]`, written bare, that is a value
+  -- the compiler lists takes the internal identity; on any other the attribute
+  -- is refused and the value is what it would be without it.
+  valueDeclaration p n s =
+    let
+      marked = carries "elaborationOnly" p
+    in
+      case Array.null marked, elaborationOnlyValue m n.name of
+        true, _ -> value n s
+        false, Just e -> valueAs n (own (Ident e.internal)) s
+        false, Nothing -> value n (s { errors = s.errors <> map (\a -> ScopeError a.range ElaborationOnlyNotAllowed) marked })
+
   -- A data type or newtype, and its constructors. One carrying
-  -- `@[elaborationOnly]`, written bare, that is exactly a declaration the compiler lists has
-  -- its constructor take the internal identity, and publishes it as no member
-  -- of the type; on any other declaration the attribute is refused and the
-  -- declaration is what it would be without it.
+  -- `@[elaborationOnly]`, written bare, that is exactly a declaration the
+  -- compiler lists has the constructor the list names take the internal
+  -- identity, and publishes it as no member of the type; on any other
+  -- declaration the attribute is refused and the declaration is what it would
+  -- be without it.
   dataType p isNewtype n ctors s =
     let
       marked = carries "elaborationOnly" p
@@ -785,10 +820,12 @@ exportAll env m scope ownMacros imported = case _ of
             $ each _.attributes (\e t -> e { attributes = t }) AttributeNamespace names.attributes s1
         )
 
--- | Whether an entity is an elaboration-only constructor under its internal
--- | identity.
+-- | Whether an entity is an elaboration-only constructor or value under its
+-- | internal identity.
 isInternal :: Qualified Ident -> Boolean
-isInternal (Qualified owner (Ident n)) = Array.any (\e -> e.module == owner && e.internal == n) elaborationOnlyEntries
+isInternal (Qualified owner (Ident n)) =
+  Array.any (\e -> e.module == owner && e.internal == n) elaborationOnlyEntries
+    || Array.any (\e -> e.module == owner && e.internal == n) elaborationOnlyValues
 
 -- | The exports of a module with no export list: every declaration it makes,
 -- | and nothing it imports.

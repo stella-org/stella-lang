@@ -90,6 +90,7 @@ elaborationOrigins = case _ of
   EffectRowAmbiguous _ os -> os
   CoreRefused failure -> [ failure.at ]
   InternalEntryMismatch _ -> []
+  InternalEntryDeclared o _ _ -> [ o ]
   Broken _ -> []
   AttemptPostponed -> []
 
@@ -161,6 +162,9 @@ printElaborationError = case _ of
   EffectRowAmbiguous _ _ -> "Nothing here determines which effects this performs; an annotation of its type decides them"
   CoreRefused failure -> internal ("the Core checker refused what was elaborated: " <> show failure.error)
   InternalEntryMismatch name -> internal ("an entry the compiler refers to is missing or at another scheme than listed: " <> show name)
+  InternalEntryDeclared _ name r -> case r.declared of
+    Just declared -> fmt @"`{name}` is an entry the compiler refers to, at `{expected}`; it cannot be declared at `{declared}`" { name: qualifiedText name, expected: printType (fromCore r.expected.body), declared: printType (fromCore declared.body) }
+    Nothing -> fmt @"`{name}` is an entry the compiler refers to, at `{expected}`, which this module is to declare" { name: qualifiedText name, expected: printType (fromCore r.expected.body) }
   Broken defect -> internal (show defect)
   AttemptPostponed -> internal "an elaboration attempt postponed itself"
   where

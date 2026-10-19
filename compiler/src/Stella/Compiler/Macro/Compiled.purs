@@ -8,11 +8,12 @@
 -- | Typed Core its bundle holds, which the session installs from the same
 -- | bundle.
 -- |
--- | **`Base.Int` is compiled from its source** ([Source](../Bootstrap/Source.purs)),
--- | as a build compiles a module, against `Prim` alone and with no macro run, so
--- | the session loads it as it loads every module, and carries out each of its
--- | entries as the operation the entry is. `Stella.Syntax` is compiled against
--- | the signature any module importing `Base.Int` reads off its interface.
+-- | **`Base.Int` and `Stella.Syntax` are what a build of their sources writes**
+-- | ([Source](../Bootstrap/Source.purs)): each one's interface file and
+-- | bytecode file, read as a build reads a module built elsewhere, so the
+-- | session loads them as it loads every module, and carries out each entry of
+-- | `Base.Int` as the operation the entry is. What is checked against them is
+-- | the signature any module importing both reads off their interfaces.
 -- |
 -- | **What `Stella.Syntax` keeps from source is in its bytecode's exports and in
 -- | no export of its interface**: a module compiled against it may refer to
@@ -27,29 +28,31 @@ module Stella.Compiler.Macro.Compiled
 import Prelude
 
 import Data.Array as Array
-import Data.Array.NonEmpty as NonEmptyArray
 import Data.Bifunctor (lmap)
-import Data.Either (Either(..))
-import Data.Identity (Identity(..))
+import Data.Either (Either(..), note)
+import Data.Maybe (Maybe(..))
+import Data.Int as Int
 import Data.Map (Map)
 import Data.Map as Map
-import Data.String (joinWith)
+import Data.String.CodeUnits as SCU
+import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
+import Stella.Compiler.Bootstrap.Source (Carried)
 import Stella.Compiler.Bootstrap.Source as Source
-import Stella.Compiler.Build (CompilerAction, compileModule, defaultHooks, printCompileError, withoutSynthesizers)
-import Stella.Compiler.Bytecode (Dmo, lower)
+import Stella.Compiler.Bytecode (Dmo, decode, lower)
+import Stella.Compiler.Bytecode.Bytes (Bytes)
 import Stella.Compiler.Elaborate.Environment.Imported (importedSignature)
 import Stella.Compiler.Elaborate.Protocol.Guest as Guest
 import Stella.Compiler.Elaborate.Protocol.Guest.Shape (Descriptor)
 import Stella.Compiler.Interface (aritiesOf, importsOf)
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment, viewFor)
+import Stella.Compiler.Interface.File as Interface
 import Stella.Compiler.Interface.FromCore (interfaceOfCore)
 import Stella.Compiler.Interface.Module (ModuleInterface)
-import Stella.Compiler.Macro.Bundle (bundle)
-import Stella.Compiler.Macro.Run (ExecutionReason(..), ParseOutcome(..), defaultSettings)
+import Stella.Compiler.Macro.Bundle (describeSyntax)
 import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.TypedCore (Export(..), Module, Signature, declareAnnotated, primSignature)
-import Stella.Compiler.TypedCore.Name (Ident, ModuleName, Qualified(..))
+import Stella.Compiler.TypedCore.Name (Ident, ModuleName(..))
 
 -- | What a translation reads of a module it is compiled against.
 type Interface = { name :: ModuleName, imports :: Array ModuleName, arities :: Map Ident Int }
@@ -71,64 +74,48 @@ type Compiled =
   , descriptor :: Descriptor
   }
 
--- | The modules compiled, or why they could not be: a failure here is a defect
--- | of the compiler.
+-- | The modules read and compiled, or why they could not be: a failure here is
+-- | a defect of the compiler.
 compiled :: Either String Compiled
 compiled = do
-  syntax <- bundle
-  base <- baseInt
-  own <- compile (syntax.withSignature base.signature) [ base.interface ] syntax.module
+  base <- carried (ModuleName "Base.Int") Source.baseInt
+  syntax <- carried (ModuleName "Stella.Syntax") Source.stellaSyntax
+  env <- lmap (\err -> "the modules the compiler carries are no environment: " <> show err)
+    (addInterface base.interface initialEnvironment >>= addInterface syntax.interface)
+  view <- lmap (\err -> "the modules the compiler carries have no view: " <> show err) (viewFor [ base.interface.name, syntax.interface.name ] env)
+  signature <- lmap (\err -> "the modules the compiler carries have no signature: " <> show err) (importedSignature env view)
+  descriptor <- lmap ("Stella.Syntax has no descriptor: " <> _) (describeSyntax syntax.interface)
   guest <- Guest.bundle
   elab <- compile (guest.withSignature primSignature) [] guest.module
-  let moduleInterfaces = [ base.moduleInterface, unexported syntax.unexported own.moduleInterface, elab.moduleInterface ]
+  let moduleInterfaces = [ base.interface, syntax.interface, elab.moduleInterface ]
   pure
-    { modules: [ base.dmo, own.dmo ]
-    , signature: own.signature
-    , interfaces: [ base.interface, own.interface ]
+    { modules: [ base.dmo, syntax.dmo ]
+    , signature
+    , interfaces: map translated [ base.interface, syntax.interface ]
     , moduleInterfaces
     , preloaded: Map.fromFoldable (map (\i -> Tuple i.name i) moduleInterfaces)
-    , descriptor: syntax.descriptor
+    , descriptor
     }
-
--- | `Base.Int`, compiled from its source as a build compiles a module: against
--- | `Prim` alone, with no macro run and no synthesis job carried out. What a
--- | module compiled against it is checked with is the signature an importer of
--- | it reads, from an environment holding its interface.
-baseInt :: Either String { dmo :: Dmo, signature :: Signature, interface :: Interface, moduleInterface :: ModuleInterface }
-baseInt = case compileModule action defaultSettings initialEnvironment Map.empty Source.baseInt of
-  Identity (Left errors) -> Left ("Base.Int does not compile: " <> joinWith "; " (map printCompileError (NonEmptyArray.toArray errors)))
-  Identity (Right made) -> do
-    env <- lmap (\err -> "Base.Int has no environment: " <> show err) (addInterface made.interface initialEnvironment)
-    view <- lmap (\err -> "Base.Int has no view: " <> show err) (viewFor [ made.interface.name ] env)
-    signature <- lmap (\err -> "Base.Int has no signature: " <> show err) (importedSignature env view)
-    pure
-      { dmo: made.dmo
-      , signature
-      , interface: { name: made.interface.name, imports: made.interface.imports, arities: made.interface.arities }
-      , moduleInterface: made.interface
-      }
   where
-  action :: CompilerAction Identity
-  action =
-    { readSource: \_ -> pure (Left "no file is read")
-    , runParser: \_ _ _ -> pure (ExecutionFailedAs { reason: NoSuchModule, detail: "no parser runs" })
-    , synthesis: withoutSynthesizers
-    , hooks: defaultHooks
-    }
+  translated i = { name: i.name, imports: i.imports, arities: i.arities }
 
--- | An interface with the values given in no export table, a constructor among
--- | them in no type's members, and none of them with an arity, an arity being
--- | of a value a module downstream reaches: a call to one is a `callu`.
-unexported :: Array Ident -> ModuleInterface -> ModuleInterface
-unexported names i = i
-  { exports = i.exports
-      { values = Map.filter (\e -> not (Array.elem (local e.entity) names)) i.exports.values
-      , types = map (\t -> t { members = Array.filter (\m -> not (Array.elem m names)) t.members }) i.exports.types
-      }
-  , arities = Map.filterKeys (\n -> not (Array.elem n names)) i.arities
-  }
+-- | A module the compiler carries, its files decoded as a build decodes them,
+-- | and the interface the one of the module named.
+carried :: ModuleName -> Carried -> Either String { interface :: ModuleInterface, dmo :: Dmo }
+carried name files = do
+  stored <- named "interface" (fromHex files.interface) >>= \bytes -> lmap (named' "interface" <<< show) (Interface.decode bytes)
+  dmo <- named "bytecode" (fromHex files.bytecode) >>= \bytes -> lmap (named' "bytecode" <<< show) (decode bytes)
+  if stored.interface.name == name && dmo.name == name then Right { interface: stored.interface, dmo }
+  else Left (show name <> " is carried as files of another module")
   where
-  local (Qualified _ n) = n
+  named what = note (show name <> ": its " <> what <> " is no hexadecimal")
+  named' what why = show name <> ": its " <> what <> " does not decode: " <> why
+
+-- | The bytes a string of hexadecimal digits spells, two digits to a byte.
+fromHex :: String -> Maybe Bytes
+fromHex s
+  | Int.odd (SCU.length s) = Nothing
+  | otherwise = traverse (\i -> Int.fromStringAs Int.hexadecimal (SCU.slice (2 * i) (2 * i + 2) s)) (Array.range 0 (SCU.length s / 2 - 1))
 
 compile
   :: Signature

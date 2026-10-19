@@ -45,7 +45,6 @@ import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (ParseOutcome(..), RunParser, defaultSettings)
 import Stella.Compiler.Macro.Tree (Position(..), Range(..), SyntaxNode(..), Token(..), TokenTree(..))
 import Stella.Compiler.Macro.Tree as Tree
-import Stella.Compiler.Bootstrap.Source as Source
 import Stella.Compiler.Build (BackendProblem(..), BuildError(..), BuildInputs, BuiltModules, ordinary, SourceRoot, defaultSourceRoots, CompileError(..), CompileWarning, CompilerAction, EnvironmentProblem(..), PackageFile, SyntaxProblem(..), build, buildMessages, compileModule, defaultHooks, locationsOf, printBuildMessage, printCompileError, warningLocationOf, withoutSynthesizers)
 import Stella.Compiler.Resolve.Module (ResolutionError(..))
 import Stella.Compiler.Resolve.Monad (ResolveError(..), ResolveReason(..)) as Resolve
@@ -58,7 +57,7 @@ import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), Modu
 import Stella.Compiler.TypedCore.Prim (booleanTy, fn, intTy, ioTy, numberTy, pureFn, recordTy, stringTy, unitTy)
 import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), Type(..))
 import Test.Spec (Spec, describe, it)
-import Test.Stella.Compiler.Sources (continuationSource)
+import Test.Stella.Compiler.Sources (baseIntPath, continuationSource, readRepositoryFile)
 import Test.Spec.Assertions (fail, shouldEqual)
 
 -- The modules imported ---------------------------------------------------------------
@@ -1462,12 +1461,13 @@ buildSpec = describe "a build" do
 
   describe "a toolchain build" do
     let
-      baseInt = Tuple "src/Base/Int.stel" Source.baseInt
+      baseIntFile = liftEffect (readRepositoryFile baseIntPath) <#> Tuple "src/Base/Int.stel"
       rebuilding names = { environment, rebuilding: Set.fromFoldable (map ModuleName names) }
       outcome r = lmap (map _.message <<< NonEmptyArray.toArray <<< buildMessages) r.result
       failure r = either identity (const []) (outcome r)
 
     it "compiles a module of the environment it names anew, which modules importing the old interface are then compiled with" do
+      baseInt <- baseIntFile
       buildingAgainst (rebuilding [ "Base.Int" ]) defaultSourceRoots
         [ baseInt, Tuple "src/B.stel" (moduleOf "B" [ "Base.Int (add)", "Stella.Syntax (Parser)" ] [ "n :: Int", "n = add 1 2" ]) ]
         \r -> do
@@ -1497,12 +1497,14 @@ buildSpec = describe "a build" do
         failure r `shouldEqual` [ "The module `Base.Int` is not available to this build" ]
 
     it "refuses a module of the environment the build does not name, as an ordinary build does" do
+      baseInt <- baseIntFile
       buildingAgainst (rebuilding [ "Base.Int" ]) defaultSourceRoots [ baseInt, Tuple "src/Stella/Syntax.stel" (valueModule "Stella.Syntax" []) ] \r ->
         case r.result of
           Left (NameInEnvironment e) -> e.name `shouldEqual` ModuleName "Stella.Syntax"
           _ -> fail "not refused"
 
     it "refuses an ordinary build declaring a module of the environment" do
+      baseInt <- baseIntFile
       building [ baseInt ] \r -> case r.result of
         Left (NameInEnvironment e) -> e.name `shouldEqual` ModuleName "Base.Int"
         _ -> fail "not refused"

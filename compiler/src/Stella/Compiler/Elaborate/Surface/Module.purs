@@ -95,7 +95,7 @@ import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind(..), kindMeta
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType(..), fromCore, kindMetasOfType, metasOf, toCore)
 import Stella.Compiler.Elaborate.Surface.Types (readAttributeDeclaration, readTypes, settledTypes)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEntry)
-import Stella.Compiler.Elaborate.Surface.Internal (Internal, internalEntries)
+import Stella.Compiler.Elaborate.Surface.Internal (Internal, declaredEntryMismatches, internalEntries)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
 import Stella.Compiler.Elaborate.Driver.Loop (Attempter, AttempterM, identically, runAttemptingM)
 import Stella.Compiler.Elaborate.Driver.Loop as Loop
@@ -230,6 +230,10 @@ data ElaborationError
   -- | reaching its module lacks or holds at another scheme than the one listed:
   -- | the compiler's fault.
   | InternalEntryMismatch (Qualified Ident)
+  -- | An entry a desugaring of the compiler's refers to, which the module
+  -- | declaring it lacks or declares at another scheme than the one listed,
+  -- | where it is declared, or where the module is where it lacks one.
+  | InternalEntryDeclared Surface.Origin (Qualified Ident) { expected :: TypeScheme, declared :: Maybe TypeScheme }
   -- | A declaration whose effect rows nothing decided, where its fits stand.
   | EffectRowAmbiguous (Qualified Ident) (Array Surface.Origin)
   -- | An attempt that postponed itself, which nothing the elaborator states
@@ -423,7 +427,7 @@ elaborateValuesM attempterOf imports surface importedEntries m =
     , effects = Map.union (Map.fromFoldable (map (localEffect m.name) types.effects)) surface.effects
     }
   -- the entries the compiler's desugarings refer to, read off it
-  Tuple internal internalErrors = case internalEntries signature of
+  Tuple internal internalErrors = case internalEntries m.name signature of
     Right entries -> Tuple entries []
     Left name -> Tuple Map.empty [ InternalEntryMismatch name ]
   constructorEntries = Array.concatMap (constructorsOf m.name) (map _.decl elaboratedData)
@@ -1552,7 +1556,7 @@ assembled signature m exports elaborated =
     , exports: Array.concatMap typeExports elaborated.data
         <> Array.concatMap elaborationOnlyExports elaborated.data
         <> map (ExportEffect <<< _.decl.name) (Array.filter effectExported elaborated.effects)
-        <> map (ExportValue <<< nameOf <<< _.name) (Array.filter (reachedFromOutside m.name exports operators <<< nameOf <<< _.name) values)
+        <> map (ExportValue <<< nameOf <<< _.name) (Array.filter (\v -> reachedFromOutside m.name exports operators (nameOf v.name) || elaborationOnlyValue v) values)
         <> map (ExportValue <<< _.decl.name) (Array.filter (reachedFromOutside m.name exports operators <<< _.decl.name) elaborated.foreigns)
     , decls
     }
@@ -1561,7 +1565,11 @@ assembled signature m exports elaborated =
     -- a foreign type the module declares has no Core declaration, and is in
     -- what the module is checked against as the ABI's types are
     Nothing -> case declareAnnotated (foldl addForeignType signature elaborated.foreignTypes) core of
-      Right declared -> Right { core, declared, interface }
+      -- what the compiler's desugarings refer to of the module is held to
+      -- the schemes listed, now that the module's values are declared
+      Right declared -> case NonEmptyArray.fromArray (map entryDeclared (declaredEntryMismatches m.name declared.signature)) of
+        Nothing -> Right { core, declared, interface }
+        Just es -> Left es
       -- an attribute's arguments are checked by Core alone
       Left { at, error: AttributeIllTyped err } -> Left (NonEmptyArray.singleton (AttributeRejected at err))
       -- and so is the value form a `Λ` encloses, what was not η-expanded
@@ -1569,6 +1577,12 @@ assembled signature m exports elaborated =
       Left { at, error: IllTyped NotAValueForm } -> Left (NonEmptyArray.singleton (ValueFormNeeded at))
       Left refusal -> Left (NonEmptyArray.singleton (CoreRefused refusal))
 
+  -- an entry declared otherwise than listed, where its declaration stands
+  entryDeclared e = InternalEntryDeclared (entryOrigin e.name) e.name { expected: e.expected, declared: e.declared }
+  entryOrigin name = case Array.find (\v -> v.name == name) values, Array.find (\d -> Array.any (\c -> Qualified m.name c.name == name) d.decl.constructors) elaborated.data of
+    Just v, _ -> v.origin
+    _, Just d -> d.origin
+    _, _ -> m.origin
   -- a data type exported, abstractly or with the constructors exported of it
   typeExports d
     | declaredHere (map (\e -> e.entity == TypeEntity (Qualified m.name d.decl.name) && e.via == Declared) (Map.lookup (tyNameText d.decl.name) exports.types)) =
@@ -1580,6 +1594,9 @@ assembled signature m exports elaborated =
     | Array.any (\a -> a.name == primAttribute "elaborationOnly") d.decl.attributes =
         map (ExportCtor <<< _.name) (Array.filter (\c -> not (exportedValue c.name)) d.decl.constructors)
     | otherwise = []
+  -- a value only elaboration names, exported under its internal identity
+  -- apart from the export list, which never names it
+  elaborationOnlyValue v = Array.any (\a -> a.name == primAttribute "elaborationOnly") v.attributes
   -- an effect exported by name, with its operations
   effectExported e = declaredHere (map (\x -> x.entity == EffectEntity e.name && x.via == Declared) (Map.lookup (effNameText e.decl.name) exports.types))
   -- an operation's scheme: the type it is called at

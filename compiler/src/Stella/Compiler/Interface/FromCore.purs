@@ -18,7 +18,7 @@
 -- |
 -- | **What the module owns is read from its checked signature**, those entries
 -- | of it qualified by the module's name: an intrinsic type the signature was
--- | given — `Stella.Syntax`'s `OriginRef` — is a type of the module as a
+-- | given — `Stella.Elab`'s `Handle` — is a type of the module as a
 -- | declared one is. The order of a data type's constructors and of an
 -- | effect's operations is the declaration's.
 module Stella.Compiler.Interface.FromCore

@@ -1,6 +1,6 @@
--- | `Stella.Syntax`: the module checks as Core against a signature holding its
--- | opaque origin type and `Base.Int`, and the types a value crossing to the host
--- | has mirror the host's constructor for constructor.
+-- | `Stella.Syntax` as the compiler carries it: its interface keeps what a
+-- | quotation is written with to its bytecode, and the types a value crossing
+-- | to the host has mirror the host's constructor for constructor.
 module Test.Stella.Compiler.Macro.Bundle (spec) where
 
 import Prelude
@@ -8,7 +8,7 @@ import Prelude
 import Prim as P
 
 import Data.Array as Array
-import Data.Either (Either(..), isLeft)
+import Data.Either (Either(..))
 import Data.Generic.Rep (class Generic, Argument, Constructor, NoArguments, Product, Sum)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
@@ -16,15 +16,14 @@ import Data.Symbol (class IsSymbol, reflectSymbol)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Elaborate.Protocol.Guest.Shape (Descriptor, Shape(..))
 import Stella.Compiler.Elaborate.Surface.Internal (internalEntries)
-import Stella.Compiler.Macro.Bundle (bundle, syntaxModule, syntaxModuleName, withSyntax)
+import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Tree (Delimiter, Failure, IssuedOrigin, OriginRef, Position, Range, Result, Syntax, SyntaxItem, SyntaxNode, Token, TokenKind, TokenTree, Trivia)
 import Stella.Compiler.TypedCore.Name (ModuleName(..))
 import Stella.Compiler.TypedCore.Prim (primModule)
-import Stella.Compiler.TypedCore (Ident(..), Qualified(..), TyName(..), Type(..), declare, declareAnnotated, primSignature)
+import Stella.Compiler.TypedCore (Ident(..), Qualified(..), TyName(..), Type(..), primSignature)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Stella.Compiler.Fixtures.Programs (intModule)
 import Type.Proxy (Proxy(..))
 
 -- The shape of a host type's field ---------------------------------------------------------
@@ -146,19 +145,21 @@ mirrored =
   , Tuple "Result" (hostCtors (Proxy :: Proxy (Result Param0)))
   ]
 
+-- | A module compiled against `Stella.Syntax`.
+main :: ModuleName
+main = ModuleName "Main"
+
 spec :: Spec Unit
 spec = describe "Stella.Compiler.Macro.Bundle" do
-  it "declares against a signature holding its origin type and Base.Int" do
-    case declare primSignature intModule of
-      Left e -> fail (show e)
-      Right withInt -> do
-        case declareAnnotated (withSyntax withInt) syntaxModule of
-          Left e -> fail (show e)
-          Right _ -> pure unit
-        isLeft (declareAnnotated withInt syntaxModule) `shouldEqual` true
+  it "exports what an antiquotation is written with from its bytecode, which a module quoting links to" do
+    case compiled of
+      Left e -> fail e
+      Right c -> case Array.find (\m -> m.name == syntaxModuleName) c.modules of
+        Just dmo -> Array.elem (Qualified syntaxModuleName (Ident "$spliced")) dmo.exports `shouldEqual` true
+        Nothing -> fail "Stella.Syntax is not carried"
 
   it "describes what crosses to the host, and the host's types mirror it constructor for constructor" do
-    case bundle of
+    case compiled of
       Left e -> fail e
       Right b -> do
         Array.filter (\(Tuple n host) -> guestCtors b.descriptor n /= Just host) mirrored `shouldEqual` []
@@ -171,19 +172,21 @@ spec = describe "Stella.Compiler.Macro.Bundle" do
     case compiled of
       Left e -> fail e
       Right c -> do
-        map (Array.fromFoldable <<< Map.keys) (internalEntries c.signature)
+        map (Array.fromFoldable <<< Map.keys) (internalEntries main c.signature)
           `shouldEqual` Right (map (Qualified syntaxModuleName <<< Ident) [ "$QuotedOrigin", "$spliced" ])
         let
           spliced = Qualified syntaxModuleName (Ident "$spliced")
           changed = c.signature { values = Map.update (\v -> Just v { scheme = { kindVars: [], body: TCon (Qualified syntaxModuleName (TyName "Term")) [] } }) spliced c.signature.values }
-        internalEntries changed `shouldEqual` Left spliced
+        internalEntries main changed `shouldEqual` Left spliced
         -- reaching Stella.Syntax, a signature lacking either entry is as wrong
         let
           quotedOrigin = Qualified syntaxModuleName (Ident "$QuotedOrigin")
-        internalEntries c.signature { values = Map.delete spliced c.signature.values } `shouldEqual` Left spliced
-        internalEntries c.signature { ctors = Map.delete quotedOrigin c.signature.ctors } `shouldEqual` Left quotedOrigin
+        internalEntries main c.signature { values = Map.delete spliced c.signature.values } `shouldEqual` Left spliced
+        internalEntries main c.signature { ctors = Map.delete quotedOrigin c.signature.ctors } `shouldEqual` Left quotedOrigin
         -- a signature that does not reach Stella.Syntax holds none
-        map Map.isEmpty (internalEntries primSignature) `shouldEqual` Right true
+        map Map.isEmpty (internalEntries main primSignature) `shouldEqual` Right true
+        -- and the module declaring them is held to none of its own
+        map Map.isEmpty (internalEntries syntaxModuleName c.signature) `shouldEqual` Right true
 
   it "names as what a session holds before a build loads anything a set closed under imports, which a build stops at" do
     case compiled of

@@ -112,6 +112,7 @@ import Stella.Compiler.Macro.Run (ExpansionSettings, RunParser)
 import Stella.Compiler.MiddleEnd.IR (Debug, Module) as MIR
 import Stella.Compiler.MiddleEnd.Translate (translate)
 import Stella.Compiler.Resolve.Module (Resolved, resolveModuleExpanding)
+import Stella.Compiler.Resolve.Scope (isElaborationOnlyValue)
 import Stella.Compiler.Surface.Origin (Origin) as Surface
 import Stella.Compiler.TypedCore (Declared, Module) as Core
 import Stella.Compiler.TypedCore.Name (ModuleName(..))
@@ -574,8 +575,12 @@ lowered
   -> Phase m Compiled
 lowered warnings decided mid = do
   bytecode <- lower mid # orFailWith (pure <<< Backend <<< LowerFailed)
-  interface <- assemble decided.surface decided.core (aritiesOf mid.module) # orFailWith (pure <<< Backend <<< InterfaceUnassembled)
+  interface <- assemble decided.surface decided.core arities # orFailWith (pure <<< Backend <<< InterfaceUnassembled)
   pure { dmo: bytecode.dmo, debug: bytecode.debug, interface, warnings }
+  where
+  -- an elaboration-only value is exported apart from the interface, which
+  -- gives it no arity: a call to it from downstream is of an arity unknown
+  arities = Map.filterKeys (not <<< isElaborationOnlyValue mid.module.name) (aritiesOf mid.module)
 
 -- | What may fail, or what it failed with taken for the error given.
 orFailWith :: forall m e e' a. Applicative m => (e -> e') -> Either e a -> ExceptT e' m a

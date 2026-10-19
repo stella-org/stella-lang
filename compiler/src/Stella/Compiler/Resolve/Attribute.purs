@@ -70,7 +70,7 @@ compilerRead :: Array { attribute :: Qualified Ident, on :: Array DeclarationSor
 compilerRead =
   [ { attribute: prim "macro", on: [ OnValue ] }
   , { attribute: prim "entrypoint", on: [ OnValue, OnComputation ] }
-  , { attribute: elaborationOnly, on: [ OnData, OnNewtype ] }
+  , { attribute: elaborationOnly, on: [ OnData, OnNewtype, OnValue ] }
   ]
   where
   prim = Qualified (ModuleName "Prim") <<< Ident

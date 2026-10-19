@@ -341,6 +341,7 @@ at = case _ of
   EffectRowAmbiguous _ os -> joinWith " " (map located os) <> " effect row ambiguous"
   CoreRefused _ -> "the Core checker refused it"
   InternalEntryMismatch _ -> "an internal entry mismatched"
+  InternalEntryDeclared _ name _ -> "an internal entry declared otherwise: " <> show name
   Broken _ -> "broken"
   AttemptPostponed -> "postponed"
 
@@ -1590,6 +1591,35 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         case r.errors of
           [ InternalEntryMismatch name ] -> name `shouldEqual` Qualified (ModuleName "Base.Continuation") (Ident "$Continuation")
           errors -> fail ("not a mismatch: " <> show (map at errors))
+
+    it "is refused where `Base.Continuation` declares its constructor at another scheme, in that module" do
+      elaboratingUnder "module Base.Continuation (Continuation) where" [ "@[elaborationOnly]", "newtype Continuation a b (r :: Row Effect) = Continuation (a -> b)" ] \r ->
+        case r.errors of
+          [ InternalEntryDeclared _ name { declared: Just _ } ] -> name `shouldEqual` Qualified (ModuleName "Base.Continuation") (Ident "$Continuation")
+          errors -> fail ("not refused as declared: " <> show (map at errors))
+
+    it "is refused where `Stella.Syntax` declares what an antiquotation is written with at another scheme, or not at all, in that module" do
+      let
+        syntaxTypes =
+          [ "data Position = Position Int Int"
+          , "data List a = Nil | Cons a (List a)"
+          , "data Trivia = Spaces"
+          , "data SyntaxNode = SyntaxNode"
+          , "data Syntax (c :: Type) = Syntax"
+          , "@[elaborationOnly]"
+          , "data OriginRef = InputOrigin Int | QuotedOrigin String Position Position"
+          ]
+        spliced = Qualified (ModuleName "Stella.Syntax") (Ident "$spliced")
+      elaboratingUnder "module Stella.Syntax where" (syntaxTypes <> [ "@[elaborationOnly]", "spliced :: Int", "spliced = 1" ]) \r ->
+        case r.errors of
+          [ InternalEntryDeclared _ name { declared } ] -> do
+            name `shouldEqual` spliced
+            map _.body declared `shouldEqual` Just (TCon (Qualified (ModuleName "Prim") (TyName "Int")) [])
+          errors -> fail ("not refused as declared: " <> show (map at errors))
+      elaboratingUnder "module Stella.Syntax where" syntaxTypes \r ->
+        case r.errors of
+          [ InternalEntryDeclared _ name { declared: Nothing } ] -> name `shouldEqual` spliced
+          errors -> fail ("not refused as undeclared: " <> show (map at errors))
 
     it "is outside this version where it is a handler declaration" do
       elaborating (effects <> [ "handler h :: Ask ~> () where", "  fast | ask _ -> 1" ]) \r ->
