@@ -4,7 +4,7 @@
 -- | manifest saying which load, in what order, whether they load or are refused
 -- | where they load, what the named globals hold, and, for a fixture with an entry
 -- | point, how running it ends and what effects the host saw on the way. The
--- | compiler's test suite writes them from hand-written Core and checks they are
+-- | compiler's test suite builds them from Stella source and checks they are
 -- | current; this reads the bytes as any consumer of a `.dmo` would and checks the
 -- | manifest. The JavaScript backend checks the same manifests, so the two agree
 -- | wherever both pass.

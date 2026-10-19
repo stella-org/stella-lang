@@ -1,5 +1,7 @@
--- | The hand-written Core of the region fixtures: which frame a cell reaches, and
--- | which cells a resumption shares or copies.
+-- | What the values of the region fixtures hold, and the hand-written Core of
+-- | `regions-core`: which frame a cell reaches, and which cells a resumption
+-- | shares or copies. `sharedGroups`, `localClosure`, and `declaredApart` are
+-- | built from source, in `regions`; the others are the Core below.
 -- |
 -- | A region opened inside the computation a `full` clause captures is part of the
 -- | captured segment, so every resumption starts from a copy of its cells as they
@@ -23,8 +25,9 @@
 -- | | `closureBefore` | a closure made before a capture, run in two copies |
 -- | | `stashed` | a closure carried out through an operation's type parameter and handed back to two copies |
 module Test.Stella.Compiler.Fixtures.Regions
-  ( regionsModule
-  , regionsExpected
+  ( regionsCoreModule
+  , regionsCoreExpected
+  , regionsSourceExpected
   ) where
 
 import Prelude
@@ -147,23 +150,8 @@ full op resumesWith row body = FullClause
 
 -- The effects --------------------------------------------------------------------------------
 
-effA :: Qualified EffName
-effA = effect "A"
-
-effB :: Qualified EffName
-effB = effect "B"
-
 flipEff :: Qualified EffName
 flipEff = effect "Flip"
-
-bumpEff :: Qualified EffName
-bumpEff = effect "Bump"
-
-counter :: Qualified EffName
-counter = effect "Counter"
-
-ask :: Qualified EffName
-ask = effect "Ask"
 
 tick :: Qualified EffName
 tick = effect "Tick"
@@ -184,45 +172,6 @@ operation name resumesWith = { name: OpName name, tyBinders: [], argument: unit'
 effectDecl :: P.Int -> P.String -> P.Array OpDecl -> Decl P.Int
 effectDecl at name operations = DeclEffect at { name: EffName name, params: [], operations, attributes: [] }
 
--- The module -----------------------------------------------------------------------------------
-
-regionsModule :: Module P.Int
-regionsModule =
-  { annotation: 0
-  , name: mainName
-  , imports: [ intName ]
-  , exports: map (\(Tuple name _) -> ExportValue (Ident name)) regionsExpected
-  , decls:
-      [ effectDecl 1 "A" [ operation "a" int ]
-      , effectDecl 2 "B" [ operation "b" int ]
-      , effectDecl 3 "Flip" [ operation "flip" int ]
-      , effectDecl 4 "Bump" [ operation "bump" int ]
-      , effectDecl 5 "Counter" [ operation "next" int ]
-      , effectDecl 6 "Ask" [ operation "ask" int ]
-      , effectDecl 7 "Tick" [ operation "tick" int ]
-      , effectDecl 8 "Branch" [ operation "branch" intToInt ]
-      , effectDecl 9 "Split" [ operation "split" int ]
-      , effectDecl 10 "Stash"
-          [ { name: OpName "stash"
-            , tyBinders: [ { name: TyVar "a", kind: KType } ]
-            , argument: TVar (TyVar "a")
-            , resumesWith: TVar (TyVar "a")
-            }
-          ]
-      , nonrec 20 "sharedGroups" int sharedGroups
-      , nonrec 21 "choiceState" int choiceState
-      , nonrec 22 "stateChoice" int stateChoice
-      , nonrec 23 "localClosure" int localClosure
-      , nonrec 24 "counting" countingScheme counting
-      , nonrec 25 "declaredApart" int declaredApart
-      , DeclRec 26 [ { name: Ident "nest", scheme: nestScheme, value: nest, attributes: [] } ]
-      , nonrec 27 "recursed" int recursed
-      , nonrec 28 "nestedCopy" int nestedCopy
-      , nonrec 29 "closureBefore" int closureBefore
-      , nonrec 30 "stashed" int stashed
-      ]
-  }
-
 nonrec :: P.Int -> P.String -> Type -> Expr P.Int -> Decl P.Int
 nonrec at name ty value = DeclNonRec at { name: Ident name, scheme: monoScheme ty, value, attributes: [] }
 
@@ -238,41 +187,6 @@ regionsExpected =
   , Tuple "closureBefore" (EInt 102)
   , Tuple "stashed" (EInt 101)
   ]
-
--- One region, two handlers ---------------------------------------------------------------------
-
--- | `region [r] ( n : Int ) @ ( 0 ) in handle (handle (let x = a () in let y = b () in
--- | let z = a () in y * 100 + z) with { fast a u -> n += 1 ; n }) with
--- | { fast b u -> n *= 10 ; n }`.
--- |
--- | Both clauses reach the one cell: `a` makes it 1, `b` 10, and `a` 11, so
--- | 10 * 100 + 11. Cells of each handler's own give 1, 0, and 2.
-sharedGroups :: Expr P.Int
-sharedGroups =
-  region "r" (lit 0)
-    $ handle effB
-        [ fast "b"
-            ( let' "v" int (intOpAt rowB "mul" (readN "r") (lit 10))
-                $ let' "w" unit' (writeN "r" (var "v"))
-                $ var "v"
-            )
-        ]
-    $ handle effA
-        [ fast "a"
-            ( let' "v" int (intOpAt rowA "add" (readN "r") (lit 1))
-                $ let' "w" unit' (writeN "r" (var "v"))
-                $ var "v"
-            )
-        ]
-    $ let' "x" int (perform effA "a")
-    $ let' "y" int (perform effB "b")
-    $ let' "z" int (perform effA "a")
-    $ intOpAt rowBody "add" (intOpAt rowBody "mul" (var "y") (lit 100)) (var "z")
-  where
-  -- the row each clause stands at, which is the row around its handler
-  rowB = regionRow "r" TRowEmpty
-  rowA = rowWith [ effB ] rowB
-  rowBody = rowWith [ effA ] rowA
 
 -- A region inside and outside a handler resuming twice ------------------------------------------
 
@@ -320,82 +234,6 @@ stateChoice =
   region "r" (lit 0)
     $ flipping (regionRow "r" TRowEmpty)
     $ flipBody (rowWith [ flipEff ] (regionRow "r" TRowEmpty))
-
--- A clause's own function over the cell ---------------------------------------------------------
-
--- | `region [r] ( n : Int ) @ ( 5 ) in handle (let a = bump () in let b = bump () in
--- | a * 100 + b) with { fast bump u -> let f = λw. n in let _ = n := f () + 1 in f () }`.
--- |
--- | The function the clause builds reads the cell it was built over: 6 and 7, so 607.
-localClosure :: Expr P.Int
-localClosure =
-  region "r" (lit 5)
-    $ handle bumpEff
-        [ fast "bump"
-            ( let' "f" (fn unit' clauseRow int) (lamAt "w" unit' clauseRow (readN "r"))
-                $ let' "w" unit' (writeN "r" (intOpAt clauseRow "add" (call (var "f")) (lit 1)))
-                $ call (var "f")
-            )
-        ]
-    $ let' "a" int (perform bumpEff "bump")
-    $ let' "b" int (perform bumpEff "bump")
-    $ intOpAt bodyRow "add" (intOpAt bodyRow "mul" (var "a") (lit 100)) (var "b")
-  where
-  clauseRow = regionRow "r" TRowEmpty
-  bodyRow = rowWith [ bumpEff ] clauseRow
-
--- A function opening a region of its own ---------------------------------------------------------
-
--- | `( Unit -{ ( Counter, Ask ) }-> Int ) -{ ( Ask ) }-> Int`
-countingScheme :: Type
-countingScheme = fn (fn unit' (rowWith [ counter, ask ] TRowEmpty) int) (rowWith [ ask ] TRowEmpty) int
-
--- | `λthunk. region [r] ( n : Int ) @ ( 0 ) in handle (thunk ()) with
--- | { fast next u -> let v = n in let _ = n := v + 1 in v }`, what a handler
--- | declaration with a cell is a function of a thunk to.
-counting :: Expr P.Int
-counting =
-  lamAt "thunk" (fn unit' (rowWith [ counter, ask ] TRowEmpty) int) (rowWith [ ask ] TRowEmpty)
-    $ region "r" (lit 0)
-    $ handle counter
-        [ fast "next"
-            ( let' "v" int (readN "r")
-                $ bumpBy "r" clauseRow (lit 1)
-                $ var "v"
-            )
-        ]
-    $ call (OpenEff 0 (regionRow "r" TRowEmpty) (var "thunk"))
-  where
-  clauseRow = regionRow "r" (rowWith [ ask ] TRowEmpty)
-
--- | `region [s] ( n : Int ) @ ( 100 ) in handle (counting (λu. let a = next () in
--- | let b = next () in let c = ask () in a + b * 10 + c * 100)) with
--- | { fast ask u -> let v = n in let _ = n := v + 1 in v }`.
--- |
--- | `counting` opens a region declaring `n` too, and each clause reaches its own:
--- | 0, 1, and 100, so 10010. A clause reaching the other's cell gives anything else.
-declaredApart :: Expr P.Int
-declaredApart =
-  region "s" (lit 100)
-    $ handle ask
-        [ fast "ask"
-            ( let' "v" int (readN "s")
-                $ bumpBy "s" clauseRow (lit 1)
-                $ var "v"
-            )
-        ]
-    $ App 0 (OpenEff 0 (regionRow "s" TRowEmpty) (Global 0 (inMain "counting") []))
-        ( lamAt "u" unit' thunkRow
-            $ let' "a" int (perform counter "next")
-            $ let' "b" int (perform counter "next")
-            $ let' "c" int (perform ask "ask")
-            $ intOpAt thunkRow "add"
-                (intOpAt thunkRow "add" (var "a") (intOpAt thunkRow "mul" (var "b") (lit 10)))
-                (intOpAt thunkRow "mul" (var "c") (lit 100))
-        )
-  where
-  clauseRow = regionRow "s" TRowEmpty
-  thunkRow = rowWith [ counter, ask ] TRowEmpty
 
 -- The same function applied inside its own clause --------------------------------------------------
 
@@ -556,3 +394,46 @@ stashed =
   where
   row = regionRow "r" (rowWith [ stash ] TRowEmpty)
   closure = fn unit' row int
+
+-- The values no source writes ------------------------------------------------------------------
+
+-- | The `Main` of `regions-core`: a computation reading and writing the cells
+-- | of a region around it, which no source writes, cells being reached from
+-- | the clauses of the expression declaring them alone; and `nest`, whose
+-- | polymorphic recursion needs a constraint written in its signature.
+regionsCoreModule :: Module P.Int
+regionsCoreModule =
+  { annotation: 0
+  , name: mainName
+  , imports: [ intName ]
+  , exports: map (\(Tuple name _) -> ExportValue (Ident name)) regionsCoreExpected
+  , decls:
+      [ effectDecl 3 "Flip" [ operation "flip" int ]
+      , effectDecl 7 "Tick" [ operation "tick" int ]
+      , effectDecl 8 "Branch" [ operation "branch" intToInt ]
+      , effectDecl 9 "Split" [ operation "split" int ]
+      , effectDecl 10 "Stash"
+          [ { name: OpName "stash"
+            , tyBinders: [ { name: TyVar "a", kind: KType } ]
+            , argument: TVar (TyVar "a")
+            , resumesWith: TVar (TyVar "a")
+            }
+          ]
+      , nonrec 21 "choiceState" int choiceState
+      , nonrec 22 "stateChoice" int stateChoice
+      , DeclRec 26 [ { name: Ident "nest", scheme: nestScheme, value: nest, attributes: [] } ]
+      , nonrec 27 "recursed" int recursed
+      , nonrec 28 "nestedCopy" int nestedCopy
+      , nonrec 29 "closureBefore" int closureBefore
+      , nonrec 30 "stashed" int stashed
+      ]
+  }
+
+regionsCoreExpected :: P.Array (Tuple P.String Expected)
+regionsCoreExpected = Array.filter (\(Tuple name _) -> Array.elem name coreOnly) regionsExpected
+  where
+  coreOnly = [ "choiceState", "stateChoice", "recursed", "nestedCopy", "closureBefore", "stashed" ]
+
+-- | What each value of the source-built `Main` of `regions` holds.
+regionsSourceExpected :: P.Array (Tuple P.String Expected)
+regionsSourceExpected = Array.filter (\(Tuple name _) -> not (Array.elem name (map (\(Tuple core _) -> core) regionsCoreExpected))) regionsExpected

@@ -1,5 +1,6 @@
--- | The hand-written Core of the effect fixtures: handlers, `perform` in both
--- | clause forms, continuations, and regions.
+-- | The hand-written Core `Main` over handlers, `perform` in both clause forms,
+-- | continuations, and regions that serialization's tests compile, the Core of
+-- | `effects-core`, and what the values of the source-built `effects` hold.
 -- |
 -- | Every expected value is what Core's rules give
 -- | ([Semantics](../../../../../docs/technical-references/03-Typed-Core/06-Semantics.md)),
@@ -21,8 +22,9 @@
 -- | | `askedOutside`, `readOutside`, `writtenOutside`, `installedByBody`, `forkedTwice` | a `fast` clause's body runs outside the handler and outside `Ev_k` |
 module Test.Stella.Compiler.Fixtures.Effects
   ( effectsModule
-  , effectsExpected
-  , meterModule
+  , effectsCoreModule
+  , effectsCoreExpected
+  , effectsSourceExpected
   ) where
 
 import Prelude
@@ -32,8 +34,8 @@ import Prim as P
 import Data.Array as Array
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.TypedCore (Cell, DecisionTree(..), Decl(..), EffName(..), Export(..), Expr(..), Ident(..), Literal(..), Module, Occurrence(..), OpClause(..), OpDecl, OpName(..), Qualified(..), RegionName(..), RowEntry(..), RowKey(..), Symbol(..), Type(..), monoScheme)
-import Stella.Compiler.TypedCore.Prim (booleanTy, fn, intTy, pureFn, unitCtor, unitTy)
+import Stella.Compiler.TypedCore (Cell, Decl(..), EffName(..), Export(..), Expr(..), Ident(..), Literal(..), Module, OpClause(..), OpDecl, OpName(..), Qualified(..), RegionName(..), RowEntry(..), RowKey(..), Symbol(..), Type(..), monoScheme)
+import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, unitCtor, unitTy)
 import Test.Stella.Compiler.Fixtures.Programs (inInt, intName, mainName)
 import Test.Stella.Compiler.Fixtures.Value (Expected(..))
 
@@ -50,9 +52,6 @@ int = TCon intTy []
 
 unit' :: Type
 unit' = TCon unitTy []
-
-bool :: Type
-bool = TCon booleanTy []
 
 rowOf :: P.Array (Qualified EffName) -> Type
 rowOf = Array.foldr (\eff rest -> TRowExtend (RowEffectEntry eff []) rest) TRowEmpty
@@ -567,55 +566,35 @@ forkedTwice =
     let' "f" int (perform fork "fork")
       $ intOpAt (regionRow "r" (rowOf [ fork ])) "add" (var "f") (readN "r")
 
--- The refusal fixtures' source -------------------------------------------------------------------
+-- The values no source writes -------------------------------------------------------------------
 
--- | A module the handler and region refusals are made from by changing what it
--- | lowers to.
--- |
--- | `Meter` has two operations, and a region of two cells, `reading` and `spare`,
--- | stands around its handler, so a handler entry has a second clause and a region
--- | entry a second cell to turn into a repeat of the first, and one of each to
--- | leave out. `installed` consumes the values of both, a `RGN` and a `HNDL`;
--- | `inBranch` opens the region in tail position inside a branch and installs the
--- | handler in tail position inside a branch of the region's body, a `TAILRGN` and
--- | a `TAILHNDL` each in a node a function's body holds inline.
-meterModule :: Module P.Int
-meterModule =
+-- | The `Main` of `effects-core`: the continuations a clause keeps beyond itself
+-- | as a plain continuation, which the surface keeps only inside a reifiable
+-- | clause, and so as no continuation applied directly. A continuation applied
+-- | to two arguments, and one held captured while a second resumption runs
+-- | through the same activation.
+effectsCoreModule :: Module P.Int
+effectsCoreModule =
   { annotation: 0
   , name: mainName
   , imports: [ intName ]
-  , exports: [ ExportValue (Ident "installed"), ExportValue (Ident "inBranch") ]
+  , exports: map (ExportValue <<< Ident <<< fst') effectsCoreExpected
   , decls:
-      [ effectDecl 1 "Meter" [ operation "bump" int, operation "peek" int ]
-      , nonrec 2 "installed" int
-          (intOp "add" (opened (intOpAt meterRow "add" metered (lit 1))) (lit 1))
-      , nonrec 3 "inBranch" (fn bool TRowEmpty int)
-          ( lam "b" bool
-              $ onTrue (opened (onTrue metered))
-          )
+      [ effectDecl 4 "Fork" [ operation "fork" int ]
+      , effectDecl 5 "Suspend" [ operation "fork" int, operation "yield" unit' ]
+      , nonrec 17 "contOverApplied" int contOverApplied
+      , nonrec 24 "interleaved" int interleaved
       ]
   }
   where
-  meter = effect "Meter"
-  reading = SymbolKey (Symbol "reading")
-  spare = SymbolKey (Symbol "spare")
-  cells = [ { key: reading, ty: int }, { key: spare, ty: int } ]
-  region = RegionName "m"
-  meterRow = TRowExtend (RowRegionEntry region) TRowEmpty
-  opened = Region 0 region cells [ lit 0, lit 0 ]
-  onTrue body =
-    Case 0 [ var "b" ]
-      (SwitchLit (OccScrutinee 0) [ { lit: LitBoolean true, tree: Leaf body } ] (Leaf (lit 0)))
-  metered =
-    Handle 0 (perform meter "bump")
-      { element: RowEffectEntry meter []
-      , returnClause: identityReturn
-      , opClauses:
-          [ fast "bump"
-              ( let' "v" int (intOpAt meterRow "add" (ReadCell 0 region reading) (lit 1))
-                  $ let' "w" unit' (WriteCell 0 region reading (var "v"))
-                  $ var "v"
-              )
-          , fast "peek" (ReadCell 0 region spare)
-          ]
-      }
+  fst' (Tuple a _) = a
+
+effectsCoreExpected :: P.Array (Tuple P.String Expected)
+effectsCoreExpected = Array.filter (\(Tuple name _) -> Array.elem name coreOnly) effectsExpected
+  where
+  coreOnly = [ "contOverApplied", "interleaved" ]
+
+-- | What each value of the source-built `Main` of `effects` holds: every value
+-- | of the Core `Main` but those `effects-core` holds.
+effectsSourceExpected :: P.Array (Tuple P.String Expected)
+effectsSourceExpected = Array.filter (\(Tuple name _) -> not (Array.elem name (map (\(Tuple n _) -> n) effectsCoreExpected))) effectsExpected

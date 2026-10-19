@@ -423,8 +423,10 @@ spec = describe "the JavaScript backend" do
     it "refuses each module a loader refuses, for the reason a loader gives" do
       programs <- fixtureModules "programs"
       case programs of
-        Right [ int, _, main ] -> Array.mapMaybe (unrefused int main) loaderRefusals `shouldEqual` []
-        Right _ -> fail "not three modules"
+        -- the constructor cases change the last module declaring one
+        Right modules -> case Array.head modules, Array.last modules, Array.find (not <<< Array.null <<< _.ctors) (Array.reverse modules) of
+          Just int, Just main, Just declaring -> Array.mapMaybe (unrefused int main declaring) loaderRefusals `shouldEqual` []
+          _, _, _ -> fail "no modules, or none declaring a constructor"
         Left err -> fail err
 
     -- a foreign the runtime carries out is resolved as a declaration before its name
@@ -469,8 +471,9 @@ spec = describe "the JavaScript backend" do
       programsRunning added = do
         programs <- fixtureModules "programs"
         pure case programs of
-          Right [ int, lib, main ] -> generated [ int, lib, runningAppended "summed" added main ]
-          Right _ -> Left "not three modules"
+          Right modules -> case Array.unsnoc modules of
+            Just { init, last } -> generated (init <> [ runningAppended "summed" added last ])
+            Nothing -> Left "no modules"
           Left err -> Left err
 
     it "gives what its initializer returns, a later force reading the cell filled" do
@@ -503,14 +506,14 @@ spec = describe "the JavaScript backend" do
     it "refuses a module whose name the encoder would not write, as the encoder does" do
       programs <- fixtureModules "programs"
       case programs of
-        Right [ _, _, main ] -> do
+        Right modules | Just main <- Array.last modules -> do
           let
             -- `sum` is exported nowhere, so nothing but its spelling changes
             lone = main { globals = map (\g -> if g.name == inMain "sum" then g { name = inMain "s\xD800um" } else g) main.globals }
           case encode lone, generate plainOptions lone of
             Left (NotScalarText _), Left (NotEncodable (NotScalarText _)) -> pure unit
             byEncoder, byBackend -> fail ("the encoder gave " <> show (map (const unit) byEncoder) <> " and the backend " <> show (map (const unit) byBackend))
-        Right _ -> fail "not three modules"
+        Right _ -> fail "no modules"
         Left err -> fail err
 
 -- | The function of the first closure with a capture that the initializer of the
@@ -565,14 +568,14 @@ refusalOf dmo = case generate plainOptions dmo of
 -- | One thing a loader refuses, as a change to one module, and the refusal it gives.
 type LoaderRefusal =
   { name :: P.String
-  , change :: { int :: Dmo, main :: Dmo } -> Dmo
+  , change :: { int :: Dmo, main :: Dmo, declaring :: Dmo } -> Dmo
   , refusal :: JsError -> P.Boolean
   }
 
 -- | Where the changed module is generated anyway, or refused for another reason,
 -- | what happened.
-unrefused :: Dmo -> Dmo -> LoaderRefusal -> Maybe P.String
-unrefused intDmo mainDmo r = case generate plainOptions (r.change { int: intDmo, main: mainDmo }) of
+unrefused :: Dmo -> Dmo -> Dmo -> LoaderRefusal -> Maybe P.String
+unrefused intDmo mainDmo declaringDmo r = case generate plainOptions (r.change { int: intDmo, main: mainDmo, declaring: declaringDmo }) of
   Left e | r.refusal e -> Nothing
   Left e -> Just (r.name <> ": refused as " <> show e)
   Right _ -> Just (r.name <> ": generated")
@@ -586,13 +589,13 @@ loaderRefusals =
         _ -> false
     }
   , { name: "a constructor another module declares"
-    , change: \m -> m.main { ctors = Array.modifyAtIndices [ 0 ] (\c -> c { name = Qualified (ModuleName "Other") (Ident "Nil") }) m.main.ctors }
+    , change: \m -> m.declaring { ctors = Array.modifyAtIndices [ 0 ] (\c -> c { name = Qualified (ModuleName "Other") (Ident "Nil") }) m.declaring.ctors }
     , refusal: case _ of
         NotThisModule _ -> true
         _ -> false
     }
   , { name: "a constructor whose owner another module declares"
-    , change: \m -> m.main { ctors = Array.modifyAtIndices [ 0 ] (\c -> c { owner = Qualified (ModuleName "Other") (TyName "List") }) m.main.ctors }
+    , change: \m -> m.declaring { ctors = Array.modifyAtIndices [ 0 ] (\c -> c { owner = Qualified (ModuleName "Other") (TyName "List") }) m.declaring.ctors }
     , refusal: case _ of
         OwnerNotThisModule _ -> true
         _ -> false

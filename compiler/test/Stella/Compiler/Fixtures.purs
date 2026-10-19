@@ -10,12 +10,14 @@
 -- | backend each read the bytes and check the manifest; neither lowers Core, which
 -- | is the compiler's work.
 -- |
--- | **The bytes are compiled from the Core in [Programs](Fixtures/Programs.purs),
--- | [Effects](Fixtures/Effects.purs), and [Foreigns](Fixtures/Foreigns.purs), and
--- | must be what the compiler produces now.** The `.dmo` format is not frozen,
--- | so the check below fails wherever a fixture differs from what compiling its
--- | source gives today, and running the suite with `STELLA_UPDATE_FIXTURES=1`
--- | writes every fixture afresh instead.
+-- | **The bytes are built from the sources under `fixtures/source` and the
+-- | library packages they import, and must be what the compiler produces now.**
+-- | The few fixtures the surface language cannot write are compiled from the Core
+-- | in [Programs](Fixtures/Programs.purs), [Effects](Fixtures/Effects.purs),
+-- | [Regions](Fixtures/Regions.purs), and [Foreigns](Fixtures/Foreigns.purs). The
+-- | `.dmo` format is not frozen, so the check below fails wherever a fixture
+-- | differs from what building its source gives today, and running the suite
+-- | with `STELLA_UPDATE_FIXTURES=1` writes every fixture afresh instead.
 module Test.Stella.Compiler.Fixtures
   ( spec
   ) where
@@ -25,17 +27,20 @@ import Prelude
 import Prim as P
 
 import Data.Array as Array
-import Data.Either (Either(..))
+import Data.Either (Either(..), either)
 import Data.Foldable (foldM, for_)
-import Data.Maybe (Maybe(..), maybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String as String
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
+import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
 import Stella.Compiler.Bytecode (Dmo, decode, encode, lower)
 import Stella.Compiler.Interface (aritiesOf, importsOf)
 import Data.Map (Map)
+import Data.Set (Set)
+import Data.Set as Set
 import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.Primitive (primTable)
 import Stella.Compiler.TypedCore (Ident(..), Module, ModuleName(..), Qualified(..), declareAnnotated)
@@ -44,10 +49,11 @@ import Test.Spec.Assertions (fail, shouldEqual)
 import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ForeignIx(..), Instr(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg, Tail(..))
 import Stella.Compiler.Bytecode.Module (CalleeEntry(..), HandlerEntry, RegionEntry)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
-import Test.Stella.Compiler.Fixtures.Effects (effectsExpected, effectsModule, meterModule)
-import Test.Stella.Compiler.Fixtures.Regions (regionsExpected, regionsModule)
-import Test.Stella.Compiler.Fixtures.Foreigns (ManifestModule, Result(..), RunCase, RunFault(..), addCallMain, addHostModule, addInnerCallMain, opCallMain, addHostShrunk, addPartialMain, addShrunkManifest, addShrunkSource, greetHostModule, greetMainModule, greetManifest, greetSource, deepIoMainModule, deepIoResult, ioEffects, ioHostModule, ioHostSource, ioMainModule, ioManifest, ioModule, ioName, hostName, ioModuleBindArity, ioModulePureArity, ioResult, pureMainModule, runCases, runEffects, runHostModule, runHostSource, runMainModule, runManifest, startMainModule)
-import Test.Stella.Compiler.Fixtures.Programs (abiSignature, baseModules, deepExpected, deepMainModule, expected, faultCases, faultModule, inInt, intModule, libModule, libRenamed, libShrunk, libUnexported, mainModule, mainName, opsExpected, opsModule, refsOnly, without)
+import Test.Stella.Compiler.Fixtures.Effects (effectsCoreExpected, effectsCoreModule, effectsSourceExpected)
+import Test.Stella.Compiler.Fixtures.Regions (regionsCoreExpected, regionsCoreModule, regionsSourceExpected)
+import Test.Stella.Compiler.Fixtures.Foreigns (ManifestModule, Result(..), RunCase, RunFault(..), addShrunkManifest, addShrunkSource, greetManifest, greetSource, deepIoResult, ioEffects, ioHostSource, ioManifest, ioName, hostName, ioModuleBindArity, ioModulePureArity, ioResult, runCases, runEffects, runHostSource, runManifest)
+import Test.Stella.Compiler.Fixtures.Build (Sources, builtFrom, packageModules, readSources)
+import Test.Stella.Compiler.Fixtures.Programs (abiSignature, coreOnlyExpected, coreOnlyModule, faultCases, sourceDeepExpected, sourceExpected, inInt, intModule, mainName, opsExpected)
 import Test.Stella.Compiler.Fixtures.Value (Expected(..), jsonString, toJson)
 
 -- Reading and writing --------------------------------------------------------------
@@ -145,129 +151,152 @@ plain f =
   , host: Nothing
   }
 
-fixtures :: P.Array Fixture
-fixtures =
+fixtures :: Sources -> P.Array Fixture
+fixtures sources =
   [ plain
       { name: "programs"
-      , description: "Calls, tail calls, partial and over-application, closures, join points, records, variants, literal dispatch, and references into another module"
-      , modules: map (map _.dmo) (compileAll [ intModule, libModule, mainModule ])
+      , description: "Calls, tail calls, partial and over-application, closures, records, variants, literal dispatch on strings and characters, recursive groups, and references into another module"
+      , modules: builtFrom sources [ "programs", "common-lib/lib", "common-lib/programs-main" ]
       , outcome: Loads
-      , observe: expected
+      , observe: sourceExpected
       }
   , plain
       { name: "programs-deep"
-      , description: "The programs at the depths stack safety is tested at: a non-tail recursion 100000 deep, a self tail call a million times over, a group of closures tail calling 100001 deep, and a join point jumping to itself 100000 times"
-      , modules: map (map _.dmo) (compileAll [ intModule, libModule, deepMainModule ])
+      , description: "The programs at the depths stack safety is tested at: a non-tail recursion 100000 deep, a self tail call a million times over, and a group of closures tail calling 100001 deep"
+      , modules: builtFrom sources [ "programs-deep", "common-lib/lib", "common-lib/programs-main" ]
       , outcome: Loads
-      , observe: deepExpected
+      , observe: sourceDeepExpected
+      }
+  , plain
+      { name: "programs-core"
+      , description: "What no source writes, in Core: a join point two leaves share and one jumping to itself, 100000 times over among them; restrict and merge; and a Number dispatch by literal identity"
+      , modules: map (map _.dmo) (compileAll [ intModule, coreOnlyModule ])
+      , outcome: Loads
+      , observe: coreOnlyExpected
       }
   , plain
       { name: "stale-arity-call"
       , description: "Main calls Lib.addTo with the two arguments Lib's interface gave it, and is loaded beside a Lib whose addTo takes one"
-      , modules: against (without "addPartial") libShrunk
+      , modules: twoVersions sources [ "stale-arity-call/compiled", "common-lib/lib" ] [ "common-lib/lib-shrunk" ]
       , outcome: RefusedAtLoad "addTo"
       , observe: []
       }
   , plain
       { name: "stale-arity-partial"
       , description: "Main applies Lib.addTo to one argument, a partial application under the interface it was compiled against, beside a Lib whose addTo takes one"
-      , modules: against (without "addCalled") libShrunk
+      , modules: twoVersions sources [ "stale-arity-partial/compiled", "common-lib/lib" ] [ "common-lib/lib-shrunk" ]
       , outcome: RefusedAtLoad "addTo"
       , observe: []
       }
   , plain
       { name: "unexported-global"
       , description: "Main reads Lib.unbox as a value, beside a Lib that does not export it"
-      , modules: against refsOnly libUnexported
+      , modules: twoVersions sources [ "common-lib/refs-main", "common-lib/lib" ] [ "unexported-global/loaded" ]
       , outcome: RefusedAtLoad "unbox"
       , observe: []
       }
   , plain
       { name: "undeclared-ctor"
       , description: "Main dispatches on Lib.Box, beside a Lib whose constructor is called Crate"
-      , modules: against refsOnly libRenamed
+      , modules: twoVersions sources [ "common-lib/refs-main", "common-lib/lib" ] [ "undeclared-ctor/loaded" ]
       , outcome: RefusedAtLoad "Box"
       , observe: []
       }
   , plain
       { name: "operations"
       , description: "Every operation of stella-base-0.1, including inputs where a host's own operator gives another answer, and operations applied short of their arity and saturated later"
-      , modules: map (map _.dmo) (compileAll (baseModules <> [ opsModule ]))
+      , modules: builtFrom sources [ "operations" ]
       , outcome: Loads
       , observe: opsExpected
       }
   , plain
       { name: "effects"
-      , description: "Handlers, perform in both clause forms, continuations resumed once, twice, interleaved, and over-applied, regions carried in a continuation, and where a fast clause's body runs"
-      , modules: map (map _.dmo) (compileAll [ intModule, effectsModule ])
+      , description: "Handlers, perform in both clause forms, continuations resumed once and twice, cells carried in a continuation, and where a fast clause's body runs"
+      , modules: builtFrom sources [ "effects" ]
       , outcome: Loads
-      , observe: effectsExpected
+      , observe: effectsSourceExpected
+      }
+  , plain
+      { name: "effects-core"
+      , description: "What no source writes, in Core: a continuation applied to two arguments, and one held captured while a second resumption runs through the same activation"
+      , modules: map (map _.dmo) (compileAll [ intModule, effectsCoreModule ])
+      , outcome: Loads
+      , observe: effectsCoreExpected
       }
   , plain
       { name: "regions"
-      , description: "Which frame a cell reaches and which cells a resumption shares or copies: handlers in one region, a region inside and outside a handler resuming twice, a function opening a region applied inside its own clause, a continuation resumed while a copy runs, and a closure made before a capture or carried through an operation"
-      , modules: map (map _.dmo) (compileAll [ intModule, regionsModule ])
+      , description: "Which region a cell reaches: two groups sharing the cells of one handling expression, a clause building a function over a cell, and a function opening a region of its own applied inside another declaring the same name"
+      , modules: builtFrom sources [ "regions" ]
       , outcome: Loads
-      , observe: regionsExpected
+      , observe: regionsSourceExpected
       }
-  , meterRefusal "region-cell-twice"
+  , plain
+      { name: "regions-core"
+      , description: "What no source writes, in Core: which cells a resumption shares or copies, a computation reading the region around it inside and outside a handler resuming twice, a continuation resumed while a copy runs, and a closure made before a capture or carried through an operation; and a function opening a region applied inside its own clause, whose polymorphic recursion needs a written constraint"
+      , modules: map (map _.dmo) (compileAll [ intModule, regionsCoreModule ])
+      , outcome: Loads
+      , observe: regionsCoreExpected
+      }
+  , meterRefusal sources "region-cell-twice"
       "the second cell of Main's region entry changed to the first, at the same KEYS index"
       (onRegions secondCellRepeats)
       "reading"
-  , meterRefusal "region-cell-aliased"
+  , meterRefusal sources "region-cell-aliased"
       "the second cell of Main's region entry changed to the first, at a KEYS index of its own holding the same key"
       secondCellAliased
       "reading"
-  , meterRefusal "handler-clause-twice"
+  , meterRefusal sources "handler-clause-twice"
       "the second clause of Main's handler entry changed to answer the first clause's operation, at the same OPS index"
       (onHandlers secondClauseRepeats)
       "bump"
-  , meterRefusal "handler-clause-aliased"
+  , meterRefusal sources "handler-clause-aliased"
       "the second clause of Main's handler entry changed to answer the first clause's operation, at an OPS index of its own holding the same name"
       secondClauseAliased
       "bump"
-  , meterRefusal "handler-hndl-clauses"
+  , meterRefusal sources "handler-hndl-clauses"
       "a HNDL of Main given one clause fewer than its handler entry holds"
       (everyNode (onInstrs (onHndl dropClause)))
       "Meter"
-  , meterRefusal "region-rgn-cells"
+  , meterRefusal sources "region-rgn-cells"
       "a RGN of Main given one initial cell value fewer than its region entry's cells"
       (everyNode (onInstrs (onRgn dropCell)))
       "reading"
-  , meterRefusal "handler-tailhndl-clauses"
+  , meterRefusal sources "handler-tailhndl-clauses"
       "a TAILHNDL inside a branch of Main given one clause fewer than its handler entry holds"
       (everyNode (onTail (onTailHndl dropClause)))
       "Meter"
-  , meterRefusal "region-tailrgn-cells"
+  , meterRefusal sources "region-tailrgn-cells"
       "a TAILRGN inside a branch of Main given one initial cell value fewer than its region entry's cells"
       (everyNode (onTail (onTailRgn dropCell)))
       "reading"
   ]
     <> map faultFixture faultCases
-    <> foreignFixtures
+    <> foreignFixtures sources
   where
   faultFixture c = plain
     { name: c.name
     , description: c.description <> ", which faults as Main.faulted is initialized"
-    , modules: map (map _.dmo) (compileAll (baseModules <> [ faultModule c ]))
+    , modules: builtFrom sources [ c.name ]
     , outcome: FaultsAtLoad "Main.faulted"
     , observe: []
     }
 
--- | `main` compiled against `Lib` as written, loaded beside `lib` instead.
-against :: Module P.Int -> Module P.Int -> Either P.String (P.Array Dmo)
-against main lib = do
-  written <- compileAll [ intModule, libModule, main ]
-  changed <- compileAll [ intModule, lib ]
-  pure (map _.dmo changed <> map _.dmo (Array.drop 2 written))
+-- | The modules built from the first directories given, loaded beside those
+-- | built from the second instead: a module of both is the second's alone,
+-- | standing where the second build puts it.
+twoVersions :: Sources -> P.Array P.String -> P.Array P.String -> Either P.String (P.Array Dmo)
+twoVersions sources compiledFrom loadedFrom = do
+  written <- builtFrom sources compiledFrom
+  loaded <- builtFrom sources loadedFrom
+  pure (loaded <> Array.filter (\d -> not (Array.elem d.name (map _.name loaded))) written)
 
 -- Foreigns and running ---------------------------------------------------------------------
 
-foreignFixtures :: P.Array Fixture
-foreignFixtures =
+foreignFixtures :: Sources -> P.Array Fixture
+foreignFixtures sources =
   [ { name: "io"
     , description: "An entry point run to the value it produces: actions a foreign returns, performed in order; a left-nested chain of bind 200 deep; every value kind crossing in and out, and an action of each kind; an opaque value handed back; a partial application of a foreign another module declares, and a foreign the entry module declares"
-    , modules: map (map _.dmo) (compileAll [ intModule, ioModule, ioHostModule, ioMainModule ])
+    , modules: builtFrom sources [ "io", "common-lib/io-host", "common-lib/io-main" ]
     , outcome: Runs { entry: "Main.main", result: ioResult, effects: ioEffects }
     , observe: []
     , foreignManifest: Just (Checked ioManifest)
@@ -275,7 +304,7 @@ foreignFixtures =
     }
   , { name: "io-deep"
     , description: "The entry point of io with its left-nested chain of bind 20000 deep, the depth stack safety is tested at"
-    , modules: map (map _.dmo) (compileAll [ intModule, ioModule, ioHostModule, deepIoMainModule ])
+    , modules: builtFrom sources [ "io-deep", "common-lib/io-host", "common-lib/io-main" ]
     , outcome: Runs { entry: "Main.main", result: deepIoResult, effects: ioEffects }
     , observe: []
     , foreignManifest: Just (Checked ioManifest)
@@ -284,21 +313,21 @@ foreignFixtures =
   , plain
       { name: "io-pure"
       , description: "An entry point that is Base.IO.bind applied to pure 7 alone, and then to Base.IO.pure handed over unapplied, reaching no host"
-      , modules: map (map _.dmo) (compileAll [ ioModule, pureMainModule ])
+      , modules: builtFrom sources [ "common-lib/io-pure" ]
       , outcome: Runs { entry: "Main.main", result: EInt 7, effects: [] }
       , observe: []
       }
   , plain
       { name: "start-no-global"
       , description: "An entry point naming a global Main does not declare"
-      , modules: map (map _.dmo) (compileAll [ ioModule, startMainModule ])
+      , modules: builtFrom sources [ "common-lib/start-main" ]
       , outcome: StartFails { entry: "Main.missing", reason: NoSuchGlobal }
       , observe: []
       }
   , plain
       { name: "start-not-an-action"
       , description: "An entry point naming a global of Main that holds an Int and no action"
-      , modules: map (map _.dmo) (compileAll [ ioModule, startMainModule ])
+      , modules: builtFrom sources [ "common-lib/start-main" ]
       , outcome: StartFails { entry: "Main.answer", reason: NotAnAction }
       , observe: []
       }
@@ -325,7 +354,7 @@ foreignFixtures =
   , plain
       { name: "foreign-no-entry"
       , description: "Host declares greet, and no manifest names Host"
-      , modules: map (map _.dmo) (compileAll [ greetHostModule, greetMainModule ])
+      , modules: builtFrom sources [ "common-lib/greet" ]
       , outcome: RefusedAtLoad "greet"
       , observe: []
       }
@@ -343,14 +372,14 @@ foreignFixtures =
       , outcome: RefusedAtLoad "bind"
       , observe: []
       }
-  , staleForeign "stale-foreign-call" "Main calls Host.add with the two arguments Host's interface gave it" addCallMain
-  , staleForeign "stale-foreign-call-inner" "Main calls Host.add with the two arguments Host's interface gave it, and puts what it gives in a record" addInnerCallMain
-  , staleForeign "stale-foreign-partial" "Main applies Host.add to one argument, a partial application under the interface it was compiled against" addPartialMain
-  , unexportedAfter "io-pure-unexported" "pure" "Main calls it, and stands over it unapplied in a partial application"
-  , unexportedAfter "io-bind-unexported" "bind" "Main applies it short of its arity"
+  , staleForeign "stale-foreign-call" "Main calls Host.add with the two arguments Host's interface gave it"
+  , staleForeign "stale-foreign-call-inner" "Main calls Host.add with the two arguments Host's interface gave it, and puts what it gives in a record"
+  , staleForeign "stale-foreign-partial" "Main applies Host.add to one argument, a partial application under the interface it was compiled against"
+  , unexportedAfter sources "io-pure-unexported" "pure" "Main calls it, and stands over it unapplied in a partial application"
+  , unexportedAfter sources "io-bind-unexported" "bind" "Main applies it short of its arity"
   , { name: "foreign-unexported"
     , description: "Main calls Host.greet, beside a Host changed after it was compiled to export nothing"
-    , modules: map (map (unexporting (Qualified hostName (Ident "greet")) <<< _.dmo)) (compileAll [ greetHostModule, greetMainModule ])
+    , modules: map (map (unexporting (Qualified hostName (Ident "greet")))) (builtFrom sources [ "common-lib/greet" ])
     , outcome: RefusedAtLoad "greet"
     , observe: []
     , foreignManifest: Just (Checked (greetManifest "./host.mjs" [ greet ]))
@@ -358,20 +387,20 @@ foreignFixtures =
     }
   , plain
       { name: "operation-by-foreign"
-      , description: "Main compiled from Core and then changed to carry out Base.Int.add by calling the foreign Base.Int.add, where it used the operation"
-      , modules: map (map (callingOperation <<< _.dmo)) (compileAll [ intModule, opCallMain ])
+      , description: "Main built from source and then changed to carry out Base.Int.add by calling the foreign Base.Int.add, where it used the operation"
+      , modules: map (map callingOperation) (builtFrom sources [ "common-lib/op-call" ])
       , outcome: Loads
       , observe: [ Tuple "added" (EInt 3) ]
       }
   , plain
       { name: "operation-by-foreign-unexported"
-      , description: "Main compiled from Core and then changed to call the foreign Base.Int.add, beside a Base.Int changed to export nothing called add"
-      , modules: map (map (unexporting (inInt "add") <<< callingOperation <<< _.dmo)) (compileAll [ intModule, opCallMain ])
+      , description: "Main built from source and then changed to call the foreign Base.Int.add, beside a Base.Int changed to export nothing called add"
+      , modules: map (map (unexporting (inInt "add") <<< callingOperation)) (builtFrom sources [ "common-lib/op-call" ])
       , outcome: RefusedAtLoad "add"
       , observe: []
       }
   ]
-    <> map runFixture runCases
+    <> map (runFixture sources) runCases
   where
   greet = { name: "greet", params: [ "int" ], result: Value "int" }
 
@@ -380,20 +409,17 @@ foreignFixtures =
   greetRefusal name description manifest host mentions =
     { name
     , description: "Main calls Host.greet, beside " <> description
-    , modules: map (map _.dmo) (compileAll [ greetHostModule, greetMainModule ])
+    , modules: builtFrom sources [ "common-lib/greet" ]
     , outcome: RefusedAtLoad mentions
     , observe: []
     , foreignManifest: Just manifest
     , host
     }
 
-  staleForeign name description main =
+  staleForeign name description =
     { name
     , description: description <> ", and is loaded beside a Host whose add takes one"
-    , modules: do
-        written <- compileAll [ addHostModule, main ]
-        changed <- compileAll [ addHostShrunk ]
-        pure (map _.dmo changed <> map _.dmo (Array.drop 1 written))
+    , modules: twoVersions sources [ name <> "/compiled", "common-lib/add-host" ] [ "common-lib/add-host-shrunk" ]
     , outcome: RefusedAtLoad "add"
     , observe: []
     , foreignManifest: Just (Checked addShrunkManifest)
@@ -403,11 +429,11 @@ foreignFixtures =
 -- | The modules of `io-pure` with the named entry of `Base.IO` taken out of what it
 -- | exports after `Main` was compiled against it: a foreign the runtime carries out
 -- | is still a declaration of the module declaring it.
-unexportedAfter :: P.String -> P.String -> P.String -> Fixture
-unexportedAfter name entry uses = plain
+unexportedAfter :: Sources -> P.String -> P.String -> P.String -> Fixture
+unexportedAfter sources name entry uses = plain
   { name
   , description: "Main compiled against Base.IO, beside a Base.IO changed to export nothing called " <> entry <> ", where " <> uses
-  , modules: map (map (unexporting (Qualified ioName (Ident entry)) <<< _.dmo)) (compileAll [ ioModule, pureMainModule ])
+  , modules: map (map (unexporting (Qualified ioName (Ident entry)))) (builtFrom sources [ "common-lib/io-pure" ])
   , outcome: RefusedAtLoad entry
   , observe: []
   }
@@ -427,16 +453,21 @@ callingOperation dmo =
     PRIM d (PrimIx 0) args -> FFI d (ForeignIx 0) args
     other -> other
 
-runFixture :: RunCase -> Fixture
-runFixture c =
+runFixture :: Sources -> RunCase -> Fixture
+runFixture sources c =
   { name: c.name
   , description: "An entry point that runs Host.say and then reaches " <> c.description
-  , modules: map (map _.dmo) (compileAll [ ioModule, runHostModule c, runMainModule c ])
+  , modules: builtFrom sources [ "common-lib/run-" <> kind ]
   , outcome: FaultsAtRun { entry: "Main.main", fault: c.fault, effects: runEffects }
   , observe: []
   , foreignManifest: Just (Checked (runManifest c))
   , host: Just (runHostSource c)
   }
+  where
+  -- the kind of what the culprit owes, which names the sources its fixture shares
+  kind = case c.culprit.result of
+    Value k -> k
+    Action _ -> "action"
 
 -- | Where a checked manifest and the modules it describes disagree: a foreign one of
 -- | the named modules declares without a signature, a signature whose `params` are
@@ -501,12 +532,11 @@ foreignManifestText modules = String.joinWith "\n"
 
 -- | A module no Core compiles to, refused where it loads: `Meter` lowered, and then
 -- | changed as `change` says. What is refused is a property of the module alone.
-meterRefusal :: P.String -> P.String -> (Dmo -> Dmo) -> P.String -> Fixture
-meterRefusal name description change mentions = plain
+meterRefusal :: Sources -> P.String -> P.String -> (Dmo -> Dmo) -> P.String -> Fixture
+meterRefusal sources name description change mentions = plain
   { name
-  , description: "Main compiled from Core and then " <> description
-  , modules: map (map (\c -> if c.dmo.name == mainName then change c.dmo else c.dmo))
-      (compileAll [ intModule, meterModule ])
+  , description: "Main built from source and then " <> description
+  , modules: map (map (\d -> if d.name == mainName then change d else d)) (builtFrom sources [ "common-lib/meter" ])
   , outcome: RefusedAtLoad mentions
   , observe: []
   }
@@ -602,14 +632,25 @@ foreignPartials dmo = Array.mapMaybe partial (instructionsOf dmo)
       Just (Tuple (m <> "." <> x) (Array.length args))
     _ -> Nothing
 
--- | Every instruction of every function of a module: a function's body, each join
--- | point's, and each node a branch holds inline.
+-- | Every instruction of every function of a module.
 instructionsOf :: Dmo -> P.Array Instr
-instructionsOf dmo = Array.concatMap function dmo.functions
+instructionsOf dmo = Array.concatMap _.code (nodesOf dmo)
+
+-- | The name of every kind of instruction and of tail a module's functions hold,
+-- | as `LOADK` and `RET`.
+kindsOf :: Dmo -> Set P.String
+kindsOf dmo = Set.fromFoldable (map (nameOf <<< show) (instructionsOf dmo) <> map (nameOf <<< show <<< _.tail) (nodesOf dmo))
+  where
+  nameOf s = fromMaybe s (Array.head (String.split (String.Pattern " ") (fromMaybe s (String.stripPrefix (String.Pattern "(") s))))
+
+-- | Every node of every function of a module: a function's body, each join
+-- | point's, and each node a branch holds inline.
+nodesOf :: Dmo -> P.Array Node
+nodesOf dmo = Array.concatMap function dmo.functions
   where
   function fn = node fn.body <> Array.concatMap (\j -> node j.body) fn.joins
 
-  node n = n.code <> inline n.tail
+  node n = [ n ] <> inline n.tail
 
   inline = case _ of
     BRIF _ a b -> node a <> node b
@@ -711,17 +752,54 @@ filesOf f = do
 
 -- The check ------------------------------------------------------------------------------
 
+-- | What source-built fixtures lower to: of the modules the directories given
+-- | build, the one named holds every kind of instruction and tail listed. A
+-- | fixture exercises the bytecode it holds, so a change to lowering that keeps
+-- | its values and drops one of these is caught here, and not regenerated away.
+lowersTo :: P.Array { dirs :: P.Array P.String, module :: P.String, kinds :: P.Array P.String }
+lowersTo =
+  -- known, unknown, and partial calls; closures, and recursive groups of them;
+  -- by-need cells; dispatches on constructors, literals, and keys; records,
+  -- a pattern's rest among them, and variants
+  [ { dirs: [ "programs", "common-lib/lib", "common-lib/programs-main" ]
+    , module: "Main"
+    , kinds: [ "CALLK", "TAILK", "CALLU", "TAILU", "PAP", "CLOS", "CAPT", "CLOSN", "SETCAP", "NEED", "FORCE", "BRC", "BRL", "BRK", "CTOR", "FIELD", "RNEW", "REXT", "RSEL", "RRES", "RUPD", "VINJ", "VPAY" ]
+    }
+  -- an operation applied short of its arity
+  , { dirs: [ "operations" ], module: "Main", kinds: [ "PRIM", "PAP" ] }
+  -- operations performed, handlers and regions in tail position, and cells
+  , { dirs: [ "effects" ], module: "Main", kinds: [ "PERF", "TAILHNDL", "TAILRGN", "CGET", "CSET" ] }
+  , { dirs: [ "regions" ], module: "Main", kinds: [ "PERF", "TAILHNDL", "TAILRGN", "CGET", "CSET" ] }
+  -- what the handler and region refusals change: an entry of each consumed and
+  -- of each in tail position
+  , { dirs: [ "common-lib/meter" ], module: "Main", kinds: [ "HNDL", "RGN", "TAILHNDL", "TAILRGN" ] }
+  -- foreigns called, in tail position and not, and applied short of their arity
+  , { dirs: [ "io", "common-lib/io-host", "common-lib/io-main" ], module: "Main", kinds: [ "FFI", "TAILFFI", "PAP" ] }
+  , { dirs: [ "common-lib/io-pure" ], module: "Main", kinds: [ "FFI", "PAP" ] }
+  -- the calls the stale fixtures load against an interface that has changed
+  , { dirs: [ "stale-arity-call/compiled", "common-lib/lib" ], module: "Main", kinds: [ "TAILK" ] }
+  , { dirs: [ "stale-arity-partial/compiled", "common-lib/lib" ], module: "Main", kinds: [ "PAP" ] }
+  , { dirs: [ "stale-foreign-call/compiled", "common-lib/add-host" ], module: "Main", kinds: [ "TAILFFI" ] }
+  , { dirs: [ "stale-foreign-call-inner/compiled", "common-lib/add-host" ], module: "Main", kinds: [ "FFI" ] }
+  , { dirs: [ "stale-foreign-partial/compiled", "common-lib/add-host" ], module: "Main", kinds: [ "PAP" ] }
+  ]
+
+-- | The sources read and prepared, given to `k`, or a failure saying why they
+-- | could not be.
+withSources :: (Sources -> Aff Unit) -> Aff Unit
+withSources k = liftEffect readSources >>= either fail k
+
 spec :: Spec Unit
 spec = describe "the bytecode fixtures" do
   -- `PRIMS` is the set of operations a module carries out, so an operation the
   -- version holds and the fixture never uses is one no backend is checked on
   it "carry out every operation of the version in the operations fixture" do
-    case compileAll (baseModules <> [ opsModule ]) of
+    withSources \sources -> case builtFrom sources [ "operations" ] of
       Left err -> fail err
-      Right compiled -> case Array.last compiled of
+      Right built -> case Array.last built of
         Nothing -> fail "nothing compiled"
         Just main ->
-          Array.filter (\entry -> not (Array.elem entry.op main.dmo.prims)) primTable
+          Array.filter (\entry -> not (Array.elem entry.op main.prims)) primTable
             <#> (\entry -> show entry.op)
             # (_ `shouldEqual` [])
 
@@ -729,14 +807,30 @@ spec = describe "the bytecode fixtures" do
   -- partial application over one is of its own kind: `bind` short of its arity, and
   -- `pure` as a value, which is a partial application of no arguments
   it "apply both Base.IO entries short of their arity in the io-pure fixture" do
-    case compileAll [ ioModule, pureMainModule ] of
+    withSources \sources -> case builtFrom sources [ "common-lib/io-pure" ] of
       Left err -> fail err
-      Right compiled -> map (foreignPartials <<< _.dmo) (Array.last compiled)
+      Right built -> map foreignPartials (Array.last built)
         `shouldEqual` Just [ Tuple "Base.IO.bind" 1, Tuple "Base.IO.pure" 0 ]
+
+  it "lower to the instructions each is to exercise" do
+    withSources \sources -> for_ lowersTo \l -> case builtFrom sources l.dirs of
+      Left err -> fail err
+      Right built -> case Array.find (\d -> d.name == ModuleName l.module) built of
+        Nothing -> fail (l.module <> " is not built from " <> String.joinWith ", " l.dirs)
+        Just dmo -> Tuple l.dirs (Array.filter (\k -> not (Set.member k (kindsOf dmo))) l.kinds) `shouldEqual` Tuple l.dirs []
+
+  -- a package's module is built only where a fixture reaches it, so one no
+  -- fixture reaches could be missing or broken unseen
+  it "reach every module of the lists and maybe packages" do
+    withSources \sources -> case traverse _.modules (fixtures sources) of
+      Left err -> fail err
+      Right built -> do
+        let reached = Set.fromFoldable (map _.name (Array.concat built))
+        Array.filter (\m -> not (Set.member m reached)) (Array.concatMap (packageModules sources) [ "lists", "maybe" ]) `shouldEqual` []
 
   it "are what compiling their source gives now" do
     update <- liftEffect updating
-    case traverse (\f -> map (Tuple f.name) (filesOf f)) fixtures of
+    withSources \sources -> case traverse (\f -> map (Tuple f.name) (filesOf f)) (fixtures sources) of
       Left err -> fail err
       Right wanted ->
         if update then liftEffect (write wanted)

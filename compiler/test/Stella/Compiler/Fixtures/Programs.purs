@@ -1,7 +1,6 @@
--- | The hand-written Core the bytecode fixtures are compiled from.
--- |
--- | Lowering Core is the compiler's work and no backend's, so the source of every
--- | fixture lives here and the backends read only the `.dmo` it compiles to
+-- | The hand-written Core `Main` the middle end's and lowering's tests compile,
+-- | the Core of `programs-core`, and what the values of the source-built
+-- | `programs`, `operations`, and fault fixtures hold
 -- | ([Fixtures](../Fixtures.purs)).
 -- |
 -- | | Value of `Main` | What it exercises |
@@ -27,35 +26,25 @@
 -- | | `dictTwice`, `mutualPair` | recursive groups of records whose closures read the group, one member and two |
 -- | | `localDict`, `localPair`, `localMixed` | the same groups bound locally, by-need cells, and a function and a cell capturing each other |
 -- |
--- | **`Main` is written at a scale**: how far the four values that recurse, loop,
--- | and jump go. `programs` holds it at a scale every suite affords, and
--- | `programs-deep` at the depths stack safety is tested at, observing those four
--- | alone.
+-- | **What `Main` holds depends on a scale**: how far the values that recurse,
+-- | loop, and jump go. `programs` is built at a scale every suite affords and
+-- | `programs-deep` at the depths stack safety is tested at, observing those
+-- | values alone; the Core `Main` stands at the first.
 module Test.Stella.Compiler.Fixtures.Programs
   ( intName
-  , libName
   , mainName
   , inInt
-  , inLib
-  , inMain
   , intModule
   , libModule
-  , libShrunk
-  , libUnexported
-  , libRenamed
   , mainModule
-  , deepMainModule
-  , deepExpected
-  , without
-  , refsOnly
-  , expected
   , abiSignature
-  , baseModules
-  , opsModule
   , opsExpected
   , FaultCase
   , faultCases
-  , faultModule
+  , coreOnlyModule
+  , coreOnlyExpected
+  , sourceExpected
+  , sourceDeepExpected
   ) where
 
 import Prelude
@@ -67,9 +56,9 @@ import Data.Enum (toEnum)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String.CodePoints as CodePoints
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.Primitive (arrayTy, baseModule, withBaseTypes)
+import Stella.Compiler.Primitive (baseModule, withBaseTypes)
 import Stella.Compiler.TypedCore (CtorBranch, Decl(..), DecisionTree(..), Export(..), Expr(..), Ident(..), JoinName(..), Kind(..), LitBranch, Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), ValueBinding, monoScheme, primSignature, scalarString, scalarStringOf, scalarValue)
-import Stella.Compiler.TypedCore.Prim (booleanTy, charTy, intTy, numberTy, pureFn, recordTy, stringTy, unitCtor, unitTy, variantTy)
+import Stella.Compiler.TypedCore.Prim (booleanTy, intTy, pureFn, recordTy, unitCtor, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Signature (Signature)
 import Test.Stella.Compiler.Fixtures.Value (Expected(..), ExpectedKey(..))
 
@@ -177,21 +166,9 @@ litCase scrutinee branches default =
 intModule :: Module P.Int
 intModule = baseModule 0 intName
 
-fn2 :: Type -> Type -> Type -> Type
-fn2 a b r = pureFn a (pureFn b r)
-
 -- | `data Box = Box Int`, `unbox`, and `addTo`, whose definitional arity is two.
 libModule :: Module P.Int
-libModule = libWith (lam "n" int $ lam "m" int $ intOp "add" (var "n") (var "m"))
-
--- | The same module with `addTo` of definitional arity **one**: its body is a
--- | partial application, so a module compiled against the first interface calls it
--- | with a count its entry does not admit.
-libShrunk :: Module P.Int
-libShrunk = libWith (lam "n" int $ app (global (inInt "add")) [ var "n" ])
-
-libWith :: Expr P.Int -> Module P.Int
-libWith addTo =
+libModule =
   { annotation: 0
   , name: libName
   , imports: [ intName ]
@@ -211,7 +188,7 @@ libWith addTo =
                 [ { ctor: inLib "Box", tree: Bind (Ident "x") (OccField (OccScrutinee 0) (inLib "Box") 0) (Leaf (var "x")) } ]
                 Nothing
             )
-      , nonrec 3 "addTo" (pureFn int (pureFn int int)) addTo
+      , nonrec 3 "addTo" (pureFn int (pureFn int int)) $ lam "n" int $ lam "m" int $ intOp "add" (var "n") (var "m")
       ]
   }
 
@@ -280,10 +257,6 @@ scaled = [ "deepSum", "counted", "evenOdd", "looped" ]
 
 mainModule :: Module P.Int
 mainModule = mainModuleAt usual
-
--- | `Main` at the depths stack safety is tested at.
-deepMainModule :: Module P.Int
-deepMainModule = mainModuleAt deep
 
 mainModuleAt :: Scale -> Module P.Int
 mainModuleAt scale =
@@ -484,97 +457,11 @@ variantBody =
           Nothing
       )
 
--- | `Main` with one of its values left out, from its declarations and its exports.
-without :: P.String -> Module P.Int
-without name = mainModule
-  { exports = Array.filter (_ /= ExportValue (Ident name)) mainModule.exports
-  , decls = Array.filter (not <<< declares) mainModule.decls
-  }
-  where
-  declares = case _ of
-    DeclNonRec _ b -> b.name == Ident name
-    _ -> false
-
--- | Load `main`, translated against `Lib`'s interface, beside `Lib` compiled with
--- | `addTo` of arity one, and check that loading is refused naming `Lib.addTo` and
-
-refsOnly :: Module P.Int
-refsOnly =
-  { annotation: 0
-  , name: mainName
-  , imports: [ intName, libName ]
-  , exports: map (ExportValue <<< Ident) [ "held", "peek" ]
-  , decls:
-      [ nonrec 1 "held" (pureFn boxTy int) (global (inLib "unbox"))
-      , nonrec 2 "peek" (pureFn boxTy int) $ lam "b" boxTy $
-          Case 0 [ var "b" ]
-            ( SwitchCtor (OccScrutinee 0)
-                [ { ctor: inLib "Box", tree: Bind (Ident "x") (OccField (OccScrutinee 0) (inLib "Box") 0) (Leaf (var "x")) } ]
-                Nothing
-            )
-      ]
-  }
-
 -- The operations ----------------------------------------------------------------------------
-
-numberName :: ModuleName
-numberName = ModuleName "Base.Number"
-
-stringName :: ModuleName
-stringName = ModuleName "Base.String"
-
-charName :: ModuleName
-charName = ModuleName "Base.Char"
-
-arrayName :: ModuleName
-arrayName = ModuleName "Base.Array"
-
-number :: Type
-number = TCon numberTy []
-
-string :: Type
-string = TCon stringTy []
-
-char' :: Type
-char' = TCon charTy []
-
-unitType :: Type
-unitType = TCon unitTy []
-
-arrayTyName :: Qualified TyName
-arrayTyName = arrayTy
-
-arrayOf :: Type -> Type
-arrayOf t = TApp (TCon arrayTyName []) t
 
 -- | `Σ_Prim` with the types the ABI supplies.
 abiSignature :: Signature
 abiSignature = withBaseTypes primSignature
-
-numberModule :: Module P.Int
-numberModule = baseModule 0 numberName
-
-stringModule :: Module P.Int
-stringModule = baseModule 0 stringName
-
-charModule :: Module P.Int
-charModule = baseModule 0 charName
-
-arrayModule :: Module P.Int
-arrayModule = baseModule 0 arrayName
-
-baseModules :: P.Array (Module P.Int)
-baseModules = [ intModule, numberModule, stringModule, charModule, arrayModule ]
-
-call :: ModuleName -> P.String -> P.Array (Expr P.Int) -> Expr P.Int
-call m x = app (global (Qualified m (Ident x)))
-
--- | An entry of `Base.Array` at `Int`.
-arrayCall :: P.String -> P.Array (Expr P.Int) -> Expr P.Int
-arrayCall x = app (TyApp 0 (global (Qualified arrayName (Ident x))) int)
-
-text :: P.String -> Expr P.Int
-text = Lit 0 <<< str
 
 -- | The string of one scalar value, written by its code rather than in the source.
 scalar :: P.Int -> P.String
@@ -586,196 +473,87 @@ minInt = -2147483648
 maxInt :: P.Int
 maxInt = 2147483647
 
-nan :: P.Number
-nan = 0.0 / 0.0
-
--- | One value of `Main` over the operations: its name, type, right-hand side, and
--- | what it holds, fixed from the ABI's meaning by hand
+-- | What each value of the `operations` fixture's `Main` holds, fixed from the
+-- | ABI's meaning by hand
 -- | ([Prim and Base](../../../../../docs/technical-references/06-Modules/02-Prim-and-Base.md)).
-type OpValue = { name :: P.String, ty :: Type, value :: Expr P.Int, holds :: Expected }
-
-opValues :: P.Array OpValue
-opValues =
-  [ v "intAddWraps" int (call intName "add" [ lit maxInt, lit 1 ]) (EInt minInt)
-  , v "intSubWraps" int (call intName "sub" [ lit minInt, lit 1 ]) (EInt maxInt)
-  , v "intMulWraps" int (call intName "mul" [ lit 65536, lit 65536 ]) (EInt 0)
-  -- the exact product needs more than 53 bits; `(a * b) | 0` would give 0
-  , v "intMulWide" int (call intName "mul" [ lit maxInt, lit maxInt ]) (EInt 1)
-  , v "quotOverflows" int (call intName "quot" [ lit minInt, lit (-1) ]) (EInt minInt)
-  , v "remOverflows" int (call intName "rem" [ lit minInt, lit (-1) ]) (EInt 0)
-  , v "quotTruncates" int (call intName "quot" [ lit 7, lit (-2) ]) (EInt (-3))
-  , v "remTakesDividendSign" int (call intName "rem" [ lit (-7), lit 2 ]) (EInt (-1))
-  , v "intEq" bool (call intName "eq" [ lit 3, lit 3 ]) (EBoolean true)
-  , v "intLt" bool (call intName "lt" [ lit 3, lit 2 ]) (EBoolean false)
-  , v "intToNumber" number (call intName "toNumber" [ lit (-5) ]) (ENumber (-5.0))
-  -- negating first would overflow and print a second minus sign or none
-  , v "intToStringMin" string (call intName "toString" [ lit minInt ]) (EString "-2147483648")
-  , v "numberAdd" number (call numberName "add" [ num 0.1, num 0.2 ]) (ENumber (0.1 + 0.2))
-  , v "subZero" number (call numberName "sub" [ num 0.0, num 0.0 ]) (ENumber 0.0)
-  , v "negateZero" number (call numberName "negate" [ num 0.0 ]) (ENumber (-0.0))
-  , v "divideByZero" number (call numberName "divide" [ num 1.0, num 0.0 ]) (ENumber (1.0 / 0.0))
-  , v "numberMul" number (call numberName "mul" [ num 0.1, num 3.0 ]) (ENumber (0.1 * 3.0))
-  , v "eqNaN" bool (call numberName "eq" [ num nan, num nan ]) (EBoolean false)
-  , v "eqZeros" bool (call numberName "eq" [ num 0.0, num (-0.0) ]) (EBoolean true)
-  , v "ltNaN" bool (call numberName "lt" [ num nan, num 1.0 ]) (EBoolean false)
-  , v "floorNegative" number (call numberName "floor" [ num (-0.5) ]) (ENumber (-1.0))
-  , v "ceilPositive" number (call numberName "ceil" [ num 0.2 ]) (ENumber 1.0)
-  , v "truncNegative" number (call numberName "trunc" [ num (-0.5) ]) (ENumber (-0.0))
-  , v "toIntNaN" int (call numberName "toInt" [ num nan ]) (EInt 0)
-  -- saturating; a conversion by `| 0` gives 1410065408
-  , v "toIntLarge" int (call numberName "toInt" [ num 1.0e10 ]) (EInt maxInt)
-  , v "toIntNegative" int (call numberName "toInt" [ num (-2.9) ]) (EInt (-2))
-  , v "toStringExponent" string (call numberName "toString" [ num 1.0e21 ]) (EString "1e+21")
-  , v "toStringPositional" string (call numberName "toString" [ num 1.0e20 ]) (EString "100000000000000000000")
-  , v "toStringSmall" string (call numberName "toString" [ num 1.0e-7 ]) (EString "1e-7")
-  , v "toStringTenth" string (call numberName "toString" [ num 0.1 ]) (EString "0.1")
-  , v "toStringNegativeZero" string (call numberName "toString" [ num (-0.0) ]) (EString "0")
-  , v "stringLength" int (call stringName "length" [ text ("a" <> smile <> "bc") ]) (EInt 4)
-  , v "codePointAtAstral" char' (call stringName "codePointAt" [ lit 1, text ("a" <> smile <> "bc") ]) (EChar 0x1F600)
-  , v "appendStrings" string (call stringName "append" [ text "ab", text "c" ]) (EString "abc")
-  , v "sliceScalars" string (call stringName "slice" [ lit 1, lit 3, text ("a" <> smile <> "bc") ]) (EString (smile <> "b"))
-  , v "singletonAstral" string (call stringName "singleton" [ call charName "fromCodePoint" [ lit 0x1F600 ] ]) (EString smile)
-  , v "stringEq" bool (call stringName "eq" [ text "a", text "a" ]) (EBoolean true)
-  -- by scalar value; JavaScript's `<` over code units says false
-  , v "ltAstral" bool (call stringName "lt" [ text (scalar 0xE000), text smile ]) (EBoolean true)
-  , v "ltPrefix" bool (call stringName "lt" [ text "ab", text "abc" ]) (EBoolean true)
-  , v "ltSame" bool (call stringName "lt" [ text "abc", text "abc" ]) (EBoolean false)
-  , v "charRoundTrip" int (call charName "toCodePoint" [ call charName "fromCodePoint" [ lit 0x1F600 ] ]) (EInt 0x1F600)
-  -- every slot written before one is read, so the precondition of `unsafeIndex`
-  -- holds (D42)
-  , v "arrayReadBack" int
-      ( let' "xs" (arrayOf int) (arrayCall "unsafeNew" [ lit 2 ])
-          $ let' "w0" unitType (arrayCall "unsafeSet" [ lit 0, lit 10, var "xs" ])
-          $ let' "w1" unitType (arrayCall "unsafeSet" [ lit 1, lit 20, var "xs" ])
-          $ arrayCall "unsafeIndex" [ var "xs", lit 1 ]
-      )
-      (EInt 20)
-  , v "arrayLength" int (arrayCall "length" [ arrayCall "unsafeNew" [ lit 3 ] ]) (EInt 3)
-  -- an operation applied short of its arity is carried out once, when the last
-  -- argument arrives
-  , v "arraySetLater" int
-      ( let' "setFirst" (fn2 int (arrayOf int) unitType) (arrayCall "unsafeSet" [ lit 0 ])
-          $ let' "xs" (arrayOf int) (arrayCall "unsafeNew" [ lit 1 ])
-          $ let' "w" unitType (app (var "setFirst") [ lit 7, var "xs" ])
-          $ arrayCall "unsafeIndex" [ var "xs", lit 0 ]
-      )
-      (EInt 7)
-  , v "numberAddLater" number
-      (let' "plus" (pureFn number number) (call numberName "add" [ num 1.5 ]) (app (var "plus") [ num 1.0 ]))
-      (ENumber 2.5)
+opsExpected :: P.Array (Tuple P.String Expected)
+opsExpected =
+  [ Tuple "intAddWraps" (EInt minInt)
+  , Tuple "intSubWraps" (EInt maxInt)
+  , Tuple "intMulWraps" (EInt 0)
+  , Tuple "intMulWide" (EInt 1)
+  , Tuple "quotOverflows" (EInt minInt)
+  , Tuple "remOverflows" (EInt 0)
+  , Tuple "quotTruncates" (EInt (-3))
+  , Tuple "remTakesDividendSign" (EInt (-1))
+  , Tuple "intEq" (EBoolean true)
+  , Tuple "intLt" (EBoolean false)
+  , Tuple "intToNumber" (ENumber (-5.0))
+  , Tuple "intToStringMin" (EString "-2147483648")
+  , Tuple "numberAdd" (ENumber (0.1 + 0.2))
+  , Tuple "subZero" (ENumber 0.0)
+  , Tuple "negateZero" (ENumber (-0.0))
+  , Tuple "divideByZero" (ENumber (1.0 / 0.0))
+  , Tuple "numberMul" (ENumber (0.1 * 3.0))
+  , Tuple "eqNaN" (EBoolean false)
+  , Tuple "eqZeros" (EBoolean true)
+  , Tuple "ltNaN" (EBoolean false)
+  , Tuple "floorNegative" (ENumber (-1.0))
+  , Tuple "ceilPositive" (ENumber 1.0)
+  , Tuple "truncNegative" (ENumber (-0.0))
+  , Tuple "toIntNaN" (EInt 0)
+  , Tuple "toIntLarge" (EInt maxInt)
+  , Tuple "toIntNegative" (EInt (-2))
+  , Tuple "toStringExponent" (EString "1e+21")
+  , Tuple "toStringPositional" (EString "100000000000000000000")
+  , Tuple "toStringSmall" (EString "1e-7")
+  , Tuple "toStringTenth" (EString "0.1")
+  , Tuple "toStringNegativeZero" (EString "0")
+  , Tuple "stringLength" (EInt 4)
+  , Tuple "codePointAtAstral" (EChar 0x1F600)
+  , Tuple "appendStrings" (EString "abc")
+  , Tuple "sliceScalars" (EString (smile <> "b"))
+  , Tuple "singletonAstral" (EString smile)
+  , Tuple "stringEq" (EBoolean true)
+  , Tuple "ltAstral" (EBoolean true)
+  , Tuple "ltPrefix" (EBoolean true)
+  , Tuple "ltSame" (EBoolean false)
+  , Tuple "charRoundTrip" (EInt 0x1F600)
+  , Tuple "arrayReadBack" (EInt 20)
+  , Tuple "arrayLength" (EInt 3)
+  , Tuple "arraySetLater" (EInt 7)
+  , Tuple "numberAddLater" (ENumber 2.5)
   ]
   where
-  v name ty value holds = { name, ty, value, holds }
   smile = scalar 0x1F600
 
--- | `Main` over every operation, each value computing one from literals.
-opsModule :: Module P.Int
-opsModule =
-  { annotation: 0
-  , name: mainName
-  , imports: map _.name baseModules
-  , exports: map (\o -> ExportValue (Ident o.name)) opValues
-  , decls: Array.mapWithIndex (\i o -> nonrec (i + 1) o.name o.ty o.value) opValues
-  }
-
-opsExpected :: P.Array (Tuple P.String Expected)
-opsExpected = map (\o -> Tuple o.name o.holds) opValues
-
--- | One way an operation faults: a `Main` whose one global carries it out on
--- | inputs the ABI says it faults on, so initializing that global is where the
--- | fault must end loading.
-type FaultCase = { name :: P.String, description :: P.String, recursive :: P.Boolean, ty :: Type, value :: Expr P.Int }
+-- | One way an operation faults: a fixture whose `Main` carries it out on inputs
+-- | the ABI says it faults on as `Main.faulted` is initialized, so that is where
+-- | the fault must end loading. Its source is `fixtures/source/<name>`.
+type FaultCase = { name :: P.String, description :: P.String }
 
 faultCases :: P.Array FaultCase
 faultCases =
-  [ f "fault-quot-zero" "Base.Int.quot by zero" int (call intName "quot" [ lit 1, lit 0 ])
-  , f "fault-rem-zero" "Base.Int.rem by zero" int (call intName "rem" [ lit 1, lit 0 ])
-  , f "fault-code-point-at-outside" "Base.String.codePointAt at an index past the last scalar value" char'
-      (call stringName "codePointAt" [ lit 4, text ("a" <> scalar 0x1F600 <> "bc") ])
-  , f "fault-slice-reversed" "Base.String.slice with its start past its end" string (call stringName "slice" [ lit 2, lit 1, text "abc" ])
-  , f "fault-slice-past-end" "Base.String.slice with its end past the length" string (call stringName "slice" [ lit 0, lit 4, text "abc" ])
-  , f "fault-slice-negative" "Base.String.slice with a negative start, which is not counted from the end" string (call stringName "slice" [ lit (-1), lit 2, text "abc" ])
-  , f "fault-from-code-point-surrogate" "Base.Char.fromCodePoint of a surrogate" char' (call charName "fromCodePoint" [ lit 0xD800 ])
-  , f "fault-from-code-point-above" "Base.Char.fromCodePoint past 0x10FFFF" char' (call charName "fromCodePoint" [ lit 0x110000 ])
-  , f "fault-from-code-point-negative" "Base.Char.fromCodePoint of a negative number" char' (call charName "fromCodePoint" [ lit (-1) ])
-  , f "fault-array-new-negative" "Base.Array.unsafeNew with a negative count" (arrayOf int) (arrayCall "unsafeNew" [ lit (-1) ])
-  , f "fault-array-set-outside" "Base.Array.unsafeSet at an index outside the array" unitType
-      (let' "xs" (arrayOf int) (arrayCall "unsafeNew" [ lit 1 ]) (arrayCall "unsafeSet" [ lit 1, lit 5, var "xs" ]))
-  , f "fault-array-index-outside" "Base.Array.unsafeIndex at an index outside the array" int
-      ( let' "xs" (arrayOf int) (arrayCall "unsafeNew" [ lit 1 ])
-          $ let' "w" unitType (arrayCall "unsafeSet" [ lit 0, lit 5, var "xs" ])
-          $ arrayCall "unsafeIndex" [ var "xs", lit 1 ]
-      )
-  -- a recursive group is initialized where it stands, a member nothing refers
-  -- to among it
-  , ( f "fault-recursive-initializer" "Base.Int.quot by zero initializing a recursive group nothing refers to" selfTy
-        (let' "z" int (call intName "quot" [ lit 1, lit 0 ]) (RecordExtend 0 (symbolKey "self") (lam "n" int (app (RecordSelect 0 (symbolKey "self") (global (inMain "faulted"))) [ var "n" ])) (RecordEmpty 0)))
-    ) { recursive = true }
-  -- a local group is initialized where it stands, before its body
-  , f "fault-local-recursive-initializer" "Base.Int.quot by zero initializing a local recursive group its body does not read" int
-      ( LetRec 0
-          [ { name: Ident "bad"
-            , ty: selfTy
-            , value: let' "z" int (call intName "quot" [ lit 1, lit 0 ]) (RecordExtend 0 (symbolKey "self") (lam "n" int (app (RecordSelect 0 (symbolKey "self") (var "bad")) [ var "n" ])) (RecordEmpty 0))
-            }
-          ]
-          (lit 0)
-      )
+  [ f "fault-quot-zero" "Base.Int.quot by zero"
+  , f "fault-rem-zero" "Base.Int.rem by zero"
+  , f "fault-code-point-at-outside" "Base.String.codePointAt at an index past the last scalar value"
+  , f "fault-slice-reversed" "Base.String.slice with its start past its end"
+  , f "fault-slice-past-end" "Base.String.slice with its end past the length"
+  , f "fault-slice-negative" "Base.String.slice with a negative start, which is not counted from the end"
+  , f "fault-from-code-point-surrogate" "Base.Char.fromCodePoint of a surrogate"
+  , f "fault-from-code-point-above" "Base.Char.fromCodePoint past 0x10FFFF"
+  , f "fault-from-code-point-negative" "Base.Char.fromCodePoint of a negative number"
+  , f "fault-array-new-negative" "Base.Array.unsafeNew with a negative count"
+  , f "fault-array-set-outside" "Base.Array.unsafeSet at an index outside the array"
+  , f "fault-array-index-outside" "Base.Array.unsafeIndex at an index outside the array"
+  , f "fault-recursive-initializer" "Base.Int.quot by zero initializing a recursive group nothing refers to"
+  , f "fault-local-recursive-initializer" "Base.Int.quot by zero initializing a local recursive group its body does not read"
   ]
   where
-  f name description ty value = { name, description, recursive: false, ty, value }
-  selfTy = recordOf [ Tuple (symbolKey "self") (pureFn int int) ]
+  f name description = { name, description }
 
--- | The `Main` of a fault case: the one global, called `faulted`, a recursive
--- | group of it where the case says so.
-faultModule :: FaultCase -> Module P.Int
-faultModule c =
-  { annotation: 0
-  , name: mainName
-  , imports: map _.name baseModules
-  , exports: []
-  , decls: [ (if c.recursive then rec1 else nonrec) 1 "faulted" c.ty c.value ]
-  }
-
--- | `Lib` exporting everything but `unbox`.
-libUnexported :: Module P.Int
-libUnexported = libModule { exports = Array.filter (_ /= ExportValue (Ident "unbox")) libModule.exports }
-
--- | `Lib` whose one constructor is called `Crate`: a module importing `Lib.Box`
--- | reaches a constructor no module declares.
-libRenamed :: Module P.Int
-libRenamed =
-  { annotation: 0
-  , name: libName
-  , imports: [ intName ]
-  , exports: [ ExportType (TyName "Box"), ExportCtor (Ident "Crate"), ExportValue (Ident "unbox"), ExportValue (Ident "addTo") ]
-  , decls:
-      [ DeclData 1
-          { name: TyName "Box"
-          , kindVars: []
-          , params: []
-          , constructors: [ { name: Ident "Crate", tag: 0, fields: [ int ] } ]
-          , isNewtype: false
-          , attributes: []
-          }
-      , nonrec 2 "unbox" (pureFn boxTy int) $ lam "b" boxTy $
-          Case 0 [ var "b" ]
-            ( SwitchCtor (OccScrutinee 0)
-                [ { ctor: inLib "Crate", tree: Bind (Ident "x") (OccField (OccScrutinee 0) (inLib "Crate") 0) (Leaf (var "x")) } ]
-                Nothing
-            )
-      , nonrec 3 "addTo" (pureFn int (pureFn int int)) $ lam "n" int $ lam "m" int $ intOp "add" (var "n") (var "m")
-      ]
-  }
-
--- | What each value of `Main` holds, fixed from the program by hand.
-expected :: P.Array (Tuple P.String Expected)
-expected = expectedAt usual
-
--- | What the values a scale reaches hold at the depths stack safety is tested at.
-deepExpected :: P.Array (Tuple P.String Expected)
-deepExpected = Array.filter (\(Tuple name _) -> Array.elem name scaled) (expectedAt deep)
-
+-- | What each value of the Core `Main` holds at a scale, fixed from the program
+-- | by hand.
 expectedAt :: Scale -> P.Array (Tuple P.String Expected)
 expectedAt scale =
   [ Tuple "summed" (EInt 6)
@@ -818,3 +596,74 @@ expectedAt scale =
   where
   cons x xs = EData "Main.Cons" [ EInt x, xs ]
   nil = EData "Main.Nil" []
+
+-- The values no source writes ------------------------------------------------------------
+
+-- | The `Main` of `programs-core`: the values whose Core no source elaborates
+-- | to, kept in Core so that what they exercise stays exercised. A join point
+-- | two leaves share and one jumping to itself, at the usual scale and at the
+-- | depth stack safety is tested at; `merge`, which no form of the surface
+-- | writes; and a `Number` dispatch by literal identity, which the surface
+-- | leaves to a guard.
+coreOnlyModule :: Module P.Int
+coreOnlyModule =
+  { annotation: 0
+  , name: mainName
+  , imports: [ intName ]
+  , exports: map (ExportValue <<< Ident) (map (\(Tuple n _) -> n) coreOnlyExpected)
+  , decls:
+      [ nonrec 1 "joined" int joinedBody
+      , nonrec 2 "looped" int (loopedBody usual.loop)
+      , nonrec 3 "loopedDeep" int (loopedBody deep.loop)
+      , nonrec 4 "recordShape" (recordOf [ Tuple (symbolKey "y") bool ]) $
+          RecordRestrict 0 (symbolKey "x")
+            (RecordMerge 0 (RecordExtend 0 (symbolKey "x") (lit 1) (RecordEmpty 0)) (RecordExtend 0 (symbolKey "y") (Lit 0 (LitBoolean true)) (RecordEmpty 0)))
+      , nonrec 5 "negZero" int $ litCase (num (-0.0)) [ Tuple (LitNumber 0.0) (lit 1), Tuple (LitNumber (-0.0)) (lit 2) ] (lit 3)
+      , nonrec 6 "posZero" int $ litCase (num 0.0) [ Tuple (LitNumber (-0.0)) (lit 1) ] (lit 2)
+      , nonrec 7 "nanCase" int $ litCase (num (0.0 / 0.0)) [ Tuple (LitNumber (0.0 / 0.0)) (lit 1) ] (lit 2)
+      ]
+  }
+
+-- | What each value of `programs-core`'s `Main` holds.
+coreOnlyExpected :: P.Array (Tuple P.String Expected)
+coreOnlyExpected =
+  [ Tuple "joined" (EInt 101)
+  , Tuple "looped" (EInt usual.loopSum)
+  , Tuple "loopedDeep" (EInt deep.loopSum)
+  , Tuple "recordShape" (ERecord [ { key: KField "y", value: EBoolean true } ])
+  , Tuple "negZero" (EInt 2)
+  , Tuple "posZero" (EInt 2)
+  , Tuple "nanCase" (EInt 1)
+  ]
+
+-- | What each value of the source-built `Main` of `programs` holds, at the
+-- | scale given: every value of the Core `Main` but those `programs-core`
+-- | holds, a list's constructors being `Data.List`'s, a record a pattern's rest
+-- | binds, and the values over the functions of `Data.List` and `Data.Maybe`.
+sourceExpected :: P.Array (Tuple P.String Expected)
+sourceExpected = sourceExpectedAt usual
+
+-- | `sourceExpected` at the depth stack safety is tested at, the values a scale
+-- | reaches alone.
+sourceDeepExpected :: P.Array (Tuple P.String Expected)
+sourceDeepExpected = Array.filter (\(Tuple name _) -> Array.elem name scaled) (sourceExpectedAt deep)
+
+sourceExpectedAt :: Scale -> P.Array (Tuple P.String Expected)
+sourceExpectedAt scale = map listsFromData (Array.filter (\(Tuple name _) -> not (Array.elem name coreOnly)) (expectedAt scale)) <> libraries
+  where
+  libraries =
+    [ Tuple "restricted" (ERecord [ { key: KField "y", value: EBoolean true } ])
+    , Tuple "listMapped" (list [ 30, 20, 10 ])
+    , Tuple "listFoldedLeft" (EInt 40)
+    , Tuple "listFoldedRight" (EInt 20)
+    , Tuple "listLength" (EInt 3)
+    , Tuple "maybeJust" (EInt 42)
+    , Tuple "maybeNothing" (EInt 7)
+    ]
+  list = Array.foldr (\x rest -> EData "Data.List.Cons" [ EInt x, rest ]) (EData "Data.List.Nil" [])
+  coreOnly = [ "joined", "looped", "recordShape", "negZero", "posZero", "nanCase" ]
+  listsFromData (Tuple name e) = Tuple name (relist e)
+  relist = case _ of
+    EData "Main.Cons" fields -> EData "Data.List.Cons" (map relist fields)
+    EData "Main.Nil" fields -> EData "Data.List.Nil" (map relist fields)
+    other -> other
