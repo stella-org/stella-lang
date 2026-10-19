@@ -28,7 +28,7 @@ import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar(..), XRowEntry(..), XTyp
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
 import Stella.Compiler.Elaborate.Driver.Synthesis (Registry, attemptJob)
 import Stella.Compiler.Elaborate.Driver.Loop (identically)
-import Stella.Compiler.Elaborate.Protocol.Guest (synthesizerType)
+import Stella.Compiler.Elaborate.Protocol.Guest (elabModule, synthesizerType)
 import Stella.Compiler.Elaborate.Protocol.Facade as F
 import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Vocabulary.View (TypeView(..))
@@ -47,6 +47,7 @@ import Stella.Compiler.Elaborate.Surface.Match (Tail(..), Witness(..))
 import Stella.Compiler.Elaborate.Surface.Expr (tagsOf)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment, viewFor)
+import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
 import Stella.Compiler.Interface.Scheme (SchemeBody(..), plainScheme)
 import Stella.Compiler.Resolve.Module (resolveModule)
@@ -82,7 +83,7 @@ int = TCon intTy []
 libInterface :: ModuleInterface
 libInterface =
   { name: lib
-  , imports: []
+  , imports: [ elabModule ]
   , exports: emptyExports
       { values = Map.fromFoldable (map (\n -> Tuple n { entity: Qualified lib (Ident n), via: Declared }) [ "inc", "id", "const", "snd", "Tuple", "ping", "resolveDict", "resolveInt", "refuse", "waitFor", "resolveNoisy", "noisy", "shown", "pick", "pickId", "counted" ])
       , types = Map.fromFoldable
@@ -178,11 +179,16 @@ continuationInterfaceHolding field = libInterface
 environment :: Either String BuildEnvironment
 environment = environmentWith continuationInterface
 
--- | `Lib` and the `Base.Continuation` given.
+-- | `Stella.Elab`, which `Lib`'s synthesizers are written against, `Lib`, and
+-- | the `Base.Continuation` given.
 environmentWith :: ModuleInterface -> Either String BuildEnvironment
-environmentWith continuations = case addInterface libInterface initialEnvironment >>= addInterface continuations of
-  Right env -> Right env
-  Left err -> Left (show err)
+environmentWith continuations = do
+  elab <- case compiled of
+    Right c | Just i <- Array.find (\candidate -> candidate.name == elabModule) c.moduleInterfaces -> Right i
+    _ -> Left "the interface of Stella.Elab is not compiled"
+  case addInterface elab initialEnvironment >>= addInterface libInterface >>= addInterface continuations of
+    Right env -> Right env
+    Left err -> Left (show err)
 
 type Ran =
   { values :: Array ElaboratedValue

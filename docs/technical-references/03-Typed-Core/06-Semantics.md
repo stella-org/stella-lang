@@ -144,7 +144,7 @@ Keeping them apart matters because the coercion forms that erasure removes — `
 
 Reduction is parameterized by a global environment, obtained by linking a module with those it depends on.
 
-The signature `Σ` is fixed throughout and left implicit, as it is in the typing rules: `cursorΣ` and the rules below consult it whenever a declared type is wanted. `G` is what linking produces, and availability is decided there.
+The signature `Σ` is fixed throughout, is `Σ ok`, and is left implicit, as it is in the typing rules: `cursorΣ` and the rules below consult it whenever a declared type is wanted. `G` is what linking produces, and availability is decided there.
 
 ```text
 G ::= ·
@@ -535,7 +535,7 @@ It is undefined in every other case. At most one clause applies at each step, si
 
 Nothing constrains the order of entries: a declared type may interleave quantifiers, constraints, and arrows freely, and the cursor follows it. A type such as `Int -> forall a. a -> a` is therefore usable, with `[String]` supplied after the first value argument.
 
-The arrow consumed by the last clause is pure. A constructor's arrows are pure by declaration, and a `foreign`'s are pure by D23.
+The arrow consumed by the last clause is pure. A constructor's arrows are pure by its exact scheme, and a `foreign`'s by D23; `Σ ok` holds both of every entry, an imported one included ([Typing Rules](05-Typing-Rules.md)).
 
 A kind instantiation `[[κ̄]]` consumes the whole vector at once and can occur at most once, since kind schemes are prenex (D3).
 

@@ -64,6 +64,7 @@ x̄, ē, v̄                   sequences of value variables, terms, and values
 | `Γ ⊢ τ1 ≡ τ2` | type equality | [Types](../03-Typed-Core/01-Kinds-and-Types.md), [Rows](../03-Typed-Core/02-Rows.md) |
 | `can(τ)` | the canonical form of a type, which equality compares | [Rows](../03-Typed-Core/02-Rows.md) |
 | `⟪ P ; U ⟫` | a canonical row: a set of key–payload pairs and a set of tails | [Rows](../03-Typed-Core/02-Rows.md) |
+| `Σ ok` | the signature is well formed, `Σ wf`, and holds `Prim` as fixed, `Σ prim`; every judgement presupposes it | [Typing Rules](../03-Typed-Core/05-Typing-Rules.md) |
 | `⟨ F ; T ⟩` | the normal form of a sharp row | [Rows](../03-Typed-Core/02-Rows.md) |
 | `A ⇀ B` | finite map, that is, a partial function | [Rows](../03-Typed-Core/02-Rows.md) |
 | `l ↦ τ` | an entry of a finite map | [Rows](../03-Typed-Core/02-Rows.md) |

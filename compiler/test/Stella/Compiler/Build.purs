@@ -173,7 +173,7 @@ interfaceMarks =
 interfaceSynth :: ModuleInterface
 interfaceSynth =
   { name: synthModule
-  , imports: []
+  , imports: [ ModuleName "Stella.Elab" ]
   , exports: emptyExports { values = Map.fromFoldable [ Tuple "resolve" { entity: resolve, via: Declared }, Tuple "make" { entity: Qualified synthModule (Ident "make"), via: Declared } ] }
   , declarations: emptyDeclarations
       { values = Map.fromFoldable

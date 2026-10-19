@@ -256,7 +256,7 @@ In a term, `region [ℓ] … in e` binds `ℓ` in `e` and in nothing else — no
 
 ## Kinding
 
-The judgement is `Γ ⊢ τ : κ`. Contexts are defined in [Typing Rules](05-Typing-Rules.md).
+The judgement is `Γ ⊢ τ : κ`. Contexts are defined in [Typing Rules](05-Typing-Rules.md), and kinding, like every judgement there, presupposes `Σ ok`: in particular every kind scheme in `Σ` is closed under its own kind variables, quantifiable, and produces `Type`, which is what lets the rule for `T [[κ̄']]` take the scheme as it finds it.
 
 ```text
   (a : κ) ∈ Γ                (T : forall k̄. κ) ∈ Σ   Γ ⊢ κ̄' qkind   |κ̄'| = |k̄|

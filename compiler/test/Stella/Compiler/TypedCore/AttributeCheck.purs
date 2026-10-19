@@ -10,7 +10,7 @@ import Prim as P
 import Data.Either (Either(..), isLeft, isRight)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Stella.Compiler.TypedCore (Attribute, Constant(..), Constraint(..), Decl(..), DeclError(..), Expr(..), Ident(..), Kind(..), Literal(..), Module, ModuleName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Signature, Symbol(..), TyName(..), TyVar(..), Type(..), declare, initialSignature, monoScheme, primSignature, pureFn, scalarString)
+import Stella.Compiler.TypedCore (Attribute, Constant(..), Constraint(..), Decl(..), DeclError(..), Expr(..), Ident(..), Kind(..), Literal(..), Module, ModuleName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Signature, SignatureError(..), Symbol(..), TyName(..), TyVar(..), Type(..), declare, initialSignature, monoScheme, primSignature, pureFn, scalarString)
 import Stella.Compiler.TypedCore.AttributeCheck (AttributeError(..), checkAttribute, checkAttributeDecl, checkConstant)
 import Stella.Compiler.TypedCore.Prim (intTy, recordTy, stringTy)
 import Test.Spec (Spec, describe, it)
@@ -149,9 +149,9 @@ spec = describe "Stella.Compiler.TypedCore.AttributeCheck" do
       initialSignature [ imported { positional: [ TVar (TyVar "a") ], keyword: [] } ] `shouldSatisfy` isLeft
       initialSignature [ imported { positional: [ TRowEmpty ], keyword: [] } ] `shouldSatisfy` isLeft
       initialSignature [ imported { positional: [], keyword: [ { label: "k", type: int, default: Just (ConstantLiteral (LitBoolean true)) } ] } ]
-        `shouldEqual` Left (AttributeEntryError bad (ConstantNotOfType (ConstantLiteral (LitBoolean true)) int))
+        `shouldEqual` Left (SignatureIllFormed (AttributeEntryError bad (ConstantNotOfType (ConstantLiteral (LitBoolean true)) int)))
       initialSignature [ imported { positional: [], keyword: [ { label: "k", type: int, default: Just (ConstantValue (Qualified (ModuleName "Lib") (Ident "gone"))) } ] } ]
-        `shouldEqual` Left (AttributeEntryError bad (UndeclaredGlobal (Qualified (ModuleName "Lib") (Ident "gone"))))
+        `shouldEqual` Left (SignatureIllFormed (AttributeEntryError bad (UndeclaredGlobal (Qualified (ModuleName "Lib") (Ident "gone")))))
 
   describe "a module" do
     it "declares its attributes, and checks every attribute attached, against the whole module" do

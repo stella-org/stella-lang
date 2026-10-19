@@ -310,6 +310,13 @@ The heading of each group names the step of the plan that the group belongs to.
 | One entry reaching a name through two import paths | Accepted. A name belongs to the module that declares it, so the two are one entry |
 | Two different entries under one name | Rejected where the parts are merged, rather than resolved by preferring either |
 | A data constructor and a value of one name | Rejected. A constructor is an ordinary global name, so the two share a namespace |
+| A `Σ` holding a constructor and a value of one name, reached by a term | No scheme: the name is ambiguous, not resolved by preferring either table. `Σ ok` excludes such a `Σ`, and lookup does not hide one |
+| An imported constructor of `T : Type -> Type` at `C : forall (a : Type). a -> T Int` | Rejected where the signature is assembled. A branch on a `T Int` would type the field at `Int` while the value carries an `a`; the scheme must be the owner applied to its own parameters, with pure arrows |
+| An imported constructor at a scheme of another arity than its fields, an effectful arrow, other kind variables or parameter kinds than its owner's, an owner that is no data entry or does not list it, or a tag another constructor of its owner has | Each rejected there too. `Σ ok` holds every one of them, an imported signature not trusted to have arisen through declarations |
+| An imported constructor whose recorded field is ill kinded, such as `() ⊎ Int`, under a scheme equivalent to the well-kinded one | Rejected there too. Equivalence relates ill-kinded types as well, and dispatch binds the recorded field, so the field is kinded in its own right |
+| An imported foreign whose arrow performs an effect, or a value whose scheme is ill kinded | Rejected there too. What D23 holds of a declaration it holds of an entry read off an interface |
+| A manifest intrinsic of the class function, record, variant, or literal, an entry of `Σ_Prim` missing or changed, its attributes among them, or an entry under `Prim` other than `Σ_Prim`'s | Rejected there too. `Σ_Prim` is what `Prim` fixes, and the classes with canonical forms the rules build are `Prim`'s types' alone |
+| The signature of a module declaring `data List a = Nil \| Cons a (List a)`, `data Proxy forall k. (p : k) = Proxy`, and a foreign; and the compiler's own `Base.Int` and `Stella.Syntax` | `Σ ok`. A realistic signature satisfies the contract it is held to |
 
 ### Reduction (step 4, once an evaluator exists)
 

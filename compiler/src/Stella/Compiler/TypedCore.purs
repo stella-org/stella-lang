@@ -28,6 +28,7 @@ module Stella.Compiler.TypedCore
   , module Stella.Compiler.TypedCore.Kinding
   , module Stella.Compiler.TypedCore.Check
   , module Stella.Compiler.TypedCore.Declare
+  , module Stella.Compiler.TypedCore.SignatureCheck
   , module Stella.Compiler.TypedCore.Equality
   , module Stella.Compiler.TypedCore.Entailment
   , module Stella.Compiler.TypedCore.Reference
@@ -40,7 +41,7 @@ import Prim as P
 import Stella.Compiler.TypedCore.Check (CheckError(..), CheckFailure, Env, JoinInfo, Typed, check, envOf, infer, isValueForm, typeOf)
 import Stella.Compiler.TypedCore.Canonical (Canonical(..), CanonicalConstraint(..), CanonicalPayload(..), VarRef(..), canonical, canonicalConstraint, canonicalPayload)
 import Stella.Compiler.TypedCore.Context (Context, assume, bindKindVars, bindRegion, bindTyVar, emptyContext, factsOf, kindVarInScope, lookupRegion, lookupTyVar)
-import Stella.Compiler.TypedCore.Declare (CheckedGroup, DeclError(..), DeclFailure, Declared, checkAttributeEntries, checkEffectEntries, checkTyConEntries, collectTypes, declare, declareAnnotated, initialSignature)
+import Stella.Compiler.TypedCore.Declare (CheckedGroup, DeclError(..), DeclFailure, Declared, collectTypes, declare, declareAnnotated, initialSignature)
 import Stella.Compiler.TypedCore.Domain (ScalarString, ScalarValue, codePointOf, compareNumber, sameNumber, scalarString, scalarStringOf, scalarValue, textOf)
 import Stella.Compiler.TypedCore.Decl (Attribute, AttributeDecl, Constant(..), CtorDecl, DataDecl, Decl(..), declAnnotation, EffectDecl, Export(..), ForeignDecl, KeywordArgument, KeywordParameter, Module, OpDecl, ValueBinding)
 import Stella.Compiler.TypedCore.Entailment (AtomicFacts, addAssumption, decompose, entails, noFacts)
@@ -51,6 +52,7 @@ import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), JoinName(..), Kin
 import Stella.Compiler.TypedCore.Prim (asFunction, booleanTy, charTy, fn, functionTy, intTy, ioTy, litType, numberTy, primModule, primSignature, pureFn, recordTy, stringTy, unitCtor, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
 import Stella.Compiler.TypedCore.Row (RowError(..), RowNormalForm, emptyNormalForm, nfSharp)
-import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), CtorInfo, EffectInfo, Signature, TyConInfo(..), ValueInfo, effectParamKinds, emptySignature, lookupCtor, lookupEffect, lookupOperation, lookupTyCon, lookupValue, tyConKind)
+import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), CtorInfo, EffectInfo, GlobalEntry(..), Signature, TyConInfo(..), ValueInfo, effectParamKinds, emptySignature, globalEntryScheme, lookupCtor, lookupEffect, lookupGlobal, lookupOperation, lookupTyCon, lookupValue, tyConKind)
+import Stella.Compiler.TypedCore.SignatureCheck (SignatureError(..), primWf, sigOk, sigWf)
 import Stella.Compiler.TypedCore.Term (Binding, CtorBranch, DecisionTree(..), Expr(..), Handler, Cell, KeyBranch, LitBranch, Literal(..), OpClause(..), Occurrence(..), Param, ReturnClause, exprAnnotation, opClauseBody, opClauseOp, withAnnotation)
 import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), RowPayload(..), TyBinder, Type(..), TypeScheme, freeRegionNames, rowEntryKey, rowEntryPayload)

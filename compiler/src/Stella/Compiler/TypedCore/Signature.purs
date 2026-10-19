@@ -23,6 +23,9 @@ module Stella.Compiler.TypedCore.Signature
   , lookupEffect
   , lookupOperation
   , lookupValue
+  , GlobalEntry(..)
+  , lookupGlobal
+  , globalEntryScheme
   , lookupAttribute
   , effectParamKinds
   ) where
@@ -145,6 +148,27 @@ lookupOperation sig name op = case lookupEffect sig name of
 
 lookupValue :: Signature -> Qualified Ident -> Maybe ValueInfo
 lookupValue sig name = Map.lookup name sig.values
+
+-- | What a term's reference to a global name finds: a constructor, or a value
+-- | or foreign.
+data GlobalEntry
+  = GlobalCtor CtorInfo
+  | GlobalValue ValueInfo
+
+-- | The entry a global name refers to, defined only where exactly one table
+-- | classifies the name. A name both tables hold is no global at all, rather
+-- | than whichever a precedence would pick: `Σ ok` excludes it, and lookup does
+-- | not hide its absence.
+lookupGlobal :: Signature -> Qualified Ident -> Maybe GlobalEntry
+lookupGlobal sig name = case lookupCtor sig name, lookupValue sig name of
+  Just info, Nothing -> Just (GlobalCtor info)
+  Nothing, Just info -> Just (GlobalValue info)
+  _, _ -> Nothing
+
+globalEntryScheme :: GlobalEntry -> TypeScheme
+globalEntryScheme = case _ of
+  GlobalCtor info -> info.scheme
+  GlobalValue info -> info.scheme
 
 lookupAttribute :: Signature -> Qualified Ident -> Maybe AttributeInfo
 lookupAttribute sig name = Map.lookup name sig.attributes

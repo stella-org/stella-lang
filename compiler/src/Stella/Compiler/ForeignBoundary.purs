@@ -32,7 +32,7 @@ import Data.Maybe (Maybe(..))
 import Stella.Compiler.ForeignManifest (ResultKind(..), Signature, ValueKind(..))
 import Stella.Compiler.TypedCore.Name (Qualified, TyName, TyVar)
 import Stella.Compiler.TypedCore.Prim (asFunction, booleanTy, charTy, intTy, ioTy, numberTy, recordTy, stringTy, unitTy, variantTy)
-import Stella.Compiler.TypedCore.Declare (impureArrow, isEmptyRow)
+import Stella.Compiler.TypedCore.SignatureCheck (impureArrow, isEmptyRow)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), TyConInfo(..))
 import Stella.Compiler.TypedCore.Signature (Signature) as Core
 import Stella.Compiler.TypedCore.Type (Type(..), TypeScheme)

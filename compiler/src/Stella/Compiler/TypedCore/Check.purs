@@ -34,7 +34,7 @@ import Stella.Compiler.TypedCore.Kinding (KindError(..), checkKind, quantifiable
 import Stella.Compiler.TypedCore.Name (EffName, Ident, JoinName, OpName, Qualified, RegionName, TyName, TyVar)
 import Stella.Compiler.TypedCore.Prim (asFunction, booleanTy, fn, litType, recordTy, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Row (RowError, RowNormalForm, fromNormalForm, nfSharp)
-import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), CtorInfo, EffectInfo, Signature, TyConInfo(..), lookupCtor, lookupEffect, lookupOperation, lookupTyCon, lookupValue)
+import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), CtorInfo, EffectInfo, GlobalEntry(..), Signature, TyConInfo(..), globalEntryScheme, lookupCtor, lookupEffect, lookupGlobal, lookupOperation, lookupTyCon)
 import Stella.Compiler.TypedCore.Term (Binding, DecisionTree(..), Expr(..), Cell, Handler, OpClause(..), Occurrence(..), Param, exprAnnotation, opClauseOp, withAnnotation)
 import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), RowPayload(..), TyBinder, Type(..), TypeScheme, freeRegionNames, rowEntryKey, rowEntryPayload, substituteKindsInType, substituteType)
 import Data.Array as Array
@@ -115,6 +115,10 @@ type CheckFailure a =
 data CheckError
   = UnboundVar Ident
   | UndeclaredGlobal (Qualified Ident)
+  -- | A name both a constructor and a value, which no `Σ ok` holds. Lookup is
+  -- | defined only where one table classifies a name, and no precedence
+  -- | resolves the collision.
+  | AmbiguousGlobal (Qualified Ident)
   -- | `M.x [[κ̄']]` supplying a number of kinds the scheme does not bind, as
   -- | expected and actual.
   | GlobalKindArgCount (Qualified Ident) P.Int P.Int
@@ -849,10 +853,11 @@ gathered parent branches fallback =
 -- The rules, one helper each --------------------------------------------------
 
 globalScheme :: forall a. a -> Signature -> Qualified Ident -> Either (CheckFailure a) TypeScheme
-globalScheme at sig name = case lookupValue sig name, lookupCtor sig name of
-  Just info, _ -> Right info.scheme
-  _, Just info -> Right info.scheme
-  _, _ -> Left { at, error: UndeclaredGlobal name }
+globalScheme at sig name = case lookupGlobal sig name of
+  Just entry -> Right (globalEntryScheme entry)
+  Nothing
+    | isJust (lookupCtor sig name) -> Left { at, error: AmbiguousGlobal name }
+    | otherwise -> Left { at, error: UndeclaredGlobal name }
 
 -- | `M.x [[κ̄']]`. The kinds are written in the term, so this verifies their
 -- | number and their layer and substitutes; it neither guesses nor searches.
@@ -1214,7 +1219,9 @@ isValueForm sig = case _ of
 
 isCtorSpine :: forall a. Signature -> Expr a -> P.Boolean
 isCtorSpine sig = case _ of
-  Global _ name _ -> isJust (lookupCtor sig name)
+  Global _ name _ -> case lookupGlobal sig name of
+    Just (GlobalCtor _) -> true
+    _ -> false
   App _ f x -> isCtorSpine sig f && isValueForm sig x
   TyApp _ e _ -> isCtorSpine sig e
   ConstraintApp _ e -> isCtorSpine sig e

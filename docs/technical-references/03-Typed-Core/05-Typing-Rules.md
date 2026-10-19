@@ -46,6 +46,60 @@ The distinction is also the unit of **separate compilation**. `Σ` is what a mod
 
 `Ω` is separate because an occurrence is not a variable. It is a path from a scrutinee, derived structurally as the tree is descended rather than introduced by a binder. It becomes a variable only by passing through `bind x = o`, at which point it enters `Γ`.
 
+### What `Σ` is held to
+
+```text
+Σ ok   =   Σ wf  ∧  Σ prim
+```
+
+**Every judgement below presupposes `Σ ok`**, kinding included, and so do conformance of a global environment and every safety statement of [Semantics](06-Semantics.md). The rules read constructors, foreigns, and the classes of intrinsics out of `Σ` and rely on what they find there; `Σ ok` is the one statement of what that is. A signature a module's declarations produce satisfies it by construction ([Modules](../06-Modules/01-Modules.md)). One assembled from interfaces is checked against it where it is assembled, rather than trusted to have arisen through declarations.
+
+`Σ wf` holds when each of the following does.
+
+**Names.**
+
+- A global name is a constructor, a foreign, or a top-level value, and never two of these. `(M.x : forall k̄. σ) ∈ Σ` is defined only where exactly one of them classifies `M.x`. No precedence between the tables resolves a collision, so lookup cannot hide one.
+- The operations of one effect have distinct names, each the name its signature is looked up by.
+
+**Type constructors and effects.**
+
+- Every `T : forall k̄. κ` has `κ` a quantifiable kind under `k̄` and nothing else, and `result(κ) = Type` ([Kinds and Types](01-Kinds-and-Types.md)).
+- Every parameter of an effect has a quantifiable kind. Every operation `op : forall (b̄ : κ̄'). σ ->* τ` has `κ̄'` quantifiable, and `σ` and `τ` of kind `Type` under the effect's parameters and `b̄`.
+
+**Data constructors.**
+
+- A constructor's owner is a data entry, and a data entry lists exactly the constructors naming it as owner, each once.
+- Where the owner is `T : forall k̄. κ1 -> … -> κm -> Type`, the constructor has exactly the scheme
+
+  ```text
+  Ctor : forall k̄. forall (a1 : κ1) … (am : κm). τ1 -> … -> τn -> T [[k̄]] a1 … am
+  ```
+
+  up to α-equivalence: the owner's kind variables, parameters at the owner's kinds with distinct names, pure arrows, and the owner applied to exactly those parameters. `τ1 … τn` are the fields `Σ` records for it, `n` is its arity, and the scheme is well kinded.
+- Each recorded field has `·, k̄, a1 : κ1, …, am : κm ⊢ τi : Type` in its own right. Type equivalence relates ill-kinded types as well, `() ⊎ Int` to `Int` among them, so a well-kinded scheme does not make the fields it is equivalent to well kinded, and dispatch binds the recorded fields.
+- The tags of one owner's constructors are distinct.
+
+**Values and foreigns.**
+
+- Every scheme `forall k̄. σ` has `·, k̄ ⊢ σ : Type`.
+- Every arrow of a foreign's type standing where a value passes through is pure (D23), the payload of a row element included. A constraint carries no value, so the arrows inside one are not held to it.
+
+**The exact shape of a constructor is what dispatch relies on.** `switchCtor` instantiates a constructor's fields at the type arguments of the occurrence it takes apart, and construction instantiates them at the arguments the scheme was applied to. The two agree only because the scheme's result is the owner applied to its own parameters. A constructor of `T : Type -> Type` declared `C : forall (a : Type). a -> T Int` breaks that: `C [String] s` has type `T Int`, and a branch taking it apart types the field at `Int` while the value carries a `String`. Under `Σ wf` a field obtained by dispatch is well kinded at the occurrence's own kind and type arguments, and `cursorΣ` may take every arrow of a constructor or a foreign to be pure ([Semantics](06-Semantics.md)).
+
+`Σ prim` holds when `Σ` holds `Σ_Prim` exactly as [Prim and Base](../06-Modules/02-Prim-and-Base.md) fixes it, and holds nothing else under `Prim`:
+
+```text
+Prim.Function : Type -> Row Effect -> Type -> Type     intrinsic function
+Prim.Record   : Row Type -> Type                       intrinsic record
+Prim.Variant  : Row Type -> Type                       intrinsic variant
+Prim.Int, Prim.Number, Prim.String, Prim.Char, Prim.Boolean : Type     intrinsic literal
+Prim.IO       : Type -> Type                           intrinsic opaque
+Prim.Unit     : Type                                   data { Prim.Unit }    Prim.Unit : Unit, tag 0, no field
+attribute Prim.macro, attribute Prim.entrypoint, attribute Prim.elaborationOnly     no parameter
+```
+
+**No type constructor outside `Prim` has the class literal, function, record, or variant.** Each of those classes comes with a canonical form the rules build and take apart, a literal, a `λ`, a record, or a variant, and the canonical-forms argument progress rests on is stated for `Prim`'s types alone. A type of one of those classes declared elsewhere would have no canonical value, a foreign's result being an opaque value. Every other intrinsic is of the class opaque.
+
 ## Judgement forms
 
 ```text

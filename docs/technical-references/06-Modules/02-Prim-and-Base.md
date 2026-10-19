@@ -230,6 +230,8 @@ Having no constructors, an intrinsic type gets its values another way. Which way
 
 The last row is the one that shapes the others. **Core has no rule that compares or decomposes an opaque value**; it carries one from the `foreign` that produced it to the `foreign` that consumes it. That is also why the class must be mechanically decidable — `opaque ω [Boolean]` must not typecheck, or a `guard` would meet a value that is not `true` and not `false`.
 
+**Every manifest and elaboration intrinsic is of the class opaque.** The first four rows name `Prim`'s type constructors alone, and `Σ prim` requires it of every signature ([Typing Rules](../03-Typed-Core/05-Typing-Rules.md)): a class other than opaque comes with a canonical form the rules build and take apart, and a type of one of those classes declared outside `Prim` would have no canonical value, a foreign's result being an opaque value.
+
 ### No declaration creates one
 
 A module declares `data`, `newtype`, and `foreign`. **None of them produces an intrinsic entry**, and there is no surface syntax that does.
@@ -256,7 +258,10 @@ A manifest intrinsic reaches `Σ` the same way, through the ABI manifest, and is
 ```text
 Σ_Prim = the intrinsic type constructors of Prim
        ∪ { Unit : Type  data { Prim.Unit } }  with Prim.Unit's tag, arity, and field types
+       ∪ { attribute macro, attribute entrypoint, attribute elaborationOnly }  of no parameter
 ```
+
+`Σ prim` holds of a signature that holds `Σ_Prim` exactly so, and nothing else under `Prim`; it is part of `Σ ok`, which every judgement presupposes ([Typing Rules](../03-Typed-Core/05-Typing-Rules.md)).
 
 [Modules](01-Modules.md) collects type-level declarations into `Σ_ty` before checking any interior. That collection starts from `Σ_Prim` rather than from the imports alone.
 
