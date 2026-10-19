@@ -1,0 +1,6 @@
+module A.Main where
+
+import B.Api (make, value)
+
+answer :: Int
+answer = value (make 3)

@@ -1,0 +1,6 @@
+module B.Api (make, module C.Core) where
+
+import C.Core
+
+make :: Int -> Token
+make n = Token n

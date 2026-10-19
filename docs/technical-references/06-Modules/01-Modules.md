@@ -501,8 +501,25 @@ No pass rewrites a module yet, so the optimizer stops before a first round, and 
 - **When the map is taken, only the interfaces are read.** Each is decoded, as any `.dmi` is ([Interface](../05-Backend/03-Interface.md)), and must be the interface of the module its entry names. The bytecode paths are resolved and kept, and a listed module's bytecode is read only where it is needed: the compile-time session loads it from its path where a macro or a synthesizer reaching the module is run (above), and nothing else of the build reads it.
 - **The map is one consistent set of interfaces, whatever order it lists them in.** Every interface it lists is checked, whether or not the build imports it, and each is added to the build environment after every module it imports, so each imports only modules the map lists and modules the compiler provides. A module listed twice, whether or not the compiler carries it, an import neither listed nor provided, and listed modules importing one another are refused; a module that merely imports one of the last is not itself reported. A module of the build the map lists as well is refused as any module the environment holds is (above).
 - **A module the compiler carries may be listed, with the interface the compiler carries**, so that a map can list a package whole, `Base` with `Base.Int` among its modules. The interfaces are compared whole, as decoded, the build hash aside; one listed with another interface is refused, and `Prim` is refused whatever it is listed with. The build is compiled against the module the compiler carries, and the compile-time session runs the one it holds, never loading the bytecode the map names for it; that path is kept for running the program. Equal interfaces say nothing of the bytecode: the guarantee below is the only one.
-- **What the map lists, every module of the build may import.** Source is not yet confined to the modules of the package and of its direct dependencies.
+- **The map confines nothing: what it lists, every module of the build may import.** The compiler knows no packages, so which modules a package's source may import — its own and those of the packages it depends on directly, the interfaces of the others there to be compiled against alone — is for whatever drives it to decide, before the build, from the imports `stellac graph` reports ([below](#stellac-graph)).
 - **Compatibility is guaranteed only between files written and read by the same compiler build.** The format and ABI versions an interface carries are checked as its reader always checks them, and an interface that decodes is not thereby one this build can use.
+
+### `stellac graph`
+
+**`stellac graph` prints the modules of the source files it is given and the modules each imports**, as JSON, for whatever drives the compiler to plan a build with: a package manager checks that a package's source imports only what it may, and orders the builds of its packages, before any of them runs. It is given `--workdir` and `--src` as `stellac build` is, and reads the files they name.
+
+```json
+{ "formatVersion": 0,
+  "modules": [
+    { "module": "A.Main", "path": "src/A/Main.stel",
+      "imports": [ { "module": "B.Api", "start": { "line": 3, "column": 8 }, "end": { "line": 3, "column": 13 } } ] } ] }
+```
+
+- **It reads each header as a build does before it compiles anything, and nothing past it.** No macro is expanded, no synthesizer run, and nothing elaborated, so no compile-time session is started and an error past a header is not reported. The errors it reports are those a build reports of directories, files, and headers ([above](#what-a-build-reports)), and where it reports one it prints no graph.
+- **Each module is given by its name and its file's path from the directory `--workdir` names**, in order of the names. **Its imports are the modules its header imports, in the order written**, each where its name is written: a line, and the columns its name begins at and ends just before, as the messages of a build count them. `import Prim` adds no dependency and is left out.
+- **It judges nothing of what the imports name.** A module no file given holds is reported as any other, modules importing one another are not refused, and nothing is said of where a module comes from beyond the file that holds it.
+
+**The imports are the module's source dependencies**: the modules its source names in its header, and the imports of the interface its build writes, which are the same modules in the same order ([above](#what-an-interface-holds)). They are not what its Core or its bytecode refers to when it runs. A module refers to entities of modules it reaches only through another — a name re-exported to it, a type in a scheme it uses, what a quotation it expands refers to — without importing them, and those modules are not among its source dependencies.
 
 ## Declaration typing and the entry point
 

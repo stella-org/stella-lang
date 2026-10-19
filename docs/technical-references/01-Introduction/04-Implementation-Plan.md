@@ -1703,3 +1703,14 @@ A `foreign` the ABI fixes, against one a host implements ([Prim and Base](../06-
 | The package built by the script | Every module of `stella-packages/base/src` built, `Base.Continuation` among them, and listed by the map |
 | A program against the map importing `Base.IO`, `Base.String`, `Base.Int`, and `Base.Continuation` beside a module of host foreigns, handling an effect by a `reifiable full` clause | Built; run by `steam run` over the bytecode the map names, the actions composed by `Base.IO.bind`, printing `built apart`, `12`, and `6`, the sum of what the generator yields, each continuation resumed by `Base.Continuation.continue` |
 | The same program against a map listing `Base.Int` with another interface, `Prim`, or `Base.String` and `Base.Int` twice | Refused, each with its message |
+
+### Source dependencies, read from headers (step 7)
+
+`stellac graph`, and the packages built apart that a driver plans with what it reports ([Modules](../06-Modules/01-Modules.md#stellac-graph)).
+
+| Input | Required outcome |
+| --- | --- |
+| Files whose headers import a module of the package, a module no file given holds, and `Prim`, two of the modules importing each other, and a declaration that does not parse | Each module, by name, with its path from the root and each module its header imports in the order written, where its name is written; `Prim` left out, the module outside reported as any other, nothing refused for the cycle or the declaration |
+| `--src` naming one file | That module alone |
+| A header naming another module than its path does | Refused as a build refuses it, no graph printed |
+| `package-c`, `package-b` importing and re-exporting `C.Core`, and `package-a`, whose `A.Main` imports `B.Api` alone and uses a name and a type of `C.Core` through it, and whose `A.Direct` imports `C.Core`, each built apart against a map listing what its builds before it wrote | Each built, `A.Direct` among them; for every module, the modules `graph` reports its header importing are the imports of the interface its build wrote, in order, `A.Main`'s being `B.Api` alone |

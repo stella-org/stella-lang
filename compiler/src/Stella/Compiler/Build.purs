@@ -61,6 +61,8 @@ module Stella.Compiler.Build
   , CompilerAction
   , BuildInputs
   , ordinary
+  , Header
+  , readHeaders
   , BuiltModules
   , CompilerHooks
   , defaultHooks
@@ -220,8 +222,10 @@ defaultHooks =
   , onModuleDone: \_ -> pure unit
   }
 
--- | What a header gives a build: the module's file and name, where its name is
--- | written, and what it imports, each with where it is written.
+-- | What a header gives a build: the module's file and name, and the modules it
+-- | imports, which are its dependencies, in the order written, each with where
+-- | it is written; `Prim`, which an import adds no dependency on, is not among
+-- | them.
 type Header =
   { path :: String
   , name :: ModuleName
@@ -249,9 +253,27 @@ build action settings inputs roots files = runExceptT do
   for_ (Array.find (\r -> not (Array.any (\f -> f.name == r) named)) rebuilt) (throwError <<< RebuildNotDeclared)
   for_ (Array.find (\f -> Map.member f.name env.interfaces && not (Set.member f.name inputs.rebuilding)) named) (throwError <<< NameInEnvironment)
   let paths = Map.fromFoldable (map (\f -> Tuple f.name f.path) named)
-  headers <- headersOf action paths named
+  headers <- headersOf action.readSource paths named
   order <- except (ordered headers)
   compileAll action settings (rebuildOf inputs) env paths order
+
+-- | The header of each file given, read as a build reads them before it orders
+-- | anything: the source directories naming their modules apart, each file
+-- | given its module's name off its path, and each header naming that module.
+-- | Nothing past a header is read and nothing is compiled; the headers are in
+-- | the order the files were given, and modules importing one another are not
+-- | refused.
+readHeaders
+  :: forall m
+   . MonadRec m
+  => (String -> m (Either String String))
+  -> Array SourceRoot
+  -> Array PackageFile
+  -> m (Either BuildError (Array Header))
+readHeaders readSource roots files = runExceptT do
+  except (rootsApart roots)
+  named <- except (placed roots files)
+  headersOf readSource (Map.fromFoldable (map (\f -> Tuple f.name f.path) named)) named
 
 -- | Every file given its module's name, read off its path; no file given twice,
 -- | and no module named twice.
@@ -325,16 +347,16 @@ isProperName segment = case SCU.uncons segment of
 headersOf
   :: forall m
    . MonadRec m
-  => CompilerAction m
+  => (String -> m (Either String String))
   -> Map ModuleName String
   -> Array { path :: String, name :: ModuleName }
   -> ExceptT BuildError m (Array Header)
-headersOf action paths named = tailRecM step { headers: [], i: 0 }
+headersOf readSource paths named = tailRecM step { headers: [], i: 0 }
   where
   step { headers, i } = case Array.index named i of
     Nothing -> pure (Done headers)
     Just file -> do
-      header <- headerOf action paths file
+      header <- headerOf readSource paths file
       pure (Loop { headers: Array.snoc headers header, i: i + 1 })
 
 -- | A file's header, its declarations left unread; the header naming the module
@@ -342,12 +364,12 @@ headersOf action paths named = tailRecM step { headers: [], i: 0 }
 headerOf
   :: forall m
    . Monad m
-  => CompilerAction m
+  => (String -> m (Either String String))
   -> Map ModuleName String
   -> { path :: String, name :: ModuleName }
   -> ExceptT BuildError m Header
-headerOf action paths file = do
-  text <- action.readSource file.path # orFailWithM (\detail -> Unreadable { path: file.path, detail })
+headerOf readSource paths file = do
+  text <- readSource file.path # orFailWithM (\detail -> Unreadable { path: file.path, detail })
   Module m <- parseHeader text # orFailWith (\err -> ModuleFailed { path: file.path, name: file.name, errors: pure (Syntax (Unparsed err)), paths })
   let written = ModuleName m.name.name
   when (written /= file.name) do
@@ -355,7 +377,7 @@ headerOf action paths file = do
   pure { path: file.path, name: file.name, imports: Array.mapMaybe importOf m.items }
   where
   importOf = case _ of
-    ItemImport (Import r) -> Just { module: ModuleName r.module.name, at: locationOf r.module.range }
+    ItemImport (Import r) | ModuleName r.module.name /= primModule -> Just { module: ModuleName r.module.name, at: locationOf r.module.range }
     _ -> Nothing
 
 -- | The headers in an order their imports allow: each after every module of

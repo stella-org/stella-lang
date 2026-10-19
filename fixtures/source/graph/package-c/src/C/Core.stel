@@ -1,0 +1,10 @@
+module C.Core where
+
+data Token = Token Int
+
+seed :: Token
+seed = Token 7
+
+value :: Token -> Int
+value t = case t of
+  Token n -> n

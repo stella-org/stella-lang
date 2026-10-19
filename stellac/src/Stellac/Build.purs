@@ -46,7 +46,7 @@ import Data.Map as Map
 import Data.Tuple (Tuple(..))
 import Data.Maybe (Maybe(..))
 import Data.Set as Set
-import Data.String (Pattern(..), joinWith, split)
+import Data.String (joinWith)
 import Data.Traversable (for)
 import Effect.Aff (Milliseconds(..))
 import Effect.Ref as Ref
@@ -76,6 +76,8 @@ import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
 import Stellac.Dependencies (printDependencyError)
 import Stellac.Dependencies as Dependencies
 import Stellac.Paths (buildDirectory, builtPath)
+import Stellac.Sources (sourceFiles)
+import Stellac.Sources as Sources
 import Stellac.Options (BuildOptions)
 import Type.Row (type (+))
 
@@ -102,9 +104,7 @@ cmd opts = do
     objects = Map.fromFoldable (map (\d -> Tuple d.module d.object) (Array.filter (\d -> not (Map.member d.module carried.interfaces)) linked.dependencies))
   for_ (Array.find (\name -> not (Array.any (\i -> i.name == name) syntax.moduleInterfaces)) opts.toolchainRebuild) \name ->
     throw (fmt @"`{name}` is not a module the compiler carries, and cannot be compiled anew" { name: moduleText name })
-  found <- FS.glob opts.workdir patterns >>= either (\why -> throw (fmt @"The source files could not be listed: {why}" { why })) pure
-  when (Array.null found) do
-    throw (fmt @"No source file matches {patterns}" { patterns: joinWith ", " patterns })
+  files <- sourceFiles opts.workdir opts.src
   -- a relative output is under the package's root; what is absolute, the host says
   absolute <- FS.isAbsolute opts.output
   let
@@ -124,8 +124,6 @@ cmd opts = do
   attempts <- liftEffect (Ref.new 0)
   health <- liftEffect (Ref.new Reusable)
   let
-    files = map (\within -> { path: underRoot within, within: split (Pattern "/") within }) found
-
     -- what a phase could not write, kept to fail the build with once it ends
     failing :: String -> Building Unit
     failing why = liftEffect (Ref.modify_ (\ws -> Array.snoc ws why) unwritten)
@@ -230,11 +228,7 @@ cmd opts = do
             throw "The build failed"
           Log.info (fmt @"✓ Built {count} module(s) → {output}" { count: Array.length built, output })
   where
-  patterns = if Array.null opts.src then [ "src/**/*.stel" ] else opts.src
-  -- a path of the package, under its root
-  underRoot path
-    | opts.workdir == "." = path
-    | otherwise = fmt @"{root}/{path}" { root: opts.workdir, path }
+  underRoot = Sources.underRoot opts.workdir
 
   steam = { command: opts.steamCmd, args: [ "session" ] }
   -- the session runs the build's parsers and synthesizers alike

@@ -24,7 +24,14 @@ type BuildOptions =
   , toolchainRebuild :: Array ModuleName
   }
 
-data Command = Build BuildOptions
+type GraphOptions =
+  { workdir :: FilePath
+  , src :: Array String
+  }
+
+data Command
+  = Build BuildOptions
+  | Graph GraphOptions
 
 derive instance Generic Command _
 instance Show Command where
@@ -53,26 +60,36 @@ options =
           [ ArgParser.command [ "build" ]
               "Build the modules of a package"
               ((Build <$> buildOptions) <* ArgParser.flagHelp)
+          , ArgParser.command [ "graph" ]
+              "Print, as JSON, the modules of the source files and the modules each\n\
+              \imports, read from their headers alone"
+              ((Graph <$> graphOptions) <* ArgParser.flagHelp)
           ]
     }
     <* ArgParser.flagHelp
   where
+  workdir =
+    ArgParser.argument [ "--workdir" ]
+      "The directory the source patterns and relative paths are under.\n\
+      \Defaults to the current directory"
+      # ArgParser.default "."
+
+  src =
+    ArgParser.argument [ "--src" ]
+      "Glob pattern, from the working directory, of the source files.\n\
+      \May be given more than once. Defaults to `src/**/*.stel`"
+      # ArgParser.unfolded
+
+  graphOptions = ArgParser.fromRecord { workdir, src }
+
   buildOptions = ArgParser.fromRecord
     { output:
         ArgParser.argument [ "-o", "--output" ]
           "Path to output directory in which all module artifacts placed\n\
           \Defaults to `output` in current directory"
           # ArgParser.default "output"
-    , workdir:
-        ArgParser.argument [ "--workdir" ]
-          "Working directory for the build process.\n\
-          \Defaults to the current directory"
-          # ArgParser.default "."
-    , src:
-        ArgParser.argument [ "--src" ]
-          "Glob pattern, from the package root, of the source files to build.\n\
-          \May be given more than once. Defaults to `src/**/*.stel`"
-          # ArgParser.unfolded
+    , workdir
+    , src
     , emitCore:
         ArgParser.flag [ "--emit-core" ]
           "Emit the Typed Core of each module as `<MODULE>.core.json`"

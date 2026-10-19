@@ -1,10 +1,11 @@
 -- | The commands the integration tests run as processes, from the root of the
--- | repository: `stellac build`, `steam run` as its command line stands, and the
--- | script building the `Base` package. All run the development entry points,
--- | which need the packages built.
+-- | repository: `stellac build` and `stellac graph`, `steam run` as its command
+-- | line stands, and the script building the `Base` package. All run the
+-- | development entry points, which need the packages built.
 module Test.E2E.Process
   ( Outcome
   , stellac
+  , graph
   , steamRun
   , buildBase
   , writeFiles
@@ -45,6 +46,10 @@ run script args = do
 -- | `stellac build` with the arguments given.
 stellac :: Array String -> Aff Outcome
 stellac args = run "stellac/index.dev.js" ([ "build" ] <> args)
+
+-- | `stellac graph` with the arguments given.
+graph :: Array String -> Aff Outcome
+graph args = run "stellac/index.dev.js" ([ "graph" ] <> args)
 
 -- | `steam run`, given the foreign manifest, the module whose `main` is the
 -- | entry point, and the bytecode of every module of the program in

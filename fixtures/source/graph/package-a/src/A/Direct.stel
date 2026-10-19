@@ -1,0 +1,9 @@
+module A.Direct where
+
+import Prim
+import C.Core (seed, value)
+import A.Main (answer)
+import B.Api as B
+
+direct :: Int
+direct = value seed
