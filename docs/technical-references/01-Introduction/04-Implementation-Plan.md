@@ -1582,7 +1582,7 @@ A build compiling modules of its environment anew ([Modules](../06-Modules/01-Mo
 
 | Input | Required outcome |
 | --- | --- |
-| A toolchain build naming `Base.Int`, its source the nine entries the ABI places in it as foreigns, and a module importing it and `Stella.Syntax` | Compiled; the interface the one the compiler carries |
+| A toolchain build naming `Base.Int`, its source `stella-packages/base/src/Base/Int.stel`, and a module importing it and `Stella.Syntax` | Compiled; the interface the one the compiler carries |
 | The same `Base.Int` lacking `toString` | Refused at its file, naming `Stella.Syntax` and the kept module reaching `Base.Int` through it; nothing written |
 | A module compiled anew that no kept module imports, and two compiled anew, one importing the other | Compiled, the interfaces changed |
 | `Base.Int` compiled anew importing `Stella.Syntax` | Refused: the build holds no `Base.Int` for it |
@@ -1608,3 +1608,16 @@ A `foreign` the ABI fixes, against one a host implements ([Prim and Base](../06-
 | `foreign type Array :: Type` in `Base.Array` | Refused where it is declared, naming the kind the ABI gives it |
 | A foreign of a `Base` module the catalog does not name, taking a function, a type variable, or an `IO` | Refused as a host foreign is (D44) |
 | A package with `Base.IO` and `Base.Array` in source and a module of host foreigns, built by `stellac build` and run by `steam run` over a manifest naming that module alone | Run, the runtime carrying out the `Base` entries |
+
+### `Base.Int` from its source (step 7)
+
+The module the compiler carries, compiled from `stella-packages/base/src/Base/Int.stel` ([Modules](../06-Modules/01-Modules.md#stellac-build)).
+
+| Input | Required outcome |
+| --- | --- |
+| The text the compiler holds, and the file | The same text |
+| The `Base.Int` the compiler carries | The interface and the bytecode the text compiles to as a build compiles a module, against `Prim` alone |
+| The file, copied as it stands into a package of its own, built with `--toolchain-rebuild Base.Int` | Built; its `.dmi` the interface the compiler carries, and its `.dmo` the same bytes |
+| An ordinary package importing `Base.Int` and a module of host foreigns, run by `steam run` over that `.dmo` | Run, `add 1 2` printed as `3` |
+| A toolchain build of the file beside a macro importing `Base.Int`, and one of the file without `toString` | As for any toolchain build of a module the compiler carries: compiled, the macro run on the module the compiler carries; refused, naming the module kept |
+| The hand-written `Base.Int` the Core fixtures compile | The Core, the interface, and the bytecode the file gives. It is watched while those fixtures stand for the module, and goes with them |

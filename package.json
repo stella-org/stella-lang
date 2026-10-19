@@ -6,5 +6,8 @@
     "js-runtime",
     "stellac",
     "compiler"
-  ]
+  ],
+  "scripts": {
+    "build:base": "node stellac/index.dev.js build --workdir stella-packages/base --toolchain-rebuild Base.Int"
+  }
 }

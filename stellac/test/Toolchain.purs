@@ -15,12 +15,14 @@ import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (for_)
 import Data.Maybe (Maybe(..))
-import Data.String (Pattern(..), contains, joinWith, lastIndexOf, take)
+import Data.String (Pattern(..), contains, joinWith, lastIndexOf, split, take)
 import Data.Traversable (for)
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
 import Effect.Ref as Ref
+import Node.Encoding (Encoding(..))
+import Node.FS.Sync as Sync
 import Run (runBaseEffect)
 import Run.Except as Except
 import Steam.CLI.Elaboration as Elaboration
@@ -38,21 +40,9 @@ import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 import Test.Stellac.Synthesis (onDisk)
 
--- | `Base.Int` written in source: the entries the ABI places in it, as
--- | foreigns.
-baseInt :: Array String
-baseInt =
-  [ "module Base.Int where"
-  , "foreign add :: Int -> Int -> Int"
-  , "foreign sub :: Int -> Int -> Int"
-  , "foreign mul :: Int -> Int -> Int"
-  , "foreign quot :: Int -> Int -> Int"
-  , "foreign rem :: Int -> Int -> Int"
-  , "foreign eq :: Int -> Int -> Boolean"
-  , "foreign lt :: Int -> Int -> Boolean"
-  , "foreign toNumber :: Int -> Number"
-  , "foreign toString :: Int -> String"
-  ]
+-- | `Base.Int` as its source of truth stands.
+baseIntPath :: String
+baseIntPath = "stella-packages/base/src/Base/Int.stel"
 
 -- | `Pass`: a macro handing back what its brackets hold, its module importing
 -- | the module given beside `Stella.Syntax`.
@@ -138,8 +128,9 @@ said' r text = Array.any (contains (Pattern text)) r.said
 
 spec :: Spec Unit
 spec = describe "stellac build --toolchain-rebuild" do
-  it "compiles a module the compiler carries anew, the package's macros run on the one the compiler carries, and the program runs on the new one" do
-    building "rebuilt" "Base.Int" [ Tuple "src/Base/Int.stel" baseInt, Tuple "src/Pass.stel" (passImporting "Base.Int"), Tuple "src/Main.stel" mainModule ] \r -> do
+  it "compiles a module the compiler carries anew from its source, the package's macros run on the one the compiler carries, and the program runs on the new one" do
+    baseInt <- liftEffect (Sync.readTextFile UTF8 baseIntPath)
+    building "rebuilt" "Base.Int" [ Tuple "src/Base/Int.stel" (split (Pattern "\n") baseInt), Tuple "src/Pass.stel" (passImporting "Base.Int"), Tuple "src/Main.stel" mainModule ] \r -> do
       r.result `shouldEqual` Right unit
       Array.take 3 r.said `shouldEqual`
         [ "[1/3] Compiling Base.Int (stellac/.test-build/rebuilt/src/Base/Int.stel)"

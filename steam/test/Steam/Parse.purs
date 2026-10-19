@@ -298,8 +298,8 @@ compileAgainst syntax extend m = case declareAnnotated (extend syntax.signature)
 -- | one does not compile.
 parserModules :: Compiled -> Either P.String (P.Array (Tuple P.String Dmo))
 parserModules syntax = do
-  array <- lmap (\err -> "Base.Array does not declare: " <> show err.error) (declareAnnotated syntax.signature (baseModule 0 arrayModule))
-  arrayDmo <- lmap ("Base.Array " <> _) (compileAgainst syntax identity (baseModule 0 arrayModule))
+  array <- lmap (\err -> "Base.Array does not declare: " <> show err.error) (declareAnnotated (withBaseTypes syntax.signature) (baseModule 0 arrayModule))
+  arrayDmo <- lmap ("Base.Array " <> _) (compileAgainst syntax withBaseTypes (baseModule 0 arrayModule))
   parsers <- lmap ("Parsers " <> _) (compileAgainst syntax (const array.signature) parsersModule)
   elab <- Guest.bundle
   declared <- lmap (\err -> "Stella.Elab does not declare: " <> show err.error) (declareAnnotated (elab.withSignature syntax.signature) elab.module)

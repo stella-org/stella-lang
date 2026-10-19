@@ -45,6 +45,7 @@ import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (ParseOutcome(..), RunParser, defaultSettings)
 import Stella.Compiler.Macro.Tree (Position(..), Range(..), SyntaxNode(..), Token(..), TokenTree(..))
 import Stella.Compiler.Macro.Tree as Tree
+import Stella.Compiler.Bootstrap.Source as Source
 import Stella.Compiler.Build (BackendProblem(..), BuildError(..), BuildInputs, BuiltModules, ordinary, SourceRoot, defaultSourceRoots, CompileError(..), CompileWarning, CompilerAction, EnvironmentProblem(..), PackageFile, SyntaxProblem(..), build, buildMessages, compileModule, defaultHooks, locationsOf, printBuildMessage, printCompileError, warningLocationOf, withoutSynthesizers)
 import Stella.Compiler.Resolve.Module (ResolutionError(..))
 import Stella.Compiler.Resolve.Monad (ResolveError(..), ResolveReason(..)) as Resolve
@@ -1353,8 +1354,8 @@ moduleText (ModuleName m) = m
 moduleOf :: String -> Array String -> Array String -> String
 moduleOf name imports body = joinWith "\n" ([ fmt @"module {name} where" { name } ] <> map ("import " <> _) imports <> body)
 
--- | `Base.Int` written in source: the entries the ABI places in it, as
--- | foreigns.
+-- | The entries the ABI places in `Base.Int`, as foreigns: what a variant of
+-- | its source is written from.
 baseIntLines :: Array String
 baseIntLines =
   [ "foreign add :: Int -> Int -> Int"
@@ -1461,7 +1462,7 @@ buildSpec = describe "a build" do
 
   describe "a toolchain build" do
     let
-      baseInt = Tuple "src/Base/Int.stel" (moduleOf "Base.Int" [] baseIntLines)
+      baseInt = Tuple "src/Base/Int.stel" Source.baseInt
       rebuilding names = { environment, rebuilding: Set.fromFoldable (map ModuleName names) }
       outcome r = lmap (map _.message <<< NonEmptyArray.toArray <<< buildMessages) r.result
       failure r = either identity (const []) (outcome r)

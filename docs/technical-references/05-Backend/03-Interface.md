@@ -362,7 +362,7 @@ speak of one module.** An interface is made only where the checks pass.
 
 ### A module written in Core
 
-**A module written in Core has a canonical interface, read off the module and its checked signature.** Such a module has no source and so no surface part: `Base.Int`, `Stella.Syntax`, and the modules the compiler or a test writes in Core. Its interface is `Stella.Compiler.Interface.FromCore` applied to the module, what checking it declared, and the arities of its translation. It is a projection of what Core holds, and no inverse of a surface part: what Core keeps nothing of is given one value.
+**A module written in Core has a canonical interface, read off the module and its checked signature.** Such a module has no source and so no surface part: `Stella.Syntax` and `Stella.Elab`, which the compiler writes in Core, and the modules a test writes in Core, the hand-written `Base` fixtures among them. Its interface is `Stella.Compiler.Interface.FromCore` applied to the module, what checking it declared, and the arities of its translation. It is a projection of what Core holds, and no inverse of a surface part: what Core keeps nothing of is given one value.
 
 | What | In the interface |
 | --- | --- |
