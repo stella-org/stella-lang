@@ -48,7 +48,7 @@ import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, SolverSta
 import Stella.Compiler.Elaborate.Mechanism.Kinding (kindingOf)
 import Stella.Compiler.Elaborate.Mechanism.Pending (PendingId)
 import Stella.Compiler.Elaborate.Mechanism.Scheduler (takeReady)
-import Stella.Compiler.Elaborate.Protocol.Guest (bundle)
+import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Elaborate.Protocol.Guest.Shape (Descriptor)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
@@ -187,9 +187,9 @@ runningWith cancellation session attempt = case job of
   Left err -> liftEffect (throw err)
   Right j -> node (runGuest session descriptor { global: { module: "Synth", name: "synth" }, attempt, budget: 1000000 } cancellation env j.id j.state)
 
--- | `Stella.Elab`'s descriptor, which the compiler's bundle holds.
+-- | `Stella.Elab`'s descriptor, which the compiler carries.
 descriptor :: Descriptor
-descriptor = case bundle of
+descriptor = case compiled <#> _.elaboration of
   Right trusted -> trusted.descriptor
   Left _ -> Map.empty
 

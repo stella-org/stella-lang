@@ -127,7 +127,7 @@ data Progress
 
 -- | Run the guest function named, as the attempt given with the budget given, on
 -- | the synthesis job named. The descriptor is `Stella.Elab`'s, which the caller
--- | has from the compiler's bundle: a bundle that does not read is the
+-- | has from the modules the compiler carries: one that does not read is the
 -- | toolchain's defect, settled before any guest runs.
 runGuest
   :: forall r

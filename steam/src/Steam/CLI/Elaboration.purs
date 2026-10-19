@@ -3,12 +3,12 @@
 -- | as.
 -- |
 -- | **`Stella.Elab` is the interpreter's own to install.** It comes from the
--- | compiler this interpreter is built with, as one bundle — the module, the
--- | fragment of the signature typing its handles, and the shape descriptor read off
--- | it — and no request loads it: a module of that name from anywhere else would
--- | decide what a guest's commands and answers are. It is lowered once when the
--- | session starts and installed when the handshake opens the profile, before the
--- | session says it is ready.
+-- | compiler this interpreter is built with, which carries the bytecode a build
+-- | of its source writes and the shape descriptor read off its interface, and no
+-- | request loads it: a module of that name from anywhere else would decide what
+-- | a guest's commands and answers are. It is read once when the session starts
+-- | and installed when the handshake opens the profile, before the session says
+-- | it is ready.
 -- |
 -- | **Who is at fault for an answer decides what it ends in.** One that is not a
 -- | canonical value, or not a `GuestAnswer` by the descriptor, or not an answer at
@@ -42,33 +42,19 @@ import Stella.CLI.Session.ProtocolError (decodeProtocolError, protocolErrorKind)
 import Stella.CLI.Session.Value (ValueProblem, decodeValue, renderPath)
 import Stella.CLI.Session.Value.Shape (conforms)
 import Stella.Compiler.Bytecode (Dmo)
-import Stella.Compiler.Bytecode as Bytecode
 import Stella.Compiler.Bytecode.Module (Key(..))
-import Stella.Compiler.Elaborate.Protocol.Guest (bundle, commandOp, guestAnswerTy, kernelEffect)
+import Stella.Compiler.Elaborate.Protocol.Guest (commandOp, guestAnswerTy, kernelEffect)
 import Stella.Compiler.Elaborate.Protocol.Guest.Shape (Descriptor)
-import Stella.Compiler.Interface (noImports)
-import Stella.Compiler.MiddleEnd (translate)
-import Stella.Compiler.TypedCore (declareAnnotated, primSignature)
+import Stella.Compiler.Macro.Compiled (compiled)
 import Type.Row (type (+))
 
--- | `Stella.Elab` lowered, and the descriptor of its data types.
+-- | `Stella.Elab`'s bytecode, and the descriptor of its data types.
 type Elaboration = { dmo :: Dmo, descriptor :: Descriptor }
 
 -- | `Stella.Elab` made ready to install, or why it could not be: a failure here is
 -- | a defect of the compiler the interpreter is built with.
 prepare :: Either P.String Elaboration
-prepare = do
-  trusted <- bundle
-  declared <- case declareAnnotated (trusted.withSignature primSignature) trusted.module of
-    Left err -> Left ("it does not declare: " <> show err.error)
-    Right declared -> Right declared
-  mid <- case translate noImports trusted.module declared of
-    Left err -> Left ("it does not translate: " <> show err)
-    Right mid -> Right mid
-  lowered <- case Bytecode.lower mid of
-    Left err -> Left ("it does not lower: " <> show err)
-    Right lowered -> Right lowered
-  pure { dmo: lowered.dmo, descriptor: trusted.descriptor }
+prepare = compiled <#> \c -> { dmo: c.elaboration.dmo, descriptor: c.elaboration.descriptor }
 
 -- | What an open session answers its guests with: the store holding `Stella.Elab`,
 -- | and the root boundary every invocation stands on.

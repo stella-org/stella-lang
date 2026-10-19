@@ -67,7 +67,6 @@ import Stella.Compiler.Build (BuildError, BuildMessage, CompilerAction, build, b
 import Stella.Compiler.Bytecode (encode)
 import Stella.Compiler.Bytecode.Bytes (Bytes)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
-import Stella.Compiler.Elaborate.Protocol.Guest as Guest
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment, lookupInterface)
 import Stella.Compiler.Interface.File as Interface
 import Stella.Compiler.Macro.Compiled (compiled)
@@ -86,7 +85,6 @@ type Building = Run (EXCEPT CompileTimeError + FS + LOG + PROCESS + AFF + EFFECT
 cmd :: forall r. BuildOptions -> Run (FS + LOG + PROCESS + EXCEPT String + EFFECT + AFF + r) Unit
 cmd opts = do
   syntax <- either (\why -> throw (internal ("the modules the compiler carries do not compile: " <> why))) pure compiled
-  elab <- either (\why -> throw (internal ("`Stella.Elab` does not describe its types: " <> why))) pure Guest.bundle
   carried <- either (\err -> throw (internal ("the modules the compiler carries do not make an environment: " <> show err))) pure
     (foldM (flip addInterface) initialEnvironment syntax.moduleInterfaces)
   linked <- case opts.dependencies of
@@ -169,7 +167,7 @@ cmd opts = do
       , synthesis: openingSynthesis
           { held: session
           , launch
-          , descriptor: elab.descriptor
+          , descriptor: syntax.elaboration.descriptor
           , loading
           , budget: defaultSynthesisSettings.budget
           , cancellation

@@ -43,7 +43,8 @@ import Stella.Compiler.Elaborate.Environment.Effects (effectsOf)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, freshTypeMeta, initialState, runElabIn)
 import Stella.Compiler.Elaborate.Mechanism.Kinding (kindingOf)
 import Stella.Compiler.Elaborate.Mechanism.Pending (Job(..), Site)
-import Stella.Compiler.Elaborate.Protocol.Guest (bundle, elabModule, kernelEffect)
+import Stella.Compiler.Elaborate.Protocol.Guest (elabModule, kernelEffect)
+import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (HandleError(..), SessionId(..))
 import Stella.Compiler.Elaborate.Vocabulary.Trace (TraceEvent(..), Tracing(..), canonicalCommands, commandsOf)
@@ -172,8 +173,8 @@ xInt = XCon intTy []
 -- | What runs a compilation's goals on the session, the attempt numbers drawn from
 -- | the session's one supply.
 guestsOn :: Session -> Ref P.Int -> Aff Guests
-guestsOn session attempts = case bundle of
-  Left err -> liftEffect (throw ("no bundle: " <> err))
+guestsOn session attempts = case compiled <#> _.elaboration of
+  Left err -> liftEffect (throw ("no Stella.Elab: " <> err))
   Right trusted -> liftEffect do
     cancellation <- newCancellation (Milliseconds 1000.0)
     health <- Ref.new Reusable

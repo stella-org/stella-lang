@@ -1458,7 +1458,7 @@ Synthesized parameters supplied at a reference ([Elaboration](../02-Surface-Lang
 | A goal no synthesizer the build provides fills, and an attempter whose monad stops | The host's defect; the elaboration stopping with the monad, no diagnostic |
 | A module compiled with a host registry, and the same with none, alone and in a build of two modules | Compiled; an internal compiler error naming the synthesizer |
 | `bad :: {{ d :: Int by make }} -> Int` where the module itself declares `make` | Reported where `make` is written, whatever its scheme: a synthesizer comes from a module compiled before; `bad` gives no scheme |
-| A module writing `one :: Handle -> Handle / {\| Kernel \|}` against `Stella.Elab`, and one after it naming `by one` | Compiled, `by one` checked against the interface projected from the bundle the session installs |
+| A module writing `one :: Handle -> Handle / {\| Kernel \|}` against `Stella.Elab`, and one after it naming `by one` | Compiled, `by one` checked against the interface of the build whose bytecode the session installs |
 | `stellac build` of `Support`, `A` filling a goal with `Support.seed`, and `Main` at two goals naming `A.one` | `Support`, `A`, `Main` compiled in that order, each loaded on the session once, `Support` before `A`; both values `1` on the machine. A walk that skips `Support`, or a load made twice, fails the build |
 | The same goal filled by a host synthesizer of the same policy | The same Core, annotations dropped |
 | A synthesizer that throws, one that faults, and one that never returns | `A synthesizer failed here` where the goal stands; the build failing against the synthesizer, as faulting, and as having used up its 1,000,000 steps, where the goal stands, with no internal error |
@@ -1611,17 +1611,19 @@ A `foreign` the ABI fixes, against one a host implements ([Prim and Base](../06-
 
 ### The modules the compiler carries, from their sources (step 7)
 
-`Base.Int` and `Stella.Syntax`, compiled from `stella-packages/base/src/Base/Int.stel` and `stella-packages/compiler-lib/src/Stella/Syntax.stel`, and the entries only elaboration names ([Modules](../06-Modules/01-Modules.md#stellac-build)).
+`Base.Int`, `Stella.Syntax`, and `Stella.Elab`, compiled from `stella-packages/base/src/Base/Int.stel` and `stella-packages/compiler-lib/src/Stella/`, and the entries only elaboration names ([Modules](../06-Modules/01-Modules.md#stellac-build)).
 
 | Input | Required outcome |
 | --- | --- |
-| The two files, compiled by the compiler as it stands, the second against the first | The interface files and the bytecode files the compiler holds, to the byte |
-| The modules the compiler carries | Those files decoded |
-| Each file, copied as it stands into a package of its own, built with `--toolchain-rebuild` naming its module | Built; its `.dmi` the interface the compiler carries, and its `.dmo` the same bytes |
+| The three files, compiled by the compiler as it stands, `Stella.Syntax` against `Base.Int` | The interface files and the bytecode files the compiler holds, to the byte |
+| The modules the compiler carries | Those files decoded, the bytecode of `Stella.Elab` held apart for a session to install |
+| `Base.Int`'s file copied as it stands into a package of its own, and `compiler-lib`'s two into another, each built with `--toolchain-rebuild` naming the modules it holds, `Stella.Syntax` against the `Base.Int` the compiler carries | Built; each `.dmi` the interface the compiler carries, and each `.dmo` the same bytes |
 | An ordinary package importing `Base.Int` and a module of host foreigns, run by `steam run` over the `.dmo` of `Base.Int` | Run, `add 1 2` printed as `3` |
 | A toolchain build of `Base.Int` beside a macro importing it, and one of `Base.Int` without `toString` | As for any toolchain build of a module the compiler carries: compiled, the macro run on the module the compiler carries; refused, naming the module kept |
 | `Stella.Syntax` as the compiler carries it | `OriginRef` exported abstract; `$QuotedOrigin` and `$spliced` in no export of the interface and with no arity, `$spliced` exported by the bytecode; the descriptor read off the interface mirroring the host's types constructor for constructor |
 | `@[elaborationOnly]` on `OriginRef` in `Stella.Syntax`, its constructors `InputOrigin` and `QuotedOrigin` in that order | `QuotedOrigin` takes `$QuotedOrigin`, `InputOrigin` keeps its name and its membership; another order, or another set of constructors, refused |
 | `@[elaborationOnly]` on `spliced` in `Stella.Syntax`, on another value there, and on `spliced` in another module | The first takes `$spliced`, and an export list naming it is refused; the others refused |
+| `Stella.Elab` as the compiler carries it | `Handle` an opaque foreign type the descriptor takes as a token; the values it publishes exactly the facade's operations, `transact`, and `synthesizer`, each at the type the facade's table and the interface give it, `ask` and `committed` among none; a family, a request, or an answer the interface does not declare refused rather than taken for none |
+| The facade's operations and `transact` on the machine, over the bytecode the compiler carries | Each operation asks its request and gives back what the answer it expects carries, and ends with its goal on any other; a candidate failing in the innermost transaction answers `Nothing` there and the one around it commits |
 | `Stella.Syntax` declaring `spliced` at `Int`, or not at all; `Base.Continuation` declaring its constructor at another scheme | Refused where the declaration stands, or at the module, in the build compiling it: the declaring module's error, not the compiler's |
 | The hand-written `Base.Int` the Core fixtures compile | The Core, the interface, and the bytecode the file gives. It is watched while those fixtures stand for the module, and goes with them |

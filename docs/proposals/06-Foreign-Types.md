@@ -72,12 +72,16 @@ here the kind signature of a type. A directive, where one applies, precedes the 
    that intrinsics are beyond a user's reach exists to keep a user from forging `Prim.Int` or a
    `Base` entry; a foreign type declared under a module's own name forges nothing. A foreign type
    may not be declared in a module under a reserved prefix — `Prim`, `Base`, a target namespace such
-   as `Js` or `Wasm`, or `Stella` — which remain the ABI's and the compiler's, **except where the ABI
-   fixes its qualified name**: `Base.Array` declares `foreign type Array :: Type -> Type`, and the
+   as `Js` or `Wasm`, or `Stella` — which remain the ABI's and the compiler's, **except as the party
+   owning the prefix fixes it**. Under `Base` and a target namespace, that is where the ABI fixes
+   its qualified name: `Base.Array` declares `foreign type Array :: Type -> Type`, and the
    declaration is then the manifest intrinsic itself, written by the package owning the prefix at
    exactly the kind and the class the ABI gives it, and refused at any other
    ([Prim and Base](../technical-references/06-Modules/02-Prim-and-Base.md)). Such a declaration names
-   a manifest intrinsic and creates nothing, so the tree below is unchanged by it.
+   a manifest intrinsic and creates nothing, so the tree below is unchanged by it. Under `Stella`,
+   the compiler's own, that is where the toolchain fixes it: its modules declare the types they and
+   the host pass as tokens, `Stella.Syntax.IssuedOrigin` and `Stella.Elab.Handle`, the second the
+   elaboration intrinsic below.
 
    ```text
    intrinsic

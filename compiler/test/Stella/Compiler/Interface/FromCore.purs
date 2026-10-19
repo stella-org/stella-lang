@@ -22,7 +22,7 @@ import Stella.Compiler.Interface.Prim (primAttribute)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Surface.Decl (Observation(..))
-import Stella.Compiler.TypedCore (CanonicalClass(..), Decl(..), Export(..), Expr(..), Literal(..), Module, declareAnnotated, primSignature)
+import Stella.Compiler.TypedCore (Decl(..), Export(..), Expr(..), Literal(..), Module, declareAnnotated, primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), OpName(..), Qualified(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, unitTy)
@@ -111,7 +111,7 @@ spec = describe "Stella.Compiler.Interface.FromCore" do
           let elabName = ModuleName "Stella.Elab"
           case Array.find (\i -> i.name == elabName) carried.moduleInterfaces of
             Just i -> do
-              map (show <<< _.sort) (Map.lookup (TyName "Handle") i.declarations.types) `shouldEqual` Just (show (Intrinsic CanonicalOpaque))
+              map (show <<< _.sort) (Map.lookup (TyName "Handle") i.declarations.types) `shouldEqual` Just (show ForeignType)
               map _.members (Map.lookup "Handle" i.exports.types) `shouldEqual` Just []
               Array.filter (\n -> Map.member n i.exports.values) [ "synthesizer", "transact", "rootScope", "literal" ] `shouldEqual` [ "synthesizer", "transact", "rootScope", "literal" ]
             Nothing -> fail "no Stella.Elab"

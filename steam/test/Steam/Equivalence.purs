@@ -59,7 +59,7 @@ import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaBinding(..), lookupMeta)
 import Stella.Compiler.Elaborate.Protocol.Facade (Facade, Synthesizer)
 import Stella.Compiler.Elaborate.Protocol.Facade as F
-import Stella.Compiler.Elaborate.Protocol.Guest (bundle)
+import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle, SessionId(..))
 import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
 import Stella.Compiler.Elaborate.Vocabulary.Request (Command(..), KernelRequest(..), ObserveRequest(..), TermRequest(..))
@@ -248,7 +248,7 @@ byHost = start <#> \(Tuple g s0) ->
 
 -- | The scenario, the goal's attempts carried out by the guest on the session.
 byGuest :: Session -> Aff (Either P.String { scenario :: Scenario, attempts :: P.Int, health :: SessionHealth })
-byGuest session = case start, bundle of
+byGuest session = case start, compiled <#> _.elaboration of
   Left err, _ -> pure (Left err)
   _, Left err -> pure (Left err)
   Right (Tuple g s0), Right trusted -> do

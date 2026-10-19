@@ -16,20 +16,22 @@ import Prelude
 import Prim as P
 
 import Data.Array as Array
-import Data.Either (Either(..))
+import Data.Either (Either(..), either)
+import Data.Map as Map
 import Data.Foldable (for_)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
 import Stella.CLI.Session.Value (WireValue(..))
 import Stella.Compiler.Bytecode.Module (Key(..))
-import Stella.Compiler.Elaborate.Protocol.Guest (Operation, elabModule, guestModule, kernelEffect, operationType, operations)
+import Stella.Compiler.Elaborate.Protocol.Guest (Operation, elabModule, kernelEffect, operationType, operations)
+import Stella.Compiler.Interface.Module (TypeSort(..))
 import Stella.Compiler.TypedCore (DecisionTree(..), Decl(..), Expr(..), Ident(..), Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), TyName(..), Type(..), monoScheme)
 import Stella.Compiler.TypedCore.Domain (scalarString)
 import Stella.Compiler.TypedCore.Prim (asFunction, booleanTy, fn, intTy, recordTy, stringTy, unitTy)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Steam.Guest (Machine, Ran(..), call, compileGuest, construct, elab, elabRow, elabT, global, goalToken, handleT, listOf, machineWith, runGuest, text, token, unitValue, wire, wireList, wireText)
+import Test.Steam.Guest (Machine, elabInterface, Ran(..), call, compileGuest, construct, elab, elabRow, elabT, global, goalToken, handleT, listOf, machineWith, runGuest, text, token, unitValue, wire, wireList, wireText)
 
 -- Arguments of every type ---------------------------------------------------------------------
 
@@ -81,19 +83,27 @@ sampleOf handle = go
 elabType :: P.String -> Qualified TyName
 elabType n = Qualified elabModule (TyName n)
 
+-- | The constructors a data type of the carried `Stella.Elab` declares, read off
+-- | its interface.
+constructorsOf :: P.String -> P.Array { name :: Ident, fields :: P.Array Type }
+constructorsOf n = case elabInterface of
+  Right i -> case Map.lookup (TyName n) i.declarations.types of
+    Just { sort: DataType d } -> d.constructors
+    _ -> []
+  Left _ -> []
+
 -- | The first constructor a data type of `Stella.Elab` declares, and its fields.
 firstCtor :: P.String -> Maybe (Tuple P.String (P.Array Type))
 firstCtor n = do
-  d <- Array.findMap
-    ( case _ of
-        DeclData _ d | d.name == TyName n -> Just d
-        _ -> Nothing
-    )
-    guestModule.decls
-  c <- Array.head d.constructors
+  c <- Array.head (constructorsOf n)
   pure (Tuple (unIdent c.name) c.fields)
   where
   unIdent (Ident x) = x
+
+-- | The type of an operation read off the carried interface, or none where it
+-- | cannot be read, which the first case reports.
+typeOfOperation :: Operation -> Either P.String Type
+typeOfOperation o = elabInterface >>= \i -> operationType i o
 
 goalSample :: Sample
 goalSample = { term: Var unit goal, value: WToken goalToken }
@@ -114,9 +124,10 @@ goal = Ident "goal"
 type Signature' = { parameters :: P.Array Type, result :: Type }
 
 signatureOf :: Operation -> Signature'
-signatureOf o = go [] case operationType o of
-  TForall v _ body -> substitute v body
-  t -> t
+signatureOf o = go [] case typeOfOperation o of
+  Right (TForall v _ body) -> substitute v body
+  Right t -> t
+  Left _ -> TCon unitTy []
   where
   go acc t = case asFunction t of
     Just parts -> go (Array.snoc acc parts.argument) parts.result
@@ -170,14 +181,7 @@ expectedAnswer _ answer = wire "Returned"
   ]
 
 fieldsOfAnswer :: P.String -> P.Array Type
-fieldsOfAnswer answer = fromMaybe [] do
-  d <- Array.findMap
-    ( case _ of
-        DeclData _ d | d.name == TyName "KernelAnswer" -> Just d
-        _ -> Nothing
-    )
-    guestModule.decls
-  _.fields <$> Array.find (\c -> c.name == Ident answer) d.constructors
+fieldsOfAnswer answer = fromMaybe [] (_.fields <$> Array.find (\c -> c.name == Ident answer) (constructorsOf "KernelAnswer"))
 
 -- | Another answer than the one expected.
 otherAnswer :: Operation -> WireValue
@@ -269,6 +273,9 @@ goalTypeCommand = wire "Kernel" [ wire "ObserveRequest" [ wire "GoalType" [ goal
 
 spec :: Spec Unit
 spec = describe "Stella.Elab, the typed facade on the machine" do
+  it "reads every operation's type off the interface of the `Stella.Elab` the compiler carries" do
+    for_ operations \o -> Tuple o.name (either Just (const Nothing) (typeOfOperation o)) `shouldEqual` Tuple o.name Nothing
+
   it "asks each operation's request, and gives back what the answer it expects carries" do
     withProbes \machine -> for_ operations \o -> do
       let first = commandOf o

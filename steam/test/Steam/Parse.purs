@@ -49,9 +49,10 @@ import Stella.CLI.Session.Value (WireValue(..), encodeValue)
 import Stella.Compiler.Bytecode (Dmo, encode, lower)
 import Stella.Compiler.CST (parseExpr)
 import Stella.Compiler.CST.Types as CST
-import Stella.Compiler.Elaborate.Protocol.Guest (commandOp, guestAnswerTy, guestCommandTy, kernelEffect)
-import Stella.Compiler.Elaborate.Protocol.Guest as Guest
+import Stella.Compiler.Elaborate.Environment.Imported (importedSignature)
+import Stella.Compiler.Elaborate.Protocol.Guest (commandOp, elabModule, guestAnswerTy, guestCommandTy, kernelEffect)
 import Stella.Compiler.Interface (importsOf, noImports)
+import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment, viewFor)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Macro.Compiled (Compiled, compiled)
 import Stella.Compiler.Macro.Tree (Delimiter(..), OriginRef(..), Position(..), Syntax(..), SyntaxNode(..), Token(..), TokenKind(..), TokenTree, treeOf)
@@ -293,6 +294,14 @@ compileAgainst syntax extend m = case declareAnnotated (extend syntax.signature)
         Left err -> Left ("does not lower: " <> show err)
         Right out -> Right out.dmo
 
+-- | The signature a module importing `Stella.Syntax` and `Stella.Elab` reads off
+-- | the interfaces the compiler carries.
+syntaxAndElab :: Compiled -> Either P.String Signature
+syntaxAndElab c = do
+  env <- lmap show (Array.foldM (flip addInterface) initialEnvironment c.moduleInterfaces)
+  view <- lmap show (viewFor [ syntaxModuleName, elabModule ] env)
+  lmap show (importedSignature env view)
+
 -- | The modules the parsers are loaded with, each by its name, compiled against
 -- | what it imports: `Base.Array`, `Parsers`, `Forged`, and `Base.Int`; or why
 -- | one does not compile.
@@ -301,9 +310,8 @@ parserModules syntax = do
   array <- lmap (\err -> "Base.Array does not declare: " <> show err.error) (declareAnnotated (withBaseTypes syntax.signature) (baseModule 0 arrayModule))
   arrayDmo <- lmap ("Base.Array " <> _) (compileAgainst syntax withBaseTypes (baseModule 0 arrayModule))
   parsers <- lmap ("Parsers " <> _) (compileAgainst syntax (const array.signature) parsersModule)
-  elab <- Guest.bundle
-  declared <- lmap (\err -> "Stella.Elab does not declare: " <> show err.error) (declareAnnotated (elab.withSignature syntax.signature) elab.module)
-  forged <- lmap ("Forged " <> _) (compileAgainst syntax (const declared.signature) forgedModule)
+  withElab <- syntaxAndElab syntax
+  forged <- lmap ("Forged " <> _) (compileAgainst syntax (const withElab) forgedModule)
   base <- maybe (Left "no Base.Int") Right (Array.head syntax.modules)
   pure [ Tuple "Base.Array" arrayDmo, Tuple "Parsers" parsers, Tuple "Forged" (forging forged), Tuple "Base.Int" base ]
 

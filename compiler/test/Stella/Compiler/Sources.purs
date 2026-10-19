@@ -1,6 +1,6 @@
 -- | The Stella sources the tests of several packages share, in
 -- | `fixtures/source`, and the sources of the modules the compiler carries.
-module Test.Stella.Compiler.Sources (continuationSource, readRepositoryFile, baseIntPath, syntaxPath) where
+module Test.Stella.Compiler.Sources (continuationSource, readRepositoryFile, baseIntPath, syntaxPath, elabPath) where
 
 import Effect (Effect)
 
@@ -21,3 +21,7 @@ baseIntPath = "stella-packages/base/src/Base/Int.stel"
 -- | The source of `Stella.Syntax`.
 syntaxPath :: String
 syntaxPath = "stella-packages/compiler-lib/src/Stella/Syntax.stel"
+
+-- | The source of `Stella.Elab`.
+elabPath :: String
+elabPath = "stella-packages/compiler-lib/src/Stella/Elab.stel"

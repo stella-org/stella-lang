@@ -1,5 +1,5 @@
 -- | The modules the compiler carries, made from their sources: what the compiler
--- | holds of `Base.Int` and of `Stella.Syntax` is what compiling each source as
+-- | holds of `Base.Int`, `Stella.Syntax`, and `Stella.Elab` is what compiling each source as
 -- | a build compiles a module writes, the interface file and the bytecode file
 -- | to the byte, and the modules it carries are those files decoded.
 -- |
@@ -19,8 +19,10 @@ import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.String (joinWith)
+import Data.Foldable (for_)
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
+import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
 import Stella.Compiler.Bootstrap.Source (Carried)
 import Stella.Compiler.Bootstrap.Source as Source
@@ -40,7 +42,7 @@ import Stella.Compiler.TypedCore (Decl(..), Module, declareAnnotated, primSignat
 import Stella.Compiler.TypedCore.Name (Ident, ModuleName(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Stella.Compiler.Sources (baseIntPath, readRepositoryFile, syntaxPath)
+import Test.Stella.Compiler.Sources (baseIntPath, elabPath, readRepositoryFile, syntaxPath)
 
 -- | The text given compiled as a build compiles a module against the
 -- | environment given: its interface and its bytecode, or the errors compiling
@@ -59,14 +61,27 @@ compiledSource env text = case runState (compileModule action defaultSettings en
     , hooks: defaultHooks { onElaborated = \m -> put (Just m) }
     }
 
--- | `Base.Int` compiled from the text given against `Prim` alone, and
--- | `Stella.Syntax` from the text given against an environment holding it.
-fromSources :: String -> String -> Either String { base :: { interface :: ModuleInterface, dmo :: Dmo }, syntax :: { interface :: ModuleInterface, dmo :: Dmo } }
-fromSources baseText syntaxText = do
-  base <- (compiledSource initialEnvironment baseText).made
+-- | A module compiled: its interface and its bytecode.
+type Made = { interface :: ModuleInterface, dmo :: Dmo }
+
+-- | The sources of the modules the compiler carries, as their files stand.
+readSources :: Aff { base :: String, syntax :: String, elab :: String }
+readSources = liftEffect do
+  base <- readRepositoryFile baseIntPath
+  syntax <- readRepositoryFile syntaxPath
+  elab <- readRepositoryFile elabPath
+  pure { base, syntax, elab }
+
+-- | `Base.Int` compiled from its text against `Prim` alone, `Stella.Syntax`
+-- | against an environment holding it, and `Stella.Elab`, which imports
+-- | nothing, against `Prim` alone.
+fromSources :: { base :: String, syntax :: String, elab :: String } -> Either String { base :: Made, syntax :: Made, elab :: Made }
+fromSources texts = do
+  base <- (compiledSource initialEnvironment texts.base).made
   env <- lmap show (addInterface base.interface initialEnvironment)
-  syntax <- (compiledSource env syntaxText).made
-  pure { base, syntax }
+  syntax <- (compiledSource env texts.syntax).made
+  elab <- (compiledSource initialEnvironment texts.elab).made
+  pure { base, syntax, elab }
 
 -- | A module of foreigns with its annotations forgotten, or nothing where it
 -- | declares anything else.
@@ -103,25 +118,24 @@ filesOf made = do
 
 spec :: Spec Unit
 spec = describe "the modules the compiler carries, from their sources" do
-  it "holds the files compiling `Base.Int` and `Stella.Syntax` from their sources writes, the second against the first" do
-    baseText <- liftEffect (readRepositoryFile baseIntPath)
-    syntaxText <- liftEffect (readRepositoryFile syntaxPath)
-    case fromSources baseText syntaxText of
+  it "holds the files compiling `Base.Int`, `Stella.Syntax`, and `Stella.Elab` from their sources writes" do
+    texts <- readSources
+    case fromSources texts of
       Left why -> fail why
-      Right made -> do
-        when (filesOf made.base /= Right Source.baseInt) (fail (baseIntPath <> " compiles to other files than the compiler holds; run `npm run embed -w compiler`"))
-        when (filesOf made.syntax /= Right Source.stellaSyntax) (fail (syntaxPath <> " compiles to other files than the compiler holds; run `npm run embed -w compiler`"))
+      Right made -> for_ [ Tuple baseIntPath (Tuple made.base Source.baseInt), Tuple syntaxPath (Tuple made.syntax Source.stellaSyntax), Tuple elabPath (Tuple made.elab Source.stellaElab) ] \(Tuple path (Tuple m held)) ->
+        when (filesOf m /= Right held) (fail (path <> " compiles to other files than the compiler holds; run `npm run embed -w compiler`"))
 
-  it "carries those modules as their files decode" do
-    baseText <- liftEffect (readRepositoryFile baseIntPath)
-    syntaxText <- liftEffect (readRepositoryFile syntaxPath)
-    case fromSources baseText syntaxText, compiled of
+  it "carries those modules as their files decode, `Stella.Elab` held apart for a session to install" do
+    texts <- readSources
+    case fromSources texts, compiled of
       Left why, _ -> fail why
       _, Left why -> fail why
       Right made, Right carried -> do
         Map.lookup (ModuleName "Base.Int") carried.preloaded `shouldEqual` Just made.base.interface
         Map.lookup (ModuleName "Stella.Syntax") carried.preloaded `shouldEqual` Just made.syntax.interface
+        Map.lookup (ModuleName "Stella.Elab") carried.preloaded `shouldEqual` Just made.elab.interface
         map encode carried.modules `shouldEqual` map encode [ made.base.dmo, made.syntax.dmo ]
+        encode carried.elaboration.dmo `shouldEqual` encode made.elab.dmo
 
   describe "the hand-written `Base.Int` the fixtures compile" do
     it "is the Core the source elaborates to" do

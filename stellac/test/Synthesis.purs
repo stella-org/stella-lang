@@ -51,7 +51,6 @@ import Stella.Compiler.Elaborate.Driver.Loop (AttempterM)
 import Stella.Compiler.Elaborate.Driver.Synthesis (attemptJob)
 import Stella.Compiler.Elaborate.Kernel.Elab (SessionEnv)
 import Stella.Compiler.Elaborate.Protocol.Facade as F
-import Stella.Compiler.Elaborate.Protocol.Guest as Guest
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment)
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (defaultSettings)
@@ -195,10 +194,9 @@ coreOfMain
   :: String
   -> (Synthesizing (FS + ()) -> BuiltModules -> SessionEnv -> AttempterM (Run (EXCEPT CompileTimeError + FS + PROCESS + AFF + EFFECT + ())))
   -> Aff (Either String (Array (Decl Unit)))
-coreOfMain name synthesis = case compiled, Guest.bundle of
-  Left why, _ -> pure (Left why)
-  _, Left why -> pure (Left why)
-  Right syntax, Right elab -> case Array.foldM (flip addInterface) initialEnvironment syntax.moduleInterfaces of
+coreOfMain name synthesis = case compiled of
+  Left why -> pure (Left why)
+  Right syntax -> case Array.foldM (flip addInterface) initialEnvironment syntax.moduleInterfaces of
     Left err -> pure (Left (show err))
     Right env -> do
       let dir = "stellac/.test-build/" <> name
@@ -219,7 +217,7 @@ coreOfMain name synthesis = case compiled, Guest.bundle of
           , locate: \m -> liftEffect (Ref.read written) <#> \names ->
               if Set.member m names then Just (dir <> "/" <> moduleText m <> ".dmo") else Nothing
           }
-        running = { held, launch, descriptor: elab.descriptor, loading, budget: defaultSynthesisSettings.budget, cancellation, attempts, health }
+        running = { held, launch, descriptor: syntax.elaboration.descriptor, loading, budget: defaultSynthesisSettings.budget, cancellation, attempts, health }
 
         action :: CompilerAction (Run (EXCEPT CompileTimeError + FS + PROCESS + AFF + EFFECT + ()))
         action =

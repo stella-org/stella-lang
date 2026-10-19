@@ -25,6 +25,7 @@ const output = "compiler/src/Stella/Compiler/Bootstrap/Source.purs";
 const sources = [
   { value: "baseInt", module: "Base.Int", package: "stella-packages/base", path: "Base/Int.stel" },
   { value: "stellaSyntax", module: "Stella.Syntax", package: "stella-packages/compiler-lib", path: "Stella/Syntax.stel" },
+  { value: "stellaElab", module: "Stella.Elab", package: "stella-packages/compiler-lib", path: "Stella/Elab.stel" },
 ];
 
 const work = mkdtempSync(join(tmpdir(), "stella-embed-"));

@@ -1,14 +1,16 @@
 -- | Guests written in Typed Core against `Stella.Elab`, and a machine to run them
 -- | on with the answers a test gives.
 -- |
--- | A guest is compiled as the trusted module is — declared, translated, and
--- | lowered — against the signature `Stella.Elab` declares. It runs on a store
+-- | A guest is declared, translated, and lowered against the signature a module
+-- | importing the `Stella.Elab` the compiler carries reads off its interface. It
+-- | runs on a store
 -- | holding `Stella.Elab` installed as a session installs it, standing on the root
 -- | boundary of `Kernel.command`; each command it asks is read back as a generic
 -- | value, and each answer the test gives is brought into the machine as the
 -- | session brings one.
 module Test.Steam.Guest
-  ( compileGuest
+  ( elabInterface
+  , compileGuest
   , compileGuests
   , compileGuestsOver
   , Machine
@@ -60,16 +62,24 @@ import Steam.Value (Root, Value(..))
 import Stella.CLI.Session.Guest (Token)
 import Stella.CLI.Session.Value (WireValue(..), renderPath)
 import Stella.Compiler.Bytecode (Dmo, lower)
-import Stella.Compiler.Elaborate.Protocol.Guest (elabModule, guestModule, handleTy, withGuest)
+import Stella.Compiler.Elaborate.Protocol.Guest (elabModule, handleTy)
 import Stella.Compiler.Elaborate.Protocol.Guest as Guest
-import Stella.Compiler.Interface (importsOf, aritiesOf, noImports)
+import Stella.Compiler.Interface (importsOf, aritiesOf)
+import Stella.Compiler.Interface.Module (ModuleInterface)
+import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.MiddleEnd (translate)
-import Stella.Compiler.TypedCore (Expr(..), Ident(..), Literal(..), Module, Qualified(..), TyName(..), Type(..), declareAnnotated, primSignature)
+import Stella.Compiler.TypedCore (Expr(..), Ident(..), Literal(..), Module, Qualified(..), TyName(..), Type(..), declareAnnotated)
 import Stella.Compiler.TypedCore.Domain (scalarString)
 import Stella.Compiler.TypedCore.Prim (unitCtor)
 import Stella.Compiler.TypedCore.Signature (Signature)
 
 -- Compiling --------------------------------------------------------------------------------
+
+-- | The interface of the `Stella.Elab` the compiler carries.
+elabInterface :: Either P.String ModuleInterface
+elabInterface = compiled >>= \c -> case Array.find (\i -> i.name == elabModule) c.moduleInterfaces of
+  Just i -> Right i
+  Nothing -> Left "the compiler carries no Stella.Elab"
 
 -- | A guest module compiled against `Stella.Elab`.
 compileGuest :: Module Unit -> Either P.String Dmo
@@ -86,12 +96,12 @@ compileGuests = compileGuestsOver identity
 -- | type an ABI manifest supplies, which no declaration does.
 compileGuestsOver :: (Signature -> Signature) -> P.Array (Module Unit) -> Either P.String (P.Array Dmo)
 compileGuestsOver supplied modules = do
-  elabDeclared <- declared (supplied (withGuest primSignature)) guestModule
-  elabMid <- translated noImports guestModule elabDeclared
-  compiled <- Array.foldM step
-    { signature: elabDeclared.signature, interfaces: [ { name: elabMid.module.name, imports: elabMid.module.imports, arities: aritiesOf elabMid.module } ], dmos: [] }
+  carried <- compiled
+  elab' <- elabInterface
+  built <- Array.foldM step
+    { signature: supplied carried.elaboration.signature, interfaces: [ { name: elab'.name, imports: elab'.imports, arities: elab'.arities } ], dmos: [] }
     modules
-  pure compiled.dmos
+  pure built.dmos
   where
   step acc m = do
     imports <- case importsOf acc.interfaces of

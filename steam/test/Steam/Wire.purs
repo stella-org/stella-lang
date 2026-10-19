@@ -28,14 +28,13 @@ import Steam.Load (Store, emptyStore, load, namesOf, noIdentities, unitValue)
 import Steam.Value (Callee(..), Continuation(..), IOValue(..), ModuleId(..), Opaque, Value(..))
 import Stella.CLI.Session.Guest (ValueClass(..))
 import Stella.CLI.Session.Value (WireValue(..), renderPath)
-import Stella.Compiler.Bytecode (Dmo, decode, encode, lower)
+import Stella.Compiler.Bytecode (Dmo, decode, encode)
 import Stella.Compiler.Bytecode.Instr (FuncIx(..))
 import Stella.Compiler.Bytecode.Module (Key(..))
-import Stella.Compiler.Elaborate.Protocol.Guest (elabModule, guestModule, withGuest)
-import Stella.Compiler.Interface (noImports)
-import Stella.Compiler.MiddleEnd (translate)
+import Stella.Compiler.Elaborate.Protocol.Guest (elabModule)
+import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Primitive (PrimOp(..))
-import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..), Symbol(..), declareAnnotated, primSignature)
+import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..), Symbol(..))
 import Stella.Compiler.TypedCore.Domain (scalarString)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -44,17 +43,11 @@ import Unsafe.Coerce (unsafeCoerce)
 -- The trusted module, loaded ------------------------------------------------------------
 
 elabDmo :: Either P.String Dmo
-elabDmo = case declareAnnotated (withGuest primSignature) guestModule of
-  Left err -> Left (show err.error)
-  Right declared -> case translate noImports guestModule declared of
+elabDmo = compiled >>= \c -> case encode c.elaboration.dmo of
+  Left err -> Left (show err)
+  Right bytes -> case decode bytes of
     Left err -> Left (show err)
-    Right mid -> case lower mid of
-      Left err -> Left (show err)
-      Right out -> case encode out.dmo of
-        Left err -> Left (show err)
-        Right bytes -> case decode bytes of
-          Left err -> Left (show err)
-          Right dmo -> Right dmo
+    Right dmo -> Right dmo
 
 fresh :: Effect Store
 fresh = map (emptyStore emptyTable) (Ref.new noIdentities)

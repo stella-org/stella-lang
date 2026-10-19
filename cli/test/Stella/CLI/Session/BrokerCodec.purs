@@ -19,7 +19,8 @@ import Stella.CLI.Session.Value (WireValue(..))
 import Stella.CLI.Session.Value.Shape (conforms)
 import Stella.Compiler.Elaborate.Driver.Attempt (Response(..))
 import Stella.Compiler.Elaborate.Environment.Catalog (EntrySort(..))
-import Stella.Compiler.Elaborate.Protocol.Guest (bundle, elabModule, guestAnswerTy)
+import Stella.Compiler.Elaborate.Protocol.Guest (elabModule, guestAnswerTy)
+import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Elaborate.Protocol.Guest.Shape (Descriptor)
 import Stella.Compiler.Elaborate.Vocabulary.Envelope (ConversationId(..), TransactionToken(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle(..), HandleClass(..), SessionId(..))
@@ -33,7 +34,7 @@ import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual, shouldSatisfy)
 
 descriptor :: Descriptor
-descriptor = case bundle of
+descriptor = case compiled <#> _.elaboration of
   Right b -> b.descriptor
   Left _ -> Map.empty
 

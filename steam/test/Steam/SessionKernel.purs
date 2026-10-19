@@ -35,14 +35,13 @@ import Stella.CLI.Session.Peer as Peer
 import Stella.CLI.Session.ProtocolError (decodeProtocolError, protocolErrorKind)
 import Stella.CLI.Session.Protocol (encodeHello, helloKind, pingKind)
 import Stella.CLI.Session.Value (WireValue(..), encodeValue)
-import Stella.Compiler.Bytecode (Dmo, encode, lower)
+import Stella.Compiler.Bytecode (Dmo, encode)
 import Stella.Compiler.Bytecode.Instr (FuncIx(..), Instr(..), JoinName(..), KeyIx(..), OpIx(..), Reg(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (GlobalInit(..), Key(..))
-import Stella.Compiler.Elaborate.Protocol.Guest (commandOp, elabModule, guestModule, handleTy, kernelEffect, withGuest)
-import Stella.Compiler.Interface (importsOf, aritiesOf, noImports)
-import Stella.Compiler.MiddleEnd (translate)
+import Stella.Compiler.Elaborate.Protocol.Guest (commandOp, elabModule, handleTy, kernelEffect)
+import Test.Steam.Guest (compileGuest)
 import Stella.Compiler.MiddleEnd.Rep (Rep(..))
-import Stella.Compiler.TypedCore (DecisionTree(..), Decl(..), Expr(..), Ident(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), TyName(..), Type(..), declareAnnotated, monoScheme, primSignature)
+import Stella.Compiler.TypedCore (DecisionTree(..), Decl(..), Expr(..), Ident(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), TyName(..), Type(..), monoScheme)
 import Stella.Compiler.TypedCore.Prim (fn)
 import Steam.CLI.Elaboration (TakenAnswer(..), prepare, takeAnswer)
 import Steam.Foreign (emptyTable)
@@ -117,24 +116,7 @@ synthModule =
     carried = Ident ("in " <> show name)
 
 compiledSynth :: Either P.String Dmo
-compiledSynth = do
-  elabDeclared <- declared (withGuest primSignature) guestModule
-  elabMid <- translated noImports guestModule elabDeclared
-  imports <- case importsOf [ { name: elabMid.module.name, imports: elabMid.module.imports, arities: aritiesOf elabMid.module } ] of
-    Left err -> Left (show err)
-    Right imports -> Right imports
-  synthDeclared <- declared elabDeclared.signature synthModule
-  mid <- translated imports synthModule synthDeclared
-  case lower mid of
-    Left err -> Left (show err)
-    Right out -> Right out.dmo
-  where
-  declared signature m = case declareAnnotated signature m of
-    Left err -> Left (show err.error)
-    Right d -> Right d
-  translated imports m d = case translate imports m d of
-    Left err -> Left (show err)
-    Right mid -> Right mid
+compiledSynth = compileGuest synthModule
 
 -- | `Unencodable.ask`, which performs the command with a closure for its argument:
 -- | a command no typed guest can build.

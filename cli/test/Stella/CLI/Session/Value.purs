@@ -20,7 +20,8 @@ import Stella.CLI.Session.Frame (renderJson)
 import Stella.CLI.Session.Value (WireValue(..), compareKeys, decodeValue, encodeValue, renderPath)
 import Stella.CLI.Session.Value.Shape (conforms)
 import Stella.Compiler.Bytecode.Module (Key(..))
-import Stella.Compiler.Elaborate.Protocol.Guest (bundle, elabModule, guestAnswerTy)
+import Stella.Compiler.Elaborate.Protocol.Guest (elabModule, guestAnswerTy)
+import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Elaborate.Protocol.Guest.Shape (Descriptor)
 import Stella.Compiler.TypedCore.Domain (scalarString, scalarValue)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..))
@@ -153,7 +154,7 @@ numberText :: Number -> String
 numberText n = encodeText (WNumber n)
 
 descriptor :: Descriptor
-descriptor = case bundle of
+descriptor = case compiled <#> _.elaboration of
   Right b -> b.descriptor
   Left _ -> Map.empty
 

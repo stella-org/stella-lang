@@ -383,7 +383,7 @@ the opening step allocates. A cell is named by its position, the key becoming de
   - The present rules on "a term that depends on its region", and on regions carried by goals and
     term metavariables, become ordinary binder scoping: a term mentioning `ℓ` stands where `ℓ`
     is in scope, and a metavariable's scope lists the region names it may mention.
-- **The guest bundle** `Stella.Elab` follows:
+- **The guest-facing module** `Stella.Elab` follows:
   - its `RowKey` and `RowPayload` views lose the region constant and gain the region name;
   - its handler requests lose cells;
   - region requests are added.
@@ -586,7 +586,7 @@ handle program with
 Each unit is reviewed before the next begins.
 
 1. **Typed Core and the checker**, together with binder freshness for every type binder.
-   Includes Core⁺, the kernel builders, the guest bundle, and the hand-written Core fixtures.
+   Includes Core⁺, the kernel builders, the guest protocol and its facade, and the hand-written Core fixtures.
 2. **Mid IR** and translation.
 3. **Bytecode**: lowering, the `.dmo` format, and the `.dmi` key encoding.
 4. **Steam**.

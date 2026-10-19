@@ -342,8 +342,8 @@ once `close` has arrived are protocol errors.
 
 **`ready` means `Stella.Elab` is there**, and `Stella.Syntax` where `parse` is in force. An accepted `hello` is not answered at once:
 the session first installs `Stella.Elab`, the module every guest is written against,
-which the interpreter builds from the compiler it is built with rather than loading
-from anywhere. Where `parse` is in force it then installs `Base.Int` and `Stella.Syntax`,
+which the interpreter takes from the compiler it is built with, as the bytecode a
+build of its source writes, rather than loading from anywhere. Where `parse` is in force it then installs `Base.Int` and `Stella.Syntax`,
 the module every parser is written against and the one it depends on, built the same
 way and loaded in that order through the loader, closed (below). Every request arriving meanwhile is answered after `ready`: one
 admitted waits its turn behind the installation, and an answer settled at once — a
