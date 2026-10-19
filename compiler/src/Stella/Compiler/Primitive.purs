@@ -1,4 +1,6 @@
--- | The primitive operations of the `Base` ABI surface.
+-- | The compiler-facing side of the ABI catalog: what each `Base` entry the
+-- | runtime carries out is declared at, the type constructors the ABI supplies,
+-- | and the `Base` names as the compiler writes them.
 -- |
 -- | A `Base` ABI entry whose meaning the ABI fixes is an **operation**, not an
 -- | implementation: every consumer carries it out directly rather than calling
@@ -6,24 +8,31 @@
 -- | machine add two integers in its dispatch loop and a JavaScript backend emit
 -- | `a + b`, neither of them recognizing a qualified name to find out.
 -- |
--- | **This table stands in for the ABI manifest**, which defines the surface and
--- | is implemented by a compiler and its backends together
+-- | **The catalog has two sides.** What a runtime reads of an entry — its name,
+-- | arity, runtime class, and profile — is the runtime-facing side
+-- | ([Runtime](Abi/Runtime.purs)), written there once and holding nothing of the
+-- | compiler's representation. What the compiler reads besides is here, keyed by
+-- | the entry's identity: the scheme it is declared at, which a surface
+-- | declaration of the entry must be at, and the arity of that scheme must be
+-- | the one the runtime-facing side gives. The two stand in for the ABI
+-- | manifest, which a compiler and its backends implement together
 -- | ([Prim and Base](../../../../docs/technical-references/06-Modules/02-Prim-and-Base.md)).
 -- | It is keyed to one ABI version, and it grows as the content of that version
--- | is settled. Until the manifest exists, this is where a compiler reads it.
+-- | is settled.
 module Stella.Compiler.Primitive
-  ( PrimOp(..)
+  ( module Runtime
   , PrimEntry
   , primTable
   , lookupPrim
   , entryOfOp
-  , codeOfOp
-  , opOfCode
-  , arityOfOp
-  , InClosedRun(..)
-  , inClosedRunOf
+  , qualifiedOf
+  , runtimeEntryNamed
+  , schemeOfRuntimeEntry
   , typeOfOp
   , schemeOfOp
+  , AbiType
+  , abiTypeDescriptors
+  , abiTypes
   , arrayTy
   , withBaseTypes
   , baseModuleNames
@@ -35,57 +44,19 @@ import Prelude
 import Prim as P
 
 import Data.Array as Array
+import Data.Map (Map)
 import Data.Map as Map
+import Data.Maybe (Maybe(..))
+import Data.Tuple (Tuple(..))
+import Stella.Compiler.Abi.Runtime (EntryName, InClosedRun(..), PrimOp(..), Profile(..), RuntimeClass(..), RuntimeEntry, RuntimeEntryId(..), arityOfOp, codeOfOp, includes, inClosedRunOf, lookupRuntimeEntry, nameOfOp, opOfCode, operations, runtimeEntries, runtimeEntryOf) as Runtime
+import Stella.Compiler.Abi.Runtime (EntryName, PrimOp(..), Profile(..), RuntimeEntry, RuntimeEntryId(..), arityOfOp, includes, lookupRuntimeEntry, nameOfOp, operations)
+import Stella.Compiler.Interface.Module (TypeEntry, TypeSort(..))
 import Stella.Compiler.TypedCore.Decl (Decl(..), Export(..), Module)
-import Stella.Compiler.TypedCore.Kind (Kind(..), monoScheme)
+import Stella.Compiler.TypedCore.Kind (Kind(..), KindScheme, monoScheme)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), TyName(..), TyVar(..))
-import Stella.Compiler.TypedCore.Prim (asFunction, booleanTy, charTy, intTy, numberTy, pureFn, stringTy, unitTy)
+import Stella.Compiler.TypedCore.Prim (booleanTy, charTy, intTy, ioTy, numberTy, pureFn, stringTy, unitTy)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
 import Stella.Compiler.TypedCore.Type (Type(..), TypeScheme)
-import Data.Generic.Rep (class Generic)
-import Data.Maybe (Maybe(..))
-import Data.Show.Generic (genericShow)
-
--- | The operations `stella-base-0.1` fixes.
--- |
--- | Each is a `Base` entry that returns no `IO`: a native leaf action names an
--- | implementation and stays a `foreign`, as does anything of a target
--- | namespace, whose meaning is one target's rather than the ABI's.
-data PrimOp
-  = IntAdd
-  | IntSub
-  | IntMul
-  | IntQuot
-  | IntRem
-  | IntEq
-  | IntLt
-  | IntToNumber
-  | IntToString
-  | NumberAdd
-  | NumberSub
-  | NumberMul
-  | NumberDivide
-  | NumberNegate
-  | NumberEq
-  | NumberLt
-  | NumberFloor
-  | NumberCeil
-  | NumberTrunc
-  | NumberToInt
-  | NumberToString
-  | StringLength
-  | StringCodePointAt
-  | StringAppend
-  | StringSlice
-  | StringSingleton
-  | StringEq
-  | StringLt
-  | CharToCodePoint
-  | CharFromCodePoint
-  | ArrayLength
-  | ArrayUnsafeNew
-  | ArrayUnsafeSet
-  | ArrayUnsafeIndex
 
 -- | What an operation realizes, and what a consumer owes it.
 -- |
@@ -94,12 +65,11 @@ data PrimOp
 -- | a backend still owes the entry at the profile that holds it.
 -- |
 -- | **The mapping between an operation and its entry has one definition**, in
--- | `entryOfOp`. Carrying the two independently anywhere would let a reader
--- | check one entry while a machine ran another operation.
+-- | the runtime-facing catalog. Carrying the two independently anywhere would
+-- | let a reader check one entry while a machine ran another operation.
 -- |
--- | `scheme` is what the entry is declared at, and `arity` the arrows of it: the
--- | two are read off one type, `typeOfOp`, so a declaration and a call site agree
--- | by construction.
+-- | `scheme` is what the entry is declared at, and `arity` the one the catalog
+-- | gives, which is the arrows of the scheme.
 -- |
 -- | **What an operation means, and whether it may fault, is not here and is not
 -- | the compiler's to say.** The ABI specification fixes it, which is what obliges
@@ -115,145 +85,30 @@ type PrimEntry =
   , scheme :: TypeScheme
   }
 
--- | The `Base` entry an operation realizes. Total, and the one place the
--- | correspondence is written.
+-- | The `Base` entry an operation realizes, as the compiler names it.
 entryOfOp :: PrimOp -> Qualified Ident
-entryOfOp = case _ of
-  IntAdd -> base "Base.Int" "add"
-  IntSub -> base "Base.Int" "sub"
-  IntMul -> base "Base.Int" "mul"
-  IntQuot -> base "Base.Int" "quot"
-  IntRem -> base "Base.Int" "rem"
-  IntEq -> base "Base.Int" "eq"
-  IntLt -> base "Base.Int" "lt"
-  IntToNumber -> base "Base.Int" "toNumber"
-  IntToString -> base "Base.Int" "toString"
-  NumberAdd -> base "Base.Number" "add"
-  NumberSub -> base "Base.Number" "sub"
-  NumberMul -> base "Base.Number" "mul"
-  NumberDivide -> base "Base.Number" "divide"
-  NumberNegate -> base "Base.Number" "negate"
-  NumberEq -> base "Base.Number" "eq"
-  NumberLt -> base "Base.Number" "lt"
-  NumberFloor -> base "Base.Number" "floor"
-  NumberCeil -> base "Base.Number" "ceil"
-  NumberTrunc -> base "Base.Number" "trunc"
-  NumberToInt -> base "Base.Number" "toInt"
-  NumberToString -> base "Base.Number" "toString"
-  StringLength -> base "Base.String" "length"
-  StringCodePointAt -> base "Base.String" "codePointAt"
-  StringAppend -> base "Base.String" "append"
-  StringSlice -> base "Base.String" "slice"
-  StringSingleton -> base "Base.String" "singleton"
-  StringEq -> base "Base.String" "eq"
-  StringLt -> base "Base.String" "lt"
-  CharToCodePoint -> base "Base.Char" "toCodePoint"
-  CharFromCodePoint -> base "Base.Char" "fromCodePoint"
-  ArrayLength -> base "Base.Array" "length"
-  ArrayUnsafeNew -> base "Base.Array" "unsafeNew"
-  ArrayUnsafeSet -> base "Base.Array" "unsafeSet"
-  ArrayUnsafeIndex -> base "Base.Array" "unsafeIndex"
+entryOfOp = qualifiedOf <<< nameOfOp
+
+-- | A name of the catalog as the compiler writes it.
+qualifiedOf :: EntryName -> Qualified Ident
+qualifiedOf name = Qualified (ModuleName name.module) (Ident name.value)
+
+-- | The entry the runtime carries out that a foreign of this name is, where
+-- | the catalog holds one.
+runtimeEntryNamed :: Qualified Ident -> Maybe RuntimeEntry
+runtimeEntryNamed (Qualified (ModuleName m) (Ident x)) = lookupRuntimeEntry { module: m, value: x }
+
+-- | The scheme an entry is declared at. Total, and the one place it is
+-- | written: an operation's from its type, and each `Base.IO` entry's here.
+schemeOfRuntimeEntry :: RuntimeEntryId -> TypeScheme
+schemeOfRuntimeEntry = case _ of
+  Operation op -> schemeOfOp op
+  IOPure -> monoScheme (TForall a KType (pureFn (TVar a) (io (TVar a))))
+  IOBind -> monoScheme (TForall a KType (TForall b KType (pureFn (io (TVar a)) (pureFn (pureFn (TVar a) (io (TVar b))) (io (TVar b))))))
   where
-  base moduleName name = Qualified (ModuleName moduleName) (Ident name)
-
--- | The code an operation carries in a `.dmo`. Total, and the one place the
--- | code is written.
--- |
--- | **A code is written rather than derived**: a position in this table, or an
--- | alphabetical rank, would change a published file's meaning as soon as an
--- | operation were added. It is fixed for the life of an ABI version, and the
--- | code of an operation a later version drops is not reused
--- | ([Encoding](../../../../docs/technical-references/05-Backend/02-Encoding.md)).
-codeOfOp :: PrimOp -> P.Int
-codeOfOp = case _ of
-  IntAdd -> 0x01
-  IntSub -> 0x02
-  IntMul -> 0x03
-  IntQuot -> 0x04
-  IntRem -> 0x05
-  IntEq -> 0x06
-  IntLt -> 0x07
-  IntToNumber -> 0x08
-  IntToString -> 0x09
-  StringLength -> 0x10
-  StringCodePointAt -> 0x11
-  StringAppend -> 0x12
-  StringSlice -> 0x13
-  StringSingleton -> 0x14
-  StringEq -> 0x15
-  StringLt -> 0x16
-  ArrayUnsafeIndex -> 0x20
-  ArrayUnsafeNew -> 0x21
-  ArrayUnsafeSet -> 0x22
-  ArrayLength -> 0x23
-  NumberAdd -> 0x30
-  NumberSub -> 0x31
-  NumberMul -> 0x32
-  NumberDivide -> 0x33
-  NumberNegate -> 0x34
-  NumberEq -> 0x35
-  NumberLt -> 0x36
-  NumberFloor -> 0x37
-  NumberCeil -> 0x38
-  NumberTrunc -> 0x39
-  NumberToInt -> 0x3A
-  NumberToString -> 0x3B
-  CharToCodePoint -> 0x40
-  CharFromCodePoint -> 0x41
-
--- | The operation a code names, where this ABI version names one. A reader of a
--- | code it does not hold rejects the file: what an operation realizes is not
--- | derivable from the file.
-opOfCode :: P.Int -> Maybe PrimOp
-opOfCode code = map _.op (Array.find (\e -> codeOfOp e.op == code) primTable)
-
--- | What an operation is to a closed run, one that reaches no observable state
--- | outside it: carried out as it is, carried out on state the run itself made,
--- | or not carried out at all.
-data InClosedRun
-  = Admitted
-  -- | Its state operands are the run's own, and state it makes becomes the run's.
-  | RunLocalState
-  | Withheld
-
--- | Total, and the one place an operation is classified, so an operation added
--- | to the table is classified where it is added.
-inClosedRunOf :: PrimOp -> InClosedRun
-inClosedRunOf = case _ of
-  IntAdd -> Admitted
-  IntSub -> Admitted
-  IntMul -> Admitted
-  IntQuot -> Admitted
-  IntRem -> Admitted
-  IntEq -> Admitted
-  IntLt -> Admitted
-  IntToNumber -> Admitted
-  IntToString -> Admitted
-  NumberAdd -> Admitted
-  NumberSub -> Admitted
-  NumberMul -> Admitted
-  NumberDivide -> Admitted
-  NumberNegate -> Admitted
-  NumberEq -> Admitted
-  NumberLt -> Admitted
-  NumberFloor -> Admitted
-  NumberCeil -> Admitted
-  NumberTrunc -> Admitted
-  NumberToInt -> Admitted
-  NumberToString -> Admitted
-  StringLength -> Admitted
-  StringCodePointAt -> Admitted
-  StringAppend -> Admitted
-  StringSlice -> Admitted
-  StringSingleton -> Admitted
-  StringEq -> Admitted
-  StringLt -> Admitted
-  CharToCodePoint -> Admitted
-  CharFromCodePoint -> Admitted
-  ArrayLength -> RunLocalState
-  ArrayUnsafeNew -> RunLocalState
-  ArrayUnsafeSet -> RunLocalState
-  ArrayUnsafeIndex -> RunLocalState
+  a = TyVar "a"
+  b = TyVar "b"
+  io = TApp (TCon ioTy [])
 
 -- | The type an operation's entry is declared at. Total, and the one place the
 -- | type is written. `Base.Array`'s entries quantify their element type in the
@@ -311,27 +166,39 @@ typeOfOp = case _ of
 schemeOfOp :: PrimOp -> TypeScheme
 schemeOfOp = monoScheme <<< typeOfOp
 
--- | How many arguments saturate an operation: the arrows of its type, beneath
--- | its quantifiers.
-arityOfOp :: PrimOp -> P.Int
-arityOfOp = arrows <<< typeOfOp
+-- | A type constructor the ABI supplies to a `Base` module, which no
+-- | declaration produces: its kind, the class of its values, and the profile
+-- | holding it. The one description both the interface's entry and the Core
+-- | signature's are made from.
+type AbiType =
+  { name :: Qualified TyName
+  , kind :: KindScheme
+  , canonical :: CanonicalClass
+  , profile :: Profile
+  }
+
+-- | Every type constructor the ABI supplies.
+abiTypeDescriptors :: P.Array AbiType
+abiTypeDescriptors =
+  [ { name: arrayTy, kind: monoScheme (KFun KType KType), canonical: CanonicalOpaque, profile: Standard } ]
+
+-- | The type constructors the ABI supplies to each module, as a build
+-- | environment holds them, of those a backend claiming the profile given owes.
+-- | Which profile a build is for is the host's to say.
+abiTypes :: Profile -> Map ModuleName (Map TyName TypeEntry)
+abiTypes profile = Map.fromFoldableWith Map.union (map entry (Array.filter (includes profile <<< _.profile) abiTypeDescriptors))
   where
-  arrows = case _ of
-    TForall _ _ body -> arrows body
-    ty -> case asFunction ty of
-      Just f -> 1 + arrows f.result
-      Nothing -> 0
+  entry t = case t.name of
+    Qualified m n -> Tuple m (Map.singleton n { kind: t.kind, sort: Intrinsic t.canonical, attributes: [] })
 
 -- | `Base.Array.Array`, the type constructor the ABI supplies to `Base.Array`.
 arrayTy :: Qualified TyName
 arrayTy = Qualified (ModuleName "Base.Array") (TyName "Array")
 
--- | A signature with the types the ABI supplies and no declaration produces:
--- | `Base.Array.Array`, an intrinsic of the opaque class
+-- | A signature with every type the ABI supplies and no declaration produces
 -- | ([Prim and Base](../../../../docs/technical-references/06-Modules/02-Prim-and-Base.md)).
 withBaseTypes :: Signature -> Signature
-withBaseTypes sig = sig
-  { types = Map.insert arrayTy (IntrinsicTyCon (monoScheme (KFun KType KType)) CanonicalOpaque) sig.types }
+withBaseTypes sig = sig { types = Array.foldl (\ts t -> Map.insert t.name (IntrinsicTyCon t.kind t.canonical) ts) sig.types abiTypeDescriptors }
 
 -- | The `Base` modules whose entries are operations, in the order of the table.
 baseModuleNames :: P.Array ModuleName
@@ -357,56 +224,11 @@ baseModule annotation name =
     Qualified m x | m == name -> Just { name: x, scheme: e.scheme }
     _ -> Nothing
 
+-- | The operations, each with its entry, arity, and scheme, in the order of the
+-- | catalog. The `Base.IO` entries are none of them.
 primTable :: P.Array PrimEntry
-primTable = map (\op -> { op, entry: entryOfOp op, arity: arityOfOp op, scheme: schemeOfOp op })
-  [ IntAdd
-  , IntSub
-  , IntMul
-  , IntQuot
-  , IntRem
-  , IntEq
-  , IntLt
-  , IntToNumber
-  , IntToString
-  , NumberAdd
-  , NumberSub
-  , NumberMul
-  , NumberDivide
-  , NumberNegate
-  , NumberEq
-  , NumberLt
-  , NumberFloor
-  , NumberCeil
-  , NumberTrunc
-  , NumberToInt
-  , NumberToString
-  , StringLength
-  , StringCodePointAt
-  , StringAppend
-  , StringSlice
-  , StringSingleton
-  , StringEq
-  , StringLt
-  , CharToCodePoint
-  , CharFromCodePoint
-  , ArrayUnsafeIndex
-  , ArrayUnsafeNew
-  , ArrayUnsafeSet
-  , ArrayLength
-  ]
+primTable = map (\op -> { op, entry: entryOfOp op, arity: arityOfOp op, scheme: schemeOfOp op }) operations
 
 -- | The operation a `Base` entry is, where it is one.
 lookupPrim :: Qualified Ident -> Maybe PrimEntry
 lookupPrim name = Array.find (\e -> e.entry == name) primTable
-
-derive instance Eq InClosedRun
-derive instance Generic InClosedRun _
-instance Show InClosedRun where
-  show = genericShow
-
-derive instance Eq PrimOp
-derive instance Ord PrimOp
-derive instance Generic PrimOp _
-
-instance Show PrimOp where
-  show = genericShow

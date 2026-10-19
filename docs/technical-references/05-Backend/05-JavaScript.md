@@ -383,7 +383,9 @@ or one a module it imports exports, which the generated module imports by name l
 anything else it names in another module. **The name then selects what carries it
 out**, as it does on the machine: an operation of the ABI, `Base.IO.pure` or
 `Base.IO.bind`, which the runtime carries out itself, or else an implementation a
-host supplies. So a foreign of the runtime's that its module does not declare, or
+host supplies. The backend reads those names from the part of the ABI catalog a
+runtime reads, as the machine does
+([Prim and Base](../06-Modules/02-Prim-and-Base.md#the-catalog-a-compiler-and-a-runtime-read)). So a foreign of the runtime's that its module does not declare, or
 does not export, is refused as any other would be.
 
 **A foreign implementation is the one the machine calls.** It is reached through the

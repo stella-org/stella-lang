@@ -29,7 +29,7 @@ import Data.Enum (fromEnum, toEnum)
 import Data.Int as Int
 import Fmt (fmt)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
-import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
+import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..), fromCoreKind)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowNormalForm, rebuild)
 import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Breach(..))
@@ -43,7 +43,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
 import Stella.Compiler.ForeignBoundary (Position(..), Refusal(..), Refused)
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), Qualified(..), RegionName(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), RegionName(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (functionTy, recordTy, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Type (RowKey(..))
 
@@ -78,6 +78,9 @@ elaborationOrigins = case _ of
   LeftUnchecked o _ -> [ o ]
   AttributeRejected o _ -> [ o ]
   ForeignRefused o _ _ -> [ o ]
+  AbiEntryMismatch o _ _ -> [ o ]
+  AbiEntryIncomparable o _ _ -> [ o ]
+  AbiTypeMismatch o _ _ -> [ o ]
   TypeHoleStands o _ _ -> [ o ]
   ExpressionHoleStands o _ _ _ -> [ o ]
   NonExhaustiveMatch o _ -> [ o ]
@@ -137,6 +140,9 @@ printElaborationError = case _ of
   LeftUnchecked _ name -> fmt @"`{name}` was not checked, as checking stopped at an error elsewhere" { name: nameOf name }
   AttributeRejected _ err -> "The arguments of this attribute do not match its declaration: " <> show err
   ForeignRefused _ name refused -> printRefused (nameOf name) refused
+  AbiEntryMismatch _ name r -> fmt @"`{name}` is an entry of the runtime ABI, which declares it at `{expected}`; it cannot be declared at `{declared}`" { name: qualifiedText name, expected: printType (fromCore r.expected.body), declared: printType (fromCore r.declared.body) }
+  AbiEntryIncomparable _ name err -> internal (fmt @"the scheme of `{name}` could not be compared with the one the ABI declares it at: {err}" { name: qualifiedText name, err: show err })
+  AbiTypeMismatch _ (Qualified (ModuleName m) (TyName n)) r -> fmt @"`{name}` is a type of the runtime ABI, of kind `{expected}`, declared as a foreign type; it cannot be declared of kind `{declared}`" { name: m <> "." <> n, expected: printKind (fromCoreKind r.expected.body), declared: printKind (fromCoreKind r.declared.body) }
   TypeHoleStands _ "_" t -> fmt @"This hole stands for `{t}`" { t: printType t }
   TypeHoleStands _ name t -> fmt @"The hole `?{name}` stands for `{t}`" { name, t: printType t }
   ExpressionHoleStands _ name t context ->
@@ -160,6 +166,7 @@ printElaborationError = case _ of
   where
   internal what = "Internal compiler error: " <> what
   nameOf (Qualified _ (Ident n)) = n
+  qualifiedText (Qualified (ModuleName m) (Ident n)) = m <> "." <> n
   localName (Ident n) = n
 
 -- | A value a `case` does not match, written as a pattern: a constructor by its

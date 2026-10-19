@@ -312,6 +312,12 @@ long before a manifest is read.
 ([Prim and Base](../06-Modules/02-Prim-and-Base.md)); a foreign manifest covering one
 would be a second answer to a question the precedence rule settles, and the rule
 selects the interpreter regardless, so the entry would be written and never read.
+**Nor has such an entry a signature to derive**: it crosses no boundary, so D44 asks
+nothing of its type, which is the scheme the ABI declares it at
+([Elaboration](../02-Surface-Language/01-Elaboration.md#a-modules-foreigns-and-attribute-declarations)).
+A module whose foreigns are all such entries, `Base.IO` and `Base.Array` among them,
+is named by no manifest, and a program over them and a module of host foreigns
+names that module alone.
 
 **This is why `Base` ships no implementations and is not a special package for it.**
 The rule attaches to the names the ABI manifest fixes and not to a package: a

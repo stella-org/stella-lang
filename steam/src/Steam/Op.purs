@@ -26,7 +26,7 @@ import Effect.Uncurried (runEffectFn1, runEffectFn2, runEffectFn3)
 import Steam.Array as Arr
 import Steam.Fault (Fault(..))
 import Steam.Value (Value(..))
-import Stella.Compiler.Primitive (PrimOp(..), primTable)
+import Stella.Compiler.Abi.Runtime (PrimOp(..), operations)
 import Partial.Unsafe (unsafePartial)
 import Stella.Compiler.TypedCore.Domain (ScalarString, codePointOf, compareByScalar, scalarAt, scalarLength, scalarString, scalarStringOf, scalarValue, scalarsOf, textOf)
 
@@ -49,7 +49,7 @@ data Refusal
 -- | saying so is one that can fall behind it: an entry duplicated here and another
 -- | omitted would leave a module refused at load for an operation the version holds.
 implemented :: P.Array PrimOp
-implemented = map _.op primTable
+implemented = operations
 
 -- | What an operation computes from the arguments it is given.
 -- |

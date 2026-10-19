@@ -66,10 +66,10 @@ import Steam.Foreign as Foreign
 import Steam.Module (CalleeTarget(..), CtorRef, ForeignRef, GlobalSlot, HandlerRef, Loaded, Prepared, RegionRef, Registry, prepare)
 import Steam.Op as Op
 import Steam.Structural (RuntimeNames)
-import Steam.Value (Closure, CtorId(..), Foreign(..), KeyId(..), ModuleId(..), OpId(..), Value(..), arityOfIO, entryOfIO, ioEntries)
+import Steam.Value (Closure, CtorId(..), Foreign(..), IOEntry(..), KeyId(..), ModuleId(..), OpId(..), Value(..), catalogued, operationName)
 import Stella.Compiler.Bytecode.Instr (CalleeIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), Function, GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName, KeyIx(..), Node, OpIx(..), PrimIx(..), RegionIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (CalleeEntry(..), Dmo, GlobalInit(..), HandlerEntry, Key, RegionEntry)
-import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp)
+import Stella.Compiler.Abi.Runtime (PrimOp, RuntimeEntryId(..), arityOfOp)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, ModuleName, OpName, Qualified(..))
 import Stella.Compiler.TypedCore.Prim (primModule, unitCtor)
 import Type.Row (type (+))
@@ -550,9 +550,18 @@ resolveForeign store scope name = do
 -- | `Base.IO.pure` or `Base.IO.bind`. **The name alone decides it**, as it does in
 -- | `implementationOf`, so the host is never asked for such a name.
 claimedByInterpreter :: Qualified Ident -> P.Boolean
-claimedByInterpreter name =
-  Array.any (\op -> entryOfOp op == name) Op.implemented
-    || Array.any (\io -> entryOfIO io == name) ioEntries
+claimedByInterpreter name = isJust (interpreterFor name)
+
+-- | How the interpreter carries out the entry of the ABI catalog this name is,
+-- | by the entry's runtime class, and the arity the catalog gives it.
+interpreterFor :: Qualified Ident -> Maybe { carriedOutBy :: Foreign, arity :: P.Int }
+interpreterFor name = catalogued name >>= \abi -> map { carriedOutBy: _, arity: abi.arity } case abi.id of
+  Operation op | Array.elem op Op.implemented -> Just (ForeignOperation op)
+  Operation _ -> Nothing
+  -- `Base.IO.pure` and `Base.IO.bind` are the interpreter's like an operation,
+  -- and are not operations: each returns `IO`, so no code stands for it
+  IOPure -> Just (ForeignIO IOPureEntry)
+  IOBind -> Just (ForeignIO IOBindEntry)
 
 -- | What carries out a foreign this module declares.
 -- |
@@ -574,21 +583,13 @@ implementationOf
   -> { name :: Qualified Ident, arity :: P.Int }
   -> Run (LOAD r) (Tuple (Qualified Ident) ForeignRef)
 implementationOf store entry =
-  case Array.find (\op -> entryOfOp op == entry.name) Op.implemented of
-    Just op
-      | arityOfOp op == entry.arity ->
-          pure (Tuple entry.name { carriedOutBy: ForeignOperation op, arity: entry.arity })
+  case interpreterFor entry.name of
+    Just claimed
+      | claimed.arity == entry.arity ->
+          pure (Tuple entry.name { carriedOutBy: claimed.carriedOutBy, arity: entry.arity })
       | otherwise ->
-          refuse (InterpreterEntryDeclaredAtWrongArity entry.name (arityOfOp op) entry.arity)
-    Nothing -> case Array.find (\io -> entryOfIO io == entry.name) ioEntries of
-      -- `Base.IO.pure` and `Base.IO.bind` are the interpreter's like an operation,
-      -- and are not operations: each returns `IO`, so no code stands for it
-      Just io
-        | arityOfIO io == entry.arity ->
-            pure (Tuple entry.name { carriedOutBy: ForeignIO io, arity: entry.arity })
-        | otherwise ->
-            refuse (InterpreterEntryDeclaredAtWrongArity entry.name (arityOfIO io) entry.arity)
-      Nothing -> hosted
+          refuse (InterpreterEntryDeclaredAtWrongArity entry.name claimed.arity entry.arity)
+    Nothing -> hosted
   where
   hosted = case Foreign.lookup entry.name store.hostForeigns of
     Just held
@@ -810,7 +811,7 @@ checkArities store dmo = traverse_ perFunction dmo.functions
         when (count >= entry'.arity) (refuse (PapNotBelowArity name entry'.arity count))
       CalleePrim op ->
         when (count >= arityOfOp op)
-          (refuse (PapNotBelowArity (entryOfOp op) (arityOfOp op) count))
+          (refuse (PapNotBelowArity (operationName op) (arityOfOp op) count))
 
   constructor (CtorIx i) count = do
     name <- at "CTORREFS" dmo.ctorRefs i

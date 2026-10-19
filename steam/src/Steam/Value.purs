@@ -30,9 +30,8 @@ module Steam.Value
   , NativeAction
   , ActionOutcome(..)
   , IOEntry(..)
-  , entryOfIO
-  , arityOfIO
-  , ioEntries
+  , catalogued
+  , operationName
   , Closure
   , CellState(..)
   , Callee(..)
@@ -56,6 +55,7 @@ import Prim as P
 
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
+import Data.Maybe (Maybe)
 import Data.Show.Generic (genericShow)
 import Effect (Effect)
 import Effect.Uncurried (EffectFn1)
@@ -65,7 +65,7 @@ import Data.Traversable (traverse)
 import Stella.Compiler.Bytecode.Instr (FuncIx, Node, Reg)
 import Stella.Compiler.Bytecode.Module (Constant(..))
 import Stella.Compiler.MiddleEnd.IR (ClauseForm)
-import Stella.Compiler.Primitive (PrimOp)
+import Stella.Compiler.Abi.Runtime (PrimOp, RuntimeEntry, lookupRuntimeEntry, nameOfOp)
 import Stella.Compiler.TypedCore.Domain (ScalarString, ScalarValue, sameNumber, textOf)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..))
 
@@ -115,22 +115,18 @@ data IOEntry
   = IOPureEntry
   | IOBindEntry
 
--- | The `Base` name each realizes, and how many arguments saturate it. Both are the
--- | ABI's ([Prim and Base](../../../docs/technical-references/06-Modules/02-Prim-and-Base.md)),
--- | and each is written once so that a loader and a reader cannot disagree.
-entryOfIO :: IOEntry -> Qualified Ident
-entryOfIO = case _ of
-  IOPureEntry -> Qualified (ModuleName "Base.IO") (Ident "pure")
-  IOBindEntry -> Qualified (ModuleName "Base.IO") (Ident "bind")
+-- | The entry of the ABI catalog a foreign of this name is, where it is one.
+-- | **The catalog is where an entry's name and arity are written**
+-- | ([Runtime](../../../compiler/src/Stella/Compiler/Abi/Runtime.purs)), so a
+-- | loader and a reader cannot disagree on either.
+catalogued :: Qualified Ident -> Maybe RuntimeEntry
+catalogued (Qualified (ModuleName m) (Ident x)) = lookupRuntimeEntry { module: m, value: x }
 
-arityOfIO :: IOEntry -> P.Int
-arityOfIO = case _ of
-  IOPureEntry -> 1
-  IOBindEntry -> 2
-
--- | The entries of `core-runtime`, which every interpreter claims.
-ioEntries :: P.Array IOEntry
-ioEntries = [ IOPureEntry, IOBindEntry ]
+-- | The `Base` entry an operation realizes, as a `.dmo` names it.
+operationName :: PrimOp -> Qualified Ident
+operationName op = Qualified (ModuleName name.module) (Ident name.value)
+  where
+  name = nameOfOp op
 
 -- | A host implementation, as the interpreter calls it.
 -- |

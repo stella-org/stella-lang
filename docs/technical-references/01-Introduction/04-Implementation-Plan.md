@@ -1593,3 +1593,18 @@ A build compiling modules of its environment anew ([Modules](../06-Modules/01-Mo
 | A macro and a synthesizer of modules a dependency map lists, both importing a third the map lists | Each run from the bytecode the map names, the third loaded first and once; `2` and `7` on the machine |
 | A toolchain build naming `Base.Int` against a map listing a module that imports it | Refused with `Base.Int` lacking `toString`, naming the module the map lists and `Stella.Syntax`; compiled with the full `Base.Int` |
 | The modules the compiler carries, as the session holds them from its opening | Closed under imports |
+
+### ABI entries and host foreigns (step 7)
+
+A `foreign` the ABI fixes, against one a host implements ([Prim and Base](../06-Modules/02-Prim-and-Base.md#a-declaration-the-abi-manifest-fixes-ships-no-implementation), [Elaboration](../02-Surface-Language/01-Elaboration.md#a-modules-foreigns-and-attribute-declarations)).
+
+| Input | Required outcome |
+| --- | --- |
+| The catalog | Each entry named once, every operation and both `Base.IO` entries among them; each entry's arity the arrows on the outer spine of the scheme it is declared at, `Base.IO.bind`'s two; each found by its name; the `Base.IO` entries of the runtime class IO, at `core-runtime`, and among no operations; `Base.Array.Array` supplied at `standard` and at no narrower profile |
+| Two schemes differing in the names of their kind or type variables alone, and two differing in a kind scheme or a body | The first the same scheme, the second not |
+| `Base.Array` in source, its type a `foreign type` and its four entries at the ABI's schemes, and `Base.IO`'s two entries likewise | Compiled, none of them refused as a host foreign would be; the interface holding the type as a foreign type |
+| A module over them calling `length`, `unsafeNew`, `pure`, and `bind` | The array entries operations in its bytecode, and the `Base.IO` entries foreigns it calls |
+| An entry declared at another result, at another body with its type variables renamed, and at another arity, one of them at a scheme a host foreign could take | Each refused where its name is declared, naming the scheme the ABI declares it at |
+| `foreign type Array :: Type` in `Base.Array` | Refused where it is declared, naming the kind the ABI gives it |
+| A foreign of a `Base` module the catalog does not name, taking a function, a type variable, or an `IO` | Refused as a host foreign is (D44) |
+| A package with `Base.IO` and `Base.Array` in source and a module of host foreigns, built by `stellac build` and run by `steam run` over a manifest naming that module alone | Run, the runtime carrying out the `Base` entries |

@@ -329,6 +329,9 @@ at = case _ of
   LeftUnchecked o _ -> located o <> " left unchecked"
   AttributeRejected o _ -> located o <> " attribute rejected"
   ForeignRefused o _ r -> located o <> " foreign refused " <> show r.position <> " " <> show r.refusal
+  AbiEntryMismatch o (Qualified _ (Ident n)) _ -> located o <> " abi entry mismatch " <> n
+  AbiEntryIncomparable o (Qualified _ (Ident n)) _ -> located o <> " abi entry incomparable " <> n
+  AbiTypeMismatch o (Qualified _ (TyName n)) _ -> located o <> " abi type mismatch " <> n
   TypeHoleStands o name t -> located o <> " hole " <> name <> " " <> printType t
   ExpressionHoleStands o name t context -> located o <> " expression hole " <> name <> " " <> printType t <> " [" <> joinWith ", " (map (\x -> let Ident n = x.name in n <> " : " <> printType x.type) context) <> "]"
   NonExhaustiveMatch o _ -> located o <> " non-exhaustive"

@@ -74,7 +74,7 @@ import Steam.CLI.Wire (Unencodable(..), classOf, fromWire, toWire)
 import Steam.Eval (Bug(AskedOutsideInvocation, HaltedOutsideClosedRun), Failure(..), Halt(..), Outcome(..), Slice, invoke, invokeClosed, resumePaused, resumeWith)
 import Steam.Foreign (emptyTable, insert)
 import Steam.Load (Identities, Initialization(..), LoadError(InitializationFailed, InitializationHalted), Store, claimedByInterpreter, emptyStore, globalNamed, loadWith, moduleNamed, namesOf, registryOf)
-import Steam.Value (Value(..))
+import Steam.Value (Value(..), operationName)
 import Stella.CLI.Effect.FS (FS, readBytes)
 import Stella.CLI.Effect.Foreigns (FOREIGNS)
 import Stella.CLI.Effect.Transport (Channel, TRANSPORT, ownChannel)
@@ -94,7 +94,6 @@ import Stella.Compiler.Bytecode (decode)
 import Stella.Compiler.ForeignManifest (Manifest)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Macro.Compiled (Compiled)
-import Stella.Compiler.Primitive (entryOfOp)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..))
 import Type.Row (type (+))
 
@@ -715,9 +714,9 @@ parseIn setup watch store request =
       HostForeignCalled foreign' ->
         failed ForeignRequested ("the parser called " <> showName foreign' <> ", which the host carries out")
       StateNotOwned op ->
-        failed StateRequested ("the parser reached an array it did not make, by " <> showName (entryOfOp op))
+        failed StateRequested ("the parser reached an array it did not make, by " <> showName (operationName op))
       OperationWithheld op ->
-        failed Parse.OperationWithheld ("the parser called " <> showName (entryOfOp op) <> ", which no parser may")
+        failed Parse.OperationWithheld ("the parser called " <> showName (operationName op) <> ", which no parser may")
     -- a closed run stands on no root boundary
     Asked _ _ -> pure (ParseBroken (DefectRunning (Bug AskedOutsideInvocation)))
     -- as an invocation's: none is left, or the loop is let go round first

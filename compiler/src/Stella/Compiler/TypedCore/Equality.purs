@@ -17,15 +17,17 @@ module Stella.Compiler.TypedCore.Equality
   ( typeEquiv
   , rowEquiv
   , constraintEquiv
+  , schemeEquiv
   ) where
 
 import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore.Name (TyVar)
+import Stella.Compiler.TypedCore.Kind (Kind(..))
+import Stella.Compiler.TypedCore.Name (KindVar(..), TyVar)
 import Stella.Compiler.TypedCore.Row (RowError, RowNormalForm, nf)
-import Stella.Compiler.TypedCore.Type (Constraint(..), RowKey, RowPayload(..), Type(..))
+import Stella.Compiler.TypedCore.Type (Constraint(..), RowKey, RowPayload(..), Type(..), TypeScheme, substituteKindsInType)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
@@ -166,3 +168,14 @@ isRowSyntax = case _ of
   TRowExtend _ _ -> true
   TRowUnion _ _ -> true
   _ -> false
+
+-- | Scheme equality: as many kind variables bound on each side, and the bodies
+-- | equal once each side's variables are renamed, in order, to one name for
+-- | each position. The names renamed to are none a source writes, so no free
+-- | variable of either body is captured. The domain is as for `typeEquiv`.
+schemeEquiv :: TypeScheme -> TypeScheme -> Either RowError P.Boolean
+schemeEquiv s1 s2
+  | Array.length s1.kindVars /= Array.length s2.kindVars = Right false
+  | otherwise = typeEquiv (renamed s1) (renamed s2)
+      where
+      renamed s = substituteKindsInType (Map.fromFoldable (Array.mapWithIndex (\i k -> Tuple k (KVar (KindVar ("$k" <> show i)))) s.kindVars)) s.body

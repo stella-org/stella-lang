@@ -36,7 +36,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe)
 import Effect.Ref (Ref)
 import Steam.Value (CtorId, Foreign, KeyId, ModuleId, OpId, Value)
-import Stella.Compiler.Primitive (PrimOp)
+import Stella.Compiler.Abi.Runtime (PrimOp)
 import Stella.Compiler.Bytecode.Instr (Function, Join, JoinName, Node)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm)
 import Stella.Compiler.Bytecode.Module (Constant)

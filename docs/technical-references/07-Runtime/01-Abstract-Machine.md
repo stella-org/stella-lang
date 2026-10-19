@@ -1488,6 +1488,10 @@ decided by the name alone**.
 | anything else the table holds | that entry's body |
 | anything else | nothing, and the module does not load |
 
+**Which names the interpreter claims, and at which arity, it reads** from the part of
+the ABI catalog a runtime reads, by each entry's runtime class, and writes none of
+its own ([Prim and Base](../06-Modules/02-Prim-and-Base.md#the-catalog-a-compiler-and-a-runtime-read)).
+
 **The two `Base.IO` entries are claimed by the interpreter and are not operations**,
 and the rule that separates them is the same one everywhere: an entry returning `IO`
 names an implementation rather than being carried out by a code

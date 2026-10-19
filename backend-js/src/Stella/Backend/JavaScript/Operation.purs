@@ -25,7 +25,7 @@ module Stella.Backend.JavaScript.Operation
 import Prim as P
 
 import Stella.Backend.JavaScript.Syntax (Expr(..))
-import Stella.Compiler.Primitive (PrimOp(..))
+import Stella.Compiler.Abi.Runtime (PrimOp(..))
 
 -- | The expression carrying the operation out over operands already evaluated.
 inline :: PrimOp -> P.Array Expr -> Expr

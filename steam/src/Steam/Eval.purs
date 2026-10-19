@@ -70,7 +70,7 @@ import Steam.Value (Activation, Callee(..), CellState(..), Clause, Closure, Cont
 import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ConstIx(..), CtorIx(..), ForeignIx(..), FuncIx(..), GlobalIx(..), HandlerIx(..), Instr(..), Join, JoinName, KeyIx(..), OpIx(..), PrimIx(..), Reg(..), RegionIx(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Constant)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
-import Stella.Compiler.Primitive (InClosedRun(..), PrimOp, arityOfOp, inClosedRunOf)
+import Stella.Compiler.Abi.Runtime (InClosedRun(..), PrimOp, arityOfOp, inClosedRunOf)
 import Steam.Array (Owned)
 import Steam.Array as Arr
 import Stella.Compiler.TypedCore.Name (Ident, Qualified)

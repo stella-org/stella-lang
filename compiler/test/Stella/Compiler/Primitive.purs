@@ -12,7 +12,16 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Primitive (InClosedRun(..), PrimOp(..), arityOfOp, inClosedRunOf, baseModule, baseModuleNames, codeOfOp, entryOfOp, opOfCode, primTable, schemeOfOp, withBaseTypes)
+import Stella.Compiler.Primitive (InClosedRun(..), PrimOp(..), Profile(..), RuntimeClass(..), RuntimeEntryId(..), abiTypes, arityOfOp, arrayTy, inClosedRunOf, baseModule, baseModuleNames, codeOfOp, entryOfOp, lookupRuntimeEntry, opOfCode, operations, primTable, qualifiedOf, runtimeEntries, runtimeEntryNamed, schemeOfOp, schemeOfRuntimeEntry, withBaseTypes)
+import Stella.Compiler.TypedCore.Equality (schemeEquiv)
+import Stella.Compiler.TypedCore.Kind (Kind(..))
+import Stella.Compiler.TypedCore.Name (KindVar(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Prim (foreignArity)
+import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), TyConInfo(..))
+import Stella.Compiler.TypedCore.Type (substituteType)
+import Data.Map as Map
+import Data.Set as Set
+import Data.Tuple (Tuple(..))
 import Stella.Compiler.Bytecode (CalleeEntry(..), Dmo, LowerError, lower)
 import Stella.Compiler.Interface (noImports)
 import Stella.Compiler.MiddleEnd (TranslateError(..), translate)
@@ -287,6 +296,49 @@ spec = describe "Stella.Compiler.Abi » operations of the Base surface" do
       -- the wrong arity would run with the wrong number of operands
       midOf nullary [ bareDecl nullary ] `shouldEqual`
         Right (Left (AbiArityMismatch intAdd 2 0))
+
+  describe "the ABI catalog" do
+
+    it "names each entry once, every operation and both `Base.IO` entries among them" do
+      let names = map (\e -> e.name.module <> "." <> e.name.value) runtimeEntries
+      Array.length (Array.nub names) `shouldEqual` Array.length names
+      map _.id runtimeEntries `shouldEqual` (map Operation operations <> [ IOPure, IOBind ])
+      Array.length (Array.nub operations) `shouldEqual` 34
+      map (opOfCode <<< codeOfOp) operations `shouldEqual` map Just operations
+
+    it "gives each entry the arity of the scheme it is declared at" do
+      Array.filter (\e -> e.arity /= foreignArity (schemeOfRuntimeEntry e.id)) runtimeEntries `shouldEqual` []
+
+    it "finds each entry by its name, and the compiler's name of it" do
+      Array.filter (\e -> map _.id (lookupRuntimeEntry e.name) /= Just e.id || map _.id (runtimeEntryNamed (qualifiedOf e.name)) /= Just e.id) runtimeEntries `shouldEqual` []
+      map _.id (runtimeEntryNamed (Qualified (ModuleName "Base.Int") (Ident "zero"))) `shouldEqual` Nothing
+
+    it "classes the `Base.IO` entries as the runtime's IO, at `core-runtime`, and leaves them out of the operations" do
+      map (\e -> { id: e.id, runtimeClass: e.runtimeClass, profile: e.profile }) (Array.filter (\e -> e.name.module == "Base.IO") runtimeEntries) `shouldEqual`
+        [ { id: IOPure, runtimeClass: RuntimeIO, profile: CoreRuntime }, { id: IOBind, runtimeClass: RuntimeIO, profile: CoreRuntime } ]
+      Array.length primTable `shouldEqual` 34
+      Array.elem (ModuleName "Base.IO") baseModuleNames `shouldEqual` false
+
+    it "compares schemes up to the names of their kind and type variables, and no further" do
+      let
+        k = KindVar "k"
+        j = KindVar "j"
+        poly v kv = { kindVars: [ kv ], body: TForall (TyVar v) (KVar kv) (pureFn (TVar (TyVar v)) (TVar (TyVar v))) }
+        bound = schemeOfRuntimeEntry IOBind
+        renamed = case bound.body of
+          TForall _ ka (TForall _ kb body) -> bound { body = TForall (TyVar "x") ka (TForall (TyVar "y") kb (swap body)) }
+          other -> bound { body = other }
+        swap = substituteType (Map.fromFoldable [ Tuple (TyVar "a") (TVar (TyVar "x")), Tuple (TyVar "b") (TVar (TyVar "y")) ])
+      schemeEquiv bound renamed `shouldEqual` Right true
+      schemeEquiv (poly "a" k) (poly "b" j) `shouldEqual` Right true
+      schemeEquiv (poly "a" k) { kindVars: [], body: TForall (TyVar "a") KType (pureFn (TVar (TyVar "a")) (TVar (TyVar "a"))) } `shouldEqual` Right false
+      schemeEquiv (poly "a" k) { kindVars: [ k, j ], body: (poly "a" k).body } `shouldEqual` Right false
+      schemeEquiv bound (schemeOfRuntimeEntry IOPure) `shouldEqual` Right false
+
+    it "supplies `Base.Array.Array` at `standard` and none at `core-runtime`, as Core and as the interface read it" do
+      map (map Map.keys) (Map.toUnfoldable (abiTypes Standard) :: P.Array _) `shouldEqual` [ Tuple (ModuleName "Base.Array") (Set.singleton (TyName "Array")) ]
+      Map.isEmpty (abiTypes CoreRuntime) `shouldEqual` true
+      Map.lookup arrayTy (withBaseTypes primSignature).types `shouldEqual` Just (IntrinsicTyCon (monoScheme (KFun KType KType)) CanonicalOpaque)
 
 -- | What a module declares, as foreigns of its name.
 foreignsOf :: Module P.Int -> P.Array { name :: Qualified Ident, scheme :: TypeScheme }

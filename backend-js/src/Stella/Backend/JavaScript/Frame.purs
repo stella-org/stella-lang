@@ -38,7 +38,7 @@ import Prim as P
 
 import Data.Maybe (Maybe)
 import Data.Tuple (Tuple)
-import Stella.Compiler.Primitive (PrimOp)
+import Stella.Compiler.Abi.Runtime (PrimOp)
 import Stella.Compiler.TypedCore.Domain (ScalarString)
 import Stella.Compiler.TypedCore.Name (Ident, ModuleName)
 

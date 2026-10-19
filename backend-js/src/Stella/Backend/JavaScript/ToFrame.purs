@@ -40,7 +40,8 @@ import Stella.Compiler.Bytecode.Module (Constant(..), Dmo, GlobalInit(..), Key(.
 import Stella.Compiler.Bytecode.Module as M
 import Stella.Backend.JavaScript.Error (JsError(..))
 import Stella.Backend.JavaScript.Frame (Block, Callee(..), CtorRef(..), Exit(..), Expr(..), ForeignRef(..), FrameFunction, GlobalRef(..), HandleOperands, Handler, IOEntry(..), Literal(..), OpenOperands, Region, Segment, SegmentId(..), Stmt(..), Target(..))
-import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp, lookupPrim)
+import Stella.Compiler.Abi.Runtime (PrimOp, arityOfOp, lookupRuntimeEntry, nameOfOp)
+import Stella.Compiler.Abi.Runtime as Abi
 import Stella.Compiler.TypedCore.Domain (codePointOf)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), OpName(..), Qualified(..), Symbol(..), Tag(..))
@@ -160,15 +161,20 @@ resolve dmo = do
 -- | The entry the runtime carries out that a foreign of this name is, with the arity
 -- | the ABI gives it: an operation, or one of the two `Base.IO` entries.
 runtimeEntry :: Qualified Ident -> Maybe { ref :: ForeignRef, arity :: P.Int }
-runtimeEntry q = case lookupPrim q of
-  Just entry -> Just { ref: ForeignOperation entry.op, arity: entry.arity }
-  Nothing
-    | q == Qualified (ModuleName "Base.IO") (Ident "pure") -> Just { ref: ForeignIO IOPure, arity: 1 }
-    | q == Qualified (ModuleName "Base.IO") (Ident "bind") -> Just { ref: ForeignIO IOBind, arity: 2 }
-    | otherwise -> Nothing
+runtimeEntry (Qualified (ModuleName m) (Ident x)) = lookupRuntimeEntry { module: m, value: x } <#> \entry ->
+  { ref: case entry.id of
+      Abi.Operation op -> ForeignOperation op
+      Abi.IOPure -> ForeignIO IOPure
+      Abi.IOBind -> ForeignIO IOBind
+  , arity: entry.arity
+  }
 
 showName :: Qualified Ident -> P.String
 showName (Qualified (ModuleName m) (Ident x)) = m <> "." <> x
+
+-- | The `Base` entry an operation realizes, as a message names it.
+operationText :: PrimOp -> P.String
+operationText op = (nameOfOp op).module <> "." <> (nameOfOp op).value
 
 -- Arities one module decides ----------------------------------------------------------
 
@@ -214,7 +220,7 @@ checkPartial dmo resolved c count = case c of
   CalleeCtor PrimUnit -> Left (ArityMismatch "Prim.Unit" 0 count)
   CalleePrim ix -> case Array.index resolved.prims ix of
     Just op | count < arityOfOp op -> Right unit
-    Just op -> Left (ArityMismatch (showName (entryOfOp op)) (arityOfOp op) count)
+    Just op -> Left (ArityMismatch (operationText op) (arityOfOp op) count)
     Nothing -> Left (NoSuchIndex "PRIMS" ix)
   CalleeForeign ref -> case foreignArity dmo ref of
     Just n | count >= n -> Left (ArityMismatch (foreignName dmo ref) n count)
@@ -240,7 +246,7 @@ foreignArity dmo = case _ of
 
 foreignName :: Dmo -> ForeignRef -> P.String
 foreignName dmo = case _ of
-  ForeignOperation op -> showName (entryOfOp op)
+  ForeignOperation op -> operationText op
   ForeignIO IOPure -> "Base.IO.pure"
   ForeignIO IOBind -> "Base.IO.bind"
   OwnForeign ix -> case Array.index dmo.foreigns ix of
@@ -483,7 +489,7 @@ instrStmt scope = case _ of
   PRIM (B.Reg d) p args -> do
     op <- primAt scope p
     when (Array.length args /= arityOfOp op)
-      (Left (ArityMismatch (showName (entryOfOp op)) (arityOfOp op) (Array.length args)))
+      (Left (ArityMismatch (operationText op) (arityOfOp op) (Array.length args)))
     pure (Set d (Prim op (regs args)))
   FFI (B.Reg d) f args -> do
     ref <- foreignAt scope f

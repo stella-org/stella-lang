@@ -64,7 +64,7 @@ import Stella.Backend.JavaScript.Operation (inline)
 import Stella.Backend.JavaScript.Syntax as S
 import Stella.Backend.JavaScript.ToFrame (FrameModule, runtimeEntry)
 import Stella.Compiler.ForeignManifest (ResultKind(..), Signature, ValueKind(..))
-import Stella.Compiler.Primitive (PrimOp, arityOfOp, entryOfOp)
+import Stella.Compiler.Abi.Runtime (PrimOp, arityOfOp, nameOfOp)
 import Stella.Compiler.TypedCore.Domain (textOf)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..))
 
@@ -342,7 +342,7 @@ primDescriptor op =
     params = Array.mapWithIndex (\j _ -> "a" <> show j) (Array.replicate (arityOfOp op) unit)
   in
     rtCall "prim"
-      [ S.String (qualifiedText (entryOfOp op))
+      [ S.String ((nameOfOp op).module <> "." <> (nameOfOp op).value)
       , S.Number (show (arityOfOp op))
       , S.Arrow params (operation op (map S.Ident params))
       ]

@@ -35,7 +35,10 @@
 -- |
 -- | **A foreign is read as a value's signature is, and has no body**: what it
 -- | takes and gives must cross to the host ([ForeignBoundary](../../ForeignBoundary.purs)),
--- | which its type decides where it is declared. An attribute declaration's
+-- | which its type decides where it is declared. **A foreign naming an entry the
+-- | runtime carries out is no host's**, by its qualified name alone
+-- | ([Primitive](../../Primitive.purs)): nothing crosses, and it must be declared
+-- | at the scheme the ABI declares the entry at. An attribute declaration's
 -- | parameters are read at closed types against the module's types.
 -- |
 -- | **A computation declaration is a value whose Core type is a thunk**, its
@@ -134,10 +137,14 @@ import Stella.Compiler.TypedCore.AttributeCheck (AttributeError, checkAttribute)
 import Stella.Compiler.TypedCore.Check (CheckError(NotAValueForm))
 import Stella.Compiler.TypedCore.Initialization (localGroupViolations, topLevelViolations)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName, OpName(..), Qualified(..), TyName(..), TyVar, unqualified)
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName, OpName(..), Qualified(..), TyName(..), TyVar, unqualified)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
-import Stella.Compiler.TypedCore.Kind (KindScheme, RowElemKind(..))
+import Stella.Compiler.TypedCore.Kind (Kind(..), KindScheme, RowElemKind(..))
+import Stella.Compiler.TypedCore.Kind as Kind
 import Stella.Compiler.TypedCore.Type (Type, TypeScheme)
+import Stella.Compiler.TypedCore.Equality (schemeEquiv)
+import Stella.Compiler.TypedCore.Row (RowError)
+import Stella.Compiler.Primitive (abiTypeDescriptors, runtimeEntryNamed, schemeOfRuntimeEntry)
 
 data ElaborationError
   -- | A form this version does not elaborate, or one resolution reported.
@@ -182,6 +189,17 @@ data ElaborationError
   | AttributeRejected Surface.Origin AttributeError
   -- | A foreign whose type does not cross to the host, where it is declared.
   | ForeignRefused Surface.Origin (Qualified Ident) Refused
+  -- | A foreign naming an entry the runtime carries out, declared at another
+  -- | scheme than the ABI declares the entry at, where it is declared.
+  | AbiEntryMismatch Surface.Origin (Qualified Ident) { expected :: TypeScheme, declared :: TypeScheme }
+  -- | A foreign naming an entry the runtime carries out whose scheme could not
+  -- | be compared with the one the ABI declares the entry at: the scheme read
+  -- | is not well kinded, which is the elaborator's fault.
+  | AbiEntryIncomparable Surface.Origin (Qualified Ident) RowError
+  -- | A foreign type naming a type constructor the ABI supplies, declared of
+  -- | another kind, or of another class, than the ABI gives it, where it is
+  -- | declared.
+  | AbiTypeMismatch Surface.Origin (Qualified TyName) { expected :: KindScheme, declared :: KindScheme }
   -- | A typed hole an annotation holds, where it is written, by its name and
   -- | the type standing for it as far as it is decided.
   | TypeHoleStands Surface.Origin String XType
@@ -391,7 +409,12 @@ elaborateValuesM attempterOf imports surface importedEntries m =
   -- imports', with the data types, their constructors, the foreign types, and
   -- the effects the module declares
   signature = foldl addEffect (foldl addForeignType (foldl (addData m.name) imports (map _.decl elaboratedData)) types.foreignTypes) types.effects
-  dataErrors = typesRead.errors <> map Unsupported types.unsupported
+  dataErrors = typesRead.errors <> map Unsupported types.unsupported <> Array.mapMaybe abiTypeMismatch types.foreignTypes
+  -- a foreign type naming a type the ABI supplies is that type, of the kind
+  -- and the class the ABI gives it, or not declared at all
+  abiTypeMismatch f = case Array.find (\t -> t.name == f.name) abiTypeDescriptors of
+    Just t | t.canonical /= CanonicalOpaque || not (sameKindScheme t.kind f.kind) -> Just (AbiTypeMismatch f.origin f.name { expected: t.kind, declared: f.kind })
+    _ -> Nothing
   -- the synonyms the values' types are read through, the operations they
   -- call, and the effects they handle: the imports', and the module's own
   withSynonyms = surface
@@ -512,11 +535,22 @@ elaborateValuesM attempterOf imports surface importedEntries m =
   -- the values, each with its body
   defined = Array.mapMaybe (\v -> either (const Nothing) (\d -> Just { declared: v.declared, scheme: v.scheme, spine: v.spine, definition: d }) v.declared.definition) schemes
   -- what a foreign takes and gives must cross to the host, which its type
-  -- decides where it is declared
+  -- decides where it is declared; an entry the runtime carries out crosses to
+  -- no host, and is declared at the scheme the ABI declares it at
   crossing = foldl crossOne { foreigns: [], errors: [] } (Array.filter (isForeignDefinition <<< _.declared.definition) schemes)
-  crossOne acc v = case crossingOf signature v.scheme of
-    Right _ -> acc { foreigns = Array.snoc acc.foreigns { origin: v.declared.origin, name: v.declared.name, decl: { name: unqualified v.declared.name, scheme: v.scheme, attributes: v.declared.attributes }, spine: v.spine } }
-    Left refused -> acc { errors = Array.snoc acc.errors (ForeignRefused v.declared.origin v.declared.name refused) }
+  crossOne acc v = case runtimeEntryNamed v.declared.name of
+    Just entry ->
+      let
+        expected = schemeOfRuntimeEntry entry.id
+      in
+        case schemeEquiv v.scheme expected of
+          Right true -> accepted acc v
+          Right false -> acc { errors = Array.snoc acc.errors (AbiEntryMismatch v.declared.origin v.declared.name { expected, declared: v.scheme }) }
+          Left err -> acc { errors = Array.snoc acc.errors (AbiEntryIncomparable v.declared.origin v.declared.name err) }
+    Nothing -> case crossingOf signature v.scheme of
+      Right _ -> accepted acc v
+      Left refused -> acc { errors = Array.snoc acc.errors (ForeignRefused v.declared.origin v.declared.name refused) }
+  accepted acc v = acc { foreigns = Array.snoc acc.foreigns { origin: v.declared.origin, name: v.declared.name, decl: { name: unqualified v.declared.name, scheme: v.scheme, attributes: v.declared.attributes }, spine: v.spine } }
 
   -- the attribute declarations, their parameters' types closed and read
   -- against the module's types
@@ -1597,3 +1631,11 @@ isSynthesizerScheme s = Array.null s.kindVars && case asArrow s.body, asArrow (f
   sameRow a b = case xnf a, xnf b of
     Right x, Right y -> rebuild x == rebuild y
     _, _ -> false
+
+-- | Whether two kind schemes bind as many kind variables, and are the same
+-- | kind once each side's variables are renamed, in order, to one name for
+-- | each position.
+sameKindScheme :: KindScheme -> KindScheme -> Boolean
+sameKindScheme a b = Array.length a.kindVars == Array.length b.kindVars && renamed a == renamed b
+  where
+  renamed s = Kind.substituteKind (Map.fromFoldable (Array.mapWithIndex (\i k -> Tuple k (KVar (KindVar ("$k" <> show i)))) s.kindVars)) s.body

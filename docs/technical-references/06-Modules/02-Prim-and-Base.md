@@ -208,7 +208,7 @@ A **target** manifest intrinsic is one only some targets have, and it lives unde
 
 An **elaboration intrinsic** exists only where a guest synthesizer runs, and where a module writing one is compiled ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)). The compiler generates it as one inseparable bundle: the module `Stella.Elab`, the fragment of `Σ` holding its intrinsics, and the runtime shape descriptor of its data types. The interface a module importing `Stella.Elab` is compiled against is projected from that module, and a compile-time session of a matching toolchain installs the module the interface was projected from, the two being made from one definition. A session started from another executable is not checked to be one: checking that a compiler and the modules it is given belong together is open ([Open Questions](../99-Open-Questions/01-Open-Questions.md)). `Stella.Elab.Handle` is exported as a type alone, with nothing that builds one or takes one apart. The ABI manifest has no entry for it and cannot supply one, and the `Stella` prefix is the compiler's own, so no package or manifest can stand in for any part of the bundle.
 
-Both reach `Σ` by the one route, `Σ_ABI(M)`, and the ABI manifest names modules of both kinds.
+Both are written in the source of the module holding them, as a `foreign type` the compiler checks against the ABI ([Manifest intrinsics, which live outside `Prim`](#manifest-intrinsics-which-live-outside-prim)), and the ABI manifest names modules of both kinds.
 
 **A target namespace is a root segment, not a prefixed path.** `Js.String` rather than `Platform.JavaScript.String`: the target is what the first segment says, and reading `import Js.String` in a header is what tells a reader the module is not portable. Which roots exist is not open-ended — the ABI manifest names them, one per target it describes, and package resolution owns each as it owns `Base` (above), so no ordinary package may claim `Js` or `Wasm`.
 
@@ -247,7 +247,7 @@ Prim.Variant  : Row Type -> Type                        intrinsic variant
 Prim.IO       : Type -> Type                            intrinsic opaque
 ```
 
-A manifest intrinsic reaches `Σ` the same way, through the ABI manifest, and is then imported by name like any other declaration.
+A manifest intrinsic is fixed the same way, by the ABI rather than by a declaration. The module holding it writes it as a `foreign type`, which names it and creates nothing: the compiler holds the declaration to the kind and the class the ABI gives the type, and it is then imported by name like any other declaration.
 
 ## How `Σ` acquires these names
 
@@ -261,10 +261,10 @@ A manifest intrinsic reaches `Σ` the same way, through the ABI manifest, and is
 [Modules](01-Modules.md) collects type-level declarations into `Σ_ty` before checking any interior. That collection starts from `Σ_Prim` rather than from the imports alone.
 
 ```text
-Σ_ty = Σ_Prim ∪ Σ_ABI(M) ∪ Σ_imp ∪ { the module's own data and effect declarations }
+Σ_ty = Σ_Prim ∪ Σ_ABI(M) ∪ Σ_imp ∪ { the module's own data, foreign type, and effect declarations }
 ```
 
-`Σ_ABI(M)` is what the ABI manifest supplies to `M` itself, and is empty for every module it does not name; the ABI manifest names `Base.*` modules and the target namespaces it describes, and no others, and the section on manifest intrinsics below says what it holds and why it comes before the module's own declarations.
+`Σ_ABI(M)` is what the environment supplies to `M` itself from outside any source. **In a build of sources it is empty**: a module holding a manifest intrinsic declares it as a `foreign type`, among its own declarations, and the section on manifest intrinsics below says how that declaration is checked. What it holds otherwise is what Core written by hand, which has no source to declare a type in, is checked with.
 
 Three consequences are worth stating.
 
@@ -272,7 +272,7 @@ Three consequences are worth stating.
 
 `Prim` is a reserved module name, and **the Core type checker rejects a module named `Prim`**. It can: the compiler builds `Σ_Prim` itself, so a second `Prim` rivals something the checker holds.
 
-`Base` is a reserved prefix, and **ownership of it is verified by package resolution, not by the Core type checker**. The modules of `Base.*` are ordinary source — `foreign` declarations with the manifest supplying what type constructors they need — so nothing in a Core module, or in the `Σ` it is checked against, tells the ABI implementation of `Base.Int` from a forgery of it. What decides is which package a module came from, and only the package implementing the ABI may claim a name under `Base`. A resolver enforces that against the ABI manifest before any module reaches the checker.
+`Base` is a reserved prefix, and **ownership of it is verified by package resolution, not by the Core type checker**. The modules of `Base.*` are ordinary source — `foreign` and `foreign type` declarations, each held to what the ABI declares — so nothing in a Core module, or in the `Σ` it is checked against, tells the ABI implementation of `Base.Int` from a forgery of it. What decides is which package a module came from, and only the package implementing the ABI may claim a name under `Base`. A resolver enforces that against the ABI manifest before any module reaches the checker.
 
 Handing the checker a provenance to trust would not improve on this. It would verify nothing, and a trusted unchecked input is what the `newtype` flag is deliberately not ([Modules](01-Modules.md)).
 
@@ -293,9 +293,11 @@ something a backend implements.
 | **ABI entry** | a `foreign` whose implementation a backend supplies, `Base.IO.bind` and the arithmetic among them | **yes**, where a profile designates it |
 | **protocol** | a standard primitive capability, declared as an effect and nothing more | no; it names operations and has no implementation to supply |
 
-An ABI entry is an ordinary `foreign` declaration, checked where it is written
-like any other (D23, well-kindedness); what sets it apart is the obligation on
-the other side. A protocol is an ordinary `effect` declaration, and an effect
+An ABI entry is a `foreign` declaration, checked where it is written; what sets
+it apart is that its qualified name is one the ABI fixes, and the obligation on
+the other side. **It is declared at the scheme the ABI declares it at**, and
+crosses to no host, so what a host foreign is held to (D44) does not apply to it
+([A declaration the ABI manifest fixes ships no implementation](#a-declaration-the-abi-manifest-fixes-ships-no-implementation)). A protocol is an ordinary `effect` declaration, and an effect
 declares operations without implementations ([Effects](../03-Typed-Core/03-Effects.md)) — there
 is nothing for a backend to supply, and what interprets one is ordinary Stella
 code.
@@ -483,10 +485,11 @@ target validation rejects.
 **Not in `Σ`.** `Σ` records every declaration: a foreign scheme for an ABI
 entry, an effect declaration for a protocol. What it does not record is which
 profile an entry belongs to, or what a backend implements. For type checking a
-`Base` ABI entry the answer is the same as for any other `foreign`.
+`Base` ABI entry what matters is the scheme the ABI declares it at, which its
+declaration must be at.
 
 ```text
-Base.Int.add : Int -> Int -> Int        declared type, trusted
+Base.Int.add : Int -> Int -> Int        declared type, the ABI's
                                         every arrow pure (D23)
 ```
 
@@ -527,7 +530,7 @@ Three stages then divide the work, and none of them duplicates another.
 
 | Stage | What it establishes |
 | --- | --- |
-| type checking | the declared type is well-kinded and every arrow is pure (D23) |
+| type checking | the declared type is well-kinded and every arrow is pure (D23); an ABI entry's is the scheme the ABI declares it at |
 | target validation | the backend manifest records every entry the program uses — each `Base` ABI entry, through a profile it claims or beyond them, and each target ABI entry — and every target root the program imports is the selected target's |
 | linking | `Σ ⊨ G` condition (3): each `δ_f` returns what it claims, performs no proper effect and runs no reified computation it constructs, applies no Stella function value, terminates, and has no observational effect — faulting among them — where its declaration asserts `#observ(none)`, all of it asked of the calls respecting the entry's ABI preconditions (D42) ([Semantics](../03-Typed-Core/06-Semantics.md)) |
 
@@ -878,7 +881,10 @@ of the handler that installed it ([Effects](../03-Typed-Core/03-Effects.md)).
 
 Executing these two is the runtime ABI's obligation (D25), which is why they are
 fixed here rather than left to the surface, and why they alone constitute the
-`core-runtime` profile.
+`core-runtime` profile. **They are not operations**: each returns `IO`, so no code
+stands for either, and a call to one stays a call to a foreign, which the runtime
+binds to its own implementation by the name
+([The catalog a compiler and a runtime read](#the-catalog-a-compiler-and-a-runtime-read)).
 
 ## Text: the meaning is portable, the representation is not
 
@@ -989,7 +995,7 @@ compares the value, never the spelling
 
 ## Manifest intrinsics, which live outside `Prim`
 
-**The ABI manifest supplies type constructors and nothing else.** It is not source, and no module may write an intrinsic entry; this is how the ABI surface states what it supplies and to whom.
+**The ABI fixes each type constructor it supplies** — its name, its kind, and the class of its values — **and the module holding one declares it as a `foreign type`.** The manifest is not source; this is how the ABI surface states what it supplies and to whom.
 
 ```text
 -- ABI manifest
@@ -1000,10 +1006,11 @@ module Base.Function.Uncurried
   intrinsic opaque Fn2 : Type -> Type -> Type -> Type
 ```
 
-The operations are ordinary source, written in the module the manifest names.
+The declaration of the type and the operations are ordinary source, written in the module the manifest names.
 
 ```purescript
 module Base.Array (Array, length, unsafeNew, unsafeSet, unsafeIndex) where
+  foreign type Array  :: Type -> Type
   foreign length      :: forall a. Array a -> Int
   foreign unsafeNew   :: forall a. Int -> Array a
   foreign unsafeSet   :: forall a. Int -> a -> Array a -> Unit
@@ -1012,11 +1019,13 @@ module Base.Array (Array, length, unsafeNew, unsafeSet, unsafeIndex) where
 
 **`length` is an operation too**, so all four entries of this module are carried out by whatever executes the code rather than by a host table: an array is an opaque value whose representation belongs to the implementation holding it, and a slot count is as unreachable from outside as an element is.
 
+**A `foreign type` whose qualified name the ABI fixes is that type, or is refused** where it is declared. Its kind scheme is to be the ABI's, kind variables compared by position, and its class the ABI's; a foreign type is of the class opaque, so a type of another class cannot be declared at all. `foreign type Array :: Type` in `Base.Array` is refused, and so is any foreign type of `Base.Array.Array`'s name at a kind other than `Type -> Type`. A refused declaration enters neither the module's signature nor its interface, so nothing reads a type of another kind under the ABI's name. An accepted one is an ordinary foreign type, held in the interface as one.
+
 ### A declaration the ABI manifest fixes ships no implementation
 
-**Every `foreign` of `Base` is an operation or one of the two `Base.IO` entries**, and
-so is carried out by whatever executes the program rather than by anything supplied
-alongside. Nothing is shipped for them, and nothing could usefully be: an operation is
+**Every `foreign` under `Base` whose qualified name the ABI fixes is an operation or
+one of the two `Base.IO` entries**, and so is carried out by whatever executes the
+program rather than by anything supplied alongside. Nothing is shipped for them, and nothing could usefully be: an operation is
 reached by a code and never through a foreign table, and what `Base.IO.pure` and
 `Base.IO.bind` construct is the executing machine's own representation of an `IO`,
 which is not a published ABI ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
@@ -1024,9 +1033,45 @@ which is not a published ABI ([Abstract Machine](../07-Runtime/01-Abstract-Machi
 **That is a property of the names and not a privilege of a package** (D43). The rule
 is that a declaration whose name the ABI manifest fixes needs nothing supplied and
 every other `foreign` does, so `Base` is not an exception to how packages work — it is
-the layer that happens to hold exactly those names, and no other layer could declare
-one, a declaration belonging to the module that writes it
-([Modules](01-Modules.md)).
+the layer the portable names the ABI fixes belong to, and no other layer could declare one, a
+declaration belonging to the module that writes it ([Modules](01-Modules.md)). A
+`foreign` of a `Base` module whose name the ABI does not fix is a host foreign like any
+other, below.
+
+**A foreign whose qualified name the ABI fixes is an ABI entry, declared at the
+scheme the ABI declares it at.** The two schemes are compared up to the names they
+bind: as many kind variables, renamed alike by position, and bodies equal as types
+are. A foreign declared at another scheme is refused where it is declared, and is
+not read as a host foreign instead: `foreign pure :: Int -> IO Int` in `Base.IO` is
+an error, not a host entry of that name. What a host foreign is held to (D44) is not
+asked of an ABI entry, which crosses to no host, so `Base.IO.bind` takes a function
+and ranges over type variables. A foreign whose name the ABI does not fix is a host
+foreign wherever it is declared, under `Base` as anywhere, and is held to D44
+([Elaboration](../02-Surface-Language/01-Elaboration.md#a-modules-foreigns-and-attribute-declarations)).
+
+### The catalog a compiler and a runtime read
+
+**The ABI is carried as a catalog in two parts**, standing in for the ABI manifest.
+The part a runtime reads lists each entry the runtime carries out — the operations
+and the two `Base.IO` entries — by its module and its name as text, with its arity,
+its runtime class, its profile, and an operation's code; nothing in it is a
+compiler's representation, a type among them. The part the compiler reads besides
+gives each of those entries the scheme it is declared at, and each type the ABI
+supplies its kind, its class, and its profile. **An entry's name and arity are
+written once**, in the first part, and the scheme the second gives an entry has as
+many arrows on its outer spine, beneath its quantifiers, as that arity:
+`Base.IO.bind`, at `forall a b. IO a -> (a -> IO b) -> IO b`, takes two.
+
+| Runtime class | How the runtime carries the entry out | What a call to it is in a `.dmo` |
+| --- | --- | --- |
+| operation | as the operation it is | the operation, by its code |
+| IO entry | by building an `IO` value it runs | a call to a foreign, which the runtime binds to its own implementation by the entry's name |
+
+A runtime and a backend classify a foreign by its name against the first part, and
+check the arity it is declared at against the one given there; neither writes an
+entry's name or arity of its own. Neither a `.dmo` nor an interface records the
+class: a foreign of an IO entry is a foreign in both, and its name is what makes it
+the runtime's.
 
 **It is not a coincidence to be watched either.** `Base` is the portable surface, and
 an entry reaching the **world** is one target's rather than every target's, so it
@@ -1060,13 +1105,9 @@ array that was written.
 signature mentions only `Prim` types and portable manifest intrinsics, so a conversion between
 the two is `Data.Array`.
 
-Splitting it this way keeps the manifest to what only it can express. A `foreign` is checked wherever it is written — every arrow pure (D23), the type well-kinded — and a manifest entry would either duplicate that or become a trusted input for no reason. It also leaves the module free to hold Stella code beside its primitives, which a portable library needs: `Data.Array.mapArray` is written in Stella and uses `unsafeIndex` ([Modules](01-Modules.md)).
+**The ABI states each entry and type, and the source states it again, the two compared.** The declaration is checked where it is written against what the ABI fixes, so what a reader of the module sees is what the ABI declares, and the ABI's statement is not a trusted input standing where no checker reads it. Writing the entries in source also leaves the module free to hold Stella code beside its primitives, which a portable library needs: `Data.Array.mapArray` is written in Stella and uses `unsafeIndex` ([Modules](01-Modules.md)).
 
-Checking such a module therefore needs its own entries in scope before its declarations are collected. Writing `Σ_ABI(M)` for what the manifest supplies to `M` — empty for every module the manifest does not name — the collection of [Modules](01-Modules.md) reads:
-
-```text
-Σ_ty = Σ_Prim ∪ Σ_ABI(M) ∪ Σ_imp ∪ { the module's own data and effect declarations }
-```
+Checking such a module needs nothing supplied before its declarations are collected: its foreign types are among them, collected with its other type-level declarations ([Modules](01-Modules.md)).
 
 An importer sees the entry through `Σ_imp`, by the ordinary route. **What it sees is not a data type**: the import path is the same, the entry is not. `Base.Array.Array` keeps its `intrinsic opaque` class, so a `switchCtor` on it is as ill-formed in the importing module as anywhere else.
 

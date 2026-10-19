@@ -35,6 +35,7 @@ import Stella.Compiler.Elaborate.Kernel.Elab (SessionEnv)
 import Stella.Compiler.Elaborate.Protocol.Facade as F
 import Stella.Compiler.Elaborate.Protocol.Guest (synthesizerType)
 import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment, viewFor)
+import Stella.Compiler.Primitive (PrimOp(..))
 import Stella.Compiler.Interface.File (decode, encode)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
 import Stella.Compiler.Interface.Prim (primAttribute)
@@ -237,7 +238,7 @@ nodeOf = case _ of
 -- | What compiling a module gave: its errors, or its warnings, what each phase
 -- | handed over — the values the Core binds, and the Mid IR's module — and the
 -- | bytecode's module and interface it made.
-type Ran = Either (Array CompileError) { warnings :: Array CompileWarning, handed :: Array String, interface :: ModuleInterface }
+type Ran = Either (Array CompileError) { warnings :: Array CompileWarning, handed :: Array String, interface :: ModuleInterface, prims :: Array PrimOp, foreignRefs :: Array (Qualified Ident) }
 
 -- | The module `M`, its lines as given after its header; compiled with the
 -- | parsers the table runs, what each phase hands over recorded.
@@ -251,7 +252,11 @@ compilingUnder = compilingBy withoutSynthesizers
 -- | `compilingUnder`, each job of the module's elaboration carried out by the
 -- | attempter given.
 compilingBy :: (BuiltModules -> SessionEnv -> AttempterM Aff) -> Array String -> Array String -> (Ran -> Aff Unit) -> Aff Unit
-compilingBy synthesis header lines k = do
+compilingBy = compilingAgainst environment
+
+-- | `compilingBy`, against the environment given.
+compilingAgainst :: BuildEnvironment -> (BuiltModules -> SessionEnv -> AttempterM Aff) -> Array String -> Array String -> (Ran -> Aff Unit) -> Aff Unit
+compilingAgainst against synthesis header lines k = do
   handed <- liftEffect (Ref.new [])
   let
     note s = liftEffect (Ref.modify_ (\l -> Array.snoc l s) handed)
@@ -266,11 +271,11 @@ compilingBy synthesis header lines k = do
           , onTranslated = \mid -> note ("mid " <> moduleText mid.name)
           }
       }
-  r <- compileModule action defaultSettings environment Map.empty (joinWith "\n" (header <> lines))
+  r <- compileModule action defaultSettings against Map.empty (joinWith "\n" (header <> lines))
   recorded <- liftEffect (Ref.read handed)
   k case r of
     Left errors -> Left (NonEmptyArray.toArray errors)
-    Right made -> Right { warnings: made.warnings, handed: Array.snoc recorded ("bytecode " <> moduleText made.dmo.name), interface: made.interface }
+    Right made -> Right { warnings: made.warnings, handed: Array.snoc recorded ("bytecode " <> moduleText made.dmo.name), interface: made.interface, prims: made.dmo.prims, foreignRefs: made.dmo.foreignRefs }
 
 unwrapIdentity :: forall a. Identity a -> a
 unwrapIdentity (Identity a) = a
@@ -1091,6 +1096,71 @@ spec = describe "Stella.Compiler.Build" do
             [ "4:9 The foreign `j` has an arrow performing effects where its argument 1 stands; the arrows of a foreign's type are pure, and a foreign that performs effects returns an `IO` action instead"
             , "5:9 The foreign `k` has an arrow performing effects where its argument 1 stands; the arrows of a foreign's type are pure, and a foreign that performs effects returns an `IO` action instead"
             , "6:9 The foreign `l` has an arrow performing effects where its result stands; the arrows of a foreign's type are pure, and a foreign that performs effects returns an `IO` action instead"
+            ]
+          Right _ -> fail "compiled"
+
+    describe "naming an entry the runtime carries out" do
+      let
+        standard = environment
+        arrayLines =
+          [ "foreign type Array :: Type -> Type"
+          , "foreign length :: forall a. Array a -> Int"
+          , "foreign unsafeNew :: forall a. Int -> Array a"
+          , "foreign unsafeSet :: forall a. Int -> a -> Array a -> Unit"
+          , "foreign unsafeIndex :: forall a. Array a -> Int -> a"
+          ]
+        ioLines = [ "foreign pure :: forall a. a -> IO a", "foreign bind :: forall a b. IO a -> (a -> IO b) -> IO b" ]
+        compiled header lines k = compilingAgainst standard withoutSynthesizers header lines case _ of
+          Left errors -> fail (joinWith "; " (rendered errors))
+          Right r -> k r
+
+      it "are declared at the schemes the ABI declares them at, crossing to no host, the ABI's types among them" do
+        compiled [ "module Base.Array where" ] arrayLines \r -> do
+          Array.fromFoldable (map _.sort (Map.values r.interface.declarations.values)) `shouldEqual` Array.replicate 4 (SortForeign MayObserve)
+          map _.sort (Map.lookup (TyName "Array") r.interface.declarations.types) `shouldEqual` Just ForeignType
+        compiled [ "module Base.IO where" ] ioLines \r ->
+          Array.fromFoldable (Map.keys r.interface.declarations.values) `shouldEqual` [ Ident "bind", Ident "pure" ]
+
+      it "are carried out as operations, and the `Base.IO` entries called as foreigns" do
+        compiled [ "module Base.Array where" ] arrayLines \array ->
+          compiled [ "module Base.IO where" ] ioLines \io ->
+            case foldM (flip addInterface) standard [ array.interface, io.interface ] of
+              Left _ -> fail "no environment"
+              Right env ->
+                compilingAgainst env withoutSynthesizers [ "module M where", "import Base.Array (Array, length, unsafeNew)", "import Base.IO (pure, bind)" ]
+                  [ "xs :: Array Int", "xs = unsafeNew 3", "n :: Int", "n = length xs", "m :: IO Int", "m = bind (pure 1) (\\x -> pure x)" ]
+                  case _ of
+                    Left errors -> fail (joinWith "; " (rendered errors))
+                    Right r -> do
+                      Array.sort r.prims `shouldEqual` Array.sort [ ArrayLength, ArrayUnsafeNew ]
+                      Array.sort r.foreignRefs `shouldEqual` [ Qualified (ModuleName "Base.IO") (Ident "bind"), Qualified (ModuleName "Base.IO") (Ident "pure") ]
+
+      it "refuse one declared at another scheme, whatever crossing to the host it would make" do
+        compilingAgainst standard withoutSynthesizers [ "module Base.Array where" ] [ "foreign type Array :: Type -> Type", "foreign length :: forall a. Array a -> Number", "foreign unsafeIndex :: forall b. Array b -> Int -> Int" ] case _ of
+          Left errors -> rendered errors `shouldEqual`
+            [ "3:9 `Base.Array.length` is an entry of the runtime ABI, which declares it at `forall a. Array a -> Int`; it cannot be declared at `forall a. Array a -> Number`"
+            , "4:9 `Base.Array.unsafeIndex` is an entry of the runtime ABI, which declares it at `forall a. Array a -> Int -> a`; it cannot be declared at `forall b. Array b -> Int -> Int`"
+            ]
+          Right _ -> fail "compiled"
+        compilingAgainst standard withoutSynthesizers [ "module Base.Number where" ] [ "foreign add :: Number -> Number" ] case _ of
+          Left errors -> rendered errors `shouldEqual` [ "2:9 `Base.Number.add` is an entry of the runtime ABI, which declares it at `Number -> Number -> Number`; it cannot be declared at `Number -> Number`" ]
+          Right _ -> fail "compiled"
+        compilingAgainst standard withoutSynthesizers [ "module Base.IO where" ] [ "foreign pure :: forall a. a -> Unit -> IO a" ] case _ of
+          Left errors -> rendered errors `shouldEqual` [ "2:9 `Base.IO.pure` is an entry of the runtime ABI, which declares it at `forall a. a -> IO a`; it cannot be declared at `forall a. a -> Unit -> IO a`" ]
+          Right _ -> fail "compiled"
+
+      it "refuse a foreign type naming a type the ABI supplies at another kind" do
+        compilingAgainst standard withoutSynthesizers [ "module Base.Array where" ] [ "foreign type Array :: Type", "foreign length :: forall a. Array -> Int" ] case _ of
+          Left errors -> rendered errors `shouldEqual`
+            [ "2:14 `Base.Array.Array` is a type of the runtime ABI, of kind `Type -> Type`, declared as a foreign type; it cannot be declared of kind `Type`" ]
+          Right _ -> fail "compiled"
+
+      it "are the catalog's alone, a foreign of a `Base` module it does not hold crossing to the host" do
+        compilingAgainst standard withoutSynthesizers [ "module Base.Extra where" ] [ "foreign d :: (Int -> Int) -> Int", "foreign e :: forall t. t -> Int", "foreign f :: IO Int -> IO Unit" ] case _ of
+          Left errors -> rendered errors `shouldEqual`
+            [ "2:9 The argument 1 of the foreign `d` cannot cross to the host, as it is a function; only `Int`, `Number`, `Char`, `String`, `Boolean`, `Unit`, and a foreign type cross, and as the result an `IO` action producing one of them"
+            , "3:9 The argument 1 of the foreign `e` cannot cross to the host, as `t` is a type variable; only `Int`, `Number`, `Char`, `String`, `Boolean`, `Unit`, and a foreign type cross, and as the result an `IO` action producing one of them"
+            , "4:9 The argument 1 of the foreign `f` cannot cross to the host, as it is an `IO` action, which crosses only as the result; only `Int`, `Number`, `Char`, `String`, `Boolean`, `Unit`, and a foreign type cross, and as the result an `IO` action producing one of them"
             ]
           Right _ -> fail "compiled"
 
