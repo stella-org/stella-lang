@@ -148,13 +148,13 @@ dt ::= leaf e
      | switchLit   o { c1 -> dt1 ; … ; cn -> dtn }   default -> dt0
      | switchKey   o { k1 -> dt1 ; … ; kn -> dtn } [ default -> dt0 ]
      | guard e dt_then dt_else
-     | fail
+     | fail τ                     derived notation
 ```
 
 - `switchCtor` is a single dispatch on a data type's tag. The branches are mutually exclusive and their written order carries no meaning.
 - `switchKey` dispatches on the key of a variant element. In the `default` branch the occurrence has the residual variant type `Variant ρ'`, the variant's row decomposing as `( k̄ : τ̄ | ρ' )` into the enumerated elements and `ρ'`. This is the structural decomposition of an open variant.
 - `guard` is the only sequential test, corresponding to CoreFn's `Guard`. Fall-through is expressed by placing `jump j` in `dt_else`.
-- `fail` is derived notation for `leaf (perform Partial.abort [τ] Prim.Unit)` and produces a `Partial` effect (D10).
+- `fail τ` is derived notation for `leaf (perform Partial.abort [τ] Prim.Unit)` and produces a `Partial` effect (D10). It writes the type it answers at, as `absurd` does: the expansion needs it, and nothing else in the tree supplies it. The checker has no node for it and reads the expansion.
 
 Sharing an alternative's body between several leaves is done by lifting it into a `letjoin` and placing `leaf (jump j ē)`, so that building a decision tree never duplicates code.
 
@@ -200,12 +200,12 @@ Two requirements must be distinguished.
 
 **What the Core type checker requires: that each switch be locally total.** Every `switch*` must either have a default or exhaust its cases. A tree that does not is rejected, because no value may be left without a destination.
 
-**What it does not require: coverage analysis of source patterns.** Whether nested patterns cover the original program is not checked. Partiality appears in the tree as `fail`, and the term's effect row then contains `Partial`.
+**What it does not require: coverage analysis of source patterns.** Whether nested patterns cover the original program is not checked. Partiality appears in the tree as `fail τ`, and the term's effect row then contains `Partial`.
 
 ```text
 switchCtor s0 {
   Main.Nil -> leaf 0
-} default -> fail            ← total; carries a Partial effect
+} default -> fail Int        ← total; carries a Partial effect
 
 switchCtor s0 {
   Main.Nil -> leaf 0
@@ -218,7 +218,7 @@ The condition for having no default differs by node.
 | --- | --- |
 | `switchCtor` | `{Ctor_i}` exhausts the constructors of `T` |
 | `switchLit` | unattainable; **a default is mandatory**, since literals cannot be exhausted |
-| `switchKey` | the unknown tail is empty and `{k_i} = dom(F)` |
+| `switchKey` | the residual the variant's row decomposes into beside the `k_i` is empty, `r' ≡ ()` |
 
 For `switchKey` over a closed variant, a tree that enumerates only some known keys and omits the default is **not admitted**; without this condition a value could be left with no destination at run time.
 

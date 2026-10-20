@@ -641,6 +641,20 @@ spec = describe "TypedCore.Check" do
         (Perform unit (EffectKey consoleEff) (OpName "log") [ int ] (Lit unit (strLit "x")))
         `shouldEqual` Left (OperationTypeArgCount (OpName "log") 0 1)
 
+    it "takes the element of a row only an inconsistent context kinds" do
+      -- under `cache ∉ ( cache : State Int )`, `( cache : State Int ) ⊎
+      -- ( cache : State Int )` is the row `( cache : State Int )`
+      inferIn (env { context = assume emptyContext (Lacks cacheKey cacheRow) }) (TRowUnion cacheRow cacheRow)
+        (Perform unit cacheKey (OpName "get") [] primUnit)
+        `shouldEqual` Right int
+
+    it "reports an ambient row with two payloads at one key" do
+      -- the rule has a derivation for it; the sharp normal form does not
+      let other = TRowExtend (RowLabelledEffectEntry (Symbol "cache") stateEff [ string ]) TRowEmpty
+      inferIn (env { context = assume emptyContext (Lacks cacheKey cacheRow) }) (TRowUnion cacheRow other)
+        (Perform unit cacheKey (OpName "get") [] primUnit)
+        `shouldEqual` Left (NotARowType (DuplicateKey cacheKey))
+
   describe "handlers" do
     it "removes the element the handler writes" do
       -- effect safety is not "no operation is performed": the row outside the
@@ -1159,6 +1173,22 @@ spec = describe "TypedCore.Check" do
       inferIn (env { context = bindVar emptyContext (Ident "r") (record row) }) TRowEmpty
         (Case unit [ var "r" ] tree)
         `shouldEqual` Right int
+
+    it "types the element of a record whose row only an inconsistent context kinds" do
+      let
+        named = TRowExtend (RowTypeEntry nameKey int) TRowEmpty
+        tree = Bind (Ident "y") (OccRecordField (OccScrutinee 0) nameKey) (Leaf (var "y"))
+        context = bindVar (assume emptyContext (Lacks nameKey named)) (Ident "r") (record (TRowUnion named named))
+      inferIn (env { context = context }) TRowEmpty (Case unit [ var "r" ] tree) `shouldEqual` Right int
+
+    it "reports a record row with two payloads at the key an occurrence reads" do
+      let
+        named = TRowExtend (RowTypeEntry nameKey int) TRowEmpty
+        twice = TRowUnion named (TRowExtend (RowTypeEntry nameKey string) TRowEmpty)
+        tree = Bind (Ident "y") (OccRecordField (OccScrutinee 0) nameKey) (Leaf (var "y"))
+        context = bindVar (assume emptyContext (Lacks nameKey named)) (Ident "r") (record twice)
+      inferIn (env { context = context }) TRowEmpty (Case unit [ var "r" ] tree)
+        `shouldEqual` Left (NotARowType (DuplicateKey nameKey))
 
     it "does not take the type of a dispatch from where a branch is written" do
       -- the first branch reaches no leaf, the second gives the type

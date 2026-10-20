@@ -10,7 +10,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.Macro.Compiled (compiled)
-import Stella.Compiler.TypedCore (CanonicalClass(..), CheckError(..), CtorInfo, Decl(..), DeclError(..), Expr(..), Ident(..), Kind(..), KindError(..), KindVar(..), Module, ModuleName(..), Qualified(..), RowElemKind(..), RowEntry(..), Signature, SignatureError(..), TyConInfo(..), TyName(..), TyVar(..), Type(..), declare, emptyContext, envOf, fn, infer, initialSignature, intTy, lookupGlobal, monoScheme, primSignature, pureFn, sigOk, unitCtor, unitTy)
+import Stella.Compiler.TypedCore (CanonicalClass(..), CheckError(..), Constraint(..), CtorInfo, Decl(..), DeclError(..), Expr(..), Ident(..), Kind(..), KindError(..), KindVar(..), Module, ModuleName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Signature, SignatureError(..), Symbol(..), TyConInfo(..), TyName(..), TyVar(..), Type(..), declare, emptyContext, envOf, fn, infer, initialSignature, intTy, lookupGlobal, monoScheme, primSignature, pureFn, sigOk, unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Name (EffName(..))
 import Data.Either (Either(..), isRight)
 import Data.Map as Map
@@ -213,6 +213,27 @@ spec = describe "TypedCore.SignatureCheck" do
       let sig = withPing primSignature
       sigOk (withValue (ctor "f") true (fn int row int) sig) `shouldEqual` Left (EffectfulForeignEntry (ctor "f") row)
       sigOk (withValue (ctor "f") false (fn int row int) sig) `shouldEqual` Right unit
+
+    it "is refused, being a foreign, at a type or a constraint after its last value" do
+      let anything = TForall a KType (TVar a)
+      sigOk (withValue (ctor "make") true anything primSignature) `shouldEqual` Left (ErasedForeignTailEntry (ctor "make"))
+      sigOk (withValue (ctor "make") true (pureFn int anything) primSignature) `shouldEqual` Left (ErasedForeignTailEntry (ctor "make"))
+      sigOk (withValue (ctor "make") false anything primSignature) `shouldEqual` Right unit
+
+    it "is refused, being a foreign, at a constraint after its last value, and not at one before it" do
+      let
+        r = TyVar "r"
+        lacking = Lacks (SymbolKey (Symbol "x")) (TVar r)
+        over body = TForall r (KRow RowType) body
+      sigOk (withValue (ctor "after") true (over (pureFn int (TConstrained lacking int))) primSignature)
+        `shouldEqual` Left (ErasedForeignTailEntry (ctor "after"))
+      sigOk (withValue (ctor "before") true (over (TConstrained lacking (pureFn int int))) primSignature) `shouldEqual` Right unit
+
+    it "admits a foreign whose quantifiers stand before its last value" do
+      let b = TyVar "b"
+      sigOk (withValue (ctor "make") true (TForall a KType (pureFn (TCon unitTy []) (TVar a))) primSignature) `shouldEqual` Right unit
+      sigOk (withValue (ctor "first") true (TForall a KType (pureFn (TVar a) (TForall b KType (pureFn (TVar b) (TVar a))))) primSignature)
+        `shouldEqual` Right unit
 
   describe "Σ prim" do
     it "holds every entry of Σ_Prim as Prim fixes it" do

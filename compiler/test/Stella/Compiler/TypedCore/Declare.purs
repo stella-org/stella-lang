@@ -424,6 +424,20 @@ spec = describe "TypedCore.Declare" do
       verdict (moduleOf [ consoleDecl, foreignDecl "f" scheme ])
         `shouldEqual` Right unit
 
+    it "refuses a type or a constraint after the last value" do
+      -- erasure keeps the values alone, so the call would wait on an argument
+      -- the erased chain does not hold
+      let
+        a = TyVar "a"
+        r = TyVar "r"
+        lacking = TConstrained (Lacks (SymbolKey (Symbol "x")) (TVar r)) int
+      verdict (moduleOf [ foreignDecl "make" (monoScheme (TForall a KType (TVar a))) ])
+        `shouldEqual` Left (ErasedForeignTail (value "make"))
+      verdict (moduleOf [ foreignDecl "after" (monoScheme (TForall r (KRow RowType) (pureFn int lacking))) ])
+        `shouldEqual` Left (ErasedForeignTail (value "after"))
+      verdict (moduleOf [ foreignDecl "make" (monoScheme (TForall a KType (pureFn unitTy' (TVar a)))) ])
+        `shouldEqual` Right unit
+
   describe "value declarations" do
     it "accepts a reference to a foreign declared later" do
       -- foreigns are collected before any value declaration is checked

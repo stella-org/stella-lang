@@ -52,7 +52,7 @@ nonrec Main.result : Int
 Points to observe.
 
 - **No type class appears.** The addition is a direct call to `Base.Int.add : Int -> Int -> Int`, which is why the surface writes it out and imports `Base.Int` to reach it. `+` becomes available once `Prelude` provides a `Semiring` class and an operator alias for its method; this position then holds `select add` applied to a dictionary, and the shape of Core is unchanged.
-- Every effect row is `()`. Since `switchCtor` exhausts the constructors there is no `fail`, and no `Partial` effect.
+- Every effect row is `()`. Since `switchCtor` exhausts the constructors there is no `fail τ`, and no `Partial` effect.
 - The right-hand side of the `rec` group is a `λ`, which reads nothing as it is initialized, so the group is initialization-safe ([Initialization Safety](10-Initialization.md)).
 - Type abstraction and application appear in `Main.Cons [Int]`. CoreFn has no counterpart.
 - The decision tree makes the order explicit: dispatch on the tag, bind the fields, then the body. CoreFn's `Case` does not carry that order.

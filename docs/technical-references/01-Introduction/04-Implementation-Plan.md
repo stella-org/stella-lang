@@ -243,6 +243,8 @@ The heading of each group names the step of the plan that the group belongs to.
 | `switchKey` enumerating `name` over `Variant ( name : Int \| r )`, the default binding the occurrence | Bound at `Variant r`, the tail the row decomposes into |
 | `switchKey` enumerating `name` over `Variant ( ( name : Int ) ⊎ ( name : Int ) )` under the inconsistent `name ∉ ( name : Int )` | Accepted with no default, and a default's occurrence is at `Variant ()`. The row is `( name : Int )`, equal pairs collapsing |
 | The same over a row with two payloads at `name` | Reported, `NotARowType`. The rule has a derivation for it, which a reduct needs and the checker does not; no sharp normal form gives the checker a payload |
+| `perform cache.get` at `( cache : State Int ) ⊎ ( cache : State Int )`, and an occurrence `o . name` of a record at `( name : Int ) ⊎ ( name : Int )`, each under the inconsistent assumption that the key is absent from its one element | Accepted, at `Int`. A `perform` and a record occurrence read the element the row decomposes into, as a `switchKey` does |
+| The same with two payloads at the key | Reported, `NotARowType`, as for a `switchKey` |
 | A handler omitting an operation of `E` | Rejected. `handle` removes the keyed element, so an operation without a clause has nowhere to go |
 | A handler clause that does not respect an operation's own `forall b̄` | Rejected |
 | An interpreter sequencing a native action before resuming a continuation, the residual row not being closed | Rejected. That continuation is `a -{ρ}-> IO r`, which the pure arrow of `Base.IO.bind` does not take. Abandoning the continuation, or resuming it first, is admitted |
@@ -298,6 +300,8 @@ The heading of each group names the step of the plan that the group belongs to.
 | `foreign Js.Console.log : String -> IO Unit` | Accepted. This is the shape every real-world leaf takes |
 | `foreign use : Record ( cb : Int -{( Console )}-> Int ) -> Unit` | Rejected. An arrow reaches the boundary through the payload of a row as readily as through an argument |
 | A `foreign` whose only effectful arrow stands inside a constraint | Accepted. A constraint is an erased proposition and carries no value across the boundary |
+| `foreign make : forall a. a`, `foreign f : Int -> forall a. a`, and one with a constraint after its last arrow | Rejected, where it is declared and where a signature is assembled. A type or constraint argument would saturate the call, and erasure removes it, so the erased program would call the foreign at another point |
+| `foreign make : forall a. Unit -> a` | Accepted. Its quantifier stands before its last value |
 | An effect with an operation `liftIO : forall a. IO a ->* a` | **Accepted.** `perform` carries the opaque `IO` to the handler without executing it. What it costs is the granularity of the capability, not soundness |
 | `newtype` on a type with two constructors, or with one constructor of two fields | Rejected. The backend erases the representation on the strength of this flag |
 | A `nonrec` whose right-hand side refers to a `foreign` declared later in the text | Initializes. Constructors and foreign implementations enter the environment before any value declaration is evaluated |
@@ -311,6 +315,7 @@ The heading of each group names the step of the plan that the group belongs to.
 | A `letjoin` whose body reads a member, not jumped to; jumped to; and jumping to itself with a closure its body applies | Accepted; rejected; rejected through the application. A join point is read where it is jumped to |
 | `region … in x`, and a closure reading `x` applied inside the region | Both rejected, the first where `x` stands, the second also at the region. A handling expression and a region count everything they hold as read through them, and what a part reads as it stands is kept as it is |
 | A nested `letrec` whose member reads the outer group under a λ, one reading it at once, and one reading a later member of its own group | Accepted; rejected for the outer group; judged by its own group alone. Each group's maps hold its own members |
+| That nested `letrec` once the outer group is allocated, its initializers holding `force ν` in place of the outer members, and one inside a `match`, an `openEffC`, a `fill`, or an open region | Judged as before. The judgement is defined on every run-time form, and `force ν` reads nothing of the group being judged |
 | A `Σ` entry `T : forall k. k` | Rejected where the signature is built. Every use site instantiating it at `Type` would pass, so an occurrence check alone lets it in |
 | A `Σ` entry `T : k -> Type` with nothing binding `k`, or `T : Effect -> Type` | Rejected there too. The whole scheme is checked under the kind variables it binds, not only its result |
 | One entry reaching a name through two import paths | Accepted. A name belongs to the module that declares it, so the two are one entry |
@@ -342,6 +347,8 @@ The heading of each group names the step of the plan that the group belongs to.
 | `( Λ (r : Row Effect). λ (u : Unit) / r. region⟨ℓ⟩ θ in Prim.Unit ) [ ( region ℓ ) ]` | Ill-typed before it steps. A frame's residual row is closed, and `r` is not, so no substitution makes the frame's row hold its own region |
 | A source `region` opened by a step | The frame's answer type and residual row are kinded under `Γ_R` alone, and it records no `RegionKey ℓ ∉ t`. Its layout enters `Γ_R` closed but for earlier regions |
 | `bind x = o in guard (p x) …` | The substitution happens before descending, so the guard's condition has no free `x` |
+| `case (v̄) of dt` stepping to `match {s_i ↦ v_i} dt`, and every step of the tree after it | Type checks. Each value `θ` reaches has the type `Ω` records for its occurrence, a `switchKey` default's by the rule for variant values |
+| `fill ν e` or `openEffC [ρ] e` whose `e` jumps to a join point outside it | Ill-typed. Both check `e` under no join point, and a jump out of either would leave a cell `Evaluating` or land at another row |
 | That call, once it is evaluated | The innermost handler of the key is chosen: `Ev_k` lets no `handle` of that key stand between it and the hole |
 | `H Ev_k[perform k.op v] with h` whose clause for `op` is `fast` | Binds the body with a `let` and rebuilds the handler around `Ev_k` with that binding in the hole. No continuation value is built, and the `let` is what reconciles the clause's row with the handled computation's |
 | A `fast` clause body performing an operation that a handler inside `Ev_k` also handles | Answered by a handler outside `h`. The body stands outside `Ev_k`, so a handler a function reached through `openEff` installed there is not in its context |
@@ -365,8 +372,9 @@ The heading of each group names the step of the plan that the group belongs to.
 
 | Input | Required outcome |
 | --- | --- |
-| A term and its erasure | The same sequence of observable steps, modulo steps that only introduce or discharge a coercion |
+| A term and its erasure | Each typed step is zero or one step of `→ᵤ`: zero where a `Λ` is applied or a coercion moved or discharged, one for every other step |
 | A term whose reduction faults | The erased term faults identically |
+| A foreign's call whose last argument would be a type, `let x : forall a. a = M.make in 0` | Does not arise: `Σ ok` refuses the foreign. The typed term would not call `δ_make`, while its erasure, the bare reference being a call there, would |
 | The number of run-time arguments a backend passes to `δ_f` | Determined by the arrow count of the **declared** type, not by the instantiated result type |
 | A handler carrying a `full` clause and a `fast` clause | Both markers survive erasure, Core having written each of them. They carry no type information, and a backend lowers the two differently |
 | A `region` | The region name survives as a term-level binder, standing for the run-time identity the opening step allocates; the layout's types do not. A cell is named by its position in the layout, its key becoming debug information (D36) |
@@ -805,6 +813,7 @@ Only what can cross the boundary may be declared (D44), and the declaration is t
 | One taking or returning a data type, a record, or a variant | **Refused at the declaration**, naming the type, since nothing downstream holds one to refuse it later |
 | One taking a function | Refused likewise. A `δ_f` may carry a function value but may not apply one, so what a host would do with it is not a question the boundary has an answer to |
 | `IO τ` in an **argument** | Refused. Only a result may be an action; an argument of one would be a reified computation the host was handed and could not run |
+| One quantifying after its last argument, `forall a. Array a` | Refused at the result, as the Core checker refuses it. A foreign is called when its last value arrives |
 | The signature the compiler derives | The kinds of the declared type, in order, and a `params` length equal to the arity
 
 ### Types read from the surface (step 7)

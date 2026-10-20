@@ -205,7 +205,7 @@ The symbol `≡` serves two roles that should not be conflated.
 
 ## Sharp normal form
 
-A rule that reads the payload at a key reads it through the normal form of a sharp row.
+The checker reads the payload at a key through the normal form of a sharp row. The rules read it through a decomposition, `ρ ≡ ( k : τ | ρ' )` with its right-hand side kinded ([Typing Rules](05-Typing-Rules.md)), which every substitution preserves.
 
 ```text
 RNF ::= ⟨ F ; T ⟩
@@ -225,7 +225,7 @@ nf( ρ1 ⊎ ρ2 )         = ⟨ F1 ∪ F2 ; T1 ∪ T2 ⟩                   wher
 
 where a union of maps is defined when the two agree at every key they share, payloads being compared by `≡`.
 
-**`F(k) = τ` exhibits a type.** A rule written so asks for a type `τ` whose canonical form is the one payload at `k`, which sharpness makes unique up to `≡`. Where a row is not sharp — kinded under an inconsistent assumption, which entails every sharpness premise — two payloads may stand at one key, and such a rule then has no `τ` to read.
+**`F(k)` is the payload a decomposition exhibits.** In a consistent context `ρ ≡ ( k : τ | ρ' )`, its right-hand side kinded, holds exactly where `F(k) ≡ τ`, sharpness making the payload unique. Where a row is not sharp — kinded under an inconsistent assumption, which entails every sharpness premise — two payloads may stand at one key and `nf` is undefined, while a decomposition may still hold; a substitution makes such a row out of a sharp one. The checker reads `nf` and reports a row it is undefined on.
 
 `nf` is not what equality is defined by. Type equality compares canonical forms, which every type has.
 

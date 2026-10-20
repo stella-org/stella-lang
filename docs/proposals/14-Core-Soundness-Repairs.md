@@ -466,6 +466,15 @@ few sites that happened to need it first.
 - Every arrow in a run-time-bearing position is pure, as required by D23. This includes arrows
   nested in arguments and row payloads; constraints themselves carry no run-time value and retain
   the existing exception.
+- The last declared argument position of a foreign is a value argument: no `forall` and no `=>`
+  stands on its spine after its last arrow, nor anywhere on it where it has no arrow. Erasure keeps
+  a chain's value arguments alone, so a foreign saturated by a type or constraint argument would be
+  called at another point once erased: with `foreign make : forall a. a`, the typed
+  `let x : forall a. a = M.make in 0` never calls `δ_make`, while its erasure
+  `let x = M.make in 0` does, and faults where `δ_make` faults. A β-step builds such a chain from a
+  well-typed term, `(λ g. g v) (M.f [τ])` among them, so no restriction on where a chain is written
+  prevents it; the declaration is where it is ruled out, both where a foreign is declared and where
+  an imported signature is assembled.
 
 #### `Prim`
 
@@ -494,6 +503,8 @@ tests for malformed signatures.
   scrutinee's kind and type arguments.
 - A signature collision cannot be hidden by lookup order.
 - `cursorΣ` may rely on constructor and foreign arrows being pure.
+- No `sig_ok` signature holds a foreign whose type takes a type or a constraint after its last
+  value, so a chain is saturated exactly when it holds as many value arguments as its arity.
 - A realistic signature containing polymorphic data such as `List` satisfies `sig_ok`.
 
 ## S7. Close the remaining run-time and regularity gaps
@@ -509,12 +520,40 @@ under that `Ω`. S5's run-time variant rule is used when a `switchKey` has refin
 
 For the other forms:
 
-- `openEffC [ρ] e` explicitly kinds `ρ` at `Row Effect`;
+- `openEffC [ρ] e` explicitly kinds `ρ` at `Row Effect`, and checks `e` with `Δ` empty: the
+  computation it widens is an application of values, `(openEff [ρ] v) w` being the one step that
+  makes it, so it needs no outer join point, and a jump out of it would land at a row other than
+  its own and find no tail context through the coercion;
 - `force ν` and `fill ν e` rely on a well-formed `Γ_N`; `fill` checks `e` with `Δ` empty and out
   of tail position;
 - an open region frame follows S4;
 - `opaque ω [τ]` remains restricted to a type constructor of canonical class opaque; and
 - every cell stored in an open region frame is a value.
+
+### Read payloads through substitution-stable premises
+
+S5 restates the `switchKey` residual by decomposition. The other rules reading a row at a key must
+follow, since a rule premised on `nf(ρ)` or `F(k)` holds of a row only as it is written: under
+an inconsistent assumption a substitution can bring a second element at a key into a tail, and the
+row is then left with no sharp normal form, while equality, entailment, and kinding are preserved by
+every substitution.
+
+- `perform k.op [σ̄] e` asks `Γ ⊢ ρ ≡ ( ent | ρ' )` with `key(ent) = k` and
+  `payload(ent) = E τ̄`, and `Γ ⊢ ( ent | ρ' ) : Row Effect`, in place of `F(k) = E τ̄` on
+  `nf(ρ)`. Under `cache ∉ ( cache : State Int )`, a `perform cache.get` at
+  `( cache : State Int | e )` with `( cache : State String )` substituted for `e` has no normal form
+  to read, and has the decomposition still.
+- A record occurrence `o . k` asks `Γ ⊢ r ≡ ( k : τ | r' )` and
+  `Γ ⊢ ( k : τ | r' ) : Row Type`, in place of `F(k) = τ`. The occurrence judgement therefore
+  carries `Γ`, written `Γ;Ω ⊢ o : τ`. The kinding premise also keeps `Ω` well formed, kinding the
+  `τ` a `bind` puts into `Γ`.
+- `readCell ℓ.k` and `writeCell ℓ.k e` ask `RegionKey ℓ ∈ keys(ρ)` in place of
+  `RegionKey ℓ ∈ dom(nf(ρ))`. They need no payload, an element keyed `RegionKey ℓ` being
+  `region ℓ` alone, but `nf(ρ)` is partial in the whole row: a conflict at another key makes it
+  undefined. `keys(ρ)` is defined on every row, and a substitution only adds to it.
+
+A checker may still read these off the sharp normal form; it is then incomplete on rows that only
+an inconsistent context kinds, and reports them.
 
 ### Make run-time contexts well formed
 
@@ -591,6 +630,15 @@ an application beyond that arity is an ordinary application of the saturated pre
 - Every use of `→ᵤ` refers to a defined relation.
 - The initialization judgement remains defined after `letrec` allocation substitutes `force`
   forms into nested initializers.
+- No typing rule reads a row through `nf` or `F(k)`: `perform`, record occurrences, and
+  `switchKey` read it through a decomposition, and `readCell` and `writeCell` through `keys(ρ)`,
+  so each is preserved by every type substitution, an inconsistent assumption included.
+- A `perform` and a record occurrence over a row collapsed under an inconsistent assumption are
+  typed; one with two payloads at the key is typed by the rules and reported by a checker reading
+  the sharp normal form.
+- `openEffC [ρ] e` types `e` under no join point, so no jump leaves a widened computation.
+- Each typed step is zero or one step of `→ᵤ`, a foreign being called at the same point in both,
+  and a step applying a `Λ` or moving or discharging a coercion being the zero-step case.
 
 ## Specification files to update
 

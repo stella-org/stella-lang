@@ -12,6 +12,7 @@ module Stella.Compiler.TypedCore.SignatureCheck
   , sigWf
   , primWf
   , impureArrow
+  , erasedTail
   , isEmptyRow
   ) where
 
@@ -73,6 +74,9 @@ data SignatureError
   -- | A foreign whose type carries an effect on an arrow where a value passes
   -- | through (D23), with the row it carries.
   | EffectfulForeignEntry (Qualified Ident) Type
+  -- | A foreign whose type takes a type or a constraint after its last value,
+  -- | which would saturate it on an argument erasure removes.
+  | ErasedForeignTailEntry (Qualified Ident)
   | AttributeEntryError (Qualified Ident) AttributeError
   -- | An entry of `Σ_Prim` missing or other than `Prim` fixes it.
   | PrimTyCon (Qualified TyName)
@@ -219,13 +223,16 @@ tagOk owner seen tag
   | otherwise = Right (Set.insert tag seen)
 
 -- | A value's or a foreign's scheme is well kinded, and a foreign's arrows are
--- | pure wherever a value passes through (D23).
+-- | pure wherever a value passes through (D23), with no type or constraint
+-- | taken after its last value.
 valueOk :: Signature -> Tuple (Qualified Ident) ValueInfo -> Either SignatureError Unit
 valueOk sig (Tuple name info) = do
   named (ValueEntryError name) (checkScheme sig info.scheme)
-  when info.isForeign case impureArrow info.scheme.body of
-    Just row -> Left (EffectfulForeignEntry name row)
-    Nothing -> Right unit
+  when info.isForeign do
+    case impureArrow info.scheme.body of
+      Just row -> Left (EffectfulForeignEntry name row)
+      Nothing -> Right unit
+    when (erasedTail info.scheme.body) (Left (ErasedForeignTailEntry name))
 
 attributeOk :: Signature -> Tuple (Qualified Ident) AttributeInfo -> Either SignatureError Unit
 attributeOk sig (Tuple name info) = case checkAttributeDecl sig info of
@@ -252,6 +259,23 @@ impureArrow ty = case asFunction ty of
     TRowExtend entry rest -> orElse (entryImpureArrow entry) (impureArrow rest)
     TRowUnion left right -> orElse (impureArrow left) (impureArrow right)
     _ -> Nothing
+
+-- | Whether a type takes a type or a constraint after its last value: a
+-- | `forall` or a `=>` on its spine past its last arrow, or anywhere on it
+-- | where it has none.
+-- |
+-- | Erasure keeps a chain's values alone, so a foreign whose type has such a
+-- | tail would be saturated by an argument the erased chain does not hold, and
+-- | called at another point once erased.
+erasedTail :: Type -> P.Boolean
+erasedTail = go false
+  where
+  go pending ty = case asFunction ty of
+    Just parts -> go false parts.result
+    Nothing -> case ty of
+      TForall _ _ body -> go true body
+      TConstrained _ body -> go true body
+      _ -> pending
 
 -- | An arrow reaches the boundary through the payload of a row element as
 -- | readily as through an argument: `Record ( cb : a -{ρ}-> b )` hands a

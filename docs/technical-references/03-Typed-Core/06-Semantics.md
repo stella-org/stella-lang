@@ -126,7 +126,7 @@ Two relations are distinguished.
 | Relation | On | Preserves types |
 | --- | --- | --- |
 | `G ⊢ N; e → N'; c` | a store and a Core term, to a store and a configuration | yes, whenever c is a term |
-| `⌊N⌋; ⌊e⌋ →ᵤ …` | erased stores and terms | not applicable; types are gone |
+| `⌊G⌋ ⊢ ⌊N⌋; ⌊e⌋ →ᵤ …` | erased stores and terms ([The erased relation](#the-erased-relation)) | not applicable; types are gone |
 
 A configuration is either a term or a fault, and **reduction threads a store `N` of by-need cells** through it: a step relates a store and a term to a store and a configuration.
 
@@ -425,13 +425,13 @@ A `foreign` returns a value of its instantiated result type, and what shape that
 | a data type | a constructor's chain |
 | an intrinsic type | the canonical form of `Σ(T)`'s class ([Prim and Base](../06-Modules/02-Prim-and-Base.md)) |
 
-The second row covers more than one case. A `foreign` whose result is `Int` returns a literal, one whose result is a function type returns a function value — `foreign make : forall a. a` instantiated at `Int -> Int` does exactly that, below — and one whose result is a `Record` returns `{}` or an `extend`. Only the `intrinsic opaque` class is left without a form of its own.
+The second row covers more than one case. A `foreign` whose result is `Int` returns a literal, one whose result is a function type returns a function value — `foreign make : forall a. Unit -> a` called at `Int -> Int` does exactly that — and one whose result is a `Record` returns `{}` or an `extend`. Only the `intrinsic opaque` class is left without a form of its own.
 
 `opaque ω [τ]` is what `δ_f` returns there. `ω` is the payload the backend holds — a JavaScript thunk, a Wasm reference, a native handle — and Core knows only that it is there.
 
 ```text
-  τ = T τ̄     Σ(T) = intrinsic opaque     Γ ⊢ τ : Type
-  ────────────────────────────────────────────────────
+  τ = T τ̄     Σ(T) = intrinsic opaque     Γ ⊢ τ : Type     Γ ⊢ ρ : Row Effect
+  ─────────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ opaque ω [τ] : τ ! ρ
 ```
 
@@ -468,6 +468,7 @@ carrier( weaken k' [τ] v )   = carrier(v)
   Γ;· ⊢ v : Variant r0 ! ()                      ← every annotation of v checked
   carrier(v) = (k, w)      Γ;· ⊢ w : τ ! ()
   Γ ⊢ r : Row Type         Γ ⊨ k ∉ r
+  Γ ⊢ ρ : Row Effect
   ─────────────────────────────────────────
   Γ;Δ ⊢ v : Variant ( k : τ | r ) ! ρ
 ```
@@ -496,16 +497,21 @@ The last is the only one a `δ_f` produces, and the only one that is a value rat
 **Opening a region allocates a name** ([Regions](#regions)), and the names allocated so far, each with the layout of the region it opened, form a global context `Γ_R` of entries `region ℓ : ι`. Run-time terms are typed under it: `Γ_R` stands at the front of every `Γ` and, like `Σ`, is left implicit. A name in `Γ_R` is in scope everywhere, which is what lets a continuation holding a frame of that name be typed wherever it is carried.
 
 ```text
-  Γ;Δ ⊢ e : τ ! r    Γ ⊨ r # ρ
-  ────────────────────────────────
+  Γ;Δ;Ω ⊢ dt : τ ! ρ
+  each ( o ↦ σ ) ∈ Ω:   θ(o) is defined      Γ;· ⊢ θ(o) : σ ! ()
+  ──────────────────────────────────────────────────────────────
+  Γ;Δ ⊢ match θ dt : τ ! ρ
+
+  Γ;· ⊢ e : τ ! r    Γ ⊨ r # ρ    Γ ⊢ ρ : Row Effect
+  ───────────────────────────────────────────────────
   Γ;Δ ⊢ openEffC [ρ] e : τ ! (r ⊎ ρ)
 
-  ( ν : σ ) ∈ Γ_N
-  ───────────────────────
+  ( ν : σ ) ∈ Γ_N    Γ ⊢ ρ : Row Effect
+  ─────────────────────────────────────
   Γ;Δ ⊢ force ν : σ ! ρ
 
-  ( ν : σ ) ∈ Γ_N    Γ;· ⊢ e : σ ! ()
-  ──────────────────────────────────
+  ( ν : σ ) ∈ Γ_N    Γ;· ⊢ e : σ ! ()    Γ ⊢ ρ : Row Effect
+  ────────────────────────────────────────────────────────   ← e out of tail position
   Γ;Δ ⊢ fill ν e : σ ! ρ
 
   ( region ℓ : ι ) ∈ Γ_R      ι = ( k̄ : σ̄ )      dom(θ) = { k̄ }
@@ -517,7 +523,23 @@ The last is the only one a `δ_f` produces, and the only one that is a value rat
   Γ;Δ ⊢ region⟨ℓ⟩ θ in e : β ! ρ
 ```
 
+**`match θ dt` is typed by the occurrence context its tree is typed under.** `θ` holds the values of the scrutinees, and `θ(o)` follows the path of an occurrence through them, computing nothing:
+
+```text
+θ(s_i)            = v_i                        where θ = { s_i ↦ v_i }
+θ(o ! Ctor . j)   = values(ᾱ)_j                where θ(o) = M.Ctor [[κ̄]] ᾱ, j from 0
+θ(o . k)          = field_k(θ(o))
+θ(o ? k)          = w                          where carrier(θ(o)) = (k, w)
+
+field_k( extend k v1 v2 )    = v1
+field_k( extend k' v1 v2 )   = field_k(v2)     when k' ≠ k
+```
+
+The rule asks every value `Ω` records a type for to have it, at `()`, as a cell's value is typed, a value having every row. `case (v̄) of dt → match {s_i ↦ v_i} dt` meets it with `Ω = { s_i ↦ τ_i }`, and each step of the tree keeps it: a `switchCtor` branch records fields of the chain it selected, which the chain's rule types at the recorded types; a `bind` substitutes a value of its occurrence's type and leaves `Ω` as it is; and a `switchKey` default records `Variant r'` of a value injecting none of the enumerated keys, which the [rule for variant values](#variant-values) types there. An occurrence `o . k` reaches no entry of `Ω` and needs none, a record value holding an element at every key of its type.
+
 `openEffC [ρ] e` widens the **ambient row of a computation**, where `openEff` widens the **effect row inside a function's type**. Both are needed and neither subsumes the other: `openEff` is what allows a pure function to be passed where a wider arrow type is expected, and `openEffC` is what allows the result of applying such a function to sit in a context whose ambient row is the wider one.
+
+**`openEffC` kinds the row it adds, and its computation stands under no join point.** A widened computation is an application, `(openEff [ρ] v) w` being the one step that makes it, and a value is typed under any `Δ`; a jump out of it would land at a row other than its own. **`fill ν e` checks its initializer as a `letrec` does** ([Typing Rules](05-Typing-Rules.md)): at `()`, under no join point, and out of tail position. It is the initializer the allocation suspended, now running, and a jump out of it would leave the cell `Evaluating`.
 
 **A `letrec` allocates a location for each member**, and the locations allocated so far, each with the type of its member, form a global context `Γ_N` of entries `ν : σ`, which run-time terms are typed under as they are under `Γ_R`. **A store is typed by it**, each cell holding a term of its location's type:
 
@@ -719,13 +741,13 @@ Descending a decision tree takes reduction steps of its own, so that a `guard`'s
      →  match θ dt_0        otherwise
 
   match θ (switchKey o { k_i -> dt_i } [default -> dt_0])
-     →  match θ dt_i        when θ(o) injects k_i, looking through weaken
+     →  match θ dt_i        when carrier(θ(o)) = (k_i, w) for some w
      →  match θ dt_0        otherwise, if a default is present
 ```
 
 Substituting in `bind` **before** the recursive step is what allows a later `guard` to mention the bound variable; deferring the substitution would leave the condition with a free variable and no way to evaluate.
 
-`θ(o)` follows the projection path of the occurrence, which involves no computation. `switchKey` looks through any `weaken` wrapping the value to find the key actually injected.
+`θ(o)` follows the projection path of the occurrence, which involves no computation ([Run-time forms](#run-time-forms)). `switchKey` and `o ? k` read the carrier, looking through any `weaken` wrapping the value to find the key actually injected.
 
 Local totality ([Terms and Matching](04-Terms-and-Matching.md)) guarantees that one case always applies, so `match` never gets stuck.
 
@@ -943,6 +965,44 @@ This is **not** a reduction relation. `openEff`, `openEffC`, `weaken`, and `[[κ
 
 A variant value loses its `weaken` wrappers, so an erased `switchKey` dispatches on the key the value carries directly. By-need cells survive erasure, a `force` and a `fill` carrying computational content: `⌊force ν⌋ = force ν`, `⌊fill ν e⌋ = fill ν ⌊e⌋`, and `⌊N⌋` erases the term each cell holds.
 
+**Every other form erases homomorphically**, dropping what it writes for the checker: `⌊let x : τ = e1 in e2⌋ = let x = ⌊e1⌋ in ⌊e2⌋`, `⌊perform k.op [τ̄] e⌋ = perform k.op ⌊e⌋`, `⌊absurd [τ] e⌋ = absurd ⌊e⌋`, `⌊letrec { x̄ : σ̄ = ē } in e⌋ = letrec { x̄ = ⌊ē⌋ } in ⌊e⌋`, a decision tree node by node, `fail τ` as its expansion, and `⌊match θ dt⌋ = match ⌊θ⌋ ⌊dt⌋`. The rest — a variable, a literal, an application, a record form, `case`, `jump` — keeps its shape with its parts erased.
+
+### The erased relation
+
+**`→ᵤ` is the relation a backend implements**, on erased stores and erased terms `u`, what erasure produces. Its values `w` are what typed values erase to:
+
+```text
+w ::= c  |  λ x. u  |  {}  |  extend k w1 w2  |  inject k w  |  opaque ω
+    |  M.Ctor w̄        |w̄| ≤ arity(M.Ctor)
+    |  M.f w̄           |w̄| < arity(M.f)
+```
+
+A typed value erases to one of these: a `Λ`, an `openEff`, and a `weaken` erase to what they hold, and a chain to its head and its values, a constructor's holding no more values than its arity and an unsaturated foreign's fewer. **An erased chain is saturated when it holds as many values as its arity**, which is the typed relation's saturation because `Σ ok` leaves a foreign no type or constraint argument after its last value ([Typing Rules](05-Typing-Rules.md#what-σ-is-held-to)).
+
+Its evaluation contexts `Eᵤ` are the erasures of the typed ones: the grammar of `Ev` with the contexts under a removed form — `Ev [τ]`, `Ev [•]`, `openEff [ρ] Ev`, `openEffC [ρ] Ev`, `weaken k [τ] Ev` — left out and the annotations of the rest dropped; `Eᵤ_k` and `Eᵤ_ℓ` are read off them as `Ev_k` and `Ev_ℓ` are. **Its rules are the typed rules on erased terms**, with these differences:
+
+```text
+  (λ x. u) w            →ᵤ  u[x := w]
+  M.x                   →ᵤ  u                    where ( M.x = u ) ∈ ⌊G⌋
+  M.f w̄                 →ᵤ  δ_f(w̄)              when |w̄| = arity(M.f), and under the
+                                                 premises the typed rule asks
+  match θ (switchKey o { k_i -> dt_i } [default -> dt_0])
+                        →ᵤ  match θ dt_i        when θ(o) = inject k_i w
+                        →ᵤ  match θ dt_0        otherwise, if a default is present
+```
+
+and with no rule for a type application, a constraint application, `openEff`, or `openEffC`, which an erased term does not hold. A `full` clause's continuation is `λ y. handle Eᵤ_k[y] with h`, a cell is reached by its position, and a `letrec`, a `force`, and a `fill` thread `⌊N⌋` as the typed rules thread `N`. `⌊G⌋` holds the erasure of each definition, and each foreign's implementation as a backend runs it, on erased values: **an implementation is handed erased values, so no annotation reaches it**, and `⌊δ_f(v̄)⌋ = δ_f(⌊v̄⌋)`, the same fault where it faults.
+
+**Each typed step is zero or one erased steps, and which is fixed by its rule.**
+
+| Typed step | Erased steps |
+| --- | --- |
+| `(Λ(a : κ). v) [σ] → v[a := σ]`, `(Λ(_ : C). v) [•] → v` | zero: both sides erase to `⌊v⌋`, up to the renaming of a region binder |
+| `(openEff [ρ] v) w → openEffC [ρ] (v w)`, `openEffC [ρ] v → v` | zero: the coercion is all that changes |
+| every other step: β, unfolding a global, a saturated foreign's chain, `let`, the record rules, `case` and `match`, join points, handlers, regions and cells, `letrec`, `force`, and `fill` | one, by the erased rule of the same name |
+
+A step under a context is a step under its erasure, the context forms erasure removes contributing nothing.
+
 ## Properties
 
 The following are stated as the properties the implementation is expected to have. They are not proved here. [Implementation Plan](../01-Introduction/04-Implementation-Plan.md) describes how each becomes a property test.
@@ -973,6 +1033,5 @@ The claim is **not** that operations are never performed. A term may be well typ
 
 This is the property the whole design rests on, and it is the one that testing is least likely to reveal. A violation does not crash: it produces a program that silently performs effects it declared it would not. D7 places effect rows on arrows, D20 keeps `IO` out of the effect world, and D23 forbids effectful `foreign` arrows, all in service of this single statement. Note that D23 alone is not sufficient: a conforming `δ_f`, condition (3) of `Σ ⊨ G`, is equally required, since `handle` intercepts only `perform` while a `foreign` application calls its implementation directly.
 
-**Erasure.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ N : Γ_N`, and `G ⊢ N; e → N2; e2`, then `⌊N⌋; ⌊e⌋` reduces to `⌊N2⌋; ⌊e2⌋` in zero or one steps under the erased relation, the zero-step case being a step that only introduced or discharged a coercion. If `G ⊢ N; e → N2; fault φ` then `⌊N⌋; ⌊e⌋` reduces to `⌊N2⌋; fault φ`, the same fault; an erased evaluator and a typed one fail identically. The value restriction is what makes this hold: the body of a type or constraint abstraction is already a value, so erasing the abstraction cannot move evaluation to a different point.
-
+**Erasure.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ N : Γ_N`, `·; · ⊢ e : τ ! ρ` under `Γ_R` and `Γ_N`, and `G ⊢ N; e → N2; e2`, then `⌊N⌋; ⌊e⌋` reduces to `⌊N2⌋; ⌊e2⌋` in zero or one steps of `→ᵤ` ([The erased relation](#the-erased-relation)), zero exactly where the step applies a `Λ` to its argument or moves or discharges a coercion. If `G ⊢ N; e → N2; fault φ` then `⌊N⌋; ⌊e⌋` reduces to `⌊N2⌋; fault φ`, the same fault; an erased evaluator and a typed one fail identically. The value restriction is what makes this hold: the body of a type or constraint abstraction is already a value, so erasing the abstraction cannot move evaluation to a different point. `Σ ok` does the same for a call: no type or constraint argument stands after a foreign's last value, so a chain is saturated after erasure exactly where it was before, and the foreign is called at the same point.
 **A continuation applied twice is covered like any other term.** The reduction rule for a `full` clause places no bound on applications of `k_i`, so a term applying it twice is well typed and has a defined reduction sequence, and the properties above hold of it. A backend that does not reproduce that sequence does not conform (D18).

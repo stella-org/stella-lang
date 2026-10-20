@@ -1089,7 +1089,7 @@ Arithmetic is the same story without an intrinsic type of its own: `Base.Int.add
 
 `List` belongs to `Prelude`, not to `Prim`; the vertical slice of [Examples](../03-Typed-Core/08-Examples.md) declares its own `Main.List` rather than reaching for either.
 
-`Partial` is not here either. It is an ordinary effect declaration of `Prelude` ([Effects](../03-Typed-Core/03-Effects.md)), and `fail` is derived notation for `perform Partial.abort [τ] Prim.Unit` that elaboration expands. The Core type checker never mentions either.
+`Partial` is not here either. It is an ordinary effect declaration of `Prelude` ([Effects](../03-Typed-Core/03-Effects.md)), and `fail τ` is derived notation for `perform Partial.abort [τ] Prim.Unit` that elaboration expands. The Core type checker never mentions either.
 
 ## What is not a name at all
 

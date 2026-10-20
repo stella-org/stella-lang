@@ -11,6 +11,8 @@
 -- | pure (D23), wherever a value passes through it, an opaque type's arguments
 -- | and a row element's payload included: the boundary performs no effect a row
 -- | could name. A row is empty by its normal form, as the Core checker reads it.
+-- | A quantifier after the last argument is refused as the Core checker refuses
+-- | it: a foreign is called when its last value arrives.
 -- |
 -- | The crossing is target-independent: what a target does with each kind is
 -- | its own, and what is written into a foreign manifest is this.
@@ -56,6 +58,9 @@ data Refusal
   | ActionOfAction
   -- | A type under a constraint, which no host could be handed evidence of.
   | ConstrainedType
+  -- | A quantifier after the last argument, which would make the call wait on
+  -- | a type rather than on a value.
+  | QuantifiedResult
   -- | An arrow performing effects, where a value passes through.
   | PerformingArrow
   -- | A type that is none of the forms a value has.
@@ -66,17 +71,20 @@ type Refused = { position :: Position, refusal :: Refusal }
 -- | How a foreign of the scheme given crosses, against the signature its
 -- | types are declared in.
 crossingOf :: Core.Signature -> TypeScheme -> Either Refused Signature
-crossingOf sig scheme = spine [] scheme.body
+crossingOf sig scheme = spine [] false scheme.body
   where
-  spine params t = case t, asFunction t of
-    TForall _ _ body, _ -> spine params body
+  -- `quantified` is whether a quantifier stands after the last argument so far
+  spine params quantified t = case t, asFunction t of
+    TForall _ _ body, _ -> spine params true body
     TConstrained _ _, _ -> Left { position: Result, refusal: ConstrainedType }
     _, Just f
       | not (isEmptyRow f.row) -> Left { position: Argument (Array.length params + 1), refusal: PerformingArrow }
       | otherwise -> do
           kind <- valueAt (Argument (Array.length params + 1)) f.argument
-          spine (Array.snoc params kind) f.result
-    _, Nothing -> { params, result: _ } <$> resultOf t
+          spine (Array.snoc params kind) false f.result
+    _, Nothing
+      | quantified -> Left { position: Result, refusal: QuantifiedResult }
+      | otherwise -> { params, result: _ } <$> resultOf t
 
   resultOf t = case headOf t of
     Just { name, arguments: [ produced ] } | name == ioTy -> case headOf produced of
@@ -138,5 +146,6 @@ instance Show Refusal where
     ActionArgument -> "ActionArgument"
     ActionOfAction -> "ActionOfAction"
     ConstrainedType -> "ConstrainedType"
+    QuantifiedResult -> "QuantifiedResult"
     PerformingArrow -> "PerformingArrow"
     NoValue t -> "NoValue " <> show t

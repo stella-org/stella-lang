@@ -35,7 +35,7 @@ import Stella.Compiler.TypedCore.Kinding (KindError, checkKind, quantifiableKind
 import Stella.Compiler.TypedCore.Name (EffName, Ident, KindVar, ModuleName, OpName, Qualified(..), TyName)
 import Stella.Compiler.TypedCore.Prim (primModule, primSignature, pureFn)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
-import Stella.Compiler.TypedCore.SignatureCheck (SignatureError, impureArrow, sigOk)
+import Stella.Compiler.TypedCore.SignatureCheck (SignatureError, erasedTail, impureArrow, sigOk)
 import Stella.Compiler.TypedCore.Signature (CtorInfo, Signature, TyConInfo(..), ValueInfo, lookupAttribute)
 import Stella.Compiler.TypedCore.AttributeCheck (AttributeError, checkAttribute, checkAttributeDecl)
 import Stella.Compiler.TypedCore.Term (Expr)
@@ -78,6 +78,10 @@ data DeclError
   -- | carries. A handler would be bypassed on the result side, and the calling
   -- | convention would leak on the argument side.
   | EffectfulForeign (Qualified Ident) Type
+  -- | A `foreign` type taking a type or a constraint after its last value: the
+  -- | call would wait on an argument erasure removes, and so happen at another
+  -- | point once erased.
+  | ErasedForeignTail (Qualified Ident)
   -- | A `nonrec` right-hand side referring to itself or to a later value
   -- | declaration, naming what it refers to.
   | ForwardReference (Qualified Ident)
@@ -249,6 +253,7 @@ addDecl m sigTy acc = case _ of
   DeclForeign at decl -> do
     checkScheme at sigTy decl.scheme
     checkPurity at (Qualified m.name decl.name) decl.scheme
+    when (erasedTail decl.scheme.body) (Left { at, error: ErasedForeignTail (Qualified m.name decl.name) })
     addValue at m.name decl.name { scheme: decl.scheme, isForeign: true } acc
 
   DeclNonRec _ _ -> pure acc

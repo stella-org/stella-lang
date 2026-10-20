@@ -83,6 +83,9 @@ The distinction is also the unit of **separate compilation**. `Σ` is what a mod
 
 - Every scheme `forall k̄. σ` has `·, k̄ ⊢ σ : Type`.
 - Every arrow of a foreign's type standing where a value passes through is pure (D23), the payload of a row element included. A constraint carries no value, so the arrows inside one are not held to it.
+- A foreign's type takes no type and no constraint after its last value: no `forall` and no `=>` stands on its spine after its last arrow, nor anywhere on it where it has no arrow (D49).
+
+**A foreign is saturated by a value, or by its bare reference.** Erasure removes type and constraint applications and keeps value arguments ([Semantics](06-Semantics.md#erasure)), so an erased chain tells a saturated foreign from an unsaturated one by counting its values against the arity, and nothing else. Were a type argument to saturate one, the typed relation and the erased one would part where it is missing: `foreign make : forall a. a` makes the bare `M.make` a value, `M.make [Int]` the call, and `let x : forall a. a = M.make in 0` steps without calling `δ_make`, while its erasure `let x = M.make in 0` calls it, and faults where `δ_make` does. A β-step builds such a chain from a well-typed term, so no restriction on where a chain is written prevents it; the declaration is where it is ruled out. `forall a. Unit -> a` is what such a foreign is declared as instead.
 
 **The exact shape of a constructor is what dispatch relies on.** `switchCtor` instantiates a constructor's fields at the type arguments of the occurrence it takes apart, and construction instantiates them at the arguments the scheme was applied to. The two agree only because the scheme's result is the owner applied to its own parameters. A constructor of `T : Type -> Type` declared `C : forall (a : Type). a -> T Int` breaks that: `C [String] s` has type `T Int`, and a branch taking it apart types the field at `Int` while the value carries a `String`. Under `Σ wf` a field obtained by dispatch is well kinded at the occurrence's own kind and type arguments, and `cursorΣ` may take every arrow of a constructor or a foreign to be pure ([Chains of a constructor or a foreign](#chains-of-a-constructor-or-a-foreign)).
 
@@ -110,53 +113,79 @@ attribute Prim.macro, attribute Prim.entrypoint, attribute Prim.elaborationOnly 
 Γ ⊢ C ok                    constraint well-formedness
 Γ ⊨ C                       constraint entailment
 Γ ⊢ τ1 ≡ τ2                 type equality
+⊢ Γ ok                      local context well-formedness
+Γ ⊢ Δ ok    Γ ⊢ Ω ok        join point and occurrence context well-formedness
 Γ; Δ ⊢ e : τ ! ρ            term typing; ρ is the ambient effect row
 Γ; Δ; Ω ⊢ dt : τ ! ρ        decision tree typing
-Ω ⊢ o : τ                   occurrence typing
+Γ; Ω ⊢ o : τ                occurrence typing
 ```
 
 `ρ` is the range of effects a term's evaluation may produce. Pure constructs are typeable under any `ρ`. Constructs that produce effects require agreement with `ρ`. Containment on an arrow's effect row is never inserted automatically (D8).
 
+A context is well formed when each entry is formed under the entries before it:
+
+```text
+               ⊢ Γ ok    Γ ⊢ κ qkind       ⊢ Γ ok    Γ ⊢ τ : Type       ⊢ Γ ok    Γ ⊢ C ok
+  ⊢ · ok       ─────────────────────       ──────────────────────       ──────────────────
+               ⊢ Γ, a : κ ok               ⊢ Γ, x : τ ok                ⊢ Γ, C ok
+
+  ⊢ Γ ok                  ⊢ Γ ok    ℓ ∉ dom(Γ)    Γ ⊢ ι : Row Type
+  ──────────              ──────────────────────────────────────────
+  ⊢ Γ, k ok               ⊢ Γ, region ℓ : ι ok
+
+  each ( j : (τ̄) -> τ ! ρ ) ∈ Δ:   Γ ⊢ τ̄ : Type    Γ ⊢ τ : Type    Γ ⊢ ρ : Row Effect
+  ─────────────────────────────────────────────────────────────────────────────────
+  Γ ⊢ Δ ok
+
+  each ( o ↦ τ ) ∈ Ω:   Γ ⊢ τ : Type
+  ──────────────────────────────────
+  Γ ⊢ Ω ok
+```
+
+**Regularity.** If `⊢ Γ ok`, `Γ ⊢ Δ ok`, and `Γ;Δ ⊢ e : τ ! ρ`, then `Γ ⊢ τ : Type` and `Γ ⊢ ρ : Row Effect`; with `Γ ⊢ Ω ok` as well, the same holds of `Γ;Δ;Ω ⊢ dt : τ ! ρ`. **Every rule carries what this needs among its own premises.** A rule typing no subterm at its row asks `Γ ⊢ ρ : Row Effect`, a literal's and a variable's among them; a rule whose type no premise kinds kinds it, the annotation of a `let` and the answer type of a `handle` among them; and a dispatch that may have no branch asks both. A derivation therefore never leans on an induction hypothesis that a dispatch with no branch, or a `case` or a `jump` with no argument, does not supply. The checker kinds every row where it introduces one — a `λ`'s, a `handle`'s inner row, a region's body row — so every row it carries meets these premises already.
+
 ## Basic rules
 
 ```text
-  ──────────────────────────
-  Γ;Δ ⊢ c : litType(c) ! ρ
+  Γ ⊢ ρ : Row Effect               (x : τ) ∈ Γ    Γ ⊢ ρ : Row Effect
+  ──────────────────────────       ──────────────────────────────────
+  Γ;Δ ⊢ c : litType(c) ! ρ         Γ;Δ ⊢ x : τ ! ρ
 
-  (x : τ) ∈ Γ       (M.x : forall k̄. σ) ∈ Σ   Γ ⊢ κ̄' qkind   |κ̄'| = |k̄|
-  ─────────────────  ─────────────────────────────────────────────────────
-  Γ;Δ ⊢ x : τ ! ρ    Γ;Δ ⊢ M.x [[κ̄']] : σ[k̄ := κ̄'] ! ρ
+  (M.x : forall k̄. σ) ∈ Σ    Γ ⊢ κ̄' qkind    |κ̄'| = |k̄|    Γ ⊢ ρ : Row Effect
+  ──────────────────────────────────────────────────────────────────────────
+  Γ;Δ ⊢ M.x [[κ̄']] : σ[k̄ := κ̄'] ! ρ
 
-  Γ ⊢ ρ' : Row Effect    Γ, x : τ1; · ⊢ e : τ2 ! ρ'
-  ─────────────────────────────────────────────────   ← the row the λ writes is its arrow's
-  Γ;Δ ⊢ λ(x : τ1) / ρ'. e : τ1 -{ρ'}-> τ2 ! ρ           ← Δ is discarded
+  Γ ⊢ τ1 : Type    Γ ⊢ ρ' : Row Effect    Γ, x : τ1; · ⊢ e : τ2 ! ρ'
+  Γ ⊢ ρ : Row Effect
+  ─────────────────────────────────────────────────────────────────   ← the row the λ writes is its arrow's
+  Γ;Δ ⊢ λ(x : τ1) / ρ'. e : τ1 -{ρ'}-> τ2 ! ρ                            ← Δ is discarded
 
   Γ;Δ ⊢ e1 : τ1 -{ρ}-> τ2 ! ρ    Γ;Δ ⊢ e2 : τ1 ! ρ
   ────────────────────────────────────────────────   ← the arrow's row equals the ambient row;
   Γ;Δ ⊢ e1 e2 : τ2 ! ρ                                  a chain of a constructor or a foreign
                                                         has a rule of its own, below
 
-  Γ ⊢ κ qkind    Γ, a : κ; · ⊢ v : τ ! ()    v is a value form
-  ────────────────────────────────────────────────────────────
+  Γ ⊢ κ qkind    Γ, a : κ; · ⊢ v : τ ! ()    v is a value form    Γ ⊢ ρ : Row Effect
+  ───────────────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ Λ(a : κ). v : forall (a : κ). τ ! ρ
 
   Γ;Δ ⊢ e : forall (a : κ). τ ! ρ    Γ ⊢ σ : κ
   ─────────────────────────────────────────────
   Γ;Δ ⊢ e [σ] : τ[a := σ] ! ρ
 
-  Γ ⊢ C ok    Γ, C; · ⊢ v : τ ! ()    v is a value form
-  ─────────────────────────────────────────────────────
+  Γ ⊢ C ok    Γ, C; · ⊢ v : τ ! ()    v is a value form    Γ ⊢ ρ : Row Effect
+  ────────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ Λ(_ : C). v : C => τ ! ρ
 
   Γ;Δ ⊢ e : C => τ ! ρ    Γ ⊨ C
   ───────────────────────────────   ← no proof term; the checker re-derives
   Γ;Δ ⊢ e [•] : τ ! ρ
 
-  Γ;Δ ⊢ e1 : τ1 ! ρ    Γ, x : τ1; Δ ⊢ e2 : τ2 ! ρ
-  ───────────────────────────────────────────────
+  Γ ⊢ τ1 : Type    Γ;Δ ⊢ e1 : τ1 ! ρ    Γ, x : τ1; Δ ⊢ e2 : τ2 ! ρ
+  ──────────────────────────────────────────────────────────────
   Γ;Δ ⊢ let x : τ1 = e1 in e2 : τ2 ! ρ
 
-  Γ' = Γ, x1 : σ1, …, xn : σn
+  Γ' = Γ, x1 : σ1, …, xn : σn      each i:  Γ ⊢ σi : Type
   each i:  Γ'; · ⊢ ei : σi ! ()
   { x̄ = ē } is initialization-safe          ← each ei reads only x1 … xi-1
   Γ'; Δ ⊢ e : τ ! ρ
@@ -167,10 +196,13 @@ attribute Prim.macro, attribute Prim.entrypoint, attribute Prim.elaborationOnly 
 to a join point outside its group would leave the group half initialized. Its row is `()`, so
 initialization has no effect to order beside what it reads ([Initialization Safety](10-Initialization.md)).
 
-  Γ;Δ ⊢ e : τ1 ! ρ    Γ ⊢ τ1 ≡ τ2
-  ────────────────────────────────   ← conversion is by equality; there is no subtyping
-  Γ;Δ ⊢ e : τ2 ! ρ
+  Γ;Δ ⊢ e : τ1 ! ρ1    Γ ⊢ τ1 ≡ τ2    Γ ⊢ ρ1 ≡ ρ2
+  Γ ⊢ τ2 : Type        Γ ⊢ ρ2 : Row Effect
+  ─────────────────────────────────────────────────   ← conversion is by equality; there is no subtyping
+  Γ;Δ ⊢ e : τ2 ! ρ2
 ```
+
+**Conversion changes the type and the row together, and each only by equality.** It is not effect-row subtyping (D8): `ρ1 ≡ ρ2` relates rows with one canonical form, so a row is never widened by it, which takes `openEff` or `openEffC`. The targets are kinded because equality does not keep a kind: it relates ill-kinded types as well, `() ⊎ Int` to `Int` among them ([What `Σ` is held to](#what-σ-is-held-to)), so a conversion to an ill-kinded type would break regularity.
 
 `litType` assigns each literal its primitive type: an integer literal has type `Int`, a floating-point literal `Number`, a string literal `String`, a character literal `Char`, and `true` and `false` have type `Boolean`. A literal produces no effect, so it is typeable under any ambient row.
 
@@ -222,14 +254,14 @@ M.id [Int -> Int]          ⟨ a -> a ; [a := Int -> Int] ⟩      expects one v
 M.id [Int -> Int] f        ⟨ a ; [a := Int -> Int] ⟩           saturated
 ```
 
-The last line is saturated because the declared remainder is the variable `a`, even though `θ(a) = Int -> Int` is a function type. **A chain ends where it is saturated**, and an argument beyond is an ordinary application of what the chain returns: `M.id [Int -> Int] f 0` is the application of the chain `M.id [Int -> Int] f` to `0`, typed by the rule for `e1 e2`. `foreign make : forall a. a` instantiated at a function type behaves the same way: `M.make [Int -> Int]` is saturated at once. A constructor's declared result is `T ᾱ`, never an arrow, so nothing applies a saturated one.
+The last line is saturated because the declared remainder is the variable `a`, even though `θ(a) = Int -> Int` is a function type. **A chain ends where it is saturated**, and an argument beyond is an ordinary application of what the chain returns: `M.id [Int -> Int] f 0` is the application of the chain `M.id [Int -> Int] f` to `0`, typed by the rule for `e1 e2`. `foreign make : forall a. Unit -> a` instantiated at a function type behaves the same way: `M.make [Int -> Int] Prim.Unit` is saturated, and an argument after it is applied to what the call returns. A constructor's declared result is `T ᾱ`, never an arrow, so nothing applies a saturated one.
 
-**Arity is a static property of the declaration.** The number of value-argument positions is the number of arrows on the declared type's spine, which is what the cursor walks and what substitution never changes. Erasure therefore preserves it: after type arguments are gone, a backend still calls `δ_f` with exactly that many run-time arguments.
+**Arity is a static property of the declaration.** The number of value-argument positions is the number of arrows on the declared type's spine, which is what the cursor walks and what substitution never changes. **A chain is saturated exactly when it holds as many values as that**: the cursor passes every quantifier and constraint before an arrow to reach it, and `Σ ok` leaves none after the last arrow of a foreign, nor of a constructor, whose scheme ends in its owner. Erasure therefore keeps both: after type arguments are gone, a backend still calls `δ_f` with exactly that many run-time arguments, and at the point the typed relation does.
 
 ### Typing a chain
 
 ```text
-  M.g a constructor or a foreign      Γ ⊢ κ̄ qkind    |κ̄| = |k̄|
+  M.g a constructor or a foreign      Γ ⊢ κ̄ qkind    |κ̄| = |k̄|    Γ ⊢ ρ : Row Effect
   cursorΣ(M.g [[κ̄]] α1 … αn) = ⟨ σ ; θ ⟩    n ≥ 1    each αi well formed, as below
   ──────────────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ M.g [[κ̄]] α1 … αn : θ(σ) ! ρ
@@ -254,6 +286,7 @@ An argument is well formed when, writing `⟨ σ' ; θ' ⟩` for the cursor **be
 ## Records and variants
 
 ```text
+  Γ ⊢ ρ : Row Effect
   ───────────────────────────
   Γ;Δ ⊢ {} : Record () ! ρ
 
@@ -306,7 +339,8 @@ merge : forall (r : Row Type). forall (s : Row Type).
 ## Effects
 
 ```text
-  nf(ρ) = ⟨ F ; T ⟩      F(k) = E τ̄                ← the key selects the element
+  Γ ⊢ ρ ≡ ( ent | ρ' )    key(ent) = k            ← the key selects the element
+  Γ ⊢ ( ent | ρ' ) : Row Effect    payload(ent) = E τ̄
   ( op : forall (b̄ : κ̄'). σ ->* τ ) ∈ Σ(E)         ← the payload selects the protocol
   E's type parameters are ā
   Γ ⊢ σ̄ : κ̄'      Γ;Δ ⊢ e : σ[ā := τ̄][b̄ := σ̄] ! ρ
@@ -315,6 +349,7 @@ merge : forall (r : Row Type). forall (s : Row Type).
 
   h = { handles ent ; return (x : α) -> e_r ; cl_i }
   Γ ⊢ ( ent | ρ ) : Row Effect                      ← the element the handle removes
+  Γ ⊢ α : Type      Γ ⊢ β : Type                    ← the annotation and the answer
   Γ;· ⊢ e : α ! ( ent | ρ )                         ← inside handle the row grows
   payload(ent) = E τ̄                                ← the key selects it, the payload names E
   Γ, x : α; · ⊢ e_r : β ! ρ
@@ -335,22 +370,25 @@ merge : forall (r : Row Type). forall (s : Row Type).
   Γ' = Γ, region ℓ : ι, { RegionKey ℓ ∉ t | t : Row Effect ∈ Γ }
   Γ' ⊢ ( region ℓ | ρ ) : Row Effect                ← sharp by the recorded facts
   Γ';· ⊢ e : β ! ( region ℓ | ρ )
+  Γ ⊢ β : Type      Γ ⊢ ρ : Row Effect              ← the answer and the residual row, outside
   ℓ ∉ frn(β) ∪ frn(ρ)                               ← nothing of the region outlives it
   ───────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ region [ℓ] ( k̄ : σ̄ ) @ ( ē ) in e : β ! ρ
 
-  ( region ℓ : ι ) ∈ Γ      ι(k) = σ      RegionKey ℓ ∈ dom(nf(ρ))
-  ─────────────────────────────────────────────────────────────
+  ( region ℓ : ι ) ∈ Γ      ι(k) = σ      RegionKey ℓ ∈ keys(ρ)      Γ ⊢ ρ : Row Effect
+  ──────────────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ readCell ℓ.k : σ ! ρ
 
-  ( region ℓ : ι ) ∈ Γ      ι(k) = σ      RegionKey ℓ ∈ dom(nf(ρ))      Γ;Δ ⊢ e : σ ! ρ
-  ──────────────────────────────────────────────────────────────────────────────────
+  ( region ℓ : ι ) ∈ Γ      ι(k) = σ      RegionKey ℓ ∈ keys(ρ)      Γ;Δ ⊢ e : σ ! ρ
+  ─────────────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ writeCell ℓ.k e : Unit ! ρ
 
   Γ;Δ ⊢ e : τ1 -{r1}-> τ2 ! ρ    Γ ⊨ r1 # r'    Γ ⊢ r' : Row Effect
   ─────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ openEff [r'] e : τ1 -{r1 ⊎ r'}-> τ2 ! ρ
 ```
+
+**The element a `perform` names is one the row decomposes into**, as the residual of a `switchKey` is ([Join points and decision trees](#join-points-and-decision-trees)). In a consistent context the kinding premise asks `k ∉ ρ'`, so the element is unique up to `≡`, and `E τ̄` is the payload the row's [sharp normal form](02-Rows.md#sharp-normal-form) has at `k`. Read off that normal form, the rule would hold of a row only as it is written: a substitution bringing a second element keyed `k` into a tail leaves the row with no normal form, while a decomposition is an equality and a kinding, which every substitution preserves ([Rows](02-Rows.md)). `readCell` and `writeCell` need no payload, an element keyed `RegionKey ℓ` being `region ℓ` and nothing else, and ask only that the key be among the row's: `keys(ρ)` is defined on every row, and a substitution only adds to it. **The checker reads the element off the sharp normal form**, as it does a `switchKey`'s decomposition: a row with two payloads at one key has none, and is reported. Only an inconsistent context kinds such a row.
 
 That handlers are deep (D15) shows in the type of the continuation `k_i`: calling it returns under the same handler, so the result type is `β`, the result of the `handle`, and the ambient row is `ρ`, the row a clause stands at, which holds every region open around the `handle` on both sides of a resumption. A shallow handler would give `τ_i -{( ent | ρ )}-> α`.
 
@@ -384,7 +422,7 @@ The explicitness is the price of D8. The elaborator inserts it, so an author doe
 
 **`ℓ ∉ dom(Γ)` is binder freshness**, the well-formedness condition on the checker's input stated above, and a binder breaking it is rejected with `RegionBinderShadows`. It is what lets an occurrence of `ℓ` mean the region it is written under: a binder shadowing an outer one would make a reference to the outer region read the inner, and would make the condition below read an outer region of the same name as an escape.
 
-**`ℓ ∉ frn(β) ∪ frn(ρ)` is the whole of the escape discipline**, and a term breaking it is rejected with `RegionEscapes`. Every way to reach a cell mentions the region: a closure over a `readCell ℓ.k` carries `region ℓ` in its own arrow. The condition therefore keeps such a closure out of the answer type and out of the residual row. There is no cell handle to leak, a cell being named by its region and key rather than held as a value, so these are the only routes there are. This is what a rank-2 quantifier would enforce for a `runST`-shaped function; `region` being a binder, a side condition enforces it directly.
+**`ℓ ∉ frn(β) ∪ frn(ρ)` is the whole of the escape discipline**, and a term breaking it is rejected with `RegionEscapes`. Every way to reach a cell mentions the region: a closure over a `readCell ℓ.k` carries `region ℓ` in its own arrow. The condition therefore keeps such a closure out of the answer type and out of the residual row. There is no cell handle to leak, a cell being named by its region and key rather than held as a value, so these are the only routes there are. This is what a rank-2 quantifier would enforce for a `runST`-shaped function; `region` being a binder, a side condition enforces it directly. **The answer type and the residual row are kinded under `Γ` as well**, where the term stands, the body's derivation kinding them under `Γ'` alone. `ℓ` is not bound in `Γ`, so the kinding premises imply the condition; it is written apart because it is the escape discipline, and the checker reports it as such, every row it carries being kinded where it was introduced.
 
 **What the condition forbids is a reference into a region, not a region.** A term that carries the whole `region` — a closure over it, or a continuation an outer handler captured across it — carries the binder along with everything the binder scopes over, and its type mentions no `ℓ` at all, that name being bound within. Such a term is closed with respect to the region and may be passed anywhere; what each application of it sees is settled in [Semantics](06-Semantics.md). The condition is about references that would outlive what binds them, and those alone.
 
@@ -393,7 +431,7 @@ The explicitness is the price of D8. The elaborator inserts it, so an author doe
 ## Join points and decision trees
 
 ```text
-  Γ ⊢ τ : Type    Γ ⊢ τ̄ : Type
+  Γ ⊢ τ : Type    Γ ⊢ τ̄ : Type    Γ ⊢ ρ : Row Effect
   Γ, x̄ : τ̄; Δ, j : (τ̄) -> τ ! ρ ⊢ e1 : τ ! ρ      ← the root of e1 is in tail position
   Γ;      Δ, j : (τ̄) -> τ ! ρ ⊢ e2 : τ ! ρ
   ───────────────────────────────────────────────────
@@ -407,11 +445,12 @@ The explicitness is the price of D8. The elaborator inserts it, so an author doe
   ────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ case (ē) of dt : τ ! ρ
 
-  Γ;Δ ⊢ e : τ ! ρ                      Ω ⊢ o : τ_o    Γ, x : τ_o; Δ; Ω ⊢ dt : τ ! ρ
-  ────────────────────────             ────────────────────────────────────────────
+  Γ;Δ ⊢ e : τ ! ρ                      Γ;Ω ⊢ o : τ_o    Γ, x : τ_o; Δ; Ω ⊢ dt : τ ! ρ
+  ────────────────────────             ──────────────────────────────────────────────
   Γ;Δ;Ω ⊢ leaf e : τ ! ρ               Γ;Δ;Ω ⊢ bind x = o in dt : τ ! ρ
 
-  Ω ⊢ o : T σ̄       T is a data type, not an intrinsic one (§6.2 Prim and Base)
+  Γ;Ω ⊢ o : T σ̄       T is a data type, not an intrinsic one (§6.2 Prim and Base)
+  Γ ⊢ τ : Type      Γ ⊢ ρ : Row Effect             ← the branches may be none
   each Ctor_i is a constructor of T, Ctor_i : forall ā. τ̄_i -> T ā
   the Ctor_i are distinct
   each i: Γ;Δ; Ω ∪ { o ! Ctor_i . j ↦ τ_ij[ā := σ̄] } ⊢ dt_i : τ ! ρ
@@ -420,14 +459,15 @@ The explicitness is the price of D8. The elaborator inserts it, so an author doe
   ─────────────────────────────────────────────────────────────
   Γ;Δ;Ω ⊢ switchCtor o { Ctor_i -> dt_i } [default -> dt_0] : τ ! ρ
 
-  Ω ⊢ o : τ_o       τ_o is a primitive type with literals
+  Γ;Ω ⊢ o : τ_o       τ_o is a primitive type with literals
   the c_i are literals of τ_o and are distinct
   each i: Γ;Δ;Ω ⊢ dt_i : τ ! ρ
   Γ;Δ;Ω ⊢ dt_0 : τ ! ρ                          ← a default is mandatory
   ─────────────────────────────────────────────────────────────
   Γ;Δ;Ω ⊢ switchLit o { c_i -> dt_i } default -> dt_0 : τ ! ρ
 
-  Ω ⊢ o : Variant r        the k_i are distinct
+  Γ;Ω ⊢ o : Variant r        the k_i are distinct
+  Γ ⊢ τ : Type      Γ ⊢ ρ : Row Effect             ← the branches may be none
   Γ ⊢ r ≡ ( k_1 : τ_1, …, k_n : τ_n | r' )       ← r decomposes into the enumerated
   Γ ⊢ ( k_1 : τ_1, …, k_n : τ_n | r' ) : Row Type    elements and a residual r'
   each i: Γ;Δ; Ω ∪ { o ? k_i ↦ τ_i } ⊢ dt_i : τ ! ρ
@@ -440,9 +480,9 @@ The explicitness is the price of D8. The elaborator inserts it, so an author doe
   ─────────────────────────────────────────────────────────────────────
   Γ;Δ;Ω ⊢ guard e dt_1 dt_2 : τ ! ρ
 
-  Γ ⊢ ρ ≡ ( Partial | ρ' )    Γ ⊢ τ : Type
-  ──────────────────────────────────────────────────  (derived; see §3.3 Effects)
-  Γ;Δ;Ω ⊢ fail : τ ! ρ
+  Γ ⊢ ρ ≡ ( Partial | ρ' )    Γ ⊢ ( Partial | ρ' ) : Row Effect    Γ ⊢ τ : Type
+  ──────────────────────────────────────────────────────────────────────────  (derived; see §3.3 Effects)
+  Γ;Δ;Ω ⊢ fail τ : τ ! ρ
 ```
 
 **A handler writes the element it removes, not only its key.** The row being handled appears nowhere else in the term, so neither half of the element is recoverable from the other: a key does not name an effect, and the arguments `τ̄` are not determined by the clauses without first-order matching. What `Ω` and `Σ` give the rules is then a lookup rather than a search. Only `key(ent)` has meaning at run time; the payload is an annotation and erases.
@@ -452,18 +492,18 @@ The explicitness is the price of D8. The elaborator inserts it, so an author doe
 ```text
   ( s_i ↦ τ ) ∈ Ω
   ───────────────
-  Ω ⊢ s_i : τ
+  Γ;Ω ⊢ s_i : τ
 
   ( o ↦ τ ) ∈ Ω                    ← a dispatch records what it takes apart
   ─────────────
-  Ω ⊢ o : τ
+  Γ;Ω ⊢ o : τ
 
-  Ω ⊢ o : Record r    nf(r) = ⟨F ; T⟩    F(k) = τ
-  ───────────────────────────────────────────────
-  Ω ⊢ o . k : τ
+  Γ;Ω ⊢ o : Record r    Γ ⊢ r ≡ ( k : τ | r' )    Γ ⊢ ( k : τ | r' ) : Row Type
+  ──────────────────────────────────────────────────────────────────────────
+  Γ;Ω ⊢ o . k : τ
 ```
 
-`o ! Ctor . j` and `o ? k` are typed by the branch that established them and by nothing else: what a constructor or a variant carries is known only under the dispatch that selected it, so those paths reach `Ω` through `switchCtor` and `switchKey`. A record needs no such branch, having one element at every key of its row, so `o . k` is read off the type of what it projects from.
+`o ! Ctor . j` and `o ? k` are typed by the branch that established them and by nothing else: what a constructor or a variant carries is known only under the dispatch that selected it, so those paths reach `Ω` through `switchCtor` and `switchKey`. A record needs no such branch, having one element at every key of its row, so `o . k` is read off the type of what it projects from. The element is one the row decomposes into, as a `perform`'s is ([Effects](#effects)), and the checker reads it off the sharp normal form in the same way. The kinding premise is what keeps `Ω` well formed: it kinds `τ`, which a `bind` puts into `Γ`.
 
 In the default branch of `switchCtor` and `switchLit` the occurrence context `Ω` is unchanged, because Core does not track the refinement "not one of the enumerated cases". Refinement happens only in the default branch of `switchKey`, where the occurrence takes the residual type `Variant r'`.
 

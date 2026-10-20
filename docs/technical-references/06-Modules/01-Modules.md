@@ -222,6 +222,8 @@ The rule is syntactically checkable.
 
 **The declared type is curried; the implementation is not.** `foreign writeAt : Int -> String -> IO Unit` declares arity 2, and a **saturated call hands both arguments at once**, so a JavaScript `function writeAt(n, s)` is the implementation and nothing binds it as `(n) => (s) => …`. A partial application is not the implementation's concern: `writeAt 0` is a value in its own right and nothing reaches the implementation until the second argument arrives, which is what a machine holds a partial application for (D30, [Bytecode](../05-Backend/01-Bytecode.md)). Under D23 this is a question of arity rather than of when effects occur. That neither `writeAt 0` nor `writeAt 0 "x"` does anything follows from the implementation conforming to condition (3) of `Σ ⊨ G` ([Semantics](../03-Typed-Core/06-Semantics.md)); D23 constrains the declared type, not the implementation.
 
+**A foreign is called when its last value arrives.** Its type takes no type and no constraint after its last value, so the bare reference of a foreign with no arrow is its call, and an argument after the last is applied to what the call returns ([Typing Rules](../03-Typed-Core/05-Typing-Rules.md#what-σ-is-held-to)). Erasure removes types and constraints and keeps values, so a call happens at the same point before and after it; a foreign that would be `forall a. a` is declared `forall a. Unit -> a`.
+
 ### Uncurried FFI
 
 To avoid a chain of closures, PureScript uses `Fn2` through `Fn10`. The equivalent in Stella is a family of n-argument function types, which are manifest intrinsics of `Base.Function.Uncurried` rather than part of `Prim` ([Prim and Base](02-Prim-and-Base.md)). **What the family is for here is an uncurried function value** — one a program stores, passes, or returns — and not the arity of an implementation, which the rule above settles.
@@ -516,6 +518,7 @@ Declarations extend the signature, so the judgement makes `Σ` explicit.
   Σ ⊢ rec { x_i : σκ_i = e_i }  ⊣  Σ'
 
   σκ = forall k̄. σ    ·, k̄ ⊢ σ : Type    every arrow of σ is pure (D23)
+  no forall and no => after the last arrow of σ
   ──────────────────────────────────────────────────────────────────
   Σ ⊢ foreign [#observ(none)] f : σκ  ⊣  Σ, M.f : σκ [#observ(none)]
 

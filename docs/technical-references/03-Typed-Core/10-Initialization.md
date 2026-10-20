@@ -47,17 +47,18 @@ and every rule below is monotone in the maps. The summaries are **the least fixe
 rules, taken together over a group; being a fixed point of sets, it is the same whatever order it
 is computed in.
 
-**The default rule** is that of the three forms the tables below leave out: an application that
-is no constructor's or foreign's chain, a `perform`, and a `writeCell`. Each of their immediate
-subexpressions `s̄` is evaluated, and the form may apply anything one of them holds, or, for a
-`writeCell`, store it where it is read back and applied:
+**The default rule** is that of the four forms the tables below leave out: an application that
+is no constructor's or foreign's chain, a `perform`, a `writeCell`, and the run-time `fill ν e`.
+Each of their immediate subexpressions `s̄` is evaluated, and the form may apply anything one of
+them holds, or, for a `writeCell` and a `fill`, store it where it is read back and applied:
 
 ```text
 imm = ⋃ₖ ( imm(sₖ) ∪ promote_this(lat(sₖ)) )        lat = ⋃ₖ lat(sₖ)
 ```
 
-`this` is the form itself. That is the rule for an application `e₁ e₂`, a `perform`, and a
-`writeCell`: **an application promotes** — what the callee and the argument may read later becomes
+`this` is the form itself. That is the rule for an application `e₁ e₂`, a `perform`, a
+`writeCell`, and a `fill`: **an application promotes** — what the callee and the argument may
+read later becomes
 read now, since the callee may apply any closure it reaches. One rule covers `(\_ -> x) ()`, a
 closure passed to a function that applies it, a member function called during initialization
 whose body reads another member, and a closure taken out of a member's value and applied —
@@ -70,18 +71,18 @@ apart a value without running what it holds, and the control forms:
 | --- | --- | --- |
 | `x`, a member | `{ x ↦ ⟨x, –⟩ }` | `lat*(x)` |
 | `y`, a local | `∅` | `ρ(y)` |
-| `M.x [[κ̄]]`, `c`, `recordEmpty`, `readCell ℓ.k` | `∅` | `∅` |
+| `M.x [[κ̄]]`, `c`, `recordEmpty`, `readCell ℓ.k`, `force ν`, `opaque ω [τ]` | `∅` | `∅` |
 | `λ(y : τ) / r. e` | `∅` | `imm(e) ∪ lat(e)`, with `ρ(y) = ∅` |
-| `Λ (a : κ). e`, `e [σ]`, `Λ (_ : C). e`, `e [•]`, `openEff [ρ] e` | `imm(e)` | `lat(e)` |
+| `Λ (a : κ). e`, `e [σ]`, `Λ (_ : C). e`, `e [•]`, `openEff [ρ] e`, `openEffC [ρ] e` | `imm(e)` | `lat(e)` |
 | `M.c [[κ̄]] ᾱ`, an application chain whose head is a data constructor or a foreign, with no more value arguments `ē` than its arity | `⋃ imm(eₖ)` | `⋃ lat(eₖ)` |
 | `extend k e₁ e₂`, `update k e₁ e₂`, `merge e₁ e₂`, `inject k [ρ] e` | `⋃ imm(eₖ)` | `⋃ lat(eₖ)` |
 | `select k e`, `restrict k e`, `weaken k [τ] e`, `absurd [τ] e` | `imm(e)` | `lat(e)` |
 | `let y : τ = e₁ in e₂` | `imm(e₁) ∪ imm(e₂)`, with `ρ(y) = lat(e₁)` | `lat(e₂)` |
 | `letrec { ȳ : σ̄ = ē' } in e`, a group nested in `R` | `⋃ imm(e'ₖ) ∪ imm(e)`, each `yₖ` a local at `ρ(yₖ) = lat(e'ₖ)`, the least fixed point over the nested group | `lat(e)` |
-| `case (ē) of dt` | `⋃ imm(eₖ) ∪ imm(dt)` | `lat(dt)` |
+| `case (ē) of dt`, and `match θ dt` with the values of `θ` as `ē` | `⋃ imm(eₖ) ∪ imm(dt)` | `lat(dt)` |
 | `letjoin j (ȳ : τ̄) : τ = e₁ in e₂` | `imm(e₂)` | `lat(e₂)` |
 | `jump j (ē)` | `⋃ imm(eₖ) ∪ imm_j` | `lat_j` |
-| `handle e with h`, `region [ℓ] (k̄ : σ̄) @ (ē) in e` | `⋃ₖ imm(partₖ) ∪ promote_this(⋃ₛ ( imm(s) ∪ lat(s) ))` | `⋃ₛ lat(s)` |
+| `handle e with h`, `region [ℓ] (k̄ : σ̄) @ (ē) in e`, `region⟨ℓ⟩ θ in e` | `⋃ₖ imm(partₖ) ∪ promote_this(⋃ₛ ( imm(s) ∪ lat(s) ))` | `⋃ₛ lat(s)` |
 
 A decision tree is judged under the scrutinees, each occurrence reading what the scrutinee it
 starts from may read later:
@@ -99,7 +100,9 @@ takes one apart: a variable a pattern binds may hold any part of the scrutinee, 
 later what the scrutinee may, and a closure extracted and applied is then an application of it,
 which promotes. A `δ_f` may carry a function value but may not apply one ([Semantics](06-Semantics.md)),
 so `Base.IO.bind` storing `a -> IO b` in the value it builds reads nothing; what applies it is the
-runtime executing that value, which an initializer, at row `()`, never does.
+runtime executing that value, which an initializer, at row `()`, never does. **An application beyond a
+chain's arity is an ordinary application** of the saturated chain, and promotes by the default
+rule.
 
 **A join point is read where it is jumped to**, not where it is defined: its body runs at each
 `jump`, under what that jump and every other hands its parameters, and a join point jumping to
@@ -114,6 +117,19 @@ the source makes directly is located at its reference alone, and every other rea
 promoted by the form itself: `region … in x` reads `x` where `x` stands, and a closure reading
 `x` applied inside the region reads it through the region. An initializer runs at row `()`, so an
 operation it performs is handled inside it, by a handling expression that is counted whole.
+
+**The judgement is defined on the run-time forms as well**, because reduction puts them inside
+an initializer: allocating a `letrec` substitutes `force ν` for its members throughout, a nested
+group's initializers included, and that nested group is judged again as a premise of the
+reduct's type ([Semantics](06-Semantics.md)). A `force ν` and an `opaque ω [τ]` read no member of
+the group being judged, a location belonging to a group already allocated and an opaque value
+holding no term. `openEffC` passes its computation through as `openEff` passes its function;
+`match θ dt` is judged as the `case` it came from, the values of `θ` its scrutinees; `fill ν e`
+promotes as a `writeCell` does, storing its value where a later `force` reads it; and an open
+region `region⟨ℓ⟩ θ in e` counts all it holds as the `region` it opened from, the values of `θ`
+standing for the initial values. **Allocation keeps a nested group safe**: the member it
+replaces was a variable bound outside the nested group, a local at `ρ = ∅`, and `force ν` has
+`imm` and `lat` both `∅`.
 
 ## The rule
 

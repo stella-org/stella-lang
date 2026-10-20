@@ -215,6 +215,7 @@ printRefused :: String -> Refused -> String
 printRefused name refused = case refused.refusal of
   ConstrainedType -> fmt @"The type of the foreign `{name}` holds a constraint, and the host cannot be handed evidence for one" { name }
   PerformingArrow -> fmt @"The foreign `{name}` has an arrow performing effects where its {place} stands; the arrows of a foreign's type are pure, and a foreign that performs effects returns an `IO` action instead" { name, place: placeOf refused.position }
+  QuantifiedResult -> fmt @"The type of the foreign `{name}` quantifies after its last argument; a foreign is called when its last argument arrives, so its quantifiers stand before that argument, and one with no argument takes `Unit`" { name }
   refusal -> fmt @"The {place} of the foreign `{name}` cannot cross to the host, as {why}; only `Int`, `Number`, `Char`, `String`, `Boolean`, `Unit`, and a foreign type cross, and as the result an `IO` action producing one of them" { name, place: placeOf refused.position, why: reason refusal }
   where
   placeOf = case _ of
@@ -232,6 +233,7 @@ printRefused name refused = case refused.refusal of
     -- the refusals of the whole type are said above
     ConstrainedType -> "it holds a constraint"
     PerformingArrow -> "it performs effects"
+    QuantifiedResult -> "it quantifies after the last argument"
 
 printDiagnostic :: Diagnostic -> String
 printDiagnostic = case _ of

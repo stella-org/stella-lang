@@ -72,6 +72,14 @@ spec = describe "Stella.Compiler.ForeignBoundary" do
       crossing (pureFn (pureFn (con intTy) (con intTy)) (con intTy)) `shouldEqual` Left { position: Argument 1, refusal: FunctionType }
       crossing (TForall (TyVar "a") KType (pureFn (TVar (TyVar "a")) (con intTy))) `shouldEqual` Left { position: Argument 1, refusal: TypeVariable (TyVar "a") }
 
+    it "quantifies before its last argument, a foreign being called when that arrives" do
+      let
+        a = TyVar "a"
+        cellOf = TApp (con cell) (TVar a)
+      crossing (TForall a KType cellOf) `shouldEqual` Left { position: Result, refusal: QuantifiedResult }
+      crossing (pureFn (con intTy) (TForall a KType cellOf)) `shouldEqual` Left { position: Result, refusal: QuantifiedResult }
+      crossing (TForall a KType (pureFn (con intTy) cellOf)) `shouldEqual` Right { params: [ AsInt ], result: AsValue AsOpaque }
+
     it "holds an action only as its result, and one producing no action" do
       crossing (pureFn (io (con intTy)) (con unitTy)) `shouldEqual` Left { position: Argument 1, refusal: ActionArgument }
       crossing (io (io (con intTy))) `shouldEqual` Left { position: Result, refusal: ActionOfAction }
