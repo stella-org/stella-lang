@@ -1,0 +1,10 @@
+module Main where
+
+import Quoting
+import Base.Int (add)
+
+n :: Int
+n = constant%[]
+
+m :: Int
+m = incremented%[2]

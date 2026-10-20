@@ -123,18 +123,26 @@
         "path": "e2e",
         "core": {
           "dependencies": [
+            "aff",
             "arrays",
             "bifunctors",
+            "cli",
             "compiler",
             "effect",
             "either",
+            "exceptions",
             "foldable-traversable",
             "maybe",
+            "node-buffer",
+            "node-fs",
             "ordered-collections",
             "prelude",
+            "refs",
+            "run",
             "strings",
             "transformers",
-            "tuples"
+            "tuples",
+            "typelevel-prelude"
           ]
         },
         "test": {
@@ -142,6 +150,7 @@
             "aff",
             "argonaut-core",
             "arrays",
+            "avar",
             "cli",
             "compiler",
             "effect",

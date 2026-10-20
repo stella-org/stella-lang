@@ -10,6 +10,7 @@ import E2E.Build (readSources)
 import Effect (Effect)
 import Effect.Exception (throw)
 import Test.E2E.Command as Command
+import Test.E2E.Lists as Lists
 import Test.E2E.Session as Session
 import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess)
@@ -21,3 +22,4 @@ main = readSources >>= case _ of
   Right sources -> runSpecAndExitProcess [ consoleReporter ] do
     Command.spec sources
     Session.spec
+    Lists.spec sources

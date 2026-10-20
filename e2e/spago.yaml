@@ -2,24 +2,33 @@ package:
   name: e2e
   description: The end-to-end tests, over programs built from source and run, and the builder they share
   dependencies:
+    - aff
     - arrays
     - bifunctors
+    - cli
     - compiler
     - effect
     - either
+    - exceptions
     - foldable-traversable
     - maybe
+    - node-buffer
+    - node-fs
     - ordered-collections
     - prelude
+    - refs
+    - run
     - strings
     - transformers
     - tuples
+    - typelevel-prelude
   test:
     main: Test.E2E
     dependencies:
       - aff
       - argonaut-core
       - arrays
+      - avar
       - cli
       - compiler
       - effect

@@ -10,7 +10,6 @@ import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess)
 import Test.Steam.Equivalence as Equivalence
 import Test.Steam.Isolation as Isolation
-import Test.Steam.Lists as Lists
 import Test.Steam.Parse as Parse
 import Test.Steam.Reference as Reference
 import Test.Steam.SessionGuest as SessionGuest
@@ -21,7 +20,6 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   SessionGuest.spec
   SessionKernel.spec
   Parse.spec
-  Lists.spec
   Reference.spec
   Equivalence.spec
   Isolation.spec

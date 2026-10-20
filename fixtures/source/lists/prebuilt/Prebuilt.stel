@@ -1,0 +1,9 @@
+-- A module that reaches `Data.List` and `Data.List.Syntax`, built first so that
+-- the build after it may stand outside them.
+module Prebuilt where
+
+import Data.List (List(..))
+import Data.List.Syntax (macro ls)
+
+ones :: List Int
+ones = ls%[1]

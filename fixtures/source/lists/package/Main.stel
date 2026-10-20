@@ -1,0 +1,21 @@
+-- Lists the package's macro writes: of what the brackets hold, a call among
+-- them, and of what the block holds.
+module Main where
+
+import Data.List (List(..))
+import Data.List.Syntax (macro ls)
+
+xs :: List Int
+xs = ls%[1, 2]
+
+none :: List Int
+none = ls%[]
+
+nested :: List (List Int)
+nested = ls%[ls%[1, 2], ls%[3, 4], ls%[5, 6]]
+
+block :: List Int
+block = ls%{
+  1
+  2
+}

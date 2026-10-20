@@ -1,0 +1,19 @@
+-- Macros written with a quotation: `constant` gives `1`, and `incremented` what
+-- its brackets hold plus one, spliced in through an antiquotation.
+module Quoting where
+
+import Stella.Syntax (List, Parser, Syntax(..), Term, TokenTree, brackets, many, map, nodesOf, tree)
+
+one :: List TokenTree -> Syntax Term
+one ts = %term{ 1 }
+
+@[macro]
+constant :: Parser (Syntax Term)
+constant = brackets (map one (many tree))
+
+inc :: List TokenTree -> Syntax Term
+inc ts = %term{ add $(Syntax (nodesOf ts)) 1 }
+
+@[macro]
+incremented :: Parser (Syntax Term)
+incremented = brackets (map inc (many tree))

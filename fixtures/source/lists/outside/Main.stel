@@ -1,0 +1,11 @@
+-- Calls of a macro of a module built before, outside this module's build.
+module Main where
+
+import Data.List (List(..))
+import Data.List.Syntax (macro ls)
+
+xs :: List Int
+xs = ls%[1, 2]
+
+none :: List Int
+none = ls%[]

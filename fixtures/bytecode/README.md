@@ -86,7 +86,8 @@ fixture made to disagree with them, whose description says so.
 
 `fixtures/source` also holds the sources of programs the end-to-end suite builds
 and runs without writing them here, each under a directory named for its test,
-such as `fixtures/source/records/`.
+such as `fixtures/source/records/`. Those under `fixtures/source/lists/` call a
+macro, and are built with each parser run on a session.
 
 A fixture setting two versions of a module side by side (`stale-arity-*`,
 `stale-foreign-*`, `unexported-global`, `undeclared-ctor`) is built twice:

@@ -1,0 +1,11 @@
+-- A macro of the build: what the brackets hold, as it was written.
+module Pass where
+
+import Stella.Syntax (List, Parser, Syntax(..), Term, TokenTree, brackets, many, map, nodesOf, tree)
+
+asSyntax :: List TokenTree -> Syntax Term
+asSyntax ts = Syntax (nodesOf ts)
+
+@[macro]
+pass :: Parser (Syntax Term)
+pass = brackets (map asSyntax (many tree))

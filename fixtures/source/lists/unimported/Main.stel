@@ -1,0 +1,5 @@
+module Main where
+import Data.List (List)
+import Data.List.Syntax (macro ls)
+xs :: List Int
+xs = ls%[1]

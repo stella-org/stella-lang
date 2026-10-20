@@ -814,13 +814,17 @@ spec sources = describe "the bytecode fixtures" do
         Just dmo -> Tuple l.dirs (Array.filter (\k -> not (Set.member k (kindsOf dmo))) l.kinds) `shouldEqual` Tuple l.dirs []
 
   -- a package's module is built only where a fixture reaches it, so one no
-  -- fixture reaches could be missing or broken unseen
-  it "reach every module of the lists and maybe packages" do
+  -- fixture reaches could be missing or broken unseen. A module declaring a
+  -- macro is built where a parser runs, which no fixture does: the Lists tests
+  -- of the integration suite build it
+  it "reach every module of the lists and maybe packages but those declaring a macro" do
     case traverse _.modules (fixtures sources) of
       Left err -> fail err
       Right built -> do
-        let reached = Set.fromFoldable (map _.name (Array.concat built))
-        Array.filter (\m -> not (Set.member m reached)) (Array.concatMap (packageModules sources) [ "lists", "maybe" ]) `shouldEqual` []
+        let
+          reached = Set.fromFoldable (map _.name (Array.concat built))
+          macros = [ ModuleName "Data.List.Syntax" ]
+        Array.filter (\m -> not (Set.member m reached) && not (Array.elem m macros)) (Array.concatMap (packageModules sources) [ "lists", "maybe" ]) `shouldEqual` []
 
   it "are what compiling their source gives now" do
     update <- liftEffect updating
