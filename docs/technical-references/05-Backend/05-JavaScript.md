@@ -473,10 +473,10 @@ which is how the machine reports one too.
 **Running one program on the machine and on the backend tests the backend, and
 not lowering.** Both read the `.dmo` lowering produced, so a defect in lowering
 reaches both alike and the comparison agrees with itself. What covers lowering
-today is its own tests, and execution tests whose expected results are fixed
-independently from hand-written Core. Comparison with an evaluator of Typed Core
-is what a claim that lowering preserves meaning broadly waits on, and no such
-evaluator exists yet ([Implementation Plan](../01-Introduction/04-Implementation-Plan.md)).
+today is its own tests, and execution tests whose expected results are fixed by
+hand from the program each runs, independently of lowering. Comparison with an
+evaluator of Typed Core is what a claim that lowering preserves meaning broadly
+waits on, and no such evaluator exists yet ([Implementation Plan](../01-Introduction/04-Implementation-Plan.md)).
 
 What the comparison is for is the part lowering does not decide: what the backend
 makes of the same file.

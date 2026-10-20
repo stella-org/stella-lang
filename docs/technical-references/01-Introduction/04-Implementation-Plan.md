@@ -61,7 +61,7 @@ The set of FFI the backend must implement is `stella-base-0.1`, the first versio
 4. **Purity**: the per-function record in the format, and a pure entry kept a host call
 5. **The lower-IR optimizations**: an evidence environment in place of a search of the stack, and a `fast` clause run in place, each resting on what the model of step 2 already guarantees
 
-**Comparing the backend with the machine tests the backend and not lowering**, both reading what lowering produced. Until a Core evaluator exists, lowering is covered by its own tests and by execution tests whose expected results are fixed independently from hand-written Core. **Building that evaluator is a unit of its own**, and it precedes any claim that lowering preserves meaning broadly; it need not precede the backend's first steps.
+**Comparing the backend with the machine tests the backend and not lowering**, both reading what lowering produced. Until a Core evaluator exists, lowering is covered by its own tests and by execution tests whose expected results are fixed by hand from the program each runs, independently of lowering. **Building that evaluator is a unit of its own**, and it precedes any claim that lowering preserves meaning broadly; it need not precede the backend's first steps.
 
 ## Notes on step 7
 
@@ -416,7 +416,7 @@ The heading of each group names the step of the plan that the group belongs to.
 
 ### Regions on the machine and the JavaScript backend (step 5, interpreter 5, and step 6, 2)
 
-Each value below is a global of one hand-written Core module, compiled to the shared fixture `regions` and run on Steam and on the JavaScript backend alike. Every region declares a cell of one key, `n`, so that reaching the wrong frame is observable, and each row gives what reaching the wrong frame, or sharing what is copied, would give instead.
+Each value below is a global of one module, run on Steam and on the JavaScript backend alike: `sharedGroups`, `localClosure`, and `declaredApart` built from source as the fixture `regions`, and the others, whose computations read the cells of a region around them as no source does, compiled from hand-written Core as `regions-core`. Every region declares a cell of one key, `n`, so that reaching the wrong frame is observable, and each row gives what reaching the wrong frame, or sharing what is copied, would give instead.
 
 | Input | Required outcome |
 | --- | --- |
