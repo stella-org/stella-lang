@@ -1,0 +1,7 @@
+-- A foreign the host carries out, and a function calling it.
+module Hosted where
+
+foreign echo :: Int -> Int
+
+callsEcho :: Int -> Int
+callsEcho n = echo n

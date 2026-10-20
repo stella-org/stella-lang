@@ -220,13 +220,11 @@
           "dependencies": [
             "aff",
             "argonaut-core",
-            "bifunctors",
             "node-buffer",
             "node-fs",
             "partial",
             "spec",
-            "spec-node",
-            "transformers"
+            "spec-node"
           ]
         }
       },

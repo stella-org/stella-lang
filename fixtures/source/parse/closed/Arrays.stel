@@ -1,0 +1,33 @@
+-- An array its initialization made, and functions reaching it or making one of
+-- their own.
+module Arrays where
+
+import Base.Array as Array
+
+-- An array of one slot, holding 7.
+table :: Array.Array Int
+table =
+  let
+    array :: Array.Array Int
+    array = Array.unsafeNew 1
+  in
+    let _ = Array.unsafeSet 0 7 array in array
+
+reads :: Int -> Int
+reads n = Array.unsafeIndex table 0
+
+writes :: Int -> Unit
+writes n = Array.unsafeSet 0 n table
+
+measures :: Int -> Int
+measures n = Array.length table
+
+keepsOwn :: Int -> Int
+keepsOwn n =
+  let
+    own :: Array.Array Int
+    own = Array.unsafeNew 1
+  in
+    let _ = Array.unsafeSet 0 7 own in
+    let _ = Array.unsafeSet 0 n own in
+    Array.unsafeIndex own 0

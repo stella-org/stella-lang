@@ -1,0 +1,19 @@
+-- An array, two globals of one initialization sharing it, and `bump`, which
+-- writes it and hands back its argument.
+module Shared (table, bump) where
+
+import Base.Array as Array
+
+table :: Array.Array Int
+table =
+  let
+    array :: Array.Array Int
+    array = Array.unsafeNew 1
+  in
+    let _ = Array.unsafeSet 0 7 array in array
+
+first :: Int
+first = Array.unsafeIndex table 0
+
+bump :: forall a. a -> a
+bump x = let _ = Array.unsafeSet 0 9 table in x

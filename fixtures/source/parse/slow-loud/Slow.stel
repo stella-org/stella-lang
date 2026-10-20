@@ -1,0 +1,8 @@
+-- A host foreign, and a global calling it as the module initializes: `Slow`,
+-- whose host module takes a while to reach.
+module Slow where
+
+foreign wait :: Int -> Int
+
+waited :: Int
+waited = wait 1

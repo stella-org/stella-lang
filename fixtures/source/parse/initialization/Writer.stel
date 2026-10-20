@@ -1,0 +1,8 @@
+-- A module whose initialization writes `Shared.table`.
+module Writer where
+
+import Base.Array as Array
+import Shared (table)
+
+reached :: Unit
+reached = Array.unsafeSet 0 9 table

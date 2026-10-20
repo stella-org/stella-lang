@@ -3,12 +3,12 @@
 -- | answered with where the parser, its input, or what it returns is not as it
 -- | should be.
 -- |
--- | The parsers are Core modules compiled here against `Stella.Syntax`. Two values
--- | no well-typed module holds — a `Parser` around what is not a function, and one
--- | around a function performing an effect — are made by compiling a module of
--- | data types of their own and pointing its constructor references at
--- | `Stella.Syntax.Parser`.
-module Test.Steam.Parse (spec) where
+-- | The parsers are built from `fixtures/source/parse` against `Stella.Syntax`, with
+-- | the `Base` modules of `stella-packages/base`. Two values no well-typed module
+-- | holds — a `Parser` around what is not a function, and one around a function
+-- | performing an effect — are made by compiling a Core module of data types of its
+-- | own and pointing its constructor references at `Stella.Syntax.Parser`.
+module Test.E2E.Parse (spec) where
 
 import Prelude hiding (ap)
 
@@ -18,7 +18,8 @@ import Data.Argonaut.Core (fromNumber, fromObject, fromString, jsonEmptyObject, 
 import Data.Array as Array
 import Data.Bifunctor (lmap)
 import Data.Either (Either(..))
-import Data.Foldable (foldMap, foldl, for_)
+import Data.Foldable (foldMap, foldl, for_, lookup)
+import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Set as Set
 import Data.String as String
@@ -51,21 +52,22 @@ import Stella.Compiler.CST (parseExpr)
 import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Elaborate.Environment.Imported (importedSignature)
 import Stella.Compiler.Elaborate.Protocol.Guest (commandOp, elabModule, guestAnswerTy, guestCommandTy, kernelEffect)
-import Stella.Compiler.Interface (importsOf, noImports)
+import Stella.Compiler.Interface (importsOf)
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment, viewFor)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Macro.Compiled (Compiled, compiled)
 import Stella.Compiler.Macro.Tree (Delimiter(..), OriginRef(..), Position(..), Syntax(..), SyntaxNode(..), Token(..), TokenKind(..), TokenTree, treeOf)
 import Stella.Compiler.MiddleEnd (translate)
-import Stella.Compiler.Primitive (arrayTy, baseModule, withBaseTypes)
-import Stella.Compiler.TypedCore (Kind(..), DecisionTree(..), Decl(..), Export(..), Expr(..), Ident(..), Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Signature, TyName(..), TyVar(..), Type(..), declareAnnotated, monoScheme, primSignature, scalarString)
-import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, stringTy, unitCtor, unitTy)
+import Stella.Compiler.TypedCore (Decl(..), Export(..), Expr(..), Ident(..), Literal(..), Module, ModuleName(..), Qualified(..), RowEntry(..), RowKey(..), Signature, TyName(..), Type(..), declareAnnotated, monoScheme)
+import Stella.Compiler.TypedCore.Prim (fn, intTy, stringTy)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Steam.Command (manifestPath, pathOf, requiring, writeModules)
-import Test.Steam.InProcess (openInProcess)
-import Test.Steam.SessionGuest (guestsCompiled, steamWith, writeGuests)
-import Test.Steam.Session (hello, node, opened, streams)
+import E2E.Build (Sources, builtFrom)
+import Node.Encoding (Encoding(..))
+import Node.FS.Perms as Perms
+import Test.E2E.Command (requiring)
+import Test.E2E.InProcess (openInProcess)
+import Test.E2E.Session (Streams, draining, hello, node, opened, streams)
 
 -- Core, written short ---------------------------------------------------------------------
 
@@ -84,20 +86,8 @@ int = TCon intTy []
 string :: Type
 string = TCon stringTy []
 
-unitType :: Type
-unitType = TCon unitTy []
-
-tree :: Type
-tree = ty "TokenTree"
-
-trees :: Type
-trees = app "List" tree
-
 syntaxTerm :: Type
 syntaxTerm = app "Syntax" (ty "Term")
-
-parserOf :: Type -> Type
-parserOf = app "Parser"
 
 g :: P.String -> P.Array Type -> Expr P.Int
 g n = foldl (TyApp 0) (Global 0 (syn n) [])
@@ -105,126 +95,11 @@ g n = foldl (TyApp 0) (Global 0 (syn n) [])
 ap :: Expr P.Int -> P.Array (Expr P.Int) -> Expr P.Int
 ap = foldl (App 0)
 
-lam :: P.String -> Type -> Expr P.Int -> Expr P.Int
-lam x t = Lam 0 (Ident x) t TRowEmpty
-
 var :: P.String -> Expr P.Int
 var = Var 0 <<< Ident
 
 lit :: P.Int -> Expr P.Int
 lit = Lit 0 <<< LitInt
-
-baseInt :: P.String -> Expr P.Int -> Expr P.Int -> Expr P.Int
-baseInt op x y = ap (Global 0 (Qualified (ModuleName "Base.Int") (Ident op)) []) [ x, y ]
-
--- | `Syntax [] : Syntax Term`.
-emptySyntax :: Expr P.Int
-emptySyntax = ap (g "Syntax" [ ty "Term" ]) [ g "Nil" [ ty "SyntaxNode" ] ]
-
--- | The trees read, as syntax: `\ts -> Syntax (nodesOf ts)`.
-asSyntax :: Expr P.Int
-asSyntax = lam "ts" trees (ap (g "Syntax" [ ty "Term" ]) [ ap (g "nodesOf" []) [ var "ts" ] ])
-
-mapTo :: Type -> Expr P.Int -> Expr P.Int -> Expr P.Int
-mapTo a f p = ap (g "map" [ a, syntaxTerm ]) [ f, p ]
-
--- | `Parser (\s -> if eq x 0 then Ok (Syntax []) s else Ok (Syntax []) s)`: a
--- | parser that computes `x` and succeeds with nothing.
-computing :: Expr P.Int -> Expr P.Int
-computing x = ap (g "Parser" [ syntaxTerm ]) [ lam "s" (ty "State") body ]
-  where
-  done = ap (g "Ok" [ syntaxTerm ]) [ emptySyntax, var "s" ]
-  body = Case 0 [ baseInt "eq" x (lit 0) ]
-    (SwitchLit (OccScrutinee 0) [ { lit: LitBoolean true, tree: Leaf done } ] (Leaf done))
-
--- | `map (\t -> if eq x 0 then Syntax [] else Syntax []) tree`: a parser that reads
--- | one tree, computes `x`, and succeeds with nothing.
-readingOne :: Expr P.Int -> Expr P.Int
-readingOne x = mapTo tree (lam "t" tree body) (g "tree" [])
-  where
-  body = Case 0 [ baseInt "eq" x (lit 0) ]
-    (SwitchLit (OccScrutinee 0) [ { lit: LitBoolean true, tree: Leaf emptySyntax } ] (Leaf emptySyntax))
-
--- The parsers ------------------------------------------------------------------------------
-
-parsersName :: ModuleName
-parsersName = ModuleName "Parsers"
-
--- | `Parsers`, every value a parser to run but `identity`, a function.
-parsersModule :: Module P.Int
-parsersModule =
-  { annotation: 0
-  , name: parsersName
-  , imports: [ ModuleName "Base.Int", arrayModule, syntaxModuleName ]
-  , exports: map (ExportValue <<< Ident)
-      [ "names", "items", "twice", "stuck", "faulting", "spinning", "identity", "seven", "table", "readsTable", "ownArray", "rebuilt", "reversed", "quotedSplice" ]
-  , decls:
-      [ value "names" (parserOf syntaxTerm) $
-          mapTo trees asSyntax (ap (g "brackets" [ trees ]) [ ap (g "sepBy" [ tree, tree ]) [ g "tree" [], g "comma" [] ] ])
-      , value "items" (parserOf syntaxTerm) $
-          mapTo trees asSyntax (ap (g "brackets" [ trees ]) [ ap (g "layout" [ tree ]) [ g "tree" [] ] ])
-      , value "twice" (parserOf syntaxTerm) $
-          ap (g "orElse" [ syntaxTerm ]) [ commaAsSyntax, commaAsSyntax ]
-      , value "stuck" (parserOf syntaxTerm) $
-          mapTo (app "List" unitType) (lam "u" (app "List" unitType) emptySyntax)
-            (ap (g "many" [ unitType ]) [ ap (g "pure" [ unitType ]) [ Global 0 unitCtor [] ] ])
-      , value "faulting" (parserOf syntaxTerm) (computing (baseInt "quot" (lit 1) (lit 0)))
-      , DeclRec 0
-          [ { name: Ident "spin"
-            , scheme: monoScheme (pureFn int int)
-            , value: lam "n" int (ap (Global 0 (Qualified parsersName (Ident "spin")) []) [ var "n" ])
-            , attributes: []
-            }
-          ]
-      , value "spinning" (parserOf syntaxTerm) (computing (ap (Global 0 (Qualified parsersName (Ident "spin")) []) [ lit 0 ]))
-      , value "identity" (pureFn int int) (lam "n" int (var "n"))
-      , value "seven" (parserOf int) (ap (g "map" [ tree, int ]) [ lam "t" tree (lit 7), g "tree" [] ])
-      , value "table" arrayOfInt arrayOfSeven
-      , value "readsTable" (parserOf syntaxTerm) (computing (baseArray "unsafeIndex" [ Global 0 (Qualified parsersName (Ident "table")) [], lit 0 ]))
-      , value "ownArray" (parserOf syntaxTerm) (readingOne (Let 0 (Ident "own") arrayOfInt arrayOfSeven (baseArray "unsafeIndex" [ var "own", lit 0 ])))
-      -- the items, each a node, folded from the right and from the left
-      , value "rebuilt" (parserOf syntaxTerm) $
-          mapTo trees (lam "ts" trees (asNodes (ap (g "foldr" [ tree, nodes ]) [ lam "t" tree (lam "acc" nodes (consNode (var "t") (var "acc"))), noNodes, var "ts" ]))) commaSeparated
-      , value "reversed" (parserOf syntaxTerm) $
-          mapTo trees (lam "ts" trees (asNodes (ap (g "foldl" [ tree, nodes ]) [ lam "acc" nodes (lam "t" tree (consNode (var "t") (var "acc"))), noNodes, var "ts" ]))) commaSeparated
-      -- the items spliced in parentheses a quotation of this module wrote
-      , value "quotedSplice" (parserOf syntaxTerm) $
-          mapTo trees
-            ( lam "ts" trees $ asNodes $
-                ap (g "Cons" [ ty "SyntaxNode" ])
-                  [ ap (g "$spliced" [ ty "Term" ]) [ ap (g "$QuotedOrigin" []) [ text "Parsers", position 2 1, position 2 5 ], g "Nil" [ ty "Trivia" ], ap (g "Syntax" [ ty "Term" ]) [ ap (g "nodesOf" []) [ var "ts" ] ] ]
-                  , noNodes
-                  ]
-            )
-            commaSeparated
-      ]
-  }
-  where
-  commaAsSyntax = mapTo tree (lam "u" tree emptySyntax) (g "comma" [])
-  commaSeparated = ap (g "brackets" [ trees ]) [ ap (g "sepBy" [ tree, tree ]) [ g "tree" [], g "comma" [] ] ]
-  nodes = app "List" (ty "SyntaxNode")
-  noNodes = g "Nil" [ ty "SyntaxNode" ]
-  consNode t rest = ap (g "Cons" [ ty "SyntaxNode" ]) [ ap (g "nodeOf" []) [ t ], rest ]
-  asNodes ns = ap (g "Syntax" [ ty "Term" ]) [ ns ]
-  position line column = ap (g "Position" []) [ lit line, lit column ]
-  text t = case scalarString t of
-    Just str -> Lit 0 (LitString str)
-    Nothing -> lit 0
-
-arrayModule :: ModuleName
-arrayModule = ModuleName "Base.Array"
-
-arrayOfInt :: Type
-arrayOfInt = TApp (TCon arrayTy []) int
-
--- | An entry of `Base.Array` at `Int`.
-baseArray :: P.String -> P.Array (Expr P.Int) -> Expr P.Int
-baseArray op = ap (TyApp 0 (Global 0 (Qualified arrayModule (Ident op)) []) int)
-
--- | An array of one slot, holding 7.
-arrayOfSeven :: Expr P.Int
-arrayOfSeven = Let 0 (Ident "array") arrayOfInt (baseArray "unsafeNew" [ lit 1 ])
-  (Let 0 (Ident "written") unitType (baseArray "unsafeSet" [ lit 0, lit 7, var "array" ]) (var "array"))
 
 value :: P.String -> Type -> Expr P.Int -> Decl P.Int
 value n t e = DeclNonRec 0 { name: Ident n, scheme: monoScheme t, value: e, attributes: [] }
@@ -302,25 +177,68 @@ syntaxAndElab c = do
   view <- lmap show (viewFor [ syntaxModuleName, elabModule ] env)
   lmap show (importedSignature env view)
 
--- | The modules the parsers are loaded with, each by its name, compiled against
--- | what it imports: `Base.Array`, `Parsers`, `Forged`, and `Base.Int`; or why
--- | one does not compile.
-parserModules :: Compiled -> Either P.String (P.Array (Tuple P.String Dmo))
-parserModules syntax = do
-  array <- lmap (\err -> "Base.Array does not declare: " <> show err.error) (declareAnnotated (withBaseTypes syntax.signature) (baseModule 0 arrayModule))
-  arrayDmo <- lmap ("Base.Array " <> _) (compileAgainst syntax withBaseTypes (baseModule 0 arrayModule))
-  parsers <- lmap ("Parsers " <> _) (compileAgainst syntax (const array.signature) parsersModule)
+-- | Where the modules and files this suite reads stand.
+dir :: P.String
+dir = "e2e/.test-dmo/parse"
+
+pathOf :: P.String -> P.String
+pathOf name = dir <> "/" <> name <> ".dmo"
+
+manifestPath :: P.String -> P.String
+manifestPath name = dir <> "/" <> name <> ".json"
+
+-- | The modules of the directory of `fixtures/source` given, built, each by its name.
+builtNamed :: Sources -> P.String -> Either P.String (P.Array (Tuple P.String Dmo))
+builtNamed sources d = builtFrom sources [ d ] <#> map \dmo -> Tuple (moduleText dmo.name) dmo
+
+moduleText :: ModuleName -> P.String
+moduleText (ModuleName m) = m
+
+named :: P.String -> P.Array (Tuple P.String Dmo) -> Either P.String Dmo
+named name modules = maybe (Left ("no " <> name)) Right (lookup name modules)
+
+-- | The modules the parsers are loaded with, each by its name: `Base.Array` and
+-- | `Parsers` built, `Forged` compiled from Core, and the `Base.Int` the compiler
+-- | carries; or why one is not made.
+parserModules :: Sources -> Compiled -> Either P.String (P.Array (Tuple P.String Dmo))
+parserModules sources syntax = do
+  built <- builtNamed sources "parse/parsers"
+  array <- named "Base.Array" built
+  parsers <- named "Parsers" built
   withElab <- syntaxAndElab syntax
   forged <- lmap ("Forged " <> _) (compileAgainst syntax (const withElab) forgedModule)
   base <- maybe (Left "no Base.Int") Right (Array.head syntax.modules)
-  pure [ Tuple "Base.Array" arrayDmo, Tuple "Parsers" parsers, Tuple "Forged" (forging forged), Tuple "Base.Int" base ]
+  pure [ Tuple "Base.Array" array, Tuple "Parsers" parsers, Tuple "Forged" (forging forged), Tuple "Base.Int" base ]
+
+-- | `Slow` and `Loud` built, a module of one host foreign each, called as it
+-- | initializes.
+slowLoud :: Sources -> Either P.String (P.Array (Tuple P.String Dmo))
+slowLoud sources = builtNamed sources "parse/slow-loud"
 
 writeParsers :: P.Array (Tuple P.String Dmo) -> Aff Unit
 writeParsers modules = do
-  writeModules
-  writeGuests
+  FS.mkdir' dir { recursive: true, mode: Perms.mkPerms Perms.all Perms.all Perms.all }
   for_ modules \(Tuple name dmo) -> write name dmo
+  writeText (dir <> "/slow.mjs")
+    """process.stderr.write("slow reached\n");
+       await new Promise((resolve) => setTimeout(resolve, 800));
+       process.stderr.write("slow ready\n");
+       export const wait = (n) => { process.stderr.write("waited\n"); return n; };
+    """
+  writeText (dir <> "/loud.mjs")
+    """export const shout = (n) => { process.stderr.write("shouted\n"); return n; };
+    """
+  writeText (manifestPath "slow-loud")
+    """{ "formatVersion": 1, "target": "javascript",
+         "modules": [ { "module": "Loud", "specifier": "./loud.mjs",
+                        "foreigns": [ { "name": "shout", "params": [ "int" ], "result": "int" } ] },
+                      { "module": "Slow", "specifier": "./slow.mjs",
+                        "foreigns": [ { "name": "wait", "params": [ "int" ], "result": "int" } ] } ] }"""
   where
+  writeText path content = do
+    buffer <- liftEffect (Buffer.fromString content UTF8)
+    FS.writeFile path buffer
+
   write name dmo = case encode dmo of
     Left err -> fail ("could not encode " <> name <> ": " <> show err)
     Right bytes -> do
@@ -328,6 +246,10 @@ writeParsers modules = do
       FS.writeFile (pathOf name) buffer
 
 -- Talking to a session ---------------------------------------------------------------------
+
+-- | `steam session` started with the arguments given, as a client launches it.
+steamWith :: P.Array P.String -> Streams -> Hello -> Client.Launch
+steamWith args s h = { command: "node", args: [ "steam/index.dev.js", "session" ] <> args, output: draining s, hello: h }
 
 parsing :: Hello
 parsing = hello { offers = [ "modules", "parse" ] }
@@ -390,12 +312,25 @@ reasonOf = case _ of
   Right (ExecutionFailed f) -> Just f.reason
   _ -> Nothing
 
+-- | Where `quotedSplice` writes its antiquotation: the origin a splice of it
+-- | carries, as `Parsers` the module and the range of `$(…)`.
+antiquoted :: Sources -> OriginRef
+antiquoted sources = case Map.lookup "fixtures/source/parse/parsers/Parsers.stel" sources.files of
+  Nothing -> QuotedOrigin "Parsers" (Position 0 0) (Position 0 0)
+  Just text -> fromMaybe (QuotedOrigin "Parsers" (Position 0 0) (Position 0 0)) do
+    let lines = String.split (String.Pattern "\n") text
+    line <- Array.findIndex (String.contains (String.Pattern written)) lines
+    column <- String.indexOf (String.Pattern written) =<< Array.index lines line
+    pure (QuotedOrigin "Parsers" (Position (line + 1) (column + 1)) (Position (line + 1) (column + 1 + String.length written)))
+  where
+  written = "$(S.Syntax (S.nodesOf ts))"
+
 -- Cases ---------------------------------------------------------------------------------------
 
-spec :: Spec Unit
-spec = describe "steam session, parsing" case compiled of
+spec :: Sources -> Spec Unit
+spec sources = describe "steam session, parsing" case compiled of
   Left err -> it "compiles Stella.Syntax" (fail err)
-  Right syntax -> requiring (guestsCompiled *> parserModules syntax) \modules -> do
+  Right syntax -> requiring (append <$> parserModules sources syntax <*> slowLoud sources) \modules -> do
     it "writes the fixture" (writeParsers modules)
 
     describe "opening" do
@@ -452,7 +387,8 @@ spec = describe "steam session, parsing" case compiled of
           Left why -> fail why
           Right answer -> case readAnswer syntax.descriptor answer of
             Right (ParsedAs (Syntax [ SyntaxGroup origin Paren (Token GroupBracket "(" _ _ _) inner [ Token GroupBracket ")" _ _ _ ] ])) -> do
-              origin `shouldEqual` QuotedOrigin "Parsers" (Position 2 1) (Position 2 5)
+              -- the range of the antiquotation as `Parsers` writes it
+              origin `shouldEqual` antiquoted sources
               Array.length inner `shouldEqual` 2
             other -> fail ("not one parenthesized group: " <> show (map summary other))
 
@@ -473,8 +409,8 @@ spec = describe "steam session, parsing" case compiled of
           run syntax session "stuck" "m%[x]" 100_000 >>= shouldEqual
             "failed at (Position 1 3) expecting [\"progress: `many` repeats a parser that read nothing\"]"
 
-    closedSpec
-    initializationSpec
+    closedSpec sources
+    initializationSpec sources
 
     describe "a session running parsers" do
       it "refuses a module declaring a foreign the host carries out, before reaching it or initializing the module" do
@@ -556,76 +492,29 @@ spec = describe "steam session, parsing" case compiled of
 hostedName :: ModuleName
 hostedName = ModuleName "Hosted"
 
--- | `Hosted`: a foreign the host carries out, and a function calling it.
-hostedModule :: Module P.Int
-hostedModule =
-  { annotation: 0
-  , name: hostedName
-  , imports: []
-  , exports: []
-  , decls:
-      [ DeclForeign 0 { name: Ident "echo", scheme: monoScheme (pureFn int int), attributes: [] }
-      , value "callsEcho" (pureFn int int) (lam "n" int (ap (Global 0 (Qualified hostedName (Ident "echo")) []) [ var "n" ]))
-      ]
-  }
-
 arraysName :: ModuleName
 arraysName = ModuleName "Arrays"
-
--- | `Arrays`: an array its initialization made, and functions reaching it or
--- | making one of their own.
-arraysModule :: Module P.Int
-arraysModule =
-  { annotation: 0
-  , name: arraysName
-  , imports: [ arrayModule ]
-  , exports: []
-  , decls:
-      [ value "table" arrayOfInt arrayOfSeven
-      , value "reads" (pureFn int int) (lam "n" int (baseArray "unsafeIndex" [ table, lit 0 ]))
-      , value "writes" (pureFn int unitType) (lam "n" int (baseArray "unsafeSet" [ lit 0, var "n", table ]))
-      , value "measures" (pureFn int int) (lam "n" int (baseArray "length" [ table ]))
-      , value "keepsOwn" (pureFn int int) $ lam "n" int $
-          Let 0 (Ident "own") arrayOfInt arrayOfSeven
-            (Let 0 (Ident "written") unitType (baseArray "unsafeSet" [ lit 0, var "n", var "own" ]) (baseArray "unsafeIndex" [ var "own", lit 0 ]))
-      ]
-  }
-  where
-  table = Global 0 (Qualified arraysName (Ident "table")) []
 
 -- | `Base.Array`, `Hosted`, and `Arrays` loaded, `Hosted.echo` counting its calls.
 type Machine = { registry :: Registry, store :: Store, calls :: Ref.Ref P.Int }
 
-machine :: Aff Machine
-machine = case declareAnnotated (withBaseTypes primSignature) (baseModule 0 arrayModule) of
-  Left err -> failing (show err.error)
-  Right array -> case lowered (withBaseTypes primSignature) (baseModule 0 arrayModule), lowered array.signature arraysModule, lowered primSignature hostedModule of
-    Right a, Right arrays, Right hosted -> do
-      calls <- liftEffect (Ref.new 0)
-      let
-        echo = mkEffectFn1 \args -> do
-          Ref.modify_ (_ + 1) calls
-          pure (Produced (fromMaybe (VInt 0) (Array.head args)))
-        table = insert (Qualified hostedName (Ident "echo")) { arity: 1, body: echo } emptyTable
-      start <- liftEffect (emptyStore table <$> Ref.new noIdentities)
-      loaded <- liftEffect $ runBaseEffect $ Except.runExcept do
-        s1 <- load start a
-        s2 <- load s1 arrays
-        load s2 hosted
-      case loaded of
-        Left err -> failing (show err)
-        Right store -> pure { registry: registryOf store, store, calls }
-    Left err, _, _ -> failing err
-    _, Left err, _ -> failing err
-    _, _, Left err -> failing err
-  where
-  lowered sig m = case declareAnnotated sig m of
-    Left err -> Left (show err.error)
-    Right declared -> case translate noImports m declared of
-      Left err -> Left (show err)
-      Right mid -> case lower mid of
-        Left err -> Left (show err)
-        Right out -> Right out.dmo
+-- | The modules of `fixtures/source/parse/closed` built and loaded, in the order
+-- | built, `Hosted.echo` counting its calls.
+machine :: Sources -> Aff Machine
+machine sources = case builtFrom sources [ "parse/closed" ] of
+  Left err -> failing err
+  Right modules -> do
+    calls <- liftEffect (Ref.new 0)
+    let
+      echo = mkEffectFn1 \args -> do
+        Ref.modify_ (_ + 1) calls
+        pure (Produced (fromMaybe (VInt 0) (Array.head args)))
+      table = insert (Qualified hostedName (Ident "echo")) { arity: 1, body: echo } emptyTable
+    start <- liftEffect (emptyStore table <$> Ref.new noIdentities)
+    loaded <- liftEffect (runBaseEffect (Except.runExcept (Array.foldM load start modules)))
+    case loaded of
+      Left err -> failing (show err)
+      Right store -> pure { registry: registryOf store, store, calls }
 
 -- | A function of the machine, run closed on `n` in stretches of `stretch` steps,
 -- | to how it ended.
@@ -664,10 +553,10 @@ openRun m mod name n = case globalNamed m.store (Qualified mod (Ident name)) of
         Left failure -> "failed " <> show failure
       Nothing -> pure "empty"
 
-closedSpec :: Spec Unit
-closedSpec = describe "a closed run" do
+closedSpec :: Sources -> Spec Unit
+closedSpec sources = describe "a closed run" do
   it "halts at a foreign the host carries out, the host never reached" do
-    m <- machine
+    m <- machine sources
     closedRun m hostedName "callsEcho" 3 1_000 >>= shouldEqual "halted (HostForeignCalled (Qualified \"Hosted\" \"echo\"))"
     liftEffect (Ref.read m.calls) >>= shouldEqual 0
     -- run open, the same function reaches it
@@ -675,7 +564,7 @@ closedSpec = describe "a closed run" do
     liftEffect (Ref.read m.calls) >>= shouldEqual 1
 
   it "reaches no array it did not make, to read, to measure, or to write" do
-    m <- machine
+    m <- machine sources
     closedRun m arraysName "reads" 0 1_000 >>= shouldEqual "halted (StateNotOwned ArrayUnsafeIndex)"
     closedRun m arraysName "measures" 0 1_000 >>= shouldEqual "halted (StateNotOwned ArrayLength)"
     closedRun m arraysName "writes" 9 1_000 >>= shouldEqual "halted (StateNotOwned ArrayUnsafeSet)"
@@ -683,7 +572,7 @@ closedSpec = describe "a closed run" do
     openRun m arraysName "reads" 0 >>= shouldEqual "done 7"
 
   it "uses an array it made, across every pause" do
-    m <- machine
+    m <- machine sources
     closedRun m arraysName "keepsOwn" 5 1_000 >>= shouldEqual "done 5"
     closedRun m arraysName "keepsOwn" 5 1 >>= shouldEqual "done 5"
     -- what one run made is not the next run's
@@ -691,67 +580,16 @@ closedSpec = describe "a closed run" do
 
 -- Initialization, closed ---------------------------------------------------------------------
 
-sharedName :: ModuleName
-sharedName = ModuleName "Shared"
-
--- | `Shared`: an array, two globals of one initialization sharing it, and `bump`,
--- | which writes it and hands back its argument.
-sharedModule :: Module P.Int
-sharedModule =
-  { annotation: 0
-  , name: sharedName
-  , imports: [ arrayModule ]
-  , exports: map (ExportValue <<< Ident) [ "table", "bump" ]
-  , decls:
-      [ value "table" arrayOfInt arrayOfSeven
-      , value "first" int (baseArray "unsafeIndex" [ Global 0 (Qualified sharedName (Ident "table")) [], lit 0 ])
-      , value "bump" (TForall a KType (pureFn (TVar a) (TVar a))) $ TyLam 0 a KType $ lam "x" (TVar a) $
-          Let 0 (Ident "written") unitType (baseArray "unsafeSet" [ lit 0, lit 9, Global 0 (Qualified sharedName (Ident "table")) [] ]) (var "x")
-      ]
-  }
-  where
-  a = TyVar "a"
-
--- | A module of one global, initialized by reaching `Shared.table`.
-reaching :: P.String -> Type -> Expr P.Int -> Module P.Int
-reaching name global init =
-  { annotation: 0
-  , name: ModuleName name
-  , imports: [ arrayModule, sharedName ]
-  , exports: []
-  , decls: [ value "reached" global init ]
-  }
-
--- | `Snapshot`, whose initialization reads `Shared.table`.
-snapshotModule :: Module P.Int
-snapshotModule = reaching "Snapshot" int (baseArray "unsafeIndex" [ Global 0 (Qualified sharedName (Ident "table")) [], lit 0 ])
-
--- | `Writer`, whose initialization writes it.
-writerModule :: Module P.Int
-writerModule = reaching "Writer" unitType (baseArray "unsafeSet" [ lit 0, lit 9, Global 0 (Qualified sharedName (Ident "table")) [] ])
-
--- | `Base.Array`, `Shared`, `Snapshot`, and `Writer`, compiled.
-initializing :: Either P.String { array :: Dmo, shared :: Dmo, snapshot :: Dmo, writer :: Dmo }
-initializing = do
-  declared <- case declareAnnotated (withBaseTypes primSignature) (baseModule 0 arrayModule) of
-    Left err -> Left (show err.error)
-    Right d -> Right d
-  array <- lowered (withBaseTypes primSignature) (baseModule 0 arrayModule)
-  sharedDeclared <- case declareAnnotated declared.signature sharedModule of
-    Left err -> Left (show err.error)
-    Right d -> Right d
-  shared <- lowered declared.signature sharedModule
-  snapshot <- lowered sharedDeclared.signature snapshotModule
-  writer <- lowered sharedDeclared.signature writerModule
+-- | `Base.Array`, `Shared`, `Snapshot`, and `Writer`, built from
+-- | `fixtures/source/parse/initialization`.
+initializing :: Sources -> Either P.String { array :: Dmo, shared :: Dmo, snapshot :: Dmo, writer :: Dmo }
+initializing sources = do
+  built <- builtNamed sources "parse/initialization"
+  array <- named "Base.Array" built
+  shared <- named "Shared" built
+  snapshot <- named "Snapshot" built
+  writer <- named "Writer" built
   pure { array, shared, snapshot, writer }
-  where
-  lowered sig m = case declareAnnotated sig m of
-    Left err -> Left (show err.error)
-    Right declared -> case translate noImports m declared of
-      Left err -> Left (show err)
-      Right mid -> case lower mid of
-        Left err -> Left (show err)
-        Right out -> Right out.dmo
 
 -- | Load the modules in order, each initialized as given, to how the last load
 -- | ended.
@@ -764,10 +602,10 @@ loadedAs initialization dmos = liftEffect do
     Left (InitializationHalted (Qualified _ (Ident name)) halt) -> name <> " halted " <> show halt
     Left err -> show err
 
-initializationSpec :: Spec Unit
-initializationSpec = describe "a closed initialization" do
+initializationSpec :: Sources -> Spec Unit
+initializationSpec sources = describe "a closed initialization" do
   it "reaches the arrays its own module makes, and no other" do
-    case initializing of
+    case initializing sources of
       Left err -> fail err
       Right m -> do
         loadedAs ClosedInitialization [ m.array, m.shared ] >>= shouldEqual "loaded"
@@ -778,7 +616,7 @@ initializationSpec = describe "a closed initialization" do
         loadedAs OpenInitialization [ m.array, m.shared, m.writer ] >>= shouldEqual "loaded"
 
   it "keeps a session running parsers from taking in what an invocation wrote" do
-    case initializing of
+    case initializing sources of
       Left err -> fail err
       Right m -> do
         let

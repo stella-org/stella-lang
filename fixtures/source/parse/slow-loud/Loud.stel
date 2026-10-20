@@ -1,0 +1,8 @@
+-- A host foreign, and a global calling it as the module initializes: `Loud`,
+-- whose initialization writes to standard error, which is what shows it ran.
+module Loud where
+
+foreign shout :: Int -> Int
+
+shouted :: Int
+shouted = shout 1

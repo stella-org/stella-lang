@@ -1,0 +1,132 @@
+-- The parsers the parsing tests run in a session: every value a parser to run
+-- but `identity`, a function, and `table`, an array the module's initialization
+-- makes. What a parser computes as it runs is computed in a function it holds,
+-- and so when it runs and not as the module is initialized.
+module Parsers
+  ( names
+  , items
+  , twice
+  , stuck
+  , faulting
+  , spinning
+  , identity
+  , seven
+  , table
+  , readsTable
+  , ownArray
+  , rebuilt
+  , reversed
+  , quotedSplice
+  ) where
+
+import Base.Array as Array
+import Base.Int as Int
+import Stella.Syntax as S
+
+-- The trees read, as syntax.
+asSyntax :: S.List S.TokenTree -> S.Syntax S.Term
+asSyntax ts = S.Syntax (S.nodesOf ts)
+
+noSyntax :: S.Syntax S.Term
+noSyntax = S.Syntax S.Nil
+
+-- What the brackets hold, separated by commas.
+commaSeparated :: S.Parser (S.List S.TokenTree)
+commaSeparated = S.brackets (S.sepBy S.tree S.comma)
+
+names :: S.Parser (S.Syntax S.Term)
+names = S.map asSyntax commaSeparated
+
+items :: S.Parser (S.Syntax S.Term)
+items = S.map asSyntax (S.brackets (S.layout S.tree))
+
+-- Nothing, read from a comma.
+commaAsSyntax :: S.Parser (S.Syntax S.Term)
+commaAsSyntax = S.map (\u -> noSyntax) S.comma
+
+-- Two alternatives failing at one position.
+twice :: S.Parser (S.Syntax S.Term)
+twice = S.orElse commaAsSyntax commaAsSyntax
+
+-- A repetition of a parser that reads nothing.
+stuck :: S.Parser (S.Syntax S.Term)
+stuck = S.map (\us -> noSyntax) (S.many (S.pure ()))
+
+-- Nothing, once `x` is computed: `x` is 0 or not.
+whether :: Int -> S.State -> S.Reply (S.Syntax S.Term)
+whether x s = case Int.eq x 0 of
+  true -> S.Ok noSyntax s
+  false -> S.Ok noSyntax s
+
+-- Faults as it runs: `quot 1 0`.
+faultingAt :: S.State -> S.Reply (S.Syntax S.Term)
+faultingAt s = whether (Int.quot 1 0) s
+
+faulting :: S.Parser (S.Syntax S.Term)
+faulting = S.Parser faultingAt
+
+spin :: Int -> Int
+spin n = spin n
+
+-- Runs out of steps as it runs.
+spinningAt :: S.State -> S.Reply (S.Syntax S.Term)
+spinningAt s = whether (spin 0) s
+
+spinning :: S.Parser (S.Syntax S.Term)
+spinning = S.Parser spinningAt
+
+-- No parser: a function.
+identity :: Int -> Int
+identity n = n
+
+-- A parser whose result is no syntax.
+seven :: S.Parser Int
+seven = S.map (\t -> 7) S.tree
+
+-- An array of one slot, holding 7, made as the module is initialized.
+table :: Array.Array Int
+table =
+  let
+    array :: Array.Array Int
+    array = Array.unsafeNew 1
+  in
+    let _ = Array.unsafeSet 0 7 array in array
+
+-- Reaches the array the initialization made.
+readsTableAt :: S.State -> S.Reply (S.Syntax S.Term)
+readsTableAt s = whether (Array.unsafeIndex table 0) s
+
+readsTable :: S.Parser (S.Syntax S.Term)
+readsTable = S.Parser readsTableAt
+
+-- Reads one tree, and reaches an array it made itself.
+fromOwn :: S.TokenTree -> S.Syntax S.Term
+fromOwn t =
+  let
+    own :: Array.Array Int
+    own = Array.unsafeNew 1
+  in
+    let _ = Array.unsafeSet 0 7 own in
+    case Int.eq (Array.unsafeIndex own 0) 0 of
+      true -> noSyntax
+      false -> noSyntax
+
+ownArray :: S.Parser (S.Syntax S.Term)
+ownArray = S.map fromOwn S.tree
+
+-- The items, each a node, folded from the right and from the left.
+consNode :: S.TokenTree -> S.List S.SyntaxNode -> S.List S.SyntaxNode
+consNode t acc = S.Cons (S.nodeOf t) acc
+
+snocNode :: S.List S.SyntaxNode -> S.TokenTree -> S.List S.SyntaxNode
+snocNode acc t = S.Cons (S.nodeOf t) acc
+
+rebuilt :: S.Parser (S.Syntax S.Term)
+rebuilt = S.map (\ts -> S.Syntax (S.foldr consNode S.Nil ts)) commaSeparated
+
+reversed :: S.Parser (S.Syntax S.Term)
+reversed = S.map (\ts -> S.Syntax (S.foldl snocNode S.Nil ts)) commaSeparated
+
+-- The items spliced in parentheses where a quotation of this module wrote them.
+quotedSplice :: S.Parser (S.Syntax S.Term)
+quotedSplice = S.map (\ts -> %term{ $(S.Syntax (S.nodesOf ts)) }) commaSeparated

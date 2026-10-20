@@ -1,0 +1,8 @@
+-- A module whose initialization reads `Shared.table`.
+module Snapshot where
+
+import Base.Array as Array
+import Shared (table)
+
+reached :: Int
+reached = Array.unsafeIndex table 0
