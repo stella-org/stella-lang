@@ -1,0 +1,7 @@
+-- `Main`, whose one value is a saturated call to `Lib.add2`.
+module Main where
+
+import Lib (add2)
+
+result :: Int
+result = add2 1 2

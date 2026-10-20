@@ -1,0 +1,171 @@
+module Main where
+
+import Data.List (List(..))
+import Data.Maybe (Maybe(..))
+
+data Color = Red | Green | Blue
+
+rank :: Color -> Int
+rank c = case c of
+  Red -> 1
+  Green | Blue -> 2
+
+second :: List Int -> Maybe Int
+second xs = case xs of
+  Cons _ (Cons y _) -> Just y
+  _ -> Nothing
+
+classify :: Color -> Maybe Int -> Int
+classify c o = case c, o of
+  Red, Just 0 -> 0
+  _, Just n -> n
+  _, Nothing -> 9
+
+named :: String -> Int
+named s = case s of
+  "one" -> 1
+  "two" -> 2
+  _ -> 0
+
+flip :: Boolean -> Boolean
+flip b = case b of
+  true -> false
+  false -> true
+
+isZero :: Int -> Boolean
+isZero n = case n of
+  0 -> true
+  _ -> false
+
+guarded :: Maybe Int -> Int
+guarded o = case o of
+  Just x
+    where
+    z = isZero x
+    z -> 100
+  Just x -> x
+  Nothing -> 7
+
+isOne :: Int -> Boolean
+isOne n = case n of
+  1 -> true
+  _ -> false
+
+layered :: Maybe Int -> Int
+layered o = case o of
+  Just x where
+      isZero x -> 0
+  Just x where
+      isOne x -> 1
+  _ -> 2
+
+sizeOf :: Int -> Int
+sizeOf n = case n of
+  m where
+    isZero m -> 0
+    otherwise -> 1
+
+data Pair a b = Pair a b
+
+newtype Wrap = Wrap Int
+
+first :: Pair Int Int -> Int
+first (Pair a _) = a
+
+unwrap :: Wrap -> Int
+unwrap (Wrap n) = n
+
+secondOf :: Pair Int Int -> Int
+secondOf p = let Pair _ b = p in b
+
+split :: Pair Int Int -> Int
+split p = case p of
+  q where
+    Pair a b = q
+    isZero a -> b
+    otherwise -> a
+rankOf :: Color -> Int
+rankOf = case _ of
+  Red -> 10
+  _ -> 20
+
+rankRed = rank Red
+rankBlue = rank Blue
+
+secondOfTwo = second (Cons 1 (Cons 2 Nil))
+secondOfOne = second (Cons 1 Nil)
+
+redZero = classify Red (Just 0)
+
+redFour = classify Red (Just 4)
+
+blueFour = classify Blue (Just 4)
+
+greenNone = classify Green Nothing
+
+two = named "two"
+
+other = named "three"
+
+flipped = flip true
+
+guardZero = guarded (Just 0)
+
+guardFive = guarded (Just 5)
+
+guardNone = guarded Nothing
+
+sizeZero = sizeOf 0
+
+sizeTwo = sizeOf 2
+
+layeredZero = layered (Just 0)
+
+layeredOne = layered (Just 1)
+
+layeredFive = layered (Just 5)
+
+layeredNone = layered Nothing
+
+firstOf = first (Pair 5 6)
+
+unwrapped = unwrap (Wrap 7)
+
+secondOfPair = secondOf (Pair 1 8)
+
+splitZero = split (Pair 0 9)
+
+splitOne = split (Pair 1 9)
+
+rankOfRed = rankOf Red
+
+rankOfBlue = rankOf Blue
+
+lambda = (\(Pair a b) -> b) (Pair 3 4)
+
+area :: [ 'Circle :: Int, 'Square :: Int, 'Dot :: Unit ] -> Int
+area s = case s of
+  'Circle r -> r
+  'Square n -> n
+  'Dot -> 0
+
+bump :: [ 'Up :: Int, ...r ] -> [ 'Up :: Int, ...r ]
+bump v = case v of
+  'Up _ -> 'Up 0
+  other -> other
+
+circle = area ('Circle 3)
+
+dot = area 'Dot
+
+bumped :: [ 'Up :: Int, 'Down :: Int ]
+bumped = bump ('Up 5)
+
+kept :: [ 'Up :: Int, 'Down :: Int ]
+kept = bump ('Down 7)
+
+temperature v = case v of
+  'Hot -> 1
+  'Cold -> 2
+
+cold = temperature 'Cold

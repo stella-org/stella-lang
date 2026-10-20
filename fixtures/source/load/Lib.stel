@@ -1,0 +1,20 @@
+-- `Lib`, which adds, and which declares a data type nothing uses: a `CTORS`
+-- entry is what the checks on a declaration's owner are about.
+module Lib (add2, one) where
+
+import Base.Int as Int
+
+data Pair a = Pair a
+
+-- A function of two.
+add2 :: Int -> Int -> Int
+add2 a b = Int.add a b
+
+-- A value.
+one :: Int
+one = 1
+
+-- `Prim.Unit`: the one value of the implicit environment, which every module may
+-- name and no header mentions.
+nothing :: Unit
+nothing = ()

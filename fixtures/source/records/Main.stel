@@ -1,0 +1,83 @@
+module Main where
+
+import Data.Maybe (Maybe(..))
+
+type Point = { x :: Int, y :: Int }
+
+point :: Point
+point = { x: 1, y: 2 }
+
+pair :: (Int, Boolean)
+pair = (3, true)
+
+-- Here we intentionally drop type annotation to exercise type inference.
+getX r = r.x
+setX n r = { x = n, ...r }
+
+label :: { ... } -> { name :: Int, ... }
+label r = { name: 7, ...r }
+
+xOf :: Int
+xOf = getX point
+
+moved :: Point
+moved = setX 5 point
+
+labelled :: { name :: Int, x :: Int, y :: Int }
+labelled = label point
+
+retyped :: { x :: Int, y :: Boolean }
+retyped = { y = false, ...point }
+
+replacedTwice :: { x :: Int, y :: Boolean }
+replacedTwice = { x = 10, y = false, ...point }
+
+ordered :: { a :: Int, b :: Int, x :: Int, y :: Int }
+ordered = { a: 1, x = 10, b: 2, y = 20, ...point }
+
+nested :: Int
+nested = { inner: point }.inner.y
+
+firstOf :: Int
+firstOf = case pair of
+  (a, _) -> a
+
+swap :: forall a b. (a, b) -> (b, a)
+swap (a, b) = (b, a)
+
+swapped :: (Boolean, Int)
+swapped = swap pair
+
+yOf :: Int
+yOf = let { y, ... } = point in y
+
+dropXY :: forall a b. { x :: a, y :: b, ... } -> { ... }
+dropXY { x, y, ...rest } = rest
+
+rested :: { z :: Int }
+rested = dropXY { x: 1, y: 2, z: 3 }
+
+orZero :: { v :: Maybe Int, ... } -> Int
+orZero = case _ of
+  { v: Just n, ... } -> n
+  { v: Nothing, ... } -> 0
+
+some :: Int
+some = orZero { v: Just 4, w: true }
+
+none :: Int
+none = orZero { v: Nothing, w: 1 }
+
+pickRest
+  :: Boolean
+  -> { x :: Int, y :: Int, ... }
+  -> { y :: Int, ... }
+pickRest = case _, _ of
+  true, { x: 1, ...rest } -> { y = 0, ...rest }
+  _, { x, ...rest } -> rest
+
+kept :: { y :: Int }
+kept = pickRest false point
+
+replacedRest :: { y :: Int }
+replacedRest = pickRest true point

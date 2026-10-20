@@ -1,0 +1,77 @@
+-- A module over `Base.Array` and `Base.Int` and nothing else: arrays allocated,
+-- written, and read back, and `mapArray`, the loop a portable array library is
+-- written as. Every slot is written before one is read, which is the
+-- precondition of `unsafeIndex` discharged where a library would discharge it.
+module Main where
+
+import Base.Array as Array
+import Base.Int as Int
+
+-- An array of two, both slots written, the second read back: 9.
+result :: Int
+result =
+  let
+    xs :: Array.Array Int
+    xs = Array.unsafeNew 2
+  in
+    let _ = Array.unsafeSet 0 7 xs in
+    let _ = Array.unsafeSet 1 9 xs in
+    Array.unsafeIndex xs 1
+
+-- The slot count an allocation was asked for: 3.
+size :: Int
+size =
+  let
+    xs :: Array.Array Int
+    xs = Array.unsafeNew 3
+  in
+    Array.length xs
+
+-- What a write answers with, kept rather than discarded: `Prim.Unit`.
+wrote :: Unit
+wrote =
+  let
+    xs :: Array.Array Int
+    xs = Array.unsafeNew 1
+  in
+    Array.unsafeSet 0 1 xs
+
+-- `f` of every slot of `src` from `i` on written into `dst`, which it answers
+-- with once `i` reaches the length.
+fill :: forall a b. (a -> b) -> Array.Array a -> Array.Array b -> Int -> Array.Array b
+fill f src dst i = case Int.lt i (Array.length src) of
+  true ->
+    let _ = Array.unsafeSet i (f (Array.unsafeIndex src i)) dst in
+    fill f src dst (Int.add i 1)
+  false -> dst
+
+-- A function over an array is a loop over the entries, and not an entry: a
+-- `foreign` is a first-order leaf.
+mapArray :: forall a b. (a -> b) -> Array.Array a -> Array.Array b
+mapArray g src = fill g src (Array.unsafeNew (Array.length src)) 0
+
+-- `[10, 20, 30]` mapped by adding one.
+mapped :: Array.Array Int
+mapped =
+  let
+    xs :: Array.Array Int
+    xs = Array.unsafeNew 3
+  in
+    let _ = Array.unsafeSet 0 10 xs in
+    let _ = Array.unsafeSet 1 20 xs in
+    let _ = Array.unsafeSet 2 30 xs in
+    mapArray (\x -> Int.add x 1) xs
+
+mappedLength :: Int
+mappedLength = Array.length mapped
+
+-- Each slot read back apart, so that a slot left unwritten or a value written
+-- into the wrong one does not go unseen.
+mapped0 :: Int
+mapped0 = Array.unsafeIndex mapped 0
+
+mapped1 :: Int
+mapped1 = Array.unsafeIndex mapped 1
+
+mapped2 :: Int
+mapped2 = Array.unsafeIndex mapped 2

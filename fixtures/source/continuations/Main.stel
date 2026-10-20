@@ -1,0 +1,63 @@
+module Main where
+
+import Base.Continuation as Continuation
+import Data.List (List(..))
+
+data Step
+  = Done
+  | Yielded Int (Continuation.Continuation Unit Step {| |})
+
+effect Choose where
+  choose :: Unit ->* Boolean
+
+effect Yield where
+  yield :: Int ->* Unit
+
+append :: forall a. List a -> List a -> List a
+append xs ys = case xs of
+  Nil -> ys
+  Cons x rest -> Cons x (append rest ys)
+
+chosen :: List Int
+chosen =
+  handle
+    case choose () of
+      true -> 1
+      false -> 2
+  with
+    Choose
+      | choose _ -> append (resume true) (resume false)
+      | return x -> Cons x Nil
+
+reified :: List Int
+reified =
+  handle
+    case choose () of
+      true -> 1
+      false -> 2
+  with
+    Choose
+      reifiable full
+      | choose _ k ->
+          append (Continuation.continue k true) (Continuation.continue k false)
+      | return x -> Cons x Nil
+
+generate :: Unit -> Step
+generate _ =
+  handle
+    let a = yield 1 in
+    let b = yield 2 in
+    yield 3
+  with
+    Yield
+      reifiable full
+      | yield n k -> Yielded n k
+      | return _ -> Done
+
+collect :: Step -> List Int
+collect s = case s of
+  Done -> Nil
+  Yielded n k -> Cons n (collect (Continuation.continue k ()))
+
+generated :: List Int
+generated = collect (generate ())

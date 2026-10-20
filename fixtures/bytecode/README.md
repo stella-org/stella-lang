@@ -77,12 +77,16 @@ A fixture is built from Stella source by the compiler: the modules under
 it names, and the modules of the `stella-packages/base`, `lists`, and `maybe`
 packages those import. It holds the `.dmo` of each module it reaches and no other,
 `Base.Int.dmo` being the module the compiler carries. Which source directories make
-each fixture, and what each must give, are in
-`compiler/test/Stella/Compiler/Fixtures.purs` and the modules beside it under
-`Fixtures/`; `Fixtures/Foreigns.purs` also holds each `host.mjs` and the signatures
-each foreign manifest is written from. A foreign manifest is checked against the
-modules it describes as it is written, except in a fixture made to disagree with
-them, whose description says so.
+each fixture, and what each must give, are in the end-to-end suite,
+`e2e/test/E2E/Fixtures.purs` and the modules beside it under `Fixtures/`;
+`Fixtures/Foreigns.purs` also holds each `host.mjs` and the signatures each foreign
+manifest is written from, and `e2e/src/E2E/Build.purs` is the build. A foreign
+manifest is checked against the modules it describes as it is written, except in a
+fixture made to disagree with them, whose description says so.
+
+`fixtures/source` also holds the sources of programs the end-to-end suite builds
+and runs without writing them here, each under a directory named for its test,
+such as `fixtures/source/records/`.
 
 A fixture setting two versions of a module side by side (`stale-arity-*`,
 `stale-foreign-*`, `unexported-global`, `undeclared-ctor`) is built twice:
@@ -113,7 +117,7 @@ apart from the values of the same kind that are built from source:
 
 ## Regenerating them
 
-The compiler's test suite checks that every fixture here is exactly what building
+The end-to-end suite checks that every fixture here is exactly what building
 its source gives now, and fails naming each one that is not. It also checks that
 the fixtures built from source still lower to the instructions they are to
 exercise, which regenerating them would not keep. The `.dmo` format is not
@@ -121,7 +125,7 @@ frozen, so after a change to it, or to a fixture's source, regenerate them all
 from the Nix dev shell:
 
 ```sh
-STELLA_UPDATE_FIXTURES=1 spago test -p compiler
+STELLA_UPDATE_FIXTURES=1 spago test -p e2e
 ```
 
 and commit the result with the change that caused it.
