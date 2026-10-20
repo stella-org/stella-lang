@@ -46,6 +46,7 @@ package:
       - node-fs
       - node-process
       - ordered-collections
+      - partial
       - prelude
       - refs
       - run

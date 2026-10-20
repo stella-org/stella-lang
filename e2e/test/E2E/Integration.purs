@@ -10,8 +10,11 @@ import E2E.Build (readSources)
 import Effect (Effect)
 import Effect.Exception (throw)
 import Test.E2E.Command as Command
+import Test.E2E.Equivalence as Equivalence
+import Test.E2E.Isolation as Isolation
 import Test.E2E.Lists as Lists
 import Test.E2E.Parse as Parse
+import Test.E2E.Reference as Reference
 import Test.E2E.Session as Session
 import Test.E2E.SessionGuest as SessionGuest
 import Test.E2E.SessionKernel as SessionKernel
@@ -29,3 +32,6 @@ main = readSources >>= case _ of
     SessionKernel.spec sources
     Lists.spec sources
     Parse.spec sources
+    Reference.spec sources
+    Equivalence.spec sources
+    Isolation.spec sources

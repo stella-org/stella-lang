@@ -168,6 +168,7 @@
             "node-fs",
             "node-process",
             "ordered-collections",
+            "partial",
             "prelude",
             "refs",
             "run",
@@ -220,8 +221,6 @@
           "dependencies": [
             "aff",
             "argonaut-core",
-            "node-buffer",
-            "node-fs",
             "partial",
             "spec",
             "spec-node"

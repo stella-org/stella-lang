@@ -1,0 +1,22 @@
+-- `box`, an array of one handle, created where the module loads; and `caching`,
+-- which keeps its goal's type there where it waits, and presents what is there
+-- where it does not: out of contract, and exactly what the host's checks are for.
+module Stash where
+
+import Base.Array as Array
+import Stella.Elab (Handle, Kernel, List(..), MessagePart(..), TypeView(..), goalType, postpone, synthesizer, throw, viewType)
+
+box :: Array.Array Handle
+box = Array.unsafeNew 1
+
+caching :: Handle -> Handle / {| Kernel |}
+caching = synthesizer \goal ->
+  let wantedType = goalType goal in
+  case viewType wantedType of
+    MetaType waited ->
+      let kept = Array.unsafeSet 0 wantedType box in
+      postpone (Cons waited Nil)
+    _ ->
+      let presented = Array.unsafeIndex box 0 in
+      let seen = viewType presented in
+      throw (Cons (TextPart "the kept handle was taken") Nil)

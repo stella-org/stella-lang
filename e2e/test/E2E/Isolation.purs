@@ -8,7 +8,10 @@
 -- | array where it waits, and presents what the array holds when it is run where it
 -- | does not wait: a handle a rollback took back is refused as stale, and one another
 -- | compiler session issued as foreign.
-module Test.Steam.Isolation (spec) where
+-- |
+-- | `Stash` is built from `fixtures/source/guests/stash`, with the `Base.Array` of
+-- | `stella-packages/base`.
+module Test.E2E.Isolation (spec) where
 
 import Prelude
 
@@ -16,7 +19,6 @@ import Prim as P
 
 import Data.Array as Array
 import Data.Either (Either(..))
-import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff, Milliseconds(..))
@@ -43,115 +45,24 @@ import Stella.Compiler.Elaborate.Environment.Effects (effectsOf)
 import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), SessionEnv, freshTypeMeta, initialState, runElabIn)
 import Stella.Compiler.Elaborate.Mechanism.Kinding (kindingOf)
 import Stella.Compiler.Elaborate.Mechanism.Pending (Job(..), Site)
-import Stella.Compiler.Elaborate.Protocol.Guest (elabModule, kernelEffect)
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (HandleError(..), SessionId(..))
 import Stella.Compiler.Elaborate.Vocabulary.Trace (TraceEvent(..), Tracing(..), canonicalCommands, commandsOf)
-import Stella.Compiler.TypedCore (CanonicalClass(..), DecisionTree(..), Decl(..), Export(..), Expr(..), Ident(..), Kind(..), Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), TyConInfo(..), TyName(..), TyVar(..), Type(..), monoScheme)
-import Stella.Compiler.TypedCore.Prim (fn, intTy, primSignature, pureFn, unitTy)
-import Stella.Compiler.TypedCore.Signature (Signature)
+import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
+import Stella.Compiler.TypedCore.Prim (intTy, primSignature)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Steam.Command (dir, pathOf)
-import Test.Steam.Guest (call, compileGuestsOver, construct, elab, elabRow, elabT, global, handleT, text, widened)
-import Test.Steam.InProcess (openInProcess)
-import Test.Steam.Session (close', hello, node)
-
--- `Base.Array` ----------------------------------------------------------------------------------
-
-arrayModuleName :: ModuleName
-arrayModuleName = ModuleName "Base.Array"
-
-arrayTy :: Qualified TyName
-arrayTy = Qualified arrayModuleName (TyName "Array")
-
-arrayOf :: Type -> Type
-arrayOf = TApp (TCon arrayTy [])
-
--- | What the ABI manifest supplies to `Base.Array`: the type constructor, opaque.
-withArray :: Signature -> Signature
-withArray sig = sig
-  { types = Map.insert arrayTy (IntrinsicTyCon (monoScheme (KFun KType KType)) CanonicalOpaque) sig.types }
-
--- | `Base.Array`, the three entries a stash needs, which the interpreter carries out.
-arrayModule :: Module Unit
-arrayModule =
-  { annotation: unit
-  , name: arrayModuleName
-  , imports: []
-  , exports: map (ExportValue <<< Ident) [ "unsafeNew", "unsafeSet", "unsafeIndex" ]
-  , decls:
-      [ foreign' "unsafeNew" (pureFn int (arrayOf a))
-      , foreign' "unsafeSet" (pureFn int (pureFn a (pureFn (arrayOf a) (TCon unitTy []))))
-      , foreign' "unsafeIndex" (pureFn (arrayOf a) (pureFn int a))
-      ]
-  }
-  where
-  a = TVar (TyVar "a")
-  int = TCon intTy []
-  foreign' name body = DeclForeign unit { name: Ident name, scheme: monoScheme (TForall (TyVar "a") KType body), attributes: [] }
-
-entry :: P.String -> Expr Unit
-entry name = TyApp unit (Global unit (Qualified arrayModuleName (Ident name)) []) handleT
-
--- `Stash` -----------------------------------------------------------------------------------------
+import E2E.Build (Sources, builtFrom)
+import Test.E2E.Command (dir, pathOf)
+import Test.E2E.InProcess (openInProcess)
+import Test.E2E.Session (close', hello, node)
 
 stashModuleName :: ModuleName
 stashModuleName = ModuleName "Stash"
 
 caching :: Qualified Ident
 caching = Qualified stashModuleName (Ident "caching")
-
--- | `box`, an array of one handle, created where the module loads; and `caching`,
--- | which keeps its goal's type there where it waits, and presents what is there
--- | where it does not.
-stashModule :: Module Unit
-stashModule =
-  { annotation: unit
-  , name: stashModuleName
-  , imports: [ elabModule, arrayModuleName ]
-  , exports: []
-  , decls:
-      [ DeclNonRec unit
-          { name: Ident "box"
-          , scheme: monoScheme (arrayOf handleT)
-          , value: App unit (entry "unsafeNew") (Lit unit (LitInt 1))
-          , attributes: []
-          }
-      , DeclNonRec unit
-          { name: Ident "caching"
-          , scheme: monoScheme (fn handleT (TRowExtend (RowEffectEntry kernelEffect []) TRowEmpty) handleT)
-          , value: App unit (global "synthesizer") (Lam unit (Ident "goal") handleT elabRow policy)
-          , attributes: []
-          }
-      ]
-  }
-  where
-  box = Global unit (Qualified stashModuleName (Ident "box")) []
-  applied f = Array.foldl (\g x -> App unit (widened elabRow g) x) f
-  var n = Var unit (Ident n)
-
-  policy =
-    Let unit (Ident "goalType") handleT (call (global "goalType") [ var "goal" ])
-      $ Case unit [ call (global "viewType") [ var "goalType" ] ]
-          ( SwitchCtor (OccScrutinee 0)
-              [ { ctor: elab "MetaType"
-                , tree: Bind (Ident "waited") (OccField (OccScrutinee 0) (elab "MetaType") 0) $ Leaf $
-                    Let unit (Ident "kept") (TCon unitTy []) (applied (entry "unsafeSet") [ Lit unit (LitInt 0), var "goalType", box ])
-                      (call (TyApp unit (global "postpone") handleT) [ listOfHandles [ var "waited" ] ])
-                }
-              ]
-              ( Just $ Leaf
-                  $ Let unit (Ident "presented") handleT (applied (entry "unsafeIndex") [ box, Lit unit (LitInt 0) ])
-                  $ Let unit (Ident "seen") (elabT "TypeView") (call (global "viewType") [ var "presented" ])
-                  $ call (TyApp unit (global "throw") handleT)
-                      [ listOfParts [ construct elabRow "TextPart" [] [ text "the kept handle was taken" ] ] ]
-              )
-          )
-
-  listOfHandles xs = Array.foldr (\x rest -> construct elabRow "Cons" [ handleT ] [ x, rest ]) (TyApp unit (global "Nil") handleT) xs
-  listOfParts xs = Array.foldr (\x rest -> construct elabRow "Cons" [ elabT "MessagePart" ] [ x, rest ]) (TyApp unit (global "Nil") (elabT "MessagePart")) xs
 
 -- The compiler's side ---------------------------------------------------------------------------
 
@@ -181,17 +92,17 @@ guestsOn session attempts = case compiled <#> _.elaboration of
     pure { session, descriptor: trusted.descriptor, env, budget: 1_000_000, cancellation, attempts, health }
 
 -- | A session served in this process that has loaded `Base.Array` and `Stash`.
-withStash :: (Session -> Aff Unit) -> Aff Unit
-withStash k = case compileGuestsOver withArray [ arrayModule, stashModule ] of
+withStash :: Sources -> (Session -> Aff Unit) -> Aff Unit
+withStash sources k = case builtFrom sources [ "guests/stash" ] of
   Left err -> fail ("the stash did not compile: " <> err)
   Right [ array, stash ] -> do
     FS.mkdir' dir { recursive: true, mode: Perms.mkPerms Perms.all Perms.all Perms.all }
-    write "BaseArrayStash" array
+    write "Base.Array" array
     write "Stash" stash
     openInProcess 10_000 (hello { offers = [ "modules", "invoke", "kernel" ] }) >>= case _ of
       Left failure -> fail ("the session did not open: " <> show failure)
       Right session -> do
-        node (Client.load session (pathOf "BaseArrayStash")) >>= shouldEqual (Right (Right "Base.Array"))
+        node (Client.load session (pathOf "Base.Array")) >>= shouldEqual (Right (Right "Base.Array"))
         node (Client.load session (pathOf "Stash")) >>= shouldEqual (Right (Right "Stash"))
         k session
         close' session >>= shouldEqual (Right unit)
@@ -203,10 +114,10 @@ withStash k = case compileGuestsOver withArray [ arrayModule, stashModule ] of
 
 -- The cases ---------------------------------------------------------------------------------------
 
-spec :: Spec Unit
-spec = describe "what a guest keeps between attempts" do
+spec :: Sources -> Spec Unit
+spec sources = describe "what a guest keeps between attempts" do
   it "retries as a new invocation from its beginning, and a handle it kept from the attempt that waited is stale" do
-    withStash \session -> do
+    withStash sources \session -> do
       attempts <- liftEffect (Ref.new 0)
       guests <- guestsOn session attempts
       case runElabIn env (initialState (SessionId 0) 10) (freshTypeMeta emptyXContext XKType) of
@@ -235,7 +146,7 @@ spec = describe "what a guest keeps between attempts" do
         _ -> fail "no metavariable"
 
   it "refuses a handle kept from another compiler session as foreign, the attempt numbers going on" do
-    withStash \session -> do
+    withStash sources \session -> do
       attempts <- liftEffect (Ref.new 0)
       earlier <- guestsOn session attempts
       -- a compilation whose goal waits, which leaves its goal's type in the array

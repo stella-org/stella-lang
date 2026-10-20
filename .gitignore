@@ -12,8 +12,7 @@ _draft
 .vscode
 
 **/.DS_Store
-# bytecode the steam and end-to-end command tests write and run
-steam/.test-dmo
+# bytecode the end-to-end tests write and run
 e2e/.test-dmo
 .sessions
 # the packages the stellac synthesis tests build

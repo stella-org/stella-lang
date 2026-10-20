@@ -1,7 +1,7 @@
 -- | The tests every change runs. Those over a child process or a session's
--- | protocol are `Test.Steam.Integration`'s, and those over inputs as deep and
--- | as long as stack safety is tested at are `Test.Steam.Stress`'s. Run with
--- | `spago test -p steam`.
+-- | protocol, over programs built from source, are the end-to-end suite's, and
+-- | those over inputs as deep and as long as stack safety is tested at are
+-- | `Test.Steam.Stress`'s. Run with `spago test -p steam`.
 module Test.Steam where
 
 import Prelude

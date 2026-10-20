@@ -1,0 +1,200 @@
+-- The reference policy dictates the guest's behavior and serves as the 
+-- standard for comparing both host and guest runners. It strictly mirrors the 
+-- host's reference synthesizer branch-for-branch.
+--
+-- It attempts to resolve a goal by finding the first fitting candidate. It checks 
+-- local site bindings first, then provided globals, and finally monomorphic declarations 
+-- tagged with the specified attribute. If the goal's type is an unsolved metavariable, 
+-- the resolver suspends and waits.
+--
+-- For local bindings and globals, the comparison with the goal's type relies strictly 
+-- on constructor views (a type constructor applied to kinds) rather than full type equality; 
+-- identifier names are compared via `Base.String.eq`. 
+-- 
+-- Declarations with the specified attribute are evaluated within an isolated transaction. 
+-- If the declaration requires no kind variable instantiation, the designated hook triggers, 
+-- and the candidate's claim is unified with the goal's type. Declarations that do contain 
+-- kind variables are bypassed without action. If all resolution attempts fail, it throws an error.
+module Policy where
+
+import Base.String as String
+import Stella.Elab
+  ( Abort
+  , Breach
+  , ConstraintView(..)
+  , Handle
+  , Kernel
+  , KindView(..)
+  , List(..)
+  , Maybe(..)
+  , MessagePart(..)
+  , Name(..)
+  , RowElemKind(..)
+  , RowKey(..)
+  , TypeView(..)
+  , declsWithAttr
+  , freshMetaType
+  , globalRef
+  , goalType
+  , localContext
+  , localVariable
+  , lookupGlobal
+  , postpone
+  , require
+  , rootScope
+  , synthesizer
+  , throw
+  , transact
+  , typeOf
+  , unify
+  , viewType
+  , warn
+  )
+
+-- What the facade runs under.
+type Elaborating = {| Abort, Breach, Kernel |}
+
+-- What runs before a candidate is referred to: given the root scope, the goal's
+-- type, and the candidate.
+type Hook = Handle -> Handle -> Name -> Unit / Elaborating
+
+-- Comparing views ------------------------------------------------------------------
+
+sameName :: Name -> Name -> Boolean
+sameName left right = case left, right of
+  Name lm lx, Name rm rx -> case String.eq lm rm of
+    true -> String.eq lx rx
+    false -> false
+
+sameKind :: KindView -> KindView -> Boolean
+sameKind a b = case a, b of
+  KindType, KindType -> true
+  KindType, _ -> false
+  KindEffect, KindEffect -> true
+  KindEffect, _ -> false
+  KindRow ea, KindRow eb -> case ea, eb of
+    RowType, RowType -> true
+    RowType, _ -> false
+    RowEffect, RowEffect -> true
+    RowEffect, _ -> false
+  KindRow _, _ -> false
+  KindFun a1 a2, KindFun b1 b2 -> case sameKind a1 b1 of
+    true -> sameKind a2 b2
+    false -> false
+  KindFun _ _, _ -> false
+  KindVar va, KindVar vb -> String.eq va vb
+  KindVar _, _ -> false
+  KindAnyRow, KindAnyRow -> true
+  KindAnyRow, _ -> false
+
+sameKinds :: List KindView -> List KindView -> Boolean
+sameKinds as bs = case as, bs of
+  Nil, Nil -> true
+  Nil, _ -> false
+  Cons ka restA, Cons kb restB -> case sameKind ka kb of
+    true -> sameKinds restA restB
+    false -> false
+  Cons _ _, _ -> false
+
+-- Two views that are the same type constructor applied to the same kinds. Any
+-- other view is not compared.
+sameConstructorView :: TypeView -> TypeView -> Boolean
+sameConstructorView left right = case left, right of
+  ConType ln lk, ConType rn rk -> case sameName ln rn of
+    true -> sameKinds lk rk
+    false -> false
+  _, _ -> false
+
+-- Hooks ------------------------------------------------------------------------------
+
+-- A row metavariable, a Lacks on it that stays open, and a warning, all named by
+-- the word given.
+leaveBehind :: Handle -> String -> Unit / Elaborating
+leaveBehind root word =
+  let row = freshMetaType root (KindRow RowType) in
+  let required = require root (LacksView (SymbolKey word) row) in
+  warn (Cons (TextPart word) Nil)
+
+-- The hook that does nothing.
+nothingBefore :: Hook
+nothingBefore root wanted name = ()
+
+-- The hook that leaves behind what a candidate can where the candidate named is
+-- tried.
+workingOn :: Name -> Hook
+workingOn candidate root wanted name = case sameName name candidate of
+  true -> leaveBehind root "trying"
+  false -> ()
+
+-- The policy -------------------------------------------------------------------------
+
+-- The first binding of the site whose type's view is the one wanted.
+findLocal :: TypeView -> List { name :: String, type :: Handle } -> Maybe String / Elaborating
+findLocal wanted entries = case entries of
+  Nil -> Nothing
+  Cons entry rest ->
+    let viewed = viewType entry.type in
+    case sameConstructorView wanted viewed of
+      true -> Just entry.name
+      false -> findLocal wanted rest
+
+-- The first of the globals given that the catalog holds with no kind variable, at
+-- the view wanted.
+findGlobal :: TypeView -> List Name -> Maybe Name / Elaborating
+findGlobal wanted names = case names of
+  Nil -> Nothing
+  Cons name rest -> case lookupGlobal name of
+    Just { kindVars: Nil, scheme, ... } ->
+      let viewed = viewType scheme in
+      case sameConstructorView wanted viewed of
+        true -> Just name
+        false -> findGlobal wanted rest
+    _ -> findGlobal wanted rest
+
+-- Given the hook, the root scope, the goal's type, and the candidate.
+trying :: Hook -> Handle -> Handle -> Name -> Maybe Handle / Elaborating
+trying hook root wanted name = case lookupGlobal name of
+  Just { kindVars: Nil, ... } ->
+    let hooked = hook root wanted name in
+    let referred = globalRef root name Nil in
+    let claimed = typeOf referred in
+    let unified = unify root claimed wanted in
+    Just referred
+  _ -> Nothing
+
+-- Each candidate tried in a transaction of its own, in order, the first that fits
+-- taken.
+search :: Hook -> Handle -> Handle -> List Name -> Maybe Handle / Elaborating
+search hook root wanted names = case names of
+  Nil -> Nothing
+  Cons candidate rest -> case transact (\u -> trying hook root wanted candidate) of
+    Just (Just found) -> Just found
+    _ -> search hook root wanted rest
+
+referenceWith :: List Name -> Name -> Hook -> Handle -> Handle / Elaborating
+referenceWith globals marker hook goal =
+  let root = rootScope () in
+  let wantedType = goalType goal in
+  case viewType wantedType of
+    MetaType waited -> postpone (Cons waited Nil)
+    view -> case findLocal view (localContext ()) of
+      Just local -> localVariable root local
+      Nothing -> case findGlobal view globals of
+        Just found -> globalRef root found Nil
+        Nothing -> case search hook root wantedType (declsWithAttr marker) of
+          Just answer -> answer
+          Nothing -> throw
+            ( Cons (TextPart "nothing the site binds, no global given, and no monomorphic declaration carrying the attribute")
+                (Cons (NamePart marker) (Cons (TextPart "fits the type") (Cons (TypePart wantedType) Nil)))
+            )
+
+-- The synthesizers -------------------------------------------------------------------
+
+-- Answering from `Main.one`, then from the candidates.
+answering :: Handle -> Handle / {| Kernel |}
+answering = synthesizer (referenceWith (Cons (Name "Main" "one") Nil) (Name "Main" "candidate") nothingBefore)
+
+-- Answering from the candidates alone, `Main.cand1` leaving behind what a
+-- candidate can where it is tried.
+searching :: Handle -> Handle / {| Kernel |}
+searching = synthesizer (referenceWith Nil (Name "Main" "candidate") (workingOn (Name "Main" "cand1")))

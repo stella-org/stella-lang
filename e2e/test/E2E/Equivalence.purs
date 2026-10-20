@@ -1,6 +1,6 @@
 -- | One synthesis scenario run twice from one state: by the host's runner, the policy
 -- | a script in the host, and by a guest on a `steam session` the CLI started, the
--- | same policy compiled from Typed Core. **What the two come to must be the same
+-- | same policy built from source. **What the two come to must be the same
 -- | in everything the host holds** — the submissions, the report, the final state,
 -- | the trace, and the Core the hole is filled with.
 -- |
@@ -17,7 +17,7 @@
 -- | through what the site binds and the globals it is given — none — and tries the
 -- | candidates, `Main.cand1` leaving behind a metavariable, an open constraint, and a
 -- | warning as it is tried.
-module Test.Steam.Equivalence (spec) where
+module Test.E2E.Equivalence (spec) where
 
 import Prelude
 
@@ -71,11 +71,11 @@ import Stella.Compiler.TypedCore.Prim (booleanTy, intTy, primSignature, recordTy
 import Stella.Compiler.TypedCore.Signature (Signature)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Steam.Command (dir, pathOf)
-import Test.Steam.Guest (compileGuests)
-import Test.Steam.Reference (policyModule, stringModule, synthesizerNamed)
-import Test.Steam.InProcess (openInProcess)
-import Test.Steam.Session (close', draining, hello, node, open', streams)
+import E2E.Build (Sources)
+import Test.E2E.Command (dir, pathOf)
+import Test.E2E.Reference (policyModules, synthesizerNamed)
+import Test.E2E.InProcess (openInProcess)
+import Test.E2E.Session (close', draining, hello, node, open', streams)
 
 -- The fixture ------------------------------------------------------------------------------------
 
@@ -273,17 +273,17 @@ equating :: MetaVar -> Job
 equating g = JobUnify { kind: XKType, left: XMeta g, right: answerType }
 
 -- | A session that has loaded `Base.String` and the policy, opened as given.
-withPolicySession :: (Hello -> Aff (Either OpenFailure Session)) -> (Session -> Aff Unit) -> Aff Unit
-withPolicySession open k = case compileGuests [ stringModule, policyModule ] of
+withPolicySession :: Sources -> (Hello -> Aff (Either OpenFailure Session)) -> (Session -> Aff Unit) -> Aff Unit
+withPolicySession sources open k = case policyModules sources of
   Left err -> fail ("the policy did not compile: " <> err)
   Right [ string, policy ] -> do
     FS.mkdir' dir { recursive: true, mode: Perms.mkPerms Perms.all Perms.all Perms.all }
-    write "BaseStringEq" string
+    write "Base.String" string
     write "Policy" policy
     open (hello { offers = [ "modules", "invoke", "kernel" ] }) >>= case _ of
       Left failure -> fail ("the session did not open: " <> show failure)
       Right session -> do
-        node (Client.load session (pathOf "BaseStringEq")) >>= shouldEqual (Right (Right "Base.String"))
+        node (Client.load session (pathOf "Base.String")) >>= shouldEqual (Right (Right "Base.String"))
         node (Client.load session (pathOf "Policy")) >>= shouldEqual (Right (Right "Policy"))
         k session
         close' session >>= shouldEqual (Right unit)
@@ -301,15 +301,15 @@ asProcess h = do
 
 -- The cases ----------------------------------------------------------------------------------------
 
-spec :: Spec Unit
-spec = describe "a guest synthesizer against the host's, one scenario" do
+spec :: Sources -> Spec Unit
+spec sources = describe "a guest synthesizer against the host's, one scenario" do
   it "solves the goal through a wait and a candidate search, by the host, and the Core checker accepts it" do
     case byHost of
       Left err -> fail err
       Right host -> checkScenario host
 
   it "comes to the same, by a guest on a session, in every part of what the host holds" do
-    withPolicySession asProcess \session -> byGuest session >>= case _, byHost of
+    withPolicySession sources asProcess \session -> byGuest session >>= case _, byHost of
       Left err, _ -> fail err
       _, Left err -> fail err
       Right guest, Right host -> do
@@ -350,7 +350,7 @@ spec = describe "a guest synthesizer against the host's, one scenario" do
   where
   runIn quantum = do
     result <- liftEffect (Ref.new (Left "the session did not run"))
-    withPolicySession (openInProcess quantum) \session -> byGuest session >>= liftEffect <<< flip Ref.write result
+    withPolicySession sources (openInProcess quantum) \session -> byGuest session >>= liftEffect <<< flip Ref.write result
     liftEffect (Ref.read result)
 
 -- | What one run of the scenario must come to, whichever runner ran it.

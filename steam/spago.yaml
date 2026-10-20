@@ -39,8 +39,6 @@ package:
     dependencies:
       - aff
       - argonaut-core
-      - node-buffer
-      - node-fs
       - partial
       - spec
       - spec-node
