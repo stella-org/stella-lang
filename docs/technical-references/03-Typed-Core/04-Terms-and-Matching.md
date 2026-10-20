@@ -15,7 +15,7 @@ e ::= x | M.x [[κ̄]]                    variable; `M.x` when κ̄ is empty
     | letrec { x̄ : σ̄ = v̄ } in e        recursive binding group
     | case (ē) of dt                   pattern match
     | letjoin j (x̄ : τ̄) : τ = e1 in e2  join point
-    | jump j (ē)                       jump to a join point; tail position only
+    | jump j (ē)                       jump to a join point in scope
     | fail τ                           non-exhaustive; derived notation
     -- records
     | {}
@@ -78,29 +78,32 @@ so every group of `FunVal`s passes, and so does a member that is none where noth
 
 **A join point writes its result type.** It is the type of the whole `letjoin` and of every `jump` to `j`, and neither of the two bodies settles it ahead of the other: a definition may jump to itself and a body may be nothing but a jump. Writing it keeps the rule free of any order of checking.
 
-`letjoin` and `jump` follow the standard join point discipline.
+`letjoin` and `jump` follow a discipline of relative join point contexts inspired by System F_J (D50). It is not F_J's own: F_J is call-by-name and lets a jump discard a known evaluation context, so an application there keeps `Δ` in its function position and empties it in its argument alone. Stella is call-by-value, a jump fires only in a tail context `Tl` ([Semantics](06-Semantics.md#join-points)), and every non-tail position empties `Δ`, which is the more conservative choice.
 
 - A join point is not first class. It cannot be passed as a value and forms no closure.
-- `jump` occurs only in tail position.
+- A join point is in scope relative to the nearest non-tail position: a position whose value something still awaits — an argument, an operand, the bound side of a `let`, a scrutinee — starts with none.
 - A join point's result type and ambient effect row match those of the enclosing scope.
 - **A join point does not cross a function boundary.**
 
-The last condition is what makes a join point a join point. `jump j` must be implementable as a transfer of control **within the same function activation** as `letjoin j`. If a closure could capture a join point, it would no longer be a goto but a genuine continuation, and would not lower to a Mid IR join point directly.
+The two scoping conditions are what make a join point a join point. `jump j` must be implementable as a transfer of control **within the same function activation** as `letjoin j`, and with nothing of that activation's evaluation left pending between them. If a closure could capture a join point, it would no longer be a goto but a genuine continuation, and would not lower to a Mid IR join point directly; and a jump out of a position whose value is awaited would abandon what awaits it.
 
-The typing rules enforce this by **discarding** the join point context `Δ`.
+The typing rules enforce both by **emptying** the join point context `Δ`: at every non-tail position ([Typing Rules](05-Typing-Rules.md#join-points-and-decision-trees)), and at every boundary.
 
 ```text
 λ (x : τ) / ρ. e             check e with Δ := ·
 Λ (a : κ). v                 check v with Δ := ·
 handle e with h              check e, the return clause, and every operation clause with Δ := ·
 region [ℓ] … @ ( ē ) in e    check e with Δ := ·
+letrec { x̄ : σ̄ = ē } in e    check each initializer with Δ := ·
 ```
 
-This is why `Δ` is a context separate from `Γ`: their scoping rules differ. `Γ` extends into the body of a lambda; `Δ` is cut off there. A single context could not express the difference.
+A `letjoin` standing in a non-tail position is no exception: it starts that position afresh, and its own definition and continuation may jump to it. `jump` itself asks of its position nothing more than that its join point be in `Δ`, which is what makes the discipline stable under reduction ([Typing Rules](05-Typing-Rules.md#join-points-and-decision-trees)).
+
+This is why `Δ` is a context separate from `Γ`: their scoping rules differ. `Γ` extends into the body of a lambda and into every operand; `Δ` is cut off at both. A single context could not express the difference.
 
 Discarding `Δ` at `handle` is conservative. A clause is entered from the `perform` site, which lies at an arbitrary depth inside the handled computation and in general in another function activation, so an outward `jump` from a clause body would be a non-local exit that unwinds the handler. This holds of both clause forms ([Effects](03-Effects.md)): a `full` clause is a function boundary outright, receiving a continuation and being invoked later, while a `fast` clause builds no continuation but is still entered from that arbitrary point. v0.1 takes the simple rule and may relax it; since the elaborator can move join points inward, the practical restriction is small.
 
-Discarding `Δ` at a `region`'s body has a reason of its own. A region closes only when its body reaches a value, so a tail context does not pass through its frame ([Semantics](06-Semantics.md)), and a `jump` out of the body would find no `letjoin` to transfer to. The initial values stand outside the region and keep `Δ`.
+Discarding `Δ` at a `region`'s body has a reason of its own. A region closes only when its body reaches a value, so a tail context does not pass through its frame ([Semantics](06-Semantics.md)), and a `jump` out of the body would find no `letjoin` to transfer to. The initial values stand outside the region, each in a non-tail position.
 
 Join points exist for two reasons: so that a decision tree can hold each alternative's body once, and so that lowering to Mid IR join points preserves structure.
 

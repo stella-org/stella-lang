@@ -511,7 +511,7 @@ The last is the only one a `δ_f` produces, and the only one that is a value rat
   Γ;Δ ⊢ force ν : σ ! ρ
 
   ( ν : σ ) ∈ Γ_N    Γ;· ⊢ e : σ ! ()    Γ ⊢ ρ : Row Effect
-  ────────────────────────────────────────────────────────   ← e out of tail position
+  ────────────────────────────────────────────────────────
   Γ;Δ ⊢ fill ν e : σ ! ρ
 
   ( region ℓ : ι ) ∈ Γ_R      ι = ( k̄ : σ̄ )      dom(θ) = { k̄ }
@@ -539,7 +539,7 @@ The rule asks every value `Ω` records a type for to have it, at `()`, as a cell
 
 `openEffC [ρ] e` widens the **ambient row of a computation**, where `openEff` widens the **effect row inside a function's type**. Both are needed and neither subsumes the other: `openEff` is what allows a pure function to be passed where a wider arrow type is expected, and `openEffC` is what allows the result of applying such a function to sit in a context whose ambient row is the wider one.
 
-**`openEffC` kinds the row it adds, and its computation stands under no join point.** A widened computation is an application, `(openEff [ρ] v) w` being the one step that makes it, and a value is typed under any `Δ`; a jump out of it would land at a row other than its own. **`fill ν e` checks its initializer as a `letrec` does** ([Typing Rules](05-Typing-Rules.md)): at `()`, under no join point, and out of tail position. It is the initializer the allocation suspended, now running, and a jump out of it would leave the cell `Evaluating`.
+**`openEffC` kinds the row it adds, and its computation stands under no join point.** A widened computation is an application, `(openEff [ρ] v) w` being the one step that makes it, and a value is typed under any `Δ`; a jump out of it would land at a row other than its own. **`fill ν e` checks its initializer as a `letrec` does** ([Typing Rules](05-Typing-Rules.md)): at `()` and under no join point. It is the initializer the allocation suspended, now running, and a jump out of it would leave the cell `Evaluating`. **These are the boundaries the run-time forms add** to those of the source (D50): the operands of `openEffC` and `fill`, and the body and the cells of an open frame `region⟨ℓ⟩`. The values `θ` of a `match` stand in non-tail positions, and its tree inherits `Δ` as a `case`'s does.
 
 **A `letrec` allocates a location for each member**, and the locations allocated so far, each with the type of its member, form a global context `Γ_N` of entries `ν : σ`, which run-time terms are typed under as they are under `Γ_R`. **A store is typed by it**, each cell holding a term of its location's type:
 
@@ -656,7 +656,7 @@ Ev_ℓ ::= an evaluation context with no `region⟨ℓ⟩ _ in _` on the path to
 
 `Ev_ℓ` picks the **innermost** frame named `ℓ`, as `Ev_k` picks the innermost handler of a key. **Region frames nest at run time**, and a reference passes over every frame of another name whatever cells it holds: the name says which region is meant, so nothing is searched for by key. Several frames of **one** name stand on one path only where a continuation has been applied while a copy of it was running; why the innermost is the right one there is argued with the rules for cells ([Cells](#cells)).
 
-A `jump` appears only in tail position, so the position it may occupy is narrower than a general context.
+A `jump` that reduces stands in a tail context of its `letjoin`, so the position it occupies there is narrower than a general context.
 
 ```text
 Tl ::= []  |  letjoin j' (x̄ : τ̄) : τ = e' in Tl
@@ -762,7 +762,7 @@ Local totality ([Terms and Matching](04-Terms-and-Matching.md)) guarantees that 
   letjoin j (x̄ : τ̄) : τ = e1 in v    →  v
 ```
 
-`Tl` is a tail context, and a join point is out of scope under `λ`, `Λ`, `handle`, and the body of a `region`, so the position of the `jump` lies within the same function activation as the `letjoin`. That is what allows a backend to compile a jump as a transfer of control rather than as a continuation.
+`Tl` is a tail context. **Typing puts every jump that reaches the hole into one** (D50): a join point is in scope relative to the nearest non-tail position or boundary, every position an evaluation context passes through but the continuation of a `letjoin` is one of those, and the tail-transparent forms above a jump — a `let` body, a `case` tree, a branch — reduce away before it is in the hole. So the position of the `jump` lies within the same function activation as the `letjoin`, with nothing pending between them. That is what allows a backend to compile a jump as a transfer of control rather than as a continuation.
 
 The second rule discards a binding whose join point is no longer reachable.
 

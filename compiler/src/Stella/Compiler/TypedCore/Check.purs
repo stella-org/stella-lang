@@ -44,6 +44,7 @@ import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), isJust)
+import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
 import Data.Traversable (traverse)
@@ -57,15 +58,19 @@ type JoinInfo =
   , row :: Type
   }
 
--- | `Σ`, `Γ`, and `Δ`, together with whether the term stands in tail position.
+-- | `Σ`, `Γ`, and `Δ`, together with the join points a non-tail position hid.
 -- |
--- | `Δ` is discarded at a `λ`, a `Λ`, and a `handle`: a join point is a transfer
--- | of control within one function activation and crosses no function boundary.
+-- | `Δ` is relative to the nearest non-tail position or boundary (D50): a
+-- | non-tail position starts with none, and so does a boundary — a `λ`, a
+-- | `Λ`, a `handle`, a region's body, and a `letrec` initializer — a join point
+-- | being a transfer of control within one function activation. `hidden` holds
+-- | the join points a non-tail position took out of scope since the nearest
+-- | boundary, so that a jump to one is reported as leaving that position.
 type Env =
   { signature :: Signature
   , context :: Context
   , joins :: Map JoinName JoinInfo
-  , tail :: P.Boolean
+  , hidden :: Set JoinName
   }
 
 -- | What checking records at a node: the annotation the term arrived with, the
@@ -148,7 +153,8 @@ data CheckError
   | LocalReadBeforeInitialized Ident Ident
   | UnboundJoin JoinName
   | JoinArity JoinName P.Int P.Int
-  -- | A `jump` outside tail position, which no transfer of control implements.
+  -- | A `jump` to a join point a non-tail position hides: control would leave
+  -- | that position, which no transfer of control implements.
   | JumpNotInTail JoinName
   | UnknownOperation (Qualified EffName) OpName
   -- | `perform k.op [σ̄]` supplying a number of types the operation does not
@@ -211,7 +217,7 @@ data CheckError
 -- | context is empty, a join point crossing no declaration boundary.
 envOf :: Signature -> Context -> Env
 envOf signature context =
-  { signature, context, joins: Map.empty, tail: true }
+  { signature, context, joins: Map.empty, hidden: Set.empty }
 
 -- | `Γ;Δ ⊢ e : τ ! ρ`, synthesizing the type.
 infer :: forall a. Env -> Type -> Expr a -> Either (CheckFailure a) (Expr (Typed a))
@@ -289,7 +295,6 @@ infer env rho expr = case expr of
 
   Jump at name args -> do
     info <- joinInfo at env name
-    when (not env.tail) (Left { at, error: JumpNotInTail name })
     sameRow at rho info.row
     args' <- checkArguments at env rho name info.params args
     Right (Jump (at' at info.result) name args')
@@ -955,7 +960,7 @@ inferChain env rho chain = do
     ty -> map _.result (asFunction ty)
 
 -- | Every scheme of a recursive group is registered before any right-hand side
--- | is checked, each under no join point and out of tail position, `Δ = ·`: an
+-- | is checked, each under no join point, `Δ = ·`: an
 -- | initializer jumping out would leave its group half initialized. **The group
 -- | is initialization-safe**, each right-hand side reading only the members
 -- | written before it ([Initialization Safety](../../../../docs/technical-references/03-Typed-Core/10-Initialization.md)),
@@ -973,7 +978,7 @@ recursiveEnv at env bindings = do
       | Just reader <- Array.index bindings v.initializer
       , Just read <- Array.index bindings v.read -> Left { at: v.at, error: LocalReadBeforeInitialized reader.name read.name }
     _ -> Right unit
-  checked <- traverse (checkBinding (inner { joins = Map.empty, tail = false })) bindings
+  checked <- traverse (checkBinding (abstracted inner)) bindings
   Right { env: inner, bindings: checked }
   where
   checkBinding inner binding = do
@@ -993,11 +998,10 @@ checkJoinBody
 checkJoinBody env name params result rho value =
   check inner rho result value
   where
-  -- The root of a join definition is in tail position whatever position the
-  -- `letjoin` itself stands in.
+  -- The definition is typed under the join points of its own `letjoin`.
   inner =
     foldl (\acc param -> bound acc param.name param.ty)
-      ((joining env name params result rho) { tail = true })
+      (joining env name params result rho)
       params
 
 checkArguments
@@ -1311,16 +1315,19 @@ valueForm at env body =
 bound :: Env -> Ident -> Type -> Env
 bound env name ty = env { context = bindVar env.context name ty }
 
--- | A `λ` discards the join point context and its body stands in tail position.
+-- | A `λ` discards the join point context.
 lambdaEnv :: Env -> Ident -> Type -> Env
 lambdaEnv env name ty =
   (abstracted env) { context = bindVar env.context name ty }
 
+-- | A boundary: no join point is in scope, and none is hidden.
 abstracted :: Env -> Env
-abstracted env = env { joins = Map.empty, tail = true }
+abstracted env = env { joins = Map.empty, hidden = Set.empty }
 
+-- | A non-tail position: no join point is in scope, and those that were are
+-- | hidden.
 notTail :: Env -> Env
-notTail env = env { tail = false }
+notTail env = env { joins = Map.empty, hidden = Set.union env.hidden (Map.keys env.joins) }
 
 joining :: Env -> JoinName -> P.Array Param -> Type -> Type -> Env
 joining env name params result rho =
@@ -1329,7 +1336,9 @@ joining env name params result rho =
 joinInfo :: forall a. a -> Env -> JoinName -> Either (CheckFailure a) JoinInfo
 joinInfo at env name = case Map.lookup name env.joins of
   Just info -> Right info
-  Nothing -> Left { at, error: UnboundJoin name }
+  Nothing
+    | Set.member name env.hidden -> Left { at, error: JumpNotInTail name }
+    | otherwise -> Left { at, error: UnboundJoin name }
 
 -- | `Γ, C`. A constraint abstraction needs its constraint well formed and not
 -- | satisfiable: a type application may substitute a row that makes it false.

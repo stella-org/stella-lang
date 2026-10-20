@@ -82,7 +82,8 @@ data Expr a
   -- | the type of the whole expression and of every `jump` to `j`, and nothing
   -- | in the two bodies determines it ahead of the other.
   | LetJoin a JoinName (P.Array Param) Type (Expr a) (Expr a)
-  -- | A jump to a join point, which occurs in tail position only.
+  -- | A jump to a join point in scope, which a non-tail position and a
+  -- | boundary take out of scope (D50).
   | Jump a JoinName (P.Array (Expr a))
   | RecordEmpty a
   | RecordExtend a RowKey (Expr a) (Expr a)

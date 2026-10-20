@@ -27,7 +27,7 @@ There are four contexts because their **scoping rules differ in four ways**. Mer
 | --- | --- | --- | --- | --- |
 | Contains | declarations | local bindings | join points | occurrence types |
 | Populated by | a module's declarations and its imports | `λ`, `Λ`, `let`, `letrec`, `bind`, `region`; kind variables while checking a declaration | `letjoin` | `case` and `switch*` |
-| Lifetime | fixed throughout checking of a module | grows at a binder, shrinks on leaving it | **discarded at a lambda** | within a decision tree only |
+| Lifetime | fixed throughout checking of a module | grows at a binder, shrinks on leaving it | **emptied at a non-tail position and at a boundary** (D50) | within a decision tree only |
 | Structure | an unordered table | ordered; later entries may refer to earlier ones | ordered | a map from occurrences |
 | Names | fully qualified `M.x`, `T`, `M.Ctor` | local names `x`, `a`; region names `ℓ` | join names `j` | not names but paths |
 | Kind schemes | yes | no | no | no |
@@ -160,7 +160,7 @@ A context is well formed when each entry is formed under the entries before it:
   ─────────────────────────────────────────────────────────────────   ← the row the λ writes is its arrow's
   Γ;Δ ⊢ λ(x : τ1) / ρ'. e : τ1 -{ρ'}-> τ2 ! ρ                            ← Δ is discarded
 
-  Γ;Δ ⊢ e1 : τ1 -{ρ}-> τ2 ! ρ    Γ;Δ ⊢ e2 : τ1 ! ρ
+  Γ;· ⊢ e1 : τ1 -{ρ}-> τ2 ! ρ    Γ;· ⊢ e2 : τ1 ! ρ
   ────────────────────────────────────────────────   ← the arrow's row equals the ambient row;
   Γ;Δ ⊢ e1 e2 : τ2 ! ρ                                  a chain of a constructor or a foreign
                                                         has a rule of its own, below
@@ -169,7 +169,7 @@ A context is well formed when each entry is formed under the entries before it:
   ───────────────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ Λ(a : κ). v : forall (a : κ). τ ! ρ
 
-  Γ;Δ ⊢ e : forall (a : κ). τ ! ρ    Γ ⊢ σ : κ
+  Γ;· ⊢ e : forall (a : κ). τ ! ρ    Γ ⊢ σ : κ
   ─────────────────────────────────────────────
   Γ;Δ ⊢ e [σ] : τ[a := σ] ! ρ
 
@@ -177,11 +177,11 @@ A context is well formed when each entry is formed under the entries before it:
   ────────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ Λ(_ : C). v : C => τ ! ρ
 
-  Γ;Δ ⊢ e : C => τ ! ρ    Γ ⊨ C
+  Γ;· ⊢ e : C => τ ! ρ    Γ ⊨ C
   ───────────────────────────────   ← no proof term; the checker re-derives
   Γ;Δ ⊢ e [•] : τ ! ρ
 
-  Γ ⊢ τ1 : Type    Γ;Δ ⊢ e1 : τ1 ! ρ    Γ, x : τ1; Δ ⊢ e2 : τ2 ! ρ
+  Γ ⊢ τ1 : Type    Γ;· ⊢ e1 : τ1 ! ρ    Γ, x : τ1; Δ ⊢ e2 : τ2 ! ρ
   ──────────────────────────────────────────────────────────────
   Γ;Δ ⊢ let x : τ1 = e1 in e2 : τ2 ! ρ
 
@@ -192,7 +192,7 @@ A context is well formed when each entry is formed under the entries before it:
   ──────────────────────────────────────────────────
   Γ;Δ ⊢ letrec { xi : σi = ei } in e : τ ! ρ
 
-**An initializer is checked under no join point**, `Δ = ·`, and out of tail position: one jumping
+**An initializer is checked under no join point**, `Δ = ·`: one jumping
 to a join point outside its group would leave the group half initialized. Its row is `()`, so
 initialization has no effect to order beside what it reads ([Initialization Safety](10-Initialization.md)).
 
@@ -273,7 +273,7 @@ An argument is well formed when, writing `⟨ σ' ; θ' ⟩` for the cursor **be
 | --- | --- |
 | `[τ]` | `Γ ⊢ τ : θ'(κ)`, where `σ' = forall (a : κ). …` |
 | `[•]` | `Γ ⊨ θ'(C)`, where `σ' = C => …` |
-| `e` | `Γ;Δ ⊢ e : θ'(τ1) ! ρ`, where `σ' = τ1 -{()}-> τ2` |
+| `e` | `Γ;· ⊢ e : θ'(τ1) ! ρ`, where `σ' = τ1 -{()}-> τ2` |
 
 **The value arguments stand at the ambient row of the whole chain.** An arrow the cursor consumes is pure, so the call itself performs nothing: building a constructor's value runs nothing it is given, and a saturated foreign steps to a value or a fault and performs no proper effect ([Semantics](06-Semantics.md)). What an argument's evaluation performs is bounded by the row ambient where the chain stands, as it would be beside any other pure form. The rule for `e1 e2` would instead ask the arrow's row `()` to be the ambient row, and an `openEff` per argument where it is not.
 
@@ -290,35 +290,35 @@ An argument is well formed when, writing `⟨ σ' ; θ' ⟩` for the cursor **be
   ───────────────────────────
   Γ;Δ ⊢ {} : Record () ! ρ
 
-  Γ;Δ ⊢ e1 : τ ! ρ    Γ;Δ ⊢ e2 : Record r ! ρ    Γ ⊢ k key Type    Γ ⊨ k ∉ r
+  Γ;· ⊢ e1 : τ ! ρ    Γ;· ⊢ e2 : Record r ! ρ    Γ ⊢ k key Type    Γ ⊨ k ∉ r
   ─────────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ extend k e1 e2 : Record ( k : τ | r ) ! ρ
 
-  Γ;Δ ⊢ e : Record ( k : τ | r ) ! ρ    Γ ⊢ k key Type
+  Γ;· ⊢ e : Record ( k : τ | r ) ! ρ    Γ ⊢ k key Type
   ──────────────────────────────────────────────────────
   Γ;Δ ⊢ select k e : τ ! ρ
 
-  Γ;Δ ⊢ e : Record ( k : τ | r ) ! ρ    Γ ⊢ k key Type
+  Γ;· ⊢ e : Record ( k : τ | r ) ! ρ    Γ ⊢ k key Type
   ──────────────────────────────────────────────────────
   Γ;Δ ⊢ restrict k e : Record r ! ρ
 
-  Γ;Δ ⊢ e1 : Record ( k : τ | r ) ! ρ    Γ;Δ ⊢ e2 : τ' ! ρ    Γ ⊢ k key Type
+  Γ;· ⊢ e1 : Record ( k : τ | r ) ! ρ    Γ;· ⊢ e2 : τ' ! ρ    Γ ⊢ k key Type
   ──────────────────────────────────────────────────────────────────────────   ← the type may change
   Γ;Δ ⊢ update k e1 e2 : Record ( k : τ' | r ) ! ρ
 
-  Γ;Δ ⊢ e1 : Record r1 ! ρ    Γ;Δ ⊢ e2 : Record r2 ! ρ    Γ ⊨ r1 # r2
+  Γ;· ⊢ e1 : Record r1 ! ρ    Γ;· ⊢ e2 : Record r2 ! ρ    Γ ⊨ r1 # r2
   ───────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ merge e1 e2 : Record (r1 ⊎ r2) ! ρ
 
-  Γ;Δ ⊢ e : τ ! ρ    Γ ⊢ k key Type    Γ ⊨ k ∉ r    Γ ⊢ r : Row Type
+  Γ;· ⊢ e : τ ! ρ    Γ ⊢ k key Type    Γ ⊨ k ∉ r    Γ ⊢ r : Row Type
   ─────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ inject k [r] e : Variant ( k : τ | r ) ! ρ
 
-  Γ;Δ ⊢ e : Variant r ! ρ    Γ ⊢ k key Type    Γ ⊨ k ∉ r    Γ ⊢ τ : Type
+  Γ;· ⊢ e : Variant r ! ρ    Γ ⊢ k key Type    Γ ⊨ k ∉ r    Γ ⊢ τ : Type
   ─────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ weaken k [τ] e : Variant ( k : τ | r ) ! ρ
 
-  Γ;Δ ⊢ e : Variant () ! ρ    Γ ⊢ τ : Type
+  Γ;· ⊢ e : Variant () ! ρ    Γ ⊢ τ : Type
   ────────────────────────────────────────
   Γ;Δ ⊢ absurd [τ] e : τ ! ρ
 ```
@@ -343,7 +343,7 @@ merge : forall (r : Row Type). forall (s : Row Type).
   Γ ⊢ ( ent | ρ' ) : Row Effect    payload(ent) = E τ̄
   ( op : forall (b̄ : κ̄'). σ ->* τ ) ∈ Σ(E)         ← the payload selects the protocol
   E's type parameters are ā
-  Γ ⊢ σ̄ : κ̄'      Γ;Δ ⊢ e : σ[ā := τ̄][b̄ := σ̄] ! ρ
+  Γ ⊢ σ̄ : κ̄'      Γ;· ⊢ e : σ[ā := τ̄][b̄ := σ̄] ! ρ
   ────────────────────────────────────────────────────
   Γ;Δ ⊢ perform k.op [σ̄] e : τ[ā := τ̄][b̄ := σ̄] ! ρ
 
@@ -365,7 +365,7 @@ merge : forall (r : Row Type). forall (s : Row Type).
   Γ;Δ ⊢ handle e with h : β ! ρ
 
   the k̄ are distinct      |ē| = |k̄|      ι = ( k̄ : σ̄ )      Γ ⊢ ι : Row Type
-  each j:  Γ;Δ ⊢ e_j : σ_j ! ρ                      ← initial values, outside the region
+  each j:  Γ;· ⊢ e_j : σ_j ! ρ                      ← initial values, outside the region
   ℓ ∉ dom(Γ)                                        ← the binder is fresh
   Γ' = Γ, region ℓ : ι, { RegionKey ℓ ∉ t | t : Row Effect ∈ Γ }
   Γ' ⊢ ( region ℓ | ρ ) : Row Effect                ← sharp by the recorded facts
@@ -379,11 +379,11 @@ merge : forall (r : Row Type). forall (s : Row Type).
   ──────────────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ readCell ℓ.k : σ ! ρ
 
-  ( region ℓ : ι ) ∈ Γ      ι(k) = σ      RegionKey ℓ ∈ keys(ρ)      Γ;Δ ⊢ e : σ ! ρ
+  ( region ℓ : ι ) ∈ Γ      ι(k) = σ      RegionKey ℓ ∈ keys(ρ)      Γ;· ⊢ e : σ ! ρ
   ─────────────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ writeCell ℓ.k e : Unit ! ρ
 
-  Γ;Δ ⊢ e : τ1 -{r1}-> τ2 ! ρ    Γ ⊨ r1 # r'    Γ ⊢ r' : Row Effect
+  Γ;· ⊢ e : τ1 -{r1}-> τ2 ! ρ    Γ ⊨ r1 # r'    Γ ⊢ r' : Row Effect
   ─────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ openEff [r'] e : τ1 -{r1 ⊎ r'}-> τ2 ! ρ
 ```
@@ -412,7 +412,7 @@ The explicitness is the price of D8. The elaborator inserts it, so an author doe
 
 **A `return` clause reading a cell is admitted by Core on purpose.** Region and `handle` are separate binders, so nothing in Core can tell a return clause inside a region from any other term inside one. The surface produces no such read; a backend and an optimizer must not assume that a return clause reads no cell.
 
-**The layout and the initial values stand outside the region.** The layout is kinded under `Γ`, and kinding it is what rejects a key written twice, a row extension requiring its key absent from the rest. Each initial value is checked at the ambient row `ρ` and keeps `Δ`, being evaluated before the region opens. A `region` given a number of initial values its layout does not declare is rejected with `CellCount`.
+**The layout and the initial values stand outside the region.** The layout is kinded under `Γ`, and kinding it is what rejects a key written twice, a row extension requiring its key absent from the rest. Each initial value is checked at the ambient row `ρ`, being evaluated before the region opens, and under no join point, standing where a value is awaited. A `region` given a number of initial values its layout does not declare is rejected with `CellCount`.
 
 **The body stands at `( region ℓ | ρ )`, under `Γ` extended with `ℓ` and with `Δ` discarded.** A join point does not cross into it, as it does not cross into a `handle` ([Terms and Matching](04-Terms-and-Matching.md)). `Γ'` records, for every row variable `t : Row Effect` bound before `ℓ`, the fact `RegionKey ℓ ∉ t`: whatever `t` is instantiated with is formed where `ℓ` is not in scope ([Rows](02-Rows.md)). A row variable bound later, inside the body, gets no such fact, and a function abstracting over a row there that needs the key absent writes `RegionKey ℓ ∉ t` in its type, discharged at each application like any other constraint.
 
@@ -432,16 +432,16 @@ The explicitness is the price of D8. The elaborator inserts it, so an author doe
 
 ```text
   Γ ⊢ τ : Type    Γ ⊢ τ̄ : Type    Γ ⊢ ρ : Row Effect
-  Γ, x̄ : τ̄; Δ, j : (τ̄) -> τ ! ρ ⊢ e1 : τ ! ρ      ← the root of e1 is in tail position
+  Γ, x̄ : τ̄; Δ, j : (τ̄) -> τ ! ρ ⊢ e1 : τ ! ρ
   Γ;      Δ, j : (τ̄) -> τ ! ρ ⊢ e2 : τ ! ρ
   ───────────────────────────────────────────────────
   Γ;Δ ⊢ letjoin j (x̄ : τ̄) : τ = e1 in e2 : τ ! ρ
 
-  ( j : (τ̄) -> τ ! ρ ) ∈ Δ    each i: Γ;Δ ⊢ e_i : τ_i ! ρ    jump is in tail position
-  ──────────────────────────────────────────────────────────────────────────────────
+  ( j : (τ̄) -> τ ! ρ ) ∈ Δ    each i: Γ;· ⊢ e_i : τ_i ! ρ
+  ─────────────────────────────────────────────────────   ← no positional condition
   Γ;Δ ⊢ jump j (ē) : τ ! ρ
 
-  each i: Γ;Δ ⊢ e_i : τ_i ! ρ        Γ;Δ; { s_i ↦ τ_i } ⊢ dt : τ ! ρ
+  each i: Γ;· ⊢ e_i : τ_i ! ρ        Γ;Δ; { s_i ↦ τ_i } ⊢ dt : τ ! ρ
   ────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ case (ē) of dt : τ ! ρ
 
@@ -476,7 +476,7 @@ The explicitness is the price of D8. The elaborator inserts it, so an author doe
   ─────────────────────────────────────────────────────────────
   Γ;Δ;Ω ⊢ switchKey o { k_i -> dt_i } [default -> dt_0] : τ ! ρ
 
-  Γ;Δ ⊢ e : Boolean ! ρ    Γ;Δ;Ω ⊢ dt_1 : τ ! ρ    Γ;Δ;Ω ⊢ dt_2 : τ ! ρ
+  Γ;· ⊢ e : Boolean ! ρ    Γ;Δ;Ω ⊢ dt_1 : τ ! ρ    Γ;Δ;Ω ⊢ dt_2 : τ ! ρ
   ─────────────────────────────────────────────────────────────────────
   Γ;Δ;Ω ⊢ guard e dt_1 dt_2 : τ ! ρ
 
@@ -484,6 +484,22 @@ The explicitness is the price of D8. The elaborator inserts it, so an author doe
   ──────────────────────────────────────────────────────────────────────────  (derived; see §3.3 Effects)
   Γ;Δ;Ω ⊢ fail τ : τ ! ρ
 ```
+
+**A join point is in scope relative to the nearest non-tail position or boundary** (D50), and `jump` asks of its position nothing more. The discipline is inspired by System F_J and more conservative than it: every non-tail position empties `Δ`, the function position of an application included, which F_J, being call-by-name, leaves with the `Δ` it was given ([Terms and Matching](04-Terms-and-Matching.md#join-points)). Three kinds of position divide the rules:
+
+| Position | `Δ` | Where |
+| --- | --- | --- |
+| non-tail | `·` | both sides of an application and the value arguments of a chain; the operand of `e [τ]`, `e [•]`, and `openEff`; the bound side of a `let`; the scrutinees of a `case`; the condition of a `guard`; the arguments of a `jump`; every operand of a record or variant form; the argument of a `perform`; the value of a `writeCell`; the initial values of a `region` |
+| tail-transparent | inherited | the body of a `let` and of a `letrec`; the continuation of a `letjoin`; the tree of a `case`; the branches and leaves of a decision tree |
+| boundary | `·` | the body of `λ`, `Λ (a : κ)`, and `Λ (_ : C)`; the handled computation and every clause of a `handle`; the body of a `region`; a `letrec` initializer |
+
+`letjoin` adds its join point to the `Δ` it is given, for its definition and its continuation. A position is a **tail position** of `letjoin j` exactly when `j` is in its `Δ`, and nothing more is meant by the phrase. [Semantics](06-Semantics.md#run-time-forms) adds the boundaries of the run-time forms.
+
+**The rule is the one reduction preserves.** A side condition that a jump stand in tail position, beside a `Δ` crossing non-tail positions, depends on everything above the jump up to the nearest boundary, and a step moves a term checked at a boundary into the position of its redex. `let y : Int = (λ (u : Unit). letjoin j () : Int = 1 in jump j ()) Prim.Unit in y` steps to `let y : Int = (letjoin j () : Int = 1 in jump j ()) in y`, where the `letjoin` stands on the bound side of a `let`. Under relative scoping both are typed, the `letjoin` starting the non-tail position afresh, and a contractum is typed at the `Δ` of its redex. The same rule rejects what no reduction can perform: in `letjoin k () : Int = 0 in f (letjoin j () : Int = jump k () in 1)`, the definition of `j` cannot reach `k`, a non-tail position standing between, and entering `j` would leave `jump k ()` under `f (…)`, which is no tail context.
+
+**A well-typed jump is one a join step performs.** Every position an evaluation context passes through, the continuation of a `letjoin` aside, is non-tail or a boundary, and both empty `Δ`; the tail-transparent forms above a jump reduce away before it reaches the hole. So a `jump j` in the hole stands in a tail context `Tl` under the `letjoin` of `j` ([Semantics](06-Semantics.md#join-points)), and the transfer stays within one function activation by typing alone.
+
+**The checker reports a jump to a join point a non-tail position hides with `JumpNotInTail`**, keeping the names it hid since the nearest boundary; a name no `letjoin` binds, or one a boundary hides, is `UnboundJoin`.
 
 **A handler writes the element it removes, not only its key.** The row being handled appears nowhere else in the term, so neither half of the element is recoverable from the other: a key does not name an effect, and the arguments `τ̄` are not determined by the clauses without first-order matching. What `Ω` and `Σ` give the rules is then a lookup rather than a search. Only `key(ent)` has meaning at run time; the payload is an annotation and erases.
 

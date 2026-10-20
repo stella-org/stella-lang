@@ -1092,7 +1092,7 @@ spec = describe "TypedCore.Check" do
         (LetJoin unit (JoinName "j") [ { name: Ident "n", ty: int } ] int (var "n") (Jump unit (JoinName "j") [ oneLit ]))
         `shouldEqual` Right int
 
-    it "puts the root of a definition in tail position wherever the letjoin stands" do
+    it "types a join definition under the join points of its own `letjoin`" do
       inferIn applied TRowEmpty
         ( App unit (var "f")
             ( LetJoin unit (JoinName "j") [ { name: Ident "n", ty: int } ] int
@@ -1113,14 +1113,57 @@ spec = describe "TypedCore.Check" do
         )
         `shouldEqual` Left (JoinArity (JoinName "j") 1 2)
 
-    it "refuses a jump outside tail position" do
-      -- the argument of an application is not a tail position, and a jump is a
+    it "refuses a jump leaving a non-tail position" do
+      -- the argument of an application is a non-tail position, and a jump is a
       -- transfer of control rather than something that returns a value
       inferIn applied TRowEmpty
         ( LetJoin unit (JoinName "j") [] int oneLit
             (App unit (var "f") (Jump unit (JoinName "j") []))
         )
         `shouldEqual` Left (JumpNotInTail (JoinName "j"))
+
+    it "types a jump from the continuation of a letjoin standing in a non-tail position" do
+      -- a non-tail position starts with no join point, and its own letjoin adds one
+      inferIn applied TRowEmpty
+        ( App unit (var "f")
+            (LetJoin unit (JoinName "j") [ { name: Ident "n", ty: int } ] int (var "n") (Jump unit (JoinName "j") [ oneLit ]))
+        )
+        `shouldEqual` Right int
+
+    it "types the contractum of a β-step at the join points of the redex" do
+      -- the body checked under the λ stands, after the step, on the bound side of a let
+      let
+        joined = LetJoin unit (JoinName "j") [] int oneLit (Jump unit (JoinName "j") [])
+        y = Ident "y"
+      inferAt TRowEmpty (Let unit y int (App unit (lam "u" unitT joined) primUnit) (var "y"))
+        `shouldEqual` Right int
+      inferAt TRowEmpty (Let unit y int joined (var "y")) `shouldEqual` Right int
+
+    it "refuses a definition jumping out of the non-tail position its letjoin stands in" do
+      inferIn applied TRowEmpty
+        ( LetJoin unit (JoinName "k") [] int (Lit unit (LitInt 0))
+            ( App unit (var "f")
+                (LetJoin unit (JoinName "j") [] int (Jump unit (JoinName "k") []) oneLit)
+            )
+        )
+        `shouldEqual` Left (JumpNotInTail (JoinName "k"))
+
+    it "refuses a jump from an initial value of a region, which stands in a non-tail position" do
+      inferAt TRowEmpty
+        (LetJoin unit (JoinName "j") [] int oneLit (Region unit regionName oneCell [ Jump unit (JoinName "j") [] ] oneLit))
+        `shouldEqual` Left (JumpNotInTail (JoinName "j"))
+
+    it "refuses a jump across a boundary as unbound, whatever non-tail position stands outside it" do
+      -- a boundary clears the join points in scope and those hidden alike
+      let
+        out body = LetJoin unit (JoinName "j") [] int oneLit body
+        jumping = Jump unit (JoinName "j") []
+      inferIn applied TRowEmpty (out (App unit (var "f") (App unit (lam "u" unitT jumping) primUnit)))
+        `shouldEqual` Left (UnboundJoin (JoinName "j"))
+      inferAt TRowEmpty (out (Region unit regionName oneCell [ oneLit ] jumping))
+        `shouldEqual` Left (UnboundJoin (JoinName "j"))
+      inferAt TRowEmpty (out (Handle unit jumping (consoleHandler int (var "x") (fn unitT TRowEmpty int))))
+        `shouldEqual` Left (UnboundJoin (JoinName "j"))
 
     it "refuses a jump from under a lambda, the join context being discarded there" do
       -- a join point is a transfer within one function activation, so it does

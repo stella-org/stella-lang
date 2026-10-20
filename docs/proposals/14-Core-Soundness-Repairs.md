@@ -41,10 +41,12 @@ mechanization proceeds past typing.
 | S5 | Sound residual typing for `switchKey` defaults | Preservation of `match` reduction fails | Typing Rules and Semantics |
 | S6 | One explicit well-formedness contract for `Σ` | Constructor dispatch and canonical forms are unsound | Kinds and Types, Typing Rules, Semantics, `Signature.purs`, `Declare.purs`, `Prim.purs` |
 | S7 | Complete typing and initialization rules for run-time forms | The statements of regularity, preservation, and initialization safety are not closed | Terms, Typing Rules, Semantics, Initialization |
+| S8 | Join points scoped relative to the nearest non-tail position | Preservation of β-reduction and of the handler steps fails | Terms and Matching, Typing Rules, Semantics, Core Type Checker, `Check.purs` |
 
 S4 and the value-retyping part of S5 are the two upstream semantic holes identified by the first
 specification review. S1--S3 and S6--S7 collect the earlier findings of the mechanization and the
-supporting repairs needed by those two holes.
+supporting repairs needed by those two holes. S8 was found while proving the substitution lemmas:
+the tail-position condition on `jump` is not preserved by β-reduction.
 
 ## S1. Make type equality total while retaining set semantics for rows
 
@@ -640,6 +642,225 @@ an application beyond that arity is an ordinary application of the saturated pre
 - Each typed step is zero or one step of `→ᵤ`, a foreign being called at the same point in both,
   and a step applying a `Λ` or moving or discharging a coercion being the zero-step case.
 
+## S8. Scope join points relative to the nearest non-tail position
+
+### Problem
+
+The rules for `letjoin` and `jump` carry the join point context `Δ` unchanged into every subterm
+except at the boundaries of [Terms and Matching](../technical-references/03-Typed-Core/04-Terms-and-Matching.md#join-points):
+the bodies of `λ` and `Λ`, `handle`, the body of a `region`, and, after S7, `letrec` initializers,
+`fill`, and `openEffC`. Beside that, they impose a separate side condition: a `jump` must be "in
+tail position". This has three defects.
+
+1. **Tail position is not defined.** The phrase occurs:
+   - in the premise of `jump`;
+   - on the definition of a `letjoin` ("the root of e1 is in tail position", wherever the
+     `letjoin` stands);
+   - on `letrec` initializers and the operand of `fill` ("out of tail position").
+
+   No judgement says which positions are tail positions. The reference checker realizes the notion
+   as a flag in its environment:
+   - the flag is set at the root of a declaration, at an abstraction, and at the root of a join
+     definition;
+   - it is cleared at every non-tail child (`notTail`);
+   - it is inherited everywhere else.
+
+   Below a non-tail position, the flag is set again only at the root of a join definition. `Δ`,
+   meanwhile, is kept.
+
+2. **The tail condition is not preserved by reduction.** Whether a position counts as a tail
+   position depends on everything above it, up to the nearest boundary. Reduction, however, moves a
+   term checked at a boundary into the position of the redex. β-reduction does exactly this. The
+   term
+
+   ```text
+   let y : Int = (λ (u : Unit) / (). letjoin j () : Int = 1 in jump j ()) Prim.Unit in y
+   ```
+
+   is accepted: the body of the `λ` is in tail position, so are the continuation of the `letjoin`
+   and the `jump`. One step gives
+
+   ```text
+   let y : Int = (letjoin j () : Int = 1 in jump j ()) in y
+   ```
+
+   Here the `letjoin` stands on the bound side of a `let`. Its continuation inherits the non-tail
+   position, and the checker reports `JumpNotInTail j`.
+
+   The reduct is a correct program. It takes the join step of
+   [Semantics](../technical-references/03-Typed-Core/06-Semantics.md) with `Tl = []`, then
+   `letjoin j () : Int = 1 in 1 → 1`. Preservation fails. It fails the same way at every step that
+   puts a body checked at a boundary where the redex stood, since the redex may stand in a non-tail
+   position: the return clause and the operation clauses of a `handle` are the other instances.
+
+3. **The rules accept jumps that no reduction can perform.** The root of a join definition is a
+   tail position wherever the `letjoin` stands, and `Δ` passes through non-tail positions. So the
+   definition of a `letjoin` that stands in a non-tail position may jump to a join point bound
+   outside that position:
+
+   ```text
+   letjoin k () : Int = 0 in f (letjoin j () : Int = jump k () in 1)
+   ```
+
+   If `j` were entered, `jump k ()` would stand under `f (…)`, which is no `Tl`, and no join rule
+   would apply. The term is not stuck only because nothing can enter `j`. A jump to `j` would have
+   to come from its continuation, which inherits the non-tail position, or from the definition of
+   `j` itself, which must first be entered. Progress then rests on this unreachability argument
+   rather than on the typing of the jump.
+
+The F* mechanization first modelled the specification with an explicit tail flag. It found the
+counterexample of item 2 there and then adopted the change below. In the revised development the
+contractum of every β-redex is typed at the `Δ` of the redex.
+
+### Required change
+
+Adopt a relative join point discipline inspired by System F_J (Maurer, Downen, Ariola, and Peyton
+Jones, “Compiling without Continuations”, PLDI 2017): `Δ` is relative to the nearest non-tail
+position or boundary, and `jump` has no positional side condition.
+
+The discipline is a more direct and conservative variant of the one of F_J, not that one as it
+stands. F_J is a call-by-name language in which a jump may discard the evaluation context around
+it, so it keeps `Δ` in some positions that are not tail positions: the function of an application
+keeps `Δ`, and only the argument is checked under an empty `Δ`. In Stella a jump discards no
+context and transfers within a `Tl` of its `letjoin`, as the call-by-value semantics has it, so
+every non-tail premise is checked under `Δ := ·`.
+
+- **`jump j (ē)` requires only `( j : (τ̄) -> τ ! ρ ) ∈ Δ`.** Its arguments are checked under
+  `Δ := ·`.
+- **A non-tail position is checked under `Δ := ·`.** The non-tail positions are:
+  - both sides of an application, and the value arguments of a chain;
+  - the operands of `e [τ]`, `e [•]`, and `openEff [ρ] e`;
+  - the bound side of `let`, the scrutinees of `case`, and the values `θ` of `match`;
+  - the condition of a guard, and the arguments of `jump`;
+  - every subterm of a record or variant operation (`extend`, `select`, `restrict`, `update`,
+    `merge`, `inject`, `weaken`, `absurd`);
+  - the argument of `perform`, the value of `writeCell`, and the initial values of `region`.
+- **`letjoin j (x̄ : τ̄) : τ = e1 in e2` adds `j` to the `Δ` it is given.** It checks `e1` under
+  `Γ, x̄ : τ̄; Δ, j` and `e2` under `Γ; Δ, j`.
+- **A tail-transparent position inherits `Δ`.** These positions are:
+  - the body of `let` and of `letrec`;
+  - the continuation of `letjoin`;
+  - the tree of `case` and of `match`;
+  - the branches and leaves of a decision tree.
+- **A boundary keeps `Δ := ·`, as now.** The boundaries are:
+  - the bodies of `λ`, `Λ (a : κ)`, and `Λ (_ : C)`;
+  - the handled computation and every clause of `handle`;
+  - the body of `region`;
+  - the body and the cells of an open frame `region⟨ℓ⟩`;
+  - `letrec` initializers;
+  - the operands of `fill` and `openEffC`.
+
+The two join point rules become:
+
+```text
+  Γ ⊢ τ : Type    Γ ⊢ τ̄ : Type    Γ ⊢ ρ : Row Effect
+  Γ, x̄ : τ̄; Δ, j : (τ̄) -> τ ! ρ ⊢ e1 : τ ! ρ
+  Γ;      Δ, j : (τ̄) -> τ ! ρ ⊢ e2 : τ ! ρ
+  ───────────────────────────────────────────────────
+  Γ;Δ ⊢ letjoin j (x̄ : τ̄) : τ = e1 in e2 : τ ! ρ
+
+  ( j : (τ̄) -> τ ! ρ ) ∈ Δ    each i: Γ;· ⊢ e_i : τ_i ! ρ
+  ─────────────────────────────────────────────────────
+  Γ;Δ ⊢ jump j (ē) : τ ! ρ
+```
+
+Every other rule writes `·` for the `Δ` of its non-tail premises. For example:
+
+```text
+  Γ;· ⊢ e1 : τ1 -{ρ}-> τ2 ! ρ    Γ;· ⊢ e2 : τ1 ! ρ
+  ──────────────────────────────────────────────
+  Γ;Δ ⊢ e1 e2 : τ2 ! ρ
+```
+
+"Tail position" stops being a premise.
+- Remove "jump is in tail position" and "the root of e1 is in tail position" from the rules.
+- Remove "out of tail position" from the `letrec`, `fill`, and S7 `openEffC` prose. `Δ := ·`
+  already says what those phrases meant.
+- Where the prose still needs the notion, define it: a position is a tail position of
+  `letjoin j` when `j` is in its `Δ`.
+
+The semantics is unchanged: `Tl` and both join rules stay as they are. Under the new rules, the
+`jump j` in the hole of an evaluation context stands in a `Tl` under the `letjoin` of `j`, because:
+- every position an evaluation context passes through, other than the continuation of a `letjoin`,
+  is a non-tail position or a boundary, and both of those empty `Δ`;
+- the tail-transparent forms above a `jump` reduce away before the `jump` is in the hole.
+
+This is the argument that the [Semantics](../technical-references/03-Typed-Core/06-Semantics.md)
+chapter gives for "the same function activation", and it now follows from the typing rule alone.
+
+### What the change accepts and rejects
+
+- **Newly accepted:** a join point bound in a non-tail position, jumped to from its continuation
+  and from the tail-transparent positions below it, as in the reduct of item 2 or in
+  `f (letjoin j (n : Int) : Int = n in jump j 1)`. A `case` with shared alternatives in argument
+  position takes this shape when its join point is bound around it rather than around the whole
+  application.
+- **Newly rejected:** a jump that leaves a non-tail position outward, as in item 3. Every such jump
+  is unreachable under the current rules. No program that the current rules accept, and that can
+  execute a jump, is rejected.
+- **Unchanged:** a jump out of `λ`, `Λ`, `handle`, `region`, a `letrec` initializer, `fill`, or
+  `openEffC` stays rejected. A join definition that jumps to itself stays accepted wherever its
+  `letjoin` stands.
+
+### Reference-checker work
+
+**`Check.purs`.**
+- Drop the `tail` field of `Env`.
+- Make `notTail` empty `joins`.
+- Let `checkJoinBody` extend the `joins` it is given, with no reset of a flag.
+- Let a `jump` check membership only.
+
+Keep `JumpNotInTail` as the diagnostic for a jump whose join point is bound but hidden by a
+non-tail position. One way is to record the hidden join points beside `joins` in `notTail`.
+Every join point boundary then clears both the active and the hidden join points, so that a jump
+across a boundary is never reported as `JumpNotInTail`. `UnboundJoin` remains the diagnostic
+for a name that no enclosing `letjoin` binds, and for one hidden by a boundary, as now.
+
+**Mid IR translation.** It already lowers a `LetJoin` in argument position through the join point
+case of `atomize` (`viaJoin` in `MiddleEnd/Translate.purs`), which delivers both the definition and
+the continuation to the bound continuation. It needs no change, but a test should cover a join
+point jumped to from its continuation in argument position.
+
+**Kernel builder.** It defers the position of a jump to the Core type checker, and may keep doing
+so. Its documentation should no longer say that only an abstraction empties `Δ`.
+
+### Acceptance criteria
+
+- Both terms of item 2 are accepted. More generally, each of these steps preserves typing at the
+  `Δ` of the redex: β-reduction, the `handle` steps, the join steps, and every step that moves a
+  term out of a tail-transparent form.
+- The term of item 3 is rejected with `JumpNotInTail k`.
+- `letjoin j () : Int = 1 in f (jump j ())` is still rejected with `JumpNotInTail j`.
+- `f (letjoin j (n : Int) : Int = n in jump j 1)` is accepted.
+- The existing test "puts the root of a definition in tail position wherever the letjoin stands"
+  still passes. Its description becomes "types a join definition under the join points of its own
+  `letjoin`".
+- Jumps out of every join point boundary of the Required change are still rejected: `λ`,
+  `Λ (a : κ)`, `Λ (_ : C)`, `handle`, `region`, an open frame `region⟨ℓ⟩`, `letrec`
+  initializers, `fill`, and `openEffC`.
+- No typing rule has "tail position" as a premise. Every non-tail position that the Required change
+  lists is checked under `Δ := ·`.
+- In a well-typed term, every `jump j` in the hole of an evaluation context stands in a `Tl` under
+  the `letjoin` of `j`.
+
+### Design decision
+
+Record the discipline as a design decision (D50), as it fixes what a join point is:
+
+> **Join points are scoped relative to the nearest non-tail position.** A non-tail position and a
+> join point boundary both start with no join point in scope. The join point boundaries are the
+> bodies of `λ` and `Λ`, `handle`, the body of `region`, an open frame `region⟨ℓ⟩`, `letrec`
+> initializers, `fill`, and `openEffC`. `letjoin` adds its join point for its
+> definition and its continuation, and the other forms pass `Δ` to their tail-transparent
+> children. `jump` requires only that its join point is in scope. *Reason:* a positional tail
+> condition beside a `Δ` that crosses non-tail positions is not preserved by β-reduction, which
+> moves a function body into the position of the call. Relative scoping, inspired by System F_J and
+> emptying `Δ` at every non-tail premise, is stable under every reduction, and it makes "the
+> `jump` lies in a `Tl` of its `letjoin`" a consequence of typing. *Reversibility:* low. The treatment of `Δ` reaches every typing rule, the
+> checker, the structural lemmas, and what lowering assumes of a jump. *Compatibility risk:* low.
+> The change newly rejects only jumps that cannot execute, and the forms it newly accepts are
+> lowered by `viaJoin` as they stand.
+
 ## Specification files to update
 
 The repair should update the following chapters as one coherent change.
@@ -649,16 +870,24 @@ The repair should update the following chapters as one coherent change.
 - [Rows](../technical-references/03-Typed-Core/02-Rows.md): total canonical rows, inconsistency, and
   ex-falso entailment.
 - [Terms and Matching](../technical-references/03-Typed-Core/04-Terms-and-Matching.md): chain-only
-  values and typed `fail` notation.
+  values, typed `fail` notation, and the relative join point discipline of S8 (the initial
+  values of a `region` no longer keep `Δ`).
 - [Typing Rules](../technical-references/03-Typed-Core/05-Typing-Rules.md): constraint abstraction,
-  chain typing, substitution-stable `switchKey` residuals, conversion, and regularity premises.
+  chain typing, substitution-stable `switchKey` residuals, conversion, regularity premises, and the
+  S8 rules for `letjoin`, `jump`, and the non-tail premises of every rule.
 - [Semantics](../technical-references/03-Typed-Core/06-Semantics.md): run-time value typing, closed
-  region frames, `match`, chain reduction, run-time contexts, and erased reduction.
+  region frames, `match`, chain reduction, run-time contexts, erased reduction, and the S8 typing of
+  `openEffC` and `fill` without a tail condition.
+- [Core Type Checker](../technical-references/03-Typed-Core/07-Core-Type-Checker.md): item 8 states
+  the S8 discipline in place of "`jump` occurs in tail position".
 - [Initialization Safety](../technical-references/03-Typed-Core/10-Initialization.md): rules for all
   run-time forms and the chain view.
 - [Design Decisions](../technical-references/01-Introduction/03-Design-Decisions.md): retain D4's
   sharp set semantics while separating total equality from sharp finite-map lookup; record the
-  chain-only operational representation if it is intended as a lasting design decision.
+  chain-only operational representation if it is intended as a lasting design decision; record S8
+  as a new decision.
+- [Implementation Plan](../technical-references/01-Introduction/04-Implementation-Plan.md): the test
+  rows on join points follow S8.
 
 The corresponding reference-checker implementation is concentrated in:
 
@@ -688,9 +917,10 @@ compiler lowers before representing the form directly.
    judgement as one change.
 4. Apply S4 and S5 to run-time typing and decision-tree typing.
 5. Complete the run-time and regularity work in S7.
-6. Add the counterexamples above as negative-before/positive-after regression tests, plus malformed
+6. Apply S8 to the join point rules, the non-tail premises of every rule, and the checker.
+7. Add the counterexamples above as negative-before/positive-after regression tests, plus malformed
    signature tests.
-7. Re-run the F* typing development from an empty cache before beginning renaming, weakening, and
+8. Re-run the F* typing development from an empty cache before beginning renaming, weakening, and
    substitution for the revised typing relation.
 
 ## Changes that belong only to the F* development
@@ -701,7 +931,6 @@ changes:
 - de Bruijn indices, locally nameless region binders, and parallel renaming/substitution;
 - sorted-list implementations of finite sets;
 - the exact cofinite-quantification encoding used for the source `region` rule;
-- a boolean tail-position flag in place of an inductively defined tail context;
 - the split between `.fst` and `.fsti`, solver patterns, fuel, and cache settings; and
 - the representation of diagnostic witnesses in the initialization judgement.
 

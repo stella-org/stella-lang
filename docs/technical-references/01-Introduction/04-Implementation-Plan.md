@@ -255,7 +255,12 @@ The heading of each group names the step of the plan that the group belongs to.
 | `Λ (a : Type). M.Just [Maybe a] (M.Nothing [a])` | A value form, its body a constructor's chain of values, and a value of the reduction relation as it stands |
 | `handle (perform E.op v) with h` at ambient row `()` | **Accepted.** Effect safety is not "no operation is performed" |
 | A `λ` whose body jumps to a join point bound outside it | Rejected. The join point context is discarded at a lambda |
-| A `letjoin` in argument position whose definition jumps to itself | Accepted. The root of a definition is in tail position wherever the `letjoin` stands |
+| A `letjoin` in argument position whose definition jumps to itself | Accepted. A join definition is typed under the join points of its own `letjoin`, wherever it stands |
+| `f (letjoin j (n : Int) : Int = n in jump j 1)` | Accepted. A non-tail position starts with no join point, and the `letjoin` in it adds its own (D50) |
+| `let y : Int = (λ (u : Unit). letjoin j () : Int = 1 in jump j ()) Prim.Unit in y`, and its contractum `let y : Int = (letjoin j () : Int = 1 in jump j ()) in y` | Both accepted. A contractum is typed at the `Δ` of its redex; a tail condition beside a `Δ` crossing non-tail positions rejects the second |
+| `letjoin k () : Int = 0 in f (letjoin j () : Int = jump k () in 1)` | Rejected, `JumpNotInTail k`. The definition of `j` stands in a non-tail position, which hides `k`, and entering `j` would leave the jump under `f (…)` |
+| `letjoin j () : Int = 1 in f (jump j ())`, and a jump from an initial value of a `region` | Rejected, `JumpNotInTail j`. Both stand in a non-tail position |
+| A jump to a join point bound outside a `λ`, a `region` body, or a `handle`, a non-tail position standing outside that boundary as well | Rejected, `UnboundJoin`. A boundary clears the join points a non-tail position hid along with those in scope |
 | `switchCtor` whose first branch reaches no leaf and whose second does | Accepted, at the type the second gives. The written order of branches carries no meaning |
 | `bind x = o . k` with no dispatch having established `o . k` | Accepted. A record has an element at every key of its row |
 | A handler clause whose continuation is typed at the inner row | Rejected. It is `τ' -{ρ}-> β`, the row outside the handle and the result of it (D15) |
@@ -393,6 +398,7 @@ The heading of each group names the step of the plan that the group belongs to.
 | `o ! Ctor . j` | Materialized inside the branch that selected `Ctor`, and nowhere earlier. Projecting it before the dispatch reads a field that is not there |
 | One occurrence used by several nodes | Projected once. An occurrence has no effect, so naming it once is sound |
 | A `Case` in argument position | A join point binding the continuation, not the continuation duplicated into each branch. A `Handle` needs none of this, being a computation |
+| A `letjoin` in argument position jumped to from its continuation, `id (letjoin j (n : Int) : Int = n in jump j 1)` | A join point binding the call, which the inner join point jumps to with its result. `viaJoin` delivers the definition and the continuation alike |
 | A `Bind` of an occurrence already materialized | An alias in the translator's environment; no instruction is emitted |
 | A handler clause body | A function with an explicit capture list. No join point of the enclosing scope is in scope in it, nor in the body of the `handle` |
 | A function member of a top-level `rec` group | A closure over an **empty** capture list. Its recursive references are global names, so nothing is evaluated to install it |
@@ -1001,7 +1007,7 @@ no identifier is at once ready and blocked
 | A `letjoin` whose definition jumps to itself, and whose body jumps to it | Built, and accepted by the Core type checker. The join point is in both scopes |
 | A `letjoin` closed with a parameter as its body, or with the body and the definition exchanged | Refused. The definition and the continuation are sibling scopes, the parameters bound in the first alone |
 | A `jump` outside its `letjoin`, or with another number of arguments | Refused |
-| A `jump` inside a `λ`, a `Λ(a)`, or a `Λ(_ : C)` in the continuation, and inside a `let` or a type's `forall` there | Refused, and built. Only an abstraction empties `Δ`: `Λ(a)` binds what `forall` does and empties it where the type's binder does not |
+| A `jump` inside a `λ`, a `Λ(a)`, or a `Λ(_ : C)` in the continuation, and inside a `let` or a type's `forall` there | Refused, and built. Of the builders, an abstraction alone empties `Δ`: `Λ(a)` binds what `forall` does and empties it where the type's binder does not. A non-tail position empties it in Core, and the Core type checker refuses a jump out of one (D50) |
 | A term that jumps, given to `closeLambda` as its body, or to `termApply` inside a `λ` | Refused. It is visible there, built in an ancestor, and would carry the jump under the abstraction |
 | The same term as a `let`'s body in the continuation | Built. A `let` inherits `Δ` |
 | Two join points opened one inside the other | `j#0` and `j#1`, from a supply apart from values' |
