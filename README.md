@@ -81,6 +81,8 @@ main = handle program
 
 ## Roadmap
 
+### Language Features
+
 - ✅️ `TypedCore`, the central representation with explicit types and kinds
 - ✅️ Bytecode compiler
 - ✅️ STEAM, the bytecode interpreter with multi-shot continuation over explicit stack
@@ -89,26 +91,36 @@ main = handle program
 - ✅️ Elaborator API
 - ✅️ Demonstration of macro within minimal sublanguage: list syntax `ls%[1,2,3]`
 - ✅️ Hindley-Milner Type Inference
-- 🎯 More macro demo: array syntax `ar%[1,2,3]` and format string with `fmt%"..."` *WIP*
+- 🎯 More macro demo: array syntax `ar%[1,2,3]` and format string with `fmt%"Hello {world}"` ... *WIP*
 - ☑️ Macro at declaration position: `m%{ ... }`
 - ☑️ Implicit handlers insertion
-- ☑️ E2E testing on whole set of language features
+- 🎯 E2E testing on whole set of language features ... *WIP*
 - ☑️ Typeclasses over macro
 - ☑️ MiddleEnd: IR design and optimization
-- ☑️ The first two backends: JavaScript and WebAssembly ... Prototype JS backend is done
 - ☑️ Suspension and concurrent primitives, `Async` effect
+- 🎯 [Verification of the Core semantics soundness and metatheory](https://github.com/stella-org/stella-spec-verified) ... *WIP*
+
+### Ecosystem
+
 - ☑️ The standard library `Prelude`
 - ☑️ portable libraries on top of `Prelude`
+- ☑️ The first two backends: JavaScript and WebAssembly ... Prototype JS backend is done
 - ☑️ Build system: [the Lazuli package manager](https://github.com/stella-org/lazuli)
-- ☑️ Ecosystem: LSP, IDE support, Formatter and Coding Agent Plugins
+- ☑️ Language Server Protocol
+- ☑️ Formatter
+- ☑️ IDE support
+- ☑️ Coding Agent Plugins
+
+### Learning Resource
+
 - ☑️ New comprehensive language reference ... *WIP*
 - ☑️ Official textbook: *Functional and Effect-Oriented Programming in Stella*
 
-Possible future enhancement, but not in the current roadmap (CONTRIBUTIONS ARE HIGHLY WELCOME!!):
+### Possible future enhancement, but not in the current roadmap (CONTRIBUTIONS ARE HIGHLY WELCOME!!):
 
 - First-class Parser API
 - Termination analysis and `Div` effect
 - Context refinement with Discriminators
 - Scoped effect
 - General higher-order effects
-- Native backend
+- Native and other backend
