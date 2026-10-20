@@ -1,0 +1,36 @@
+package:
+  name: stella-devtools
+  description: The stella compiler developers' toolkit
+  dependencies:
+    - aff
+    - argparse-basic
+    - arrays
+    - cli
+    - compiler
+    - console
+    - effect
+    - either
+    - fmt
+    - foldable-traversable
+    - maybe
+    - node-process
+    - ordered-collections
+    - prelude
+    - run
+    - typelevel-prelude
+  run:
+    main: Stella.Devtools.JS
+  test:
+    main: Test.Stella.Devtools
+    dependencies:
+      - dodo-printer
+      - node-buffer
+      - node-child-process
+      - node-execa
+      - node-fs
+      - refs
+      - spec
+      - spec-node
+      - steam
+      - strings
+      - tuples
