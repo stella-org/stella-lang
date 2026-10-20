@@ -1501,11 +1501,11 @@ Synthesized parameters supplied at a reference ([Elaboration](../02-Surface-Lang
 | A module compiled with a host registry, and the same with none, alone and in a build of two modules | Compiled; an internal compiler error naming the synthesizer |
 | `bad :: {{ d :: Int by make }} -> Int` where the module itself declares `make` | Reported where `make` is written, whatever its scheme: a synthesizer comes from a module compiled before; `bad` gives no scheme |
 | A module writing `one :: Handle -> Handle / {\| Kernel \|}` against `Stella.Elab`, and one after it naming `by one` | Compiled, `by one` checked against the interface of the build whose bytecode the session installs |
-| `stellac build` of `Support`, `A` filling a goal with `Support.seed`, and `Main` at two goals naming `A.one` | `Support`, `A`, `Main` compiled in that order, each loaded on the session once, `Support` before `A`; both values `1` on the machine. A walk that skips `Support`, or a load made twice, fails the build |
+| `stellac compile` of `Support`, `A` filling a goal with `Support.seed`, and `Main` at two goals naming `A.one` | `Support`, `A`, `Main` compiled in that order, each loaded on the session once, `Support` before `A`; both values `1` on the machine. A walk that skips `Support`, or a load made twice, fails the build |
 | The same goal filled by a host synthesizer of the same policy | The same Core, annotations dropped |
 | A synthesizer that throws, one that faults, and one that never returns | `A synthesizer failed here` where the goal stands, with what it said; the build failing against the synthesizer, as faulting, and as having used up its 1,000,000 steps, where the goal stands, with no internal error |
 | An equation carried out by the build's attempter | By the host, no session opened |
-| `stellac build`, over `Base`, of `Codec`, of `Derive` deriving an encoder of `Codec` from each goal's type, and of `Main` asking for one of `{ name: "Ann", age: 30, admin: false }` and of `{ id: 1, owner: { name: "Bo" } }` | Compiled; written `{"admin":false,"age":30,"name":"Ann"}` and `{"id":1,"owner":{"name":"Bo"}}` on the machine: the fields in the canonical order of keys, each field's encoder, the inner record's among them, a subgoal of the same synthesizer |
+| `stellac compile`, over `Base`, of `Codec`, of `Derive` deriving an encoder of `Codec` from each goal's type, and of `Main` asking for one of `{ name: "Ann", age: 30, admin: false }` and of `{ id: 1, owner: { name: "Bo" } }` | Compiled; written `{"admin":false,"age":30,"name":"Ann"}` and `{"id":1,"owner":{"name":"Bo"}}` on the machine: the fields in the canonical order of keys, each field's encoder, the inner record's among them, a subgoal of the same synthesizer |
 | The same of `{ name :: String, ...r }`, the site binding the fields of `{ ...r }`, written by hand or derived by a goal of its own | The known fields, then the tail's, by the site's binding: `{"name":"Cy","age":4}`, `{"name":"Di","admin":true,"age":5}`; the row never closed |
 | The same of a type another goal decides, that goal queued after it | Postponed on the type's metavariable, then written once the other goal decides it |
 | The same of an open tail the site binds no fields of, and of `{ ratio: 1.5 }` | `A synthesizer failed here`, with what it said, where each goal stands |
@@ -1642,7 +1642,7 @@ A module's source dependencies and its runtime dependencies (D51, [Modules](../0
 
 ### Seed builds and the compile-time session (step 7)
 
-The driver's seed build, apart from its ordinary one ([Modules](../06-Modules/01-Modules.md#how-a-build-proceeds)), `stella-devtools build-seeds`, which runs it ([Modules](../06-Modules/01-Modules.md#stella-devtools)), and what the compile-time session of [`stellac build`](../06-Modules/01-Modules.md#stellac-build) loads.
+The driver's seed build, apart from its ordinary one ([Modules](../06-Modules/01-Modules.md#how-a-build-proceeds)), `stella-devtools build-seeds`, which runs it ([Modules](../06-Modules/01-Modules.md#stella-devtools)), and what the compile-time session of [`stellac compile`](../06-Modules/01-Modules.md#stellac-compile) loads.
 
 | Input | Required outcome |
 | --- | --- |
@@ -1653,9 +1653,9 @@ The driver's seed build, apart from its ordinary one ([Modules](../06-Modules/01
 | A seed build given `Prim`, or a module the environment does not hold; an ordinary build holding `Base.Int` | Refused before any module is compiled |
 | A seed build given `Base.Int` against an environment holding a module that imports it | Refused with `Base.Int` lacking `toString`, naming that module and `Stella.Syntax`; compiled with the full `Base.Int` |
 | `stella-devtools build-seeds` | `Base.Int`, `Stella.Syntax`, and `Stella.Elab` written to the output, each `.dmi` the interface and each `.dmo` the bytecode of the seed module the compiler holds, to the byte; no session opened, and nothing the compiler holds changed |
-| On the host `build-seeds` shares with `stellac build`, a seed build against an environment holding `Pass`, a macro importing `Base.Int` and `Stella.Syntax`, and `Main` calling it, given `Base.Int` from its source, `Pass`, and `Main` | Compiled, the macro run on the seed: the session loads `Pass` from the bytecode the build wrote and is never sent `Base.Int`; `Main.n` `3` on the machine over the `Base.Int` the build wrote |
+| On the host `build-seeds` shares with `stellac compile`, a seed build against an environment holding `Pass`, a macro importing `Base.Int` and `Stella.Syntax`, and `Main` calling it, given `Base.Int` from its source, `Pass`, and `Main` | Compiled, the macro run on the seed: the session loads `Pass` from the bytecode the build wrote and is never sent `Base.Int`; `Main.n` `3` on the machine over the `Base.Int` the build wrote |
 | The same with a `Stella.Elab` of another interface in place of `Base.Int`, `Pass` importing it | The build failing against `Stella.Elab`, neither the program's error nor the compiler's: the session runs the module it holds, never the one the build wrote |
-| A macro and a synthesizer of modules a dependency map lists, both importing a third the map lists | Each run from the bytecode the map names, the third loaded first and once; `2` and `7` on the machine |
+| A macro and a synthesizer of modules `dependencies` lists, both importing a third it lists | Each run from the bytecode it names, the third loaded first and once; `2` and `7` on the machine |
 | The modules the compiler carries, as the session holds them from its opening | Closed under imports |
 
 ### ABI entries and host foreigns (step 7)
@@ -1671,11 +1671,11 @@ A `foreign` the ABI fixes, against one a host implements ([Prim and Base](../06-
 | An entry declared at another result, at another body with its type variables renamed, and at another arity, one of them at a scheme a host foreign could take | Each refused where its name is declared, naming the scheme the ABI declares it at |
 | `foreign type Array :: Type` in `Base.Array` | Refused where it is declared, naming the kind the ABI gives it |
 | A foreign of a `Base` module the catalog does not name, taking a function, a type variable, or an `IO` | Refused as a host foreign is (D44) |
-| A package with `Base.IO` and `Base.Array` in source and a module of host foreigns, built by `stellac build` and run by `steam run` over a manifest naming that module alone | Run, the runtime carrying out the `Base` entries |
+| A package with `Base.IO` and `Base.Array` in source and a module of host foreigns, built by `stellac compile` and run by `steam run` over a manifest naming that module alone | Run, the runtime carrying out the `Base` entries |
 
 ### The modules the compiler carries, from their sources (step 7)
 
-`Base.Int`, `Stella.Syntax`, and `Stella.Elab`, compiled from `stella-packages/base/src/Base/Int.stel` and `stella-packages/compiler-lib/src/Stella/`, and the entries only elaboration names ([Modules](../06-Modules/01-Modules.md#stellac-build)).
+`Base.Int`, `Stella.Syntax`, and `Stella.Elab`, compiled from `stella-packages/base/src/Base/Int.stel` and `stella-packages/compiler-lib/src/Stella/`, and the entries only elaboration names ([Modules](../06-Modules/01-Modules.md#stellac-compile)).
 
 | Input | Required outcome |
 | --- | --- |
@@ -1690,17 +1690,17 @@ A `foreign` the ABI fixes, against one a host implements ([Prim and Base](../06-
 | `Stella.Syntax` declaring `spliced` at `Int`, or not at all; `Base.Continuation` declaring its constructor at another scheme | Refused where the declaration stands, or at the module, in the build compiling it: the declaring module's error, not the compiler's |
 | The hand-written `Base.Int` the Core fixtures compile | The Core, the interface, and the bytecode the file gives. It is watched while those fixtures stand for the module, and goes with them |
 
-### The `Base` package from its sources, given by a dependency map (step 7)
+### The `Base` package from its sources, given by `dependencies` (step 7)
 
-`stella-packages/base`, its modules against the ABI catalog, and a build given its files by the map `npm run build:base` writes ([Modules](../06-Modules/01-Modules.md#the-dependency-map)).
+`stella-packages/base`, its modules against the ABI catalog, and a build given its files by the `dependencies.json` `npm run build:base` writes ([Modules](../06-Modules/01-Modules.md#stellajson)).
 
 | Input | Required outcome |
 | --- | --- |
 | Each module the catalog names an entry or a type of | A source in `stella-packages/base/src`, compiling to an interface that declares every entry of the module as a foreign at the scheme and of the arity the catalog gives, every type as a foreign type of the kind it gives, and no other foreign |
-| A map listing a module the compiler carries with the interface it carries, with another interface, `Prim`, and a module listed twice, carried or not | The first accepted, the environment holding the module the compiler carries; the others refused |
-| The package built by the script | `Base.Int` written by `stella-devtools build-seeds`, and every other module of `stella-packages/base/src`, `Base.Continuation` among them, built by an ordinary build against a map listing it; the map the script writes listing every module, `Base.Int` by the files `build-seeds` wrote |
-| A program against the map importing `Base.IO`, `Base.String`, `Base.Int`, and `Base.Continuation` beside a module of host foreigns, handling an effect by a `reifiable full` clause | Built; run by `steam run` over the bytecode the map names, the actions composed by `Base.IO.bind`, printing `built apart`, `12`, and `6`, the sum of what the generator yields, each continuation resumed by `Base.Continuation.continue` |
-| The same program against a map listing `Base.Int` with another interface, `Prim`, or `Base.String` and `Base.Int` twice | Refused, each with its message |
+| `dependencies` listing a seed module with the interface of the seed module the compiler holds, with another interface, `Prim`, and a module listed twice, a seed module or not | The first accepted, the environment holding the seed module the compiler holds; the others refused |
+| The package built by the script | `Base.Int` written by `stella-devtools build-seeds`, and every other module of `stella-packages/base/src`, `Base.Continuation` among them, built by an ordinary build whose `dependencies` lists it, in an order the script computes from the imports `stellac graph` reports; the `dependencies.json` the script writes listing every module, `Base.Int` by the files `build-seeds` wrote |
+| A program whose `dependencies` are the entries of `dependencies.json`, importing `Base.IO`, `Base.String`, `Base.Int`, and `Base.Continuation` beside a module of host foreigns, handling an effect by a `reifiable full` clause | Built; run by `steam run` over the bytecode those entries name, the actions composed by `Base.IO.bind`, printing `built apart`, `12`, and `6`, the sum of what the generator yields, each continuation resumed by `Base.Continuation.continue` |
+| The same program whose `dependencies` lists `Base.Int` with another interface, `Prim`, or `Base.String` and `Base.Int` twice | Refused, each with its message |
 
 ### Source dependencies, read from headers (step 7)
 
@@ -1708,7 +1708,28 @@ A `foreign` the ABI fixes, against one a host implements ([Prim and Base](../06-
 
 | Input | Required outcome |
 | --- | --- |
-| Files whose headers import a module of the package, a module no file given holds, and `Prim`, two of the modules importing each other, and a declaration that does not parse | Each module, by name, with its path from the root and each module its header imports in the order written, where its name is written; `Prim` left out, the module outside reported as any other, nothing refused for the cycle or the declaration |
-| `--src` naming one file | That module alone |
-| A header naming another module than its path does | Refused as a build refuses it, no graph printed |
-| `package-c`, `package-b` importing and re-exporting `C.Core`, and `package-a`, whose `A.Main` imports `B.Api` alone and uses a name and a type of `C.Core` through it, and whose `A.Direct` imports `C.Core`, each built apart against a map listing what its builds before it wrote | Each built, `A.Direct` among them; for every module, the modules `graph` reports its header importing are the imports of the interface its build wrote, in order, `A.Main`'s being `B.Api` alone |
+| Files whose headers import a module of the package, a module `modules` does not list, and `Prim`, two of the modules importing each other, and a declaration that does not parse | Each module, by name, with its path as `stella.json` lists it and each module its header imports in the order written, where its name is written; `Prim` left out, the module outside reported as any other, nothing refused for the cycle or the declaration |
+| A `stella.json` whose `dependencies` lists files that do not exist | The graph printed, none of them read |
+| A header naming another module than its file is listed as | Refused as `stellac compile` refuses it, no graph printed |
+| `package-c`, `package-b` importing and re-exporting `C.Core`, and `package-a`, whose `A.Main` imports `B.Api` alone and uses a name and a type of `C.Core` through it, and whose `A.Direct` imports `C.Core`, each built apart, its `dependencies` listing what the builds before it wrote | Each built, `A.Direct` among them; for every module, the modules `graph` reports its header importing are the imports of the interface its build wrote, in order, `A.Main`'s being `B.Api` alone |
+
+### `stella.json` and `stellac compile` (step 7)
+
+What a `stellac` command is given, and the ordinary build `stellac compile` runs over it ([Modules](../06-Modules/01-Modules.md#stellajson)).
+
+| Input | Required outcome |
+| --- | --- |
+| A `stella.json` lacking a field, in the file or in `options`; one with a field no rule names, in either; one whose `formatVersion` is not `0`; one with a field of another kind, or an empty string | Refused by `compile` and `graph` alike, each error naming its field; nothing read or written |
+| A `stella.json` standing elsewhere than the directory the command runs in, its `output`, paths, interfaces, and objects relative | Each resolved against the directory the file stands in |
+| `modules` listing one file as `src/A.stel` and as `src/./B/../A.stel` | Refused as a file listed twice |
+| `steamCommand` a bare name, a relative path, and an absolute path | Looked for on `PATH`; resolved against the directory the file stands in; taken as it stands |
+| `modules` listing a module twice, a file twice, `Prim`, a module `dependencies` lists, or a name no module may have; `traceOptimizer` naming a module `modules` does not list | Refused by `compile` and `graph` alike, naming the entry; no file of `modules` read |
+| `modules` listing a seed module | Refused by `compile`; `graph` prints the graph of the seed modules' sources |
+| `modules` empty, with `dependencies` listing an interface that does not decode, and with a sound one | `compile` refuses the first and, for the second, writes nothing and succeeds; `graph` prints no module for both |
+| A header naming another module than its file is listed as | Refused where the name is written, nothing compiled |
+| `modules` listing `B` before `A`, which `B` imports, and a module importing itself | Refused before any module is compiled, where the import is written |
+| The same listing `A` first, and two modules neither of which imports the other, in either order | Compiled in the order listed |
+| `traceOptimizer` naming two modules, and `[]` | `<output>/<M>.mir` for each module named; none |
+| `logLevel` `error`, and `monochrome` `true` | No progress said; messages without colour |
+| `stellac compile` given no file, or more than one; `stellac build` | Refused |
+| A package built by `compile` | `<output>/<M>.dmo` and `<output>/<M>.dmi` for each module, and nothing else |
