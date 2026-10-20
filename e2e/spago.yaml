@@ -18,7 +18,9 @@ package:
     main: Test.E2E
     dependencies:
       - aff
+      - argonaut-core
       - arrays
+      - cli
       - compiler
       - effect
       - either
@@ -26,8 +28,14 @@ package:
       - exceptions
       - fmt
       - foldable-traversable
+      - foreign-object
       - integers
       - maybe
+      - node-buffer
+      - node-child-process
+      - node-execa
+      - node-fs
+      - node-process
       - ordered-collections
       - prelude
       - refs
@@ -37,3 +45,4 @@ package:
       - steam
       - strings
       - tuples
+      - typelevel-prelude

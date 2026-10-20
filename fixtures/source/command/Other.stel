@@ -1,0 +1,8 @@
+-- A module that also declares a `main`, which nothing may pick up: the entry
+-- module is named, so this one is not a competitor.
+module Other where
+
+import Base.IO as IO
+
+main :: IO Unit
+main = IO.pure ()

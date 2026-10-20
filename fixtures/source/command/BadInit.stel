@@ -1,0 +1,9 @@
+-- A module whose global faults as it is evaluated, so the module does not load
+-- and the program never starts: `Base.String.codePointAt 5 ""`, an index outside
+-- the empty string.
+module BadInit where
+
+import Base.String as String
+
+boom :: Char
+boom = String.codePointAt 5 ""

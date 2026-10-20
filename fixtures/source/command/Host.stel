@@ -1,0 +1,7 @@
+-- A module whose foreign nothing but a manifest can supply.
+module Host where
+
+foreign greet :: Int -> Int
+
+greeted :: Int
+greeted = greet 1

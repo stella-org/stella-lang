@@ -8,20 +8,16 @@ import Prelude
 import Effect (Effect)
 import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess)
-import Test.Steam.Command as Command
 import Test.Steam.Equivalence as Equivalence
 import Test.Steam.Isolation as Isolation
 import Test.Steam.Lists as Lists
 import Test.Steam.Parse as Parse
 import Test.Steam.Reference as Reference
-import Test.Steam.Session as Session
 import Test.Steam.SessionGuest as SessionGuest
 import Test.Steam.SessionKernel as SessionKernel
 
 main :: Effect Unit
 main = runSpecAndExitProcess [ consoleReporter ] do
-  Command.spec
-  Session.spec
   SessionGuest.spec
   SessionKernel.spec
   Parse.spec

@@ -140,7 +140,9 @@
         "test": {
           "dependencies": [
             "aff",
+            "argonaut-core",
             "arrays",
+            "cli",
             "compiler",
             "effect",
             "either",
@@ -148,8 +150,14 @@
             "exceptions",
             "fmt",
             "foldable-traversable",
+            "foreign-object",
             "integers",
             "maybe",
+            "node-buffer",
+            "node-child-process",
+            "node-execa",
+            "node-fs",
+            "node-process",
             "ordered-collections",
             "prelude",
             "refs",
@@ -158,7 +166,8 @@
             "spec-node",
             "steam",
             "strings",
-            "tuples"
+            "tuples",
+            "typelevel-prelude"
           ]
         }
       },
@@ -204,8 +213,6 @@
             "argonaut-core",
             "bifunctors",
             "node-buffer",
-            "node-child-process",
-            "node-execa",
             "node-fs",
             "partial",
             "spec",

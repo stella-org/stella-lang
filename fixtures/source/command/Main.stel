@@ -1,0 +1,20 @@
+-- `main`, an action that produces `Prim.Unit`; `second`, another; `notAnAction`,
+-- no action at all; and `faulting`, an action that faults once it is executed and
+-- not before: the fault is inside the function a `bind` holds, which the drive
+-- loop is what applies.
+module Main where
+
+import Base.IO as IO
+import Base.String as String
+
+main :: IO Unit
+main = IO.pure ()
+
+second :: IO Unit
+second = IO.pure ()
+
+notAnAction :: Unit
+notAnAction = ()
+
+faulting :: IO Char
+faulting = IO.bind (IO.pure ()) (\_ -> IO.pure (String.codePointAt 5 ""))

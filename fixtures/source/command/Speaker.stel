@@ -1,0 +1,7 @@
+-- A program whose entry point is an action a host constructs.
+module Speaker where
+
+foreign say :: Int -> IO Unit
+
+main :: IO Unit
+main = say 7
