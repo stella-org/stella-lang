@@ -1640,22 +1640,22 @@ A module's source dependencies and its runtime dependencies (D51, [Modules](../0
 | A boundary rolled back with the attempt that built its body | Its job is gone with it; nothing of the boundary survives the rollback |
 | A position whose expected row nothing fixes — a λ with no expected type, a top-level value without a signature | No insertion |
 
-### Toolchain builds and the compile-time seed (step 7)
+### Seed builds and the compile-time session (step 7)
 
-A build compiling modules of its environment anew ([Modules](../06-Modules/01-Modules.md#how-a-build-proceeds)), and what the compile-time session of [`stellac build`](../06-Modules/01-Modules.md#stellac-build) loads.
+The driver's seed build, apart from its ordinary one ([Modules](../06-Modules/01-Modules.md#how-a-build-proceeds)), `stella-devtools build-seeds`, which runs it ([Modules](../06-Modules/01-Modules.md#stella-devtools)), and what the compile-time session of [`stellac build`](../06-Modules/01-Modules.md#stellac-build) loads.
 
 | Input | Required outcome |
 | --- | --- |
-| A toolchain build naming `Base.Int`, its source `stella-packages/base/src/Base/Int.stel`, and a module importing it and `Stella.Syntax` | Compiled; the interface the one the compiler carries |
-| The same `Base.Int` lacking `toString` | Refused at its file, naming `Stella.Syntax` and the kept module reaching `Base.Int` through it; nothing written |
+| A seed build given `Base.Int`, its source `stella-packages/base/src/Base/Int.stel` | Compiled; the interface the one of the seed module the compiler holds |
+| The same `Base.Int` lacking `toString` | Refused at its file, naming `Stella.Syntax`, which the build keeps and which imports it; nothing written |
 | A module compiled anew that no kept module imports, and two compiled anew, one importing the other | Compiled, the interfaces changed |
 | `Base.Int` compiled anew importing `Stella.Syntax` | Refused: the build holds no `Base.Int` for it |
-| An ordinary build holding `Base.Int`; a toolchain build holding `Stella.Syntax`, which it does not name; one naming `Prim`, a module the environment does not hold, or one no file holds | Refused before any module is compiled |
-| `stellac build --toolchain-rebuild Base.Int` with no macro run | Compiled, no session opened |
-| The same with `Pass`, a macro importing `Base.Int` and `Stella.Syntax`, and `Main` calling it | Compiled, the macro run on the seed and the package's `Base.Int` never sent; `Main.n` `3` on the machine over the `Base.Int` the build wrote. A walk going past the seed fails the build |
-| `--toolchain-rebuild Stella.Elab` with a `Stella.Elab` of another interface, and a macro module importing it | The build failing against `Stella.Elab`, neither the program's error nor the compiler's |
+| A seed build given `Prim`, or a module the environment does not hold; an ordinary build holding `Base.Int` | Refused before any module is compiled |
+| A seed build given `Base.Int` against an environment holding a module that imports it | Refused with `Base.Int` lacking `toString`, naming that module and `Stella.Syntax`; compiled with the full `Base.Int` |
+| `stella-devtools build-seeds` | `Base.Int`, `Stella.Syntax`, and `Stella.Elab` written to the output, each `.dmi` the interface and each `.dmo` the bytecode of the seed module the compiler holds, to the byte; no session opened, and nothing the compiler holds changed |
+| On the host `build-seeds` shares with `stellac build`, a seed build against an environment holding `Pass`, a macro importing `Base.Int` and `Stella.Syntax`, and `Main` calling it, given `Base.Int` from its source, `Pass`, and `Main` | Compiled, the macro run on the seed: the session loads `Pass` from the bytecode the build wrote and is never sent `Base.Int`; `Main.n` `3` on the machine over the `Base.Int` the build wrote |
+| The same with a `Stella.Elab` of another interface in place of `Base.Int`, `Pass` importing it | The build failing against `Stella.Elab`, neither the program's error nor the compiler's: the session runs the module it holds, never the one the build wrote |
 | A macro and a synthesizer of modules a dependency map lists, both importing a third the map lists | Each run from the bytecode the map names, the third loaded first and once; `2` and `7` on the machine |
-| A toolchain build naming `Base.Int` against a map listing a module that imports it | Refused with `Base.Int` lacking `toString`, naming the module the map lists and `Stella.Syntax`; compiled with the full `Base.Int` |
 | The modules the compiler carries, as the session holds them from its opening | Closed under imports |
 
 ### ABI entries and host foreigns (step 7)
@@ -1681,9 +1681,7 @@ A `foreign` the ABI fixes, against one a host implements ([Prim and Base](../06-
 | --- | --- |
 | The three files, compiled by the compiler as it stands, `Stella.Syntax` against `Base.Int` | The interface files and the bytecode files the compiler holds, to the byte |
 | The modules the compiler carries | Those files decoded, the bytecode of `Stella.Elab` held apart for a session to install |
-| `Base.Int`'s file copied as it stands into a package of its own, and `compiler-lib`'s two into another, each built with `--toolchain-rebuild` naming the modules it holds, `Stella.Syntax` against the `Base.Int` the compiler carries | Built; each `.dmi` the interface the compiler carries, and each `.dmo` the same bytes |
-| An ordinary package importing `Base.Int` and a module of host foreigns, run by `steam run` over the `.dmo` of `Base.Int` | Run, `add 1 2` printed as `3` |
-| A toolchain build of `Base.Int` beside a macro importing it, and one of `Base.Int` without `toString` | As for any toolchain build of a module the compiler carries: compiled, the macro run on the module the compiler carries; refused, naming the module kept |
+| An ordinary package importing `Base.Int` and a module of host foreigns, run by `steam run` over the `.dmo` of `Base.Int` that `stella-devtools build-seeds` wrote | Run, `add 1 2` printed as `3` |
 | `Stella.Syntax` as the compiler carries it | `OriginRef` exported abstract; `$QuotedOrigin` and `$spliced` in no export of the interface and with no arity, `$spliced` exported by the bytecode; the descriptor read off the interface mirroring the host's types constructor for constructor |
 | `@[elaborationOnly]` on `OriginRef` in `Stella.Syntax`, its constructors `InputOrigin` and `QuotedOrigin` in that order | `QuotedOrigin` takes `$QuotedOrigin`, `InputOrigin` keeps its name and its membership; another order, or another set of constructors, refused |
 | `@[elaborationOnly]` on `spliced` in `Stella.Syntax`, on another value there, and on `spliced` in another module | The first takes `$spliced`, and an export list naming it is refused; the others refused |
@@ -1700,7 +1698,7 @@ A `foreign` the ABI fixes, against one a host implements ([Prim and Base](../06-
 | --- | --- |
 | Each module the catalog names an entry or a type of | A source in `stella-packages/base/src`, compiling to an interface that declares every entry of the module as a foreign at the scheme and of the arity the catalog gives, every type as a foreign type of the kind it gives, and no other foreign |
 | A map listing a module the compiler carries with the interface it carries, with another interface, `Prim`, and a module listed twice, carried or not | The first accepted, the environment holding the module the compiler carries; the others refused |
-| The package built by the script | Every module of `stella-packages/base/src` built, `Base.Continuation` among them, and listed by the map |
+| The package built by the script | `Base.Int` written by `stella-devtools build-seeds`, and every other module of `stella-packages/base/src`, `Base.Continuation` among them, built by an ordinary build against a map listing it; the map the script writes listing every module, `Base.Int` by the files `build-seeds` wrote |
 | A program against the map importing `Base.IO`, `Base.String`, `Base.Int`, and `Base.Continuation` beside a module of host foreigns, handling an effect by a `reifiable full` clause | Built; run by `steam run` over the bytecode the map names, the actions composed by `Base.IO.bind`, printing `built apart`, `12`, and `6`, the sum of what the generator yields, each continuation resumed by `Base.Continuation.continue` |
 | The same program against a map listing `Base.Int` with another interface, `Prim`, or `Base.String` and `Base.Int` twice | Refused, each with its message |
 
