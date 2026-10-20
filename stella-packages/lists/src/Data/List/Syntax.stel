@@ -1,0 +1,25 @@
+-- `ls`, a macro writing a list: `ls%[e, …]` of the elements the brackets hold,
+-- separated by commas, and `ls%{ … }` of those the block holds, one a line.
+--
+-- What it gives is `Cons (e) (Cons (…) Nil)`. The constructors are not
+-- qualified: they are resolved where the call stands, so a module calling `ls`
+-- imports `Data.List (List(..))` as well as the macro.
+module Data.List.Syntax (macro ls) where
+
+import Stella.Syntax as S
+
+-- One element: the tokens up to a comma.
+element :: S.Parser (S.List S.TokenTree)
+element = S.bind (S.satisfy "an element" S.notComma) \first ->
+  S.map (\rest -> S.Cons first rest) (S.many (S.satisfy "the rest of an element" S.notComma))
+
+-- `Cons (e) rest`, the element spliced as it was written.
+cons :: S.List S.TokenTree -> S.Syntax S.Term -> S.Syntax S.Term
+cons es rest = %term{ Cons $(S.Syntax (S.nodesOf es)) $rest }
+
+build :: S.List (S.List S.TokenTree) -> S.Syntax S.Term
+build xss = S.foldr cons %term{ Nil } xss
+
+@[macro]
+ls :: S.Parser (S.Syntax S.Term)
+ls = S.orElse (S.brackets (S.map build (S.sepBy element S.comma))) (S.braces (S.map build (S.layout (S.many S.tree))))
