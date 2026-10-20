@@ -1,0 +1,30 @@
+-- The probes of the typed facade of `Stella.Elab`. The test appends one probe
+-- for each operation of the guest protocol, `probe_<operation>`, made from the
+-- operation's type on the interface the compiler carries; these two are written
+-- here.
+module Probe where
+
+import Stella.Elab
+
+-- A `throw` inside a `transact`, then `rootScope`.
+throwingInside :: Unit -> Handle / {| Abort, Breach, Kernel |}
+throwingInside u =
+  let
+    inner :: Maybe Handle
+    inner = transact (\v -> throw (Cons (TextPart "no") Nil))
+  in
+    rootScope ()
+
+-- That inside another `transact`: the inner answers `Nothing`, and the outer
+-- commits with the handle.
+nested :: Handle -> Handle / {| Kernel |}
+nested = synthesizer \goal -> case transact throwingInside of
+  Just outer -> outer
+  Nothing -> goal
+
+-- `goalType goal` inside a `transact`, and `rootScope` where the transaction
+-- answers `Nothing`.
+guarded :: Handle -> Handle / {| Kernel |}
+guarded = synthesizer \goal -> case transact (\u -> goalType goal) of
+  Just found -> found
+  Nothing -> rootScope ()

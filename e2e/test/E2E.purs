@@ -12,6 +12,7 @@ import Effect.Exception (throw)
 import Test.E2E.Arrays as Arrays
 import Test.E2E.Cells as Cells
 import Test.E2E.Continuations as Continuations
+import Test.E2E.Facade as Facade
 import Test.E2E.Fixtures as Fixtures
 import E2E.Build (readSources)
 import Test.E2E.Handling as Handling
@@ -34,3 +35,4 @@ main = readSources >>= case _ of
     Cells.spec sources
     Continuations.spec sources
     Records.spec sources
+    Facade.spec sources

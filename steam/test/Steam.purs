@@ -12,7 +12,6 @@ import Test.Spec.Runner.Node (runSpecAndExitProcess)
 import Test.Steam.Calls as Calls
 import Test.Steam.Drive as Drive
 import Test.Steam.Eval as Eval
-import Test.Steam.Facade as Facade
 import Test.Steam.Fixtures as Fixtures
 import Test.Steam.Foreign as Foreign
 import Test.Steam.Handlers as Handlers
@@ -38,5 +37,4 @@ main = do
     Drive.spec
     Marshal.spec
     Structural.spec
-    Facade.spec
     Wire.spec

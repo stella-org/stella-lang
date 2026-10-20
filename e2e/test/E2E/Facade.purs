@@ -9,7 +9,11 @@
 -- | otherwise the handle `rootScope` then answers with. **An answer the operation
 -- | does not expect ends the probe with its goal**, before it asks anything more,
 -- | which is what tells the two apart.
-module Test.Steam.Facade (spec) where
+-- |
+-- | The probes are written in source here, from each operation's type on the
+-- | interface, and appended to `fixtures/source/guests/facade/Probe.stel`, which
+-- | holds the probes of `transact`; the module is built as a fixture is.
+module Test.E2E.Facade (spec) where
 
 import Prelude
 
@@ -24,21 +28,23 @@ import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
 import Stella.CLI.Session.Value (WireValue(..))
 import Stella.Compiler.Bytecode.Module (Key(..))
-import Stella.Compiler.Elaborate.Protocol.Guest (Operation, elabModule, kernelEffect, operationType, operations)
+import Stella.Compiler.Elaborate.Protocol.Guest (Operation, elabModule, handleTy, operationType, operations)
 import Stella.Compiler.Interface.Module (TypeSort(..))
-import Stella.Compiler.TypedCore (DecisionTree(..), Decl(..), Expr(..), Ident(..), Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), TyName(..), Type(..), monoScheme)
+import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), TyName(..), Type(..))
 import Stella.Compiler.TypedCore.Domain (scalarString)
-import Stella.Compiler.TypedCore.Prim (asFunction, booleanTy, fn, intTy, recordTy, stringTy, unitTy)
+import Stella.Compiler.TypedCore.Prim (asFunction, booleanTy, intTy, recordTy, stringTy, unitTy)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Steam.Guest (Machine, elabInterface, Ran(..), call, compileGuest, construct, elab, elabRow, elabT, global, goalToken, handleT, listOf, machineWith, runGuest, text, token, unitValue, wire, wireList, wireText)
+import Data.String as String
+import E2E.Build (Sources, builtFrom)
+import Test.E2E.Guest (Machine, elabInterface, Ran(..), goalToken, machineWith, runGuest, token, wire, wireList, wireText)
 
 -- Arguments of every type ---------------------------------------------------------------------
 
--- | A value of a type the facade takes or gives, as a term and as a generic value.
--- | A handle is the one given; a list holds one element and an optional value one;
--- | any other data type of `Stella.Elab` is its first constructor.
-type Sample = { term :: Expr Unit, value :: WireValue }
+-- | A value of a type the facade takes or gives, as source text and as a generic
+-- | value. A handle is the one given; a list holds one element and an optional
+-- | value one; any other data type of `Stella.Elab` is its first constructor.
+type Sample = { text :: P.String, value :: WireValue }
 
 sampleOf :: Sample -> Type -> Sample
 sampleOf handle = go
@@ -46,27 +52,29 @@ sampleOf handle = go
   go t = case t of
     TCon name []
       | name == handleTy' -> handle
-      | name == stringTy -> { term: text "s", value: wireText "s" }
-      | name == booleanTy -> { term: Lit unit (LitBoolean true), value: WBoolean true }
-      | name == intTy -> { term: Lit unit (LitInt 1), value: WInt 1 }
-      | name == unitTy -> { term: unitValue, value: WData unitName [] }
+      | name == stringTy -> { text: "\"s\"", value: wireText "s" }
+      | name == booleanTy -> { text: "true", value: WBoolean true }
+      | name == intTy -> { text: "1", value: WInt 1 }
+      | name == unitTy -> { text: "()", value: WData unitName [] }
     TApp (TCon name []) row | name == recordTy ->
       let
         fields = entries row
       in
-        { term: Array.foldr (\(Tuple k s) rest -> RecordExtend unit (SymbolKey (Symbol k)) s.term rest) (RecordEmpty unit) fields
+        { text: "{ " <> String.joinWith ", " (map (\(Tuple k s) -> k <> ": " <> s.text) fields) <> " }"
         , value: WRecord (map (\(Tuple k s) -> { key: KSymbol (Symbol k), value: s.value }) (Array.sortWith (\(Tuple k _) -> k) fields))
         }
     TApp (TCon name []) element
       | name == elabType "List" ->
-          let s = go element in { term: listOf element [ s.term ], value: wireList [ s.value ] }
+          let s = go element in { text: "(Cons " <> s.text <> " Nil)", value: wireList [ s.value ] }
       | name == elabType "Maybe" ->
-          let s = go element in { term: construct elabRow "Just" [ element ] [ s.term ], value: wire "Just" [ s.value ] }
+          let s = go element in { text: "(Just " <> s.text <> ")", value: wire "Just" [ s.value ] }
     TCon (Qualified _ (TyName n)) [] -> case firstCtor n of
       Just (Tuple c fields) ->
-        let samples = map go fields in { term: construct elabRow c [] (map _.term samples), value: wire c (map _.value samples) }
-      Nothing -> { term: unitValue, value: WString (unsafeText ("no sample of " <> n)) }
-    _ -> { term: unitValue, value: WString (unsafeText "no sample") }
+        let samples = map go fields in { text: applied c (map _.text samples), value: wire c (map _.value samples) }
+      Nothing -> { text: "()", value: WString (unsafeText ("no sample of " <> n)) }
+    _ -> { text: "()", value: WString (unsafeText "no sample") }
+
+  applied c args = if Array.null args then c else "(" <> String.joinWith " " (Array.cons c args) <> ")"
 
   entries row = case row of
     TRowExtend (RowTypeEntry (SymbolKey (Symbol k)) t') rest -> Array.cons (Tuple k (go t')) (entries rest)
@@ -79,6 +87,9 @@ sampleOf handle = go
   fromMaybe' = case _ of
     Just x -> x
     Nothing -> fromMaybe' (scalarString "")
+
+handleT :: Type
+handleT = TCon handleTy []
 
 elabType :: P.String -> Qualified TyName
 elabType n = Qualified elabModule (TyName n)
@@ -106,17 +117,14 @@ typeOfOperation :: Operation -> Either P.String Type
 typeOfOperation o = elabInterface >>= \i -> operationType i o
 
 goalSample :: Sample
-goalSample = { term: Var unit goal, value: WToken goalToken }
+goalSample = { text: "goal", value: WToken goalToken }
 
 -- | What a handle in an answer is: a token no request holds.
 answered :: Sample
-answered = { term: unitValue, value: WToken (token "answered") }
+answered = { text: "()", value: WToken (token "answered") }
 
 marker :: WireValue
 marker = WToken (token "marker")
-
-goal :: Ident
-goal = Ident "goal"
 
 -- The probes ----------------------------------------------------------------------------------
 
@@ -141,29 +149,36 @@ signatureOf o = go [] case typeOfOperation o of
 probeModuleName :: ModuleName
 probeModuleName = ModuleName "Probe"
 
--- | `synthesizer (λgoal. let result = op samples in result)`, or `rootScope ()` in
--- | place of `result` where it is no handle.
-probeDecl :: Operation -> Decl Unit
-probeDecl o = DeclNonRec unit
-  { name: Ident ("probe_" <> o.name)
-  , scheme: monoScheme synthesizerType
-  , value: App unit (global "synthesizer")
-      ( Lam unit goal handleT elabRow
-          ( Let unit result sig.result (call operation (map (_.term <<< sampleOf goalSample) sig.parameters))
-              (if sig.result == handleT then Var unit result else call (global "rootScope") [ unitValue ])
-          )
-      )
-  , attributes: []
-  }
+-- | A type of the facade as source text: the names of `Stella.Elab` and of `Prim`,
+-- | which the probes import whole, applied, and closed records.
+typeText :: Type -> P.String
+typeText = case _ of
+  TCon (Qualified _ (TyName n)) [] -> n
+  TApp (TCon name []) row | name == recordTy -> "{ " <> String.joinWith ", " (fieldsOf row) <> " }"
+  TApp f x -> "(" <> typeText f <> " " <> typeText x <> ")"
+  _ -> "?"
   where
-  sig = signatureOf o
-  result = Ident "result"
-  operation = case o.answer of
-    Nothing -> TyApp unit (global o.name) handleT
-    Just _ -> global o.name
+  fieldsOf = case _ of
+    TRowExtend (RowTypeEntry (SymbolKey (Symbol k)) t) rest -> Array.cons (k <> " :: " <> typeText t) (fieldsOf rest)
+    _ -> []
 
-synthesizerType :: Type
-synthesizerType = fn handleT (TRowExtend (RowEffectEntry kernelEffect []) TRowEmpty) handleT
+-- | `probe_<operation> = synthesizer \goal -> let result = operation samples in
+-- | result`, `rootScope ()` in place of `result` where it is no handle; what an
+-- | operation answering nothing gives is a handle.
+probeText :: Operation -> P.String
+probeText o = String.joinWith "\n"
+  [ ""
+  , name <> " :: Handle -> Handle / {| Kernel |}"
+  , name <> " = synthesizer \\goal ->"
+  , "  let"
+  , "    result :: " <> typeText sig.result
+  , "    result = " <> String.joinWith " " (Array.cons o.name (map (_.text <<< sampleOf goalSample) sig.parameters))
+  , "  in"
+  , "    " <> (if sig.result == handleT then "result" else "rootScope ()")
+  ]
+  where
+  name = "probe_" <> o.name
+  sig = signatureOf o
 
 -- | The command an operation's probe asks first.
 commandOf :: Operation -> WireValue
@@ -192,69 +207,16 @@ otherAnswer o = case o.answer of
 rootScopeCommand :: WireValue
 rootScopeCommand = wire "Kernel" [ wire "BuildRequest" [ wire "RootScope" [] ] ]
 
--- Transactions ----------------------------------------------------------------------------------
-
--- | `transact [Handle] (λ_. body)`.
-transacting :: P.String -> Expr Unit -> Expr Unit
-transacting binder body = call (TyApp unit (global "transact") handleT) [ Lam unit (Ident binder) (TCon unitTy []) elabRow body ]
-
--- | `case e of Just h -> h; Nothing -> otherwise`.
-orElse :: P.String -> Expr Unit -> Expr Unit -> Expr Unit
-orElse binder e otherwise = Case unit [ e ]
-  ( SwitchCtor (OccScrutinee 0)
-      [ { ctor: elab "Just", tree: Bind (Ident binder) (OccField (OccScrutinee 0) (elab "Just") 0) (Leaf (Var unit (Ident binder))) }
-      , { ctor: elab "Nothing", tree: Leaf otherwise }
-      ]
-      Nothing
-  )
-
-rootScope :: Expr Unit
-rootScope = call (global "rootScope") [ unitValue ]
-
-synthesizing :: P.String -> Expr Unit -> Decl Unit
-synthesizing name body = DeclNonRec unit
-  { name: Ident name
-  , scheme: monoScheme synthesizerType
-  , value: App unit (global "synthesizer") (Lam unit goal handleT elabRow body)
-  , attributes: []
-  }
-
--- | A `throw` inside a `transact` inside another, then `rootScope`: the inner
--- | answers `Nothing` and the outer commits with the handle.
-nested :: Decl Unit
-nested = synthesizing "nested" $
-  orElse "outer"
-    ( transacting "u1"
-        ( Let unit (Ident "inner") (TApp (TCon (elabType "Maybe") []) handleT)
-            ( transacting "u2"
-                (call (TyApp unit (global "throw") handleT) [ listOf (elabT "MessagePart") [ construct elabRow "TextPart" [] [ text "no" ] ] ])
-            )
-            rootScope
-        )
-    )
-    (Var unit goal)
-
--- | `goalType goal` inside a `transact`, and `rootScope` where the transaction
--- | answers `Nothing`.
-guarded :: Decl Unit
-guarded = synthesizing "guarded" $
-  orElse "found" (transacting "u3" (call (global "goalType") [ Var unit goal ])) rootScope
-
-probeModule :: Module Unit
-probeModule =
-  { annotation: unit
-  , name: probeModuleName
-  , imports: [ elabModule ]
-  , exports: []
-  , decls: map probeDecl operations <> [ nested, guarded ]
-  }
-
 -- The cases ---------------------------------------------------------------------------------
 
-withProbes :: (Machine -> Aff Unit) -> Aff Unit
-withProbes k = case compileGuest probeModule of
+-- | `Probe`: the probes of `transact` the fixture holds, and one for each
+-- | operation, appended.
+withProbes :: Sources -> (Machine -> Aff Unit) -> Aff Unit
+withProbes sources k = case builtFrom (sources { files = Map.update (\written -> Just (written <> String.joinWith "\n" (map probeText operations) <> "\n")) probes sources.files }) [ "guests/facade" ] of
   Left err -> fail ("the probes did not compile: " <> err)
-  Right dmo -> machineWith [ dmo ] >>= k
+  Right dmos -> machineWith dmos >>= k
+  where
+  probes = "fixtures/source/guests/facade/Probe.stel"
 
 run :: Machine -> P.String -> P.Array WireValue -> Aff Ran
 run machine name = runGuest machine (Qualified probeModuleName (Ident name)) [ goalToken ]
@@ -271,13 +233,13 @@ commit = wire "CommitTransaction" []
 goalTypeCommand :: WireValue
 goalTypeCommand = wire "Kernel" [ wire "ObserveRequest" [ wire "GoalType" [ goalValue ] ] ]
 
-spec :: Spec Unit
-spec = describe "Stella.Elab, the typed facade on the machine" do
+spec :: Sources -> Spec Unit
+spec sources = describe "Stella.Elab, the typed facade on the machine" do
   it "reads every operation's type off the interface of the `Stella.Elab` the compiler carries" do
     for_ operations \o -> Tuple o.name (either Just (const Nothing) (typeOfOperation o)) `shouldEqual` Tuple o.name Nothing
 
   it "asks each operation's request, and gives back what the answer it expects carries" do
-    withProbes \machine -> for_ operations \o -> do
+    withProbes sources \machine -> for_ operations \o -> do
       let first = commandOf o
       ran <- run machine ("probe_" <> o.name) case o.answer of
         Nothing -> [ wire "Returned" [ wire "UnitAnswer" [] ] ]
@@ -290,23 +252,23 @@ spec = describe "Stella.Elab, the typed facade on the machine" do
           | otherwise -> Returned [ first, rootScopeCommand ] marker
 
   it "ends with its goal where an operation is answered with another answer, before asking anything more" do
-    withProbes \machine -> for_ operations \o -> do
+    withProbes sources \machine -> for_ operations \o -> do
       ran <- run machine ("probe_" <> o.name) [ otherAnswer o ]
       Tuple o.name ran `shouldEqual` Tuple o.name (Returned [ commandOf o ] goalValue)
 
   it "ends with its goal where a command is answered with no kernel answer at all" do
-    withProbes \machine -> for_ operations \o -> do
+    withProbes sources \machine -> for_ operations \o -> do
       ran <- run machine ("probe_" <> o.name) [ wire "TransactionCommitted" [] ]
       Tuple o.name ran `shouldEqual` Tuple o.name (Returned [ commandOf o ] goalValue)
 
   it "ends with its goal where a candidate fails outside every transaction" do
-    withProbes \machine -> for_ operations \o -> do
+    withProbes sources \machine -> for_ operations \o -> do
       ran <- run machine ("probe_" <> o.name) [ wire "CandidateFailed" [] ]
       Tuple o.name ran `shouldEqual` Tuple o.name (Returned [ commandOf o ] goalValue)
 
   describe "transact" do
     it "answers Nothing in the innermost transaction a candidate fails in, and the one around it commits" do
-      withProbes \machine -> do
+      withProbes sources \machine -> do
         ran <- run machine "nested"
           [ wire "TransactionBegun" []
           , wire "TransactionBegun" []
@@ -324,7 +286,7 @@ spec = describe "Stella.Elab, the typed facade on the machine" do
           marker
 
     it "answers Just what the candidate returned where the transaction commits" do
-      withProbes \machine -> do
+      withProbes sources \machine -> do
         ran <- run machine "guarded"
           [ wire "TransactionBegun" []
           , wire "Returned" [ wire "HandleAnswer" [ marker ] ]
@@ -333,7 +295,7 @@ spec = describe "Stella.Elab, the typed facade on the machine" do
         ran `shouldEqual` Returned [ begin, goalTypeCommand, commit ] marker
 
     it "answers Nothing where the candidate fails, sending nothing to close it" do
-      withProbes \machine -> do
+      withProbes sources \machine -> do
         ran <- run machine "guarded"
           [ wire "TransactionBegun" []
           , wire "CandidateFailed" []
@@ -342,7 +304,7 @@ spec = describe "Stella.Elab, the typed facade on the machine" do
         ran `shouldEqual` Returned [ begin, goalTypeCommand, rootScopeCommand ] marker
 
     it "answers Nothing where the transaction fails as it commits" do
-      withProbes \machine -> do
+      withProbes sources \machine -> do
         ran <- run machine "guarded"
           [ wire "TransactionBegun" []
           , wire "Returned" [ wire "HandleAnswer" [ WToken (token "found") ] ]
@@ -352,7 +314,7 @@ spec = describe "Stella.Elab, the typed facade on the machine" do
         ran `shouldEqual` Returned [ begin, goalTypeCommand, commit, rootScopeCommand ] marker
 
     it "lets a breach inside it through to the synthesizer, which ends with its goal" do
-      withProbes \machine -> do
+      withProbes sources \machine -> do
         ran <- run machine "guarded"
           [ wire "TransactionBegun" []
           , wire "Returned" [ wire "UnitAnswer" [] ]
@@ -361,6 +323,6 @@ spec = describe "Stella.Elab, the typed facade on the machine" do
         ran `shouldEqual` Returned [ begin, goalTypeCommand ] goalValue
 
     it "ends with its goal where a transaction is not begun" do
-      withProbes \machine -> do
+      withProbes sources \machine -> do
         ran <- run machine "guarded" [ wire "Returned" [ wire "UnitAnswer" [] ] ]
         ran `shouldEqual` Returned [ begin ] goalValue
