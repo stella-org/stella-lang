@@ -13,6 +13,8 @@ import Test.E2E.Command as Command
 import Test.E2E.Lists as Lists
 import Test.E2E.Parse as Parse
 import Test.E2E.Session as Session
+import Test.E2E.SessionGuest as SessionGuest
+import Test.E2E.SessionKernel as SessionKernel
 import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess)
 
@@ -23,5 +25,7 @@ main = readSources >>= case _ of
   Right sources -> runSpecAndExitProcess [ consoleReporter ] do
     Command.spec sources
     Session.spec
+    SessionGuest.spec sources
+    SessionKernel.spec sources
     Lists.spec sources
     Parse.spec sources

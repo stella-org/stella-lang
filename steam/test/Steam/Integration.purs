@@ -11,13 +11,9 @@ import Test.Spec.Runner.Node (runSpecAndExitProcess)
 import Test.Steam.Equivalence as Equivalence
 import Test.Steam.Isolation as Isolation
 import Test.Steam.Reference as Reference
-import Test.Steam.SessionGuest as SessionGuest
-import Test.Steam.SessionKernel as SessionKernel
 
 main :: Effect Unit
 main = runSpecAndExitProcess [ consoleReporter ] do
-  SessionGuest.spec
-  SessionKernel.spec
   Reference.spec
   Equivalence.spec
   Isolation.spec

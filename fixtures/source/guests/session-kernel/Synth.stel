@@ -1,0 +1,13 @@
+-- `synth` asks for its goal's type, asks for the weak head normal form of the
+-- handle the first answer carries, and returns the handle the second answer
+-- carries. Where an answer carries no handle, it returns the goal.
+module Synth where
+
+import Stella.Elab (GuestAnswer(..), GuestCommand(..), Handle, Kernel(..), KernelAnswer(..), KernelRequest(..), ObserveRequest(..))
+
+synth :: Handle -> Handle / {| Kernel |}
+synth goal = case command (Kernel (ObserveRequest (GoalType goal))) of
+  Returned (HandleAnswer found) -> case command (Kernel (ObserveRequest (Whnf found))) of
+    Returned (HandleAnswer carried) -> carried
+    _ -> goal
+  _ -> goal

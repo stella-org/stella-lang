@@ -16,6 +16,7 @@ module Test.E2E.Session
   , request'
   , opened
   , steamChild
+  , steamWith
   ) where
 
 import Prelude
@@ -303,3 +304,7 @@ spec = describe "steam session" do
       open' ((fake s "") { command = "/nonexistent/steam" }) >>= case _ of
         Left (OpenFailed (NotStarted _)) -> pure unit
         other -> fail ("unexpected: " <> show (map (const unit) other))
+
+-- | `steam session` started with the arguments given, as a client launches it.
+steamWith :: Array String -> Streams -> Hello -> Client.Launch
+steamWith args s h = { command: "node", args: [ "steam/index.dev.js", "session" ] <> args, output: draining s, hello: h }

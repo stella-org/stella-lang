@@ -63,11 +63,11 @@ import Stella.Compiler.TypedCore.Prim (fn, intTy, stringTy)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 import E2E.Build (Sources, builtFrom)
-import Node.Encoding (Encoding(..))
 import Node.FS.Perms as Perms
 import Test.E2E.Command (requiring)
 import Test.E2E.InProcess (openInProcess)
-import Test.E2E.Session (Streams, draining, hello, node, opened, streams)
+import Test.E2E.Session (hello, node, opened, steamWith, streams)
+import Test.E2E.SlowLoud (slowLoud, writeSlowLoud)
 
 -- Core, written short ---------------------------------------------------------------------
 
@@ -210,34 +210,12 @@ parserModules sources syntax = do
   base <- maybe (Left "no Base.Int") Right (Array.head syntax.modules)
   pure [ Tuple "Base.Array" array, Tuple "Parsers" parsers, Tuple "Forged" (forging forged), Tuple "Base.Int" base ]
 
--- | `Slow` and `Loud` built, a module of one host foreign each, called as it
--- | initializes.
-slowLoud :: Sources -> Either P.String (P.Array (Tuple P.String Dmo))
-slowLoud sources = builtNamed sources "parse/slow-loud"
-
-writeParsers :: P.Array (Tuple P.String Dmo) -> Aff Unit
-writeParsers modules = do
+writeParsers :: P.Array (Tuple P.String Dmo) -> P.Array Dmo -> Aff Unit
+writeParsers modules hosts = do
   FS.mkdir' dir { recursive: true, mode: Perms.mkPerms Perms.all Perms.all Perms.all }
   for_ modules \(Tuple name dmo) -> write name dmo
-  writeText (dir <> "/slow.mjs")
-    """process.stderr.write("slow reached\n");
-       await new Promise((resolve) => setTimeout(resolve, 800));
-       process.stderr.write("slow ready\n");
-       export const wait = (n) => { process.stderr.write("waited\n"); return n; };
-    """
-  writeText (dir <> "/loud.mjs")
-    """export const shout = (n) => { process.stderr.write("shouted\n"); return n; };
-    """
-  writeText (manifestPath "slow-loud")
-    """{ "formatVersion": 1, "target": "javascript",
-         "modules": [ { "module": "Loud", "specifier": "./loud.mjs",
-                        "foreigns": [ { "name": "shout", "params": [ "int" ], "result": "int" } ] },
-                      { "module": "Slow", "specifier": "./slow.mjs",
-                        "foreigns": [ { "name": "wait", "params": [ "int" ], "result": "int" } ] } ] }"""
+  writeSlowLoud dir hosts
   where
-  writeText path content = do
-    buffer <- liftEffect (Buffer.fromString content UTF8)
-    FS.writeFile path buffer
 
   write name dmo = case encode dmo of
     Left err -> fail ("could not encode " <> name <> ": " <> show err)
@@ -246,10 +224,6 @@ writeParsers modules = do
       FS.writeFile (pathOf name) buffer
 
 -- Talking to a session ---------------------------------------------------------------------
-
--- | `steam session` started with the arguments given, as a client launches it.
-steamWith :: P.Array P.String -> Streams -> Hello -> Client.Launch
-steamWith args s h = { command: "node", args: [ "steam/index.dev.js", "session" ] <> args, output: draining s, hello: h }
 
 parsing :: Hello
 parsing = hello { offers = [ "modules", "parse" ] }
@@ -330,8 +304,8 @@ antiquoted sources = case Map.lookup "fixtures/source/parse/parsers/Parsers.stel
 spec :: Sources -> Spec Unit
 spec sources = describe "steam session, parsing" case compiled of
   Left err -> it "compiles Stella.Syntax" (fail err)
-  Right syntax -> requiring (append <$> parserModules sources syntax <*> slowLoud sources) \modules -> do
-    it "writes the fixture" (writeParsers modules)
+  Right syntax -> requiring (Tuple <$> parserModules sources syntax <*> slowLoud sources) \(Tuple modules hosts) -> do
+    it "writes the fixture" (writeParsers modules hosts)
 
     describe "opening" do
       it "installs Base.Int and then Stella.Syntax through the loader, before it is ready" do

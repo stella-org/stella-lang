@@ -3,9 +3,10 @@
 -- | makes for each command, and what the client's answers come to.
 -- |
 -- | The client here is written on the peer directly, answering `kernel` requests as
--- | each test says. The guest is a Core module compiled against `Stella.Elab`, with
--- | one `.dmo` written by hand for a command no compiler produces.
-module Test.Steam.SessionKernel (spec) where
+-- | each test says. The guest is built from `fixtures/source/guests/session-kernel`
+-- | against `Stella.Elab`, with `.dmo`s written by hand for a command no compiler
+-- | produces, a guest that never returns, and modules under reserved names.
+module Test.E2E.SessionKernel (spec) where
 
 import Prelude
 
@@ -38,85 +39,29 @@ import Stella.CLI.Session.Value (WireValue(..), encodeValue)
 import Stella.Compiler.Bytecode (Dmo, encode)
 import Stella.Compiler.Bytecode.Instr (FuncIx(..), Instr(..), JoinName(..), KeyIx(..), OpIx(..), Reg(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (GlobalInit(..), Key(..))
-import Stella.Compiler.Elaborate.Protocol.Guest (commandOp, elabModule, handleTy, kernelEffect)
-import Test.Steam.Guest (compileGuest)
+import Stella.Compiler.Elaborate.Protocol.Guest (commandOp, elabModule, kernelEffect)
+import E2E.Build (Sources, builtFrom)
 import Stella.Compiler.MiddleEnd.Rep (Rep(..))
-import Stella.Compiler.TypedCore (DecisionTree(..), Decl(..), Expr(..), Ident(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), TyName(..), Type(..), monoScheme)
-import Stella.Compiler.TypedCore.Prim (fn)
+import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
 import Steam.CLI.Elaboration (TakenAnswer(..), prepare, takeAnswer)
 import Steam.Foreign (emptyTable)
 import Steam.Load (emptyStore, noIdentities)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Steam.Command (bugModule, pathOf, requiring)
-import Test.Steam.Session (Streams, hello, steamChild, streams)
+import Test.E2E.Command (bugModule, pathOf, requiring)
+import Test.E2E.Session (Streams, hello, steamChild, streams)
 
 -- The guests ------------------------------------------------------------------------------
 
 elab :: P.String -> Qualified Ident
 elab c = Qualified elabModule (Ident c)
 
-handle :: Type
-handle = TCon handleTy []
-
-answerTy :: Type
-answerTy = TCon (Qualified elabModule (TyName "GuestAnswer")) []
-
-kernelRow :: Type
-kernelRow = TRowExtend (RowEffectEntry kernelEffect []) TRowEmpty
-
--- | `Synth.synth`: asks for its goal's type, asks for the weak head normal form of
--- | the handle the first answer carries, and returns the handle the second answer
--- | carries. Where an answer carries no handle it returns the goal.
-synthModule :: Module Unit
-synthModule =
-  { annotation: unit
-  , name: ModuleName "Synth"
-  , imports: [ elabModule ]
-  , exports: []
-  , decls:
-      [ DeclNonRec unit
-          { name: Ident "synth"
-          , scheme: monoScheme (fn handle kernelRow handle)
-          , value: Lam unit goal handle kernelRow
-              ( asking (Ident "first") (observe "GoalType" (Var unit goal))
-                  \found -> asking (Ident "second") (observe "Whnf" (Var unit found)) (Var unit)
-              )
-          , attributes: []
-          }
-      ]
-  }
-  where
-  goal = Ident "goal"
-
-  -- a constructor applied inside the kernel row, constructor arrows being pure
-  app c x = App unit (OpenEff unit kernelRow (Global unit (elab c) [])) x
-
-  observe request h = app "Kernel" (app "ObserveRequest" (app request h))
-
-  -- perform the command, and go on with the handle its answer carries
-  asking name command k =
-    Let unit name answerTy (Perform unit (EffectKey kernelEffect) commandOp [] command)
-      ( Case unit [ Var unit name ]
-          ( SwitchCtor (OccScrutinee 0)
-              [ { ctor: elab "Returned"
-                , tree: SwitchCtor returned
-                    [ { ctor: elab "HandleAnswer"
-                      , tree: Bind carried (OccField returned (elab "HandleAnswer") 0) (Leaf (k carried))
-                      }
-                    ]
-                    (Just (Leaf (Var unit goal)))
-                }
-              ]
-              (Just (Leaf (Var unit goal)))
-          )
-      )
-    where
-    returned = OccField (OccScrutinee 0) (elab "Returned") 0
-    carried = Ident ("in " <> show name)
-
-compiledSynth :: Either P.String Dmo
-compiledSynth = compileGuest synthModule
+-- | `Synth`, built from its source.
+compiledSynth :: Sources -> Either P.String Dmo
+compiledSynth sources = builtFrom sources [ "guests/session-kernel" ] >>= \built ->
+  case Array.find (\d -> d.name == ModuleName "Synth") built of
+    Just dmo -> Right dmo
+    Nothing -> Left "Synth was not built"
 
 -- | `Unencodable.ask`, which performs the command with a closure for its argument:
 -- | a command no typed guest can build.
@@ -174,14 +119,14 @@ named name = bugModule
 
 -- | Whether `Synth` compiles, and why not: the one module `writeGuests` writes
 -- | that is compiled.
-synthCompiled :: Either P.String Unit
-synthCompiled = case compiledSynth of
+synthCompiled :: Sources -> Either P.String Unit
+synthCompiled sources = case compiledSynth sources of
   Left err -> Left ("Synth did not compile: " <> err)
   Right _ -> Right unit
 
-writeGuests :: Aff Unit
-writeGuests = do
-  case compiledSynth of
+writeGuests :: Sources -> Aff Unit
+writeGuests sources = do
+  case compiledSynth sources of
     Left err -> fail ("Synth did not compile: " <> err)
     Right synth -> write "Synth" synth
   write "Unencodable" unencodable
@@ -317,9 +262,9 @@ violating s reply = do
   exit <- raw.child.exit
   pure (Tuple (came result) exit.code)
 
-spec :: Spec Unit
-spec = describe "steam session, answering a guest's commands" $ requiring synthCompiled \_ -> do
-  it "writes the guests" writeGuests
+spec :: Sources -> Spec Unit
+spec sources = describe "steam session, answering a guest's commands" $ requiring (synthCompiled sources) \_ -> do
+  it "writes the guests" (writeGuests sources)
 
   describe "opening" do
     it "installs Stella.Elab before ready, and refuses every module under Stella by name" do

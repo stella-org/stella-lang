@@ -1,9 +1,11 @@
 -- | Loading modules into a session and applying guest functions to tokens.
 -- |
 -- | What is asserted is what a client sees: the answer to each request, the order
--- | answers come in, and how the process ended. The guests are Core modules compiled
--- | here, and two `.dmo`s written by hand for states no compiler produces.
-module Test.Steam.SessionGuest (spec, guestsCompiled, writeGuests, steamWith) where
+-- | answers come in, and how the process ended. The guests are built from
+-- | `fixtures/source/guests/session-guest` and `fixtures/source/common-lib/slow-loud`,
+-- | beside the modules of the `steam run` tests, and two `.dmo`s are written by hand
+-- | for states no compiler produces.
+module Test.E2E.SessionGuest (spec) where
 
 import Prelude
 
@@ -21,56 +23,27 @@ import Effect.Ref as Ref
 import Foreign.Object (Object)
 import Foreign.Object as Object
 import Node.Buffer as Buffer
-import Node.Encoding (Encoding(..))
 import Node.FS.Aff as FS
-import Stella.CLI.Effect.Process (Output)
 import Stella.CLI.Session.Client (ClientFailure(..), RequestFailure(..), Session)
 import Stella.CLI.Session.Client as Client
 import Stella.CLI.Session.Guest (GlobalName, InvocationFailure, InvocationReason(..), LoadFailure, LoadStage(..), Token, ValueClass(..), encodeInvoke, encodeLoad)
 import Stella.CLI.Session.Protocol (Hello, closeKind)
-import Stella.Compiler.Bytecode (Dmo, encode, lower)
+import Stella.Compiler.Bytecode (Dmo, encode)
 import Stella.Compiler.Bytecode.Instr (ConstIx(..), ForeignIx(..), FuncIx(..), Instr(..), PrimIx(..), Reg(..), Tail(..))
 import Stella.Compiler.Bytecode.Module (Constant(..), GlobalInit(..))
-import Stella.Compiler.Interface (noImports)
-import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.MiddleEnd.Rep (Rep(..))
 import Stella.Compiler.Primitive (PrimOp(..))
-import Stella.Compiler.TypedCore (Decl(..), Expr(..), Ident(..), Kind(..), Literal(..), Module, ModuleName(..), Qualified(..), TyVar(..), Type(..), declareAnnotated, monoScheme, primSignature)
-import Stella.Compiler.TypedCore.Prim (charTy, intTy, pureFn)
+import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual, shouldSatisfy)
-import Test.Steam.Command (bugModule, ioModule, manifestPath, modulesCompiled, outOfRange, pathOf, requiring, stringModule, stringModuleName, writeModules)
-import Test.Steam.Session (Streams, close', draining, hello, node, open', opened, ping', request', streams)
+import E2E.Build (Sources, builtFrom)
+import Data.Foldable (for_)
+import Test.E2E.Command (bugModule, dir, manifestPath, pathOf, requiring, writeModules)
+import Test.E2E.Command as Command
+import Test.E2E.Session (Streams, close', hello, node, open', opened, ping', request', steamWith, streams)
+import Test.E2E.SlowLoud (slowLoud, writeSlowLoud)
 
 -- The guests -----------------------------------------------------------------------------
-
-guestName :: ModuleName
-guestName = ModuleName "Guest"
-
-a :: Type
-a = TVar (TyVar "a")
-
--- | `Guest`: a function handing back its argument, one handing back an `Int`, one
--- | that faults, and a global that is not a function at all.
-guestModule :: Module P.Int
-guestModule =
-  { annotation: 0
-  , name: guestName
-  , imports: [ stringModuleName ]
-  , exports: []
-  , decls:
-      [ value 1 "identity" (TForall (TyVar "a") KType (pureFn a a))
-          (TyLam 0 (TyVar "a") KType (Lam 0 (Ident "x") a TRowEmpty (Var 0 (Ident "x"))))
-      , value 2 "seven" (TCon intTy []) (Lit 0 (LitInt 7))
-      , value 3 "constant" (TForall (TyVar "a") KType (pureFn a (TCon intTy [])))
-          (TyLam 0 (TyVar "a") KType (Lam 0 (Ident "x") a TRowEmpty (Lit 0 (LitInt 7))))
-      , value 4 "faulting" (TForall (TyVar "a") KType (pureFn a (TCon charTy [])))
-          (TyLam 0 (TyVar "a") KType (Lam 0 (Ident "x") a TRowEmpty outOfRange))
-      ]
-  }
-  where
-  value n name scheme body = DeclNonRec n
-    { name: Ident name, scheme: monoScheme scheme, value: body, attributes: [] }
 
 -- | `OpaqueGuest.fresh`, which hands back a new array: an opaque value, and not a
 -- | token.
@@ -124,125 +97,35 @@ bugGuest = bugModule
   , globals = [ { name: Qualified (ModuleName "BugGuest") (Ident "boom"), init: GFunc (FuncIx 0) } ]
   }
 
--- | Whether the modules `writeGuests` writes compile, and why not.
-guestsCompiled :: Either P.String Unit
-guestsCompiled = do
-  modulesCompiled
-  _ <- compiledGuest
-  _ <- compiledHosted slowModule
-  _ <- compiledHosted loudModule
-  pure unit
+-- | What the guests are loaded beside: the modules of the `steam run` tests, `Guest`,
+-- | and `Slow` and `Loud`.
+type Fixture = { command :: Command.Fixture, guest :: P.Array Dmo, hosts :: P.Array Dmo }
 
-writeGuests :: Aff Unit
-writeGuests = do
-  writeModules
-  case compiledGuest of
-    Left err -> fail err
-    Right guest -> do
-      write "Guest" guest
-      write "OpaqueGuest" opaqueGuest
-      write "BugGuest" bugGuest
-  case compiledHosted slowModule, compiledHosted loudModule of
-    Right slow, Right loud -> do
-      write "Slow" slow
-      write "Loud" loud
-    Left err, _ -> fail err
-    _, Left err -> fail err
-  writeText (dirOf "slow.mjs")
-    ( "process.stderr.write(\"slow reached\\n\");\n"
-        <> "await new Promise((resolve) => setTimeout(resolve, 800));\n"
-        <> "process.stderr.write(\"slow ready\\n\");\n"
-        <> "export const wait = (n) => { process.stderr.write(\"waited\\n\"); return n; };\n"
-    )
-  writeText (dirOf "loud.mjs")
-    "export const shout = (n) => { process.stderr.write(\"shouted\\n\"); return n; };\n"
-  writeText (manifestPath "slow-loud")
-    """{ "formatVersion": 1, "target": "javascript",
-         "modules": [ { "module": "Loud", "specifier": "./loud.mjs",
-                        "foreigns": [ { "name": "shout", "params": [ "int" ], "result": "int" } ] },
-                      { "module": "Slow", "specifier": "./slow.mjs",
-                        "foreigns": [ { "name": "wait", "params": [ "int" ], "result": "int" } ] } ] }"""
+fixtureOf :: Sources -> Either P.String Fixture
+fixtureOf sources = do
+  command <- Command.compiled sources
+  guest <- builtFrom sources [ "guests/session-guest" ]
+  hosts <- slowLoud sources
+  pure { command, guest, hosts }
+
+writeGuests :: Fixture -> Aff Unit
+writeGuests made = do
+  writeModules made.command
+  for_ made.guest \dmo -> write dmo
+  write opaqueGuest
+  write bugGuest
+  writeSlowLoud dir made.hosts
   where
-  write name dmo = case encode dmo of
-    Left err -> fail ("could not encode " <> name <> ": " <> show err)
-    Right bytes -> do
+  write dmo = case dmo.name, encode dmo of
+    ModuleName name, Right bytes -> do
       buffer <- liftEffect (Buffer.fromArray bytes)
       FS.writeFile (pathOf name) buffer
-
--- | A module of one host foreign and one global that calls it as it initializes.
-hosted :: P.String -> P.String -> P.String -> Module P.Int
-hosted m foreignName valueName =
-  { annotation: 0
-  , name: ModuleName m
-  , imports: []
-  , exports: []
-  , decls:
-      [ DeclForeign 1
-          { name: Ident foreignName
-          , scheme: monoScheme (pureFn (TCon intTy []) (TCon intTy []))
-          , attributes: []
-          }
-      , DeclNonRec 2
-          { name: Ident valueName
-          , scheme: monoScheme (TCon intTy [])
-          , value: App 0 (Global 0 (Qualified (ModuleName m) (Ident foreignName)) []) (Lit 0 (LitInt 1))
-          , attributes: []
-          }
-      ]
-  }
-
--- | `Slow`, whose host module takes a while to reach without holding up anything
--- | else.
-slowModule :: Module P.Int
-slowModule = hosted "Slow" "wait" "waited"
-
--- | `Loud`, whose initialization writes to standard error, which is what shows it
--- | ran.
-loudModule :: Module P.Int
-loudModule = hosted "Loud" "shout" "shouted"
-
-compiledHosted :: Module P.Int -> Either P.String Dmo
-compiledHosted m = case declareAnnotated primSignature m of
-  Left err -> Left (show err.error)
-  Right declared -> case translate noImports m declared of
-    Left err -> Left (show err)
-    Right mid -> case lower mid of
-      Left err -> Left (show err)
-      Right out -> Right out.dmo
-
--- | A file beside the modules.
-dirOf :: P.String -> P.String
-dirOf name = String.replace (String.Pattern "Nothing.dmo") (String.Replacement name) (pathOf "Nothing")
-
-writeText :: P.String -> P.String -> Aff Unit
-writeText path content = do
-  buffer <- liftEffect (Buffer.fromString content UTF8)
-  FS.writeFile path buffer
-
-compiledGuest :: Either P.String Dmo
-compiledGuest = case declareAnnotated primSignature ioModule of
-  Left err -> Left ("Base.IO did not declare: " <> show err.error)
-  Right io -> case declareAnnotated io.signature stringModule of
-    Left err -> Left ("Base.String did not declare: " <> show err.error)
-    Right string -> case declareAnnotated string.signature guestModule of
-      Left err -> Left ("Guest did not declare: " <> show err.error)
-      Right declared -> case translate noImports guestModule declared of
-        Left err -> Left (show err)
-        Right mid -> case lower mid of
-          Left err -> Left (show err)
-          Right out -> Right out.dmo
+    ModuleName name, Left err -> fail ("could not encode " <> name <> ": " <> show err)
 
 -- Talking to a session ---------------------------------------------------------------------
 
 both :: Hello
 both = hello { offers = [ "modules", "invoke" ] }
-
-steamWith :: P.Array P.String -> Streams -> Hello -> Client.Launch
-steamWith args s h =
-  { command: "node", args: [ "steam/index.dev.js", "session" ] <> args, output: output, hello: h }
-  where
-  output :: Output
-  output = draining s
 
 load' :: Session -> P.String -> Aff (Either RequestFailure (Either LoadFailure P.String))
 load' session path = node (Client.load session path)
@@ -298,10 +181,10 @@ codeOf = case _ of
 
 -- Cases ---------------------------------------------------------------------------------------
 
-spec :: Spec Unit
-spec = describe "steam session, loading and invoking" $ requiring guestsCompiled \_ -> do
+spec :: Sources -> Spec Unit
+spec sources = describe "steam session, loading and invoking" $ requiring (fixtureOf sources) \made -> do
   it "writes the fixture" do
-    writeGuests
+    writeGuests made
 
   describe "loading" do
     it "loads modules over Base alone with no manifest, and names each" do

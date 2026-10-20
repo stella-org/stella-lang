@@ -1,0 +1,19 @@
+-- Guest functions a session applies to tokens: one handing back its argument,
+-- one handing back an `Int`, one that faults, and a global that is not a
+-- function at all.
+module Guest where
+
+import Base.String as String
+
+identity :: forall a. a -> a
+identity x = x
+
+seven :: Int
+seven = 7
+
+constant :: forall a. a -> Int
+constant x = 7
+
+-- `codePointAt 5 ""`, an index outside the empty string.
+faulting :: forall a. a -> Char
+faulting x = String.codePointAt 5 ""

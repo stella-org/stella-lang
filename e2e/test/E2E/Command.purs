@@ -20,6 +20,9 @@ module Test.E2E.Command
   , manifestPath
   , requiring
   , writeModules
+  , Fixture
+  , compiled
+  , bugModule
   ) where
 
 import Prelude
