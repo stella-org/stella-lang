@@ -1,7 +1,8 @@
 -- | The end-to-end tests over a child process or a session's protocol: the
--- | `steam` command run on programs built from source, sessions, and `stellac build`
+-- | `steam` command run on programs built from source, sessions, `stellac build`
 -- | and `stellac graph` of packages written to disk, with the programs `build`
--- | builds run. CI runs them with every change. Run with
+-- | builds run, and `stella-devtools` writing the seed modules, which needs
+-- | `stella-devtools` built. CI runs them with every change. Run with
 -- | `spago test -p e2e -m Test.E2E.Integration`.
 module Test.E2E.Integration where
 
@@ -19,7 +20,6 @@ import Test.E2E.Base as Base
 import Test.E2E.BasePackage as BasePackage
 import Test.E2E.Command as Command
 import Test.E2E.Codec as Codec
-import Test.E2E.CompilerLib as CompilerLib
 import Test.E2E.Equivalence as Equivalence
 import Test.E2E.Graph as Graph
 import Test.E2E.Isolation as Isolation
@@ -32,7 +32,6 @@ import Test.E2E.Session as Session
 import Test.E2E.SessionGuest as SessionGuest
 import Test.E2E.SessionKernel as SessionKernel
 import Test.E2E.Synthesis as Synthesis
-import Test.E2E.Toolchain as Toolchain
 import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess')
 import Test.Spec.Runner.Node.Config as Config
@@ -54,13 +53,11 @@ main = readSources >>= case _ of
     Equivalence.spec sources
     Isolation.spec sources
     Synthesis.spec
-    Toolchain.spec
     Apart.spec
     Separate.spec
     Run.spec
     Abi.spec
     Base.spec
     BasePackage.spec
-    CompilerLib.spec
     Graph.spec
     Codec.spec

@@ -61,7 +61,7 @@ import Stella.CLI.Session.Client (Session)
 import Stella.CLI.Session.Client as Client
 import Stella.CLI.Session.CompileTime (CompileTimeError(..))
 import Stella.CLI.Session.RunParser (loadingParser)
-import Stella.Compiler.Build (CompilerAction, PackageFile, build, buildMessages, compileModule, defaultHooks, ordinary, printBuildMessage, printCompileError, withoutSynthesizers)
+import Stella.Compiler.Build (CompilerAction, PackageFile, build, buildMessages, compileModule, defaultHooks, printBuildMessage, printCompileError, withoutSynthesizers)
 import Stella.Compiler.Bytecode (Dmo, encode)
 import Stella.Compiler.CST (parseHeader)
 import Stella.Compiler.CST.Types (Import(..), Item(..), Module(..))
@@ -146,7 +146,7 @@ builtFrom sources dirs = do
   reached <- reach sources.files library own
   let
     placed = own <> Array.mapMaybe (\m -> Map.lookup m library) (Array.fromFoldable (Set.delete baseIntName reached))
-    Tuple result dmos = runState (build (action sources.files placed) defaultSettings (ordinary sources.environment) [ { prefix: [], dir: [ "src" ] } ] (map (\f -> { path: f.path, within: f.within } :: PackageFile) placed)) []
+    Tuple result dmos = runState (build (action sources.files placed) defaultSettings sources.environment [ { prefix: [], dir: [ "src" ] } ] (map (\f -> { path: f.path, within: f.within } :: PackageFile) placed)) []
   case result of
     Left err -> Left (String.joinWith "; " (map printBuildMessage (NonEmptyArray.toArray (buildMessages err))))
     Right _ -> pure (if Set.member baseIntName reached then Array.cons sources.baseInt dmos else dmos)
@@ -233,7 +233,7 @@ builtOnSession sources on dirs = case prepared of
                         liftEffect (Ref.modify_ (Set.insert made.dmo.name) written)
                   }
               }
-          outcome <- runOnNode (Except.runExcept (build onSession defaultSettings (ordinary env) [ { prefix: [], dir: [ "src" ] } ] (map (\f -> { path: f.path, within: f.within } :: PackageFile) placed)))
+          outcome <- runOnNode (Except.runExcept (build onSession defaultSettings env [ { prefix: [], dir: [ "src" ] } ] (map (\f -> { path: f.path, within: f.within } :: PackageFile) placed)))
           made <- liftEffect (Ref.read lowered)
           pure
             { outcome: case outcome of

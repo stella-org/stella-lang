@@ -62,7 +62,6 @@ options workdir dependencies =
   , emitCore: false
   , steamCmd: "steam"
   , dependencies
-  , toolchainRebuild: []
   }
 
 type Ran = { result :: Either String Unit, said :: Array String }

@@ -45,7 +45,7 @@ import Stella.CLI.Session.Client as Client
 import Stella.CLI.Session.CompileTime (CompileTimeError)
 import Stella.CLI.Session.RunParser (openingParser)
 import Stella.CLI.Session.Synthesis (Synthesizing, defaultSynthesisSettings, openingSynthesis)
-import Stella.Compiler.Build (BuiltModules, CompilerAction, build, ordinary, buildMessages, defaultHooks, defaultSourceRoots, printBuildMessage)
+import Stella.Compiler.Build (BuiltModules, CompilerAction, build, buildMessages, defaultHooks, defaultSourceRoots, printBuildMessage)
 import Stella.Compiler.Bytecode (decode, encode)
 import Stella.Compiler.Elaborate.Driver.Loop (AttempterM)
 import Stella.Compiler.Elaborate.Driver.Synthesis (attemptJob)
@@ -104,7 +104,6 @@ options dir =
   , emitCore: false
   , steamCmd: "steam"
   , dependencies: Nothing
-  , toolchainRebuild: []
   }
 
 -- | Run on the disk and on real processes, `steam` started as the development
@@ -217,7 +216,7 @@ coreOfMain name synthesis = case compiled of
                     liftEffect (Ref.modify_ (Set.insert made.dmo.name) written)
               }
           }
-      outcome <- runOnDisk (Except.runExcept (build action defaultSettings (ordinary env) defaultSourceRoots (map (\(Tuple path _) -> { path, within: split (Pattern "/") path }) sources)))
+      outcome <- runOnDisk (Except.runExcept (build action defaultSettings env defaultSourceRoots (map (\(Tuple path _) -> { path, within: split (Pattern "/") path }) sources)))
       opened <- liftEffect (Ref.read held)
       for_ opened \session -> runOnDisk (void (Client.close session))
       made <- liftEffect (Ref.read core)

@@ -67,7 +67,6 @@ options workdir =
   , emitCore: false
   , steamCmd: "steam"
   , dependencies: Just "../base/dependencies.json"
-  , toolchainRebuild: []
   }
 
 type Ran = { result :: Either String Unit, said :: Array String }

@@ -17,6 +17,7 @@ package:
     - effect
     - either
     - exceptions
+    - fmt
     - foldable-traversable
     - foreign-object
     - free

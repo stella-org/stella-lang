@@ -21,7 +21,6 @@ type BuildOptions =
   , emitCore :: Boolean
   , steamCmd :: String
   , dependencies :: Maybe FilePath
-  , toolchainRebuild :: Array ModuleName
   }
 
 type GraphOptions =
@@ -110,13 +109,6 @@ options =
           "A JSON file naming, for each module the build is compiled against\n\
           \but does not build, its interface and its bytecode"
           # ArgParser.optional
-    , toolchainRebuild:
-        ArgParser.argument [ "--toolchain-rebuild" ]
-          "A module the compiler carries, compiled anew from the package's source.\n\
-          \May be given more than once. The macros and synthesizers the build\n\
-          \runs still run on the modules the compiler carries"
-          # moduleName
-          # ArgParser.unfolded
     }
 
 parse :: Array String -> Either ArgParser.ArgError Options

@@ -241,14 +241,12 @@ data BuildError
   | NameReserved { path :: String, name :: ModuleName, owner :: SourceRoot }
   -- | A module of the build named as one the build is compiled against is.
   | NameInEnvironment { path :: String, name :: ModuleName }
-  -- | A module to be compiled anew that the build is not compiled against, or
-  -- | `Prim`, which no source declares.
+  -- | A module a seed build is given that the build is not compiled
+  -- | against, or `Prim`, which no source declares.
   | NotRebuildable ModuleName
-  -- | A module to be compiled anew that no file of the build holds.
-  | RebuildNotDeclared ModuleName
   -- | A module compiled anew whose interface is not the one it replaces, which
   -- | the modules named, kept by the build, are compiled against: the inputs of
-  -- | a toolchain build that do not fit together, whatever the module's source.
+  -- | a seed build that do not fit together, whatever the module's source.
   | RebuiltDiverges { path :: String, name :: ModuleName, observers :: NonEmptyArray ModuleName }
   -- | Modules importing one another, in the order the build was given them.
   | ImportCycle (NonEmptyArray { path :: String, name :: ModuleName })
@@ -300,7 +298,6 @@ buildMessages = case _ of
   NameReserved r -> one r.path [] (fmt @"This file cannot hold `{name}`: modules under `{prefix}` are kept in `{dir}`" { name: moduleText r.name, prefix: prefixText r.owner, dir: dirText r.owner })
   NameInEnvironment r -> one r.path [] (fmt @"This file holds `{name}`, which names a module the build is compiled against" { name: moduleText r.name })
   NotRebuildable name -> none (fmt @"`{name}` cannot be compiled anew: the build is compiled against no module of that name that source may declare" { name: moduleText name })
-  RebuildNotDeclared name -> none (fmt @"`{name}` is to be compiled anew, and no file of the build holds it" { name: moduleText name })
   RebuiltDiverges r -> one r.path [] (fmt @"This file compiles `{name}` anew with an interface that differs from the one {observers} {are} compiled against, which the build keeps" { name: moduleText r.name, observers: joinWith ", " (map (\m -> "`" <> moduleText m <> "`") (NonEmptyArray.toArray r.observers)), are: if NonEmptyArray.length r.observers == 1 then "is" else "are" })
   ImportCycle members -> NonEmptyArray.singleton
     { path: Nothing

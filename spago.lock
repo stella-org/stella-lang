@@ -46,6 +46,7 @@
             "effect",
             "either",
             "exceptions",
+            "fmt",
             "foldable-traversable",
             "foreign-object",
             "free",
@@ -229,6 +230,44 @@
           ]
         }
       },
+      "stella-devtools": {
+        "path": "devtools",
+        "core": {
+          "dependencies": [
+            "aff",
+            "argparse-basic",
+            "arrays",
+            "cli",
+            "compiler",
+            "console",
+            "effect",
+            "either",
+            "fmt",
+            "foldable-traversable",
+            "maybe",
+            "node-process",
+            "ordered-collections",
+            "prelude",
+            "run",
+            "typelevel-prelude"
+          ]
+        },
+        "test": {
+          "dependencies": [
+            "dodo-printer",
+            "node-buffer",
+            "node-child-process",
+            "node-execa",
+            "node-fs",
+            "refs",
+            "spec",
+            "spec-node",
+            "steam",
+            "strings",
+            "tuples"
+          ]
+        }
+      },
       "stella-fmt": {
         "path": "stella-fmt",
         "core": {
@@ -255,7 +294,6 @@
             "argonaut-core",
             "argparse-basic",
             "arrays",
-            "bifunctors",
             "cli",
             "compiler",
             "console",
@@ -269,7 +307,6 @@
             "node-process",
             "ordered-collections",
             "prelude",
-            "refs",
             "run",
             "strings",
             "tuples",
@@ -281,6 +318,7 @@
             "dodo-printer",
             "effect",
             "exceptions",
+            "refs",
             "spec",
             "spec-node",
             "tuples"

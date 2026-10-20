@@ -6,7 +6,6 @@ package:
     - argonaut-core
     - argparse-basic
     - arrays
-    - bifunctors
     - cli
     - compiler
     - console
@@ -20,7 +19,6 @@ package:
     - node-process
     - ordered-collections
     - prelude
-    - refs
     - run
     - strings
     - tuples
@@ -33,6 +31,7 @@ package:
       - dodo-printer
       - effect
       - exceptions
+      - refs
       - spec
       - spec-node
       - tuples

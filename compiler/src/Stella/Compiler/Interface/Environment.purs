@@ -86,7 +86,7 @@ addInterface i env
       Nothing -> Right env { interfaces = Map.insert i.name i env.interfaces }
 
 -- | The environment without the interface of the module given, where it holds
--- | one: what a toolchain build compiles that module against, and adds the
+-- | one: what a seed build compiles that module against, and adds the
 -- | module's new interface to ([Build](../Build.purs)).
 withoutInterface :: ModuleName -> BuildEnvironment -> BuildEnvironment
 withoutInterface m env = env { interfaces = Map.delete m env.interfaces }

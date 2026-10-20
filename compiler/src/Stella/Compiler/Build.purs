@@ -30,14 +30,23 @@
 -- | the module's own functions into themselves — so no module of the build may
 -- | be named as one the environment holds already.
 -- |
--- | **A toolchain build names modules of the environment it compiles anew from
--- | the package's source**, and those alone may share a name with one the
--- | environment holds. Each is compiled against the environment without it, and
--- | its new interface takes the old one's place. Until then the old one stays, for
--- | the modules the environment holds that import it; where any of them is kept,
--- | the new interface must be the old one, which is what they were compiled
--- | against. Which modules import it is read off the environment the build
--- | starts from, so that a module rebuilt earlier hides nothing.
+-- | **The driver is parts, and each entry composes the ones it needs**:
+-- | reading the headers, ordering them by their imports, and compiling one
+-- | module and committing its interface. An entry decides which modules of the
+-- | build may share a name with one the environment holds; no part does.
+-- |
+-- | **An ordinary build (`build`) replaces nothing**: no module of the build is
+-- | named as one the environment holds.
+-- |
+-- | **A seed build (`buildSeeds`) compiles modules of the environment anew
+-- | from their sources**, every module it is given one of them; it is how the
+-- | seed modules, which are loaded as the compiler bootstraps, are built. Each
+-- | is compiled against the environment without it, and its new interface
+-- | takes the old one's place. Until then the old one stays, for the modules
+-- | the environment holds that import it; where any of them is kept, the new
+-- | interface must be the old one, which is what they were compiled against.
+-- | Which modules import it is read off the environment the build starts
+-- | from, so that a module rebuilt earlier hides nothing.
 -- |
 -- | **Within a module, a phase's result is held no longer than the next phase
 -- | reads it**: it is handed to the host as the phase ends, and what the next
@@ -59,8 +68,6 @@ module Stella.Compiler.Build
   , defaultSourceRoots
   , Progress
   , CompilerAction
-  , BuildInputs
-  , ordinary
   , Header
   , readHeaders
   , BuiltModules
@@ -68,6 +75,7 @@ module Stella.Compiler.Build
   , defaultHooks
   , withoutSynthesizers
   , build
+  , buildSeeds
   , compileModule
   , module Stella.Compiler.Build.Report
   ) where
@@ -157,38 +165,35 @@ withoutSynthesizers _ session id s = pure (attemptPending session id s)
 -- | The modules of the build compiled so far, each by its interface.
 type BuiltModules = Map ModuleName ModuleInterface
 
--- | What a build is compiled against: the build environment, and the modules
--- | of it the build compiles anew from the package's source. A build compiling
--- | any anew is a toolchain build.
-type BuildInputs =
-  { environment :: BuildEnvironment
-  , rebuilding :: Set ModuleName
+-- | What an entry lets its build replace, as the build compiles each module:
+-- | the environment the module is compiled against, made of the one the build
+-- | has reached, and what refuses the interface it made.
+type Replacing =
+  { against :: ModuleName -> BuildEnvironment -> BuildEnvironment
+  , refused :: Header -> ModuleInterface -> Maybe BuildError
   }
 
--- | An ordinary build against the environment given: no module of it compiled
--- | anew.
-ordinary :: BuildEnvironment -> BuildInputs
-ordinary environment = { environment, rebuilding: Set.empty }
+-- | An ordinary build's: nothing replaced, and no interface refused.
+replacingNothing :: Replacing
+replacingNothing = { against: \_ env -> env, refused: \_ _ -> Nothing }
 
--- | What a toolchain build keeps of its inputs as it goes: the modules it
--- | compiles anew, the environment it started from, and, for each of those
--- | modules, the modules of that environment it keeps whose imports reach it.
-type Rebuild =
-  { rebuilding :: Set ModuleName
-  , before :: BuildEnvironment
-  , observers :: Map ModuleName (Array ModuleName)
-  }
-
-rebuildOf :: BuildInputs -> Rebuild
-rebuildOf inputs =
-  { rebuilding: inputs.rebuilding
-  , before: inputs.environment
-  , observers: Map.fromFoldable (map (\r -> Tuple r (Array.filter (reaches r) kept)) (Array.fromFoldable inputs.rebuilding))
+-- | A seed build's, the environment it starts from and the modules it
+-- | compiles anew given: each compiled against the environment without it, and
+-- | its interface refused where it is not the old one while a module of that
+-- | environment the build keeps reaches it.
+replacingAnew :: BuildEnvironment -> Set ModuleName -> Replacing
+replacingAnew before anew =
+  { against: \name env -> if Set.member name anew then withoutInterface name env else env
+  , refused: \header made -> do
+      observers <- NonEmptyArray.fromArray =<< Map.lookup header.name observed
+      old <- lookupInterface header.name before
+      if old == made then Nothing else Just (RebuiltDiverges { path: header.path, name: header.name, observers })
   }
   where
-  kept = Array.filter (\m -> not (Set.member m inputs.rebuilding)) (Array.fromFoldable (Map.keys inputs.environment.interfaces))
-  reaches r m = case lookupInterface m inputs.environment of
-    Just i | Right view <- viewFor i.imports inputs.environment -> Set.member r (reachable view)
+  observed = Map.fromFoldable (map (\r -> Tuple r (Array.filter (reaches r) kept)) (Array.fromFoldable anew))
+  kept = Array.filter (\m -> not (Set.member m anew)) (Array.fromFoldable (Map.keys before.interfaces))
+  reaches r m = case lookupInterface m before of
+    Just i | Right view <- viewFor i.imports before -> Set.member r (reachable view)
     _ -> false
 
 -- | What the host is handed as a build goes. `onStartCompile` comes as a
@@ -232,30 +237,47 @@ type Header =
   , imports :: Array { module :: ModuleName, at :: DiagnosticLocation }
   }
 
--- | Build the files given against the inputs given, in an order their imports
--- | allow. The modules built, in the order built.
+-- | An ordinary build: the files given built against the environment given,
+-- | in an order their imports allow, no module of them named as one the
+-- | environment holds. The modules built, in the order built.
 build
   :: forall m
    . MonadRec m
   => CompilerAction m
   -> ExpansionSettings
-  -> BuildInputs
+  -> BuildEnvironment
   -> Array SourceRoot
   -> Array PackageFile
   -> m (Either BuildError (Array { path :: String, name :: ModuleName }))
-build action settings inputs roots files = runExceptT do
+build action settings env roots files = runExceptT do
   except (rootsApart roots)
   named <- except (placed roots files)
-  let
-    env = inputs.environment
-    rebuilt = Array.fromFoldable inputs.rebuilding
-  for_ (Array.find (\r -> r == primModule || not (Map.member r env.interfaces)) rebuilt) (throwError <<< NotRebuildable)
-  for_ (Array.find (\r -> not (Array.any (\f -> f.name == r) named)) rebuilt) (throwError <<< RebuildNotDeclared)
-  for_ (Array.find (\f -> Map.member f.name env.interfaces && not (Set.member f.name inputs.rebuilding)) named) (throwError <<< NameInEnvironment)
+  for_ (Array.find (\f -> Map.member f.name env.interfaces) named) (throwError <<< NameInEnvironment)
   let paths = Map.fromFoldable (map (\f -> Tuple f.name f.path) named)
   headers <- headersOf action.readSource paths named
   order <- except (ordered headers)
-  compileAll action settings (rebuildOf inputs) env paths order
+  compileAll action settings replacingNothing env paths order
+
+-- | A seed build: the files given, each with the module it holds, every
+-- | one a module of the environment given, `Prim` aside, compiled anew from
+-- | its source, in an order their imports allow. The modules built, in the
+-- | order built.
+buildSeeds
+  :: forall m
+   . MonadRec m
+  => CompilerAction m
+  -> ExpansionSettings
+  -> BuildEnvironment
+  -> Array { path :: String, name :: ModuleName }
+  -> m (Either BuildError (Array { path :: String, name :: ModuleName }))
+buildSeeds action settings env named = runExceptT do
+  except (pathsOnce (map _.path named))
+  except (namesOnce named)
+  for_ (Array.find (\f -> f.name == primModule || not (Map.member f.name env.interfaces)) named) (throwError <<< NotRebuildable <<< _.name)
+  let paths = Map.fromFoldable (map (\f -> Tuple f.name f.path) named)
+  headers <- headersOf action.readSource paths named
+  order <- except (ordered headers)
+  compileAll action settings (replacingAnew env (Set.fromFoldable (map _.name named))) env paths order
 
 -- | The header of each file given, read as a build reads them before it orders
 -- | anything: the source directories naming their modules apart, each file
@@ -279,15 +301,24 @@ readHeaders readSource roots files = runExceptT do
 -- | and no module named twice.
 placed :: Array SourceRoot -> Array PackageFile -> Either BuildError (Array { path :: String, name :: ModuleName })
 placed roots files = do
-  for_ (foldl seen { paths: Set.empty, twice: Nothing } files).twice (Left <<< ListedTwice)
+  pathsOnce (map _.path files)
   named <- traverse (\f -> { path: f.path, name: _ } <$> moduleNameOf roots f) files
-  for_ (foldl once { names: Map.empty, twice: Nothing } named).twice (Left <<< NamedTwice)
+  namesOnce named
   pure named
+
+-- | No file given twice.
+pathsOnce :: Array String -> Either BuildError Unit
+pathsOnce paths = for_ (foldl seen { paths: Set.empty, twice: Nothing } paths).twice (Left <<< ListedTwice)
   where
-  seen acc f
+  seen acc path
     | Just _ <- acc.twice = acc
-    | Set.member f.path acc.paths = acc { twice = Just f.path }
-    | otherwise = acc { paths = Set.insert f.path acc.paths }
+    | Set.member path acc.paths = acc { twice = Just path }
+    | otherwise = acc { paths = Set.insert path acc.paths }
+
+-- | No module held by two files.
+namesOnce :: Array { path :: String, name :: ModuleName } -> Either BuildError Unit
+namesOnce named = for_ (foldl once { names: Map.empty, twice: Nothing } named).twice (Left <<< NamedTwice)
+  where
   once acc f
     | Just _ <- acc.twice = acc
     | Just first <- Map.lookup f.name acc.names = acc { twice = Just { name: f.name, paths: [ first, f.path ] } }
@@ -395,37 +426,29 @@ ordered headers = case Array.findMap cycleOf grouped of
     | otherwise = Nothing
 
 -- | Every module in the order given, one at a time, each against the build
--- | environment with the modules before it committed, and a module compiled
--- | anew against that environment without it.
+-- | environment with the modules before it committed, as the entry's
+-- | replacing makes it, and its interface committed unless that refuses it.
 compileAll
   :: forall m
    . MonadRec m
   => CompilerAction m
   -> ExpansionSettings
-  -> Rebuild
+  -> Replacing
   -> BuildEnvironment
   -> Map ModuleName String
   -> Array Header
   -> ExceptT BuildError m (Array { path :: String, name :: ModuleName })
-compileAll action settings rebuild env0 paths order = tailRecM step { env: env0, built: Map.empty, done: [], i: 0 }
+compileAll action settings replacing env0 paths order = tailRecM step { env: env0, built: Map.empty, done: [], i: 0 }
   where
   total = Array.length order
   step { env, built, done, i } = case Array.index order i of
     Nothing -> pure (Done done)
     Just header -> do
-      let against = if Set.member header.name rebuild.rebuilding then withoutInterface header.name env else env
+      let against = replacing.against header.name env
       made <- compileOne action settings against built paths { current: i + 1, total } header
-      for_ (diverging rebuild header made.interface) throwError
+      for_ (replacing.refused header made.interface) throwError
       committed <- commit action paths header against built made
       pure (Loop { env: committed.env, built: committed.built, done: Array.snoc done { path: header.path, name: header.name }, i: i + 1 })
-
--- | A module compiled anew whose interface is not the one it replaces, while
--- | modules the build keeps import that one.
-diverging :: Rebuild -> Header -> ModuleInterface -> Maybe BuildError
-diverging rebuild header made = do
-  observers <- NonEmptyArray.fromArray =<< Map.lookup header.name rebuild.observers
-  old <- lookupInterface header.name rebuild.before
-  if old == made then Nothing else Just (RebuiltDiverges { path: header.path, name: header.name, observers })
 
 -- | A module of the build read and compiled against the environment and the
 -- | modules of the build given, neither of which it changes.

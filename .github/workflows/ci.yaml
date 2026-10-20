@@ -29,6 +29,7 @@ jobs:
               - 'cli/**'
               - 'steam/**'
               - 'stellac/**'
+              - 'devtools/**'
               - 'js-runtime/**'
               - 'fixtures/**'
               - 'stella-packages/**'
@@ -63,7 +64,7 @@ jobs:
 
       - name: Build
         run: |
-          for package in compiler cli steam backend-js stellac e2e; do
+          for package in compiler cli steam backend-js stellac stella-devtools e2e; do
             spago build -p "$package" --strict --pure --pedantic-packages
           done
 
@@ -73,8 +74,9 @@ jobs:
       # naming itself, rather than passing in those. Regenerate with
       # STELLA_UPDATE_FIXTURES=1 spago test -p e2e.
       # The tests over a child process or a session's protocol are a suite of their
-      # own in e2e, run here as every change's; those over inputs as deep and as
-      # long as stack safety is tested at are the Stress workflow's.
+      # own in e2e, run here as every change's, and so are stella-devtools'; those
+      # over inputs as deep and as long as stack safety is tested at are the Stress
+      # workflow's.
       - name: Test
         run: |
           spago test -p compiler --pure
@@ -83,6 +85,7 @@ jobs:
           spago test -p e2e -m Test.E2E.Integration --pure
           spago test -p steam --pure
           spago test -p stellac --pure
+          spago test -p stella-devtools --pure
           spago test -p backend-js --pure
 
       - name: Format check

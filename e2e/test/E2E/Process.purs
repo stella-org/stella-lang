@@ -1,12 +1,13 @@
 -- | The commands the integration tests run as processes, from the root of the
 -- | repository: `stellac build` and `stellac graph`, `steam run` as its command
--- | line stands, and the script building the `Base` package. All run the
--- | development entry points, which need the packages built.
+-- | line stands, `stella-devtools`, and the script building the `Base` package.
+-- | All run from the workspace's build output, which needs the packages built.
 module Test.E2E.Process
   ( Outcome
   , stellac
   , graph
   , steamRun
+  , devtools
   , buildBase
   , writeFiles
   , removeTree
@@ -56,6 +57,10 @@ graph args = run "stellac/index.dev.js" ([ "graph" ] <> args)
 -- | dependency order.
 steamRun :: { manifest :: String, entry :: String, modules :: Array String } -> Aff Outcome
 steamRun p = run "steam/index.dev.js" ([ "run", "--manifest", p.manifest, "--entry", p.entry ] <> p.modules)
+
+-- | `stella-devtools` with the arguments given.
+devtools :: Array String -> Aff Outcome
+devtools = run "devtools/index.js"
 
 -- | `npm run build:base`, the development script building the `Base` package
 -- | and writing its dependency map, with the arguments given.
