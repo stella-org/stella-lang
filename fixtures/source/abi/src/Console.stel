@@ -1,0 +1,4 @@
+module Console where
+
+foreign log :: String -> IO Unit
+foreign logInt :: Int -> IO Unit

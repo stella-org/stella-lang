@@ -1,0 +1,8 @@
+module Lib.Core where
+
+import Base.Int (add)
+
+data Pair = Pair Int Int
+
+double :: Int -> Int
+double n = add n n

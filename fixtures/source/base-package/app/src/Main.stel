@@ -1,0 +1,37 @@
+module Main where
+
+import Base.IO (pure, bind)
+import Base.String (append, length)
+import Base.Int (add, toString)
+import Base.Continuation as Continuation
+import Console (log)
+
+data Step
+  = Done
+  | Yielded Int (Continuation.Continuation Unit Step {| |})
+
+effect Yield where
+  yield :: Int ->* Unit
+
+generate :: Unit -> Step
+generate _ =
+  handle
+    let a = yield 1 in
+    let b = yield 2 in
+    yield 3
+  with
+    Yield
+      reifiable full
+      | yield n k -> Yielded n k
+      | return _ -> Done
+
+total :: Step -> Int
+total s = case s of
+  Done -> 0
+  Yielded n k -> add n (total (Continuation.continue k ()))
+
+greeting :: String
+greeting = append "built " "apart"
+
+main :: IO Unit
+main = bind (pure greeting) (\s -> bind (log s) (\_ -> bind (log (toString (add (length s) 1))) (\_ -> log (toString (total (generate ()))))))

@@ -2,12 +2,12 @@
 -- | its modules writes: the files on disk, the session a process, and the
 -- | modules built then run on the machine.
 -- |
--- | Each case builds in a directory of its own under `stellac/.test-build`, the
+-- | Each case builds in a directory of its own under `e2e/.test-build`, the
 -- | session started as `node steam/index.dev.js session`. `A` writes the
 -- | synthesizers against `Stella.Elab`, over `Support`, a module of the package
 -- | the session loads before `A`; `Main` names one by a synthesized parameter,
 -- | at two goals.
-module Test.Stellac.Synthesis (spec, onDisk, development) where
+module Test.E2E.Synthesis (spec, onDisk, development) where
 
 import Prelude
 
@@ -58,33 +58,12 @@ import Stella.Compiler.TypedCore (Decl(..), Ident(..), ModuleName(..), Qualified
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stellac.Options (BuildOptions, Command(..))
 import Stellac.Program (program)
+import Node.Encoding (Encoding(..))
+import Node.FS.Aff as NodeFS
+import Test.E2E.Process (copyTree, removeTree)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 import Type.Row (type (+))
-
--- | `Support`: what `A` fills a goal with.
-support :: Array String
-support = [ "module Support where", "seed :: Int", "seed = 1" ]
-
--- | `A`: the synthesizers, one filling a goal with `Support.seed`, one
--- | refusing, one faulting, and one that never returns.
-synthesizers :: Array String
-synthesizers =
-  [ "module A where"
-  , "import Stella.Elab"
-  , "import Base.Int (quot)"
-  , "import Support"
-  , "one :: Handle -> Handle / {| Kernel |}"
-  , "one = synthesizer (\\_ -> literal (rootScope ()) (LitInt seed))"
-  , "refusing :: Handle -> Handle / {| Kernel |}"
-  , "refusing = synthesizer (\\_ -> throw (Cons (TextPart \"nothing fits\") Nil))"
-  , "faulty :: Handle -> Handle / {| Kernel |}"
-  , "faulty = synthesizer (\\_ -> literal (rootScope ()) (LitInt (quot 1 0)))"
-  , "spin :: Int -> Int"
-  , "spin n = spin n"
-  , "looping :: Handle -> Handle / {| Kernel |}"
-  , "looping = synthesizer (\\_ -> literal (rootScope ()) (LitInt (spin 0)))"
-  ]
 
 -- | `Main`, naming the synthesizer given for the parameter of `pick`, and `n`
 -- | and `m` the values `pick` gives, a goal each.
@@ -106,12 +85,12 @@ type Ran = { result :: Either String Unit, said :: Array String, dir :: String }
 -- | `stellac build` in the directory given.
 building :: String -> String -> (Ran -> Aff Unit) -> Aff Unit
 building name synthesizer k = do
-  let dir = "stellac/.test-build/" <> name
+  let dir = "e2e/.test-build/" <> name
+  removeTree dir
+  copyTree "fixtures/source/synthesis" dir
   said <- liftEffect (Ref.new [])
   result <- onDisk said do
-    for_ [ Tuple "src/Support.stel" support, Tuple "src/A.stel" synthesizers, Tuple "src/Main.stel" (mainNaming synthesizer) ] \(Tuple path lines) -> do
-      _ <- FS.makeDirectory (dir <> "/src")
-      FS.writeText (dir <> "/" <> path) (joinWith "\n" lines)
+    _ <- FS.writeText (dir <> "/src/Main.stel") (joinWith "\n" (mainNaming synthesizer))
     program { logLevel: Info, monochrome: true, command: Build (options dir) }
   lines <- liftEffect (Ref.read said)
   k { result, said: lines, dir }
@@ -199,7 +178,9 @@ coreOfMain name synthesis = case compiled of
   Right syntax -> case Array.foldM (flip addInterface) initialEnvironment syntax.moduleInterfaces of
     Left err -> pure (Left (show err))
     Right env -> do
-      let dir = "stellac/.test-build/" <> name
+      let dir = "e2e/.test-build/" <> name
+      support <- NodeFS.readTextFile UTF8 "fixtures/source/synthesis/src/Support.stel"
+      synthesizers <- NodeFS.readTextFile UTF8 "fixtures/source/synthesis/src/A.stel"
       held <- liftEffect (Ref.new Nothing)
       written <- liftEffect (Ref.new Set.empty)
       loaded <- liftEffect (Ref.new Set.empty)
@@ -208,7 +189,7 @@ coreOfMain name synthesis = case compiled of
       attempts <- liftEffect (Ref.new 0)
       health <- liftEffect (Ref.new Reusable)
       let
-        sources = [ Tuple "src/Support.stel" support, Tuple "src/A.stel" synthesizers, Tuple "src/Main.stel" (mainNaming "one") ]
+        sources = [ Tuple "src/Support.stel" support, Tuple "src/A.stel" synthesizers, Tuple "src/Main.stel" (joinWith "\n" (mainNaming "one")) ]
         launch = { command: "steam", args: [ "session" ], output: Inherit, hello: { protocol: 1, profile: "elaboration", offers: [ "modules", "parse", "invoke", "kernel" ], requires: [] } }
         loading =
           { seed: syntax.preloaded
@@ -222,7 +203,7 @@ coreOfMain name synthesis = case compiled of
         action :: CompilerAction (Run (EXCEPT CompileTimeError + FS + PROCESS + AFF + EFFECT + ()))
         action =
           { readSource: \path -> pure case Array.find (\(Tuple p _) -> p == path) sources of
-              Just (Tuple _ lines) -> Right (joinWith "\n" lines)
+              Just (Tuple _ text) -> Right text
               Nothing -> Left "no such file"
           , runParser: openingParser held launch syntax.descriptor loading
           , synthesis: synthesis running
@@ -271,9 +252,9 @@ spec = describe "stellac build of a synthesizer of the package" do
     building "solved" "one" \r -> do
       r.result `shouldEqual` Right unit
       Array.take 3 r.said `shouldEqual`
-        [ "[1/3] Compiling Support (stellac/.test-build/solved/src/Support.stel)"
-        , "[2/3] Compiling A (stellac/.test-build/solved/src/A.stel)"
-        , "[3/3] Compiling Main (stellac/.test-build/solved/src/Main.stel)"
+        [ "[1/3] Compiling Support (e2e/.test-build/solved/src/Support.stel)"
+        , "[2/3] Compiling A (e2e/.test-build/solved/src/A.stel)"
+        , "[3/3] Compiling Main (e2e/.test-build/solved/src/Main.stel)"
         ]
       n <- valueOf r.dir [ "Support", "A", "Main" ] "n"
       m <- valueOf r.dir [ "Support", "A", "Main" ] "m"

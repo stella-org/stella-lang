@@ -12,10 +12,9 @@ _draft
 .vscode
 
 **/.DS_Store
-# bytecode the end-to-end tests write and run
+# what the end-to-end tests write: bytecode they run, and the packages the stellac
+# tests build
 e2e/.test-dmo
+e2e/.test-build
+e2e/.test-integration
 .sessions
-# the packages the stellac synthesis tests build
-stellac/.test-build
-# the packages the stellac integration tests build
-stellac/.test-integration

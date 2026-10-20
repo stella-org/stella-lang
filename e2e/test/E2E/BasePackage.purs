@@ -10,7 +10,7 @@
 -- | bytecode the map names. Maps
 -- | listing a module the compiler carries with another interface, `Prim`, or a
 -- | module twice are refused. The cases run in order: the first builds `Base`.
-module Test.Stellac.BasePackage (spec) where
+module Test.E2E.BasePackage (spec) where
 
 import Prelude
 
@@ -32,70 +32,15 @@ import Stella.Compiler.TypedCore (Ident(..), ModuleName(..))
 import Stellac.Dependencies (parse)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Stellac.Process (Outcome, buildBase, removeTree, steamRun, stellac, writeFiles)
+import Test.E2E.Process (Outcome, buildBase, copyTree, removeTree, steamRun, stellac, writeFiles)
 
 -- | Where this suite's files stand, written afresh for each run.
 dir :: String
-dir = "stellac/.test-integration/base-package"
+dir = "e2e/.test-integration/base-package"
 
 -- | Where the script writes what the build of `Base` writes, and its map.
 baseOutput :: String
 baseOutput = dir <> "/base"
-
-app :: Array { path :: String, text :: String }
-app =
-  [ { path: "app/src/Console.stel"
-    , text:
-        """module Console where
-
-foreign log :: String -> IO Unit
-"""
-    }
-  , { path: "app/src/Main.stel"
-    , text:
-        """module Main where
-
-import Base.IO (pure, bind)
-import Base.String (append, length)
-import Base.Int (add, toString)
-import Base.Continuation as Continuation
-import Console (log)
-
-data Step = Done | Yielded Int (Continuation.Continuation Unit Step {||})
-
-effect Yield where
-  yield :: Int ->* Unit
-
-generate :: Unit -> Step
-generate _ = handle (let a = yield 1 in let b = yield 2 in yield 3) with
-  Yield reifiable full | yield n k -> Yielded n k
-    | return _ -> Done
-
-total :: Step -> Int
-total s = case s of
-  Done -> 0
-  Yielded n k -> add n (total (Continuation.continue k ()))
-
-greeting :: String
-greeting = append "built " "apart"
-
-main :: IO Unit
-main = bind (pure greeting) (\s -> bind (log s) (\_ -> bind (log (toString (add (length s) 1))) (\_ -> log (toString (total (generate ()))))))
-"""
-    }
-  , { path: "app/host/console.mjs"
-    , text:
-        """export const log = (s) => () => { console.log(s); };
-"""
-    }
-  , { path: "app/foreign.json"
-    , text:
-        """{ "formatVersion": 1, "target": "javascript", "modules": [
-  { "module": "Console", "specifier": "./host/console.mjs",
-    "foreigns": [ { "name": "log", "params": [ "string" ], "result": { "action": "unit" } } ] } ] }
-"""
-    }
-  ]
 
 -- | A map under `maps`, listing each module given by the files of the name
 -- | given that the build of `Base` wrote.
@@ -145,7 +90,7 @@ spec = describe "the `Base` package, built from its sources and given by a map" 
     modules `shouldEqual` map (\m -> baseOutput <> "/_build/Base." <> m <> ".dmo") [ "Array", "Char", "Continuation", "IO", "Int", "Number", "String" ]
 
   it "builds a program against the map, `Base.Int` accepted as the module the compiler carries" do
-    writeFiles dir app
+    copyTree "fixtures/source/base-package" dir
     built <- buildApp "../base/dependencies.json"
     when (built.status /= 0) (fail ("the program did not build: " <> built.err))
 

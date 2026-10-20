@@ -1,25 +1,17 @@
+-- | The tests every change runs: builds over files held in memory, and the
+-- | dependency maps they read. Those that write packages to disk and run
+-- | `stellac build` are the end-to-end suite's. Run with `spago test -p stellac`.
 module Test.Stella where
 
 import Prelude
 
-import Data.Maybe (Maybe(..))
 import Effect (Effect)
-import Effect.Aff (Milliseconds(..))
 import Test.Spec.Reporter (consoleReporter)
-import Test.Spec.Runner.Node (runSpecAndExitProcess')
-import Test.Spec.Runner.Node.Config as Config
-import Test.Stellac.Apart as Apart
+import Test.Spec.Runner.Node (runSpecAndExitProcess)
 import Test.Stellac.Build as Build
 import Test.Stellac.Dependencies as Dependencies
-import Test.Stellac.Synthesis as Synthesis
-import Test.Stellac.Toolchain as Toolchain
 
--- | Each case may take a minute: a synthesizer that never returns runs until
--- | its budget is used up, which on the machine takes seconds.
 main :: Effect Unit
-main = runSpecAndExitProcess' { defaultConfig: Config.defaultConfig { timeout = Just (Milliseconds 60_000.0) }, parseCLIOptions: true } [ consoleReporter ] do
+main = runSpecAndExitProcess [ consoleReporter ] do
   Build.spec
   Dependencies.spec
-  Synthesis.spec
-  Toolchain.spec
-  Apart.spec

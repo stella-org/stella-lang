@@ -1,0 +1,14 @@
+module Lib.Pass where
+
+import Lib.Support
+import Stella.Syntax (List, Parser, Syntax(..), Term, TokenTree, brackets, many, map, nodesOf, tree)
+
+k :: Int
+k = seed
+
+asSyntax :: List TokenTree -> Syntax Term
+asSyntax ts = Syntax (nodesOf ts)
+
+@[macro]
+pass :: Parser (Syntax Term)
+pass = brackets (map asSyntax (many tree))

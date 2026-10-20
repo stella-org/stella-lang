@@ -1,0 +1,8 @@
+module App.Main where
+
+import Lib.Extra
+
+flipped = swap origin
+
+four :: Int
+four = twice 2

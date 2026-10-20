@@ -1,0 +1,6 @@
+module App.Main where
+
+import Lib.Greet
+
+main :: IO Unit
+main = say Glad

@@ -1,0 +1,3 @@
+module Console where
+
+foreign logInt :: Int -> IO Unit

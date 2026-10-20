@@ -1,0 +1,9 @@
+module Main where
+import Lib.Pass
+import Lib.Synth
+pick :: {{ d :: Int by one }} -> Int -> Int
+pick d x = d
+n :: Int
+n = pass%[2]
+m :: Int
+m = pick 5

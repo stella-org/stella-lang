@@ -1,0 +1,13 @@
+module Lib.Greet where
+
+import Lib.Console
+
+data Mood = Glad | Glum
+
+line :: Mood -> String
+line m = case m of
+  Glad -> "glad to be built apart"
+  Glum -> "glum"
+
+say :: Mood -> IO Unit
+say m = log (line m)

@@ -153,6 +153,7 @@
             "avar",
             "cli",
             "compiler",
+            "dodo-printer",
             "effect",
             "either",
             "enums",
@@ -175,6 +176,7 @@
             "spec",
             "spec-node",
             "steam",
+            "stellac",
             "strings",
             "tuples",
             "typelevel-prelude"
@@ -279,13 +281,8 @@
             "dodo-printer",
             "effect",
             "exceptions",
-            "node-buffer",
-            "node-child-process",
-            "node-execa",
-            "node-fs",
             "spec",
             "spec-node",
-            "steam",
             "tuples"
           ]
         }

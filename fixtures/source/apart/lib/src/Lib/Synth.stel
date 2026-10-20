@@ -1,0 +1,7 @@
+module Lib.Synth where
+
+import Stella.Elab
+import Lib.Support
+
+one :: Handle -> Handle / {| Kernel |}
+one = synthesizer (\_ -> literal (rootScope ()) (LitInt seed))

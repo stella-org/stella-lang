@@ -1,0 +1,13 @@
+module Lib.Extra where
+
+import Lib.Core
+
+origin :: Pair
+origin = Pair 1 (double 2)
+
+swap :: Pair -> Pair
+swap p = case p of
+  Pair a b -> Pair b a
+
+twice :: Int -> Int
+twice n = double n

@@ -1,0 +1,3 @@
+module Lib.Console where
+
+foreign log :: String -> IO Unit

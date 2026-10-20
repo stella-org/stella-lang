@@ -1,0 +1,14 @@
+module A where
+import Stella.Elab
+import Base.Int (quot)
+import Support
+one :: Handle -> Handle / {| Kernel |}
+one = synthesizer (\_ -> literal (rootScope ()) (LitInt seed))
+refusing :: Handle -> Handle / {| Kernel |}
+refusing = synthesizer (\_ -> throw (Cons (TextPart "nothing fits") Nil))
+faulty :: Handle -> Handle / {| Kernel |}
+faulty = synthesizer (\_ -> literal (rootScope ()) (LitInt (quot 1 0)))
+spin :: Int -> Int
+spin n = spin n
+looping :: Handle -> Handle / {| Kernel |}
+looping = synthesizer (\_ -> literal (rootScope ()) (LitInt (spin 0)))

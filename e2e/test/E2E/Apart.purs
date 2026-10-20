@@ -2,7 +2,7 @@
 -- | names a synthesizer of a package built apart: the files on disk, the
 -- | session a process, and the modules built then run on the machine.
 -- |
--- | The library `lib` is built first, under `stellac/.test-build/apart/lib`:
+-- | The library `lib` is built first, under `e2e/.test-build/apart/lib`:
 -- | `Lib.Pass` writes a macro against `Stella.Syntax`, `Lib.Synth` a
 -- | synthesizer against `Stella.Elab`, and both import `Lib.Support`. The map
 -- | `deps.json` lists the three by the files that build wrote. `Main` of the
@@ -10,17 +10,15 @@
 -- | it. The session refuses a module whose imports it has not loaded, and a
 -- | second module of a name it holds, so the build succeeds only where
 -- | `Lib.Support` is loaded before both modules reaching it, and once.
-module Test.Stellac.Apart (spec) where
+module Test.E2E.Apart (spec) where
 
 import Prelude
 
 import Data.Array as Array
 import Data.Either (Either(..))
-import Data.Foldable (for_)
 import Data.Maybe (Maybe(..))
 import Data.String (joinWith)
 import Data.Traversable (for)
-import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
 import Effect.Ref as Ref
@@ -39,49 +37,11 @@ import Stellac.Options (BuildOptions, Command(..))
 import Stellac.Program (program)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
-import Test.Stellac.Synthesis (onDisk)
+import Test.E2E.Process (copyTree, removeTree)
+import Test.E2E.Synthesis (onDisk)
 
 dir :: String
-dir = "stellac/.test-build/apart"
-
-library :: Array (Tuple String (Array String))
-library =
-  [ Tuple "src/Lib/Support.stel" [ "module Lib.Support where", "seed :: Int", "seed = 7" ]
-  , Tuple "src/Lib/Pass.stel"
-      [ "module Lib.Pass where"
-      , "import Lib.Support"
-      , "import Stella.Syntax (List, Parser, Syntax(..), Term, TokenTree, brackets, many, map, nodesOf, tree)"
-      , "k :: Int"
-      , "k = seed"
-      , "asSyntax :: List TokenTree -> Syntax Term"
-      , "asSyntax ts = Syntax (nodesOf ts)"
-      , "@[macro]"
-      , "pass :: Parser (Syntax Term)"
-      , "pass = brackets (map asSyntax (many tree))"
-      ]
-  , Tuple "src/Lib/Synth.stel"
-      [ "module Lib.Synth where"
-      , "import Stella.Elab"
-      , "import Lib.Support"
-      , "one :: Handle -> Handle / {| Kernel |}"
-      , "one = synthesizer (\\_ -> literal (rootScope ()) (LitInt seed))"
-      ]
-  ]
-
-app :: Array (Tuple String (Array String))
-app =
-  [ Tuple "src/Main.stel"
-      [ "module Main where"
-      , "import Lib.Pass"
-      , "import Lib.Synth"
-      , "pick :: {{ d :: Int by one }} -> Int -> Int"
-      , "pick d x = d"
-      , "n :: Int"
-      , "n = pass%[2]"
-      , "m :: Int"
-      , "m = pick 5"
-      ]
-  ]
+dir = "e2e/.test-build/apart"
 
 libraryModules :: Array String
 libraryModules = [ "Lib.Support", "Lib.Pass", "Lib.Synth" ]
@@ -110,19 +70,15 @@ type Ran = { result :: Either String Unit, said :: Array String }
 -- | The library built, the map written, and `app` built through it.
 building :: (Ran -> Aff Unit) -> Aff Unit
 building k = do
+  removeTree dir
+  copyTree "fixtures/source/apart" dir
   said <- liftEffect (Ref.new [])
   result <- onDisk said do
-    for_ [ Tuple "lib" library, Tuple "app" app ] \(Tuple package files) ->
-      for_ files \(Tuple path lines) -> do
-        _ <- FS.makeDirectory (fmt package "src/Lib")
-        FS.writeText (fmt package path) (joinWith "\n" lines)
     _ <- FS.writeText (dir <> "/deps.json") depsMap
     program { logLevel: Info, monochrome: true, command: Build (options (dir <> "/lib") Nothing) }
     program { logLevel: Info, monochrome: true, command: Build (options (dir <> "/app") (Just "../deps.json")) }
   lines <- liftEffect (Ref.read said)
   k { result, said: lines }
-  where
-  fmt package path = dir <> "/" <> package <> "/" <> path
 
 -- | The global of `Main` named, rendered once `Stella.Elab`, the modules the
 -- | compiler carries, the library's modules, and `Main` are loaded.

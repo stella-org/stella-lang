@@ -2,12 +2,12 @@
 -- | compiler carries, beside a macro of its own: the files on disk, the
 -- | session a process, and the modules built then run on the machine.
 -- |
--- | Each case builds in a directory of its own under `stellac/.test-build`.
+-- | Each case builds in a directory of its own under `e2e/.test-build`.
 -- | `Pass` writes a macro against `Stella.Syntax`, and imports the module the
 -- | package compiles anew; `Main` calls the macro. The session refuses a second
 -- | module of a name it holds, so a build that sent it the package's own would
 -- | fail.
-module Test.Stellac.Toolchain (spec) where
+module Test.E2E.Toolchain (spec) where
 
 import Prelude
 
@@ -38,7 +38,7 @@ import Stellac.Options (Command(..))
 import Stellac.Program (program)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
-import Test.Stellac.Synthesis (onDisk)
+import Test.E2E.Synthesis (onDisk)
 
 -- | `Base.Int` as its source of truth stands.
 baseIntPath :: String
@@ -67,7 +67,7 @@ type Ran = { result :: Either String Unit, said :: Array String, dir :: String }
 -- | naming the module given.
 building :: String -> String -> Array (Tuple String (Array String)) -> (Ran -> Aff Unit) -> Aff Unit
 building name rebuilt files k = do
-  let dir = "stellac/.test-build/" <> name
+  let dir = "e2e/.test-build/" <> name
   said <- liftEffect (Ref.new [])
   result <- onDisk said do
     for_ files \(Tuple path lines) -> do
@@ -133,9 +133,9 @@ spec = describe "stellac build --toolchain-rebuild" do
     building "rebuilt" "Base.Int" [ Tuple "src/Base/Int.stel" (split (Pattern "\n") baseInt), Tuple "src/Pass.stel" (passImporting "Base.Int"), Tuple "src/Main.stel" mainModule ] \r -> do
       r.result `shouldEqual` Right unit
       Array.take 3 r.said `shouldEqual`
-        [ "[1/3] Compiling Base.Int (stellac/.test-build/rebuilt/src/Base/Int.stel)"
-        , "[2/3] Compiling Pass (stellac/.test-build/rebuilt/src/Pass.stel)"
-        , "[3/3] Compiling Main (stellac/.test-build/rebuilt/src/Main.stel)"
+        [ "[1/3] Compiling Base.Int (e2e/.test-build/rebuilt/src/Base/Int.stel)"
+        , "[2/3] Compiling Pass (e2e/.test-build/rebuilt/src/Pass.stel)"
+        , "[3/3] Compiling Main (e2e/.test-build/rebuilt/src/Main.stel)"
         ]
       n <- valueOfN r.dir
       n `shouldEqual` "3"
@@ -143,4 +143,4 @@ spec = describe "stellac build --toolchain-rebuild" do
   it "fails where a macro of the package reaches a module compiled anew whose interface differs from the one the session runs" do
     building "differs" "Stella.Elab" [ Tuple "src/Stella/Elab.stel" [ "module Stella.Elab where", "n :: Int", "n = 1" ], Tuple "src/Pass.stel" (passImporting "Stella.Elab"), Tuple "src/Main.stel" mainModule ] \r -> do
       r.result `shouldEqual` Left "The build failed"
-      said' r "stellac/.test-build/differs/src/Stella/Elab.stel: `Stella.Elab` is compiled anew with an interface that differs from the one of the module the compiler carries, which the macros and synthesizers of the build run on" `shouldEqual` true
+      said' r "e2e/.test-build/differs/src/Stella/Elab.stel: `Stella.Elab` is compiled anew with an interface that differs from the one of the module the compiler carries, which the macros and synthesizers of the build run on" `shouldEqual` true

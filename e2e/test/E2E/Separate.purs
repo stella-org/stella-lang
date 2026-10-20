@@ -7,7 +7,7 @@
 -- | alone and uses a type `Lib.Core` declares, through a dependency map listing
 -- | the files in `store`. The cases run in order: the first builds the library,
 -- | and the third compares what it builds with what the second built.
-module Test.Stellac.Separate (spec) where
+module Test.E2E.Separate (spec) where
 
 import Prelude
 
@@ -28,56 +28,11 @@ import Stella.Compiler.Interface.File as Interface
 import Stella.Compiler.TypedCore (ModuleName(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Stellac.Process (Outcome, copyArtifacts, removeTree, stellac, writeFiles)
+import Test.E2E.Process (Outcome, copyArtifacts, copyTree, removeTree, stellac)
 
 -- | Where this suite's files stand, written afresh for each run.
 dir :: String
-dir = "stellac/.test-integration/separate"
-
-sources :: Array { path :: String, text :: String }
-sources =
-  [ { path: "lib/src/Lib/Core.stel"
-    , text:
-        """module Lib.Core where
-
-import Base.Int (add)
-
-data Pair = Pair Int Int
-
-double :: Int -> Int
-double n = add n n
-"""
-    }
-  , { path: "lib/src/Lib/Extra.stel"
-    , text:
-        """module Lib.Extra where
-
-import Lib.Core
-
-origin :: Pair
-origin = Pair 1 (double 2)
-
-swap :: Pair -> Pair
-swap p = case p of
-  Pair a b -> Pair b a
-
-twice :: Int -> Int
-twice n = double n
-"""
-    }
-  , { path: "app/src/App/Main.stel"
-    , text:
-        """module App.Main where
-
-import Lib.Extra
-
-flipped = swap origin
-
-four :: Int
-four = twice 2
-"""
-    }
-  ]
+dir = "e2e/.test-integration/separate"
 
 libModules :: Array String
 libModules = [ "Lib.Core", "Lib.Extra" ]
@@ -92,7 +47,7 @@ mapOf modules = fmtWith @(SetOpenClose "<" ">" DefaultConfig) @"""{ "formatVersi
 setUp :: Aff Unit
 setUp = do
   removeTree dir
-  writeFiles dir sources
+  copyTree "fixtures/source/separate" dir
   lib <- stellac [ "--workdir", dir <> "/lib" ]
   when (lib.status /= 0) (fail ("the library did not build: " <> lib.err))
   copyArtifacts { from: dir <> "/lib/output/_build", to: dir <> "/store", modules: libModules }

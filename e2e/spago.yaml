@@ -31,6 +31,7 @@ package:
       - avar
       - cli
       - compiler
+      - dodo-printer
       - effect
       - either
       - enums
@@ -53,6 +54,7 @@ package:
       - spec
       - spec-node
       - steam
+      - stellac
       - strings
       - tuples
       - typelevel-prelude

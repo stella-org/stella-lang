@@ -1,0 +1,7 @@
+module Main where
+
+import Base.Int (add)
+import Console (logInt)
+
+main :: IO Unit
+main = logInt (add 1 2)

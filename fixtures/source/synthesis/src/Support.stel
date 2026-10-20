@@ -1,0 +1,3 @@
+module Support where
+seed :: Int
+seed = 1

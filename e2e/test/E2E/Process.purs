@@ -2,13 +2,14 @@
 -- | repository: `stellac build`, `steam run` as its command line stands, and the
 -- | script building the `Base` package. All run the development entry points,
 -- | which need the packages built.
-module Test.Stellac.Process
+module Test.E2E.Process
   ( Outcome
   , stellac
   , steamRun
   , buildBase
   , writeFiles
   , removeTree
+  , copyTree
   , copyArtifacts
   ) where
 
@@ -24,6 +25,7 @@ import Node.ChildProcess.Types (Exit(..))
 import Node.Encoding (Encoding(..))
 import Node.FS.Aff as FS
 import Node.FS.Perms as Perms
+import Node.FS.Stats as Stats
 import Node.Library.Execa (execa)
 
 -- | What one invocation left: its exit status and its two streams.
@@ -75,3 +77,16 @@ copyArtifacts p = do
   FS.mkdir' p.to { recursive: true, mode: Perms.mkPerms Perms.all Perms.all Perms.all }
   for_ p.modules \m -> for_ [ "dmo", "dmi" ] \ext ->
     FS.copyFile (fmt @"{from}/{m}.{ext}" { from: p.from, m, ext }) (fmt @"{to}/{m}.{ext}" { to: p.to, m, ext })
+
+-- | The directory given, with everything under it, copied into the directory
+-- | given, which is made where it is not there; what that holds already stays.
+copyTree :: String -> String -> Aff Unit
+copyTree from to = do
+  FS.mkdir' to { recursive: true, mode: Perms.mkPerms Perms.all Perms.all Perms.all }
+  names <- FS.readdir from
+  for_ names \name -> do
+    let
+      source = fmt @"{from}/{name}" { from, name }
+      target = fmt @"{to}/{name}" { to, name }
+    stat <- FS.stat source
+    if Stats.isDirectory stat then copyTree source target else FS.copyFile source target

@@ -7,7 +7,7 @@
 -- | the `Base.Int` the compiler carries; the files it writes are the
 -- | compiler's modules to the byte. The cases run in order: the first builds
 -- | the package.
-module Test.Stellac.CompilerLib (spec) where
+module Test.E2E.CompilerLib (spec) where
 
 import Prelude
 
@@ -29,11 +29,11 @@ import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.TypedCore (ModuleName(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Stellac.Process (removeTree, stellac, writeFiles)
+import Test.E2E.Process (removeTree, stellac, writeFiles)
 
 -- | Where this suite's files stand, written afresh for each run.
 dir :: String
-dir = "stellac/.test-integration/compiler-lib"
+dir = "e2e/.test-integration/compiler-lib"
 
 -- | The file of the module given the package wrote, of the extension given.
 built :: String -> String -> String

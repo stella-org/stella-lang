@@ -8,7 +8,7 @@
 -- | a foreign manifest and a JavaScript implementation written here, and the
 -- | bytecode of each module in the order the case states, the library's taken
 -- | from the map. The cases run in order: the first builds both packages.
-module Test.Stellac.Run (spec) where
+module Test.E2E.Run (spec) where
 
 import Prelude
 
@@ -27,64 +27,14 @@ import Stella.Compiler.TypedCore (ModuleName(..))
 import Stellac.Dependencies (parse)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Stellac.Process (Outcome, copyArtifacts, removeTree, steamRun, stellac, writeFiles)
+import Test.E2E.Process (Outcome, copyArtifacts, removeTree, copyTree, steamRun, stellac)
 
 -- | Where this suite's files stand, written afresh for each run.
 dir :: String
-dir = "stellac/.test-integration/run"
+dir = "e2e/.test-integration/run"
 
 libModules :: Array String
 libModules = [ "Lib.Console", "Lib.Greet" ]
-
-sources :: Array { path :: String, text :: String }
-sources =
-  [ { path: "lib/src/Lib/Console.stel"
-    , text:
-        """module Lib.Console where
-
-foreign log :: String -> IO Unit
-"""
-    }
-  , { path: "lib/src/Lib/Greet.stel"
-    , text:
-        """module Lib.Greet where
-
-import Lib.Console
-
-data Mood = Glad | Glum
-
-line :: Mood -> String
-line m = case m of
-  Glad -> "glad to be built apart"
-  Glum -> "glum"
-
-say :: Mood -> IO Unit
-say m = log (line m)
-"""
-    }
-  , { path: "app/src/App/Main.stel"
-    , text:
-        """module App.Main where
-
-import Lib.Greet
-
-main :: IO Unit
-main = say Glad
-"""
-    }
-  , { path: "host/console.mjs"
-    , text:
-        """export const log = (s) => () => { console.log(s); };
-"""
-    }
-  , { path: "foreign.json"
-    , text:
-        """{ "formatVersion": 1, "target": "javascript", "modules": [
-  { "module": "Lib.Console", "specifier": "./host/console.mjs",
-    "foreigns": [ { "name": "log", "params": [ "string" ], "result": { "action": "unit" } } ] } ] }
-"""
-    }
-  ]
 
 mapPath :: String
 mapPath = dir <> "/deps.json"
@@ -99,7 +49,7 @@ mapText = fmtWith @(SetOpenClose "<" ">" DefaultConfig) @"""{ "formatVersion": 0
 setUp :: Aff Unit
 setUp = do
   removeTree dir
-  writeFiles dir sources
+  copyTree "fixtures/source/run" dir
   lib <- stellac [ "--workdir", dir <> "/lib" ]
   when (lib.status /= 0) (fail ("the library did not build: " <> lib.err))
   copyArtifacts { from: dir <> "/lib/output/_build", to: dir <> "/store", modules: libModules }

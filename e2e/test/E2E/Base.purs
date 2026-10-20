@@ -8,7 +8,7 @@
 -- | `Base.Int`, compiled against the one the compiler carries, beside `Console`,
 -- | whose foreign the host implements; it runs over the bytecode the first
 -- | package wrote. The cases run in order: the first builds `Base.Int`.
-module Test.Stellac.Base (spec) where
+module Test.E2E.Base (spec) where
 
 import Prelude
 
@@ -29,45 +29,11 @@ import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.TypedCore (ModuleName(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Stellac.Process (Outcome, removeTree, steamRun, stellac, writeFiles)
+import Test.E2E.Process (Outcome, copyTree, removeTree, steamRun, stellac, writeFiles)
 
 -- | Where this suite's files stand, written afresh for each run.
 dir :: String
-dir = "stellac/.test-integration/base"
-
-app :: Array { path :: String, text :: String }
-app =
-  [ { path: "app/src/Console.stel"
-    , text:
-        """module Console where
-
-foreign logInt :: Int -> IO Unit
-"""
-    }
-  , { path: "app/src/Main.stel"
-    , text:
-        """module Main where
-
-import Base.Int (add)
-import Console (logInt)
-
-main :: IO Unit
-main = logInt (add 1 2)
-"""
-    }
-  , { path: "app/host/console.mjs"
-    , text:
-        """export const logInt = (n) => () => { console.log(String(n)); };
-"""
-    }
-  , { path: "app/foreign.json"
-    , text:
-        """{ "formatVersion": 1, "target": "javascript", "modules": [
-  { "module": "Console", "specifier": "./host/console.mjs",
-    "foreigns": [ { "name": "logInt", "params": [ "int" ], "result": { "action": "unit" } } ] } ] }
-"""
-    }
-  ]
+dir = "e2e/.test-integration/base"
 
 -- | The file the package compiling `Base.Int` wrote, of the extension given.
 baseFile :: String -> String
@@ -102,7 +68,7 @@ spec = describe "`Base.Int` from its source" do
         map encode (Array.head carried.modules) `shouldEqual` Just (Right dmo)
 
   it "runs a program over the bytecode it wrote, the package compiled against the `Base.Int` the compiler carries" do
-    writeFiles dir app
+    copyTree "fixtures/source/base" dir
     built <- stellac [ "--workdir", dir <> "/app" ]
     when (built.status /= 0) (fail ("the program did not build: " <> built.err))
     outcome <- steamRun

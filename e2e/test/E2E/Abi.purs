@@ -7,79 +7,22 @@
 -- | names `Console` alone: an entry the runtime carries out has no host
 -- | implementation to name. The cases run in order: the first builds the
 -- | package.
-module Test.Stellac.Abi (spec) where
+module Test.E2E.Abi (spec) where
 
 import Prelude
 
 import Data.Array as Array
 import Data.String (Pattern(..), contains, split)
+import Data.Traversable (for_)
+import Node.Encoding (Encoding(..))
+import Node.FS.Aff as FS
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Stellac.Process (Outcome, removeTree, steamRun, stellac, writeFiles)
+import Test.E2E.Process (Outcome, copyTree, removeTree, steamRun, stellac, writeFiles)
 
 -- | Where this suite's files stand, written afresh for each run.
 dir :: String
-dir = "stellac/.test-integration/abi"
-
-sources :: Array { path :: String, text :: String }
-sources =
-  [ { path: "src/Base/IO.stel"
-    , text:
-        """module Base.IO where
-
-foreign pure :: forall a. a -> IO a
-foreign bind :: forall a b. IO a -> (a -> IO b) -> IO b
-"""
-    }
-  , { path: "src/Base/Array.stel"
-    , text:
-        """module Base.Array where
-
-foreign type Array :: Type -> Type
-foreign length :: forall a. Array a -> Int
-foreign unsafeNew :: forall a. Int -> Array a
-foreign unsafeSet :: forall a. Int -> a -> Array a -> Unit
-foreign unsafeIndex :: forall a. Array a -> Int -> a
-"""
-    }
-  , { path: "src/Console.stel"
-    , text:
-        """module Console where
-
-foreign log :: String -> IO Unit
-foreign logInt :: Int -> IO Unit
-"""
-    }
-  , { path: "src/Main.stel"
-    , text:
-        """module Main where
-
-import Base.IO (pure, bind)
-import Base.Array (Array, length, unsafeNew, unsafeSet, unsafeIndex)
-import Console (log, logInt)
-
-words :: Array String
-words = unsafeNew 2
-
-main :: IO Unit
-main = bind (pure (unsafeSet 0 "built" words)) (\_ -> bind (pure (unsafeSet 1 "from source" words)) (\_ -> bind (log (unsafeIndex words 1)) (\_ -> logInt (length words))))
-"""
-    }
-  , { path: "host/console.mjs"
-    , text:
-        """export const log = (s) => () => { console.log(s); };
-export const logInt = (n) => () => { console.log(String(n)); };
-"""
-    }
-  , { path: "foreign.json"
-    , text:
-        """{ "formatVersion": 1, "target": "javascript", "modules": [
-  { "module": "Console", "specifier": "./host/console.mjs",
-    "foreigns": [ { "name": "log", "params": [ "string" ], "result": { "action": "unit" } },
-                  { "name": "logInt", "params": [ "int" ], "result": { "action": "unit" } } ] } ] }
-"""
-    }
-  ]
+dir = "e2e/.test-integration/abi"
 
 -- | The bytecode of each module named, in the order named.
 program :: Array String -> Array String
@@ -95,7 +38,11 @@ spec :: Spec Unit
 spec = describe "steam run, over `Base` modules written in source" do
   it "builds the package, its `Base` modules among it" do
     removeTree dir
-    writeFiles dir sources
+    copyTree "fixtures/source/abi" dir
+    -- the `Base` modules the package compiles, as `stella-packages/base` writes them
+    for_ [ "IO", "Array" ] \m -> do
+      text <- FS.readTextFile UTF8 ("stella-packages/base/src/Base/" <> m <> ".stel")
+      writeFiles dir [ { path: "src/Base/" <> m <> ".stel", text } ]
     built <- stellac [ "--workdir", dir ]
     when (built.status /= 0) (fail ("the package did not build: " <> built.err))
 
