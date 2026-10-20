@@ -8,7 +8,7 @@
 -- | compiled from its source on its own once, for every fixture, and stands first
 -- | among a fixture's modules where they reach it. The modules of a fixture are
 -- | those, in the order they are built, and nothing else of the packages.
-module Test.Stella.Compiler.Fixtures.Build
+module E2E.Build
   ( Sources
   , readSources
   , builtFrom

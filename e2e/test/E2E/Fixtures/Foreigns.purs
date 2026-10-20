@@ -17,7 +17,7 @@
 -- | | `add 1`, then applied to 2 | a partial application of a foreign another module declares |
 -- | | `twice 5` | a foreign the entry module declares itself |
 -- | | `half`, `nextChar`, `shout`, `flip`, `note` | each value kind crossing in and out; an astral `char` both ways; a whole number owed as a `number` staying one; a `unit` result whatever the host returned |
-module Test.Stella.Compiler.Fixtures.Foreigns
+module Test.E2E.Fixtures.Foreigns
   ( Result(..)
   , Signature
   , ManifestModule
@@ -50,8 +50,8 @@ import Data.String as String
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.TypedCore (Decl(..), Export(..), Ident(..), Kind(..), Module, ModuleName(..), TyVar(..), Type(..), monoScheme)
 import Stella.Compiler.TypedCore.Prim (ioTy, pureFn, unitTy)
-import Test.Stella.Compiler.Fixtures.Programs (mainName)
-import Test.Stella.Compiler.Fixtures.Value (Expected(..), ExpectedKey(..))
+import Test.E2E.Fixtures.Programs (mainName)
+import Test.E2E.Fixtures.Value (Expected(..), ExpectedKey(..))
 
 -- The manifest's signatures ---------------------------------------------------------------
 

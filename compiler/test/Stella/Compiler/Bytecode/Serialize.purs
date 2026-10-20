@@ -2,8 +2,8 @@
 -- |
 -- | **The round trip is the assertion.** A module written and read again is the
 -- | module it was, which is what an encoder and a decoder that each carry their
--- | own operand order would fail; the two slices and the effect fixtures carry
--- | every form a lowering produces between them.
+-- | own operand order would fail; the two slices and a handle whose value is
+-- | consumed carry every form a lowering produces between them.
 -- |
 -- | The cases after it are the ones the format fixes in its own right: the bytes
 -- | of the header, that one module has one encoding, that a section above the
@@ -18,14 +18,13 @@ import Stella.Compiler.Bytecode (Bytes, Constant(..), DecodeError(..), Dmo, Enco
 import Stella.Compiler.Bytecode.Bytes (byte, runR, skipR, structuralR, svar, svarR, utf8, utf8R, uvar, uvarR, vecR)
 import Stella.Compiler.Interface (noImports)
 import Stella.Compiler.MiddleEnd (Rep(..), translate)
-import Stella.Compiler.TypedCore (Module, ModuleName(..), declare, declareAnnotated, primSignature, scalarString, scalarValue, textOf)
+import Stella.Compiler.TypedCore (Decl(..), EffName(..), Expr(..), Ident(..), Literal(..), Module, ModuleName(..), OpClause(..), OpName(..), Qualified(..), RowEntry(..), RowKey(..), Type(..), declare, declareAnnotated, monoScheme, primSignature, scalarString, scalarValue, textOf)
+import Stella.Compiler.TypedCore.Prim (intTy, unitCtor, unitTy)
 import Data.Array as Array
 import Data.Char as Char
 import Data.Either (Either(..), isLeft)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.CodeUnits as CodeUnits
-import Test.Stella.Compiler.Fixtures.Effects (effectsModule)
-import Test.Stella.Compiler.Fixtures.Programs as Programs
 import Test.Stella.Compiler.TypedCore.HandlerSlice (handlerSlice)
 import Test.Stella.Compiler.TypedCore.VerticalSlice (intModule, verticalSlice)
 import Test.Spec (Spec, describe, it)
@@ -51,6 +50,48 @@ loweredAgainst base m = case declare primSignature base of
       Right mid -> case lower mid of
         Left err -> Left (show err)
         Right out -> Right out.dmo
+
+-- | `Main` whose one value consumes what a handler gives,
+-- | `Base.Int.add (handle ask () with { fast ask _ -> 1 }) 1`: a `HNDL`, where
+-- | the handles of the slices stand in tail position.
+consumedHandle :: Module P.Int
+consumedHandle =
+  { annotation: 0
+  , name: ModuleName "Main"
+  , imports: [ ModuleName "Base.Int" ]
+  , exports: []
+  , decls:
+      [ DeclEffect 1 { name: EffName "Ask", params: [], operations: [ { name: OpName "ask", tyBinders: [], argument: unit', resumesWith: int } ], attributes: [] }
+      , DeclNonRec 2 { name: Ident "consumed", scheme: monoScheme int, value: App 0 (App 0 (Global 0 add []) handled) (Lit 0 (LitInt 1)), attributes: [] }
+      ]
+  }
+  where
+  int = TCon intTy []
+  unit' = TCon unitTy []
+  add = Qualified (ModuleName "Base.Int") (Ident "add")
+  ask = Qualified (ModuleName "Main") (EffName "Ask")
+  handled = Handle 0 (Perform 0 (EffectKey ask) (OpName "ask") [] (Global 0 unitCtor []))
+    { element: RowEffectEntry ask []
+    , returnClause: { binder: Ident "x", ty: int, body: Var 0 (Ident "x") }
+    , opClauses: [ FastClause { op: OpName "ask", tyBinders: [], argBinder: { name: Ident "u", ty: unit' }, body: Lit 0 (LitInt 1) } ]
+    }
+
+-- | Whether a function of the module holds a `HNDL`, in its body, a join point's,
+-- | or a node a branch holds inline.
+holdsHndl :: Dmo -> P.Boolean
+holdsHndl dmo = Array.any (\fn -> node fn.body || Array.any (\j -> node j.body) fn.joins) dmo.functions
+  where
+  node :: Node -> P.Boolean
+  node n = Array.any isHndl n.code || case n.tail of
+    BRIF _ a b -> node a || node b
+    BRC _ cases fallback -> Array.any (\c -> node c.body) cases || maybe false node fallback
+    BRL _ cases fallback -> Array.any (\c -> node c.body) cases || node fallback
+    BRK _ cases fallback -> Array.any (\c -> node c.body) cases || maybe false node fallback
+    _ -> false
+
+  isHndl = case _ of
+    HNDL _ _ _ _ _ -> true
+    _ -> false
 
 -- | A module of no declarations, which is what the cases about the container
 -- | itself stand on.
@@ -142,10 +183,12 @@ spec = describe "Stella.Compiler.Bytecode.Serialize" do
         Left err -> fail err
         Right dmo -> roundTrip dmo `shouldEqual` Right dmo
 
-    it "carries the effect fixtures, a HNDL whose value is consumed among them" do
-      case loweredAgainst Programs.intModule effectsModule of
+    it "carries a HNDL whose value is consumed" do
+      case loweredOf consumedHandle of
         Left err -> fail err
-        Right dmo -> roundTrip dmo `shouldEqual` Right dmo
+        Right dmo -> do
+          holdsHndl dmo `shouldEqual` true
+          roundTrip dmo `shouldEqual` Right dmo
 
     it "carries a constant of every kind, the two zeros apart" do
       case everyConstant of

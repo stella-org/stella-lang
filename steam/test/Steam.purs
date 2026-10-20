@@ -9,21 +9,14 @@ import Prelude
 import Effect (Effect)
 import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess)
-import Test.Steam.Arrays as Arrays
 import Test.Steam.Calls as Calls
-import Test.Steam.Cells as Cells
-import Test.Steam.Continuations as Continuations
 import Test.Steam.Drive as Drive
 import Test.Steam.Eval as Eval
 import Test.Steam.Facade as Facade
 import Test.Steam.Fixtures as Fixtures
 import Test.Steam.Foreign as Foreign
 import Test.Steam.Handlers as Handlers
-import Test.Steam.Handling as Handling
-import Test.Steam.Load as Load
 import Test.Steam.Marshal as Marshal
-import Test.Steam.Matches as Matches
-import Test.Steam.Records as Records
 import Test.Steam.Structural as Structural
 import Test.Steam.Ops as Ops
 import Test.Steam.Root as Root
@@ -38,15 +31,8 @@ main = do
     Eval.spec
     Calls.spec
     Ops.spec
-    Load.spec
-    Arrays.spec
     Foreign.spec
     Handlers.spec
-    Matches.spec
-    Handling.spec
-    Cells.spec
-    Continuations.spec
-    Records.spec
     Root.spec
     Fixtures.spec fixtures
     Drive.spec

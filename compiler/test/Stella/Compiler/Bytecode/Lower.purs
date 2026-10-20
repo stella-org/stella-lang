@@ -22,7 +22,7 @@ import Data.Either (Either(..), either)
 import Data.Foldable (foldM)
 import Data.String (Pattern(..))
 import Data.String as String
-import Test.Stella.Compiler.Fixtures.Programs as Programs
+import Test.Stella.Compiler.Programs as Programs
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))

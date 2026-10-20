@@ -16,7 +16,7 @@
 -- | A key is `{"field": "x"}`, `{"tag": "Ok"}`, `{"position": 0}`, or
 -- | `{"effect": "Mod.Eff"}`, one per kind, since a field and a tag of one spelling
 -- | are two keys (D16).
-module Test.Stella.Compiler.Fixtures.Value
+module Test.E2E.Fixtures.Value
   ( Expected(..)
   , ExpectedKey(..)
   , toJson

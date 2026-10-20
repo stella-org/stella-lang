@@ -18,7 +18,7 @@
 -- | `.dmo` format is not frozen, so the check below fails wherever a fixture
 -- | differs from what building its source gives today, and running the suite
 -- | with `STELLA_UPDATE_FIXTURES=1` writes every fixture afresh instead.
-module Test.Stella.Compiler.Fixtures
+module Test.E2E.Fixtures
   ( spec
   ) where
 
@@ -27,14 +27,13 @@ import Prelude
 import Prim as P
 
 import Data.Array as Array
-import Data.Either (Either(..), either)
+import Data.Either (Either(..))
 import Data.Foldable (foldM, for_)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String as String
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
-import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
 import Stella.Compiler.Bytecode (Dmo, decode, encode, lower)
 import Stella.Compiler.Interface (aritiesOf, importsOf)
@@ -49,12 +48,12 @@ import Test.Spec.Assertions (fail, shouldEqual)
 import Stella.Compiler.Bytecode.Instr (CalleeIx(..), ForeignIx(..), Instr(..), KeyIx(..), Node, OpIx(..), PrimIx(..), Reg, Tail(..))
 import Stella.Compiler.Bytecode.Module (CalleeEntry(..), HandlerEntry, RegionEntry)
 import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
-import Test.Stella.Compiler.Fixtures.Effects (effectsCoreExpected, effectsCoreModule, effectsSourceExpected)
-import Test.Stella.Compiler.Fixtures.Regions (regionsCoreExpected, regionsCoreModule, regionsSourceExpected)
-import Test.Stella.Compiler.Fixtures.Foreigns (ManifestModule, Result(..), RunCase, RunFault(..), addShrunkManifest, addShrunkSource, greetManifest, greetSource, deepIoResult, ioEffects, ioHostSource, ioManifest, ioName, hostName, ioModuleBindArity, ioModulePureArity, ioResult, runCases, runEffects, runHostSource, runManifest)
-import Test.Stella.Compiler.Fixtures.Build (Sources, builtFrom, packageModules, readSources)
-import Test.Stella.Compiler.Fixtures.Programs (abiSignature, coreOnlyExpected, coreOnlyModule, faultCases, sourceDeepExpected, sourceExpected, inInt, intModule, mainName, opsExpected)
-import Test.Stella.Compiler.Fixtures.Value (Expected(..), jsonString, toJson)
+import Test.E2E.Fixtures.Effects (effectsCoreExpected, effectsCoreModule, effectsSourceExpected)
+import Test.E2E.Fixtures.Regions (regionsCoreExpected, regionsCoreModule, regionsSourceExpected)
+import Test.E2E.Fixtures.Foreigns (ManifestModule, Result(..), RunCase, RunFault(..), addShrunkManifest, addShrunkSource, greetManifest, greetSource, deepIoResult, ioEffects, ioHostSource, ioManifest, ioName, hostName, ioModuleBindArity, ioModulePureArity, ioResult, runCases, runEffects, runHostSource, runManifest)
+import E2E.Build (Sources, builtFrom, packageModules)
+import Test.E2E.Fixtures.Programs (abiSignature, coreOnlyExpected, coreOnlyModule, faultCases, sourceDeepExpected, sourceExpected, inInt, intModule, mainName, opsExpected)
+import Test.E2E.Fixtures.Value (Expected(..), jsonString, toJson)
 
 -- Reading and writing --------------------------------------------------------------
 
@@ -784,17 +783,12 @@ lowersTo =
   , { dirs: [ "stale-foreign-partial/compiled", "common-lib/add-host" ], module: "Main", kinds: [ "PAP" ] }
   ]
 
--- | The sources read and prepared, given to `k`, or a failure saying why they
--- | could not be.
-withSources :: (Sources -> Aff Unit) -> Aff Unit
-withSources k = liftEffect readSources >>= either fail k
-
-spec :: Spec Unit
-spec = describe "the bytecode fixtures" do
+spec :: Sources -> Spec Unit
+spec sources = describe "the bytecode fixtures" do
   -- `PRIMS` is the set of operations a module carries out, so an operation the
   -- version holds and the fixture never uses is one no backend is checked on
   it "carry out every operation of the version in the operations fixture" do
-    withSources \sources -> case builtFrom sources [ "operations" ] of
+    case builtFrom sources [ "operations" ] of
       Left err -> fail err
       Right built -> case Array.last built of
         Nothing -> fail "nothing compiled"
@@ -807,13 +801,13 @@ spec = describe "the bytecode fixtures" do
   -- partial application over one is of its own kind: `bind` short of its arity, and
   -- `pure` as a value, which is a partial application of no arguments
   it "apply both Base.IO entries short of their arity in the io-pure fixture" do
-    withSources \sources -> case builtFrom sources [ "common-lib/io-pure" ] of
+    case builtFrom sources [ "common-lib/io-pure" ] of
       Left err -> fail err
       Right built -> map foreignPartials (Array.last built)
         `shouldEqual` Just [ Tuple "Base.IO.bind" 1, Tuple "Base.IO.pure" 0 ]
 
   it "lower to the instructions each is to exercise" do
-    withSources \sources -> for_ lowersTo \l -> case builtFrom sources l.dirs of
+    for_ lowersTo \l -> case builtFrom sources l.dirs of
       Left err -> fail err
       Right built -> case Array.find (\d -> d.name == ModuleName l.module) built of
         Nothing -> fail (l.module <> " is not built from " <> String.joinWith ", " l.dirs)
@@ -822,7 +816,7 @@ spec = describe "the bytecode fixtures" do
   -- a package's module is built only where a fixture reaches it, so one no
   -- fixture reaches could be missing or broken unseen
   it "reach every module of the lists and maybe packages" do
-    withSources \sources -> case traverse _.modules (fixtures sources) of
+    case traverse _.modules (fixtures sources) of
       Left err -> fail err
       Right built -> do
         let reached = Set.fromFoldable (map _.name (Array.concat built))
@@ -830,7 +824,7 @@ spec = describe "the bytecode fixtures" do
 
   it "are what compiling their source gives now" do
     update <- liftEffect updating
-    withSources \sources -> case traverse (\f -> map (Tuple f.name) (filesOf f)) (fixtures sources) of
+    case traverse (\f -> map (Tuple f.name) (filesOf f)) (fixtures sources) of
       Left err -> fail err
       Right wanted ->
         if update then liftEffect (write wanted)

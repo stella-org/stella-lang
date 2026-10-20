@@ -26,7 +26,7 @@ import Data.Foldable (foldM)
 import Data.Maybe (Maybe(..))
 import Data.String (Pattern(..))
 import Data.String as String
-import Test.Stella.Compiler.Fixtures.Programs as Programs
+import Test.Stella.Compiler.Programs as Programs
 import Test.Stella.Compiler.TypedCore.VerticalSlice (intModule, verticalSlice)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)

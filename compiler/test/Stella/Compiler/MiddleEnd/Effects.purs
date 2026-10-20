@@ -22,7 +22,7 @@ import Stella.Compiler.TypedCore.Prim (fn, intTy, unitCtor, unitTy)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
-import Test.Stella.Compiler.Fixtures.Programs (inInt, intName, mainName)
+import Test.Stella.Compiler.Programs (inInt, intName, mainName)
 import Test.Stella.Compiler.TypedCore.HandlerSlice (always0Name, cellKey, counterEff, counterKey, counterName, handlerSlice, nextOp, seededSlice, twiceCountedName, twiceName)
 import Test.Stella.Compiler.TypedCore.VerticalSlice (intModule)
 import Test.Spec (Spec, describe, it)

@@ -1,0 +1,39 @@
+package:
+  name: e2e
+  description: The end-to-end tests, over programs built from source and run, and the builder they share
+  dependencies:
+    - arrays
+    - bifunctors
+    - compiler
+    - effect
+    - either
+    - foldable-traversable
+    - maybe
+    - ordered-collections
+    - prelude
+    - strings
+    - transformers
+    - tuples
+  test:
+    main: Test.E2E
+    dependencies:
+      - aff
+      - arrays
+      - compiler
+      - effect
+      - either
+      - enums
+      - exceptions
+      - fmt
+      - foldable-traversable
+      - integers
+      - maybe
+      - ordered-collections
+      - prelude
+      - refs
+      - run
+      - spec
+      - spec-node
+      - steam
+      - strings
+      - tuples

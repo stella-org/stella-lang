@@ -10,7 +10,7 @@
 -- | written under, and the innermost frame of that identity is the copy running.
 -- |
 -- | Every expected value is what Core's rules give
--- | ([Semantics](../../../../../docs/technical-references/03-Typed-Core/06-Semantics.md)),
+-- | ([Semantics](../../../../docs/technical-references/03-Typed-Core/06-Semantics.md)),
 -- | worked out beside each value together with what reaching the wrong frame, or
 -- | sharing what is copied, gives instead.
 -- |
@@ -24,7 +24,7 @@
 -- | | `nestedCopy` | a continuation resumed while a copy of it is running |
 -- | | `closureBefore` | a closure made before a capture, run in two copies |
 -- | | `stashed` | a closure carried out through an operation's type parameter and handed back to two copies |
-module Test.Stella.Compiler.Fixtures.Regions
+module Test.E2E.Fixtures.Regions
   ( regionsCoreModule
   , regionsCoreExpected
   , regionsSourceExpected
@@ -38,8 +38,8 @@ import Data.Array as Array
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.TypedCore (Constraint(..), DecisionTree(..), Decl(..), EffName(..), Export(..), Expr(..), Ident(..), Kind(..), Literal(..), Module, Occurrence(..), OpClause(..), OpDecl, OpName(..), Qualified(..), RegionName(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyVar(..), Type(..), TypeScheme, monoScheme)
 import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, unitCtor, unitTy)
-import Test.Stella.Compiler.Fixtures.Programs (inInt, intName, mainName)
-import Test.Stella.Compiler.Fixtures.Value (Expected(..))
+import Test.E2E.Fixtures.Programs (inInt, intName, mainName)
+import Test.E2E.Fixtures.Value (Expected(..))
 
 -- Names and types ------------------------------------------------------------------------
 

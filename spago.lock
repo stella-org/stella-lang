@@ -119,6 +119,49 @@
           ]
         }
       },
+      "e2e": {
+        "path": "e2e",
+        "core": {
+          "dependencies": [
+            "arrays",
+            "bifunctors",
+            "compiler",
+            "effect",
+            "either",
+            "foldable-traversable",
+            "maybe",
+            "ordered-collections",
+            "prelude",
+            "strings",
+            "transformers",
+            "tuples"
+          ]
+        },
+        "test": {
+          "dependencies": [
+            "aff",
+            "arrays",
+            "compiler",
+            "effect",
+            "either",
+            "enums",
+            "exceptions",
+            "fmt",
+            "foldable-traversable",
+            "integers",
+            "maybe",
+            "ordered-collections",
+            "prelude",
+            "refs",
+            "run",
+            "spec",
+            "spec-node",
+            "steam",
+            "strings",
+            "tuples"
+          ]
+        }
+      },
       "steam": {
         "path": "steam",
         "core": {
