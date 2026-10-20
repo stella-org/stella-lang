@@ -17,6 +17,7 @@ import Stella.Compiler.TypedCore.Context (assume, bindTyVar, bindVar, emptyConte
 import Stella.Compiler.TypedCore.Declare (declare)
 import Stella.Compiler.TypedCore.Prim (fn, intTy, numberTy, primSignature, pureFn, stringTy, unitTy)
 import Stella.Compiler.TypedCore.Domain (scalarString)
+import Stella.Compiler.TypedCore.Row (RowError(..))
 import Stella.Compiler.TypedCore.Signature (Signature)
 import Stella.Compiler.TypedCore.Type (Constraint(..))
 import Data.Either (Either(..), either)
@@ -1286,6 +1287,49 @@ spec = describe "TypedCore.Check" do
           ( TypeMismatch (variant (TRowExtend (RowTypeEntry nameKey int) TRowEmpty))
               (variant row)
           )
+
+    it "refines an open variant's occurrence to the tail its row decomposes into" do
+      -- `( name : Int | r )` is `( name : Int )` and the residual `r`
+      let
+        r = TyVar "r"
+        withRow = assume (bindTyVar emptyContext r (KRow RowType)) (Lacks nameKey (TVar r))
+        context =
+          bindVar (bindVar withRow (Ident "v") (variant (TRowExtend (RowTypeEntry nameKey int) (TVar r))))
+            (Ident "rest")
+            (variant (TVar r))
+        tree = SwitchKey (OccScrutinee 0)
+          [ { key: nameKey, tree: Leaf (var "rest") } ]
+          (Just (Bind (Ident "w") (OccScrutinee 0) (Leaf (var "w"))))
+      inferIn (env { context = context }) TRowEmpty (Case unit [ var "v" ] tree)
+        `shouldEqual` Right (variant (TVar r))
+
+    it "decomposes a row only an inconsistent context kinds" do
+      -- under `name ∉ ( name : Int )`, `( name : Int ) ⊎ ( name : Int )` is the
+      -- row `( name : Int )`, and its residual without `name` is `()`
+      let
+        named = TRowExtend (RowTypeEntry nameKey int) TRowEmpty
+        context =
+          bindVar (assume emptyContext (Lacks nameKey named)) (Ident "v") (variant (TRowUnion named named))
+        exhaustive = SwitchKey (OccScrutinee 0) [ { key: nameKey, tree: Leaf oneLit } ] Nothing
+        refined = SwitchKey (OccScrutinee 0)
+          [ { key: nameKey, tree: Leaf oneLit } ]
+          (Just (Bind (Ident "w") (OccScrutinee 0) (Leaf (VariantAbsurd unit int (var "w")))))
+      inferIn (env { context = context }) TRowEmpty (Case unit [ var "v" ] exhaustive) `shouldEqual` Right int
+      inferIn (env { context = context }) TRowEmpty (Case unit [ var "v" ] refined) `shouldEqual` Right int
+
+    it "reports a scrutinee row with two payloads at one key" do
+      -- the rule has a derivation for it; the sharp normal form does not
+      let
+        twice =
+          TRowUnion (TRowExtend (RowTypeEntry nameKey int) TRowEmpty)
+            (TRowExtend (RowTypeEntry nameKey string) TRowEmpty)
+        context =
+          bindVar (assume emptyContext (Lacks nameKey (TRowExtend (RowTypeEntry nameKey int) TRowEmpty)))
+            (Ident "v")
+            (variant twice)
+        tree = SwitchKey (OccScrutinee 0) [ { key: nameKey, tree: Leaf oneLit } ] (Just (Leaf oneLit))
+      inferIn (env { context = context }) TRowEmpty (Case unit [ var "v" ] tree)
+        `shouldEqual` Left (NotARowType (DuplicateKey nameKey))
 
     it "does not take the type of a guard from the branch written first" do
       -- the consequent reaches no leaf, and the alternative is what gives the

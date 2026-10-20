@@ -427,12 +427,12 @@ The explicitness is the price of D8. The elaborator inserts it, so an author doe
   ─────────────────────────────────────────────────────────────
   Γ;Δ;Ω ⊢ switchLit o { c_i -> dt_i } default -> dt_0 : τ ! ρ
 
-  Ω ⊢ o : Variant r        nf(r) = ⟨F ; T⟩
-  each k_i ∈ dom(F) and the k_i are distinct
-  each i: Γ;Δ; Ω ∪ { o ? k_i ↦ F(k_i) } ⊢ dt_i : τ ! ρ
+  Ω ⊢ o : Variant r        the k_i are distinct
+  Γ ⊢ r ≡ ( k_1 : τ_1, …, k_n : τ_n | r' )       ← r decomposes into the enumerated
+  Γ ⊢ ( k_1 : τ_1, …, k_n : τ_n | r' ) : Row Type    elements and a residual r'
+  each i: Γ;Δ; Ω ∪ { o ? k_i ↦ τ_i } ⊢ dt_i : τ ! ρ
   with a default:     Γ;Δ; Ω ∪ { o ↦ Variant r' } ⊢ dt_0 : τ ! ρ
-                      where nf(r') = ⟨ F ∖ {k_1..k_n} ; T ⟩
-  without a default:  T = ∅ and {k_i} = dom(F)
+  without a default:  Γ ⊢ r' ≡ ()
   ─────────────────────────────────────────────────────────────
   Γ;Δ;Ω ⊢ switchKey o { k_i -> dt_i } [default -> dt_0] : τ ! ρ
 
@@ -467,4 +467,8 @@ The explicitness is the price of D8. The elaborator inserts it, so an author doe
 
 In the default branch of `switchCtor` and `switchLit` the occurrence context `Ω` is unchanged, because Core does not track the refinement "not one of the enumerated cases". Refinement happens only in the default branch of `switchKey`, where the occurrence takes the residual type `Variant r'`.
 
-That branch is the term-level appearance of residual computation over an unknown tail: when `T ≠ ∅` the condition `{k_i} = dom(F)` cannot be met, so a default is required, and its type is the residual. An open variant cannot be enumerated by pretending it is closed.
+That branch is the term-level appearance of residual computation over an unknown tail: where `r` has a row variable among its tails, so has every `r'` it decomposes into, `r' ≡ ()` cannot be met, and a default is required, its type being the residual. An open variant cannot be enumerated by pretending it is closed.
+
+**The residual is what the row decomposes into, not what deleting the keys leaves.** In a consistent context the kinding premise asks `k_i ∉ r'` of every enumerated key, so `r'` is unique up to `≡`: it is the row whose [sharp normal form](02-Rows.md#sharp-normal-form) is that of `r` with the `k_i` deleted, and each `τ_i` is the payload `r` has at `k_i`. Stated by deletion, the rule would hold of a row only as it is written, and a substitution can change what deleting finds. Under `x ∉ s`, `Variant ( x : Int | s )` has the residual `s`. Substituting `( x : Int )` for `s` turns the assumption into the inconsistent `x ∉ ( x : Int )` and collapses the row to `( x : Int )`, whose deletion leaves `()`, while the default was typed at `Variant s`, now `Variant ( x : Int )`. The decomposition admits that residual still, `( x : Int | ( x : Int ) )` being kinded wherever the context entails every constraint. Equality and entailment are preserved by every substitution ([Rows](02-Rows.md)), and so is this rule.
+
+**The checker reads the decomposition off the sharp normal form**: each `τ_i` is `r`'s payload at `k_i`, a key `r` lacks is rejected with `NoElementAt`, and `r'` is what deleting the `k_i` leaves, which is a residual the rule admits wherever the normal form exists. A row with two payloads at one key has none, and is reported. Only an inconsistent context kinds such a row, and a substitution makes one out of a sharp row; the rule has a derivation for it, which a reduct needs and the checker, checking no reduct, does not.

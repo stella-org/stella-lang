@@ -152,7 +152,7 @@ dt ::= leaf e
 ```
 
 - `switchCtor` is a single dispatch on a data type's tag. The branches are mutually exclusive and their written order carries no meaning.
-- `switchKey` dispatches on the key of a variant element. In the `default` branch the occurrence has the residual variant type `Variant ρ'`, with the enumerated keys removed. This is the structural decomposition of an open variant.
+- `switchKey` dispatches on the key of a variant element. In the `default` branch the occurrence has the residual variant type `Variant ρ'`, the variant's row decomposing as `( k̄ : τ̄ | ρ' )` into the enumerated elements and `ρ'`. This is the structural decomposition of an open variant.
 - `guard` is the only sequential test, corresponding to CoreFn's `Guard`. Fall-through is expressed by placing `jump j` in `dt_else`.
 - `fail` is derived notation for `leaf (perform Partial.abort [τ] Prim.Unit)` and produces a `Partial` effect (D10).
 

@@ -787,8 +787,9 @@ tree at env rho expected occurrences dt = case dt of
     normal <- normalize at row
     distinct at (map _.key branches)
     items <- traverse (keyItem at found.occurrences occurrence row normal) branches
-    residual <- residualVariant at row normal (map _.key branches)
-    keysExhaustive at normal (map _.key branches) fallback
+    let rest = residualOf normal (map _.key branches)
+    residual <- variant <$> rowOfNormalForm at row rest
+    keysExhaustive at rest fallback
     let residualOccurrences = Map.insert occurrence residual found.occurrences
     ty <- subTreeType at env rho expected (items <> fallbackItem residualOccurrences fallback)
     checked <- traverse (checkItem at env rho ty) items
@@ -1180,18 +1181,12 @@ keyItem at occurrences occurrence row normal branch =
             branch.tree
         )
 
--- | The type an occurrence takes in a default branch: the variant of the row
--- | with the enumerated keys removed, not the type it had.
-residualVariant
-  :: forall a
-   . a
-  -> Type
-  -> RowNormalForm
-  -> P.Array RowKey
-  -> Either (CheckFailure a) Type
-residualVariant at row normal keys = do
-  rest <- rowOfNormalForm at row (normal { known = foldl (flip Map.delete) normal.known keys })
-  Right (variant rest)
+-- | `r'` of the decomposition `r ≡ ( k̄ : τ̄ | r' )` a `switchKey` makes, read
+-- | off the sharp normal form: deleting the enumerated keys leaves the one
+-- | residual the kinding premise admits in a consistent context, and one the
+-- | rule admits in any. A default's occurrence takes its variant.
+residualOf :: RowNormalForm -> P.Array RowKey -> RowNormalForm
+residualOf normal keys = normal { known = foldl (flip Map.delete) normal.known keys }
 
 exhaustive
   :: forall a
@@ -1206,20 +1201,19 @@ exhaustive at constructors branches fallback = case fallback of
     when (not (Array.all (\ctor -> Array.elem ctor branches) constructors))
       (Left { at, error: NotExhaustive })
 
--- | Absent a default, a `switchKey` has an empty unknown tail and enumerates
--- | every known key: a value carrying anything else would have no destination.
+-- | Absent a default, a `switchKey`'s residual is `()`: no unknown tail and no
+-- | known key left unenumerated, since a value carrying anything else would
+-- | have no destination.
 keysExhaustive
   :: forall a
    . a
   -> RowNormalForm
-  -> P.Array RowKey
   -> Maybe (DecisionTree a)
   -> Either (CheckFailure a) Unit
-keysExhaustive at normal branches fallback = case fallback of
+keysExhaustive at rest fallback = case fallback of
   Just _ -> Right unit
-  Nothing -> do
-    when (not (Set.isEmpty normal.tail)) (Left { at, error: NotExhaustive })
-    when (not (Array.all (\key -> Array.elem key branches) (Map.keys normal.known # Array.fromFoldable)))
+  Nothing ->
+    when (not (Map.isEmpty rest.known && Set.isEmpty rest.tail))
       (Left { at, error: NotExhaustive })
 
 distinct :: forall a b. Ord b => a -> P.Array b -> Either (CheckFailure a) Unit

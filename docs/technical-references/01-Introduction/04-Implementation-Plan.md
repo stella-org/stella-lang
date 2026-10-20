@@ -240,6 +240,9 @@ The heading of each group names the step of the plan that the group belongs to.
 | `switchKey` over a row with an unknown tail, no default | Rejected |
 | `switchCtor` with a default whose body is ill-typed | Rejected. The default branch is typed like any other |
 | `switchKey` default | The occurrence is refined to the residual `Variant r'`, not left at the original type |
+| `switchKey` enumerating `name` over `Variant ( name : Int \| r )`, the default binding the occurrence | Bound at `Variant r`, the tail the row decomposes into |
+| `switchKey` enumerating `name` over `Variant ( ( name : Int ) ⊎ ( name : Int ) )` under the inconsistent `name ∉ ( name : Int )` | Accepted with no default, and a default's occurrence is at `Variant ()`. The row is `( name : Int )`, equal pairs collapsing |
+| The same over a row with two payloads at `name` | Reported, `NotARowType`. The rule has a derivation for it, which a reduct needs and the checker does not; no sharp normal form gives the checker a payload |
 | A handler omitting an operation of `E` | Rejected. `handle` removes the keyed element, so an operation without a clause has nowhere to go |
 | A handler clause that does not respect an operation's own `forall b̄` | Rejected |
 | An interpreter sequencing a native action before resuming a continuation, the residual row not being closed | Rejected. That continuation is `a -{ρ}-> IO r`, which the pure arrow of `Base.IO.bind` does not take. Abandoning the continuation, or resuming it first, is admitted |
@@ -334,6 +337,10 @@ The heading of each group names the step of the plan that the group belongs to.
 | `letjoin j (x : Int) : Int = e1 in let y = (λz.z) 1 in jump j y` | The body reduces before the jump fires |
 | `letrec { f = λx. … } in e` | Unfolds only in elimination position. No term steps to itself |
 | `switchKey` on a value wrapped in `weaken` | Dispatches on the key actually injected. `weaken` is a value form and is looked through |
+| `switchKey` enumerating `x` over `inject y [( x : Int )] true`, the default binding the occurrence, and the same under a `weaken` | Steps into the default with the value as it stands, which has the residual `Variant ( y : Boolean )` by what it carries. No annotation is rewritten |
+| `inject y [r] true` whose `r` names an unbound variable or a region not in scope, or under a `weaken` holding such a type, read at `Variant ( y : Boolean )` | Ill-typed. The rule for variant values asks the value to have some variant type first, which checks every annotation the carrier skips |
+| `( Λ (r : Row Effect). λ (u : Unit) / r. region⟨ℓ⟩ θ in Prim.Unit ) [ ( region ℓ ) ]` | Ill-typed before it steps. A frame's residual row is closed, and `r` is not, so no substitution makes the frame's row hold its own region |
+| A source `region` opened by a step | The frame's answer type and residual row are kinded under `Γ_R` alone, and it records no `RegionKey ℓ ∉ t`. Its layout enters `Γ_R` closed but for earlier regions |
 | `bind x = o in guard (p x) …` | The substitution happens before descending, so the guard's condition has no free `x` |
 | That call, once it is evaluated | The innermost handler of the key is chosen: `Ev_k` lets no `handle` of that key stand between it and the hole |
 | `H Ev_k[perform k.op v] with h` whose clause for `op` is `fast` | Binds the body with a `let` and rebuilds the handler around `Ev_k` with that binding in the hole. No continuation value is built, and the `let` is what reconciles the clause's row with the handled computation's |

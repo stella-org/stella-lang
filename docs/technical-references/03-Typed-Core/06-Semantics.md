@@ -457,6 +457,27 @@ A **constructor's chain of values is always a value**, saturated or not: a satur
 
 `weaken` and `openEff` are **value forms, not redexes**. Reducing them away would change the type — `weaken k [τ] v : Variant ( k : τ | r )` while `v : Variant r` — and D8 provides no subtyping to identify the two. They are consumed by the constructs that examine them: pattern matching looks through `weaken`, and application looks through `openEff`.
 
+### Variant values
+
+**A variant value is typed by what it carries.** Its row annotation and the `weaken`s around it have no run-time content, and a reduct may need the value at a row they do not spell out. What it carries is the key and the payload of the `inject` beneath its `weaken`s:
+
+```text
+carrier( inject k [r] w )    = (k, w)
+carrier( weaken k' [τ] v )   = carrier(v)
+
+  Γ;· ⊢ v : Variant r0 ! ()                      ← every annotation of v checked
+  carrier(v) = (k, w)      Γ;· ⊢ w : τ ! ()
+  Γ ⊢ r : Row Type         Γ ⊨ k ∉ r
+  ─────────────────────────────────────────
+  Γ;Δ ⊢ v : Variant ( k : τ | r ) ! ρ
+```
+
+**The first premise is what keeps the annotations honest.** The carrier reads none of them, so without it `inject y [r] true` would be typed at `Variant ( y : Boolean )` whatever `r` is, a row naming an unbound variable or a region not in scope among them, and so would a `weaken` holding such a type. Asking `v` to have some variant type first checks every annotation it holds, a derivation of that judgement for `v` ending at last in the rules for `inject` and `weaken`; the rule changes only which row `v` is read at.
+
+**The rule is what lets a `switchKey` default keep its refinement.** `inject y [( x : Int )] true` has type `Variant ( y : Boolean | x : Int )`, and a `switchKey` enumerating `x` sends it to the default, where the occurrence stands at `Variant ( y : Boolean )`. The step places the value as it stands, `match θ` keeping `θ` and a `bind` substituting `θ(o)`, and the value's annotation still says that the rest holds `x`; by the rules for `inject` and `weaken` it has no residual type. By this one it has, carrying `y` and a `Boolean`, and so it has under any number of `weaken`s. No step rewrites an annotation, and no default gives up its refinement.
+
+**It is a rule of the declarative relation that the checker does not implement.** Nothing in its form confines it to reducts, so the relation applies it to a variant value in a source term as well. The checker types a source term by the rules for `inject` and `weaken` alone, so it accepts the programs it accepted without this rule, and where a source term needs the rule it is narrower than the relation, as it is on a row with no sharp normal form ([Typing Rules](05-Typing-Rules.md)). Nor is it subtyping (D8): it relates no two types and types a value alone, whose annotations erase, while a variant computation stays at the type its term writes.
+
 ### Run-time forms
 
 Six forms arise during reduction and are never produced by elaboration.
@@ -488,9 +509,10 @@ The last is the only one a `δ_f` produces, and the only one that is a value rat
   Γ;Δ ⊢ fill ν e : σ ! ρ
 
   ( region ℓ : ι ) ∈ Γ_R      ι = ( k̄ : σ̄ )      dom(θ) = { k̄ }
-  each j:  Γ;· ⊢ θ(k_j) : σ_j ! ()
-  Γ' = Γ, { RegionKey ℓ ∉ t | t : Row Effect ∈ Γ }
-  Γ';· ⊢ e : β ! ( region ℓ | ρ )      ℓ ∉ frn(β) ∪ frn(ρ)
+  each j:  θ(k_j) is a value      Γ;· ⊢ θ(k_j) : σ_j ! ()
+  · ⊢ β : Type      · ⊢ ρ : Row Effect             ← closed: under Γ_R alone
+  ℓ ∉ frn(β) ∪ frn(ρ)
+  Γ;· ⊢ e : β ! ( region ℓ | ρ )
   ─────────────────────────────────────────────────────────────
   Γ;Δ ⊢ region⟨ℓ⟩ θ in e : β ! ρ
 ```
@@ -510,7 +532,23 @@ The last is the only one a `δ_f` produces, and the only one that is a value rat
 
 An `Evaluating` cell's initializer is the term a `fill ν e` stands for, typed where it stands. **A location is no value**: it stands only as the operand of `force` and `fill`, which is what keeps a member's name, once substituted, a reference that reads its cell. They are **local** forms only. A top-level `rec` group installs its members into `G` in the order written, and its recursive references are global names.
 
-`region⟨ℓ⟩ θ in e` is a region whose initial values have been evaluated. **It binds nothing**: its rule is the source rule ([Typing Rules](05-Typing-Rules.md)) with `ℓ ∈ Γ_R` in place of the binder and `θ` in place of the initial values. It carries `θ` — **the cells themselves, by value** — together with the name the opening allocated, which is what makes its rule derivable and hence what makes preservation hold across a write (D36). The values live here and nowhere else: a region's cells have no store, no address, and no two ways to reach one cell of one frame.
+**`Γ_R` and `Γ_N` are closed.** `·` is the context holding `Γ_R` and no local binding, so no kind variable, type variable, term variable, or assumption. A layout is kinded under the names allocated before its own, and a location's type under `·`:
+
+```text
+  each ( region ℓ : ι ) ∈ Γ_R:   Γ_R<ℓ ⊢ ι : Row Type      ← Γ_R<ℓ: the entries before ℓ's
+  ────────────────────────────────────────────────────
+  ⊢ Γ_R ok
+
+  each ( ν : σ ) ∈ Γ_N:   · ⊢ σ : Type
+  ─────────────────────────────────────
+  Γ_R ⊢ Γ_N ok
+```
+
+**Both hold because a step is never taken under a binder of the term.** A region is opened, and a `letrec` allocated, where no `λ`, `Λ`, or constraint abstraction encloses it, so its layout and its members' types are kinded under `Γ_R` as it stands then. A location's type may name a region, a `letrec` allocated inside an open region holding a member that reaches its cells, and a layout may name an earlier region. **Extending either changes no entry**: an opening adds a fresh name and an allocation fresh locations, so a term typed under the old contexts is typed under the new. That a location's type mentions no local binder is what lets `force ν` and `fill ν e` be typed in any `Γ` and left unchanged by a substitution for one.
+
+`region⟨ℓ⟩ θ in e` is a region whose initial values have been evaluated. **It binds nothing**: its rule is the source rule ([Typing Rules](05-Typing-Rules.md)) with `ℓ ∈ Γ_R` in place of the binder, `θ` in place of the initial values, and its answer type and residual row closed. It carries `θ` — **the cells themselves, by value** — together with the name the opening allocated, which is what makes its rule derivable and hence what makes preservation hold across a write (D36). The values live here and nowhere else: a region's cells have no store, no address, and no two ways to reach one cell of one frame. Every cell holds a value, the opening putting the initial values there and a write the value it writes.
+
+**A frame's answer type and residual row are closed for the reason `Γ_R` is**, and the premise is what keeps the rule true under substitution. A frame is made by a step, so a well-typed source `region` opens into a frame whose `β` and `ρ` were kinded under `Γ_R` alone. Were they kinded under `Γ`, `( Λ (r : Row Effect). λ (u : Unit) / r. region⟨ℓ⟩ θ in Prim.Unit ) [ ( region ℓ ) ]` would be typed, `ℓ ∉ frn(r)` holding, and step to a term holding a frame whose residual row holds `region ℓ`. Closed, `r` is a residual row no frame has, and the term is rejected before it steps. A substitution for a local variable leaves `β`, `ρ`, and the layout as they are, and acts on `θ` and `e` as on any term; the rule types `θ` and `e` under `Γ`, since a frame does stand under a binder once a continuation copies it into the body of a `λ`. **For the same reason the frame records no `RegionKey ℓ ∉ t`**: `ρ` has no row variable for such a fact to be about, `( region ℓ | ρ )` is sharp by `ℓ ∉ frn(ρ)` alone, and a fact about a row variable bound in `Γ` would not survive substituting a row that holds `region ℓ` for it. The source rule keeps its facts, its residual row standing under row variables bound outside it.
 
 **One name may label several frames.** A continuation copies its segment as it stands, frames and names included, so applying one twice puts two frames named `ℓ` into the term. Every frame of a name descends from one opening and carries a `θ` typed against the one layout `Γ_R(ℓ)`. Which of them a reference reaches is settled with the rules for cells ([Cells](#cells)).
 
@@ -909,15 +947,17 @@ A variant value loses its `weaken` wrappers, so an erased `switchKey` dispatches
 
 The following are stated as the properties the implementation is expected to have. They are not proved here. [Implementation Plan](../01-Introduction/04-Implementation-Plan.md) describes how each becomes a property test.
 
-Every property assumes three things, and each does work the others do not (above), together with a store its types type, `⊢ N : Γ_N`, which conformance and the term are read under. Without `Σ; Γ_N ⊨ G` the global environment may supply an ill-typed definition or a `δ_f` that returns the wrong thing. Without `G` being **Core-modelled** the relation gives a saturated `foreign` no step at all, so there is no reduction sequence to quantify over — which is why an environment holding `Base.Array.unsafeSet` is outside every statement below, and one holding `Base.String.codePointAt` is not. Without `e` **respecting preconditions** a step is reached whose outcome the ABI declined to fix, so what follows it is not a term these statements describe.
+Every property assumes three things, and each does work the others do not (above), together with well-formed run-time contexts, `⊢ Γ_R ok` and `Γ_R ⊢ Γ_N ok`, and a store `Γ_N` types, `⊢ N : Γ_N`, which conformance and the term are read under. Without `Σ; Γ_N ⊨ G` the global environment may supply an ill-typed definition or a `δ_f` that returns the wrong thing. Without `G` being **Core-modelled** the relation gives a saturated `foreign` no step at all, so there is no reduction sequence to quantify over — which is why an environment holding `Base.Array.unsafeSet` is outside every statement below, and one holding `Base.String.codePointAt` is not. Without `e` **respecting preconditions** a step is reached whose outcome the ABI declined to fix, so what follows it is not a term these statements describe.
 
 **The third is the one a reader is likely to want narrower, and it cannot be.** It is not a condition on `G`, since the same environment runs a program that reads only written slots and one that does not; and it is not decidable here, since nothing in these documents analyses which slots a program has written. **What it is, is a debt the library owes**, and `Data.Array` is where it is paid: an array leaves its constructors with every slot written, and an application reaching `Base.Array.unsafeIndex` through that library is a term that respects preconditions without its author having thought about it.
 
-**Preservation.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ N : Γ_N`, `Γ; Δ ⊢ e : τ ! ρ` under `Γ_N`, and `G ⊢ N; e → N2; e2` for a **term** `e2`, then there is a `Γ_N2` extending `Γ_N` with `⊢ N2 : Γ_N2`, `Σ; Γ_N2 ⊨ G`, and `Γ; Δ ⊢ e2 : τ ! ρ` under `Γ_N2`.
+**Preservation.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ Γ_R ok`, `Γ_R ⊢ Γ_N ok`, `⊢ N : Γ_N`, `·; · ⊢ e : τ ! ρ` under `Γ_R` and `Γ_N`, and `G ⊢ N; e → N2; e2` for a **term** `e2`, then there are a `Γ_R2` extending `Γ_R` and a `Γ_N2` extending `Γ_N`, with `⊢ Γ_R2 ok`, `Γ_R2 ⊢ Γ_N2 ok`, `⊢ N2 : Γ_N2`, `Σ; Γ_N2 ⊨ G`, and `·; · ⊢ e2 : τ ! ρ` under `Γ_R2` and `Γ_N2`.
 
 A step to `fault φ` is outside the statement: a fault carries no type.
 
 Both the type and the ambient row are preserved exactly. Widening is never discarded by a step: applying through an `openEff` moves it to `openEffC`, and `openEffC` is discharged only against a value, whose type does not mention the ambient row. Handling an operation likewise leaves the row unchanged, since the clause body is typed at the residual row that the `handle` already had. `Γ_R` and `Γ_N` are what a step changes: opening a region extends `Γ_R` with the name it allocates, and a `letrec` extends `Γ_N` with the locations it allocates, and the statement is read under the extended ones, every name and every location already in them keeping its layout or its type. A `force` and a `fill` change the state of a cell and not its type.
+
+**The term is closed**, as it is in Progress and Effect safety. A step is taken where no binder of the term encloses it, which is what makes a region frame's answer type and residual row closed ([Run-time forms](#run-time-forms)); an open term is reached by substitution rather than by a step, and what a substitution preserves is a lemma of the typing rules, not of the relation.
 
 **Progress.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ N : Γ_N`, and `·; · ⊢ e : τ ! ()` under `Γ_N`, then `e` is a value, or there exist `N2` and `e2` with `G ⊢ N; e → N2; e2`, or `G ⊢ N; e → N2; fault φ` for some fault φ. A `force` has a rule in every state of its cell, and a `fill` of a value always steps.
 

@@ -358,6 +358,7 @@ Define the carried key and payload of a variant value by looking through `weaken
 underlying `inject`. Add an admissible run-time value typing rule:
 
 ```text
+Γ;· ⊢ v : Variant r0 ! ()
 carrier(v) = (k, w)       Γ;· ⊢ w : τ ! ()
 Γ ⊢ r : Row Type          Γ ⊨ k ∉ r
 ────────────────────────────────────────────
@@ -366,7 +367,10 @@ carrier(v) = (k, w)       Γ;· ⊢ w : τ ! ()
 
 The row annotation on `inject` and the wrappers added by `weaken` carry no run-time content. The rule
 therefore permits a run-time variant value to be typed at any well-kinded variant row that contains
-the key and payload it actually carries.
+the key and payload it actually carries. The first premise nevertheless requires the value to have
+some ordinary variant typing before its row is changed. This checks every annotation that
+`carrier` looks through; without it, an `inject` or `weaken` containing an unbound type variable or
+an out-of-scope region could be typed merely from its carried key and payload.
 
 The syntax-directed Core checker may continue to use the ordinary `inject` and `weaken` rules for
 source terms. The new rule is required in the declarative run-time typing relation and when proving
@@ -395,6 +399,7 @@ The no-default rule remains: the row has no unknown tail and the branches exhaus
 
 - Reduction of the counterexample into the default branch preserves the occurrence typing.
 - The rule also works when the injected value is underneath one or more `weaken` wrappers.
+- An `inject` or `weaken` with an ill-scoped annotation cannot be retyped by the variant-value rule.
 - Residual refinement is preserved by type substitution, including in an inconsistent context.
 - The operational `switchKey` rules are unchanged.
 

@@ -276,7 +276,7 @@ Two binders change `Γ*` besides the assumptions.
 { RegionKey ℓ ∉ t  |  t : Row Effect ∈ Γ }
 ```
 
-for every row variable of kind `Row Effect` bound before `ℓ`. A row variable bound later, inside the body, gets no such fact; a function that abstracts over a row there and needs the key absent says so in its type, as for any other key. This is what lets a function polymorphic in its row be applied inside a region with no constraint written for it, and what makes the body's row `( region ℓ | ρ )` sharp ([Typing Rules](05-Typing-Rules.md)).
+for every row variable of kind `Row Effect` bound before `ℓ`. A row variable bound later, inside the body, gets no such fact; a function that abstracts over a row there and needs the key absent says so in its type, as for any other key. This is what lets a function polymorphic in its row be applied inside a region with no constraint written for it, and what makes the body's row `( region ℓ | ρ )` sharp ([Typing Rules](05-Typing-Rules.md)). A run-time region frame adds none, its residual row being closed ([Semantics](06-Semantics.md#run-time-forms)).
 
 ### What entailment does not derive
 
