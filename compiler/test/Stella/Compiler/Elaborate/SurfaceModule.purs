@@ -30,7 +30,7 @@ import Stella.Compiler.Elaborate.Driver.Synthesis (Registry, attemptJob)
 import Stella.Compiler.Elaborate.Driver.Loop (identically)
 import Stella.Compiler.Elaborate.Protocol.Guest (elabModule, synthesizerType)
 import Stella.Compiler.Elaborate.Protocol.Facade as F
-import Stella.Compiler.Elaborate.Vocabulary.Message (MessagePart(..))
+import Stella.Compiler.Elaborate.Vocabulary.Message (FrozenMessagePart(..), MessagePart(..))
 import Stella.Compiler.Elaborate.Vocabulary.View (TypeView(..))
 import Stella.Compiler.Elaborate.Environment.Imported (importedCatalog, importedSignature, sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceEnv, importedSurface)
@@ -38,6 +38,8 @@ import Stella.Compiler.Elaborate.Kernel.Elab (Outcome(..), closeBoundary, create
 import Stella.Compiler.Elaborate.Mechanism.Unify (KindMetaBinding(..), MetaBinding(..), UnifyError(..), lookupMeta)
 import Stella.Compiler.Elaborate.Surface.Types (readTypes)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
+import Stella.Compiler.Elaborate.Mechanism.Kinding (KindEvidence(..))
+import Stella.Compiler.Elaborate.Mechanism.Pending (PendingId(..))
 import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), cellRecords, elaborateModuleM, escapedCells, settleBodies)
 import Data.Identity (Identity(..))
 import Stella.Compiler.Elaborate.Surface.Report (elaborationOrigins, printElaborationError, printType)
@@ -674,6 +676,26 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     it "share a hole's name within one annotation alone" do
       elaborating [ "h :: Int -> Int", "h x = (inc :: ?a -> ?a) ((inc :: ?a -> ?a) x)" ] \r ->
         map at r.errors `shouldEqual` [ "4:15 hole a Int", "4:34 hole a Int" ]
+
+  describe "a synthesizer's failure" do
+    let
+      failed message = Rejected (SynthesisFailed { goal: { origin: InDeclaration (Qualified (ModuleName "M") (Ident "f")), pending: PendingId 0, synthesizer: Qualified (ModuleName "D") (Ident "derive"), expectedType: XCon intTy [] }, message })
+
+    it "is reported as before where the synthesizer says nothing" do
+      printElaborationError (failed []) `shouldEqual` "A synthesizer failed here"
+
+    it "says what the synthesizer said, each part in order and separated by a space" do
+      printElaborationError
+        ( failed
+            [ FrozenText "no encoder for"
+            , FrozenType { type: XCon intTy [], kind: ExactKind XKType }
+            , FrozenText "beside"
+            , FrozenTerm { term: ELit unit (LitInt 1), claimed: XCon stringTy [] }
+            , FrozenText "or"
+            , FrozenName (Qualified (ModuleName "Codec") (Ident "int"))
+            ]
+        )
+        `shouldEqual` "A synthesizer failed here: no encoder for `Int` beside a term of `String` or `Codec.int`"
 
   describe "an expression hole" do
     it "is reported with the type it stands at and the locals in scope, the body no value" do

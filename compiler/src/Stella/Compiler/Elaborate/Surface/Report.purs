@@ -40,6 +40,7 @@ import Stella.Compiler.Elaborate.Surface.Match (Witness(..))
 import Stella.Compiler.TypedCore.Domain (codePointOf, textOf)
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
+import Stella.Compiler.Elaborate.Vocabulary.Message (FrozenMessagePart(..))
 import Stella.Compiler.ForeignBoundary (Position(..), Refusal(..), Refused)
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
@@ -250,7 +251,9 @@ printDiagnostic = case _ of
   ObligationBroken b -> printBreach b.breach
   ObligationRejected r -> printBreach r.breach
   TermAssignmentFailed _ _ -> "A term filled in here is not valid where it stands"
-  SynthesisFailed _ -> "A synthesizer failed here"
+  SynthesisFailed s
+    | Array.null s.message -> "A synthesizer failed here"
+    | otherwise -> fmt @"A synthesizer failed here: {message}" { message: printMessage s.message }
   RowNotContained _ r -> fmt @"This performs `{s}`, which is not among the effects allowed here" { s: printEffectRow (rebuild r.source) }
   BoundaryNotContained _ r -> fmt @"This performs `{s}` beyond the effects expected here, which this version of the compiler does not resolve with an implicit handler yet" { s: printEffectRow (rebuild r.source) }
   CellEscapes e -> fmt @"The cell `{cell}` is the first cell referenced in a region that would be carried beyond the handling expression declaring its cells; a cell lives only as long as that expression" { cell: case e.cell of Ident n -> n }
@@ -421,3 +424,14 @@ printKind = go false
 
 parenthesized :: Boolean -> String -> String
 parenthesized yes s = if yes then fmt @"({s})" { s } else s
+
+-- | What a synthesizer said, its parts separated by spaces.
+printMessage :: Array FrozenMessagePart -> String
+printMessage parts = joinWith " " (map part parts)
+  where
+  part = case _ of
+    FrozenText text -> text
+    FrozenType t -> fmt @"`{t}`" { t: printType t.type }
+    FrozenTerm t -> fmt @"a term of `{t}`" { t: printType t.claimed }
+    FrozenName name -> fmt @"`{name}`" { name: qualifiedText name }
+  qualifiedText (Qualified (ModuleName m) (Ident n)) = m <> "." <> n
