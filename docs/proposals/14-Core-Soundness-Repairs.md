@@ -1,6 +1,6 @@
 # Core Soundness Repairs Found by Mechanization
 
-Status: Proposed
+Status: Accepted
 
 ## Purpose
 
