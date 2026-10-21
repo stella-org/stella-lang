@@ -1,0 +1,13 @@
+-- A synthesizer that decides the type of its goal: it is `{ name :: String }`,
+-- and the term `{ name: "Fay" }`.
+module Sample (sampled) where
+
+import Stella.Elab
+
+sampled :: Handle -> Handle / {| Kernel |}
+sampled = synthesizer (\goal ->
+  let root = rootScope () in
+  let string = typeConstructor root (Name "Prim" "String") Nil in
+  let record = applyType root (typeConstructor root (Name "Prim" "Record") Nil) (extendRow root (SymbolKey "name") (TypePayload string) (emptyRow root)) in
+  let unified = unify root (goalType goal) record in
+  recordExtend root (SymbolKey "name") (literal root (LitString "Fay")) (recordEmpty root))

@@ -1,0 +1,210 @@
+-- An encoder of `Codec` derived from the type of the goal.
+--
+-- `Encoder Int`, `Encoder String`, and `Encoder Boolean` are `Codec`'s own. The
+-- encoder of a record is `object` over the fields of its row: one `field` for
+-- each known field, in the order `normalizeRow` gives the keys, each field's
+-- encoder asked of `derive` again as a subgoal. A row open in one rigid tail `r`
+-- ends in the fields of `{ ...r }`, written of the record with the known fields
+-- restricted away and asked as a subgoal; the goal `Fields { ...r }` itself is
+-- answered by a binding of the site at that type, and by nothing else, so the
+-- row is never closed. A type not decided yet postpones the goal on its
+-- metavariables.
+module Derive (derive) where
+
+import Base.String as String
+import Stella.Elab
+  ( Abort
+  , Breach
+  , Handle
+  , Kernel
+  , KindView(..)
+  , List(..)
+  , Literal(..)
+  , Maybe(..)
+  , MessagePart(..)
+  , Name(..)
+  , PayloadView(..)
+  , RowKey(..)
+  , TypeView(..)
+  , applyType
+  , closeLambda
+  , emptyRow
+  , freshMetaType
+  , globalRef
+  , goalType
+  , literal
+  , localContext
+  , localVariable
+  , normalizeRow
+  , openLambda
+  , postpone
+  , recordRestrict
+  , recordSelect
+  , rootScope
+  , subgoal
+  , synthesizer
+  , termApply
+  , throw
+  , transact
+  , typeApply
+  , typeConstructor
+  , typeVariable
+  , unify
+  , viewType
+  )
+
+type Elaborating = {| Abort, Breach, Kernel |}
+
+isName :: Name -> String -> String -> Boolean
+isName name m x = case name of
+  Name nm nx -> case String.eq nm m of
+    true -> String.eq nx x
+    false -> false
+
+codec :: String -> Name
+codec x = Name "Codec" x
+
+-- `Codec.<name>` applied to the type given.
+codecType :: Handle -> String -> Handle -> Handle / Elaborating
+codecType root name argument = applyType root (typeConstructor root (codec name) Nil) argument
+
+-- `{ ...row }`.
+recordOf :: Handle -> Handle -> Handle / Elaborating
+recordOf root row = applyType root (typeConstructor root (Name "Prim" "Record") Nil) row
+
+-- The global of `Codec` named, applied to the types and then to the terms given.
+call :: Handle -> String -> List Handle -> List Handle -> Handle / Elaborating
+call root name types terms = applyTerms root (applyTypes root (globalRef root (codec name) Nil) types) terms
+
+applyTypes :: Handle -> Handle -> List Handle -> Handle / Elaborating
+applyTypes root e types = case types of
+  Nil -> e
+  Cons t rest -> applyTypes root (typeApply root e t) rest
+
+applyTerms :: Handle -> Handle -> List Handle -> Handle / Elaborating
+applyTerms root e terms = case terms of
+  Nil -> e
+  Cons t rest -> applyTerms root (termApply root e t) rest
+
+-- The argument of `Codec.<name>` the type given is, where it is one.
+argumentOf :: Handle -> String -> Handle -> Maybe Handle / Elaborating
+argumentOf root name wanted = transact (\u ->
+  let argument = freshMetaType root KindType in
+  let unified = unify root (codecType root name argument) wanted in
+  argument)
+
+-- The row of a record type, where the type given is one.
+rowOf :: TypeView -> Maybe Handle / Elaborating
+rowOf view = case view of
+  AppType f row -> case viewType f of
+    ConType name _ -> case isName name "Prim" "Record" of
+      true -> Just row
+      false -> Nothing
+    _ -> Nothing
+  _ -> Nothing
+
+-- Whether the type given is `Codec.Fields` applied to something.
+isFields :: TypeView -> Boolean / Elaborating
+isFields view = case view of
+  AppType f _ -> case viewType f of
+    ConType name _ -> isName name "Codec" "Fields"
+    _ -> false
+  _ -> false
+
+metasOf :: List { meta :: Handle, type :: Handle } -> List Handle
+metasOf flexible = case flexible of
+  Nil -> Nil
+  Cons tail rest -> Cons tail.meta (metasOf rest)
+
+unsupported :: forall a. Handle -> a / Elaborating
+unsupported wanted = throw (Cons (TextPart "no encoder is derived for the type") (Cons (TypePart wanted) Nil))
+
+-- The encoder of the type given.
+encoderOf :: Handle -> Handle -> Handle / Elaborating
+encoderOf root a =
+  let view = viewType a in
+  case view of
+    MetaType m -> postpone (Cons m Nil)
+    ConType name _ -> case isName name "Prim" "Int" of
+      true -> call root "int" Nil Nil
+      false -> case isName name "Prim" "String" of
+        true -> call root "string" Nil Nil
+        false -> case isName name "Prim" "Boolean" of
+          true -> call root "boolean" Nil Nil
+          false -> unsupported a
+    _ -> case rowOf view of
+      Just row -> call root "object" (Cons a Nil) (Cons (fieldsOf root a row) Nil)
+      Nothing -> unsupported a
+
+-- The fields of the record type given, of the row given.
+fieldsOf :: Handle -> Handle -> Handle -> Handle / Elaborating
+fieldsOf root record row =
+  let normal = normalizeRow row in
+  case normal.flexible of
+    Cons _ _ -> postpone (metasOf normal.flexible)
+    Nil -> case normal.rigid of
+      Nil -> known root record normal.known (call root "none" (Cons record Nil) Nil)
+      Cons tail Nil -> case normal.known of
+        Nil -> fromSite root (codecType root "Fields" record) (localContext ())
+        Cons _ _ -> known root record normal.known (tailFields root record normal.known tail)
+      Cons _ _ -> throw (Cons (TextPart "no encoder is derived for a row open in more than one tail:") (Cons (TypePart record) Nil))
+
+-- One `field` for each known field given, before the fields given.
+known :: Handle -> Handle -> List { key :: RowKey, payload :: PayloadView } -> Handle -> Handle / Elaborating
+known root record entries after = case entries of
+  Nil -> after
+  Cons entry others -> case entry.key, entry.payload of
+    SymbolKey label, TypePayload t ->
+      let encoder = subgoal root (codecType root "Encoder" t) (Name "Derive" "derive") in
+      call root "field" (Cons record (Cons t Nil)) (Cons (literal root (LitString label)) (Cons (selector root record label) (Cons encoder (Cons (known root record others after) Nil))))
+    _, _ -> throw (Cons (TextPart "no encoder is derived for a row holding a field that is not labelled:") (Cons (TypePart record) Nil))
+
+-- `\x -> x.label`, over the record type given.
+selector :: Handle -> Handle -> String -> Handle / Elaborating
+selector root record label =
+  let opened = openLambda root "x" record in
+  closeLambda root opened.binder (recordSelect opened.bodyScope (SymbolKey label) opened.variable) (emptyRow root)
+
+-- The fields of the tail named, written of the record with the known fields
+-- given restricted away, asked as a subgoal.
+tailFields :: Handle -> Handle -> List { key :: RowKey, payload :: PayloadView } -> String -> Handle / Elaborating
+tailFields root record entries tail =
+  let remaining = recordOf root (typeVariable root tail) in
+  let opened = openLambda root "x" record in
+  let restricted = closeLambda root opened.binder (restrictAll opened.bodyScope entries opened.variable) (emptyRow root) in
+  let fields = subgoal root (codecType root "Fields" remaining) (Name "Derive" "derive") in
+  call root "narrow" (Cons remaining (Cons record Nil)) (Cons restricted (Cons fields Nil))
+
+restrictAll :: Handle -> List { key :: RowKey, payload :: PayloadView } -> Handle -> Handle / Elaborating
+restrictAll scope entries e = case entries of
+  Nil -> e
+  Cons entry others -> restrictAll scope others (recordRestrict scope entry.key e)
+
+-- The first binding of the site at `Fields` that is the type wanted.
+fromSite :: Handle -> Handle -> List { name :: String, type :: Handle } -> Handle / Elaborating
+fromSite root wanted entries = case entries of
+  Nil -> throw (Cons (TextPart "nothing the site binds is the") (Cons (TypePart wanted) (Cons (TextPart "that the open tail needs") Nil)))
+  Cons entry others -> case isFields (viewType entry.type) of
+    true -> case transact (\u -> let unified = unify root entry.type wanted in localVariable root entry.name) of
+      Just found -> found
+      Nothing -> fromSite root wanted others
+    false -> fromSite root wanted others
+
+policy :: Handle -> Handle / Elaborating
+policy goal =
+  let root = rootScope () in
+  let wanted = goalType goal in
+  case viewType wanted of
+    MetaType m -> postpone (Cons m Nil)
+    _ -> case argumentOf root "Encoder" wanted of
+      Just a -> encoderOf root a
+      Nothing -> case argumentOf root "Fields" wanted of
+        Just record -> case viewType record of
+          MetaType m -> postpone (Cons m Nil)
+          view -> case rowOf view of
+            Just row -> fieldsOf root record row
+            Nothing -> unsupported wanted
+        Nothing -> unsupported wanted
+
+derive :: Handle -> Handle / {| Kernel |}
+derive = synthesizer policy

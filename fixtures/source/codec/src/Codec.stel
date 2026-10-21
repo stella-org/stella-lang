@@ -1,0 +1,82 @@
+-- What a value is written as, and what writes a value of a type.
+--
+-- An `Encoder a` writes a whole value of `a`; a `Fields a` writes the fields of
+-- a record of type `a`, one entry for each, in the order its combinators are
+-- applied. `render` is enough to observe the values written here, and escapes
+-- nothing.
+module Codec
+  ( Json(..)
+  , Entries(..)
+  , Encoder(..)
+  , Fields(..)
+  , int
+  , string
+  , boolean
+  , none
+  , field
+  , narrow
+  , object
+  , run
+  , render
+  ) where
+
+import Base.Int as Int
+import Base.String as String
+
+data Json = JNull | JBoolean Boolean | JInt Int | JString String | JObject Entries
+
+data Entries = Done | Entry String Json Entries
+
+data Encoder a = Encoder (a -> Json)
+
+data Fields a = Fields (a -> Entries)
+
+int :: Encoder Int
+int = Encoder JInt
+
+string :: Encoder String
+string = Encoder JString
+
+boolean :: Encoder Boolean
+boolean = Encoder JBoolean
+
+run :: forall a. Encoder a -> a -> Json
+run (Encoder f) x = f x
+
+-- No fields.
+none :: forall a. Fields a
+none = Fields (\_ -> Done)
+
+-- The field of the label given, read by the function given and written by the
+-- encoder given, before the fields given.
+field :: forall a b. String -> (a -> b) -> Encoder b -> Fields a -> Fields a
+field label select (Encoder f) (Fields rest) = Fields (\x -> Entry label (f (select x)) (rest x))
+
+-- The fields given, written of what the function given makes of a record.
+narrow :: forall a b. (b -> a) -> Fields a -> Fields b
+narrow restrict (Fields f) = Fields (\x -> f (restrict x))
+
+object :: forall a. Fields a -> Encoder a
+object (Fields f) = Encoder (\x -> JObject (f x))
+
+render :: Json -> String
+render j = case j of
+  JNull -> "null"
+  JBoolean b -> case b of
+    true -> "true"
+    false -> "false"
+  JInt n -> Int.toString n
+  JString s -> quoted s
+  JObject es -> String.append "{" (String.append (entries true es) "}")
+
+quoted :: String -> String
+quoted s = String.append "\"" (String.append s "\"")
+
+entries :: Boolean -> Entries -> String
+entries first es = case es of
+  Done -> ""
+  Entry label value rest ->
+    let written = String.append (quoted label) (String.append ":" (String.append (render value) (entries false rest))) in
+    case first of
+      true -> written
+      false -> String.append "," written

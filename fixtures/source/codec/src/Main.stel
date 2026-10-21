@@ -1,0 +1,39 @@
+-- Encoders derived for closed rows, nested ones, and rows open in a tail whose
+-- fields the site passes, each value written as a string. The type `waited`
+-- encodes is decided by another goal, which `Sample` answers after `derive`
+-- is first asked, so `derive` waits for it.
+module Main where
+
+import Codec
+import Derive (derive)
+import Sample (sampled)
+
+encode :: forall a. {{ e :: Encoder a by derive }} -> a -> Json
+encode e x = run e x
+
+fieldsOf :: forall a. {{ f :: Fields a by derive }} -> Fields a
+fieldsOf f = f
+
+person :: String
+person = render (encode { name: "Ann", age: 30, admin: false })
+
+nested :: String
+nested = render (encode { id: 1, owner: { name: "Bo" } })
+
+named :: forall r. Fields { ...r } -> { name :: String, ...r } -> Json
+named rest x = encode x
+
+handAge :: Fields { age :: Int }
+handAge = field "age" (\r -> r.age) int none
+
+opened :: String
+opened = render (named handAge { name: "Cy", age: 4 })
+
+derivedTail :: String
+derivedTail = render (named fieldsOf { name: "Di", age: 5, admin: true })
+
+sample :: forall a. {{ s :: a by sampled }} -> a
+sample s = s
+
+waited :: String
+waited = render (encode sample)
