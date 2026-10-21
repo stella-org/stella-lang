@@ -12,15 +12,14 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.Primitive (InClosedRun(..), PrimOp(..), Profile(..), RuntimeClass(..), RuntimeEntryId(..), abiTypes, arityOfOp, arrayTy, inClosedRunOf, baseModule, baseModuleNames, codeOfOp, entryOfOp, lookupRuntimeEntry, opOfCode, operations, primTable, qualifiedOf, runtimeEntries, runtimeEntryNamed, schemeOfOp, schemeOfRuntimeEntry, withBaseTypes)
+import Stella.Compiler.Primitive (InClosedRun(..), PrimOp(..), Profile(..), RuntimeClass(..), RuntimeEntryId(..), abiTypeDescriptors, arityOfOp, arrayTy, codeOfOp, entryOfOp, inClosedRunOf, lookupRuntimeEntry, opOfCode, operations, primTable, qualifiedOf, runtimeEntries, runtimeEntryNamed, schemeOfRuntimeEntry)
 import Stella.Compiler.TypedCore.Equality (schemeEquiv)
 import Stella.Compiler.TypedCore.Kind (Kind(..))
-import Stella.Compiler.TypedCore.Name (KindVar(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Name (KindVar(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (foreignArity)
-import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), TyConInfo(..))
+import Stella.Compiler.TypedCore.Signature (CanonicalClass(..))
 import Stella.Compiler.TypedCore.Type (substituteType)
 import Data.Map as Map
-import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Bytecode (CalleeEntry(..), Dmo, LowerError, lower)
 import Stella.Compiler.Interface (noImports)
@@ -31,7 +30,7 @@ import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
 import Test.Spec (Spec, describe, it)
-import Test.Spec.Assertions (fail, shouldEqual)
+import Test.Spec.Assertions (shouldEqual)
 
 int :: Type
 int = TCon intTy []
@@ -234,18 +233,6 @@ spec = describe "Stella.Compiler.Abi » operations of the Base surface" do
         `shouldEqual` [ ArrayUnsafeIndex, ArrayUnsafeNew, ArrayUnsafeSet, ArrayLength ]
       Array.all (\e -> inClosedRunOf e.op == RunLocalState || inClosedRunOf e.op == Admitted) primTable `shouldEqual` true
 
-    it "gives each Base module its operations as foreign declarations, at their schemes" do
-      baseModuleNames `shouldEqual` map ModuleName [ "Base.Int", "Base.Number", "Base.String", "Base.Char", "Base.Array" ]
-      Array.concatMap (foreignsOf <<< baseModule 0) baseModuleNames
-        `shouldEqual` map (\e -> { name: e.entry, scheme: schemeOfOp e.op }) primTable
-      Array.foldM
-        ( \_ name -> case declareAnnotated (withBaseTypes primSignature) (baseModule 0 name) of
-            Left err -> fail (show name <> " does not declare: " <> show err.error)
-            Right _ -> pure unit
-        )
-        unit
-        baseModuleNames
-
   describe "an operation short of its arguments" do
 
     it "waits as an operation rather than as the name of an implementation" do
@@ -317,7 +304,7 @@ spec = describe "Stella.Compiler.Abi » operations of the Base surface" do
       map (\e -> { id: e.id, runtimeClass: e.runtimeClass, profile: e.profile }) (Array.filter (\e -> e.name.module == "Base.IO") runtimeEntries) `shouldEqual`
         [ { id: IOPure, runtimeClass: RuntimeIO, profile: CoreRuntime }, { id: IOBind, runtimeClass: RuntimeIO, profile: CoreRuntime } ]
       Array.length primTable `shouldEqual` 34
-      Array.elem (ModuleName "Base.IO") baseModuleNames `shouldEqual` false
+      Array.any (\e -> case e.entry of Qualified m _ -> m == ModuleName "Base.IO") primTable `shouldEqual` false
 
     it "compares schemes up to the names of their kind and type variables, and no further" do
       let
@@ -335,16 +322,5 @@ spec = describe "Stella.Compiler.Abi » operations of the Base surface" do
       schemeEquiv (poly "a" k) { kindVars: [ k, j ], body: (poly "a" k).body } `shouldEqual` Right false
       schemeEquiv bound (schemeOfRuntimeEntry IOPure) `shouldEqual` Right false
 
-    it "supplies `Base.Array.Array` at `standard` and none at `core-runtime`, as Core and as the interface read it" do
-      map (map Map.keys) (Map.toUnfoldable (abiTypes Standard) :: P.Array _) `shouldEqual` [ Tuple (ModuleName "Base.Array") (Set.singleton (TyName "Array")) ]
-      Map.isEmpty (abiTypes CoreRuntime) `shouldEqual` true
-      Map.lookup arrayTy (withBaseTypes primSignature).types `shouldEqual` Just (IntrinsicTyCon (monoScheme (KFun KType KType)) CanonicalOpaque)
-
--- | What a module declares, as foreigns of its name.
-foreignsOf :: Module P.Int -> P.Array { name :: Qualified Ident, scheme :: TypeScheme }
-foreignsOf m = Array.mapMaybe
-  ( case _ of
-      DeclForeign _ f -> Just { name: Qualified m.name f.name, scheme: f.scheme }
-      _ -> Nothing
-  )
-  m.decls
+    it "fixes `Base.Array.Array`, opaque, at `standard`, and nothing at `core-runtime`" do
+      abiTypeDescriptors `shouldEqual` [ { name: arrayTy, kind: monoScheme (KFun KType KType), canonical: CanonicalOpaque, profile: Standard } ]

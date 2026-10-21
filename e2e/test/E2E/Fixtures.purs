@@ -52,7 +52,7 @@ import Test.E2E.Fixtures.Effects (effectsCoreExpected, effectsCoreModule, effect
 import Test.E2E.Fixtures.Regions (regionsCoreExpected, regionsCoreModule, regionsSourceExpected)
 import Test.E2E.Fixtures.Foreigns (ManifestModule, Result(..), RunCase, RunFault(..), addShrunkManifest, addShrunkSource, greetManifest, greetSource, deepIoResult, ioEffects, ioHostSource, ioManifest, ioName, hostName, ioModuleBindArity, ioModulePureArity, ioResult, runCases, runEffects, runHostSource, runManifest)
 import E2E.Build (Sources, builtFrom, packageModules)
-import Test.E2E.Fixtures.Programs (abiSignature, coreOnlyExpected, coreOnlyModule, faultCases, sourceDeepExpected, sourceExpected, inInt, intModule, mainName, opsExpected)
+import Test.E2E.Fixtures.Programs (baseInt, coreOnlyExpected, coreOnlyModule, faultCases, sourceDeepExpected, sourceExpected, inInt, mainName, opsExpected)
 import Test.E2E.Fixtures.Value (Expected(..), jsonString, toJson)
 
 -- Reading and writing --------------------------------------------------------------
@@ -73,10 +73,13 @@ foreign import removeTree :: P.String -> Effect Unit
 -- | A compiled module: its `.dmo`, and the arities its interface carries.
 type Compiled = { dmo :: Dmo, dmi :: { name :: ModuleName, imports :: P.Array ModuleName, arities :: Map Ident P.Int } }
 
--- | Each module checked against the signatures before it and translated against
--- | the interfaces of those it imports, then carried through the container.
+-- | Each module checked against the signatures before it, the `Base.Int` the
+-- | compiler carries first, translated against the interfaces of those it
+-- | imports, and carried through the container.
 compileAll :: P.Array (Module P.Int) -> Either P.String (P.Array Compiled)
-compileAll modules = _.out <$> foldM step { signature: abiSignature, dmis: [], out: [] } modules
+compileAll modules = do
+  base <- baseInt
+  _.out <$> foldM step { signature: base.signature, dmis: [ base.interface ], out: [] } modules
   where
   step acc m = do
     declared <- stage "declare" (declareAnnotated acc.signature m)
@@ -169,7 +172,7 @@ fixtures sources =
   , plain
       { name: "programs-core"
       , description: "What no source writes, in Core: a join point two leaves share and one jumping to itself, 100000 times over among them; restrict and merge; and a Number dispatch by literal identity"
-      , modules: map (map _.dmo) (compileAll [ intModule, coreOnlyModule ])
+      , modules: map (Array.cons sources.baseInt <<< map _.dmo) (compileAll [ coreOnlyModule ])
       , outcome: Loads
       , observe: coreOnlyExpected
       }
@@ -218,7 +221,7 @@ fixtures sources =
   , plain
       { name: "effects-core"
       , description: "What no source writes, in Core: a continuation applied to two arguments, and one held captured while a second resumption runs through the same activation"
-      , modules: map (map _.dmo) (compileAll [ intModule, effectsCoreModule ])
+      , modules: map (Array.cons sources.baseInt <<< map _.dmo) (compileAll [ effectsCoreModule ])
       , outcome: Loads
       , observe: effectsCoreExpected
       }
@@ -232,7 +235,7 @@ fixtures sources =
   , plain
       { name: "regions-core"
       , description: "What no source writes, in Core: which cells a resumption shares or copies, a computation reading the region around it inside and outside a handler resuming twice, a continuation resumed while a copy runs, and a closure made before a capture or carried through an operation; and a function opening a region applied inside its own clause, whose polymorphic recursion needs a written constraint"
-      , modules: map (map _.dmo) (compileAll [ intModule, regionsCoreModule ])
+      , modules: map (Array.cons sources.baseInt <<< map _.dmo) (compileAll [ regionsCoreModule ])
       , outcome: Loads
       , observe: regionsCoreExpected
       }

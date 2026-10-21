@@ -10,8 +10,7 @@ module Test.E2E.Fixtures.Programs
   ( intName
   , mainName
   , inInt
-  , intModule
-  , abiSignature
+  , baseInt
   , opsExpected
   , FaultCase
   , faultCases
@@ -26,12 +25,17 @@ import Prelude
 import Prim as P
 
 import Data.Array as Array
+import Data.Bifunctor (lmap)
+import Data.Either (Either, note)
+import Data.Foldable (foldM)
 import Data.Enum (toEnum)
 import Data.Maybe (fromMaybe)
 import Data.String.CodePoints as CodePoints
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.Primitive (baseModule, withBaseTypes)
-import Stella.Compiler.TypedCore (DecisionTree(..), Decl(..), Export(..), Expr(..), Ident(..), JoinName(..), LitBranch, Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), Type(..), monoScheme, primSignature)
+import Stella.Compiler.Elaborate.Environment.Imported (importedSignature)
+import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment, viewFor)
+import Stella.Compiler.Macro.Compiled (Interface, compiled)
+import Stella.Compiler.TypedCore (DecisionTree(..), Decl(..), Export(..), Expr(..), Ident(..), JoinName(..), LitBranch, Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), Type(..), monoScheme)
 import Stella.Compiler.TypedCore.Prim (booleanTy, intTy, recordTy)
 import Stella.Compiler.TypedCore.Signature (Signature)
 import Test.E2E.Fixtures.Value (Expected(..), ExpectedKey(..))
@@ -93,11 +97,6 @@ litCase scrutinee branches default =
 
 -- The modules ----------------------------------------------------------------------------
 
--- | `Base.Int`, every entry of `stella-base-0.1`. Each is an operation, so what
--- | carries it out is settled by its name where the module is used.
-intModule :: Module P.Int
-intModule = baseModule 0 intName
-
 nonrec :: P.Int -> P.String -> Type -> Expr P.Int -> Decl P.Int
 nonrec at name ty value = DeclNonRec at { name: Ident name, scheme: monoScheme ty, value, attributes: [] }
 
@@ -142,9 +141,19 @@ loopedBody n =
 
 -- The operations ----------------------------------------------------------------------------
 
--- | `Σ_Prim` with the types the ABI supplies.
-abiSignature :: Signature
-abiSignature = withBaseTypes primSignature
+-- | What the Core of a fixture is compiled against: `Base.Int` as the compiler
+-- | carries it, its signature read off its interface as an importer reads it,
+-- | and the arities a translation reads of it. `Base.Int` is not compiled here:
+-- | a fixture holds `Base.Int.dmo` as its source builds it, the bytes the
+-- | compiler carries.
+baseInt :: Either P.String { signature :: Signature, interface :: Interface }
+baseInt = do
+  carried <- compiled
+  env <- lmap show (foldM (flip addInterface) initialEnvironment carried.moduleInterfaces)
+  view <- lmap show (viewFor [ intName ] env)
+  signature <- lmap show (importedSignature env view)
+  interface <- note "the compiler carries no Base.Int" (Array.find (\i -> i.name == intName) carried.interfaces)
+  pure { signature, interface }
 
 -- | The string of one scalar value, written by its code rather than in the source.
 scalar :: P.Int -> P.String

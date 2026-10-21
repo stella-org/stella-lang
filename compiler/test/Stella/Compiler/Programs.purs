@@ -1,5 +1,5 @@
 -- | The hand-written Core `Lib` and `Main` the middle end's and lowering's tests
--- | compile, with `Base.Int` behind them.
+-- | compile, with the `Base.Int` the compiler carries behind them.
 -- |
 -- | | Value of `Main` | What it exercises |
 -- | | --- | --- |
@@ -27,10 +27,9 @@ module Test.Stella.Compiler.Programs
   ( intName
   , mainName
   , inInt
-  , intModule
   , libModule
   , mainModule
-  , abiSignature
+  , baseInt
   ) where
 
 import Prelude
@@ -38,10 +37,15 @@ import Prelude
 import Prim as P
 
 import Data.Array as Array
+import Data.Bifunctor (lmap)
+import Data.Either (Either, note)
+import Data.Foldable (foldM)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.Primitive (baseModule, withBaseTypes)
-import Stella.Compiler.TypedCore (CtorBranch, Decl(..), DecisionTree(..), Export(..), Expr(..), Ident(..), JoinName(..), Kind(..), LitBranch, Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), ValueBinding, monoScheme, primSignature, scalarString, scalarStringOf, scalarValue)
+import Stella.Compiler.Elaborate.Environment.Imported (importedSignature)
+import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment, viewFor)
+import Stella.Compiler.Macro.Compiled (Interface, compiled)
+import Stella.Compiler.TypedCore (CtorBranch, DecisionTree(..), Decl(..), Export(..), Expr(..), Ident(..), JoinName(..), Kind(..), LitBranch, Literal(..), Module, ModuleName(..), Occurrence(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), ValueBinding, monoScheme, scalarString, scalarStringOf, scalarValue)
 import Stella.Compiler.TypedCore.Prim (booleanTy, intTy, pureFn, recordTy, unitCtor, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Signature (Signature)
 
@@ -143,11 +147,6 @@ litCase scrutinee branches default =
     )
 
 -- The modules ----------------------------------------------------------------------------
-
--- | `Base.Int`, every entry of `stella-base-0.1`. Each is an operation, so what
--- | carries it out is settled by its name where the module is used.
-intModule :: Module P.Int
-intModule = baseModule 0 intName
 
 -- | `data Box = Box Int`, `unbox`, and `addTo`, whose definitional arity is two.
 libModule :: Module P.Int
@@ -431,8 +430,16 @@ variantBody =
           Nothing
       )
 
--- The operations ----------------------------------------------------------------------------
+-- `Base.Int` ----------------------------------------------------------------------------------
 
--- | `Σ_Prim` with the types the ABI supplies.
-abiSignature :: Signature
-abiSignature = withBaseTypes primSignature
+-- | What `Lib` and `Main` are compiled against: `Base.Int` as the compiler carries
+-- | it, its signature read off its interface as an importer reads it, and the
+-- | arities a translation reads of it. `Base.Int` is not compiled here.
+baseInt :: Either P.String { signature :: Signature, interface :: Interface }
+baseInt = do
+  carried <- compiled
+  env <- lmap show (foldM (flip addInterface) initialEnvironment carried.moduleInterfaces)
+  view <- lmap show (viewFor [ intName ] env)
+  signature <- lmap show (importedSignature env view)
+  interface <- note "the compiler carries no Base.Int" (Array.find (\i -> i.name == intName) carried.interfaces)
+  pure { signature, interface }

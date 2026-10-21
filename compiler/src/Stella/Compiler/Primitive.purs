@@ -1,5 +1,5 @@
 -- | The compiler-facing side of the ABI catalog: what each `Base` entry the
--- | runtime carries out is declared at, the type constructors the ABI supplies,
+-- | runtime carries out is declared at, the type constructors the ABI fixes,
 -- | and the `Base` names as the compiler writes them.
 -- |
 -- | A `Base` ABI entry whose meaning the ABI fixes is an **operation**, not an
@@ -32,11 +32,7 @@ module Stella.Compiler.Primitive
   , schemeOfOp
   , AbiType
   , abiTypeDescriptors
-  , abiTypes
   , arrayTy
-  , withBaseTypes
-  , baseModuleNames
-  , baseModule
   ) where
 
 import Prelude
@@ -44,18 +40,13 @@ import Prelude
 import Prim as P
 
 import Data.Array as Array
-import Data.Map (Map)
-import Data.Map as Map
-import Data.Maybe (Maybe(..))
-import Data.Tuple (Tuple(..))
+import Data.Maybe (Maybe)
 import Stella.Compiler.Abi.Runtime (EntryName, InClosedRun(..), PrimOp(..), Profile(..), RuntimeClass(..), RuntimeEntry, RuntimeEntryId(..), arityOfOp, codeOfOp, includes, inClosedRunOf, lookupRuntimeEntry, nameOfOp, opOfCode, operations, runtimeEntries, runtimeEntryOf) as Runtime
-import Stella.Compiler.Abi.Runtime (EntryName, PrimOp(..), Profile(..), RuntimeEntry, RuntimeEntryId(..), arityOfOp, includes, lookupRuntimeEntry, nameOfOp, operations)
-import Stella.Compiler.Interface.Module (TypeEntry, TypeSort(..))
-import Stella.Compiler.TypedCore.Decl (Decl(..), Export(..), Module)
+import Stella.Compiler.Abi.Runtime (EntryName, PrimOp(..), Profile(..), RuntimeEntry, RuntimeEntryId(..), arityOfOp, lookupRuntimeEntry, nameOfOp, operations)
 import Stella.Compiler.TypedCore.Kind (Kind(..), KindScheme, monoScheme)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (booleanTy, charTy, intTy, ioTy, numberTy, pureFn, stringTy, unitTy)
-import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
+import Stella.Compiler.TypedCore.Signature (CanonicalClass(..))
 import Stella.Compiler.TypedCore.Type (Type(..), TypeScheme)
 
 -- | What an operation realizes, and what a consumer owes it.
@@ -166,10 +157,9 @@ typeOfOp = case _ of
 schemeOfOp :: PrimOp -> TypeScheme
 schemeOfOp = monoScheme <<< typeOfOp
 
--- | A type constructor the ABI supplies to a `Base` module, which no
--- | declaration produces: its kind, the class of its values, and the profile
--- | holding it. The one description both the interface's entry and the Core
--- | signature's are made from.
+-- | A type constructor the ABI fixes for a `Base` module: its name, its kind,
+-- | the class of its values, and the profile holding it. The `foreign type` of
+-- | the module's source declaring it must agree with it.
 type AbiType =
   { name :: Qualified TyName
   , kind :: KindScheme
@@ -177,52 +167,14 @@ type AbiType =
   , profile :: Profile
   }
 
--- | Every type constructor the ABI supplies.
+-- | Every type constructor the ABI fixes.
 abiTypeDescriptors :: P.Array AbiType
 abiTypeDescriptors =
   [ { name: arrayTy, kind: monoScheme (KFun KType KType), canonical: CanonicalOpaque, profile: Standard } ]
 
--- | The type constructors the ABI supplies to each module, as a build
--- | environment holds them, of those a backend claiming the profile given owes.
--- | Which profile a build is for is the host's to say.
-abiTypes :: Profile -> Map ModuleName (Map TyName TypeEntry)
-abiTypes profile = Map.fromFoldableWith Map.union (map entry (Array.filter (includes profile <<< _.profile) abiTypeDescriptors))
-  where
-  entry t = case t.name of
-    Qualified m n -> Tuple m (Map.singleton n { kind: t.kind, sort: Intrinsic t.canonical, attributes: [] })
-
--- | `Base.Array.Array`, the type constructor the ABI supplies to `Base.Array`.
+-- | `Base.Array.Array`, the type constructor the ABI fixes for `Base.Array`.
 arrayTy :: Qualified TyName
 arrayTy = Qualified (ModuleName "Base.Array") (TyName "Array")
-
--- | A signature with every type the ABI supplies and no declaration produces
--- | ([Prim and Base](../../../../docs/technical-references/06-Modules/02-Prim-and-Base.md)).
-withBaseTypes :: Signature -> Signature
-withBaseTypes sig = sig { types = Array.foldl (\ts t -> Map.insert t.name (IntrinsicTyCon t.kind t.canonical) ts) sig.types abiTypeDescriptors }
-
--- | The `Base` modules whose entries are operations, in the order of the table.
-baseModuleNames :: P.Array ModuleName
-baseModuleNames = Array.nub (map (\e -> moduleOf e.entry) primTable)
-  where
-  moduleOf (Qualified m _) = m
-
--- | The `Base` module of that name as Core: a `foreign` declaration of each
--- | operation's entry, at its scheme, in the order of the table, all exported,
--- | every annotation the one given. Such a module is compiled and loaded as any
--- | other, and a consumer carries out each entry as the operation it is.
-baseModule :: forall a. a -> ModuleName -> Module a
-baseModule annotation name =
-  { annotation
-  , name
-  , imports: []
-  , exports: map (ExportValue <<< _.name) entries
-  , decls: map (\e -> DeclForeign annotation { name: e.name, scheme: e.scheme, attributes: [] }) entries
-  }
-  where
-  entries = Array.mapMaybe ownEntry primTable
-  ownEntry e = case e.entry of
-    Qualified m x | m == name -> Just { name: x, scheme: e.scheme }
-    _ -> Nothing
 
 -- | The operations, each with its entry, arity, and scheme, in the order of the
 -- | catalog. The `Base.IO` entries are none of them.

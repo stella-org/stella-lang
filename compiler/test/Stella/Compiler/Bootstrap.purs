@@ -2,10 +2,6 @@
 -- | holds of `Base.Int`, `Stella.Syntax`, and `Stella.Elab` is what compiling each source as
 -- | a build compiles a module writes, the interface file and the bytecode file
 -- | to the byte, and the modules it carries are those files decoded.
--- |
--- | **The last group watches the hand-written Core of the fixtures**, which
--- | stands for `Base.Int` where a test compiles Core rather than source: it is to
--- | give what the source gives, and goes with those fixtures.
 module Test.Stella.Compiler.Bootstrap (spec) where
 
 import Prelude
@@ -15,31 +11,25 @@ import Data.Array.NonEmpty as NonEmptyArray
 import Data.Bifunctor (bimap, lmap)
 import Data.Either (Either(..))
 import Data.Int as Int
-import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.String (joinWith)
 import Data.Foldable (for_)
-import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
 import Stella.Compiler.Bootstrap.Source (Carried)
 import Stella.Compiler.Bootstrap.Source as Source
 import Stella.Compiler.Build (CompilerAction, compileModule, defaultHooks, printCompileError, withoutSynthesizers)
-import Stella.Compiler.Bytecode (Dmo, encode, lower)
-import Stella.Compiler.Interface (importsOf)
+import Stella.Compiler.Bytecode (Dmo, encode)
 import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment)
 import Stella.Compiler.Interface.File as Interface
-import Stella.Compiler.Interface.FromCore (FromCoreError, interfaceOfCore)
 import Stella.Compiler.Interface.Module (ModuleInterface)
 import Stella.Compiler.Macro.Compiled (compiled)
-import Stella.Compiler.MiddleEnd (translate)
 import Stella.Compiler.Macro.Run (ExecutionReason(..), ParseOutcome(..), defaultSettings)
-import Stella.Compiler.Primitive (baseModule, withBaseTypes)
 import Stella.Compiler.Surface.Origin (Origin)
-import Stella.Compiler.TypedCore (Decl(..), Module, declareAnnotated, primSignature)
-import Stella.Compiler.TypedCore.Name (Ident, ModuleName(..))
+import Stella.Compiler.TypedCore (Module)
+import Stella.Compiler.TypedCore.Name (ModuleName(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 import Test.Stella.Compiler.Sources (baseIntPath, elabPath, readRepositoryFile, syntaxPath)
@@ -83,29 +73,6 @@ fromSources texts = do
   elab <- (compiledSource initialEnvironment texts.elab).made
   pure { base, syntax, elab }
 
--- | A module of foreigns with its annotations forgotten, or nothing where it
--- | declares anything else.
-foreignsOnly :: forall a. Module a -> Maybe (Module Unit)
-foreignsOnly m = do
-  decls <- traverse forgotten m.decls
-  pure { annotation: unit, name: m.name, imports: m.imports, exports: m.exports, decls }
-  where
-  forgotten = case _ of
-    DeclForeign _ f -> Just (DeclForeign unit f)
-    _ -> Nothing
-
--- | The hand-written `Base.Int` checked, translated, and lowered as the fixtures
--- | compile it, with the interface it gives at the arities given.
-handWritten :: Either String { dmo :: Dmo, interface :: Map Ident Int -> Either FromCoreError ModuleInterface }
-handWritten = do
-  declared <- lmap (show <<< _.error) (declareAnnotated (withBaseTypes primSignature) hand)
-  imports <- lmap show (importsOf [])
-  mid <- lmap show (translate imports hand declared)
-  lowered <- lmap show (lower mid)
-  pure { dmo: lowered.dmo, interface: interfaceOfCore hand declared }
-  where
-  hand = baseModule unit (ModuleName "Base.Int")
-
 -- | A module's interface file and bytecode file, each in hexadecimal, as the
 -- | compiler holds a module it carries.
 filesOf :: { interface :: ModuleInterface, dmo :: Dmo } -> Either String Carried
@@ -136,20 +103,3 @@ spec = describe "the modules the compiler carries, from their sources" do
         Map.lookup (ModuleName "Stella.Elab") carried.preloaded `shouldEqual` Just made.elab.interface
         map encode carried.modules `shouldEqual` map encode [ made.base.dmo, made.syntax.dmo ]
         encode carried.elaboration.dmo `shouldEqual` encode made.elab.dmo
-
-  describe "the hand-written `Base.Int` the fixtures compile" do
-    it "is the Core the source elaborates to" do
-      text <- liftEffect (readRepositoryFile baseIntPath)
-      case compiledSource initialEnvironment text of
-        { made: Left why } -> fail why
-        { core: Just core } -> foreignsOnly core `shouldEqual` Just (baseModule unit (ModuleName "Base.Int"))
-        _ -> fail "no Core"
-
-    it "has the interface and the bytecode of the source" do
-      text <- liftEffect (readRepositoryFile baseIntPath)
-      case (compiledSource initialEnvironment text).made, handWritten of
-        Left why, _ -> fail why
-        _, Left why -> fail why
-        Right made, Right hand -> do
-          hand.interface made.interface.arities `shouldEqual` Right made.interface
-          encode hand.dmo `shouldEqual` encode made.dmo

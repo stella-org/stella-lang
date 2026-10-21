@@ -74,11 +74,12 @@ functionOf i = do
     Just f -> Right f
     Nothing -> Left ("no function #" <> show i)
 
--- | The programs' modules, each declared against those before it and translated
--- | against their interfaces; the last of them, `Main`.
+-- | `Lib` and `Main`, each declared against those before it and translated against
+-- | their interfaces, the `Base.Int` the compiler carries first; the last, `Main`.
 programsMain :: Either P.String M.Module
 programsMain = do
-  done <- foldM step { signature: Programs.abiSignature, dmis: [], modules: [] } [ Programs.intModule, Programs.libModule, Programs.mainModule ]
+  base <- Programs.baseInt
+  done <- foldM step { signature: base.signature, dmis: [ base.interface ], modules: [] } [ Programs.libModule, Programs.mainModule ]
   case Array.last done.modules of
     Just m -> Right m
     Nothing -> Left "no module"
