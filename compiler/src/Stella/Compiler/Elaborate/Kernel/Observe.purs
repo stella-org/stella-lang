@@ -43,7 +43,7 @@ import Stella.Compiler.Elaborate.CorePlus.Row (xnf)
 import Stella.Compiler.Elaborate.CorePlus.Type (XConstraint(..), XRowEntry(..), XType(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (substitute)
 import Stella.Compiler.Elaborate.Vocabulary.View (ConstraintView(..), ContextEntry, DeclView, KindView(..), PayloadView(..), RowView, TypeView(..))
-import Stella.Compiler.TypedCore (Ident, Qualified, RowElemKind(..), RowKey(..))
+import Stella.Compiler.TypedCore (Ident, Qualified, RowElemKind(..), RowKey(..), compareRowKeys)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
@@ -214,7 +214,7 @@ rowView handle builtIn vars evidence row = do
     Right n -> do
       known <- traverse
         (\(Tuple key entry) -> { key, payload: _ } <$> payloadView builtIn vars entry)
-        (Map.toUnfoldable n.known :: P.Array (Tuple RowKey XRowEntry))
+        (Array.sortBy (\(Tuple a _) (Tuple b _) -> compareRowKeys a b) (Map.toUnfoldable n.known :: P.Array (Tuple RowKey XRowEntry)))
       flexible <- traverse
         ( \m -> { meta: _, type: _ }
             <$> issue (MetaObject m)

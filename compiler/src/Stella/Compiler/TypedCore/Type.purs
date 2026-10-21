@@ -13,6 +13,7 @@ module Stella.Compiler.TypedCore.Type
   , TypeScheme
   , rowEntryKey
   , rowEntryPayload
+  , compareRowKeys
   , substituteType
   , substituteConstraint
   , substituteKindsInType
@@ -28,7 +29,8 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.TypedCore.Kind (Kind, Scheme, substituteKind)
-import Stella.Compiler.TypedCore.Name (EffName, KindVar, Qualified, RegionName, Symbol, Tag, TyName, TyVar(..))
+import Stella.Compiler.TypedCore.Domain (compareByScalar)
+import Stella.Compiler.TypedCore.Name (EffName(..), KindVar, ModuleName(..), Qualified(..), RegionName(..), Symbol(..), Tag(..), TyName, TyVar(..))
 import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
 import Data.Map as Map
@@ -123,6 +125,41 @@ rowEntryKey = case _ of
   RowEffectEntry e _ -> EffectKey e
   RowLabelledEffectEntry s _ _ -> SymbolKey s
   RowRegionEntry name -> RegionKey name
+
+-- | The canonical order of keys: the order a row's view lists its known keys in,
+-- | and a snapshot's fields stand in.
+-- |
+-- | **A kind decides first** — a field, a tag, a position, an effect, a region —
+-- | and within one kind the payload does: a spelling by scalar value, a position
+-- | by its number, an effect by its module's name and then its own, a region by
+-- | its name. Text is compared by scalar value and **not by what a host holds it
+-- | in**, which would make an answer depend on the host.
+compareRowKeys :: RowKey -> RowKey -> Ordering
+compareRowKeys a b = case compare (kind a) (kind b) of
+  EQ -> within a b
+  other -> other
+  where
+  kind :: RowKey -> P.Int
+  kind = case _ of
+    SymbolKey _ -> 0
+    TagKey _ -> 1
+    PositionKey _ -> 2
+    EffectKey _ -> 3
+    RegionKey _ -> 4
+
+  within :: RowKey -> RowKey -> Ordering
+  within x y = case x, y of
+    SymbolKey (Symbol left), SymbolKey (Symbol right) -> compareByScalar left right
+    TagKey (Tag left), TagKey (Tag right) -> compareByScalar left right
+    PositionKey left, PositionKey right -> compare left right
+    EffectKey left, EffectKey right -> effect left right
+    RegionKey (RegionName left), RegionKey (RegionName right) -> compareByScalar left right
+    _, _ -> EQ
+
+  effect (Qualified (ModuleName leftModule) (EffName left)) (Qualified (ModuleName rightModule) (EffName right)) =
+    case compareByScalar leftModule rightModule of
+      EQ -> compareByScalar left right
+      other -> other
 
 rowEntryPayload :: RowEntry -> RowPayload
 rowEntryPayload = case _ of

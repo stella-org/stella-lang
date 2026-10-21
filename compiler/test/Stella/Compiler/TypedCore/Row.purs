@@ -10,7 +10,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore (Constraint(..), EffName(..), Kind(..), ModuleName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowError(..), RowKey(..), RowPayload(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), constraintEquiv, decompose, entails, nfSharp, noFacts, typeEquiv)
+import Stella.Compiler.TypedCore (Constraint(..), EffName(..), Kind(..), ModuleName(..), Qualified(..), RegionName(..), RowElemKind(..), RowEntry(..), RowError(..), RowKey(..), RowPayload(..), Symbol(..), Tag(..), TyName(..), TyVar(..), Type(..), compareRowKeys, constraintEquiv, decompose, entails, nfSharp, noFacts, typeEquiv)
 import Stella.Compiler.TypedCore.Entailment (forget)
 import Stella.Compiler.TypedCore.Type (substituteConstraint, substituteType)
 import Data.Either (Either(..))
@@ -127,6 +127,25 @@ spec = describe "Stella.Compiler.TypedCore.Row" do
         Right { known: Map.empty, tail: Set.singleton r }
 
   describe "keys" do
+    it "are ordered by kind, and within one by spelling, number, or qualified name" do
+      -- a kind decides first, so a field stands before a tag whatever the spellings
+      compareRowKeys (SymbolKey (Symbol "z")) (TagKey (Tag "a")) `shouldEqual` LT
+      compareRowKeys (TagKey (Tag "z")) (PositionKey 0) `shouldEqual` LT
+      compareRowKeys (PositionKey 9) (EffectKey (Qualified (ModuleName "A") (EffName "E"))) `shouldEqual` LT
+      compareRowKeys (EffectKey (Qualified (ModuleName "Z") (EffName "Z"))) (RegionKey (RegionName "a")) `shouldEqual` LT
+      compareRowKeys (PositionKey 2) (PositionKey 10) `shouldEqual` LT
+      -- an effect by its module's name first, then its own
+      compareRowKeys (EffectKey (Qualified (ModuleName "A") (EffName "Z"))) (EffectKey (Qualified (ModuleName "B") (EffName "A"))) `shouldEqual` LT
+      compareRowKeys (EffectKey (Qualified (ModuleName "A") (EffName "E"))) (EffectKey (Qualified (ModuleName "A") (EffName "F"))) `shouldEqual` LT
+      compareRowKeys (RegionKey (RegionName "r1")) (RegionKey (RegionName "r2")) `shouldEqual` LT
+      compareRowKeys (SymbolKey (Symbol "a")) (SymbolKey (Symbol "a")) `shouldEqual` EQ
+
+    it "compare a spelling by scalar value, not by the code units a host holds it in" do
+      -- `U+E000` stands below an astral character by scalar value, and above it by
+      -- code unit
+      compareRowKeys (SymbolKey (Symbol "\xE000")) (SymbolKey (Symbol "\x1F600")) `shouldEqual` LT
+      compareRowKeys (TagKey (Tag "\xE000")) (TagKey (Tag "\x1F600")) `shouldEqual` LT
+
     it "separates a Symbol from a Tag of the same spelling" do
       -- `( SymbolKey X : Int, TagKey X : Int )`: one spelling, two keys
       nfSharp (field (Symbol spelled) tInt (variant (Tag spelled) tInt TRowEmpty)) `shouldEqual`

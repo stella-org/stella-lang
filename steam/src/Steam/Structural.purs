@@ -29,7 +29,6 @@ module Steam.Structural
   , SnapshotLimits
   , defaultLimits
   , inspect
-  , compareKeys
   ) where
 
 import Prelude
@@ -43,9 +42,9 @@ import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Steam.Value (CtorId, KeyId, OpId, Value(..))
 import Stella.Compiler.Bytecode.Module (Key(..))
-import Stella.Compiler.TypedCore.Domain (ScalarString, ScalarValue, codePointOf, compareByScalar, compareNumber, sameNumber, scalarLength, scalarStringOf, scalarsOf, textOf)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident, ModuleName(..), OpName, Qualified(..), RegionName(..), Symbol(..), Tag(..))
-import Stella.Compiler.TypedCore.Type (RowKey(..))
+import Stella.Compiler.TypedCore.Domain (ScalarString, ScalarValue, codePointOf, compareNumber, sameNumber, scalarLength, scalarStringOf, scalarsOf, textOf)
+import Stella.Compiler.TypedCore.Name (Ident, OpName, Qualified)
+import Stella.Compiler.TypedCore.Type (RowKey(..), compareRowKeys)
 
 -- | A `Number` under the identity of a literal: equality of the bit pattern, with
 -- | all NaNs taken as one (D37). The host's `==` decides neither, identifying the
@@ -135,42 +134,6 @@ data Taken
   = Taken StructuralValue P.Int
   | NotTaken
 
--- | The canonical order of keys, which is the order a snapshot's fields stand in.
--- |
--- | **A kind decides first**, and within one kind the payload does: a spelling by
--- | scalar value, a position by its number, an effect by its module's name and then
--- | its own. Text is compared by scalar value and **not by what a host holds it in**,
--- | which would make an answer depend on the host.
--- |
--- | `RegionKey` is ordered with the rest and reached by nothing: erasure keeps no
--- | region element, so no value carries one (D36).
-compareKeys :: RowKey -> RowKey -> Ordering
-compareKeys a b = case compare (kind a) (kind b) of
-  EQ -> within a b
-  other -> other
-  where
-  kind :: RowKey -> P.Int
-  kind = case _ of
-    SymbolKey _ -> 0
-    TagKey _ -> 1
-    PositionKey _ -> 2
-    EffectKey _ -> 3
-    RegionKey _ -> 4
-
-  within :: RowKey -> RowKey -> Ordering
-  within x y = case x, y of
-    SymbolKey (Symbol left), SymbolKey (Symbol right) -> compareByScalar left right
-    TagKey (Tag left), TagKey (Tag right) -> compareByScalar left right
-    PositionKey left, PositionKey right -> compare left right
-    EffectKey left, EffectKey right -> effect left right
-    RegionKey (RegionName left), RegionKey (RegionName right) -> compareByScalar left right
-    _, _ -> EQ
-
-  effect (Qualified (ModuleName leftModule) (EffName left)) (Qualified (ModuleName rightModule) (EffName right)) =
-    case compareByScalar leftModule rightModule of
-      EQ -> compareByScalar left right
-      other -> other
-
 -- | The snapshot of a value.
 inspect :: SnapshotLimits -> RuntimeNames -> Value -> StructuralValue
 inspect given names value = case go limits.maxDepth limits.maxNodes value of
@@ -236,7 +199,7 @@ inspect given names value = case go limits.maxDepth limits.maxNodes value of
           Nothing -> marker nodes
           Just entries -> paying nodes \_ ->
             let
-              ordered = Array.sortBy (\x y -> compareKeys x.key y.key) entries
+              ordered = Array.sortBy (\x y -> compareRowKeys x.key y.key) entries
               capped = Array.take limits.maxItems ordered
               taken = fieldsOf (depth - 1) (nodes - 1) capped
             in

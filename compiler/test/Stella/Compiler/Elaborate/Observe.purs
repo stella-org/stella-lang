@@ -219,6 +219,19 @@ spec = describe "Elaborate.Observe" do
         map _.key rv.known `shouldEqual` [ keyN ]
         rv.rigid `shouldEqual` [ r ]
 
+    it "lists the known keys in the canonical order, a spelling compared by scalar value" do
+      let
+        label spelling = XRowTypeEntry (SymbolKey (Symbol spelling)) xInt
+        row = XRowExtend (label "b") (XRowExtend (label "\x1F600") (XRowExtend (label "\xE000") (XRowExtend (label "a") XRowEmpty)))
+        action = do
+          ty <- typeHandle (recordOf row) (ExactKind XKType)
+          view <- viewType ty
+          case view of
+            AppType _ arg -> normalizeRow arg
+            _ -> raiseDiagnostic failure
+      observing start action \rv _ ->
+        map _.key rv.known `shouldEqual` map (SymbolKey <<< Symbol) [ "a", "b", "\xE000", "\x1F600" ]
+
     it "gives the empty row the kind its place fixes, and any row kind where nothing does" do
       let
         underRecord = do

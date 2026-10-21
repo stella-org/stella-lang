@@ -55,4 +55,4 @@ import Stella.Compiler.TypedCore.Row (RowError(..), RowNormalForm, emptyNormalFo
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), CtorInfo, EffectInfo, GlobalEntry(..), Signature, TyConInfo(..), ValueInfo, effectParamKinds, emptySignature, globalEntryScheme, lookupCtor, lookupEffect, lookupGlobal, lookupOperation, lookupTyCon, lookupValue, tyConKind)
 import Stella.Compiler.TypedCore.SignatureCheck (SignatureError(..), primWf, sigOk, sigWf)
 import Stella.Compiler.TypedCore.Term (Binding, CtorBranch, DecisionTree(..), Expr(..), Handler, Cell, KeyBranch, LitBranch, Literal(..), OpClause(..), Occurrence(..), Param, ReturnClause, exprAnnotation, opClauseBody, opClauseOp, withAnnotation)
-import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), RowPayload(..), TyBinder, Type(..), TypeScheme, freeRegionNames, rowEntryKey, rowEntryPayload)
+import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), RowPayload(..), TyBinder, Type(..), TypeScheme, compareRowKeys, freeRegionNames, rowEntryKey, rowEntryPayload)

@@ -19,12 +19,12 @@ import Effect.Ref as Ref
 import Effect.Uncurried (runEffectFn1, runEffectFn3)
 import Steam.Array as Arr
 import Steam.Render (render, renderKey)
-import Steam.Structural (NumberAtom(..), SnapshotLimits, RuntimeNames, StructuralValue(..), compareKeys, defaultLimits, inspect)
+import Steam.Structural (NumberAtom(..), SnapshotLimits, RuntimeNames, StructuralValue(..), defaultLimits, inspect)
 import Steam.Value (Continuation(..), CtorId(..), IOValue(..), KeyId(..), ModuleId(..), OpId(..), Value(..))
 import Stella.Compiler.Bytecode.Instr (FuncIx(..))
 import Stella.Compiler.Bytecode.Module (Key(..))
 import Stella.Compiler.TypedCore.Domain (ScalarString, ScalarValue, scalarString, scalarValue)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), OpName(..), Qualified(..), Symbol(..), Tag(..))
+import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), OpName(..), Qualified(..), Symbol(..), Tag(..))
 import Stella.Compiler.TypedCore.Type (RowKey(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -207,18 +207,6 @@ spec = describe "Steam.Structural" do
         `shouldEqual` SVariant (TagKey (Tag "Left")) (SInt 1)
       render (snapshot (VVariant keyLeft (VInt 1))) `shouldEqual` "[@Left 1]"
 
-    it "orders keys by kind, and a spelling by scalar value" do
-      -- a kind decides first, so a field stands before a tag whatever the spellings
-      compareKeys (SymbolKey (Symbol "z")) (TagKey (Tag "a")) `shouldEqual` LT
-      compareKeys (PositionKey 2) (PositionKey 10) `shouldEqual` LT
-      compareKeys (EffectKey (Qualified (ModuleName "A") (EffName "E")))
-        (EffectKey (Qualified (ModuleName "B") (EffName "E")))
-        `shouldEqual` LT
-      -- `U+E000` stands below an astral character by scalar value, and above it by
-      -- the code units a host holds text in
-      compareKeys (SymbolKey (Symbol privateUse)) (SymbolKey (Symbol astral))
-        `shouldEqual` LT
-
     it "writes a field and a tag of one spelling differently" do
       -- a `SymbolKey` and a `TagKey` are two keys (D16), so nothing collapses them
       renderKey (SymbolKey (Symbol "X")) `shouldEqual` "X"
@@ -299,14 +287,6 @@ spec = describe "Steam.Structural" do
         Just s -> do
           let taken = within (defaultLimits { maxTextUnits = 3 }) (VString s)
           render taken `shouldEqual` "\"abc…\""
-
--- | Two spellings whose order by scalar value is the reverse of their order by the
--- | code units a host holds them in.
-astral :: P.String
-astral = "\x1F600"
-
-privateUse :: P.String
-privateUse = "\xE000"
 
 nan :: P.Number
 nan = 0.0 / 0.0
