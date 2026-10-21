@@ -1233,12 +1233,17 @@ one kind the payload decides:
 | a variant's tag, `TagKey` | the spelling, by scalar value |
 | a tuple's component, `PositionKey` | the number, ascending |
 | an effect, `EffectKey` | the module's name by scalar value, then the effect's |
+| a region, `RegionKey` | the region's name, by scalar value |
 
 **By scalar value and not by the host's order.** A host compares text by the code
 units it holds, which puts an astral character below `U+E000` where a scalar value puts
 it above ([Interface](../05-Backend/03-Interface.md)); an answer ordered that way would
-depend on what the host holds text in. `RegionKey` has no row: erasure keeps no region
-element, so no value carries one (D36).
+depend on what the host holds text in. **A region's key orders a row and never a
+snapshot**: erasure keeps no region element, so no value carries one (D36), while a
+row a synthesizer observes may hold one and lists it in this order ([Elaborator
+API](../02-Surface-Language/03-Elaborator-API.md#what-an-observation-shows)). The order
+is one definition, `Stella.Compiler.TypedCore.Type.compareRowKeys`, which the snapshot
+and the observation both read.
 
 **A snapshot always stops.** A value may be deeper or wider than anything wants to
 read, so a snapshot is taken **within limits the request carries**, a default standing

@@ -393,7 +393,7 @@ warn            : Message -> Elab Unit
 
 `localConstraints` exposes row constraints to elaborators, so that a derive mechanism working over rows can consult which Lacks constraints are already assumed.
 
-Residual computation over an unknown tail takes this shape: `normalizeRow` extracts the known elements and the unknown tail, an encoder is assembled recursively over the known part, and where the tail `T` is non-empty the corresponding evidence is requested as a `subgoal`, to be decided by whatever the site it stands at can supply. **Closing the row is never required.**
+Residual computation over an unknown tail takes this shape: `normalizeRow` extracts the known elements and the unknown tail, an encoder is assembled recursively over the known part, and where the tail `T` is non-empty the corresponding evidence is requested as a `subgoal`, to be decided by whatever the site it stands at can supply. No type a source writes is a bare row, so the evidence is asked at the record of the tail, `{ ...T }`, and applied to the record with the known keys restricted away. **Closing the row is never required.**
 
 ## Names only elaboration writes
 

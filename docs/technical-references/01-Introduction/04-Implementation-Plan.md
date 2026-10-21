@@ -1503,8 +1503,13 @@ Synthesized parameters supplied at a reference ([Elaboration](../02-Surface-Lang
 | A module writing `one :: Handle -> Handle / {\| Kernel \|}` against `Stella.Elab`, and one after it naming `by one` | Compiled, `by one` checked against the interface of the build whose bytecode the session installs |
 | `stellac build` of `Support`, `A` filling a goal with `Support.seed`, and `Main` at two goals naming `A.one` | `Support`, `A`, `Main` compiled in that order, each loaded on the session once, `Support` before `A`; both values `1` on the machine. A walk that skips `Support`, or a load made twice, fails the build |
 | The same goal filled by a host synthesizer of the same policy | The same Core, annotations dropped |
-| A synthesizer that throws, one that faults, and one that never returns | `A synthesizer failed here` where the goal stands; the build failing against the synthesizer, as faulting, and as having used up its 1,000,000 steps, where the goal stands, with no internal error |
+| A synthesizer that throws, one that faults, and one that never returns | `A synthesizer failed here` where the goal stands, with what it said; the build failing against the synthesizer, as faulting, and as having used up its 1,000,000 steps, where the goal stands, with no internal error |
 | An equation carried out by the build's attempter | By the host, no session opened |
+| `stellac build`, over `Base`, of `Codec`, of `Derive` deriving an encoder of `Codec` from each goal's type, and of `Main` asking for one of `{ name: "Ann", age: 30, admin: false }` and of `{ id: 1, owner: { name: "Bo" } }` | Compiled; written `{"admin":false,"age":30,"name":"Ann"}` and `{"id":1,"owner":{"name":"Bo"}}` on the machine: the fields in the canonical order of keys, each field's encoder, the inner record's among them, a subgoal of the same synthesizer |
+| The same of `{ name :: String, ...r }`, the site binding the fields of `{ ...r }`, written by hand or derived by a goal of its own | The known fields, then the tail's, by the site's binding: `{"name":"Cy","age":4}`, `{"name":"Di","admin":true,"age":5}`; the row never closed |
+| The same of a type another goal decides, that goal queued after it | Postponed on the type's metavariable, then written once the other goal decides it |
+| The same of an open tail the site binds no fields of, and of `{ ratio: 1.5 }` | `A synthesizer failed here`, with what it said, where each goal stands |
+| A row of the labels `b`, `U+1F600`, `U+E000`, `a`, observed | `known` as `a`, `b`, `U+E000`, `U+1F600`: by scalar value, not by code unit |
 
 ### Binding groups and generalization (step 7)
 
