@@ -1,0 +1,10 @@
+module Main where
+
+import Codec
+import Derive (derive)
+
+encode :: forall a. {{ e :: Encoder a by derive }} -> a -> Json
+encode e x = run e x
+
+bare :: forall r. { name :: String, ...r } -> Json
+bare x = encode x

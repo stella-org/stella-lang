@@ -17,6 +17,7 @@ import Test.E2E.Apart as Apart
 import Test.E2E.Base as Base
 import Test.E2E.BasePackage as BasePackage
 import Test.E2E.Command as Command
+import Test.E2E.Codec as Codec
 import Test.E2E.CompilerLib as CompilerLib
 import Test.E2E.Equivalence as Equivalence
 import Test.E2E.Isolation as Isolation
@@ -59,3 +60,4 @@ main = readSources >>= case _ of
     Base.spec
     BasePackage.spec
     CompilerLib.spec
+    Codec.spec
