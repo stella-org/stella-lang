@@ -64,7 +64,7 @@ internalEntries :: ModuleName -> Signature -> Either (Qualified Ident) Internal
 internalEntries self sig = Map.fromFoldable <$> traverse entry (Array.concatMap (reached (_ /= self) sig) listed)
   where
   entry e = case heldIn sig e of
-    Just scheme | schemeEquiv scheme e.expected == Right true -> Right (Tuple e.name { kindVars: scheme.kindVars, body: fromCore scheme.body })
+    Just scheme | schemeEquiv scheme e.expected -> Right (Tuple e.name { kindVars: scheme.kindVars, body: fromCore scheme.body })
     _ -> Left e.name
 
 -- | An entry the module declares that is not the one listed: absent from what
@@ -79,7 +79,7 @@ declaredEntryMismatches :: ModuleName -> Signature -> Array EntryMismatch
 declaredEntryMismatches self sig = Array.mapMaybe mismatch (Array.concatMap (reached (_ == self) sig) listed)
   where
   mismatch e = case heldIn sig e of
-    Just scheme | schemeEquiv scheme e.expected == Right true -> Nothing
+    Just scheme | schemeEquiv scheme e.expected -> Nothing
     declared -> Just { name: e.name, expected: e.expected, declared }
 
 -- | An entry the compiler lists: its name, whether it is a constructor or a

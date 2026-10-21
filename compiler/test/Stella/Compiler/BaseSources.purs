@@ -78,7 +78,7 @@ spec = describe "the `Base` sources, against the ABI catalog" do
         Set.map (\(Ident x) -> x) (Map.keys foreigns) `shouldEqual` Set.fromFoldable (map _.name.value entries)
         for_ entries \e -> do
           let x = Ident e.name.value
-          map (\v -> schemeEquiv (coreScheme v.scheme) (schemeOfRuntimeEntry e.id)) (Map.lookup x foreigns) `shouldEqual` Just (Right true)
+          map (\v -> schemeEquiv (coreScheme v.scheme) (schemeOfRuntimeEntry e.id)) (Map.lookup x foreigns) `shouldEqual` Just true
           map (foreignArity <<< coreScheme <<< _.scheme) (Map.lookup x foreigns) `shouldEqual` Just e.arity
         Set.map (\(TyName x) -> x) (Map.keys foreignTypes) `shouldEqual` Set.fromFoldable (map (\t -> case t.name of Qualified _ (TyName x) -> x) types)
         for_ types \t -> case t.name of

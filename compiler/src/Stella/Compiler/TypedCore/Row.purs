@@ -1,9 +1,11 @@
--- | Row normal forms.
+-- | Sharp row normal forms.
 -- |
--- | A row is a keyed, unordered, duplicate-free collection, so its normal form
--- | is a finite map from keys to payloads together with a set of row variables
--- | standing for the unknown tail. Normalization never closes a row variable,
--- | which is what makes row equality decidable on open rows.
+-- | A sharp row has one payload at each key, so its normal form is a finite map
+-- | from keys to payloads together with a set of row variables standing for the
+-- | unknown tail. This is the projection a rule reads a payload through, as in
+-- | `F(k) = τ`. It is partial, defined only where kinding has established
+-- | sharpness; type equality compares canonical forms, which are total
+-- | (`Stella.Compiler.TypedCore.Canonical`).
 -- |
 -- | Keys are rigid — a structural key is a literal (D13) and a derived effect
 -- | key is the head constructor (D16) — so no key changes while a row is
@@ -12,7 +14,7 @@ module Stella.Compiler.TypedCore.Row
   ( RowNormalForm
   , RowError(..)
   , emptyNormalForm
-  , nf
+  , nfSharp
   , fromNormalForm
   ) where
 
@@ -20,6 +22,7 @@ import Prelude
 
 import Prim as P
 
+import Stella.Compiler.TypedCore.Canonical (canonicalPayload)
 import Stella.Compiler.TypedCore.Name (TyVar)
 import Stella.Compiler.TypedCore.Type (RowEntry(..), RowKey(..), RowPayload(..), Type(..), rowEntryKey, rowEntryPayload)
 import Data.Array as Array
@@ -44,9 +47,10 @@ type RowNormalForm =
   , tail :: Set TyVar
   }
 
--- | Normalization fails only on input the kinding rules already reject.
+-- | Where the projection is undefined.
 data RowError
-  -- | The same key twice, which sharpness forbids (D4).
+  -- | Two payloads at one key that are not equal, so no payload is the one at
+  -- | that key.
   = DuplicateKey RowKey
   -- | A type that is not a row at all.
   | NotARow Type
@@ -54,23 +58,22 @@ data RowError
 emptyNormalForm :: RowNormalForm
 emptyNormalForm = { known: Map.empty, tail: Set.empty }
 
--- | `nf`.
+-- | `nf`, on a sharp row.
 -- |
 -- | **The caller establishes `Γ ⊢ ρ : Row ε` first.** `NotARow` and
 -- | `DuplicateKey` are defensive checks, not a replacement for kinding: a type
--- | variable alone does not carry its kind, so `nf` cannot decide on its own
--- | that what it is given is a row. Kind-check the tail of a row extension and
--- | both sides of a union before normalizing or deciding entailment.
+-- | variable alone does not carry its kind, so `nfSharp` cannot decide on its
+-- | own that what it is given is a row.
 -- |
--- | A duplicate is reported rather than silently resolved, because
--- | normalization is part of the trusted core and must not turn an ill-kinded
--- | row into a well-formed one.
+-- | A row kinded in a context whose assumptions are inconsistent need not be
+-- | sharp, sharpness being an entailment that holds there of anything. Equal
+-- | payloads at one key are one payload, as they are canonically, so
+-- | `( x : Int ) ⊎ ( x : Int )` projects to `( x : Int )`; distinct ones have no
+-- | projection and are reported.
 -- |
--- | A repeated row *variable*, as in `r ⊎ r`, is absorbed by the union of sets
--- | and is not an error here. What decides it is the union's side condition
--- | `r # r`, which an ordinary context does not derive.
-nf :: Type -> Either RowError RowNormalForm
-nf = case _ of
+-- | A repeated row *variable*, as in `r ⊎ r`, is absorbed by the union of sets.
+nfSharp :: Type -> Either RowError RowNormalForm
+nfSharp = case _ of
   TRowEmpty ->
     Right emptyNormalForm
 
@@ -78,16 +81,12 @@ nf = case _ of
     Right { known: Map.empty, tail: Set.singleton a }
 
   TRowExtend entry rest -> do
-    { known, tail } <- nf rest
-    let key = rowEntryKey entry
-    case Map.lookup key known of
-      Just _ -> Left (DuplicateKey key)
-      Nothing ->
-        Right { known: Map.insert key (rowEntryPayload entry) known, tail }
+    n <- nfSharp rest
+    union { known: Map.singleton (rowEntryKey entry) (rowEntryPayload entry), tail: Set.empty } n
 
   TRowUnion left right -> do
-    l <- nf left
-    r <- nf right
+    l <- nfSharp left
+    r <- nfSharp right
     union l r
 
   ty ->
@@ -123,15 +122,15 @@ entryOf (Tuple key payload) = case payload of
 
 union :: RowNormalForm -> RowNormalForm -> Either RowError RowNormalForm
 union l r =
-  case Set.findMin (Set.intersection (keysOf l) (keysOf r)) of
-    Just shared -> Left (DuplicateKey shared)
+  case Array.find clashes (Map.toUnfoldable (Map.intersectionWith Tuple l.known r.known)) of
+    Just (Tuple key _) -> Left (DuplicateKey key)
     Nothing ->
       Right
         { known: Map.union l.known r.known
         , tail: Set.union l.tail r.tail
         }
   where
-  keysOf n = Set.fromFoldable (Map.keys n.known)
+  clashes (Tuple _ (Tuple a b)) = canonicalPayload a /= canonicalPayload b
 
 derive instance Eq RowError
 derive instance Generic RowError _

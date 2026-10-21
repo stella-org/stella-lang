@@ -143,7 +143,6 @@ import Stella.Compiler.TypedCore.Kind (Kind(..), KindScheme, RowElemKind(..))
 import Stella.Compiler.TypedCore.Kind as Kind
 import Stella.Compiler.TypedCore.Type (Type, TypeScheme)
 import Stella.Compiler.TypedCore.Equality (schemeEquiv)
-import Stella.Compiler.TypedCore.Row (RowError)
 import Stella.Compiler.Primitive (abiTypeDescriptors, runtimeEntryNamed, schemeOfRuntimeEntry)
 
 data ElaborationError
@@ -192,10 +191,6 @@ data ElaborationError
   -- | A foreign naming an entry the runtime carries out, declared at another
   -- | scheme than the ABI declares the entry at, where it is declared.
   | AbiEntryMismatch Surface.Origin (Qualified Ident) { expected :: TypeScheme, declared :: TypeScheme }
-  -- | A foreign naming an entry the runtime carries out whose scheme could not
-  -- | be compared with the one the ABI declares the entry at: the scheme read
-  -- | is not well kinded, which is the elaborator's fault.
-  | AbiEntryIncomparable Surface.Origin (Qualified Ident) RowError
   -- | A foreign type naming a type constructor the ABI supplies, declared of
   -- | another kind, or of another class, than the ABI gives it, where it is
   -- | declared.
@@ -547,10 +542,8 @@ elaborateValuesM attempterOf imports surface importedEntries m =
       let
         expected = schemeOfRuntimeEntry entry.id
       in
-        case schemeEquiv v.scheme expected of
-          Right true -> accepted acc v
-          Right false -> acc { errors = Array.snoc acc.errors (AbiEntryMismatch v.declared.origin v.declared.name { expected, declared: v.scheme }) }
-          Left err -> acc { errors = Array.snoc acc.errors (AbiEntryIncomparable v.declared.origin v.declared.name err) }
+        if schemeEquiv v.scheme expected then accepted acc v
+        else acc { errors = Array.snoc acc.errors (AbiEntryMismatch v.declared.origin v.declared.name { expected, declared: v.scheme }) }
     Nothing -> case crossingOf signature v.scheme of
       Right _ -> accepted acc v
       Left refused -> acc { errors = Array.snoc acc.errors (ForeignRefused v.declared.origin v.declared.name refused) }

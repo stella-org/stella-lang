@@ -316,11 +316,11 @@ spec = describe "Stella.Compiler.Abi » operations of the Base surface" do
           TForall _ ka (TForall _ kb body) -> bound { body = TForall (TyVar "x") ka (TForall (TyVar "y") kb (swap body)) }
           other -> bound { body = other }
         swap = substituteType (Map.fromFoldable [ Tuple (TyVar "a") (TVar (TyVar "x")), Tuple (TyVar "b") (TVar (TyVar "y")) ])
-      schemeEquiv bound renamed `shouldEqual` Right true
-      schemeEquiv (poly "a" k) (poly "b" j) `shouldEqual` Right true
-      schemeEquiv (poly "a" k) { kindVars: [], body: TForall (TyVar "a") KType (pureFn (TVar (TyVar "a")) (TVar (TyVar "a"))) } `shouldEqual` Right false
-      schemeEquiv (poly "a" k) { kindVars: [ k, j ], body: (poly "a" k).body } `shouldEqual` Right false
-      schemeEquiv bound (schemeOfRuntimeEntry IOPure) `shouldEqual` Right false
+      schemeEquiv bound renamed `shouldEqual` true
+      schemeEquiv (poly "a" k) (poly "b" j) `shouldEqual` true
+      schemeEquiv (poly "a" k) { kindVars: [], body: TForall (TyVar "a") KType (pureFn (TVar (TyVar "a")) (TVar (TyVar "a"))) } `shouldEqual` false
+      schemeEquiv (poly "a" k) { kindVars: [ k, j ], body: (poly "a" k).body } `shouldEqual` false
+      schemeEquiv bound (schemeOfRuntimeEntry IOPure) `shouldEqual` false
 
     it "fixes `Base.Array.Array`, opaque, at `standard`, and nothing at `core-runtime`" do
       abiTypeDescriptors `shouldEqual` [ { name: arrayTy, kind: monoScheme (KFun KType KType), canonical: CanonicalOpaque, profile: Standard } ]

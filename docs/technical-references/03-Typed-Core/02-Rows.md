@@ -50,7 +50,7 @@ Sharing one theory does not mean sharing one notation.
 
 ## Sharpness
 
-A well-kinded row never contains the same key twice (D4).
+A row well-kinded in a consistent context never contains the same key twice (D4). Sharpness is what kinding establishes; type equality does not rest on it, comparing [canonical forms](#canonical-form) that every row has, sharp or not.
 
 PureScript, following Leijen's scoped labels, admits `( a :: Int, a :: String )`. That choice makes row unification unitary, which is a real benefit. Stella nevertheless rejects it, because Stella has `⊎`.
 
@@ -99,65 +99,90 @@ The rules are **kind-independent**: a row element is an `ent` with key `key(ent)
   Γ ⊨ key(ent) ∉ ρ2    Γ ⊨ ρ1 # ρ2
   ──────────────────────────────────
   Γ ⊨ ( ent | ρ1 ) # ρ2
+
+  Γ inconsistent    Γ ⊢ C ok
+  ──────────────────────────   ← ex falso
+  Γ ⊨ C
 ```
 
 `Console ∉ e` at `Row Effect` and `name ∉ r` at `Row Type` are derived by the same rules.
 
+### Inconsistent assumptions
+
+**An assumption need only be well formed, not satisfiable.** A type application checks only that its argument has the quantified kind, so it can substitute a row into a constraint abstraction and make what that abstraction assumes false:
+
+```text
+( Λ (r : Row Type). Λ (_ : name ∉ r). v ) [ ( name : Int ) ]
+```
+
+steps to an abstraction assuming `name ∉ ( name : Int )`. Refusing to form a context holding that assumption would leave the reduct with no type, so `C => τ` and `Λ (_ : C). v` ask `Γ ⊢ C ok` and nothing more, and `Γ, C` is formed whatever `C` says ([Typing Rules](05-Typing-Rules.md)). `e [•]`, which eliminates a constraint abstraction, still asks `Γ ⊨ C`, so an assumption that cannot hold is never discharged in a context where it does not already.
+
+**A context whose assumptions are inconsistent entails every well-formed constraint, and that is the whole of ex falso.** It makes no unbound variable bound, no ill-kinded application such as `Int Int` well-kinded, and no kind mismatch a match. What it can do is satisfy a sharpness premise of kinding, because that premise is an entailment: under `name ∉ ( name : Int )`, `r ⊎ r` is well-kinded.
+
+**Inconsistency is decided one assumption at a time.** Both constraints are negative, so the empty row satisfies whatever an assumption says of a row variable, and assumptions each satisfiable on their own are satisfiable together. An assumption is inconsistent exactly when its known keys contradict it:
+
+```text
+inconsistent( k ∉ ρ )      ⟺   k ∈ keys(ρ)
+inconsistent( ρ1 # ρ2 )    ⟺   keys(ρ1) ∩ keys(ρ2) ≠ ∅
+```
+
+`keys(ρ)` is the set of keys of the canonical form of `ρ` ([below](#canonical-form)). `Γ` is inconsistent when one of its assumptions is. `r # r` is not inconsistent: it is satisfied by `()`. A positive constraint, were one ever added, would make the characterization depend on how assumptions interact, and it would have to be revisited.
+
+**What a `region` binder records is not an assumption.** The facts `RegionKey ℓ ∉ t` it adds for the row variables bound before it are what freshness gives, as `Γ*` below sets out, and none is ever false; they are kept apart from what constraint abstractions assume, though entailment reads both.
+
 **Constraints carry no run-time content.** Introduction and elimination appear in terms as `Λ(_ : C). e` and `e [•]`, and both are erased. This has nothing to do with dictionary passing: the row solver and the type class resolver are separate mechanisms (D5).
 
-The Core type checker **re-derives** `Γ ⊨ C` for each `e [•]`. No proof term is carried. The derivation is comparison of normal forms plus a scan of the context, and involves no search.
+The Core type checker **re-derives** `Γ ⊨ C` for each `e [•]`. No proof term is carried. The derivation is comparison of canonical forms plus a scan of the context, and involves no search.
 
-## Normal form
+## Canonical form
 
-Every well-kinded row has a normal form. The four equations below cover every type of kind `Row ε`, because a row kind is produced by row syntax alone and never by a type constructor ([Kinds and Types](01-Kinds-and-Types.md)).
-
-```text
-RNF ::= ⟨ F ; T ⟩
-
-F : RowKey ⇀ Payload      a finite map; sharpness makes keys unique
-T : { RowVar }            a finite set of row variables
-```
-
-The payload is determined by the kind and the element: a type `τ` at `Row Type`, and at `Row Effect` an effect application `E τ̄` or, for a region, its name. The key is whichever of the five constructors the element carried, and `F` no more distinguishes them than a map distinguishes how its keys were spelled.
-
-`⟨ F ; T ⟩` represents the union of the known elements `F` with the row variables of the unknown tail `T`.
+**Every type has a canonical form, and type equality compares canonical forms.** Canonicalization is total: it is defined on every type, well-kinded or not, in any context, consistent or not.
 
 ```text
-nf( () )              = ⟨ ∅ ; ∅ ⟩
-nf( a )               = ⟨ ∅ ; {a} ⟩
-nf( (ent | ρ) )       = ⟨ F ∪ {key(ent) ↦ payload(ent)} ; T ⟩   where ⟨F;T⟩ = nf(ρ)
-nf( ρ1 ⊎ ρ2 )         = ⟨ F1 ∪ F2 ; T1 ∪ T2 ⟩                   where ⟨Fi;Ti⟩ = nf(ρi)
+can( a )                  = a, a bound variable identified by the depth of its binder
+can( T [[κ̄]] )            = T [[κ̄]]
+can( τ1 τ2 )              = can(τ1) can(τ2)
+can( forall (a : κ). τ )  = forall κ. can(τ)
+can( C => τ )             = can(C) => can(τ)
+can( () )                 = ⟪ ∅ ; ∅ ⟫
+can( (ent | ρ) )          = ⟪ { key(ent) ↦ can(payload(ent)) } ; ∅ ⟫ ∪ parts(can(ρ))
+can( ρ1 ⊎ ρ2 )            = parts(can(ρ1)) ∪ parts(can(ρ2))
 ```
 
-The kinding side conditions guarantee that both unions are disjoint, so `∪` is well defined, and that `T` is a set.
+A canonical row `⟪ P ; U ⟫` is a set `P` of pairs `k ↦ π`, a key with a canonical payload, and a set `U` of canonical tails. `can(C)` canonicalizes the rows of a constraint and keeps its form. `parts(c)` is `c` itself where `c` is a row and `⟪ ∅ ; {c} ⟫` otherwise, and `∪` is the union of both parts. Three rules make the form unique:
 
-`nf` terminates and its result is unique, provided `key(ent)` cannot change during normalization. Every key constructor is rigid for its own reason: a `SymbolKey` and a `TagKey` are written literals (D13), a `PositionKey` is fixed by where the element stands, an `EffectKey` comes from the constructor the element well-formedness rule requires at the head of a payload (D16), and a `RegionKey ℓ` carries a region name, which no instantiation replaces ([Kinds and Types](01-Kinds-and-Types.md)). **No key depends on a metavariable**, and that is the substance of both decisions.
+- **Equal pairs collapse.** `P` is a set, so `ρ ⊎ ρ` and `ρ` are one row. Two pairs of one key with different payloads stay apart; the form does not become undefined.
+- **A row of no pairs and one tail is that tail.** `a ⊎ ()`, `() ⊎ a`, and `a` have one form.
+- **A type that is no row is an opaque tail where it stands in one.** Canonicalization does not kind its input. A well-kinded row has only row variables in its tails, a row kind being produced by row syntax alone ([Kinds and Types](01-Kinds-and-Types.md)).
+
+The payload is a type `τ` at `Row Type`, and at `Row Effect` an effect application `E τ̄` or, for a region, its name. The key is whichever of the five constructors the element carried, and `P` no more distinguishes them than a map distinguishes how its keys were spelled.
+
+**Sharpness is not a property of the form.** Kinding establishes it, and on a row kinded in a consistent context `P` pairs each key with one payload, which is the finite map of the [sharp normal form](#sharp-normal-form). What the form does not assume is what keeps equality meaningful where sharpness is not given. `r ⊎ r ≡ r` holds because tails are a set; substituting `( x : Int )` for `r` gives `( x : Int ) ⊎ ( x : Int ) ≡ ( x : Int )`, which an equality defined through the finite map would leave without meaning. Rows stay keyed sets; no multiset is introduced.
+
+Canonicalization terminates and its result is unique, provided `key(ent)` cannot change during it. Every key constructor is rigid for its own reason: a `SymbolKey` and a `TagKey` are written literals (D13), a `PositionKey` is fixed by where the element stands, an `EffectKey` comes from the constructor the element well-formedness rule requires at the head of a payload (D16), and a `RegionKey ℓ` carries a region name, which no instantiation replaces ([Kinds and Types](01-Kinds-and-Types.md)). **No key depends on a metavariable**, and that is the substance of both decisions.
 
 ### Equality
 
 ```text
-Γ ⊢ ρ1 ≡ ρ2   ⟺   nf(ρ1) = ⟨F1;T1⟩,  nf(ρ2) = ⟨F2;T2⟩,
-                   dom(F1) = dom(F2),
-                   ∀k ∈ dom(F1). Γ ⊢ F1(k) ≡ F2(k),
-                   T1 = T2
+Γ ⊢ τ1 ≡ τ2   ⟺   can(τ1) = can(τ2)
 ```
 
-Row equality is therefore decidable and **never requires closing a row variable**.
+The right-hand side consults nothing of `Γ`. Equality is therefore decidable, **never requires closing a row variable**, and is stable under substitution with no premise: `τ1 ≡ τ2` gives `τ1[σ] ≡ τ2[σ]` whatever `σ` is, kinded or not. Union is idempotent, commutative, and associative under it, with unit `()`.
 
 ```text
-nf( ( name : String | r ) ⊎ ( age : Int ) )
-  = ⟨ {name ↦ String, age ↦ Int} ; {r} ⟩
-  = nf( ( age : Int, name : String | r ) )
+can( ( name : String | r ) ⊎ ( age : Int ) )
+  = ⟪ {name ↦ String, age ↦ Int} ; {r} ⟫
+  = can( ( age : Int, name : String | r ) )
 
-nf( ( Console | e ) ⊎ ( State Int ) )
-  = ⟨ {EffectKey Console ↦ Console, EffectKey State ↦ State Int} ; {e} ⟩
-  = nf( ( State Int, Console | e ) )
+can( ( Console | e ) ⊎ ( State Int ) )
+  = ⟪ {EffectKey Console ↦ Console, EffectKey State ↦ State Int} ; {e} ⟫
+  = can( ( State Int, Console | e ) )
 
-nf( ( cache : State Int, counter : State Int ) )
-  = ⟨ {SymbolKey cache ↦ State Int, SymbolKey counter ↦ State Int} ; ∅ ⟩
+can( ( cache : State Int, counter : State Int ) )
+  = ⟪ {SymbolKey cache ↦ State Int, SymbolKey counter ↦ State Int} ; ∅ ⟫
 ```
 
-`T1 = T2` is literal set equality. Order is irrelevant, so `⟨∅;{r,s}⟩` and `⟨∅;{s,r}⟩` are equal. Distinct row variables, however, are **not** identified.
+On sharp rows this is the comparison of normal forms: the same keys, equal payloads at each, and equal tails. Tails compare as sets. Order is irrelevant, so `r ⊎ s` and `s ⊎ r` are equal. Distinct row variables, however, are **not** identified.
 
 ```text
 ( name : String | r )   and   ( name : String | s )     are different rows
@@ -178,43 +203,72 @@ The symbol `≡` serves two roles that should not be conflated.
 
 `( name : String | ?r ) ≡ ( name : String | ?s )` is a constraint, not a question of equality, and unification solves it with a fresh `?t`, setting `?r := ?t` and `?s := ?t`. Unification produces a substitution that makes the rows equal; equality itself identifies nothing.
 
+## Sharp normal form
+
+The checker reads the payload at a key through the normal form of a sharp row. The rules read it through a decomposition, `ρ ≡ ( k : τ | ρ' )` with its right-hand side kinded ([Typing Rules](05-Typing-Rules.md)), which every substitution preserves.
+
+```text
+RNF ::= ⟨ F ; T ⟩
+
+F : RowKey ⇀ Payload      a finite map
+T : { RowVar }            a finite set of row variables
+```
+
+`nf(ρ) = ⟨ F ; T ⟩` is **defined where `can(ρ) = ⟪ P ; U ⟫` pairs each key with one payload and every tail is a row variable**: `F` maps each key of `P` to its payload and `T` is `U`. Kinding a row in a consistent context establishes both. On such a row it is computed as
+
+```text
+nf( () )              = ⟨ ∅ ; ∅ ⟩
+nf( a )               = ⟨ ∅ ; {a} ⟩
+nf( (ent | ρ) )       = ⟨ F ∪ {key(ent) ↦ payload(ent)} ; T ⟩   where ⟨F;T⟩ = nf(ρ)
+nf( ρ1 ⊎ ρ2 )         = ⟨ F1 ∪ F2 ; T1 ∪ T2 ⟩                   where ⟨Fi;Ti⟩ = nf(ρi)
+```
+
+where a union of maps is defined when the two agree at every key they share, payloads being compared by `≡`.
+
+**`F(k)` is the payload a decomposition exhibits.** In a consistent context `ρ ≡ ( k : τ | ρ' )`, its right-hand side kinded, holds exactly where `F(k) ≡ τ`, sharpness making the payload unique. Where a row is not sharp — kinded under an inconsistent assumption, which entails every sharpness premise — two payloads may stand at one key and `nf` is undefined, while a decomposition may still hold; a substitution makes such a row out of a sharp one. The checker reads `nf` and reports a row it is undefined on.
+
+`nf` is not what equality is defined by. Type equality compares canonical forms, which every type has.
+
 ## Deciding entailment
 
 ```text
-Γ ⊨ k ∉ ρ        ⟺   nf(ρ) = ⟨F;T⟩,  k ∉ dom(F),
-                       ∀t ∈ T. (k ∉ t) ∈ Γ*
+Γ ⊨ C            where Γ is inconsistent
 
-Γ ⊨ ρ1 # ρ2      ⟺   nf(ρi) = ⟨Fi;Ti⟩,
-                       dom(F1) ∩ dom(F2) = ∅,
-                       ∀t ∈ T1. ∀k ∈ dom(F2). (k ∉ t) ∈ Γ*,
-                       ∀t ∈ T2. ∀k ∈ dom(F1). (k ∉ t) ∈ Γ*,
-                       ∀t1 ∈ T1. ∀t2 ∈ T2. (t1 # t2) ∈ Γ*
+Γ ⊨ k ∉ ρ        ⟺   k ∉ keys(ρ),
+                       ∀t ∈ tails(ρ). (k ∉ t) ∈ Γ*
+
+Γ ⊨ ρ1 # ρ2      ⟺   keys(ρ1) ∩ keys(ρ2) = ∅,
+                       ∀t ∈ tails(ρ1). ∀k ∈ keys(ρ2). (k ∉ t) ∈ Γ*,
+                       ∀t ∈ tails(ρ2). ∀k ∈ keys(ρ1). (k ∉ t) ∈ Γ*,
+                       ∀t1 ∈ tails(ρ1). ∀t2 ∈ tails(ρ2). (t1 # t2) ∈ Γ*
 ```
+
+`keys(ρ)` is the set of keys of the pairs of `can(ρ)`, and `tails(ρ)` its set of tails. **A fact is about a canonical tail**, a row variable or an opaque one alike, and a tail meets a fact only when the two are the same canonical form. Of an opaque tail, which only an ill-kinded row holds, a fact comes from an assumption about it and from nothing else.
+
+**Entailment is preserved by every substitution.** `Γ ⊨ C` gives `Γ[σ] ⊨ C[σ]`, with no kinding or admissibility premise on `σ`. What a substitution does to a tail it does on both sides: substituting `Int` for `r` turns `k ∉ r ⊨ k ∉ r` into `k ∉ Int ⊨ k ∉ Int`, and a fact restricted to row variables would lose it. Where the substitution brings a key into a tail, the assumption that gave the fact becomes inconsistent, and the context entails the constraint all the same.
 
 `t1 = t2` is not excluded. `r # r` is satisfiable — it constrains `r` to the empty row — and an assumption entails itself, so a context assuming it must be able to discharge it. What makes `r ⊎ r` ill-kinded in an ordinary context is that nothing there derives `r # r`.
 
 ### `Γ*`: decomposing assumptions into atomic facts
 
-The conditions above look for **atomic facts about row variables** — `k ∉ t` and `t1 # t2` — whereas assumptions in `Γ` concern composite rows. Each assumption is decomposed over the normal form.
+The conditions above look for **atomic facts about tails** — `k ∉ t` and `t1 # t2` — whereas assumptions in `Γ` concern composite rows. Each assumption is decomposed over its canonical form.
 
 ```text
-assumption (k ∉ ρ)      with nf(ρ) = ⟨F;T⟩
-                          if k ∈ dom(F) the assumption is unsatisfiable
-                          otherwise it yields  { k ∉ t | t ∈ T }
+assumption (k ∉ ρ)      if k ∈ keys(ρ) the assumption makes Γ inconsistent
+                          otherwise it yields  { k ∉ t | t ∈ tails(ρ) }
 
-assumption (ρ1 # ρ2)    with nf(ρi) = ⟨Fi;Ti⟩
-                          if dom(F1) ∩ dom(F2) ≠ ∅ the assumption is unsatisfiable
+assumption (ρ1 # ρ2)    if keys(ρ1) ∩ keys(ρ2) ≠ ∅ the assumption makes Γ inconsistent
                           otherwise it yields
-                            { k ∉ t | k ∈ dom(F1), t ∈ T2 }
-                            { k ∉ t | k ∈ dom(F2), t ∈ T1 }
-                            { t1 # t2 | t1 ∈ T1, t2 ∈ T2 }
+                            { k ∉ t | k ∈ keys(ρ1), t ∈ tails(ρ2) }
+                            { k ∉ t | k ∈ keys(ρ2), t ∈ tails(ρ1) }
+                            { t1 # t2 | t1 ∈ tails(ρ1), t2 ∈ tails(ρ2) }
 ```
 
-The only closure added is symmetry of `#`. Since `Γ` is finite and each `nf` is finite, `Γ*` is finite and is constructed once.
+The only closure added is symmetry of `#`. Since `Γ` is finite and each canonical form is finite, `Γ*` is finite and is constructed once.
 
 Two binders change `Γ*` besides the assumptions.
 
-**A type binder hides what was assumed of a variable it shadows.** A `forall` met while kinding is scoped lexically, and binding `a` again removes every atomic fact about the outer `a`: what was assumed of it says nothing of the inner one ([Kinds and Types](01-Kinds-and-Types.md)).
+**A type binder hides what was assumed of a variable it shadows.** A `forall` met while kinding is scoped lexically, and binding `a` again removes every atomic fact about a tail the outer `a` occurs free in: what was assumed of it says nothing of the inner one ([Kinds and Types](01-Kinds-and-Types.md)).
 
 **A `region` binder adds facts that freshness gives.** A row variable bound outside `ℓ` cannot be instantiated with a row mentioning `ℓ`: wherever its instantiation is formed, `ℓ` is not in scope, and capture-avoiding substitution keeps it so. Entering the body of `region [ℓ]` therefore adds
 
@@ -222,7 +276,7 @@ Two binders change `Γ*` besides the assumptions.
 { RegionKey ℓ ∉ t  |  t : Row Effect ∈ Γ }
 ```
 
-for every row variable of kind `Row Effect` bound before `ℓ`. A row variable bound later, inside the body, gets no such fact; a function that abstracts over a row there and needs the key absent says so in its type, as for any other key. This is what lets a function polymorphic in its row be applied inside a region with no constraint written for it, and what makes the body's row `( region ℓ | ρ )` sharp ([Typing Rules](05-Typing-Rules.md)).
+for every row variable of kind `Row Effect` bound before `ℓ`. A row variable bound later, inside the body, gets no such fact; a function that abstracts over a row there and needs the key absent says so in its type, as for any other key. This is what lets a function polymorphic in its row be applied inside a region with no constraint written for it, and what makes the body's row `( region ℓ | ρ )` sharp ([Typing Rules](05-Typing-Rules.md)). A run-time region frame adds none, its residual row being closed ([Semantics](06-Semantics.md#run-time-forms)).
 
 ### What entailment does not derive
 

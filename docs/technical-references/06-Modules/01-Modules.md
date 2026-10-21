@@ -222,6 +222,8 @@ The rule is syntactically checkable.
 
 **The declared type is curried; the implementation is not.** `foreign writeAt : Int -> String -> IO Unit` declares arity 2, and a **saturated call hands both arguments at once**, so a JavaScript `function writeAt(n, s)` is the implementation and nothing binds it as `(n) => (s) => …`. A partial application is not the implementation's concern: `writeAt 0` is a value in its own right and nothing reaches the implementation until the second argument arrives, which is what a machine holds a partial application for (D30, [Bytecode](../05-Backend/01-Bytecode.md)). Under D23 this is a question of arity rather than of when effects occur. That neither `writeAt 0` nor `writeAt 0 "x"` does anything follows from the implementation conforming to condition (3) of `Σ ⊨ G` ([Semantics](../03-Typed-Core/06-Semantics.md)); D23 constrains the declared type, not the implementation.
 
+**A foreign is called when its last value arrives.** Its type takes no type and no constraint after its last value, so the bare reference of a foreign with no arrow is its call, and an argument after the last is applied to what the call returns ([Typing Rules](../03-Typed-Core/05-Typing-Rules.md#what-σ-is-held-to)). Erasure removes types and constraints and keeps values, so a call happens at the same point before and after it; a foreign that would be `forall a. a` is declared `forall a. Unit -> a`.
+
 ### Uncurried FFI
 
 To avoid a chain of closures, PureScript uses `Fn2` through `Fn10`. The equivalent in Stella is a family of n-argument function types, which are manifest intrinsics of `Base.Function.Uncurried` rather than part of `Prim` ([Prim and Base](02-Prim-and-Base.md)). **What the family is for here is an uncurried function value** — one a program stores, passes, or returns — and not the arity of an implementation, which the rule above settles.
@@ -522,6 +524,7 @@ Declarations extend the signature, so the judgement makes `Σ` explicit.
   Σ ⊢ rec { x_i : σκ_i = e_i }  ⊣  Σ'
 
   σκ = forall k̄. σ    ·, k̄ ⊢ σ : Type    every arrow of σ is pure (D23)
+  no forall and no => after the last arrow of σ
   ──────────────────────────────────────────────────────────────────
   Σ ⊢ foreign [#observ(none)] f : σκ  ⊣  Σ, M.f : σκ [#observ(none)]
 
@@ -562,7 +565,7 @@ The join point context is empty. Join points do not cross a function boundary, a
   Σ_ty = Σ_Prim ∪ Σ_ABI(M) ∪ Σ_imp ∪ { all of the above }
 ```
 
-**An entry arriving through an import is checked as its declaration would have been**, where the signature is assembled: a type constructor's kind scheme, an effect's parameters and operations, and an attribute declaration's parameter types and defaults. An interface is read for its structure alone ([Interface](../05-Backend/03-Interface.md)), so this is where an entry no declaration of this module produced is held to the rules.
+**The assembled signature `Σ_Prim ∪ Σ_ABI(M) ∪ Σ_imp` is checked to be `Σ ok`** ([Typing Rules](../03-Typed-Core/05-Typing-Rules.md)) where it is assembled, so every entry arriving through an import is held to what its declaration would have established: a type constructor's kind scheme, an effect's parameters and operations, a constructor's owner, tag, and exact scheme, a value's or a foreign's scheme and a foreign's purity, an attribute declaration's parameter types and defaults, and that no name is both a constructor and a value. An interface is read for its structure alone ([Interface](../05-Backend/03-Interface.md)), so this is where an entry no declaration of this module produced is held to the rules. The declaration rules below keep `Σ ok`, each adding only what it has checked, so the signature a module is checked under satisfies it throughout.
 
 `Σ_Prim` is the signature of `Prim` ([Prim and Base](02-Prim-and-Base.md)), which no module imports — a header's `import Prim` selects names and adds no import — and every module may name. `Σ_ABI(M)` is what the environment supplies to `M` itself from outside any source, and is empty in a build of sources: a module holding a manifest intrinsic declares it as a `foreign type`, which the compiler holds to the kind and the class the ABI gives it ([Prim and Base](02-Prim-and-Base.md#manifest-intrinsics-which-live-outside-prim)).
 

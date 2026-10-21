@@ -3,7 +3,7 @@
 Once this specification is settled, the target of Phase A is determined.
 
 1. **Define the Core AST** ([Kinds and Types](../03-Typed-Core/01-Kinds-and-Types.md), [Terms and Matching](../03-Typed-Core/04-Terms-and-Matching.md), [Modules](../06-Modules/01-Modules.md))
-2. **Row normalization `nf`, the entailment decision `Γ ⊨ C`, and row unification** ([Rows](../03-Typed-Core/02-Rows.md), [Elaboration](../02-Surface-Language/01-Elaboration.md)) — the first target for unit tests and property tests
+2. **Canonical forms and type equality, the sharp normal form `nf`, the entailment decision `Γ ⊨ C`, and row unification** ([Rows](../03-Typed-Core/02-Rows.md), [Elaboration](../02-Surface-Language/01-Elaboration.md)) — the first target for unit tests and property tests
 3. **The Core type checker** ([Core Type Checker](../03-Typed-Core/07-Core-Type-Checker.md))
 4. **Hand-write the Core module of the vertical slice** ([Examples](../03-Typed-Core/08-Examples.md)) and run it through step 3 — the type checker's first end-to-end test
 5. **Lowering to Mid IR**: the erasures of [Semantics](../03-Typed-Core/06-Semantics.md), and the mapping of decision trees and join points
@@ -14,11 +14,13 @@ Steps 2 and 4 precede step 7 because the type checker can run before the parser 
 
 ## Notes on step 2
 
-Row unification is where subtle errors concentrate, and two properties deserve explicit regression tests.
+Row unification is where subtle errors concentrate, and three properties deserve explicit regression tests, the last of which concerns equality rather than unification.
 
 **Two-sided refinement.** A constraint such as `{ a : A | ?r } ≡ { b : B | ?s }` cannot be solved by substituting into one side; it requires a fresh variable substituted into both. A one-sided substitution either produces an incorrect solution or fails an occurs check and rejects a solvable constraint.
 
 **The rigid/flexible distinction.** A rigid row variable is not assignable but can be absorbed by a flexible tail on the other side. Case analysis that only checks whether a tail is empty gets this wrong.
+
+**Equality is total, and stable under substitution.** It compares canonical forms, which every type has, so `r ⊎ r ≡ r` still means something once `( x : Int )` is substituted for `r`. An equality defined through the finite-map normal form fails there, and a test that only compares sharp rows does not notice.
 
 ## Notes on step 5
 
@@ -135,7 +137,7 @@ Extending the generator to `foreign` declarations is worthwhile once the FFI sur
 
 **Machine-checked or paper proofs are deferred.** They become worth revisiting if the work is to be published, or if one subsystem keeps producing subtle bugs that property testing does not catch.
 
-**Conformance of the global environment** is a premise of every property above, not something they establish. A test harness supplies `G` and must therefore guarantee `Σ ⊨ G` itself: global definitions are well-typed values, and each `δ_f` returns either a value of the instantiated result type — the one the spine judgement gives — or a permitted fault, performs no proper effect and runs no reified computation it constructs, applies no Stella function value, terminates, and has no observational effect — faulting among them — where the declaration asserts `#observ(none)` ([Semantics](../03-Typed-Core/06-Semantics.md)).
+**Conformance of the global environment** is a premise of every property above, not something they establish. A test harness supplies `G` and must therefore guarantee `Σ ⊨ G` itself: global definitions are well-typed values, and each `δ_f` returns either a value of the instantiated result type — the one the typing of its chain gives — or a permitted fault, performs no proper effect and runs no reified computation it constructs, applies no Stella function value, terminates, and has no observational effect — faulting among them — where the declaration asserts `#observ(none)` ([Semantics](../03-Typed-Core/06-Semantics.md)).
 
 **The separate Core-modelled premise is the other thing the generator has to respect, and it is the easier of the two to miss.** It is not a clause of `Σ ⊨ G` and is not implied by it: it asks that returning an outcome the arguments fix be the **whole** of what a saturated call does, so no hidden read, no write, and no identity the arguments do not determine. A harness whose `δ_f` reads a counter or a clock, or writes to a cell the next call reads, invalidates the property rather than testing it, and it does so silently — the run completes and the assertion passes. **Faulting is not what the premise excludes**: a `δ_f` that faults on an argument it always faults on satisfies it, which is what keeps `Base.String.codePointAt` and the fault branch of progress inside the properties. A generator that produces a hidden read or a write is producing a term the relation gives no step to.
 
@@ -161,6 +163,9 @@ The heading of each group names the step of the plan that the group belongs to.
 | `⟨∅;{?r,?s}⟩ ≡ ⟨{a↦A};∅⟩` | Stuck, not failure. Two solutions exist, so the constraint waits |
 | A solved `?r := D ⊎ ?t` where `k ∉ ?r` was required | The obligation that named `?r` names `?t` once its constraint is zonked, and `k ∉ dom(D)` is decided again. Omitting either produces Core that is not well-kinded |
 | `r ⊎ r` | Ill-kinded. The disjointness side condition rejects it before normalization |
+| `( x : Int ) ⊎ ( x : Int ) ≡ ( x : Int )` | Succeeds. A row is a set of entries, so equal entries collapse; this is `r ⊎ r ≡ r` with `( x : Int )` substituted for `r`, and an equality defined only on sharp rows would leave it without meaning |
+| `( x : Int ) ⊎ ( x : String )` against `( x : Int )` | Fails, and is decided: two payloads at one key stay apart in the canonical form rather than leaving the row with none |
+| `τ1 ≡ τ2`, then `τ1[σ] ≡ τ2[σ]` for any `σ` | Succeeds, with no kinding or consistency premise. Equality compares total canonical forms |
 
 ### Kinds and constraints (step 3)
 
@@ -180,7 +185,11 @@ The heading of each group names the step of the plan that the group belongs to.
 | `forall (f : Type -> k). …` | Rejected. `k` may be instantiated with a row kind |
 | A `Σ` entry `MkRow : Type -> Row Type`, used as `Record (MkRow Int)` | Rejected at the occurrence. Kinding does not trust the table for this |
 | `(name ∉ r) => Record ( name : String \| r )` | **Accepted.** The constraint is assumed while the body is kinded; without it the row is not sharp |
-| `(name ∉ ( name : String )) => Int` | Rejected. `Γ, C` requires `C` to be satisfiable |
+| `(name ∉ ( name : String )) => Int` | **Accepted.** `Γ, C` requires `C` to be well formed, not satisfiable |
+| `( Λ (r : Row Type). Λ (_ : name ∉ r). v ) [ ( name : Int ) ]` | **Accepted**, and the abstraction it steps to, assuming `name ∉ ( name : Int )`, has the same type. Refusing an unsatisfiable assumption would leave that reduct untypable. Its `[•]` is rejected in a consistent context: `e [•]` alone asks entailment |
+| `( name : String \| r )` and `r ⊎ r` under the assumption `name ∉ ( name : Int )` | Accepted. A sharpness premise is an entailment, and an inconsistent context entails every constraint |
+| `Int Int`, or an unbound type variable, under the same assumption | Rejected. Ex falso reaches entailment and nothing else |
+| `k ∉ r ⊨ k ∉ r`, then `Int` substituted for `r` | `k ∉ Int ⊨ k ∉ Int`. A fact is about a canonical tail, an opaque one included, so entailment is preserved by every substitution with no admissibility premise; facts kept of row variables alone lose this one |
 
 ### Row keys (step 3)
 
@@ -231,14 +240,27 @@ The heading of each group names the step of the plan that the group belongs to.
 | `switchKey` over a row with an unknown tail, no default | Rejected |
 | `switchCtor` with a default whose body is ill-typed | Rejected. The default branch is typed like any other |
 | `switchKey` default | The occurrence is refined to the residual `Variant r'`, not left at the original type |
+| `switchKey` enumerating `name` over `Variant ( name : Int \| r )`, the default binding the occurrence | Bound at `Variant r`, the tail the row decomposes into |
+| `switchKey` enumerating `name` over `Variant ( ( name : Int ) ⊎ ( name : Int ) )` under the inconsistent `name ∉ ( name : Int )` | Accepted with no default, and a default's occurrence is at `Variant ()`. The row is `( name : Int )`, equal pairs collapsing |
+| The same over a row with two payloads at `name` | Reported, `NotARowType`. The rule has a derivation for it, which a reduct needs and the checker does not; no sharp normal form gives the checker a payload |
+| `perform cache.get` at `( cache : State Int ) ⊎ ( cache : State Int )`, and an occurrence `o . name` of a record at `( name : Int ) ⊎ ( name : Int )`, each under the inconsistent assumption that the key is absent from its one element | Accepted, at `Int`. A `perform` and a record occurrence read the element the row decomposes into, as a `switchKey` does |
+| The same with two payloads at the key | Reported, `NotARowType`, as for a `switchKey` |
 | A handler omitting an operation of `E` | Rejected. `handle` removes the keyed element, so an operation without a clause has nowhere to go |
 | A handler clause that does not respect an operation's own `forall b̄` | Rejected |
 | An interpreter sequencing a native action before resuming a continuation, the residual row not being closed | Rejected. That continuation is `a -{ρ}-> IO r`, which the pure arrow of `Base.IO.bind` does not take. Abandoning the continuation, or resuming it first, is admitted |
-| A pure global applied where the ambient row is not empty, as `Base.Int.add n 1` is under `( State Int \| e )` | Rejected without `openEff`. An application requires the arrow to carry the ambient row and containment is never inserted (D8); currying makes it one `openEff` per argument consumed |
-| A data constructor applied in a handler clause, the row outside the handle not being empty | Rejected for the same reason. Constructor arrows are pure by declaration, so one is widened like any other pure global. An instantiation such as `Prelude.Nothing [a]` needs no widening, applying nothing |
+| A foreign applied where the ambient row is not empty, as `Base.Int.add n 1` is under `( State Int \| e )` | Accepted without `openEff`. A foreign's chain consumes pure arrows alone, and its value arguments are checked at the ambient row of the whole chain |
+| A data constructor applied in a handler clause, the row outside the handle not being empty | Accepted without widening, as a foreign's chain is. Constructor arrows are pure by the exact scheme |
+| A defined global of pure arrows applied where the ambient row is not empty | Rejected without `openEff`. Its application is the rule for `e1 e2`, whose arrow carries the ambient row, and containment is never inserted (D8); currying makes it one `openEff` per argument consumed |
+| `M.id [Int -> Int] f x` with `foreign id : forall a. a -> a`, where the ambient row is not empty | Rejected without `openEff`. The chain ends at `f`, saturated at the declared remainder `a`, and `x` is an ordinary application of the `Int -> Int` it returns |
+| `Λ (a : Type). M.Just [Maybe a] (M.Nothing [a])` | A value form, its body a constructor's chain of values, and a value of the reduction relation as it stands |
 | `handle (perform E.op v) with h` at ambient row `()` | **Accepted.** Effect safety is not "no operation is performed" |
 | A `λ` whose body jumps to a join point bound outside it | Rejected. The join point context is discarded at a lambda |
-| A `letjoin` in argument position whose definition jumps to itself | Accepted. The root of a definition is in tail position wherever the `letjoin` stands |
+| A `letjoin` in argument position whose definition jumps to itself | Accepted. A join definition is typed under the join points of its own `letjoin`, wherever it stands |
+| `f (letjoin j (n : Int) : Int = n in jump j 1)` | Accepted. A non-tail position starts with no join point, and the `letjoin` in it adds its own (D50) |
+| `let y : Int = (λ (u : Unit). letjoin j () : Int = 1 in jump j ()) Prim.Unit in y`, and its contractum `let y : Int = (letjoin j () : Int = 1 in jump j ()) in y` | Both accepted. A contractum is typed at the `Δ` of its redex; a tail condition beside a `Δ` crossing non-tail positions rejects the second |
+| `letjoin k () : Int = 0 in f (letjoin j () : Int = jump k () in 1)` | Rejected, `JumpNotInTail k`. The definition of `j` stands in a non-tail position, which hides `k`, and entering `j` would leave the jump under `f (…)` |
+| `letjoin j () : Int = 1 in f (jump j ())`, and a jump from an initial value of a `region` | Rejected, `JumpNotInTail j`. Both stand in a non-tail position |
+| A jump to a join point bound outside a `λ`, a `region` body, or a `handle`, a non-tail position standing outside that boundary as well | Rejected, `UnboundJoin`. A boundary clears the join points a non-tail position hid along with those in scope |
 | `switchCtor` whose first branch reaches no leaf and whose second does | Accepted, at the type the second gives. The written order of branches carries no meaning |
 | `bind x = o . k` with no dispatch having established `o . k` | Accepted. A record has an element at every key of its row |
 | A handler clause whose continuation is typed at the inner row | Rejected. It is `τ' -{ρ}-> β`, the row outside the handle and the result of it (D15) |
@@ -283,6 +305,8 @@ The heading of each group names the step of the plan that the group belongs to.
 | `foreign Js.Console.log : String -> IO Unit` | Accepted. This is the shape every real-world leaf takes |
 | `foreign use : Record ( cb : Int -{( Console )}-> Int ) -> Unit` | Rejected. An arrow reaches the boundary through the payload of a row as readily as through an argument |
 | A `foreign` whose only effectful arrow stands inside a constraint | Accepted. A constraint is an erased proposition and carries no value across the boundary |
+| `foreign make : forall a. a`, `foreign f : Int -> forall a. a`, and one with a constraint after its last arrow | Rejected, where it is declared and where a signature is assembled. A type or constraint argument would saturate the call, and erasure removes it, so the erased program would call the foreign at another point |
+| `foreign make : forall a. Unit -> a` | Accepted. Its quantifier stands before its last value |
 | An effect with an operation `liftIO : forall a. IO a ->* a` | **Accepted.** `perform` carries the opaque `IO` to the handler without executing it. What it costs is the granularity of the capability, not soundness |
 | `newtype` on a type with two constructors, or with one constructor of two fields | Rejected. The backend erases the representation on the strength of this flag |
 | A `nonrec` whose right-hand side refers to a `foreign` declared later in the text | Initializes. Constructors and foreign implementations enter the environment before any value declaration is evaluated |
@@ -296,11 +320,19 @@ The heading of each group names the step of the plan that the group belongs to.
 | A `letjoin` whose body reads a member, not jumped to; jumped to; and jumping to itself with a closure its body applies | Accepted; rejected; rejected through the application. A join point is read where it is jumped to |
 | `region … in x`, and a closure reading `x` applied inside the region | Both rejected, the first where `x` stands, the second also at the region. A handling expression and a region count everything they hold as read through them, and what a part reads as it stands is kept as it is |
 | A nested `letrec` whose member reads the outer group under a λ, one reading it at once, and one reading a later member of its own group | Accepted; rejected for the outer group; judged by its own group alone. Each group's maps hold its own members |
+| That nested `letrec` once the outer group is allocated, its initializers holding `force ν` in place of the outer members, and one inside a `match`, an `openEffC`, a `fill`, or an open region | Judged as before. The judgement is defined on every run-time form, and `force ν` reads nothing of the group being judged |
 | A `Σ` entry `T : forall k. k` | Rejected where the signature is built. Every use site instantiating it at `Type` would pass, so an occurrence check alone lets it in |
 | A `Σ` entry `T : k -> Type` with nothing binding `k`, or `T : Effect -> Type` | Rejected there too. The whole scheme is checked under the kind variables it binds, not only its result |
 | One entry reaching a name through two import paths | Accepted. A name belongs to the module that declares it, so the two are one entry |
 | Two different entries under one name | Rejected where the parts are merged, rather than resolved by preferring either |
 | A data constructor and a value of one name | Rejected. A constructor is an ordinary global name, so the two share a namespace |
+| A `Σ` holding a constructor and a value of one name, reached by a term | No scheme: the name is ambiguous, not resolved by preferring either table. `Σ ok` excludes such a `Σ`, and lookup does not hide one |
+| An imported constructor of `T : Type -> Type` at `C : forall (a : Type). a -> T Int` | Rejected where the signature is assembled. A branch on a `T Int` would type the field at `Int` while the value carries an `a`; the scheme must be the owner applied to its own parameters, with pure arrows |
+| An imported constructor at a scheme of another arity than its fields, an effectful arrow, other kind variables or parameter kinds than its owner's, an owner that is no data entry or does not list it, or a tag another constructor of its owner has | Each rejected there too. `Σ ok` holds every one of them, an imported signature not trusted to have arisen through declarations |
+| An imported constructor whose recorded field is ill kinded, such as `() ⊎ Int`, under a scheme equivalent to the well-kinded one | Rejected there too. Equivalence relates ill-kinded types as well, and dispatch binds the recorded field, so the field is kinded in its own right |
+| An imported foreign whose arrow performs an effect, or a value whose scheme is ill kinded | Rejected there too. What D23 holds of a declaration it holds of an entry read off an interface |
+| A manifest intrinsic of the class function, record, variant, or literal, an entry of `Σ_Prim` missing or changed, its attributes among them, or an entry under `Prim` other than `Σ_Prim`'s | Rejected there too. `Σ_Prim` is what `Prim` fixes, and the classes with canonical forms the rules build are `Prim`'s types' alone |
+| The signature of a module declaring `data List a = Nil \| Cons a (List a)`, `data Proxy forall k. (p : k) = Proxy`, and a foreign; and the compiler's own `Base.Int` and `Stella.Syntax` | `Σ ok`. A realistic signature satisfies the contract it is held to |
 
 ### Reduction (step 4, once an evaluator exists)
 
@@ -308,13 +340,20 @@ The heading of each group names the step of the plan that the group belongs to.
 | --- | --- |
 | `let x = (openEff [( E )] f) 0 in perform E.op Prim.Unit` with `f : Int -> Int` | Steps to `let x = openEffC [( E )] (f 0) in …`. Discarding the coercion leaves the two parts of the `let` with no common ambient row |
 | `id [Int -> Int] f 0` with `foreign id : forall a. a -> a` | `δ_id(f)` runs and returns `f`, and `0` is applied to the result. Testing the substituted type instead absorbs `0` and calls `δ_id(f, 0)` |
-| `foreign clock : IO Time`, an arity-zero foreign | Steps to `δ_clock()`. The spine is saturated as soon as it is formed |
+| `foreign clock : IO Time`, an arity-zero foreign | Steps to `δ_clock()`. Its bare reference is a saturated chain |
 | `M.f v` for a unary foreign | Steps. The final value argument must fire the implementation |
-| `Base.IO.pure [Int]` | Steps. A polymorphic foreign accumulates the type argument on its spine |
+| `Base.IO.pure [Int]` | A value, an unsaturated foreign's chain. No step forms a call out of the reference |
+| `openEffC [ρ] (M.Just [Int] 1)` | Steps to `M.Just [Int] 1`, typed at the widened row as the redex was. A constructor's chain of values has every row |
 | `letjoin j (x : Int) : Int = e1 in let y = (λz.z) 1 in jump j y` | The body reduces before the jump fires |
 | `letrec { f = λx. … } in e` | Unfolds only in elimination position. No term steps to itself |
 | `switchKey` on a value wrapped in `weaken` | Dispatches on the key actually injected. `weaken` is a value form and is looked through |
+| `switchKey` enumerating `x` over `inject y [( x : Int )] true`, the default binding the occurrence, and the same under a `weaken` | Steps into the default with the value as it stands, which has the residual `Variant ( y : Boolean )` by what it carries. No annotation is rewritten |
+| `inject y [r] true` whose `r` names an unbound variable or a region not in scope, or under a `weaken` holding such a type, read at `Variant ( y : Boolean )` | Ill-typed. The rule for variant values asks the value to have some variant type first, which checks every annotation the carrier skips |
+| `( Λ (r : Row Effect). λ (u : Unit) / r. region⟨ℓ⟩ θ in Prim.Unit ) [ ( region ℓ ) ]` | Ill-typed before it steps. A frame's residual row is closed, and `r` is not, so no substitution makes the frame's row hold its own region |
+| A source `region` opened by a step | The frame's answer type and residual row are kinded under `Γ_R` alone, and it records no `RegionKey ℓ ∉ t`. Its layout enters `Γ_R` closed but for earlier regions |
 | `bind x = o in guard (p x) …` | The substitution happens before descending, so the guard's condition has no free `x` |
+| `case (v̄) of dt` stepping to `match {s_i ↦ v_i} dt`, and every step of the tree after it | Type checks. Each value `θ` reaches has the type `Ω` records for its occurrence, a `switchKey` default's by the rule for variant values |
+| `fill ν e` or `openEffC [ρ] e` whose `e` jumps to a join point outside it | Ill-typed. Both check `e` under no join point, and a jump out of either would leave a cell `Evaluating` or land at another row |
 | That call, once it is evaluated | The innermost handler of the key is chosen: `Ev_k` lets no `handle` of that key stand between it and the hole |
 | `H Ev_k[perform k.op v] with h` whose clause for `op` is `fast` | Binds the body with a `let` and rebuilds the handler around `Ev_k` with that binding in the hole. No continuation value is built, and the `let` is what reconciles the clause's row with the handled computation's |
 | A `fast` clause body performing an operation that a handler inside `Ev_k` also handles | Answered by a handler outside `h`. The body stands outside `Ev_k`, so a handler a function reached through `openEff` installed there is not in its context |
@@ -338,8 +377,9 @@ The heading of each group names the step of the plan that the group belongs to.
 
 | Input | Required outcome |
 | --- | --- |
-| A term and its erasure | The same sequence of observable steps, modulo steps that only introduce or discharge a coercion |
+| A term and its erasure | Each typed step is zero or one step of `→ᵤ`: zero where a `Λ` is applied or a coercion moved or discharged, one for every other step |
 | A term whose reduction faults | The erased term faults identically |
+| A foreign's call whose last argument would be a type, `let x : forall a. a = M.make in 0` | Does not arise: `Σ ok` refuses the foreign. The typed term would not call `δ_make`, while its erasure, the bare reference being a call there, would |
 | The number of run-time arguments a backend passes to `δ_f` | Determined by the arrow count of the **declared** type, not by the instantiated result type |
 | A handler carrying a `full` clause and a `fast` clause | Both markers survive erasure, Core having written each of them. They carry no type information, and a backend lowers the two differently |
 | A `region` | The region name survives as a term-level binder, standing for the run-time identity the opening step allocates; the layout's types do not. A cell is named by its position in the layout, its key becoming debug information (D36) |
@@ -350,7 +390,7 @@ The heading of each group names the step of the plan that the group belongs to.
 | --- | --- |
 | A saturated call to a pure global under a non-empty ambient row, wrapped in one `openEff` per argument consumed | One `callk`. Peeling the spine looks through `openEff`, `TyApp`, and `ConstraintApp`; stopping at the first of them emits a chain of `callu`s where one known call belongs |
 | `Main.Nil [Int]` | The atom `const Main.Nil`. A saturated constructor of arity 0 allocates nothing |
-| A `foreign` of arity 0, referenced bare | `ffi f []`, which **calls the implementation**. The spine is saturated as soon as it is formed, so treating the reference as a value leaves the call unmade |
+| A `foreign` of arity 0, referenced bare | `ffi f []`, which **calls the implementation**. Its bare reference is a saturated chain, so treating it as a value leaves the call unmade |
 | A `foreign` of arity `n > 0`, referenced bare | `pap f []`. It is a value, not a call and not an atom |
 | A top-level value referenced bare | The atom `global M.x`, which is a load |
 | A constructor applied below its arity | `pap`. Over-application does not arise, a constructor's declared result never being an arrow |
@@ -358,6 +398,7 @@ The heading of each group names the step of the plan that the group belongs to.
 | `o ! Ctor . j` | Materialized inside the branch that selected `Ctor`, and nowhere earlier. Projecting it before the dispatch reads a field that is not there |
 | One occurrence used by several nodes | Projected once. An occurrence has no effect, so naming it once is sound |
 | A `Case` in argument position | A join point binding the continuation, not the continuation duplicated into each branch. A `Handle` needs none of this, being a computation |
+| A `letjoin` in argument position jumped to from its continuation, `id (letjoin j (n : Int) : Int = n in jump j 1)` | A join point binding the call, which the inner join point jumps to with its result. `viaJoin` delivers the definition and the continuation alike |
 | A `Bind` of an occurrence already materialized | An alias in the translator's environment; no instruction is emitted |
 | A handler clause body | A function with an explicit capture list. No join point of the enclosing scope is in scope in it, nor in the body of the `handle` |
 | A function member of a top-level `rec` group | A closure over an **empty** capture list. Its recursive references are global names, so nothing is evaluated to install it |
@@ -778,6 +819,7 @@ Only what can cross the boundary may be declared (D44), and the declaration is t
 | One taking or returning a data type, a record, or a variant | **Refused at the declaration**, naming the type, since nothing downstream holds one to refuse it later |
 | One taking a function | Refused likewise. A `δ_f` may carry a function value but may not apply one, so what a host would do with it is not a question the boundary has an answer to |
 | `IO τ` in an **argument** | Refused. Only a result may be an action; an argument of one would be a reified computation the host was handed and could not run |
+| One quantifying after its last argument, `forall a. Array a` | Refused at the result, as the Core checker refuses it. A foreign is called when its last value arrives |
 | The signature the compiler derives | The kinds of the declared type, in order, and a `params` length equal to the arity
 
 ### Types read from the surface (step 7)
@@ -965,7 +1007,7 @@ no identifier is at once ready and blocked
 | A `letjoin` whose definition jumps to itself, and whose body jumps to it | Built, and accepted by the Core type checker. The join point is in both scopes |
 | A `letjoin` closed with a parameter as its body, or with the body and the definition exchanged | Refused. The definition and the continuation are sibling scopes, the parameters bound in the first alone |
 | A `jump` outside its `letjoin`, or with another number of arguments | Refused |
-| A `jump` inside a `λ`, a `Λ(a)`, or a `Λ(_ : C)` in the continuation, and inside a `let` or a type's `forall` there | Refused, and built. Only an abstraction empties `Δ`: `Λ(a)` binds what `forall` does and empties it where the type's binder does not |
+| A `jump` inside a `λ`, a `Λ(a)`, or a `Λ(_ : C)` in the continuation, and inside a `let` or a type's `forall` there | Refused, and built. Of the builders, an abstraction alone empties `Δ`: `Λ(a)` binds what `forall` does and empties it where the type's binder does not. A non-tail position empties it in Core, and the Core type checker refuses a jump out of one (D50) |
 | A term that jumps, given to `closeLambda` as its body, or to `termApply` inside a `λ` | Refused. It is visible there, built in an ancestor, and would carry the jump under the abstraction |
 | The same term as a `let`'s body in the continuation | Built. A `let` inherits `Δ` |
 | Two join points opened one inside the other | `j#0` and `j#1`, from a supply apart from values' |

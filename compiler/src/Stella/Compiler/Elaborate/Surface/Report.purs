@@ -79,7 +79,6 @@ elaborationOrigins = case _ of
   AttributeRejected o _ -> [ o ]
   ForeignRefused o _ _ -> [ o ]
   AbiEntryMismatch o _ _ -> [ o ]
-  AbiEntryIncomparable o _ _ -> [ o ]
   AbiTypeMismatch o _ _ -> [ o ]
   TypeHoleStands o _ _ -> [ o ]
   ExpressionHoleStands o _ _ _ -> [ o ]
@@ -142,7 +141,6 @@ printElaborationError = case _ of
   AttributeRejected _ err -> "The arguments of this attribute do not match its declaration: " <> show err
   ForeignRefused _ name refused -> printRefused (nameOf name) refused
   AbiEntryMismatch _ name r -> fmt @"`{name}` is an entry of the runtime ABI, which declares it at `{expected}`; it cannot be declared at `{declared}`" { name: qualifiedText name, expected: printType (fromCore r.expected.body), declared: printType (fromCore r.declared.body) }
-  AbiEntryIncomparable _ name err -> internal (fmt @"the scheme of `{name}` could not be compared with the one the ABI declares it at: {err}" { name: qualifiedText name, err: show err })
   AbiTypeMismatch _ (Qualified (ModuleName m) (TyName n)) r -> fmt @"`{name}` is a type of the runtime ABI, of kind `{expected}`, declared as a foreign type; it cannot be declared of kind `{declared}`" { name: m <> "." <> n, expected: printKind (fromCoreKind r.expected.body), declared: printKind (fromCoreKind r.declared.body) }
   TypeHoleStands _ "_" t -> fmt @"This hole stands for `{t}`" { t: printType t }
   TypeHoleStands _ name t -> fmt @"The hole `?{name}` stands for `{t}`" { name, t: printType t }
@@ -226,6 +224,7 @@ printRefused :: String -> Refused -> String
 printRefused name refused = case refused.refusal of
   ConstrainedType -> fmt @"The type of the foreign `{name}` holds a constraint, and the host cannot be handed evidence for one" { name }
   PerformingArrow -> fmt @"The foreign `{name}` has an arrow performing effects where its {place} stands; the arrows of a foreign's type are pure, and a foreign that performs effects returns an `IO` action instead" { name, place: placeOf refused.position }
+  QuantifiedResult -> fmt @"The type of the foreign `{name}` quantifies after its last argument; a foreign is called when its last argument arrives, so its quantifiers stand before that argument, and one with no argument takes `Unit`" { name }
   refusal -> fmt @"The {place} of the foreign `{name}` cannot cross to the host, as {why}; only `Int`, `Number`, `Char`, `String`, `Boolean`, `Unit`, and a foreign type cross, and as the result an `IO` action producing one of them" { name, place: placeOf refused.position, why: reason refusal }
   where
   placeOf = case _ of
@@ -243,6 +242,7 @@ printRefused name refused = case refused.refusal of
     -- the refusals of the whole type are said above
     ConstrainedType -> "it holds a constraint"
     PerformingArrow -> "it performs effects"
+    QuantifiedResult -> "it quantifies after the last argument"
 
 printDiagnostic :: Diagnostic -> String
 printDiagnostic = case _ of

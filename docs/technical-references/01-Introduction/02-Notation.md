@@ -14,8 +14,7 @@ Notation confined to a single document is introduced where it is used.
 | `a`, `b` | type variables |
 | `τ`, `σ` | types |
 | `ρ`, `r`, `s`, `e` | rows (`e` usually an effect row) |
-| `ς` | an argument spine of a constructor or foreign |
-| `α` | a spine argument: `[τ]`, `[•]`, or a value |
+| `α`, `ᾱ` | an argument of a constructor's or a foreign's application chain, `[τ]`, `[•]`, or a term; a sequence of them |
 | `θ` | a kind and type substitution |
 | `δ_f` | the implementation of a foreign `f` |
 | `ω` | the payload of an opaque value, held by the backend |
@@ -62,7 +61,10 @@ x̄, ē, v̄                   sequences of value variables, terms, and values
 | `ρ1 # ρ2` | Disjoint constraint | [Rows](../03-Typed-Core/02-Rows.md) |
 | `Γ ⊨ C` | constraint entailment | [Rows](../03-Typed-Core/02-Rows.md) |
 | `Γ ⊢ τ1 ≡ τ2` | type equality | [Types](../03-Typed-Core/01-Kinds-and-Types.md), [Rows](../03-Typed-Core/02-Rows.md) |
-| `⟨ F ; T ⟩` | row normal form | [Rows](../03-Typed-Core/02-Rows.md) |
+| `can(τ)` | the canonical form of a type, which equality compares | [Rows](../03-Typed-Core/02-Rows.md) |
+| `⟪ P ; U ⟫` | a canonical row: a set of key–payload pairs and a set of tails | [Rows](../03-Typed-Core/02-Rows.md) |
+| `Σ ok` | the signature is well formed, `Σ wf`, and holds `Prim` as fixed, `Σ prim`; every judgement presupposes it | [Typing Rules](../03-Typed-Core/05-Typing-Rules.md) |
+| `⟨ F ; T ⟩` | the normal form of a sharp row | [Rows](../03-Typed-Core/02-Rows.md) |
 | `A ⇀ B` | finite map, that is, a partial function | [Rows](../03-Typed-Core/02-Rows.md) |
 | `l ↦ τ` | an entry of a finite map | [Rows](../03-Typed-Core/02-Rows.md) |
 | `Γ ⊢ κ qkind` | `κ` is a quantifiable kind | [Kinds](../03-Typed-Core/01-Kinds-and-Types.md) |
@@ -78,7 +80,7 @@ x̄, ē, v̄                   sequences of value variables, terms, and values
 | `Γ; Δ ⊢ e : τ ! ρ` | term typing. The row to the right of `!` is the ambient effect row | [Typing Rules](../03-Typed-Core/05-Typing-Rules.md) |
 | `Σ ⊢ decl ⊣ Σ'` | declaration checking, extending the signature | [Modules](../06-Modules/01-Modules.md) |
 | `G ⊢ N; e → N'; c` | reduction of a store and a term to a store and a configuration, a term or a fault; `G ⊢ e → c` where the store stands | [Semantics](../03-Typed-Core/06-Semantics.md) |
-| `cursorΣ(M.g, ς)` | the unconsumed declared type and accumulated substitution of a spine | [Semantics](../03-Typed-Core/06-Semantics.md) |
+| `cursorΣ(M.g [[κ̄]] ᾱ)` | the unconsumed declared type and accumulated substitution of a chain | [Typing Rules](../03-Typed-Core/05-Typing-Rules.md) |
 | `ftv(τ)` | the type variables occurring free in `τ`, and likewise of a row | [Typing Rules](../03-Typed-Core/05-Typing-Rules.md) |
 | `dom(F)` | the keys a finite map is defined on | [Rows](../03-Typed-Core/02-Rows.md) |
 | `·` | the empty context | [Typing Rules](../03-Typed-Core/05-Typing-Rules.md) |

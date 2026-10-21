@@ -481,8 +481,8 @@ closeJoin scopeHandle binderHandle definitionHandle bodyHandle = do
 -- |
 -- | `j` must be in scope: this scope must stand under the `letjoin` that binds
 -- | it, and no abstraction may stand between. The arguments are as many as `j`
--- | takes; what they are claimed at, and whether the jump is in tail position,
--- | are the Core type checker's.
+-- | takes; what they are claimed at, and whether a non-tail position stands
+-- | between the jump and its join point (D50), are the Core type checker's.
 jump :: Handle -> Handle -> P.Array Handle -> Elab Handle
 jump scopeHandle joinHandle argumentHandles = do
   scope <- resolveScope scopeHandle

@@ -536,7 +536,7 @@ spec = describe "Stella.Elab, as the compiler carries it" do
             schemeOf n = snd <$> Array.find (\(Tuple x _) -> x == n) published
             a = TyVar "a"
             equivalent expected = case _ of
-              Just s -> schemeEquiv s { kindVars: [], body: expected } == Right true
+              Just s -> schemeEquiv s { kindVars: [], body: expected }
               Nothing -> false
           Array.sort (map fst published) `shouldEqual` Array.sort (map _.name operations <> [ "transact", "synthesizer" ])
           for_ operations \o -> case operationType c.interface o of

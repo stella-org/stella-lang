@@ -10,7 +10,8 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.TypedCore (Constraint(..), CtorDecl, Decl(..), EffName(..), OpDecl, TyBinder, Export(..), Expr(..), Ident(..), Kind(..), KindVar(..), Literal(..), Module, ModuleName(..), OpName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyName(..), TyVar(..), Type(..), TypeScheme, monoScheme)
-import Stella.Compiler.TypedCore.Declare (DeclError(..), checkEffectEntries, checkTyConEntries, declare, initialSignature)
+import Stella.Compiler.TypedCore.Declare (DeclError(..), declare, initialSignature)
+import Stella.Compiler.TypedCore.SignatureCheck (SignatureError(..), sigOk)
 import Stella.Compiler.TypedCore.Kinding (KindError(..), Synthesized(..))
 import Stella.Compiler.TypedCore.Prim (fn, intTy, ioTy, primSignature, pureFn, recordTy, stringTy, unitTy)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..), emptySignature, lookupCtor)
@@ -145,7 +146,7 @@ spec :: Spec Unit
 spec = describe "TypedCore.Declare" do
   describe "the signature a compiler builds" do
     it "accepts the entries of Prim" do
-      checkTyConEntries primSignature `shouldEqual` Right unit
+      sigOk primSignature `shouldEqual` Right unit
 
     it "assembles the signature a module is checked under" do
       map (\sig -> Map.member (tyCon "Weird") sig.types) (initialSignature [])
@@ -153,21 +154,21 @@ spec = describe "TypedCore.Declare" do
 
     it "checks the table where it is assembled" do
       map (const unit) (initialSignature [ withEntry (entry (KVar ghost) []) ])
-        `shouldEqual` Left (TyConEntryError (tyCon "Weird") (UnboundKindVar ghost))
+        `shouldEqual` Left (SignatureIllFormed (TyConEntryError (tyCon "Weird") (UnboundKindVar ghost)))
 
     it "refuses an entry that produces a row at some instantiation" do
       -- `forall k. k` passes every use site that instantiates it at `Type`
       let k = KindVar "k"
-      checkTyConEntries (withEntry (entry (KVar k) [ k ]))
+      sigOk (withEntry (entry (KVar k) [ k ]))
         `shouldEqual` Left (TyConEntryError (tyCon "Weird") (ResultNotType (KVar k)))
 
     it "refuses an entry whose kind variable nothing binds" do
       -- the result is `Type`, so checking only the result admits it
-      checkTyConEntries (withEntry (entry (KFun (KVar ghost) KType) []))
+      sigOk (withEntry (entry (KFun (KVar ghost) KType) []))
         `shouldEqual` Left (TyConEntryError (tyCon "Weird") (UnboundKindVar ghost))
 
     it "refuses an entry taking an argument that cannot be quantified" do
-      checkTyConEntries (withEntry (entry (KFun KEffect KType) []))
+      sigOk (withEntry (entry (KFun KEffect KType) []))
         `shouldEqual` Left (TyConEntryError (tyCon "Weird") (NotQuantifiable KEffect))
 
     it "absorbs an entry arriving through two import paths" do
@@ -195,53 +196,53 @@ spec = describe "TypedCore.Declare" do
 
   describe "the effect entries a compiler assembles" do
     it "accepts an entry a declaration would have produced" do
-      checkEffectEntries (withEffectEntry [] [ plainOp ]) `shouldEqual` Right unit
+      sigOk (withEffectEntry [] [ plainOp ]) `shouldEqual` Right unit
 
     it "checks the table where it is assembled" do
       map (const unit) (initialSignature [ withEffectEntry [ { name: TyVar "a", kind: KEffect } ] [] ])
-        `shouldEqual` Left (EffectEntryError weirdEff (NotQuantifiable KEffect))
+        `shouldEqual` Left (SignatureIllFormed (EffectEntryError weirdEff (NotQuantifiable KEffect)))
 
     it "refuses an operation keyed under a name other than the one it declares" do
       -- the table is keyed by the declared name, so a lookup of `foo` would
       -- otherwise answer with the signature of something else
       let mismatched = withEffectEntry [] [] # keyedAs (OpName "foo") plainOp
-      checkEffectEntries mismatched
+      sigOk mismatched
         `shouldEqual` Left (OperationNameMismatch weirdEff (OpName "foo") (OpName "op"))
 
     it "refuses a parameter at a kind that cannot be quantified" do
-      checkEffectEntries (withEffectEntry [ { name: TyVar "a", kind: KEffect } ] [])
+      sigOk (withEffectEntry [ { name: TyVar "a", kind: KEffect } ] [])
         `shouldEqual` Left (EffectEntryError weirdEff (NotQuantifiable KEffect))
 
     it "refuses an operation binder at a kind that cannot be quantified" do
       let op = plainOp { tyBinders = [ { name: TyVar "b", kind: KEffect } ] }
-      checkEffectEntries (withEffectEntry [] [ op ])
+      sigOk (withEffectEntry [] [ op ])
         `shouldEqual` Left (EffectEntryError weirdEff (NotQuantifiable KEffect))
 
     it "refuses an argument that is not a type" do
       let op = plainOp { argument = TRowEmpty }
-      checkEffectEntries (withEffectEntry [] [ op ])
+      sigOk (withEffectEntry [] [ op ])
         `shouldEqual` Left (EffectEntryError weirdEff (ExpectedKind TRowEmpty KType AnyRow))
 
     it "refuses a resumption type that is not a type" do
       let op = plainOp { resumesWith = TRowEmpty }
-      checkEffectEntries (withEffectEntry [] [ op ])
+      sigOk (withEffectEntry [] [ op ])
         `shouldEqual` Left (EffectEntryError weirdEff (ExpectedKind TRowEmpty KType AnyRow))
 
     it "refuses a type variable the entry does not bind" do
       let op = plainOp { argument = TVar (TyVar "ghost") }
-      checkEffectEntries (withEffectEntry [] [ op ])
+      sigOk (withEffectEntry [] [ op ])
         `shouldEqual` Left (EffectEntryError weirdEff (UnboundTyVar (TyVar "ghost")))
 
     it "admits a type variable the parameters bind" do
       let op = plainOp { argument = TVar (TyVar "a") }
-      checkEffectEntries (withEffectEntry [ { name: TyVar "a", kind: KType } ] [ op ])
+      sigOk (withEffectEntry [ { name: TyVar "a", kind: KType } ] [ op ])
         `shouldEqual` Right unit
 
     it "admits one the operation binds for itself" do
       let
         op = plainOp
           { tyBinders = [ { name: TyVar "b", kind: KType } ], argument = TVar (TyVar "b") }
-      checkEffectEntries (withEffectEntry [] [ op ]) `shouldEqual` Right unit
+      sigOk (withEffectEntry [] [ op ]) `shouldEqual` Right unit
 
   describe "data declarations" do
     it "derives the type of a constructor" do
@@ -421,6 +422,20 @@ spec = describe "TypedCore.Declare" do
         row = TRowExtend (RowTypeEntry (SymbolKey (Symbol "x")) (fn int consoleRow int)) TRowEmpty
         scheme = monoScheme (TConstrained (Lacks (SymbolKey (Symbol "cb")) row) (pureFn int int))
       verdict (moduleOf [ consoleDecl, foreignDecl "f" scheme ])
+        `shouldEqual` Right unit
+
+    it "refuses a type or a constraint after the last value" do
+      -- erasure keeps the values alone, so the call would wait on an argument
+      -- the erased chain does not hold
+      let
+        a = TyVar "a"
+        r = TyVar "r"
+        lacking = TConstrained (Lacks (SymbolKey (Symbol "x")) (TVar r)) int
+      verdict (moduleOf [ foreignDecl "make" (monoScheme (TForall a KType (TVar a))) ])
+        `shouldEqual` Left (ErasedForeignTail (value "make"))
+      verdict (moduleOf [ foreignDecl "after" (monoScheme (TForall r (KRow RowType) (pureFn int lacking))) ])
+        `shouldEqual` Left (ErasedForeignTail (value "after"))
+      verdict (moduleOf [ foreignDecl "make" (monoScheme (TForall a KType (pureFn unitTy' (TVar a)))) ])
         `shouldEqual` Right unit
 
   describe "value declarations" do

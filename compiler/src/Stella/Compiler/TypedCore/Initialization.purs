@@ -43,7 +43,7 @@ import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.TypedCore.Name (Ident, JoinName, Qualified)
 import Stella.Compiler.TypedCore.Prim (foreignArity)
-import Stella.Compiler.TypedCore.Signature (Signature, lookupCtor, lookupValue)
+import Stella.Compiler.TypedCore.Signature (GlobalEntry(..), Signature, lookupGlobal)
 import Stella.Compiler.TypedCore.Term (DecisionTree(..), Expr(..), OpClause(..), Occurrence(..), exprAnnotation, opClauseBody)
 
 -- | A member's right-hand side reading a member it may not: the right-hand
@@ -388,9 +388,9 @@ rootOf = case _ of
   OccRecordField o _ -> rootOf o
   OccVariantPayload o _ -> rootOf o
 
--- | Whether an application is part of a constructor's or a foreign's spine,
--- | no deeper than its arity: what builds a value, or a foreign that may carry
--- | a function but not apply one.
+-- | Whether an application is part of a constructor's or a foreign's chain,
+-- | with no more value arguments than its arity: what builds a value, or a
+-- | foreign that may carry a function but not apply one.
 building :: forall a. Env -> Expr a -> P.Boolean
 building env e = case spine e 0 of
   Just { name, depth } -> case arityOf name of
@@ -404,11 +404,10 @@ building env e = case spine e 0 of
     ConstraintApp _ inner -> spine inner depth
     Global _ name _ | not (Map.member name env.globals) -> Just { name, depth }
     _ -> Nothing
-  arityOf name = case lookupCtor env.sig name of
-    Just info -> Just (Array.length info.fields)
-    Nothing -> case lookupValue env.sig name of
-      Just info | info.isForeign -> Just (foreignArity info.scheme)
-      _ -> Nothing
+  arityOf name = case lookupGlobal env.sig name of
+    Just (GlobalCtor info) -> Just (Array.length info.fields)
+    Just (GlobalValue info) | info.isForeign -> Just (foreignArity info.scheme)
+    _ -> Nothing
 
 local :: Ident -> Reads -> Env -> Env
 local name reads env = env { locals = Map.insert name (Local reads) env.locals }

@@ -15,16 +15,11 @@ module Stella.Compiler.TypedCore.Declare
   , Declared
   , CheckedGroup
   , initialSignature
-  , checkTyConEntries
-  , checkEffectEntries
-  , checkAttributeEntries
   , collectTypes
   , dataEntry
   , ctorInfo
   , declare
   , declareAnnotated
-  , impureArrow
-  , isEmptyRow
   ) where
 
 import Prelude
@@ -36,15 +31,15 @@ import Stella.Compiler.TypedCore.Initialization (topLevelViolations)
 import Stella.Compiler.TypedCore.Context (Context, bindKindVars, bindTyVar, emptyContext)
 import Stella.Compiler.TypedCore.Decl (CtorDecl, DataDecl, Decl(..), EffectDecl, Export(..), Module, OpDecl, ValueBinding)
 import Stella.Compiler.TypedCore.Kind (Kind(..))
-import Stella.Compiler.TypedCore.Kinding (KindError, checkKind, producesType, quantifiableKind)
+import Stella.Compiler.TypedCore.Kinding (KindError, checkKind, quantifiableKind)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, KindVar, ModuleName, OpName, Qualified(..), TyName)
-import Stella.Compiler.TypedCore.Prim (asFunction, primModule, primSignature, pureFn)
+import Stella.Compiler.TypedCore.Prim (primModule, primSignature, pureFn)
 import Stella.Compiler.TypedCore.Reference (globalsOf)
-import Stella.Compiler.TypedCore.Row (nf)
-import Stella.Compiler.TypedCore.Signature (AttributeInfo, CtorInfo, EffectInfo, Signature, TyConInfo(..), ValueInfo, lookupAttribute, tyConKind)
+import Stella.Compiler.TypedCore.SignatureCheck (SignatureError, erasedTail, impureArrow, sigOk)
+import Stella.Compiler.TypedCore.Signature (CtorInfo, Signature, TyConInfo(..), ValueInfo, lookupAttribute)
 import Stella.Compiler.TypedCore.AttributeCheck (AttributeError, checkAttribute, checkAttributeDecl)
 import Stella.Compiler.TypedCore.Term (Expr)
-import Stella.Compiler.TypedCore.Type (RowEntry(..), TyBinder, Type(..), TypeScheme)
+import Stella.Compiler.TypedCore.Type (TyBinder, Type(..), TypeScheme)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (foldM, foldMap, foldl, foldr, traverse_)
@@ -83,6 +78,10 @@ data DeclError
   -- | carries. A handler would be bypassed on the result side, and the calling
   -- | convention would leak on the argument side.
   | EffectfulForeign (Qualified Ident) Type
+  -- | A `foreign` type taking a type or a constraint after its last value: the
+  -- | call would wait on an argument erasure removes, and so happen at another
+  -- | point once erased.
+  | ErasedForeignTail (Qualified Ident)
   -- | A `nonrec` right-hand side referring to itself or to a later value
   -- | declaration, naming what it refers to.
   | ForwardReference (Qualified Ident)
@@ -92,14 +91,9 @@ data DeclError
   -- | side it is, and the member read.
   | ReadBeforeInitialized (Qualified Ident) (Qualified Ident)
   | IllTyped CheckError
-  -- | A malformed type constructor entry, which no declaration produces.
-  | TyConEntryError (Qualified TyName) KindError
-  -- | The same for an effect entry, which no declaration produced either.
-  | EffectEntryError (Qualified EffName) KindError
-  -- | An effect entry keying an operation under a name other than the one its
-  -- | declaration carries, as the key and the declared name. The table is keyed
-  -- | by the declared name, so no declaration produces one.
-  | OperationNameMismatch (Qualified EffName) OpName OpName
+  -- | An assembled signature that is not `Σ ok`. A declaration produces no such
+  -- | entry, so it arrived through an interface or the manifest.
+  | SignatureIllFormed SignatureError
   -- | Two parts of an assembled signature carry different entries under one
   -- | name. A name belongs to the module that declares it, so an entry reaching
   -- | one name by several import paths is the same entry; differing ones mean
@@ -114,25 +108,22 @@ data DeclError
   -- | An attribute declaration, or an attribute attached to a declaration, that
   -- | does not check.
   | AttributeIllTyped AttributeError
-  -- | An attribute entry, which no declaration of this module produced, that
-  -- | does not check.
-  | AttributeEntryError (Qualified Ident) AttributeError
 
 -- | `Σ_Prim ∪ Σ_ABI(M) ∪ Σ_imp`, the signature a module is checked under.
 -- |
 -- | `Prim` is never imported, so it goes in before anything else. Every entry
 -- | that no declaration produced arrives through here, which is why the table
--- | is checked at this point rather than trusted.
+-- | is held to `Σ ok` at this point rather than trusted to have arisen through
+-- | declarations.
 -- |
 -- | Two import paths reaching one entry contribute the same entry, a name
 -- | belonging to the module that declares it, so the union needs no tie-break.
 initialSignature :: P.Array Signature -> Either DeclError Signature
 initialSignature parts = do
   sig <- foldM merge primSignature parts
-  checkTyConEntries sig
-  checkEffectEntries sig
-  checkAttributeEntries sig
-  pure sig
+  case sigOk sig of
+    Left err -> Left (SignatureIllFormed err)
+    Right _ -> Right sig
 
 -- | Two parts of a signature, agreeing wherever they meet.
 -- |
@@ -167,76 +158,6 @@ mergeTable onConflict left right = foldM add left (Map.toUnfoldable right :: P.A
 sharedKeys :: forall k v w. Ord k => Map k v -> Map k w -> P.Array k
 sharedKeys left right =
   Set.toUnfoldable (Set.intersection (Set.fromFoldable (Map.keys left)) (Set.fromFoldable (Map.keys right)))
-
--- | Every type constructor entry is a well-formed kind scheme producing `Type`.
--- |
--- | An entry derived from a declaration is so by construction. One arriving
--- | with `Prim` or through the manifest of the primitive surface is checked
--- | here: a scheme such as `forall k. k` passes every use site that
--- | instantiates it at `Type` while producing a row at another, and neither an
--- | unbound kind variable nor a domain that cannot be quantified is visible
--- | from one occurrence either.
-checkTyConEntries :: Signature -> Either DeclError Unit
-checkTyConEntries sig =
-  traverse_ entryOk (Map.toUnfoldable sig.types :: P.Array (Tuple (Qualified TyName) TyConInfo))
-  where
-  entryOk (Tuple name info) = named name do
-    let scheme = tyConKind info
-    quantifiableKind (bindKindVars emptyContext scheme.kindVars) scheme.body
-    producesType scheme.body
-
-  named name = case _ of
-    Left err -> Left (TyConEntryError name err)
-    Right value -> Right value
-
--- | Every effect entry is what an `effect` declaration would have produced.
--- |
--- | The counterpart of `checkTyConEntries`, and it exists for the same reason:
--- | an entry derived from a declaration is well formed by construction, while
--- | one arriving through an assembled interface is checked here. What is
--- | re-checked is what the declaration rules ask of it — the parameters and an
--- | operation's own binders at a quantifiable kind (D24), the argument and the
--- | resumption type at `Type`, and every type variable in scope.
--- |
--- | An effect constructor binds no kind variable, so the context starts from
--- | the parameters alone (D3).
-checkEffectEntries :: Signature -> Either DeclError Unit
-checkEffectEntries sig =
-  traverse_ entryOk (Map.toUnfoldable sig.effects :: P.Array (Tuple (Qualified EffName) EffectInfo))
-  where
-  entryOk (Tuple name info) = do
-    named name (traverse_ (\binder -> quantifiableKind emptyContext binder.kind) info.params)
-    traverse_ (operationOk name info)
-      (Map.toUnfoldable info.operations :: P.Array (Tuple OpName OpDecl))
-
-  -- The table is keyed by the name each operation declares, which is what a
-  -- declaration produces and what `Σ(E).op` is looked up by. An entry keying
-  -- one name to a declaration carrying another would answer a lookup with a
-  -- signature belonging to something else.
-  operationOk name info (Tuple key op) = do
-    when (key /= op.name) (Left (OperationNameMismatch name key op.name))
-    named name do
-      let ctx = paramContext [] info.params
-      traverse_ (\binder -> quantifiableKind ctx binder.kind) op.tyBinders
-      let inner = foldl (\acc binder -> bindTyVar acc binder.name binder.kind) ctx op.tyBinders
-      checkKind sig inner op.argument KType
-      checkKind sig inner op.resumesWith KType
-
-  named name = case _ of
-    Left err -> Left (EffectEntryError name err)
-    Right value -> Right value
-
--- | Every attribute entry is what an `attribute` declaration would have
--- | produced: its parameter types closed and of kind `Type`, and each default of
--- | its parameter's type. An entry arriving through an assembled interface is
--- | checked here, as a type constructor or an effect entry is.
-checkAttributeEntries :: Signature -> Either DeclError Unit
-checkAttributeEntries sig =
-  traverse_ entryOk (Map.toUnfoldable sig.attributes :: P.Array (Tuple (Qualified Ident) AttributeInfo))
-  where
-  entryOk (Tuple name info) = case checkAttributeDecl sig info of
-    Left err -> Left (AttributeEntryError name err)
-    Right _ -> Right unit
 
 -- | `Σ_ty`, the kinds of the type constructors and effect constructors a module
 -- | declares, added to what `Prim`, the primitive surface, and the imports
@@ -332,6 +253,7 @@ addDecl m sigTy acc = case _ of
   DeclForeign at decl -> do
     checkScheme at sigTy decl.scheme
     checkPurity at (Qualified m.name decl.name) decl.scheme
+    when (erasedTail decl.scheme.body) (Left { at, error: ErasedForeignTail (Qualified m.name decl.name) })
     addValue at m.name decl.name { scheme: decl.scheme, isForeign: true } acc
 
   DeclNonRec _ _ -> pure acc
@@ -496,36 +418,6 @@ checkPurity at name scheme = case impureArrow scheme.body of
   Just row -> Left { at, error: EffectfulForeign name row }
   Nothing -> Right unit
 
--- | The row of an arrow performing effects that the type holds where a value
--- | passes through, a constraint's own types aside.
-impureArrow :: Type -> Maybe Type
-impureArrow ty = case asFunction ty of
-  Just parts | not (isEmptyRow parts.row) -> Just parts.row
-  _ -> case ty of
-    TApp f x -> orElse (impureArrow f) (impureArrow x)
-    TForall _ _ body -> impureArrow body
-    TConstrained _ body -> impureArrow body
-    TRowExtend entry rest -> orElse (entryImpureArrow entry) (impureArrow rest)
-    TRowUnion left right -> orElse (impureArrow left) (impureArrow right)
-    _ -> Nothing
-
--- | An arrow reaches the boundary through the payload of a row element as
--- | readily as through an argument: `Record ( cb : a -{ρ}-> b )` hands a
--- | callback across it.
-entryImpureArrow :: RowEntry -> Maybe Type
-entryImpureArrow = case _ of
-  RowTypeEntry _ ty -> impureArrow ty
-  RowEffectEntry _ args -> Array.findMap impureArrow args
-  RowLabelledEffectEntry _ _ args -> Array.findMap impureArrow args
-  -- A region carries only its name, through which nothing crosses.
-  RowRegionEntry _ -> Nothing
-
--- | Whether a row's normal form holds no element and no tail.
-isEmptyRow :: Type -> P.Boolean
-isEmptyRow row = case nf row of
-  Right normal -> Map.isEmpty normal.known && Set.isEmpty normal.tail
-  Left _ -> false
-
 -- | Value declarations are in dependency order: a `nonrec` refers neither to
 -- | itself nor to a later value declaration, and every cycle is contained in a
 -- | `rec` group. Constructors and foreign implementations enter the environment
@@ -618,11 +510,6 @@ kinded :: forall a b. a -> Either KindError b -> Either (DeclFailure a) b
 kinded at = case _ of
   Left error -> Left { at, error: IllKinded error }
   Right value -> Right value
-
-orElse :: forall x. Maybe x -> Maybe x -> Maybe x
-orElse first second = case first of
-  Just _ -> first
-  Nothing -> second
 
 derive instance Eq DeclError
 derive instance Generic DeclError _

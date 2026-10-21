@@ -23,8 +23,8 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore.Context (Context, assume, bindTyVar, kindVarInScope, lookupRegion, lookupTyVar)
-import Stella.Compiler.TypedCore.Entailment (DecomposeError, entails)
+import Stella.Compiler.TypedCore.Context (Context, assume, bindTyVar, factsOf, kindVarInScope, lookupRegion, lookupTyVar)
+import Stella.Compiler.TypedCore.Entailment (entails)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), resultKind, substituteKind)
 import Stella.Compiler.TypedCore.Name (EffName, KindVar, Qualified, RegionName, TyName, TyVar)
 import Stella.Compiler.TypedCore.Signature (Signature, effectParamKinds, lookupEffect, lookupTyCon, tyConKind)
@@ -82,9 +82,6 @@ data KindError
   | NotSharp RowKey Type
   -- | `Γ ⊭ ρ1 # ρ2`, the disjointness condition of row union.
   | NotDisjoint Type Type
-  -- | A side condition reached no verdict, the context or the row being at
-  -- | fault rather than the constraint.
-  | EntailmentError DecomposeError
 
 -- | `Γ ⊢ κ kind`.
 -- |
@@ -196,14 +193,11 @@ kindOf sig ctx = case _ of
   -- The constraint is assumed while the body is kinded. A type such as
   -- `(k ∉ r) => Record ( k : τ | r )` is sharp only under its own constraint,
   -- so kinding the body without it would leave no constrained row type
-  -- well-kinded.
+  -- well-kinded. The constraint need only be well formed, not satisfiable.
   TConstrained constraint body -> do
     wellFormedConstraint sig ctx constraint
-    case assume ctx constraint of
-      Left err -> Left (EntailmentError err)
-      Right assumed -> do
-        checkKind sig assumed body KType
-        Right (Kinded KType)
+    checkKind sig (assume ctx constraint) body KType
+    Right (Kinded KType)
 
   TRowEmpty -> Right AnyRow
 
@@ -296,10 +290,9 @@ agreeingElemKind right l r = case l, r of
 -- | A side condition of the kinding rules. It is decided, never assumed: what
 -- | makes a row sharp is that the context proves the key absent.
 require :: Context -> Constraint -> KindError -> Either KindError Unit
-require ctx constraint failure = case entails ctx.facts constraint of
-  Left err -> Left (EntailmentError err)
-  Right true -> Right unit
-  Right false -> Left failure
+require ctx constraint failure
+  | entails (factsOf ctx) constraint = Right unit
+  | otherwise = Left failure
 
 -- | The result of a kind is `Type`.
 -- |

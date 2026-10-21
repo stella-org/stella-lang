@@ -12,7 +12,7 @@ import Prim as P
 import Stella.Compiler.Interface (noImports)
 import Stella.Compiler.MiddleEnd (Rep(..), TranslateError, translate)
 import Stella.Compiler.MiddleEnd as M
-import Stella.Compiler.TypedCore (Constraint(..), Decl(..), Expr(..), Ident(..), Kind(..), Literal(..), Module, ModuleName(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), TyVar(..), Type(..), declareAnnotated, intTy, monoScheme, primSignature, pureFn, recordTy, variantTy)
+import Stella.Compiler.TypedCore (Constraint(..), Decl(..), Expr(..), Ident(..), JoinName(..), Kind(..), Literal(..), Module, ModuleName(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), TyVar(..), Type(..), declareAnnotated, intTy, monoScheme, primSignature, pureFn, recordTy, variantTy)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
@@ -112,6 +112,29 @@ wrapperModule = moduleOf
           App 0 (Global 0 (value "viaCon") [])
             ( App 0 (Global 0 (value "viaOpen") [])
                 (App 0 (Global 0 (value "viaTyApp") []) (Lit 0 (LitInt 1)))
+            )
+      , attributes: []
+      }
+  ]
+
+-- The join point fixture -------------------------------------------------------
+
+-- | `nonrec Main.id : Int -> Int = λx. x` and
+-- | `nonrec Main.joined : Int = Main.id (letjoin j (n : Int) : Int = n in jump j 1)`.
+-- |
+-- | The join point is bound in argument position and jumped to from its
+-- | continuation, which relative scoping of join points admits (D50).
+joinModule :: Module P.Int
+joinModule = moduleOf
+  [ DeclNonRec 1
+      { name: Ident "id", scheme: monoScheme (pureFn int int), value: identity', attributes: [] }
+  , DeclNonRec 2
+      { name: Ident "joined"
+      , scheme: monoScheme int
+      , value:
+          App 0 (Global 0 (value "id") [])
+            ( LetJoin 0 (JoinName "j") [ { name: Ident "n", ty: int } ] int (Var 0 (Ident "n"))
+                (Jump 0 (JoinName "j") [ Lit 0 (LitInt 1) ])
             )
       , attributes: []
       }
@@ -254,6 +277,28 @@ spec = describe "Stella.Compiler.MiddleEnd.Translate » cases a plausible transl
           Right (map (\f -> map _.local f.params) result.module.functions)
       firstParams `shouldEqual` Right
         [ [ M.Local 0 ], [ M.Local 0 ], [ M.Local 0 ], [] ]
+
+  describe "a join point in argument position" do
+    it "binds the call as a join point the inner one jumps to" do
+      let
+        found = do
+          result <- lower joinModule
+          Right (Array.find isJoin (map _.body result.module.functions))
+        isJoin = case _ of
+          M.ELetJoin _ _ _ _ -> true
+          _ -> false
+      -- the definition receives the inner join point's result and makes the call;
+      -- the inner join point, from its continuation, jumps to it
+      found `shouldEqual` Right
+        ( Just
+            ( M.ELetJoin (M.JoinId 0) [ { local: M.Local 0, rep: RepInt } ]
+                (M.ETail (M.CCallKnown (value "id") [ M.ALocal (M.Local 0) ]))
+                ( M.ELetJoin (M.JoinId 1) [ { local: M.Local 1, rep: RepInt } ]
+                    (M.EJump (M.JoinId 0) [ M.ALocal (M.Local 1) ])
+                    (M.EJump (M.JoinId 1) [ M.ALit (LitInt 1) ])
+                )
+            )
+        )
 
   describe "the debug table" do
 

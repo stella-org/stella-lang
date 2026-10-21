@@ -399,7 +399,8 @@ lowerConsoleClauseOf leaf =
           (App 0 leaf (Var 0 (Ident "msg")))
     }
 
--- | The same clause with the widening dropped from the native leaf.
+-- | The same clause with the widening dropped from the native leaf, a foreign's
+-- | chain.
 bareLeafClause :: OpClause P.Int
 bareLeafClause = lowerConsoleClauseOf (Global 0 jsConsoleLog [])
 
@@ -490,8 +491,9 @@ tickOf addExpr =
     $ Var 0 (Ident "n")
 
 -- | `Base.Int.add n 1`, with each arrow the application consumes widened to the
--- | ambient row first. Containment is never inserted (D8), so a pure function
--- | called where effects may occur carries an `openEff` per argument.
+-- | ambient row first, as an elaborator may write it. The chain of a foreign
+-- | needs no widening, its value arguments being checked at the ambient row;
+-- | a widened head is no chain, and the ordinary rule for application types it.
 widenedAdd :: Expr P.Int
 widenedAdd =
   App 0
@@ -500,7 +502,7 @@ widenedAdd =
     )
     (Lit 0 (LitInt 1))
 
--- | The same application with the widening left out.
+-- | The same application with the widening left out, a foreign's chain.
 bareAdd :: Expr P.Int
 bareAdd =
   App 0 (App 0 (Global 0 intAdd []) (Var 0 (Ident "n"))) (Lit 0 (LitInt 1))
@@ -711,8 +713,8 @@ openConsoleValue =
         }
 
 -- | `toMaybe` whose return clause applies `Just` without widening it. A data
--- | constructor has pure arrows by declaration, so calling one where the
--- | ambient row is not empty needs `openEff` exactly as a foreign does.
+-- | constructor's arrows are pure by its exact scheme, so its chain stands at
+-- | whatever row is ambient, as a foreign's does.
 withBareJust :: Module P.Int
 withBareJust = exampleOf tickValue bareJustToMaybe closedConsole
 
@@ -748,8 +750,8 @@ spec = describe "Stella.Compiler.TypedCore.EffectSlice" do
       valueScheme runConsoleIOName `shouldEqual` Just runConsoleIOScheme
 
   describe "mutations of them" do
-    it "refuses a pure function applied at an effectful row without openEff" do
-      verdict withBareAdd `shouldEqual` Left (IllTyped (RowMismatch tickRow TRowEmpty))
+    it "accepts a foreign's chain at an effectful row without openEff" do
+      verdict withBareAdd `shouldEqual` Right unit
 
     it "refuses a continuation carrying the row inside the handle" do
       verdict withShallowContinuation `shouldEqual`
@@ -768,9 +770,8 @@ spec = describe "Stella.Compiler.TypedCore.EffectSlice" do
       verdict withOpenResidualRow `shouldEqual`
         Left (IllTyped (RowMismatch TRowEmpty rowVar))
 
-    it "refuses a data constructor applied at an effectful row without openEff" do
-      verdict withBareJust `shouldEqual`
-        Left (IllTyped (RowMismatch rowVar TRowEmpty))
+    it "accepts a data constructor's chain at an effectful row without openEff" do
+      verdict withBareJust `shouldEqual` Right unit
 
   describe "the adapter" do
     it "passes declaration checking, its clause being fast" do
@@ -786,11 +787,10 @@ spec = describe "Stella.Compiler.TypedCore.EffectSlice" do
       adapterVerdict (jsEffectConsoleWith openConsoleRow lowerConsoleClause)
         `shouldEqual` Left (IllTyped (RowMismatch adapterSourceRow openConsoleRow))
 
-    it "refuses the native leaf applied without openEff" do
-      -- the clause is typed at `( LiftIO | e )` while `Js.Console.log` has pure
-      -- arrows, so the widening is owed whichever form the clause takes
-      adapterVerdict (jsEffectConsoleOf bareLeafClause)
-        `shouldEqual` Left (IllTyped (RowMismatch liftIORow TRowEmpty))
+    it "accepts the native leaf applied without openEff" do
+      -- the clause is typed at `( LiftIO | e )`, and `Js.Console.log msg` is a
+      -- foreign's chain, whose pure arrows bound none of its arguments
+      adapterVerdict (jsEffectConsoleOf bareLeafClause) `shouldEqual` Right unit
 
     it "refuses the same body in a full clause, which owes the answer type" do
       -- a full clause supplies what the handle returns, so its body is `a`

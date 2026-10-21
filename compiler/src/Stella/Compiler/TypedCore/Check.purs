@@ -25,16 +25,16 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore.Context (Context, assume, bindRegion, bindTyVar, bindVar, lookupRegion, lookupTyVar, lookupVar)
-import Stella.Compiler.TypedCore.Entailment (DecomposeError, entails)
+import Stella.Compiler.TypedCore.Context (Context, assume, bindRegion, bindTyVar, bindVar, factsOf, lookupRegion, lookupTyVar, lookupVar)
+import Stella.Compiler.TypedCore.Entailment (entails)
 import Stella.Compiler.TypedCore.Equality (constraintEquiv, typeEquiv)
 import Stella.Compiler.TypedCore.Initialization (localViolations)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..))
 import Stella.Compiler.TypedCore.Kinding (KindError(..), checkKind, quantifiableKind, wellFormedConstraint, wellFormedKey)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, JoinName, OpName, Qualified, RegionName, TyName, TyVar)
 import Stella.Compiler.TypedCore.Prim (asFunction, booleanTy, fn, litType, recordTy, unitTy, variantTy)
-import Stella.Compiler.TypedCore.Row (RowError, RowNormalForm, fromNormalForm, nf)
-import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), CtorInfo, EffectInfo, Signature, TyConInfo(..), lookupCtor, lookupEffect, lookupOperation, lookupTyCon, lookupValue)
+import Stella.Compiler.TypedCore.Row (RowError, RowNormalForm, fromNormalForm, nfSharp)
+import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), CtorInfo, EffectInfo, GlobalEntry(..), Signature, TyConInfo(..), globalEntryScheme, lookupCtor, lookupEffect, lookupGlobal, lookupOperation, lookupTyCon)
 import Stella.Compiler.TypedCore.Term (Binding, DecisionTree(..), Expr(..), Cell, Handler, OpClause(..), Occurrence(..), Param, exprAnnotation, opClauseOp, withAnnotation)
 import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), RowPayload(..), TyBinder, Type(..), TypeScheme, freeRegionNames, rowEntryKey, rowEntryPayload, substituteKindsInType, substituteType)
 import Data.Array as Array
@@ -44,6 +44,7 @@ import Data.Generic.Rep (class Generic)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), isJust)
+import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
 import Data.Traversable (traverse)
@@ -57,15 +58,19 @@ type JoinInfo =
   , row :: Type
   }
 
--- | `Σ`, `Γ`, and `Δ`, together with whether the term stands in tail position.
+-- | `Σ`, `Γ`, and `Δ`, together with the join points a non-tail position hid.
 -- |
--- | `Δ` is discarded at a `λ`, a `Λ`, and a `handle`: a join point is a transfer
--- | of control within one function activation and crosses no function boundary.
+-- | `Δ` is relative to the nearest non-tail position or boundary (D50): a
+-- | non-tail position starts with none, and so does a boundary — a `λ`, a
+-- | `Λ`, a `handle`, a region's body, and a `letrec` initializer — a join point
+-- | being a transfer of control within one function activation. `hidden` holds
+-- | the join points a non-tail position took out of scope since the nearest
+-- | boundary, so that a jump to one is reported as leaving that position.
 type Env =
   { signature :: Signature
   , context :: Context
   , joins :: Map JoinName JoinInfo
-  , tail :: P.Boolean
+  , hidden :: Set JoinName
   }
 
 -- | What checking records at a node: the annotation the term arrived with, the
@@ -115,6 +120,10 @@ type CheckFailure a =
 data CheckError
   = UnboundVar Ident
   | UndeclaredGlobal (Qualified Ident)
+  -- | A name both a constructor and a value, which no `Σ ok` holds. Lookup is
+  -- | defined only where one table classifies a name, and no precedence
+  -- | resolves the collision.
+  | AmbiguousGlobal (Qualified Ident)
   -- | `M.x [[κ̄']]` supplying a number of kinds the scheme does not bind, as
   -- | expected and actual.
   | GlobalKindArgCount (Qualified Ident) P.Int P.Int
@@ -144,7 +153,8 @@ data CheckError
   | LocalReadBeforeInitialized Ident Ident
   | UnboundJoin JoinName
   | JoinArity JoinName P.Int P.Int
-  -- | A `jump` outside tail position, which no transfer of control implements.
+  -- | A `jump` to a join point a non-tail position hides: control would leave
+  -- | that position, which no transfer of control implements.
   | JumpNotInTail JoinName
   | UnknownOperation (Qualified EffName) OpName
   -- | `perform k.op [σ̄]` supplying a number of types the operation does not
@@ -180,8 +190,9 @@ data CheckError
   | NoLeaf
   -- | A type written in a term whose kind the rules do not derive.
   | IllKindedType KindError
+  -- | A row where a payload is read at a key, as of a sharp row, that has no
+  -- | one payload there or is no row.
   | NotARowType RowError
-  | UndecidedConstraint DecomposeError
   -- | A `region` given a number of initial values its layout does not declare,
   -- | as expected and actual.
   | CellCount P.Int P.Int
@@ -206,11 +217,13 @@ data CheckError
 -- | context is empty, a join point crossing no declaration boundary.
 envOf :: Signature -> Context -> Env
 envOf signature context =
-  { signature, context, joins: Map.empty, tail: true }
+  { signature, context, joins: Map.empty, hidden: Set.empty }
 
 -- | `Γ;Δ ⊢ e : τ ! ρ`, synthesizing the type.
 infer :: forall a. Env -> Type -> Expr a -> Either (CheckFailure a) (Expr (Typed a))
 infer env rho expr = case expr of
+  chain | Just view <- declaredChain env.signature chain -> inferChain env rho view
+
   Var at name -> case lookupVar env.context name of
     Just ty -> Right (Var (at' at ty) name)
     Nothing -> Left { at, error: UnboundVar name }
@@ -232,10 +245,7 @@ infer env rho expr = case expr of
 
   App at f x -> do
     f' <- infer (notTail env) rho f
-    parts <- functionParts at (typeOf f')
-    sameRow at rho parts.row
-    x' <- check (notTail env) rho parts.argument x
-    Right (App (at' at parts.result) f' x')
+    applied env rho rho at f' x
 
   TyLam at name kind body -> do
     freshTypeBinder at env name
@@ -247,26 +257,18 @@ infer env rho expr = case expr of
 
   TyApp at e ty -> do
     e' <- infer (notTail env) rho e
-    case typeOf e' of
-      TForall name kind body -> do
-        kinded at (checkKind env.signature env.context ty kind)
-        Right (TyApp (at' at (substituteType (Map.singleton name ty) body)) e' ty)
-      other -> Left { at, error: NotAForall other }
+    instantiated env at e' ty
 
   ConstraintLam at constraint body -> do
     kinded at (wellFormedConstraint env.signature env.context constraint)
     valueForm at env body
-    inner <- assuming at env constraint
+    let inner = assuming env constraint
     body' <- infer (abstracted inner) TRowEmpty body
     Right (ConstraintLam (at' at (TConstrained constraint (typeOf body'))) constraint body')
 
   ConstraintApp at e -> do
     e' <- infer (notTail env) rho e
-    case typeOf e' of
-      TConstrained constraint body -> do
-        require at env constraint
-        Right (ConstraintApp (at' at body) e')
-      other -> Left { at, error: NotConstrained other }
+    discharged env at e'
 
   Let at name ty value body -> do
     kinded at (checkKind env.signature env.context ty KType)
@@ -293,7 +295,6 @@ infer env rho expr = case expr of
 
   Jump at name args -> do
     info <- joinInfo at env name
-    when (not env.tail) (Left { at, error: JumpNotInTail name })
     sameRow at rho info.row
     args' <- checkArguments at env rho name info.params args
     Right (Jump (at' at info.result) name args')
@@ -478,7 +479,7 @@ check env rho expected expr = case expr of
       kinded at (wellFormedConstraint env.signature env.context constraint)
       sameConstraint at expectedConstraint constraint
       valueForm at env body
-      assumed <- assuming at env constraint
+      let assumed = assuming env constraint
       body' <- check (abstracted assumed) TRowEmpty inner body
       Right (ConstraintLam (at' at expected) constraint body')
     other -> Left { at, error: NotConstrained other }
@@ -717,10 +718,9 @@ clauseEnv env tyBinders argBinder =
       tyBinders
 
 sameConstraint :: forall a. a -> Constraint -> Constraint -> Either (CheckFailure a) Unit
-sameConstraint at expected actual = case constraintEquiv expected actual of
-  Left err -> Left { at, error: NotARowType err }
-  Right true -> Right unit
-  Right false -> Left { at, error: ConstraintMismatch expected actual }
+sameConstraint at expected actual
+  | constraintEquiv expected actual = Right unit
+  | otherwise = Left { at, error: ConstraintMismatch expected actual }
 
 -- | `Γ;Δ;Ω ⊢ dt : τ ! ρ`.
 -- |
@@ -792,8 +792,9 @@ tree at env rho expected occurrences dt = case dt of
     normal <- normalize at row
     distinct at (map _.key branches)
     items <- traverse (keyItem at found.occurrences occurrence row normal) branches
-    residual <- residualVariant at row normal (map _.key branches)
-    keysExhaustive at normal (map _.key branches) fallback
+    let rest = residualOf normal (map _.key branches)
+    residual <- variant <$> rowOfNormalForm at row rest
+    keysExhaustive at rest fallback
     let residualOccurrences = Map.insert occurrence residual found.occurrences
     ty <- subTreeType at env rho expected (items <> fallbackItem residualOccurrences fallback)
     checked <- traverse (checkItem at env rho ty) items
@@ -849,10 +850,11 @@ gathered parent branches fallback =
 -- The rules, one helper each --------------------------------------------------
 
 globalScheme :: forall a. a -> Signature -> Qualified Ident -> Either (CheckFailure a) TypeScheme
-globalScheme at sig name = case lookupValue sig name, lookupCtor sig name of
-  Just info, _ -> Right info.scheme
-  _, Just info -> Right info.scheme
-  _, _ -> Left { at, error: UndeclaredGlobal name }
+globalScheme at sig name = case lookupGlobal sig name of
+  Just entry -> Right (globalEntryScheme entry)
+  Nothing
+    | isJust (lookupCtor sig name) -> Left { at, error: AmbiguousGlobal name }
+    | otherwise -> Left { at, error: UndeclaredGlobal name }
 
 -- | `M.x [[κ̄']]`. The kinds are written in the term, so this verifies their
 -- | number and their layer and substitutes; it neither guesses nor searches.
@@ -871,8 +873,94 @@ instantiateKinds at env name kinds scheme = do
   traverse_ (\kind -> kinded at (quantifiableKind env.context kind)) kinds
   Right (substituteKindsInType (Map.fromFoldable (Array.zip scheme.kindVars kinds)) scheme.body)
 
+-- | `e1 e2` with `e1` typed, its arrow at the row given and its argument
+-- | checked at the ambient row.
+applied :: forall a. Env -> Type -> Type -> a -> Expr (Typed a) -> Expr a -> Either (CheckFailure a) (Expr (Typed a))
+applied env rho arrowRow at f' x = do
+  parts <- functionParts at (typeOf f')
+  sameRow at arrowRow parts.row
+  x' <- check (notTail env) rho parts.argument x
+  Right (App (at' at parts.result) f' x')
+
+-- | `e [σ]` with `e` typed.
+instantiated :: forall a. Env -> a -> Expr (Typed a) -> Type -> Either (CheckFailure a) (Expr (Typed a))
+instantiated env at e' ty = case typeOf e' of
+  TForall name kind body -> do
+    kinded at (checkKind env.signature env.context ty kind)
+    Right (TyApp (at' at (substituteType (Map.singleton name ty) body)) e' ty)
+  other -> Left { at, error: NotAForall other }
+
+-- | `e [•]` with `e` typed.
+discharged :: forall a. Env -> a -> Expr (Typed a) -> Either (CheckFailure a) (Expr (Typed a))
+discharged env at e' = case typeOf e' of
+  TConstrained constraint body -> do
+    require at env constraint
+    Right (ConstraintApp (at' at body) e')
+  other -> Left { at, error: NotConstrained other }
+
+-- | An argument of an application chain.
+data ChainArg a
+  = ChainType a Type
+  | ChainConstraint a
+  | ChainValue a (Expr a)
+
+-- | The spine view of an application chain headed by a constructor or a
+-- | foreign: the head, its kind arguments, and its other arguments in written
+-- | order, at least one.
+type Chain a =
+  { at :: a
+  , name :: Qualified Ident
+  , kinds :: P.Array Kind
+  , args :: P.Array (ChainArg a)
+  }
+
+declaredChain :: forall a. Signature -> Expr a -> Maybe (Chain a)
+declaredChain sig = go []
+  where
+  go args = case _ of
+    App at f x -> go (Array.cons (ChainValue at x) args) f
+    TyApp at e ty -> go (Array.cons (ChainType at ty) args) e
+    ConstraintApp at e -> go (Array.cons (ChainConstraint at) args) e
+    Global at name kinds
+      | not (Array.null args) && declared name -> Just { at, name, kinds, args }
+    _ -> Nothing
+
+  declared name = case lookupGlobal sig name of
+    Just (GlobalCtor _) -> true
+    Just (GlobalValue info) -> info.isForeign
+    Nothing -> false
+
+-- | `M.g [[κ̄]] ā`, typed through `cursorΣ`.
+-- |
+-- | The cursor walks the declared scheme, and the chain is saturated where
+-- | the declared remainder is no binder: an arrow an instantiation brings in
+-- | is no argument position. Every arrow the cursor consumes is pure (`Σ ok`),
+-- | so a value argument is checked at the ambient row of the whole chain
+-- | rather than at the arrow's. An argument past saturation is an ordinary
+-- | application of the result.
+inferChain :: forall a. Env -> Type -> Chain a -> Either (CheckFailure a) (Expr (Typed a))
+inferChain env rho chain = do
+  scheme <- globalScheme chain.at env.signature chain.name
+  head <- infer (notTail env) rho (Global chain.at chain.name chain.kinds)
+  result <- foldM step { expr: head, declared: Just scheme.body } chain.args
+  Right result.expr
+  where
+  step state arg = do
+    let following = state.declared >>= consumed
+    expr <- case arg of
+      ChainType at ty -> instantiated env at state.expr ty
+      ChainConstraint at -> discharged env at state.expr
+      ChainValue at x -> applied env rho (if isJust following then TRowEmpty else rho) at state.expr x
+    Right { expr, declared: following }
+
+  -- the declared remainder past one entry, where the remainder is a binder
+  consumed = case _ of
+    TForall _ _ body -> Just body
+    TConstrained _ body -> Just body
+    ty -> map _.result (asFunction ty)
+
 -- | Every scheme of a recursive group is registered before any right-hand side
--- | is checked, each under no join point and out of tail position, `Δ = ·`: an
+-- | is checked, each under no join point, `Δ = ·`: an
 -- | initializer jumping out would leave its group half initialized. **The group
 -- | is initialization-safe**, each right-hand side reading only the members
 -- | written before it ([Initialization Safety](../../../../docs/technical-references/03-Typed-Core/10-Initialization.md)),
@@ -890,7 +978,7 @@ recursiveEnv at env bindings = do
       | Just reader <- Array.index bindings v.initializer
       , Just read <- Array.index bindings v.read -> Left { at: v.at, error: LocalReadBeforeInitialized reader.name read.name }
     _ -> Right unit
-  checked <- traverse (checkBinding (inner { joins = Map.empty, tail = false })) bindings
+  checked <- traverse (checkBinding (abstracted inner)) bindings
   Right { env: inner, bindings: checked }
   where
   checkBinding inner binding = do
@@ -910,11 +998,10 @@ checkJoinBody
 checkJoinBody env name params result rho value =
   check inner rho result value
   where
-  -- The root of a join definition is in tail position whatever position the
-  -- `letjoin` itself stands in.
+  -- The definition is typed under the join points of its own `letjoin`.
   inner =
     foldl (\acc param -> bound acc param.name param.ty)
-      ((joining env name params result rho) { tail = true })
+      (joining env name params result rho)
       params
 
 checkArguments
@@ -1098,18 +1185,12 @@ keyItem at occurrences occurrence row normal branch =
             branch.tree
         )
 
--- | The type an occurrence takes in a default branch: the variant of the row
--- | with the enumerated keys removed, not the type it had.
-residualVariant
-  :: forall a
-   . a
-  -> Type
-  -> RowNormalForm
-  -> P.Array RowKey
-  -> Either (CheckFailure a) Type
-residualVariant at row normal keys = do
-  rest <- rowOfNormalForm at row (normal { known = foldl (flip Map.delete) normal.known keys })
-  Right (variant rest)
+-- | `r'` of the decomposition `r ≡ ( k̄ : τ̄ | r' )` a `switchKey` makes, read
+-- | off the sharp normal form: deleting the enumerated keys leaves the one
+-- | residual the kinding premise admits in a consistent context, and one the
+-- | rule admits in any. A default's occurrence takes its variant.
+residualOf :: RowNormalForm -> P.Array RowKey -> RowNormalForm
+residualOf normal keys = normal { known = foldl (flip Map.delete) normal.known keys }
 
 exhaustive
   :: forall a
@@ -1124,20 +1205,19 @@ exhaustive at constructors branches fallback = case fallback of
     when (not (Array.all (\ctor -> Array.elem ctor branches) constructors))
       (Left { at, error: NotExhaustive })
 
--- | Absent a default, a `switchKey` has an empty unknown tail and enumerates
--- | every known key: a value carrying anything else would have no destination.
+-- | Absent a default, a `switchKey`'s residual is `()`: no unknown tail and no
+-- | known key left unenumerated, since a value carrying anything else would
+-- | have no destination.
 keysExhaustive
   :: forall a
    . a
   -> RowNormalForm
-  -> P.Array RowKey
   -> Maybe (DecisionTree a)
   -> Either (CheckFailure a) Unit
-keysExhaustive at normal branches fallback = case fallback of
+keysExhaustive at rest fallback = case fallback of
   Just _ -> Right unit
-  Nothing -> do
-    when (not (Set.isEmpty normal.tail)) (Left { at, error: NotExhaustive })
-    when (not (Array.all (\key -> Array.elem key branches) (Map.keys normal.known # Array.fromFoldable)))
+  Nothing ->
+    when (not (Map.isEmpty rest.known && Set.isEmpty rest.tail))
       (Left { at, error: NotExhaustive })
 
 distinct :: forall a b. Ord b => a -> P.Array b -> Either (CheckFailure a) Unit
@@ -1199,8 +1279,12 @@ operationSubstitution at env op params args binders tyArgs = do
 
 -- | `v`.
 -- |
--- | A constructor spine is a value form saturated or not: a constructor has no
--- | body to reduce, so an unsaturated one is a value that behaves as a function.
+-- | A constructor's application chain of values is a value form, saturated or
+-- | not: a constructor has no body to reduce, so an unsaturated one is a value
+-- | that behaves as a function. Every value form is a value of the reduction
+-- | relation, which needs no step beneath a `Λ`: the chain under one is a
+-- | value already. An unsaturated foreign's chain is a value there as well,
+-- | and is no value form here.
 isValueForm :: forall a. Signature -> Expr a -> P.Boolean
 isValueForm sig = case _ of
   Lit _ _ -> true
@@ -1214,7 +1298,9 @@ isValueForm sig = case _ of
 
 isCtorSpine :: forall a. Signature -> Expr a -> P.Boolean
 isCtorSpine sig = case _ of
-  Global _ name _ -> isJust (lookupCtor sig name)
+  Global _ name _ -> case lookupGlobal sig name of
+    Just (GlobalCtor _) -> true
+    _ -> false
   App _ f x -> isCtorSpine sig f && isValueForm sig x
   TyApp _ e _ -> isCtorSpine sig e
   ConstraintApp _ e -> isCtorSpine sig e
@@ -1229,16 +1315,19 @@ valueForm at env body =
 bound :: Env -> Ident -> Type -> Env
 bound env name ty = env { context = bindVar env.context name ty }
 
--- | A `λ` discards the join point context and its body stands in tail position.
+-- | A `λ` discards the join point context.
 lambdaEnv :: Env -> Ident -> Type -> Env
 lambdaEnv env name ty =
   (abstracted env) { context = bindVar env.context name ty }
 
+-- | A boundary: no join point is in scope, and none is hidden.
 abstracted :: Env -> Env
-abstracted env = env { joins = Map.empty, tail = true }
+abstracted env = env { joins = Map.empty, hidden = Set.empty }
 
+-- | A non-tail position: no join point is in scope, and those that were are
+-- | hidden.
 notTail :: Env -> Env
-notTail env = env { tail = false }
+notTail env = env { joins = Map.empty, hidden = Set.union env.hidden (Map.keys env.joins) }
 
 joining :: Env -> JoinName -> P.Array Param -> Type -> Type -> Env
 joining env name params result rho =
@@ -1247,35 +1336,34 @@ joining env name params result rho =
 joinInfo :: forall a. a -> Env -> JoinName -> Either (CheckFailure a) JoinInfo
 joinInfo at env name = case Map.lookup name env.joins of
   Just info -> Right info
-  Nothing -> Left { at, error: UnboundJoin name }
+  Nothing
+    | Set.member name env.hidden -> Left { at, error: JumpNotInTail name }
+    | otherwise -> Left { at, error: UnboundJoin name }
 
-assuming :: forall a. a -> Env -> Constraint -> Either (CheckFailure a) Env
-assuming at env constraint = case assume env.context constraint of
-  Left err -> Left { at, error: UndecidedConstraint err }
-  Right context -> Right env { context = context }
+-- | `Γ, C`. A constraint abstraction needs its constraint well formed and not
+-- | satisfiable: a type application may substitute a row that makes it false.
+assuming :: Env -> Constraint -> Env
+assuming env constraint = env { context = assume env.context constraint }
 
 -- Decisions the rules delegate ------------------------------------------------
 
 require :: forall a. a -> Env -> Constraint -> Either (CheckFailure a) Unit
-require at env constraint = case entails env.context.facts constraint of
-  Left err -> Left { at, error: UndecidedConstraint err }
-  Right true -> Right unit
-  Right false -> Left { at, error: NotEntailed constraint }
+require at env constraint
+  | entails (factsOf env.context) constraint = Right unit
+  | otherwise = Left { at, error: NotEntailed constraint }
 
 equalTypes :: forall a. a -> Type -> Type -> Either (CheckFailure a) Unit
-equalTypes at expected actual = case typeEquiv expected actual of
-  Left err -> Left { at, error: NotARowType err }
-  Right true -> Right unit
-  Right false -> Left { at, error: TypeMismatch expected actual }
+equalTypes at expected actual
+  | typeEquiv expected actual = Right unit
+  | otherwise = Left { at, error: TypeMismatch expected actual }
 
 sameRow :: forall a. a -> Type -> Type -> Either (CheckFailure a) Unit
-sameRow at expected actual = case typeEquiv expected actual of
-  Left err -> Left { at, error: NotARowType err }
-  Right true -> Right unit
-  Right false -> Left { at, error: RowMismatch expected actual }
+sameRow at expected actual
+  | typeEquiv expected actual = Right unit
+  | otherwise = Left { at, error: RowMismatch expected actual }
 
 normalize :: forall a. a -> Type -> Either (CheckFailure a) RowNormalForm
-normalize at row = case nf row of
+normalize at row = case nfSharp row of
   Left err -> Left { at, error: NotARowType err }
   Right normal -> Right normal
 

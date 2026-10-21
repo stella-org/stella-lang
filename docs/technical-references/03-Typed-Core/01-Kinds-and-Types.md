@@ -112,7 +112,7 @@ result( κ )         = κ                 otherwise
 
 **Only row syntax produces a row.** The side condition confines a row kind to the argument side of an arrow: `Row Type -> Type` is quantifiable and `Row Type -> Row Type` is not, and a kind variable is excluded from the result position as well, since it may be instantiated with a row kind. The same condition holds of the kind of every type constructor in `Σ`.
 
-What this buys is the domain of `nf`. A type of kind `Row ε` is then a row variable, `()`, a row extension, or a union and nothing else, which is exactly what normalization is defined on, so **every well-kinded row has a normal form** ([Rows](02-Rows.md)). Row equality, entailment, and unification all rest on that. A type-level function producing a row would have to arrive together with normalization rules of its own.
+What this buys is the shape of a row. A type of kind `Row ε` is then a row variable, `()`, a row extension, or a union and nothing else, so **the tails of a well-kinded row are row variables**, and a row kinded in a consistent context has a normal form ([Rows](02-Rows.md)). Entailment and unification rest on that. A type-level function producing a row would have to arrive together with normalization rules of its own.
 
 A kind variable is quantifiable, and every `[[κ̄]]` requires `qkind` of what it supplies, so a kind variable stands only for a quantifiable kind.
 
@@ -256,7 +256,7 @@ In a term, `region [ℓ] … in e` binds `ℓ` in `e` and in nothing else — no
 
 ## Kinding
 
-The judgement is `Γ ⊢ τ : κ`. Contexts are defined in [Typing Rules](05-Typing-Rules.md).
+The judgement is `Γ ⊢ τ : κ`. Contexts are defined in [Typing Rules](05-Typing-Rules.md), and kinding, like every judgement there, presupposes `Σ ok`: in particular every kind scheme in `Σ` is closed under its own kind variables, quantifiable, and produces `Type`, which is what lets the rule for `T [[κ̄']]` take the scheme as it finds it.
 
 ```text
   (a : κ) ∈ Γ                (T : forall k̄. κ) ∈ Σ   Γ ⊢ κ̄' qkind   |κ̄'| = |k̄|
@@ -283,11 +283,13 @@ The judgement is `Γ ⊢ τ : κ`. Contexts are defined in [Typing Rules](05-Typ
   Γ ⊢ ρ1 ⊎ ρ2 : Row ε
 ```
 
-**A constraint is assumed while its body is kinded.** A row that is sharp only under `k ∉ r` — `(k ∉ r) => Record ( k : τ | r )`, the shape every row-polymorphic function has — is well-kinded for that reason and for no other. Writing `Γ, C` also requires `C` to be satisfiable ([Typing Rules](05-Typing-Rules.md)).
+**A constraint is assumed while its body is kinded.** A row that is sharp only under `k ∉ r` — `(k ∉ r) => Record ( k : τ | r )`, the shape every row-polymorphic function has — is well-kinded for that reason and for no other. Writing `Γ, C` requires `C` to be well formed; it does not require `C` to be satisfiable: an assumption a type application makes false is still assumed, and a context whose assumptions are inconsistent entails every constraint ([Rows](02-Rows.md)).
+
+**What an inconsistent assumption reaches is entailment alone.** Under `name ∉ ( name : Int )` the sharpness premise of a row extension or a union is discharged, since it is an entailment, but an unbound variable stays unbound and `Int Int` stays ill-kinded.
 
 **A `forall` is scoped lexically.** `Γ, a : κ` hides an outer variable of the name `a`, together with every assumption made of it: what was assumed of the outer variable says nothing of the inner one. Types are not held to the unique-binder convention, since a type reaches the checker from `Σ` and from substitution as well as from the term, and types are compared up to α-equivalence.
 
-That row extension and row union require **entailment from the context** is the centre of the design. PureScript admits `RCons` unconditionally and performs no elimination of duplicate labels; in Stella a well-kinded row is sharp by construction.
+That row extension and row union require **entailment from the context** is the centre of the design. PureScript admits `RCons` unconditionally and performs no elimination of duplicate labels; in Stella a row well-kinded in a consistent context is sharp by construction.
 
 ### Row elements
 
@@ -377,8 +379,8 @@ Both sides of `#` must share the same `ε`; a Disjoint constraint spanning `Row 
 
 ## Type equality
 
-`Γ ⊢ τ1 ≡ τ2` holds when the types are α-equivalent, their rows agree by the normal form of [Rows](02-Rows.md), and they are otherwise structurally identical.
+`Γ ⊢ τ1 ≡ τ2` holds when the canonical forms of the two types are equal ([Rows](02-Rows.md)): they are α-equivalent, their rows agree as sets of key–payload pairs and of tails, and they are otherwise structurally identical. **Equality is total and consults nothing of `Γ`**, so it needs no kinding premise and is stable under substitution; sharpness is kinding's, not equality's.
 
-There is no β-reduction and no δ-reduction, because there are no type-level functions. Apart from row normalization, deciding equality is syntactic.
+There is no β-reduction and no δ-reduction, because there are no type-level functions. Apart from canonicalizing rows, deciding equality is syntactic.
 
 The type grammar has application `τ1 τ2` but **no abstraction**, and that is what gives this property. Type constructors can be abstracted over — `forall (f : Type -> Type). …` — but anonymous type constructors cannot be defined. Core therefore lies between System F and System Fω (D1). Introducing a type-level lambda would make it Fω and would bring β-reduction into type equality.

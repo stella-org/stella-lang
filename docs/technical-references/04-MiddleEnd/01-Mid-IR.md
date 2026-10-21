@@ -130,7 +130,7 @@ atom ::= local x                   a binding in scope
 
 `global M.x` reads a top-level value that module initialization has already
 stored, which is a load and not a call. **A foreign is never an atom**: a
-foreign whose declared arity is 0 saturates as soon as its spine is formed and
+foreign whose declared arity is 0 is saturated by its bare reference and
 therefore calls its implementation ([Semantics](../03-Typed-Core/06-Semantics.md)),
 and one of arity `n > 0` referenced bare is a partial application.
 

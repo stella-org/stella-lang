@@ -17,6 +17,7 @@ import Stella.Compiler.TypedCore.Context (assume, bindTyVar, bindVar, emptyConte
 import Stella.Compiler.TypedCore.Declare (declare)
 import Stella.Compiler.TypedCore.Prim (fn, intTy, numberTy, primSignature, pureFn, stringTy, unitTy)
 import Stella.Compiler.TypedCore.Domain (scalarString)
+import Stella.Compiler.TypedCore.Row (RowError(..))
 import Stella.Compiler.TypedCore.Signature (Signature)
 import Stella.Compiler.TypedCore.Type (Constraint(..))
 import Data.Either (Either(..), either)
@@ -168,8 +169,21 @@ fixtures =
           , isNewtype: false
           , attributes: []
           }
+      -- `foreign id : forall a. a -> a`, and a defined global of the same
+      -- type, which no chain rule types
+      , DeclForeign unit { name: Ident "id", scheme: { kindVars: [], body: identityType }, attributes: [] }
+      , DeclNonRec unit
+          { name: Ident "ident"
+          , scheme: { kindVars: [], body: identityType }
+          , value: TyLam unit (TyVar "a") KType (lam "x" (TVar (TyVar "a")) (var "x"))
+          , attributes: []
+          }
       ]
   }
+
+-- | `forall a. a -> a`
+identityType :: Type
+identityType = TForall (TyVar "a") KType (pureFn (TVar (TyVar "a")) (TVar (TyVar "a")))
 
 sig :: Signature
 sig = either (const primSignature) identity (declare primSignature fixtures)
@@ -452,6 +466,70 @@ spec = describe "TypedCore.Check" do
       checkAt TRowEmpty (TConstrained expected int) abstraction
         `shouldEqual` Left (ConstraintMismatch expected assumed)
 
+  describe "an application chain of a constructor or a foreign" do
+    let
+      just ty x = App unit (TyApp unit (Global unit (value "Just") []) ty) x
+      nothing ty = TyApp unit (Global unit (value "Nothing") []) ty
+      chainOf name ty x = App unit (TyApp unit (Global unit (value name) []) ty) x
+      logs = Perform unit (EffectKey consoleEff) (OpName "log") [] (Lit unit (strLit "x"))
+
+    it "is typed at any ambient row, the arrows it consumes being pure" do
+      -- a constructor's value stands where effects may occur, as the value
+      -- `openEffC [ρ] v` steps to does
+      inferAt consoleRow (just int oneLit) `shouldEqual` Right (maybeOf int)
+      inferAt consoleRow (chainOf "id" int oneLit) `shouldEqual` Right int
+
+    it "checks its value arguments at the ambient row of the whole chain" do
+      inferAt consoleRow (just unitT logs) `shouldEqual` Right (maybeOf unitT)
+
+    it "ends where the declared type is saturated, an arrow an instantiation brings in being none" do
+      -- `Main.id [Int -> Int] f` is saturated at the declared remainder `a`,
+      -- so `x` is an ordinary application of what it returns
+      let chain = App unit (chainOf "id" (pureFn int int) (var "f")) (var "x")
+      inferIn applied TRowEmpty chain `shouldEqual` Right int
+      inferIn applied consoleRow chain `shouldEqual` Left (RowMismatch consoleRow TRowEmpty)
+
+    it "leaves a defined global to the ordinary rule for application" do
+      inferAt TRowEmpty (chainOf "ident" int oneLit) `shouldEqual` Right int
+      inferAt consoleRow (chainOf "ident" int oneLit) `shouldEqual` Left (RowMismatch consoleRow TRowEmpty)
+
+    it "refuses a constructor applied past saturation" do
+      inferAt TRowEmpty (App unit (just int oneLit) oneLit) `shouldEqual` Left (NotAFunction (maybeOf int))
+
+    it "refuses an argument of another sort than the declared type calls for" do
+      inferAt TRowEmpty (App unit (Global unit (value "Just") []) oneLit)
+        `shouldEqual` Left (NotAFunction (TForall (TyVar "a") KType (pureFn (TVar (TyVar "a")) (maybeOf (TVar (TyVar "a"))))))
+
+    it "is a value form beneath a Λ, saturated or not" do
+      let a = TVar (TyVar "a")
+      inferAt TRowEmpty (TyLam unit (TyVar "a") KType (just (maybeOf a) (nothing a)))
+        `shouldEqual` Right (TForall (TyVar "a") KType (maybeOf (maybeOf a)))
+      inferAt TRowEmpty (TyLam unit (TyVar "a") KType (TyApp unit (Global unit (value "Just") []) a))
+        `shouldEqual` Right (TForall (TyVar "a") KType (pureFn a (maybeOf a)))
+
+  describe "a constraint abstraction a type application makes unsatisfiable" do
+    -- `( Λ r. Λ (_ : name ∉ r). λ (x : Record r). extend name 1 x ) [ ( name : Int ) ]`
+    -- steps to an abstraction assuming `name ∉ ( name : Int )`, which must keep
+    -- the redex's type
+    let
+      r = TyVar "r"
+      named = TRowExtend (RowTypeEntry nameKey int) TRowEmpty
+      abstraction row =
+        ConstraintLam unit (Lacks nameKey row)
+          (Lam unit (Ident "x") (record row) TRowEmpty (RecordExtend unit nameKey oneLit (var "x")))
+      redex = TyApp unit (TyLam unit r (KRow RowType) (abstraction (TVar r))) named
+      reduct = abstraction named
+
+    it "types the reduct at the type of the redex" do
+      inferAt TRowEmpty reduct `shouldEqual` inferAt TRowEmpty redex
+      case inferAt TRowEmpty redex of
+        Right (TConstrained c _) -> c `shouldEqual` Lacks nameKey named
+        other -> show other `shouldEqual` "Right (TConstrained …)"
+
+    it "still asks entailment of its application" do
+      inferAt TRowEmpty (ConstraintApp unit redex)
+        `shouldEqual` Left (NotEntailed (Lacks nameKey named))
+
   describe "records" do
     it "selects what was extended" do
       inferAt TRowEmpty
@@ -562,6 +640,20 @@ spec = describe "TypedCore.Check" do
       inferAt consoleRow
         (Perform unit (EffectKey consoleEff) (OpName "log") [ int ] (Lit unit (strLit "x")))
         `shouldEqual` Left (OperationTypeArgCount (OpName "log") 0 1)
+
+    it "takes the element of a row only an inconsistent context kinds" do
+      -- under `cache ∉ ( cache : State Int )`, `( cache : State Int ) ⊎
+      -- ( cache : State Int )` is the row `( cache : State Int )`
+      inferIn (env { context = assume emptyContext (Lacks cacheKey cacheRow) }) (TRowUnion cacheRow cacheRow)
+        (Perform unit cacheKey (OpName "get") [] primUnit)
+        `shouldEqual` Right int
+
+    it "reports an ambient row with two payloads at one key" do
+      -- the rule has a derivation for it; the sharp normal form does not
+      let other = TRowExtend (RowLabelledEffectEntry (Symbol "cache") stateEff [ string ]) TRowEmpty
+      inferIn (env { context = assume emptyContext (Lacks cacheKey cacheRow) }) (TRowUnion cacheRow other)
+        (Perform unit cacheKey (OpName "get") [] primUnit)
+        `shouldEqual` Left (NotARowType (DuplicateKey cacheKey))
 
   describe "handlers" do
     it "removes the element the handler writes" do
@@ -930,8 +1022,7 @@ spec = describe "TypedCore.Check" do
       let
         r = TyVar "r"
         withFact =
-          either (const env) (\context -> env { context = context })
-            (assume (bindTyVar emptyContext r (KRow RowType)) (Lacks sizeKey (TVar r)))
+          env { context = assume (bindTyVar emptyContext r (KRow RowType)) (Lacks sizeKey (TVar r)) }
         annotation =
           TForall r (KRow RowType)
             (pureFn (record (TVar r)) (record (TRowExtend (RowTypeEntry sizeKey int) (TVar r))))
@@ -1001,7 +1092,7 @@ spec = describe "TypedCore.Check" do
         (LetJoin unit (JoinName "j") [ { name: Ident "n", ty: int } ] int (var "n") (Jump unit (JoinName "j") [ oneLit ]))
         `shouldEqual` Right int
 
-    it "puts the root of a definition in tail position wherever the letjoin stands" do
+    it "types a join definition under the join points of its own `letjoin`" do
       inferIn applied TRowEmpty
         ( App unit (var "f")
             ( LetJoin unit (JoinName "j") [ { name: Ident "n", ty: int } ] int
@@ -1022,14 +1113,57 @@ spec = describe "TypedCore.Check" do
         )
         `shouldEqual` Left (JoinArity (JoinName "j") 1 2)
 
-    it "refuses a jump outside tail position" do
-      -- the argument of an application is not a tail position, and a jump is a
+    it "refuses a jump leaving a non-tail position" do
+      -- the argument of an application is a non-tail position, and a jump is a
       -- transfer of control rather than something that returns a value
       inferIn applied TRowEmpty
         ( LetJoin unit (JoinName "j") [] int oneLit
             (App unit (var "f") (Jump unit (JoinName "j") []))
         )
         `shouldEqual` Left (JumpNotInTail (JoinName "j"))
+
+    it "types a jump from the continuation of a letjoin standing in a non-tail position" do
+      -- a non-tail position starts with no join point, and its own letjoin adds one
+      inferIn applied TRowEmpty
+        ( App unit (var "f")
+            (LetJoin unit (JoinName "j") [ { name: Ident "n", ty: int } ] int (var "n") (Jump unit (JoinName "j") [ oneLit ]))
+        )
+        `shouldEqual` Right int
+
+    it "types the contractum of a β-step at the join points of the redex" do
+      -- the body checked under the λ stands, after the step, on the bound side of a let
+      let
+        joined = LetJoin unit (JoinName "j") [] int oneLit (Jump unit (JoinName "j") [])
+        y = Ident "y"
+      inferAt TRowEmpty (Let unit y int (App unit (lam "u" unitT joined) primUnit) (var "y"))
+        `shouldEqual` Right int
+      inferAt TRowEmpty (Let unit y int joined (var "y")) `shouldEqual` Right int
+
+    it "refuses a definition jumping out of the non-tail position its letjoin stands in" do
+      inferIn applied TRowEmpty
+        ( LetJoin unit (JoinName "k") [] int (Lit unit (LitInt 0))
+            ( App unit (var "f")
+                (LetJoin unit (JoinName "j") [] int (Jump unit (JoinName "k") []) oneLit)
+            )
+        )
+        `shouldEqual` Left (JumpNotInTail (JoinName "k"))
+
+    it "refuses a jump from an initial value of a region, which stands in a non-tail position" do
+      inferAt TRowEmpty
+        (LetJoin unit (JoinName "j") [] int oneLit (Region unit regionName oneCell [ Jump unit (JoinName "j") [] ] oneLit))
+        `shouldEqual` Left (JumpNotInTail (JoinName "j"))
+
+    it "refuses a jump across a boundary as unbound, whatever non-tail position stands outside it" do
+      -- a boundary clears the join points in scope and those hidden alike
+      let
+        out body = LetJoin unit (JoinName "j") [] int oneLit body
+        jumping = Jump unit (JoinName "j") []
+      inferIn applied TRowEmpty (out (App unit (var "f") (App unit (lam "u" unitT jumping) primUnit)))
+        `shouldEqual` Left (UnboundJoin (JoinName "j"))
+      inferAt TRowEmpty (out (Region unit regionName oneCell [ oneLit ] jumping))
+        `shouldEqual` Left (UnboundJoin (JoinName "j"))
+      inferAt TRowEmpty (out (Handle unit jumping (consoleHandler int (var "x") (fn unitT TRowEmpty int))))
+        `shouldEqual` Left (UnboundJoin (JoinName "j"))
 
     it "refuses a jump from under a lambda, the join context being discarded there" do
       -- a join point is a transfer within one function activation, so it does
@@ -1082,6 +1216,22 @@ spec = describe "TypedCore.Check" do
       inferIn (env { context = bindVar emptyContext (Ident "r") (record row) }) TRowEmpty
         (Case unit [ var "r" ] tree)
         `shouldEqual` Right int
+
+    it "types the element of a record whose row only an inconsistent context kinds" do
+      let
+        named = TRowExtend (RowTypeEntry nameKey int) TRowEmpty
+        tree = Bind (Ident "y") (OccRecordField (OccScrutinee 0) nameKey) (Leaf (var "y"))
+        context = bindVar (assume emptyContext (Lacks nameKey named)) (Ident "r") (record (TRowUnion named named))
+      inferIn (env { context = context }) TRowEmpty (Case unit [ var "r" ] tree) `shouldEqual` Right int
+
+    it "reports a record row with two payloads at the key an occurrence reads" do
+      let
+        named = TRowExtend (RowTypeEntry nameKey int) TRowEmpty
+        twice = TRowUnion named (TRowExtend (RowTypeEntry nameKey string) TRowEmpty)
+        tree = Bind (Ident "y") (OccRecordField (OccScrutinee 0) nameKey) (Leaf (var "y"))
+        context = bindVar (assume emptyContext (Lacks nameKey named)) (Ident "r") (record twice)
+      inferIn (env { context = context }) TRowEmpty (Case unit [ var "r" ] tree)
+        `shouldEqual` Left (NotARowType (DuplicateKey nameKey))
 
     it "does not take the type of a dispatch from where a branch is written" do
       -- the first branch reaches no leaf, the second gives the type
@@ -1210,6 +1360,49 @@ spec = describe "TypedCore.Check" do
           ( TypeMismatch (variant (TRowExtend (RowTypeEntry nameKey int) TRowEmpty))
               (variant row)
           )
+
+    it "refines an open variant's occurrence to the tail its row decomposes into" do
+      -- `( name : Int | r )` is `( name : Int )` and the residual `r`
+      let
+        r = TyVar "r"
+        withRow = assume (bindTyVar emptyContext r (KRow RowType)) (Lacks nameKey (TVar r))
+        context =
+          bindVar (bindVar withRow (Ident "v") (variant (TRowExtend (RowTypeEntry nameKey int) (TVar r))))
+            (Ident "rest")
+            (variant (TVar r))
+        tree = SwitchKey (OccScrutinee 0)
+          [ { key: nameKey, tree: Leaf (var "rest") } ]
+          (Just (Bind (Ident "w") (OccScrutinee 0) (Leaf (var "w"))))
+      inferIn (env { context = context }) TRowEmpty (Case unit [ var "v" ] tree)
+        `shouldEqual` Right (variant (TVar r))
+
+    it "decomposes a row only an inconsistent context kinds" do
+      -- under `name ∉ ( name : Int )`, `( name : Int ) ⊎ ( name : Int )` is the
+      -- row `( name : Int )`, and its residual without `name` is `()`
+      let
+        named = TRowExtend (RowTypeEntry nameKey int) TRowEmpty
+        context =
+          bindVar (assume emptyContext (Lacks nameKey named)) (Ident "v") (variant (TRowUnion named named))
+        exhaustive = SwitchKey (OccScrutinee 0) [ { key: nameKey, tree: Leaf oneLit } ] Nothing
+        refined = SwitchKey (OccScrutinee 0)
+          [ { key: nameKey, tree: Leaf oneLit } ]
+          (Just (Bind (Ident "w") (OccScrutinee 0) (Leaf (VariantAbsurd unit int (var "w")))))
+      inferIn (env { context = context }) TRowEmpty (Case unit [ var "v" ] exhaustive) `shouldEqual` Right int
+      inferIn (env { context = context }) TRowEmpty (Case unit [ var "v" ] refined) `shouldEqual` Right int
+
+    it "reports a scrutinee row with two payloads at one key" do
+      -- the rule has a derivation for it; the sharp normal form does not
+      let
+        twice =
+          TRowUnion (TRowExtend (RowTypeEntry nameKey int) TRowEmpty)
+            (TRowExtend (RowTypeEntry nameKey string) TRowEmpty)
+        context =
+          bindVar (assume emptyContext (Lacks nameKey (TRowExtend (RowTypeEntry nameKey int) TRowEmpty)))
+            (Ident "v")
+            (variant twice)
+        tree = SwitchKey (OccScrutinee 0) [ { key: nameKey, tree: Leaf oneLit } ] (Just (Leaf oneLit))
+      inferIn (env { context = context }) TRowEmpty (Case unit [ var "v" ] tree)
+        `shouldEqual` Left (NotARowType (DuplicateKey nameKey))
 
     it "does not take the type of a guard from the branch written first" do
       -- the consequent reaches no leaf, and the alternative is what gives the

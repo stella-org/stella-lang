@@ -15,7 +15,7 @@ e ::= x | M.x [[κ̄]]                    variable; `M.x` when κ̄ is empty
     | letrec { x̄ : σ̄ = v̄ } in e        recursive binding group
     | case (ē) of dt                   pattern match
     | letjoin j (x̄ : τ̄) : τ = e1 in e2  join point
-    | jump j (ē)                       jump to a join point; tail position only
+    | jump j (ē)                       jump to a join point in scope
     | fail τ                           non-exhaustive; derived notation
     -- records
     | {}
@@ -51,16 +51,16 @@ v ::= c
     | λ (x : τ) / ρ . e
     | Λ (a : κ) . v
     | Λ (_ : C) . v
-    | M.Ctor ς                 a constructor spine
+    | M.Ctor [[κ̄]] ᾱ            a constructor's chain, its value arguments values
     | {} | extend k v1 v2
     | inject k [ρ] v
 ```
 
-`ς` is the spine of arguments the constructor has accumulated: kind, type, and constraint instantiations together with values, in whatever order the declared type calls for. [Semantics](06-Semantics.md) gives the full value grammar, which adds the forms that arise only during reduction.
+`M.Ctor [[κ̄]] ᾱ` is an **application chain**, the constructor under its type, constraint, and value arguments in whatever order the declared type calls for; it is an ordinary term, typed by its own rule ([Typing Rules](05-Typing-Rules.md#chains-of-a-constructor-or-a-foreign)), and no other form stands for a constructor's value. [Semantics](06-Semantics.md) gives the full value grammar, which adds a foreign's unsaturated chain and the forms that arise only during reduction. **Every value form is a value there**: `Λ (a : Type). M.Cons [a] v1 v2` is a value as it stands, and reduction never enters the `Λ`.
 
 **A constructor application need not be saturated.** Data constructors have curried function types, so `Main.Cons [Int] 1 : List Int -> List Int` is a legitimate term. Were it not a value form, it would be neither a value nor reducible, since a constructor, unlike a lambda, has no body to reduce.
 
-With `|v̄| = arity` it is a completed structure; with `|v̄| < arity` it is a value that behaves as a function. Both are value forms and evaluation stops at them.
+With `|values(ᾱ)| = arity` it is a completed structure; with `|values(ᾱ)| < arity` it is a value that behaves as a function. Both are value forms and evaluation stops at them.
 
 **The body of a type or constraint abstraction must be a value form** (the value restriction). This makes `Λ`, `[τ]`, and `[•]` fully erasable and removes any question of evaluation order at type application. The elaborator eta-expands where necessary.
 
@@ -78,29 +78,32 @@ so every group of `FunVal`s passes, and so does a member that is none where noth
 
 **A join point writes its result type.** It is the type of the whole `letjoin` and of every `jump` to `j`, and neither of the two bodies settles it ahead of the other: a definition may jump to itself and a body may be nothing but a jump. Writing it keeps the rule free of any order of checking.
 
-`letjoin` and `jump` follow the standard join point discipline.
+`letjoin` and `jump` follow a discipline of relative join point contexts inspired by System F_J (D50). It is not F_J's own: F_J is call-by-name and lets a jump discard a known evaluation context, so an application there keeps `Δ` in its function position and empties it in its argument alone. Stella is call-by-value, a jump fires only in a tail context `Tl` ([Semantics](06-Semantics.md#join-points)), and every non-tail position empties `Δ`, which is the more conservative choice.
 
 - A join point is not first class. It cannot be passed as a value and forms no closure.
-- `jump` occurs only in tail position.
+- A join point is in scope relative to the nearest non-tail position: a position whose value something still awaits — an argument, an operand, the bound side of a `let`, a scrutinee — starts with none.
 - A join point's result type and ambient effect row match those of the enclosing scope.
 - **A join point does not cross a function boundary.**
 
-The last condition is what makes a join point a join point. `jump j` must be implementable as a transfer of control **within the same function activation** as `letjoin j`. If a closure could capture a join point, it would no longer be a goto but a genuine continuation, and would not lower to a Mid IR join point directly.
+The two scoping conditions are what make a join point a join point. `jump j` must be implementable as a transfer of control **within the same function activation** as `letjoin j`, and with nothing of that activation's evaluation left pending between them. If a closure could capture a join point, it would no longer be a goto but a genuine continuation, and would not lower to a Mid IR join point directly; and a jump out of a position whose value is awaited would abandon what awaits it.
 
-The typing rules enforce this by **discarding** the join point context `Δ`.
+The typing rules enforce both by **emptying** the join point context `Δ`: at every non-tail position ([Typing Rules](05-Typing-Rules.md#join-points-and-decision-trees)), and at every boundary.
 
 ```text
 λ (x : τ) / ρ. e             check e with Δ := ·
 Λ (a : κ). v                 check v with Δ := ·
 handle e with h              check e, the return clause, and every operation clause with Δ := ·
 region [ℓ] … @ ( ē ) in e    check e with Δ := ·
+letrec { x̄ : σ̄ = ē } in e    check each initializer with Δ := ·
 ```
 
-This is why `Δ` is a context separate from `Γ`: their scoping rules differ. `Γ` extends into the body of a lambda; `Δ` is cut off there. A single context could not express the difference.
+A `letjoin` standing in a non-tail position is no exception: it starts that position afresh, and its own definition and continuation may jump to it. `jump` itself asks of its position nothing more than that its join point be in `Δ`, which is what makes the discipline stable under reduction ([Typing Rules](05-Typing-Rules.md#join-points-and-decision-trees)).
+
+This is why `Δ` is a context separate from `Γ`: their scoping rules differ. `Γ` extends into the body of a lambda and into every operand; `Δ` is cut off at both. A single context could not express the difference.
 
 Discarding `Δ` at `handle` is conservative. A clause is entered from the `perform` site, which lies at an arbitrary depth inside the handled computation and in general in another function activation, so an outward `jump` from a clause body would be a non-local exit that unwinds the handler. This holds of both clause forms ([Effects](03-Effects.md)): a `full` clause is a function boundary outright, receiving a continuation and being invoked later, while a `fast` clause builds no continuation but is still entered from that arbitrary point. v0.1 takes the simple rule and may relax it; since the elaborator can move join points inward, the practical restriction is small.
 
-Discarding `Δ` at a `region`'s body has a reason of its own. A region closes only when its body reaches a value, so a tail context does not pass through its frame ([Semantics](06-Semantics.md)), and a `jump` out of the body would find no `letjoin` to transfer to. The initial values stand outside the region and keep `Δ`.
+Discarding `Δ` at a `region`'s body has a reason of its own. A region closes only when its body reaches a value, so a tail context does not pass through its frame ([Semantics](06-Semantics.md)), and a `jump` out of the body would find no `letjoin` to transfer to. The initial values stand outside the region, each in a non-tail position.
 
 Join points exist for two reasons: so that a decision tree can hold each alternative's body once, and so that lowering to Mid IR join points preserves structure.
 
@@ -148,13 +151,13 @@ dt ::= leaf e
      | switchLit   o { c1 -> dt1 ; … ; cn -> dtn }   default -> dt0
      | switchKey   o { k1 -> dt1 ; … ; kn -> dtn } [ default -> dt0 ]
      | guard e dt_then dt_else
-     | fail
+     | fail τ                     derived notation
 ```
 
 - `switchCtor` is a single dispatch on a data type's tag. The branches are mutually exclusive and their written order carries no meaning.
-- `switchKey` dispatches on the key of a variant element. In the `default` branch the occurrence has the residual variant type `Variant ρ'`, with the enumerated keys removed. This is the structural decomposition of an open variant.
+- `switchKey` dispatches on the key of a variant element. In the `default` branch the occurrence has the residual variant type `Variant ρ'`, the variant's row decomposing as `( k̄ : τ̄ | ρ' )` into the enumerated elements and `ρ'`. This is the structural decomposition of an open variant.
 - `guard` is the only sequential test, corresponding to CoreFn's `Guard`. Fall-through is expressed by placing `jump j` in `dt_else`.
-- `fail` is derived notation for `leaf (perform Partial.abort [τ] Prim.Unit)` and produces a `Partial` effect (D10).
+- `fail τ` is derived notation for `leaf (perform Partial.abort [τ] Prim.Unit)` and produces a `Partial` effect (D10). It writes the type it answers at, as `absurd` does: the expansion needs it, and nothing else in the tree supplies it. The checker has no node for it and reads the expansion.
 
 Sharing an alternative's body between several leaves is done by lifting it into a `letjoin` and placing `leaf (jump j ē)`, so that building a decision tree never duplicates code.
 
@@ -200,12 +203,12 @@ Two requirements must be distinguished.
 
 **What the Core type checker requires: that each switch be locally total.** Every `switch*` must either have a default or exhaust its cases. A tree that does not is rejected, because no value may be left without a destination.
 
-**What it does not require: coverage analysis of source patterns.** Whether nested patterns cover the original program is not checked. Partiality appears in the tree as `fail`, and the term's effect row then contains `Partial`.
+**What it does not require: coverage analysis of source patterns.** Whether nested patterns cover the original program is not checked. Partiality appears in the tree as `fail τ`, and the term's effect row then contains `Partial`.
 
 ```text
 switchCtor s0 {
   Main.Nil -> leaf 0
-} default -> fail            ← total; carries a Partial effect
+} default -> fail Int        ← total; carries a Partial effect
 
 switchCtor s0 {
   Main.Nil -> leaf 0
@@ -218,7 +221,7 @@ The condition for having no default differs by node.
 | --- | --- |
 | `switchCtor` | `{Ctor_i}` exhausts the constructors of `T` |
 | `switchLit` | unattainable; **a default is mandatory**, since literals cannot be exhausted |
-| `switchKey` | the unknown tail is empty and `{k_i} = dom(F)` |
+| `switchKey` | the residual the variant's row decomposes into beside the `k_i` is empty, `r' ≡ ()` |
 
 For `switchKey` over a closed variant, a tree that enumerates only some known keys and omits the default is **not admitted**; without this condition a value could be left with no destination at run time.
 
