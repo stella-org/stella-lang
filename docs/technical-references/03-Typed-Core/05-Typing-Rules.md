@@ -222,6 +222,7 @@ The rules for global names instantiate a kind scheme with `κ̄'`, which is **pu
 M.g [[κ̄]] α1 … αn         M.g a constructor or a foreign of Σ
 α ::= [τ]  |  [•]  |  e     a type, a constraint, or a value argument
 values(ᾱ)                   the value arguments of ᾱ, in order
+types(ᾱ)                    the type arguments of ᾱ, the τ of each [τ], in order
 ```
 
 The arguments come in whatever order the declared type calls for: a declared type may interleave quantifiers, constraints, and arrows, and nothing requires the erased arguments to precede the values. A type such as `Int -> forall a. a -> a` is therefore usable, with `[String]` supplied after the first value argument.
@@ -257,6 +258,18 @@ M.id [Int -> Int] f        ⟨ a ; [a := Int -> Int] ⟩           saturated
 The last line is saturated because the declared remainder is the variable `a`, even though `θ(a) = Int -> Int` is a function type. **A chain ends where it is saturated**, and an argument beyond is an ordinary application of what the chain returns: `M.id [Int -> Int] f 0` is the application of the chain `M.id [Int -> Int] f` to `0`, typed by the rule for `e1 e2`. `foreign make : forall a. Unit -> a` instantiated at a function type behaves the same way: `M.make [Int -> Int] Prim.Unit` is saturated, and an argument after it is applied to what the call returns. A constructor's declared result is `T ᾱ`, never an arrow, so nothing applies a saturated one.
 
 **Arity is a static property of the declaration.** The number of value-argument positions is the number of arrows on the declared type's spine, which is what the cursor walks and what substitution never changes. **A chain is saturated exactly when it holds as many values as that**: the cursor passes every quantifier and constraint before an arrow to reach it, and `Σ ok` leaves none after the last arrow of a foreign, nor of a constructor, whose scheme ends in its owner. Erasure therefore keeps both: after type arguments are gone, a backend still calls `δ_f` with exactly that many run-time arguments, and at the point the typed relation does.
+
+### The instance of a chain
+
+**A chain's instance is its kind arguments and its type arguments**, and nothing else, and is written `ξ`:
+
+```text
+instance(M.g [[κ̄]] ᾱ)  =  ⟨ κ̄ ; types(ᾱ) ⟩
+```
+
+**For a saturated chain it determines the cursor's substitution, and so the instantiated result type `θ(σ)`.** The declaration fixes which of its quantifiers each type argument fills, in order, the kind arguments fill its kind scheme, and a constraint argument carries no proof object and contributes nothing. The value arguments do not enter: the cursor consumes an arrow without extending `θ`.
+
+The instance is what the typed semantics hands a foreign's **typed adapter** beside `values(ᾱ)`, so that the outcome of a call can carry the annotations its type calls for ([Semantics](06-Semantics.md#chains-of-a-constructor-or-a-foreign)). It is ghost information: erasure removes it with the type and constraint arguments, and no implementation receives it. The form given here is not normative; any representation from which the cursor's substitution can be rebuilt serves.
 
 ### Typing a chain
 

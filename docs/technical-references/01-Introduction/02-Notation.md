@@ -16,7 +16,11 @@ Notation confined to a single document is introduced where it is used.
 | `ρ`, `r`, `s`, `e` | rows (`e` usually an effect row) |
 | `α`, `ᾱ` | an argument of a constructor's or a foreign's application chain, `[τ]`, `[•]`, or a term; a sequence of them |
 | `θ` | a kind and type substitution |
-| `δ_f` | the implementation of a foreign `f` |
+| `δ_f` | the implementation of a foreign `f`, on erased value arguments |
+| `δᵀ_f`, `δᵤ_f` | the typed view of a foreign's implementation, a Core-modelled one's adapter; a Core-modelled foreign's erased function |
+| `Pᴴ_f`, `Pᶜ_f` | a foreign's ABI precondition, and a Core-modelled one's, independent of the host state |
+| `ξ` | the instance of a chain, its kind and type arguments |
+| `H` | a host state, what an ABI contract may refer to beyond the arguments |
 | `ω` | the payload of an opaque value, held by the backend |
 | `k` | row keys |
 | `s` | the symbol of a `SymbolKey` |

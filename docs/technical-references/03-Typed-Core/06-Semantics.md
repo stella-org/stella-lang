@@ -55,7 +55,7 @@ After `e2` and `e1` are evaluated to values, the value form of `e1` determines w
 | --- | --- |
 | `λ (x : τ) / ρ . e` | β-reduction: evaluate `e[x := v2]` |
 | an unsaturated chain of a constructor, `M.Ctor [[κ̄]] ᾱ` | nothing: `M.Ctor [[κ̄]] ᾱ v2` is again a constructor's chain of values, and so a value as it stands. **No step is taken and no computation occurs** |
-| an unsaturated chain of a foreign, `M.f [[κ̄]] ᾱ` | nothing while `M.f [[κ̄]] ᾱ v2` is unsaturated, which is then a value as it stands. Once it is saturated it is a redex, and the step `δ_f` calls the implementation, a primitive step, which yields a value or a fault ([below](#chains-of-a-constructor-or-a-foreign)). That it reaches the **world** nowhere is a conformance obligation on the implementation and not a consequence of D23 alone; a world effect happens when the runtime executes the returned `IO`. An **observational** effect is a separate matter and the call may have one, unless the declaration asserts `#observ(none)` (D41) |
+| an unsaturated chain of a foreign, `M.f [[κ̄]] ᾱ` | nothing while `M.f [[κ̄]] ᾱ v2` is unsaturated, which is then a value as it stands. Once it is saturated it is a redex, and the step calls the implementation `δ_f`, a primitive step, which yields a value or a fault ([below](#chains-of-a-constructor-or-a-foreign)). That it reaches the **world** nowhere is a conformance obligation on the implementation and not a consequence of D23 alone; a world effect happens when the runtime executes the returned `IO`. An **observational** effect is a separate matter and the call may have one, unless the declaration asserts `#observ(none)` (D41) |
 
 A saturated constructor's chain does not have a function type and so never appears in the position of `e1`.
 
@@ -259,6 +259,30 @@ The third class is what a mutable array behind a pure interface is: `Base.Array.
 
 **What the annotation says nothing about is the reified class.** `#observ(none)` and returning `IO` are independent and compose: `#observ(none) foreign log : String -> IO Unit` performs nothing when it is applied and merely constructs an action, and the output happens where the drive loop runs that action. Whether an entry returns `IO` is read off the result type and is stated nowhere ([Interface](../05-Backend/03-Interface.md)).
 
+#### An implementation, and the typed view it is read through
+
+**An implementation runs on erased values, and conformance speaks of typed ones.** A backend hands `δ_f` the erasures of the value arguments and receives an erased value or a fault: no kind, type, or constraint argument reaches it, and an annotation such as the `[IO τ]` of `opaque ω [IO τ]` is nowhere in what it returns. What conformance asks — that a call's result have the instantiated result type `θ(σ)` — is asked of a typed value. **The implementation and the annotated outcome conformance speaks of are therefore kept apart**, and a foreign's entry in `G` stands for its implementation together with the contract it is read through:
+
+```text
+H                 a host state: what an ABI contract may refer to beyond the
+                  arguments, the contents of an array among it. A metavariable
+                  of this specification, not a component of a configuration
+
+Pᴴ_f(H, w̄)        the ABI precondition of M.f, on erased value arguments
+δ_f(H, w̄)         the implementation, on erased value arguments: within
+                  Pᴴ_f, a value w or a fault φ
+δᵀ_f(H, ξ, v̄)     its typed view: for a well-typed call with instance ξ
+                  (Typing Rules) and value arguments v̄, an annotated value
+                  or a fault, with
+                    eraseOutcome(δᵀ_f(H, ξ, v̄)) = δ_f(H, ⌊v̄⌋)
+
+eraseOutcome(value v) = value ⌊v⌋        eraseOutcome(fault φ) = fault φ
+```
+
+**The instance shapes annotations and nothing the implementation does.** `δ_f` is not given `ξ`, and its outcome is fixed by the state and the erased arguments; `ξ` reaches the typed view alone, which uses it to write the annotations the cursor computes. `Base.IO.pure : forall a. a -> IO a` at `[τ]` returns `opaque ω`, and its typed view gives `opaque ω [IO τ]`: the payload is the implementation's and the annotation the instance's.
+
+**The typed view is chosen with the environment, and is not derived from the implementation.** The implementation fixes the erasure of each outcome and not the outcome: values carrying different annotations — inside the body of a returned closure, say — may have one type and one erasure. What is asked of a typed view is that it be a function, one outcome for each state, instance, and argument list, and that it erase to what the implementation returns; conformance asks the rest.
+
 ```text
 Σ; Γ_N ⊨ G   holds when
 
@@ -274,20 +298,21 @@ The third class is what a mutable array behind a pure interface is: `Base.Array.
       Γ_R ⊢ Γ_N ok, and for every saturated chain M.f [[κ̄]] ᾱ of values with
       cursorΣ(M.f [[κ̄]] ᾱ) = ⟨ σ ; θ ⟩  (Typing Rules) that is well typed
       under them, ·; · ⊢ M.f [[κ̄]] ᾱ : θ(σ) ! () under Γ_R and Γ_N,
-      writing v̄ = values(ᾱ), and **where the ABI preconditions of M.f hold**:
-        δ_f(v̄) is defined
-        δ_f(v̄) is either a fault or a value v with ·; · ⊢ v : θ(σ) ! ()
-               under the same Γ_R and Γ_N
-        δ_f(v̄) performs no proper effect, and runs no reified computation
+      writing ξ = instance(M.f [[κ̄]] ᾱ) and v̄ = values(ᾱ), and at every
+      host state H **where Pᴴ_f(H, ⌊v̄⌋) holds**:
+        δ_f(H, ⌊v̄⌋) is defined
+        δᵀ_f(H, ξ, v̄) is either a fault or a value v with
+               ·; · ⊢ v : θ(σ) ! () under the same Γ_R and Γ_N
+        the call performs no proper effect, and runs no reified computation
                it constructs
-        δ_f(v̄) applies no Stella function value
-        δ_f(v̄) terminates
-        δ_f(v̄) has no observational effect, and so returns a value
+        the call applies no Stella function value
+        the call terminates
+        the call has no observational effect, and so returns a value
                rather than a fault,
                where Σ records #observ(none) for M.f
 ```
 
-**Condition (3) asks of a call a typed program can make, and of no other.** A chain the cursor walks but whose values are not of the types it selects is no call a well-typed term reaches, and an implementation owes nothing for one; the result it owes is still at the instantiated result type `θ(σ)`, and the ABI preconditions still bound what it is asked. **The result is typed under the contexts the call is**, not merely under some: an argument may be a closure that forces a location or reaches a region, and a result may hand one back, so preservation needs the value `δ_f` returns at `θ(σ)` under the `Γ_R` and `Γ_N` the step stands under.
+**Condition (3) asks of a call a typed program can make, and of no other.** A chain the cursor walks but whose values are not of the types it selects is no call a well-typed term reaches, and an implementation owes nothing for one; the typed view of what it returns is still at the instantiated result type `θ(σ)`, and the ABI precondition still bounds what it is asked. **The result is typed under the contexts the call is**, not merely under some: an argument may be a closure that forces a location or reaches a region, and a result may hand one back, so preservation needs the value the typed view gives at `θ(σ)` under the `Γ_R` and `Γ_N` the step stands under. The clauses after the second are about the call as the implementation makes it, which is where an effect, an application, and divergence happen.
 
 **Conformance is relative to the store's types** because a value installed in `G` may be a closure whose body forces a cell a local `letrec` allocated while it was evaluated ([Module initialization](#module-initialization)). It is stable under extending the store: where `Γ_N2` extends `Γ_N`, `Σ; Γ_N ⊨ G` gives `Σ; Γ_N2 ⊨ G`, a value typed under fewer locations being typed under more, so a step that allocates leaves `G` conforming. Condition (1) mentions no location and (3) quantifies over every well-formed run-time context, and **`Σ ⊨ G` is `Σ; · ⊨ G`**, what an environment owes before any store exists and what an implementation of a `δ_f` is held to.
 
@@ -308,6 +333,14 @@ The properties below are stated of a conforming environment. **During the fold t
 
 **One entry of `stella-base-0.1` has such a precondition, and it covers one case of that entry.** `Base.Array.unsafeIndex` faults on an index outside the array, as every backend must; the precondition is reached only after the index is found to be in range, and it is that the slot has been written. A slot `Base.Array.unsafeNew` left unwritten is one the ABI does not say how to read ([Prim and Base](../06-Modules/02-Prim-and-Base.md)). Requiring a fault there instead would oblige every backend to carry an initialization bit and to check it on every read, and that check would stand on the hot path of the one operation a portable array library is built out of — which is why it is not required. It is not forbidden either: a backend that pays for the check is conformant, and a program violating the precondition then runs there and nowhere else. The cost of the precondition is this paragraph and the premise below; the cost of removing it is paid by every array read in every program.
 
+**A precondition reads erased arguments, and may read the host state.** It is about a run-time call, and a run-time call carries no annotation: `Pᴴ_f(H, w̄)` takes the erasures of the value arguments, so at any one state two typed argument lists erasing alike stand inside it or outside it together. The state is another matter. `unsafeIndex`'s precondition changes when the slot is written, its erased arguments unchanged, and that dependence is what keeps such an entry from being Core-modelled (below). An erased opaque value keeps its payload, so a precondition may speak of the run-time object the payload denotes. A precondition stated over typed values instead is admissible where it is invariant under erasure with the state held fixed,
+
+```text
+⌊v̄₁⌋ = ⌊v̄₂⌋   implies   ( P(H, v̄₁)  iff  P(H, v̄₂) )
+```
+
+which makes it one on erased values written another way.
+
 **A precondition is not an observational effect, and confusing the two loses both.**
 
 | | What it asks | What it is read by |
@@ -322,23 +355,54 @@ The properties below are stated of a conforming environment. **During the fold t
 **`Σ ⊨ G` is what every implementation owes, and it is not what this relation needs.** A second condition sits beside it, and the two are kept apart because they bind different parties: conformance is owed by whoever supplies a `δ_f`, while the one below says which environments the rules below describe at all.
 
 ```text
-G is Core-modelled   when for each (M.f : σκ = δ_f) ∈ G, and for every saturated
-                     chain M.f [[κ̄]] ᾱ of values, writing v̄ = values(ᾱ):
-                       returning an outcome — a value or a fault — is the whole
-                              of what δ_f(v̄) does
-                       v̄ determines that outcome, and nothing else
-                              contributes to it
-                       δ_f(v̄) reads no state that v̄ does not carry
-                       δ_f(v̄) writes no state
-                       δ_f(v̄) creates no identity that v̄ does not determine,
-                              a freshly allocated one among them, observed or not
+G is Core-modelled   when each (M.f : σκ = δ_f) ∈ G has an erased precondition
+                     Pᶜ_f(w̄) and an erased function δᵤ_f(w̄), each of the erased
+                     value arguments alone, and a typed adapter δᵀ_f(ξ, v̄),
+                     which together meet the correspondence contract:
+
+  (a) at every host state H,  Pᴴ_f(H, w̄)  iff  Pᶜ_f(w̄)
+
+  (b) where Pᶜ_f(w̄) holds, at every host state H:
+        returning an outcome — a value or a fault — is the whole of what
+               δ_f(H, w̄) does
+        w̄ determines that outcome, and nothing else contributes to it:
+               δ_f(H, w̄) = δᵤ_f(w̄)
+        δ_f(H, w̄) reads no state that w̄ does not carry
+        δ_f(H, w̄) writes no state
+        δ_f(H, w̄) creates no identity that w̄ does not determine,
+               a freshly allocated one among them, observed or not
+
+  (c) the typed view is the adapter: for every well-typed saturated chain
+      of values, with ξ and v̄ as in condition (3), where Pᶜ_f(⌊v̄⌋) holds,
+      at every host state H:
+        δᵀ_f(H, ξ, v̄) = δᵀ_f(ξ, v̄)
+
+  (d) erasure coherence: for every well-typed saturated chain of values,
+      with ξ and v̄ as in condition (3), where Pᶜ_f(⌊v̄⌋) holds:
+        δᵀ_f(ξ, v̄) and δᵤ_f(⌊v̄⌋) are both defined, and
+        eraseOutcome(δᵀ_f(ξ, v̄)) = δᵤ_f(⌊v̄⌋)
 ```
 
-**Determining the outcome is not enough, and the clauses after the first are not decoration.** An entry writing through an array it is handed returns `Unit` whatever it wrote, so the arguments determine its outcome perfectly and it is still not what the rule below reads `δ_f` as. What disqualifies it is the write, which the rule names nowhere. The condition is therefore about the whole of a call and not about its result: an outcome the arguments fix, and nothing else happening.
+**The rule below reads a foreign through the adapter, and a backend runs the erased function.** The typed reduct of a call has to carry the annotations its type calls for, and only the instance supplies them; the erased call must not see the instance at all. Neither function alone serves both, so the contract names both and says how they agree.
+
+**Erasure coherence is stated, and is the clause the two relations meet at.** It covers the whole of an outcome: whether the call returns or faults, which fault with what payload, and the erased value where it returns. So inside `Pᶜ_f` two calls whose value arguments erase alike have outcomes that erase alike, whatever their instances. **The adapter may read `ξ` to write annotations and for nothing else**: it may give `M.Nil [τ]` rather than `M.Nil [σ]`, but may not use the instance to choose `Nil` over `Cons`, to pick another opaque identity, to fault at one instance only, or to change a fault's payload. Definedness is a separate obligation from the equation: inside `Pᶜ_f` neither side may be undefined, while outside `Pᴴ_f` the ABI fixes neither definedness nor an outcome.
+
+**The adapter belongs to the environment and is chosen with it.** Being the typed view, it is not computed from the implementation: (b) fixes `δᵤ_f` wherever the rules use it, and the adapter is one function erasing to it, chosen when `G` is. That it is a function, one outcome for each instance and argument list, is what keeps the rule below deterministic.
+
+**Why the rule needs the instance.** `foreign mkNil : forall a. Unit -> List a` serves as an example of the model, not of the host boundary, which D44 keeps a user constructor away from. At `[Int]` a call must reduce to `M.Nil [Int]` and at `[String]` to `M.Nil [String]`, and both calls have the value arguments `Prim.Unit`; no function of those alone gives both. With the instance it is:
+
+```text
+δᵀ_mkNil(⟨ · ; τ ⟩, Prim.Unit) = value (M.Nil [τ])
+δᵤ_mkNil(Prim.Unit)            = value M.Nil
+```
+
+and both sides of (d) are `value M.Nil`. **An adapter giving `M.Nil [Int]` at `[Int]` and a fault at `[String]` breaks (d)**, though a call could have either outcome on its own: for the same erased arguments the two erase differently. `Base.IO.pure` is the shipped case of the same thing, its adapter writing `opaque ω [IO τ]` over the `opaque ω` its implementation returns, the same payload at every instance.
+
+**Determining the outcome is not enough, and the clauses of (b) after the first are not decoration.** An entry writing through an array it is handed returns `Unit` whatever it wrote, so the arguments determine its outcome perfectly and it is still not what the rule below reads. What disqualifies it is the write, which the rule names nowhere. The condition is therefore about the whole of a call and not about its result: an outcome the arguments fix, and nothing else happening.
 
 **Neither of the two conditions implies the other, and an earlier draft of this section claimed that one did.** They disagree in both directions, and the disagreement is not a technicality.
 
-**They forbid different identities.** `#observ(none)` forbids creating an identity **anything can observe**, and this condition forbids creating one **the arguments do not determine**, observed or not — the rule below equates a saturated call with `δ_f(v̄)`, so two calls on equal arguments must give the same term, and a fresh `ω` on each is two terms. An entry handing back an allocation no Stella program can tell from another therefore satisfies the directive and fails this condition.
+**They forbid different identities.** `#observ(none)` forbids creating an identity **anything can observe**, and this condition forbids creating one **the arguments do not determine**, observed or not — the rule below equates a saturated call with its adapter's outcome, a function of the instance and the arguments, so two calls on equal arguments at one instance must give the same term, and a fresh `ω` on each is two terms. An entry handing back an allocation no Stella program can tell from another therefore satisfies the directive and fails this condition.
 
 **And this condition permits a fault, which the directive does not.** `Base.String.codePointAt` is the standing case above.
 
@@ -352,9 +416,9 @@ G is Core-modelled   when for each (M.f : σκ = δ_f) ∈ G, and for every satu
 
 ```text
 e respects preconditions under G
-                     when no saturated foreign invocation reached from e by
-                     the relation below violates the ABI precondition of the
-                     entry it invokes
+                     when no saturated foreign chain reached from e by the
+                     relation below has value arguments whose erasure lies
+                     outside Pᶜ_f of the entry it invokes
 ```
 
 **This one is not decided anywhere, and saying so is part of stating it.** Whether a program ever reads an unwritten slot is not settled by its type, by any analysis in these documents, or by anything a machine does at run time. What discharges it is the library that owns the unsafe entry, and what a violation costs is everything below: a term that violates one has no guarantee of preservation, of progress, or of anything else this section states.
@@ -369,7 +433,7 @@ e respects preconditions under G
 
 Condition (2) applies to the entries a `rec` group installs as well. Each `v_i` is checked under its own `k̄_i` and refers to its neighbours through `Σ`, which the declaration rules populated before any value declaration was checked.
 
-Condition (3) is stated through the cursor because the result type of a polymorphic foreign depends on the instantiation the chain carries. Applying `forall a. a -> a` at `[Int]` obliges `δ_f` to return an `Int`, and the raw declared type does not say so.
+Condition (3) is stated through the cursor because the result type of a polymorphic foreign depends on the instantiation the chain carries. Applying `forall a. a -> a` at `[Int]` obliges the typed view to give an `Int`, and `δ_f` to return the erasure of one, and the raw declared type does not say so.
 
 **A `δ_f` may carry a function value but may not apply one.** That restriction is what lets the requirements above hold together. The rule for a saturated `foreign` is one atomic step to a value or a fault, so a `δ_f` applying a Stella function would step to neither where that application diverges — Core claims nowhere that a function terminates — and progress would fail for a term that is not stuck but running. **Where the function came from makes no difference**, so the condition names none: an argument, a field of a record or of a constructor among the arguments, a closure retained from an earlier call, or one reached through a global are one case, as D23 treats every runtime-bearing position of a declared type alike. Carrying one is untouched by this: `Base.IO.bind` takes `a -> IO b` and stores it in the `IO` value it builds, and what applies it is the runtime executing that value, which is outside this reduction relation (D25).
 
@@ -383,9 +447,9 @@ Admitting a fault in (3) is what keeps the condition consistent with progress: a
 
 An entry with observational effects reads and writes memory, and **the relation above names none of it**. The gap is not a matter of emphasis, and it is worth stating exactly where it falls.
 
-**The state is not in the term.** A mutable array is an `opaque ω [τ]`, and a `writeCell`-like write performed inside `δ_f` leaves that `ω` as it was: the term after the write is the term before it. So `Base.Array.unsafeSet` writes state the configuration does not record, and `Base.Array.unsafeIndex` **reads** it — the `ω` it is handed names an array whose current contents are nowhere in `v̄`, so the same arguments give different values according to which writes preceded them. Neither is the function of `v̄` that the rule below reads `δ_f` as. **Any argument that the state "is really in the payload" is wrong**, and an earlier draft of this section made it.
+**The state is not in the term.** A mutable array is an `opaque ω [τ]`, and a `writeCell`-like write performed inside `δ_f` leaves that `ω` as it was: the term after the write is the term before it. So `Base.Array.unsafeSet` writes state the configuration does not record, and `Base.Array.unsafeIndex` **reads** it — the `ω` it is handed names an array whose current contents are nowhere in `v̄`, so the same arguments give different values according to which writes preceded them. Neither factors through a function of the erased arguments, which is what the rule below reads a foreign through. **Any argument that the state "is really in the payload" is wrong**, and an earlier draft of this section made it.
 
-**What follows is that the step is not defined, and not merely that it is not deterministic.** The rule is `M.f [[κ̄]] ᾱ → δ_f(values(ᾱ))`, which reads `δ_f` as a function of `values(ᾱ)`. For an entry that reads hidden state it is not one, so **that rule gives such an entry no step at all**: there is nothing here to be non-deterministic, because there is nothing here.
+**What follows is that the step is not defined, and not merely that it is not deterministic.** The rule reads a foreign through an adapter and the erased function `δᵤ_f` it corresponds to, both functions of the call alone. For an entry that reads hidden state there is no such pair, so **that rule gives such an entry no step at all**: there is nothing here to be non-deterministic, because there is nothing here.
 
 **Being Core-modelled is the line, and it is not the line `#observ(none)` draws.** It is a condition of its own beside `Σ ⊨ G` and not a clause within it, because the two bind different parties: conformance is what an implementer owes and admits `unsafeSet`, while being Core-modelled is what these rules need and does not. The relation is defined against a `G` that is both, and every property below carries both as premises.
 
@@ -429,14 +493,14 @@ v ::= c
 
 A `foreign` returns a value of its instantiated result type, and what shape that value has follows from the type.
 
-| Result type | The value `δ_f` returns |
+| Result type | The value the typed view gives |
 | --- | --- |
 | a data type | a constructor's chain |
 | an intrinsic type | the canonical form of `Σ(T)`'s class ([Prim and Base](../06-Modules/02-Prim-and-Base.md)) |
 
 The second row covers more than one case. A `foreign` whose result is `Int` returns a literal, one whose result is a function type returns a function value — `foreign make : forall a. Unit -> a` called at `Int -> Int` does exactly that — and one whose result is a `Record` returns `{}` or an `extend`. Only the `intrinsic opaque` class is left without a form of its own.
 
-`opaque ω [τ]` is what `δ_f` returns there. `ω` is the payload the backend holds — a JavaScript thunk, a Wasm reference, a native handle — and Core knows only that it is there.
+`opaque ω [τ]` is what the typed view gives there, `δ_f` itself returning `opaque ω`. `ω` is the payload the backend holds — a JavaScript thunk, a Wasm reference, a native handle — and Core knows only that it is there.
 
 ```text
   τ = T τ̄     Σ(T) = intrinsic opaque     Γ ⊢ τ : Type     Γ ⊢ ρ : Row Effect
@@ -458,7 +522,7 @@ Erasure keeps the payload, which carries the run-time content, and drops the typ
 ⌊opaque ω [τ]⌋ = opaque ω
 ```
 
-A constructor's or a foreign's arguments stand on its application chain ([Chains of a constructor or a foreign](#chains-of-a-constructor-or-a-foreign)): kind, type, and constraint instantiations and values, in the order the declared type calls for. `values(ᾱ)` is the subsequence of value arguments, which is what erasure keeps and what `δ_f` receives.
+A constructor's or a foreign's arguments stand on its application chain ([Chains of a constructor or a foreign](#chains-of-a-constructor-or-a-foreign)): kind, type, and constraint instantiations and values, in the order the declared type calls for. `values(ᾱ)` is the subsequence of value arguments, which is what erasure keeps and what `δ_f` receives erased. The rest is the chain's instance ([Typing Rules](05-Typing-Rules.md#the-instance-of-a-chain)), which the typed relation hands a foreign's adapter and erasure removes.
 
 A polymorphic `foreign` is used through its chain as a constructor is. `Base.IO.pure [Int]`, with `Base.IO.pure : forall a. a -> IO a`, is an unsaturated chain and a value, though the rule for type application reduces only a `Λ`.
 
@@ -501,7 +565,7 @@ region⟨ℓ⟩ θ in e      an open region of cells named ℓ, θ a finite map 
 opaque ω [τ]          a value an implementation returned, typed above
 ```
 
-The last is the only one a `δ_f` produces, and the only one that is a value rather than a step in progress; its rule is given with the values.
+The last is the only one a foreign's typed outcome introduces, and the only one that is a value rather than a step in progress; its rule is given with the values.
 
 **Opening a region allocates a name** ([Regions](#regions)), and the names allocated so far, each with the layout of the region it opened, form a global context `Γ_R` of entries `region ℓ : ι`. Run-time terms are typed under it: `Γ_R` stands at the front of every `Γ` and, like `Σ`, is left implicit. A name in `Γ_R` is in scope everywhere, which is what lets a continuation holding a frame of that name be typed wherever it is carried.
 
@@ -590,18 +654,20 @@ An `Evaluating` cell's initializer is the term a `fill ν e` stands for, typed w
 A constructor's chain of values is a value, saturated or not; a foreign's is a value while it is unsaturated, and a redex once it is saturated:
 
 ```text
-  M.f [[κ̄]] ᾱ   →  δ_f( values(ᾱ) )     when M.f [[κ̄]] ᾱ is saturated, every value
-                                         argument in ᾱ is a value, G is Core-modelled,
-                                         and the ABI preconditions of M.f hold
+  M.f [[κ̄]] ᾱ   →  δᵀ_f( instance(M.f [[κ̄]] ᾱ), values(ᾱ) )
+                     when M.f [[κ̄]] ᾱ is saturated, every value argument in ᾱ
+                     is a value, G is Core-modelled, and Pᶜ_f(⌊values(ᾱ)⌋)
 ```
 
-**The premises on the rule are not decoration, and the last two say different things.** `δ_f( values(ᾱ) )` names the outcome the arguments determine, so the rule says nothing where they determine nothing (above): an implementation reading hidden state is one this rule gives no step to, and that is the whole of what "outside the relation" means. The precondition premise is narrower and fails at one call rather than for a whole environment — a `Base.Array.unsafeIndex` reading a slot nothing wrote has a step taken in any real machine and no step here, because what that step yields is what the ABI declined to fix. Both are written on this rule because this is the one rule where either bites; every rule is read against such a `G` and such a term.
+**The instance is read and not passed.** The adapter receives the chain's kind and type arguments so that the reduct carries the annotations the cursor computes, `M.Nil [τ]` or `opaque ω [IO τ]`; the erased rule below receives the erased values alone, and erasure coherence confines what the instance can change to those annotations ([The correspondence contract](#an-abi-precondition-is-where-condition-3-stops-asking)).
+
+**The premises on the rule are not decoration, and the last two say different things.** The adapter names the outcome the instance and the arguments determine, so the rule says nothing where the arguments determine nothing (above): an implementation reading hidden state is one this rule gives no step to, and that is the whole of what "outside the relation" means. The precondition premise is narrower and fails at one call rather than for a whole environment — a call outside `Pᶜ_f` has a step taken in any real machine and no step here, because what that step yields is what the ABI declined to fix. Both are written on this rule because this is the one rule where either bites; every rule is read against such a `G` and such a term.
 
 **The evaluation contexts reach every argument of a chain, and nothing else needs to.** `e Ev` evaluates the value arguments right to left (D35), and `Ev v`, `Ev [τ]`, and `Ev [•]` descend to the head through the arguments already values. Every prefix of an unsaturated chain is itself an unsaturated chain and a value, so no context finds a redex inside a chain of values, and the step above, at the root of a saturated foreign's chain, is the only one there is.
 
-**A saturated foreign's chain steps before anything further is applied to it.** A chain ends where it is saturated, so in `M.id [Int -> Int] f 0` the chain `M.id [Int -> Int] f` stands in the context `Ev 0` and reduces to `δ_id(f)` first; the result is then applied to `0` by the ordinary rule for application, rather than `0` being absorbed into a call `δ_id(f, 0)`.
+**A saturated foreign's chain steps before anything further is applied to it.** A chain ends where it is saturated, so in `M.id [Int -> Int] f 0` the chain `M.id [Int -> Int] f` stands in the context `Ev 0` and steps first, to the adapter's outcome for `f`; the result is then applied to `0` by the ordinary rule for application, rather than `0` being absorbed into a call of `δ_id` on `f` and `0`.
 
-The rule is also what makes an arity-zero `foreign` work. A declaration such as `foreign clock : IO Time` is saturated by its bare reference, so `M.clock` steps to `δ_clock()` rather than sitting as a term that is neither reducible nor complete.
+The rule is also what makes an arity-zero `foreign` work. A declaration such as `foreign clock : IO Time` is saturated by its bare reference, so `M.clock` steps, its implementation called with no arguments, rather than sitting as a term that is neither reducible nor complete.
 
 A saturated **constructor**'s chain is a value and does not reduce; a saturated **foreign**'s is a redex. The difference is that a constructor has an implementation nowhere but in its own structure.
 
@@ -706,7 +772,7 @@ let x : Int = (openEff [( E )] f) 0 in perform E.op Prim.Unit
 
 The whole term is typed at ambient row `( E )`, and the rule for `let` requires both its parts to share that row. Rewriting the bound expression to `f 0` would give it row `()`, which no longer matches the body, and no common ambient row exists. Widening the type of the function value is therefore replaced by widening the **ambient row of the resulting computation**, which `openEffC` records. Once that computation reaches a value, the coercion is discharged: a value is pure, so `openEffC [ρ] v → v` keeps both the type and the row.
 
-**Foreign and constructor application** is given by the rule for chains above. A foreign's chain reduces once it is saturated, and `δ_f` yields a value or a fault.
+**Foreign and constructor application** is given by the rule for chains above. A foreign's chain reduces once it is saturated, and its adapter yields a value or a fault.
 
 **Recursive bindings** allocate by-need cells, held in a store `N` the configuration carries alongside the term. A cell is `Suspended e`, its initializer not yet run; `Evaluating`, the initializer running; or `Ready v`. Every other rule leaves `N` as it is and is written without it. `N` is the reduction's own state and holds nothing a `δ_f` writes, so what [An observational effect is outside what this relation models](#an-observational-effect-is-outside-what-this-relation-models) says is untouched.
 
@@ -993,14 +1059,14 @@ Its evaluation contexts `Eᵤ` are the erasures of the typed ones: the grammar o
 ```text
   (λ x. u) w            →ᵤ  u[x := w]
   M.x                   →ᵤ  u                    where ( M.x = u ) ∈ ⌊G⌋
-  M.f w̄                 →ᵤ  δ_f(w̄)              when |w̄| = arity(M.f), and under the
-                                                 premises the typed rule asks
+  M.f w̄                 →ᵤ  δᵤ_f(w̄)             when |w̄| = arity(M.f), G is
+                                                 Core-modelled, and Pᶜ_f(w̄)
   match θ (switchKey o { k_i -> dt_i } [default -> dt_0])
                         →ᵤ  match θ dt_i        when θ(o) = inject k_i w
                         →ᵤ  match θ dt_0        otherwise, if a default is present
 ```
 
-and with no rule for a type application, a constraint application, `openEff`, or `openEffC`, which an erased term does not hold. A `full` clause's continuation is `λ y. handle Eᵤ_k[y] with h`, a cell is reached by its position, and a `letrec`, a `force`, and a `fill` thread `⌊N⌋` as the typed rules thread `N`. `⌊G⌋` holds the erasure of each definition, and each foreign's implementation as a backend runs it, on erased values: **an implementation is handed erased values, so no annotation reaches it**, and `⌊δ_f(v̄)⌋ = δ_f(⌊v̄⌋)`, the same fault where it faults.
+and with no rule for a type application, a constraint application, `openEff`, or `openEffC`, which an erased term does not hold. A `full` clause's continuation is `λ y. handle Eᵤ_k[y] with h`, a cell is reached by its position, and a `letrec`, a `force`, and a `fill` thread `⌊N⌋` as the typed rules thread `N`. `⌊G⌋` holds the erasure of each definition, and each foreign's erased function `δᵤ_f`, the implementation as a backend runs it: **an implementation is handed erased values, so no instance and no annotation reaches it.** A typed foreign step and an erased one meet at erasure coherence, clause (d) of [the correspondence contract](#an-abi-precondition-is-where-condition-3-stops-asking): `eraseOutcome(δᵀ_f(ξ, v̄)) = δᵤ_f(⌊v̄⌋)`, the erasure of the same value or the same fault.
 
 **Each typed step is zero or one erased steps, and which is fixed by its rule.**
 
@@ -1042,5 +1108,5 @@ The claim is **not** that operations are never performed. A term may be well typ
 
 This is the property the whole design rests on, and it is the one that testing is least likely to reveal. A violation does not crash: it produces a program that silently performs effects it declared it would not. D7 places effect rows on arrows, D20 keeps `IO` out of the effect world, and D23 forbids effectful `foreign` arrows, all in service of this single statement. Note that D23 alone is not sufficient: a conforming `δ_f`, condition (3) of `Σ ⊨ G`, is equally required, since `handle` intercepts only `perform` while a `foreign` application calls its implementation directly.
 
-**Erasure.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ N : Γ_N`, `·; · ⊢ e : τ ! ρ` under `Γ_R` and `Γ_N`, and `G ⊢ N; e → N2; e2`, then `⌊N⌋; ⌊e⌋` reduces to `⌊N2⌋; ⌊e2⌋` in zero or one steps of `→ᵤ` ([The erased relation](#the-erased-relation)), zero exactly where the step applies a `Λ` to its argument or moves or discharges a coercion. If `G ⊢ N; e → N2; fault φ` then `⌊N⌋; ⌊e⌋` reduces to `⌊N2⌋; fault φ`, the same fault; an erased evaluator and a typed one fail identically. The value restriction is what makes this hold: the body of a type or constraint abstraction is already a value, so erasing the abstraction cannot move evaluation to a different point. `Σ ok` does the same for a call: no type or constraint argument stands after a foreign's last value, so a chain is saturated after erasure exactly where it was before, and the foreign is called at the same point.
+**Erasure.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ N : Γ_N`, `·; · ⊢ e : τ ! ρ` under `Γ_R` and `Γ_N`, and `G ⊢ N; e → N2; e2`, then `⌊N⌋; ⌊e⌋` reduces to `⌊N2⌋; ⌊e2⌋` in zero or one steps of `→ᵤ` ([The erased relation](#the-erased-relation)), zero exactly where the step applies a `Λ` to its argument or moves or discharges a coercion. If `G ⊢ N; e → N2; fault φ` then `⌊N⌋; ⌊e⌋` reduces to `⌊N2⌋; fault φ`, the same fault; an erased evaluator and a typed one fail identically. A saturated foreign's step erases to one erased foreign step, giving the erasure of the same value or the same fault, by erasure coherence, which the correspondence contract states rather than this property deriving it. The value restriction is what makes this hold: the body of a type or constraint abstraction is already a value, so erasing the abstraction cannot move evaluation to a different point. `Σ ok` does the same for a call: no type or constraint argument stands after a foreign's last value, so a chain is saturated after erasure exactly where it was before, and the foreign is called at the same point.
 **A continuation applied twice is covered like any other term.** The reduction rule for a `full` clause places no bound on applications of `k_i`, so a term applying it twice is well typed and has a defined reduction sequence, and the properties above hold of it. A backend that does not reproduce that sequence does not conform (D18).

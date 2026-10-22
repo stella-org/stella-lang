@@ -12,7 +12,7 @@ import Prim as P
 import Stella.Compiler.Interface (noImports)
 import Stella.Compiler.MiddleEnd (Rep(..), TranslateError, translate)
 import Stella.Compiler.MiddleEnd as M
-import Stella.Compiler.TypedCore (Constraint(..), Decl(..), Expr(..), Ident(..), JoinName(..), Kind(..), Literal(..), Module, ModuleName(..), Qualified(..), RowEntry(..), RowKey(..), Symbol(..), TyVar(..), Type(..), declareAnnotated, intTy, monoScheme, primSignature, pureFn, recordTy, variantTy)
+import Stella.Compiler.TypedCore (Constraint(..), Decl(..), Expr(..), Ident(..), JoinName(..), Kind(..), Literal(..), Module, ModuleName(..), Qualified(..), RowElemKind(..), RowEntry(..), RowKey(..), Symbol(..), TyVar(..), Type(..), declareAnnotated, intTy, monoScheme, primSignature, pureFn, recordTy, variantTy)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
@@ -177,6 +177,38 @@ debugModule = moduleOf
       }
   ]
 
+-- The foreign instance fixture ------------------------------------------------
+
+-- | `foreign Main.pick : forall (r : Row Type). (name ∉ r) => Int -> forall a. a -> a`
+-- | and `nonrec Main.picked : Int = Main.pick [()] [•] 1 [Int] 2`.
+-- |
+-- | The chain carries a type and a constraint argument before its first value
+-- | and a type argument between its values; only the values reach the call.
+foreignModule :: Module P.Int
+foreignModule = moduleOf
+  [ DeclForeign 1
+      { name: Ident "pick"
+      , scheme:
+          monoScheme
+            ( TForall r (KRow RowType)
+                (TConstrained (Lacks nameKey (TVar r)) (pureFn int (TForall a KType (pureFn (TVar a) (TVar a)))))
+            )
+      , attributes: []
+      }
+  , DeclNonRec 2
+      { name: Ident "picked"
+      , scheme: monoScheme int
+      , value:
+          App 0
+            (TyApp 0 (App 0 (ConstraintApp 0 (TyApp 0 (Global 0 (value "pick") []) TRowEmpty)) (Lit 0 (LitInt 1))) int)
+            (Lit 0 (LitInt 2))
+      , attributes: []
+      }
+  ]
+  where
+  r = TyVar "r"
+  a = TyVar "a"
+
 -- The weaken fixture ----------------------------------------------------------
 
 bKey :: RowKey
@@ -299,6 +331,20 @@ spec = describe "Stella.Compiler.MiddleEnd.Translate » cases a plausible transl
                 )
             )
         )
+
+  describe "a polymorphic foreign's chain" do
+    it "passes the value arguments alone, the instance staying behind" do
+      -- the instance is what the typed semantics hands a foreign's adapter, and
+      -- erasure removes it: the implementation is called with the two values
+      let
+        calls = do
+          result <- lower foreignModule
+          Right (Array.filter isForeignCall (map _.body result.module.functions))
+        isForeignCall = case _ of
+          M.ETail (M.CForeign _ _) -> true
+          _ -> false
+      calls `shouldEqual` Right
+        [ M.ETail (M.CForeign (value "pick") [ M.ALit (LitInt 1), M.ALit (LitInt 2) ]) ]
 
   describe "the debug table" do
 
