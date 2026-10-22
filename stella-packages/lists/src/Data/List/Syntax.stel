@@ -3,7 +3,8 @@
 --
 -- What it gives is `Cons (e) (Cons (…) Nil)`. The constructors are not
 -- qualified: they are resolved where the call stands, so a module calling `ls`
--- imports `Data.List (List(..))` as well as the macro.
+-- imports `Data.List (List(..))` as well as the macro, which `Data.List`
+-- re-exports.
 module Data.List.Syntax (macro ls) where
 
 import Stella.Syntax as S

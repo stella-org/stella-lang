@@ -1,4 +1,7 @@
 -- Lists: a list is empty, or an element before a list.
+--
+-- `ls`, the macro writing a list, is `Data.List.Syntax`'s, re-exported here, so
+-- that a module importing `List(..)` and `ls` from here has both.
 module Data.List
   ( List(..)
   , append
@@ -7,9 +10,11 @@ module Data.List
   , foldl
   , reverse
   , length
+  , module Syntax
   ) where
 
 import Base.Int as Int
+import Data.List.Syntax (macro ls) as Syntax
 
 data List a = Nil | Cons a (List a)
 
