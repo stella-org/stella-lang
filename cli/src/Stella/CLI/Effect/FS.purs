@@ -22,6 +22,7 @@ module Stella.CLI.Effect.FS
   , remove
   , glob
   , isAbsolute
+  , resolve
   ) where
 
 import Prelude
@@ -58,6 +59,9 @@ data FileSystem a
   -- | Whether a path names a file from the root of the file system, by the
   -- | host's own rule.
   | IsAbsolute P.String (P.Boolean -> a)
+  -- | Resolve to absolute path which does not contain `.` or  `..`.
+  -- | Relative path is resolved against the host's working directory.
+  | Resolve P.String (P.String -> a)
 
 derive instance Functor FileSystem
 
@@ -93,3 +97,6 @@ glob root patterns = Run.lift _fs (Glob root patterns identity)
 
 isAbsolute :: forall r. P.String -> Run (FS + r) P.Boolean
 isAbsolute path = Run.lift _fs (IsAbsolute path identity)
+
+resolve :: forall r. P.String -> Run (FS + r) P.String
+resolve path = Run.lift _fs (Resolve path identity)

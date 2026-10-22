@@ -95,6 +95,7 @@ inMemory files faults = case _ of
   MakeDirectory _ reply -> pure (reply (Right unit))
   Remove path reply -> reply (Right unit) <$ Run.liftEffect (Ref.modify_ (Map.delete path) files)
   IsAbsolute path reply -> pure (reply (String.take 1 path == "/"))
+  Resolve path reply -> pure (reply path)
   Glob root _ reply -> Run.liftEffect (Ref.read files) <#> \fs ->
     reply (Right (Array.sort (Array.mapMaybe (fromRoot root) (Array.filter (contains (Pattern ".stel")) (Array.fromFoldable (Map.keys fs))))))
   where

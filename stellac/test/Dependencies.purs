@@ -93,6 +93,7 @@ reading files p = Run.extract (FS.interpret handler p)
     WriteText _ _ reply -> pure (reply (Left "read only"))
     MakeDirectory _ reply -> pure (reply (Left "read only"))
     Remove _ reply -> pure (reply (Left "read only"))
+    Resolve path reply -> pure (reply path)
     Glob _ _ reply -> pure (reply (Right []))
 
 bytesOf :: ModuleInterface -> File
