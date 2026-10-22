@@ -227,7 +227,7 @@ data ResolveReason
   -- | A name bound twice by one group of binders.
   | BoundTwice String
   -- | A name standing for an effect anywhere but at the head of an effect
-  -- | application in an effect row or a capability signature.
+  -- | application in an effect row or on either side of `~>`.
   | EffectNotType String
   -- | An element of an effect row, or the source or a target of `~>`, that is
   -- | not an effect applied to its arguments.
@@ -240,11 +240,10 @@ data ResolveReason
   | RowItemMisplaced
   -- | `{{ … }}` off the spine of a signature.
   | SynthesizedMisplaced
-  -- | `E ~> ρ` anywhere but at the end of the quantifiers of a handler
-  -- | declaration's signature.
-  | CapabilityMisplaced
   -- | A target of `~>` that is not an effect applied to its arguments.
   | CapabilityTargetMalformed
+  -- | An effect `~>` writes twice among its source and its targets.
+  | CapabilityEffectTwice String
   -- | A name in a pattern that no constructor in scope stands for.
   | UnknownConstructor String
   -- | A name in a pattern that stands for a value other than a constructor.
@@ -424,7 +423,7 @@ printResolveReason = case _ of
     "`" <> a <> "` and `" <> b <> "` have one precedence and cannot be chained; add parentheses"
   KindMalformed -> "A kind is made of `Type`, `Effect`, `Row Type`, `Row Effect`, kind variables, and arrows"
   BoundTwice n -> "`" <> n <> "` is bound twice here"
-  EffectNotType n -> "`" <> n <> "` is an effect, which stands only at the head of an effect application, in an effect row or a capability signature"
+  EffectNotType n -> "`" <> n <> "` is an effect, which stands only at the head of an effect application, in an effect row or on either side of `~>`"
   EffectExpected -> "An effect applied to its arguments is expected here"
   SynonymAsEffect n ->
     "`" <> n <> "` is a type synonym, and an element of an effect row is one effect applied to its arguments; where `" <> n <> "` stands for a row of effects, write `/ " <> n <> "` for the row itself, or `..." <> n <> "` to bring its effects into another row"
@@ -433,8 +432,9 @@ printResolveReason = case _ of
   RowItemMisplaced -> "This item cannot stand in a row of this bracket"
   SynthesizedMisplaced ->
     "A synthesized parameter stands on the spine of a signature, before any ordinary parameter"
-  CapabilityMisplaced -> "`~>` stands only as the signature of a handler declaration, under its quantifiers"
   CapabilityTargetMalformed -> "What `~>` translates into is a list of effects, such as `( Console )` or `()`"
+  CapabilityEffectTwice e ->
+    "The effect `" <> e <> "` is written twice here; `~>` handles one effect, and translates it into effects other than it and than one another"
   UnknownConstructor n -> "There is no constructor `" <> n <> "` in scope"
   NotAConstructor n -> "`" <> n <> "` is not a constructor"
   ConstructorArity n fields written ->

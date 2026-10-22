@@ -35,10 +35,11 @@
 -- | arguments, and the arguments beyond them are applied to what it stands for.
 -- |
 -- | **This version reads a subset of types**: variables, constructors,
--- | applications, arrows, `forall`, kind annotations, tuples, rows and the rows
--- | they spread, where a spread row is read as the empty row, elements over a
--- | row, unions, and row variables, the type synonyms the imports declare, and
--- | type operators naming a type constructor or one of those synonyms.
+-- | applications, arrows, `forall`, `~>`, kind annotations, tuples, rows and
+-- | the rows they spread, where a spread row is read as the empty row, elements
+-- | over a row, unions, and row variables, the type synonyms the imports
+-- | declare, and type operators naming a type constructor or one of those
+-- | synonyms.
 -- | Anything else is reported as outside it, and stands meanwhile as a fresh
 -- | metavariable, so what surrounds it is still read.
 module Stella.Compiler.Elaborate.Surface.Type
@@ -543,6 +544,7 @@ readType scope t = case t of
       , holes: body'.holes
       , wildcards: body'.wildcards
       }
+  TypeCapability o source targets -> capability scope o source targets
   TypeKinded _ inner k -> do
     kind <- readKind k
     case kind of
@@ -846,6 +848,34 @@ effectApplication scope application = do
     , wildcards: []
     }
 
+-- | `E ~> ( t̄ )`, read as its expansion,
+-- | `forall (e : Row Effect). C̄ => forall (a : Type). (Unit -{( E, t̄ | e )}-> a) -{( t̄ | e )}-> a`:
+-- | the thunk performs the source and the targets beside the residual row
+-- | `e`, the handler the targets beside it, and the answer is the same on both
+-- | sides. `C̄` is each effect's absence from `e`, standing under the binder of
+-- | `e` as every row's atoms stand under the binder they are about.
+-- |
+-- | **`e` and `a` are fresh at each `~>`**, named apart from every name
+-- | source can write and from the type variables in scope, so two `~>` of one
+-- | type share neither. Each effect's arguments are read once, and what their
+-- | rows require of the variables around is left to their binders.
+capability :: Scope -> Surface.Origin -> EffectApplication -> Array EffectApplication -> Elab Read
+capability scope origin source targets = do
+  let
+    written = Array.cons source targets
+    taken = Set.union (Map.keys scope.tyVars) (foldMap (foldMap writtenTyVars <<< _.arguments) written)
+  e <- freshBinderName taken "e"
+  a <- freshBinderName (Set.insert e taken) "a"
+  read <- traverse (effectApplication scope) written
+  let
+    entries = Array.zipWith (\application r -> XRowEffectEntry application.effect r.arguments) written read
+    thunk = xFunction (XCon unitTy []) (foldr XRowExtend (XVar e) entries) (XVar a)
+    handler = xFunction thunk (foldr XRowExtend (XVar e) (Array.drop 1 entries)) (XVar a)
+    absent = map (\entry -> { origin, atom: LacksAtom (xRowEntryKey entry) e }) entries
+    parts = joined (map _.read read) handler XKType
+    taken' = quantify [ { var: e, kind: XKRow RowEffect }, { var: a, kind: XKType } ] (parts.implied <> absent) handler
+  pure parts { type = taken'.type, implied = taken'.rest }
+
 -- | A kind with the kind variables given replaced.
 instantiateKindVars :: Map KindVar XKind -> XKind -> XKind
 instantiateKindVars by = case _ of
@@ -988,6 +1018,7 @@ typeParts = case _ of
         EffectSpread _ t -> Array.fromFoldable t
     )
     items
+  TypeCapability _ source targets -> Array.concatMap _.arguments (Array.cons source targets)
   TypeSynthesized _ _ t _ _ -> [ t ]
   _ -> []
 

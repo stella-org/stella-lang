@@ -109,6 +109,8 @@ A name standing for two macros is ambiguous where it is called. A name the modul
 
 **A row written in a type holds each key once**, which is what keeps a row sharp before any spread joins it ([Rows](../03-Typed-Core/02-Rows.md)). A variant's row writes each tag once and each label once, and an effect row each label once and each effect once unlabelled: an unlabelled element's key is its effect, so `{| State Int, State String |}` holds `State` twice however the name is spelt or qualified, and a second instance of an effect is written with a label, `{| State Int, s :: State String |}`. Each key written after one equal to it is an error, reported where the later item stands; what a spread brings is no key written, and whether it repeats one is decided where the row is elaborated.
 
+**`E ~> ( t̄ )` writes each effect once**, among its source and its targets alike, since its expansion holds them all in one row ([Effect Handlers](02-Effect-Handlers.md#the-type-of-a-handler)): `State Int ~> ( State String )` and `Log ~> ( Log )` are errors, reported where the later effect stands, and that target is dropped. A source or a target is an effect applied to its arguments, written directly; a type synonym is none, and no label is written there.
+
 ### Macro declarations
 
 **A top-level value declaration carrying `@[macro]` declares a macro.** Its name enters the macro namespace of the modules importing it, and no value namespace: no source names it as a value, the declaring module included. It is compiled as a global like any other, which is how an expansion runs it, and what type it must have is fixed with macro expansion.

@@ -348,10 +348,10 @@ spec = describe "Stella.Compiler.Resolve.Type" do
         r.result `shouldEqual` "[] A.E ~> A.Both Prim.Int Prim.Int Prim.String"
 
     it "read each quantifier in front of `~>` as binding over the rest, all of them in scope over the handler" do
-      resolving [ "handler h :: forall s. (forall (t :: Type). State s ~> ( Both s t, State u )) where", clause ] handler \r -> do
-        r.result `shouldEqual` "[u#0] forall s#1. forall (t#2 :: Type). A.State s#1 ~> A.Both s#1 t#2, A.State u#0"
+      resolving [ "handler h :: forall s. (forall (t :: Type). State s ~> ( Both t u, E )) where", clause ] handler \r -> do
+        r.result `shouldEqual` "[u#0] forall s#1. forall (t#2 :: Type). A.State s#1 ~> A.Both t#2 u#0, A.E"
         r.reasons `shouldEqual` []
-      resolving [ "handler h :: forall s. (forall (t :: Type). State s ~> ( Both s t, State u )) where", clause ]
+      resolving [ "handler h :: forall s. (forall (t :: Type). State s ~> ( Both t u, E )) where", clause ]
         (handlerWith (renderVars <<< handlerScope))
         \r -> r.result `shouldEqual` "u#0 s#1 t#2"
       resolving [ "handler h :: forall s s. State s ~> () where", clause ] handler \r -> do
@@ -370,10 +370,37 @@ spec = describe "Stella.Compiler.Resolve.Type" do
         r.result `shouldEqual` "[] A.E ~> "
         r.reasons `shouldEqual` [ CapabilityTargetMalformed ]
 
-    it "read any other type as written in full, and `~>` nowhere else" do
+    it "report an effect written twice among the source and the targets, where it is written again" do
+      resolving [ "handler h :: State Int ~> ( E, State String ) where", clause ] handler \r -> do
+        r.result `shouldEqual` "[] A.State Prim.Int ~> A.E"
+        r.reasons `shouldEqual` [ CapabilityEffectTwice "State" ]
+
+    it "read any other type as written in full" do
       resolving [ "handler h :: (Unit -> a / {| E |}) -> a where", clause ] handler \r ->
         r.result `shouldEqual` "[a#0] ((Prim.Unit -> a#0 / {| A.E |}) -> a#0)"
-      shows [ "f :: Int -> (E ~> ())" ] "[] (Prim.Int -> !)" [ CapabilityMisplaced ]
+
+  describe "`~>`" do
+    it "stands wherever a type does, its source and its targets in the order written" do
+      shows [ "f :: (State s ~> ( E, Both s Int )) -> Int -> E ~> ()" ]
+        "[s#0] ((A.State s#0 ~> (A.E, A.Both s#0 Prim.Int)) -> (Prim.Int -> (A.E ~> ())))"
+        []
+      shows [ "f :: { h :: E ~> ( State Int ) }" ] "[] { h :: (A.E ~> (A.State Prim.Int)) }" []
+      annotation [ "f :: (Int & Int) ~> ( E )" ] \r -> do
+        r.result `shouldEqual` "(A.Both Prim.Int Prim.Int ~> (A.E))"
+        r.reasons `shouldEqual` []
+
+    it "report a source or a target that is no effect written directly" do
+      shows [ "f :: Int -> (Int ~> ( E ))" ] "[] (Prim.Int -> !)" [ EffectExpected ]
+      shows [ "f :: S ~> ()" ] "[] !" [ SynonymAtCapability "S" ]
+      shows [ "f :: E ~> ( S )" ] "[] (A.E ~> ())" [ SynonymAtCapability "S" ]
+      shows [ "f :: E ~> E" ] "[] (A.E ~> ())" [ CapabilityTargetMalformed ]
+
+    it "report an effect written twice, where it is written again" do
+      shows [ "f :: State Int ~> ( State String )" ] "[] (A.State Prim.Int ~> ())" [ CapabilityEffectTwice "State" ]
+      shows [ "f :: E ~> ( E )" ] "[] (A.E ~> ())" [ CapabilityEffectTwice "E" ]
+      shows [ "f :: E ~> ( State Int, Both Int Int, State Int )" ]
+        "[] (A.E ~> (A.State Prim.Int, A.Both Prim.Int Prim.Int))"
+        [ CapabilityEffectTwice "State" ]
 
 renderVar :: TypeVar -> String
 renderVar (TypeVar v) = case v.name, v.id of
@@ -445,6 +472,8 @@ renderType = case _ of
   TypeRecord _ items -> "{ " <> joinWith ", " (map record items) <> " }"
   TypeVariant _ items -> "[ " <> joinWith ", " (map variant items) <> " ]"
   TypeEffectRow _ items -> "{| " <> joinWith ", " (map effect items) <> " |}"
+  TypeCapability _ source targets ->
+    "(" <> renderApplication source <> " ~> (" <> joinWith ", " (map renderApplication targets) <> "))"
   TypeSynthesized _ n t _ f ->
     "{{" <> maybe "_" (\(Ident i) -> i) n <> " :: " <> renderType t <> " by " <> qualifiedIdent f <> "}}"
   TypeInvalid _ -> "!"

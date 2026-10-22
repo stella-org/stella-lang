@@ -386,11 +386,11 @@ performs `LiftIO` in its place, carrying the `IO` value the native leaf built.
 
 ```text
 Js.Effect.Console.lowerConsole
-  : forall (e : Row Effect). forall (a : Type).
-    Console ∉ e => LiftIO ∉ e =>
+  : forall (e : Row Effect). Console ∉ e => LiftIO ∉ e =>
+    forall (a : Type).
     ( Unit -{ ( Console, LiftIO | e ) }-> a ) -{ ( LiftIO | e ) }-> a
-  = Λ (e : Row Effect). Λ (a : Type).
-      Λ (_ : Console ∉ e). Λ (_ : LiftIO ∉ e).
+  = Λ (e : Row Effect). Λ (_ : Console ∉ e). Λ (_ : LiftIO ∉ e).
+      Λ (a : Type).
         λ (thunk : Unit -{ ( Console, LiftIO | e ) }-> a).
           handle ( thunk Prim.Unit ) with
             { handles Console

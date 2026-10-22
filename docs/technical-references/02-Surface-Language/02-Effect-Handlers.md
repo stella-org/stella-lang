@@ -17,11 +17,11 @@ It desugars to a value declaration whose right-hand side is a `handle` under a t
 
 ```text
 Js.Effect.Console.runConsole
-  : forall (e : Row Effect). forall (a : Type).
-    Console ∉ e => LiftIO ∉ e =>
+  : forall (e : Row Effect). Console ∉ e => LiftIO ∉ e =>
+    forall (a : Type).
     ( Unit -{ ( Console, LiftIO | e ) }-> a ) -{ ( LiftIO | e ) }-> a
-  = Λ (e : Row Effect). Λ (a : Type).
-      Λ (_ : Console ∉ e). Λ (_ : LiftIO ∉ e).
+  = Λ (e : Row Effect). Λ (_ : Console ∉ e). Λ (_ : LiftIO ∉ e).
+      Λ (a : Type).
         λ (thunk : Unit -{ ( Console, LiftIO | e ) }-> a).
           handle ( thunk Prim.Unit ) with
             { handles Console
@@ -34,21 +34,55 @@ Js.Effect.Console.runConsole
 
 `handler` is a declaration form and not a new kind of entity. The name it binds is an ordinary global, exported by an ordinary export list, applied at an ordinary call site.
 
-### `~>` is a shorthand for one shape
+### The type of a handler
 
-`E ~> ρ` reads "handles `E`, performs `ρ`", and abbreviates the shape every capability translation takes: effect-polymorphic in a residual row, and leaving the answer type alone.
+`E ~> ( t̄ )` reads "handles `E`, performs `t̄`", and is the type every capability translation has: effect-polymorphic in a residual row, and leaving the answer type alone. It is a derived notation of the surface, read as its expansion wherever it is written; Core has no handler type.
 
 ```text
-handler h :: E ~> ( t1, …, tn ) where …
+E ~> ( t1, …, tn )
 
-  ⟹  h : forall (e : Row Effect). forall (a : Type).
-           E ∉ e => t1 ∉ e => … => tn ∉ e =>
-           ( Unit -{ ( E, t1, …, tn | e ) }-> a ) -{ ( t1, …, tn | e ) }-> a
+  ≝  forall (e : Row Effect). C̄ => forall (a : Type).
+       ( Unit -{ ( E, t1, …, tn | e ) }-> a ) -{ ( t1, …, tn | e ) }-> a
+
+  C̄ = E ∉ e, t1 ∉ e, …, tn ∉ e, normalized, under the binder of e
 ```
 
-The left of `~>` is **one element**, because a `handle` names one key. The right is a **row fragment**, which may hold several elements or none; the empty target is written `()`.
+The left of `~>` is **one element**, because a `handle` names one key. The right is a **row fragment**, which may hold several elements or none; the empty target is written `()`. **Each effect is written once** among the source and the targets, their keys being their effects: `State Int ~> ( State String )` would hold `State` twice in the thunk's row ([Name Resolution](06-Name-Resolution.md)).
 
-**The shape is quantified as a signature is.** A type variable it mentions that nothing binds is quantified implicitly, and a `forall` may stand in front of it, to give a variable its kind: `forall (s :: Type). State s ~> ()`. Its variables are in scope in the handler's parameters and body ([Name Resolution](06-Name-Resolution.md)).
+- **`e` and `a` are fresh at each `~>`**, named apart from the type variables in scope and from every name source can write, so two `~>` of one type share neither, and nothing can mention them.
+- **`C̄` stands directly under `e`'s binder, ahead of `a`'s**, as every row's atoms stand under the binder they are about ([Elaboration](01-Elaboration.md#a-signatures-type)), each once and in one order, so `Console ~> ( LiftIO, FS )` and `Console ~> ( FS, LiftIO )` are one type.
+- **`e` is one variable, on both sides**: what the handler passes through untouched, holding neither the source nor a target. The answer `a` is the same on both sides, so a handler that changes it writes [the general form](#the-general-form).
+
+**`~>` stands wherever a type does**: the argument or the result of an arrow, a field of a record or of a data type, a type synonym's body, an annotation, and a signature, a local one among them. Where it stands as an argument, its quantifiers stand there, and the type is of rank 2.
+
+```stella
+applyHandler :: (Console ~> ( LiftIO )) -> (Unit -> Int / {| Console |}) -> Int / {| LiftIO |}
+applyHandler h work = h work
+
+type Lowering = Fuel ~> ()
+mkLimit :: Int -> Lowering            -- one scheme with Int -> Fuel ~> ()
+```
+
+**A handler is passed as any higher-rank argument is**: the quantifiers and the atoms expected are opened where the argument stands, and the argument is elaborated under them. A handler declared at the top level, or bound as a parameter, passes as it is, `applyHandler runConsole w`, as a reference that [η-expansion](01-Elaboration.md#η-expansion) may move under them. An application does not: `applyHandler (runWithLimit 1000) w` puts `runWithLimit 1000` under the `Λ` the opened quantifiers make, it is no form that may move there, and it is refused; `applyHandler (\t -> runWithLimit 1000 t) w` is accepted.
+
+**A handler is instantiated where it is applied**, as every function is whose type is a `forall` or a constraint there ([Elaboration](01-Elaboration.md#signatures)): `runWithLimit 1000 work`, `handle work with runWithLimit 1000`, and `r.console work`, a handler read out of a field, each instantiate the expansion where the application stands. Where it is not applied, nothing infers a polymorphic type for it: a local without a signature bound to `runWithLimit 1000` is outside what this version elaborates. A local holding a handler polymorphically is written with its signature, and as a function where its right-hand side is no form that may move:
+
+```stella
+let h :: Fuel ~> ()
+    h t = runWithLimit 1000 t
+in …
+```
+
+**An intermediate target stays a target of a composite.** Composing a handler of `E` into `F` with one of `F` into `G` is `E ~> ( F, G )`: under it, the computation's row is `( E, F, G | e )`, whose `F` the first leaves to the second.
+
+```stella
+compose :: (E ~> ( F )) -> (F ~> ( G )) -> E ~> ( F, G )
+compose h1 h2 thunk = h2 (\_ -> h1 thunk)
+```
+
+`E ~> ( G )` is refused for it, and rightly: nothing says its `e` does not hold `F`, and `h2`, installed around the computation, would then handle the operations of `F` the computation performs itself, which a handler of `E` must leave alone.
+
+**A handler declaration's signature is quantified as a signature is.** A type variable it mentions that nothing binds is quantified implicitly, and a `forall` may stand in front of it, to give a variable its kind: `forall (s :: Type). State s ~> ()`. Its variables are in scope in the handler's parameters and body ([Name Resolution](06-Name-Resolution.md)).
 
 ```stella
 -- effect Verbosity where level :: Unit ->* Int
@@ -144,7 +178,14 @@ A handler declaration may take ordinary value parameters, written before the `::
 handler runWithLimit (limit :: Int) :: Fuel ~> () where …
 ```
 
-They become arguments of the generated function, ahead of the thunk, and require nothing of Core.
+They become arguments of the generated function, ahead of the thunk and of the quantifiers of the expansion, and require nothing of Core.
+
+```text
+runWithLimit : Int -> forall (e : Row Effect). Fuel ∉ e =>
+                 forall (a : Type). ( Unit -{ ( Fuel | e ) }-> a ) -{ e }-> a
+```
+
+`runWithLimit 1000` is at the type past the first arrow, which is instantiated where it is applied ([The type of a handler](#the-type-of-a-handler)).
 
 ## Cells
 
@@ -247,11 +288,11 @@ A handler declaration desugars to a function whose body is the region around its
 
 ```text
 Main.counter
-  : forall (e : Row Effect). forall (a : Type).
-    Counter ∉ e =>
+  : forall (e : Row Effect). Counter ∉ e =>
+    forall (a : Type).
     ( Unit -{ ( Counter | e ) }-> a ) -{ e }-> a
-  = Λ (e : Row Effect). Λ (a : Type).
-      Λ (_ : Counter ∉ e).
+  = Λ (e : Row Effect). Λ (_ : Counter ∉ e).
+      Λ (a : Type).
         λ (thunk : Unit -{ ( Counter | e ) }-> a).
           region [ℓ] ( n : Int ) @ ( 0 ) in
             handle ( ( openEff [( region ℓ )] thunk ) Prim.Unit ) with

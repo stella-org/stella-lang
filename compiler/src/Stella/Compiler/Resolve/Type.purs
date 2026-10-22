@@ -100,7 +100,9 @@ resolveType t = case t of
   CST.TypeArrow a b -> TypeFunction o <$> resolveType a <*> resolveType b <*> pure Nothing
   CST.TypeOperationArrow _ _ _ -> pure (TypeInvalid o)
   CST.TypeEffect _ _ _ -> pure (TypeInvalid o)
-  CST.TypeCapability _ _ -> invalid CapabilityMisplaced
+  CST.TypeCapability source target -> capabilityOf source target <#> case _ of
+    Just c -> TypeCapability o c.source c.targets
+    Nothing -> TypeInvalid o
   CST.TypeForall bs body -> do
     b <- bindTypeVariables bs
     TypeForall o b.binders <$> withTypeVariables b.scope (resolveType body)
@@ -205,12 +207,9 @@ resolveHandlerSignature t = quantify t
       b <- bindTypeVariables bs
       withTypeVariables b.scope (capability (Array.snoc quantifiers b.binders) body)
     CST.TypeParens inner -> capability quantifiers inner
-    CST.TypeCapability source target -> do
-      source' <- effectApplication AtCapability source
-      targets <- capabilityTargets target
-      pure case source' of
-        Just s -> Capability { origin, quantifiers, source: s, targets }
-        Nothing -> General (TypeInvalid origin)
+    CST.TypeCapability source target -> capabilityOf source target <#> case _ of
+      Just c -> Capability { origin, quantifiers, source: c.source, targets: c.targets }
+      Nothing -> General (TypeInvalid origin)
     _ -> pure (General (TypeInvalid origin))
 
 -- | Binds a group of type variables, each with its kind where one is written.
@@ -368,7 +367,9 @@ reportEffectsTwice items = void (foldM step Set.empty items)
       | Set.member application.effect seen -> report range (EffectTwice (effectText application.effect)) $> seen
       | otherwise -> pure (Set.insert application.effect seen)
     _ -> pure seen
-  effectText (Qualified _ (EffName n)) = n
+
+effectText :: Qualified EffName -> String
+effectText (Qualified _ (EffName n)) = n
 
 misplaced :: forall a. CST.RowItem -> Resolve (Maybe a)
 misplaced item = report (itemRange item) RowItemMisplaced $> Nothing
@@ -421,13 +422,32 @@ effectApplication position t = case application t of
     CST.TypeParens inner -> application inner
     _ -> { head: x, arguments: [] }
 
--- | What `~>` translates into: `()`, or effects in parentheses.
-capabilityTargets :: CST.Type -> Resolve (Array EffectApplication)
+-- | `E ~> ( t̄ )`, its source and its targets, where its source is an effect
+-- | applied to its arguments. **Each effect stands once** among the source and
+-- | the targets, an effect's key being the effect: one written again is
+-- | reported where it is, and dropped.
+capabilityOf :: CST.Type -> CST.Type -> Resolve (Maybe { source :: EffectApplication, targets :: Array EffectApplication })
+capabilityOf source target = do
+  source' <- effectApplication AtCapability source
+  targets <- capabilityTargets target
+  let seen = maybe Set.empty (Set.singleton <<< _.effect) source'
+  kept <- snd <$> foldM distinct (Tuple seen []) targets
+  pure (source' <#> \s -> { source: s, targets: kept })
+  where
+  distinct (Tuple seen kept) (Tuple range application)
+    | Set.member application.effect seen = report range (CapabilityEffectTwice (effectText application.effect)) $> Tuple seen kept
+    | otherwise = pure (Tuple (Set.insert application.effect seen) (Array.snoc kept application))
+
+-- | What `~>` translates into, each target with where it is written: `()`, or
+-- | effects in parentheses.
+capabilityTargets :: CST.Type -> Resolve (Array (Tuple CST.SourceRange EffectApplication))
 capabilityTargets t = case t of
   CST.TypeUnit _ -> pure []
-  CST.TypeParens inner -> Array.fromFoldable <$> effectApplication AtCapability inner
-  CST.TypeTuple ts -> Array.catMaybes <$> traverse (effectApplication AtCapability) ts
+  CST.TypeParens inner -> Array.fromFoldable <$> target inner
+  CST.TypeTuple ts -> Array.catMaybes <$> traverse target ts
   _ -> report (typeRange t) CapabilityTargetMalformed $> []
+  where
+  target x = map (Tuple (typeRange x)) <$> effectApplication AtCapability x
 
 -- | The variables a type mentions that neither a `forall` inside it nor the
 -- | scope binds, each once, in the order they first appear.

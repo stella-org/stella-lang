@@ -5,11 +5,10 @@
 -- | variable by the binding it refers to. Parentheses are gone, the range of a
 -- | node covering what they enclosed.
 -- |
--- | Three forms are confined to one position each, and so are not types of
--- | their own here: a computation type `τ / ρ` stands only at the end of the
--- | spine of a computation declaration's signature (`ComputationType`), `->*` only in an
--- | operation's signature (`OperationSignature`), and `E ~> ρ` only at the end
--- | of the quantifiers of a handler's signature (`HandlerSignature`).
+-- | Two forms are confined to one position each, and so are not types of their
+-- | own here: a computation type `τ / ρ` stands only at the end of the spine of
+-- | a computation declaration's signature (`ComputationType`), and `->*` only in
+-- | an operation's signature (`OperationSignature`).
 module Stella.Compiler.Surface.Type
   ( Kind(..)
   , kindOrigin
@@ -91,6 +90,10 @@ data Type
   | TypeRecord Origin (Array RecordRowItem)
   | TypeVariant Origin (Array VariantRowItem)
   | TypeEffectRow Origin (Array EffectRowItem)
+  -- | `E ~> ( t̄ )`: a handler of the effect `E` translating it into the　effects `t̄`.
+  -- | this is a *derived notion*: it is expanded into the type of the handler as a
+  -- | function of its thunk.
+  | TypeCapability Origin EffectApplication (Array EffectApplication)
   -- | `{{ name :: τ by f }}`: a synthesized parameter, which a goal at `τ` that
   -- | the synthesizer `f` fills supplies, with where `f` is written. The name is
   -- | written for the reader and binds nothing.
@@ -115,6 +118,7 @@ typeOrigin = case _ of
   TypeRecord o _ -> o
   TypeVariant o _ -> o
   TypeEffectRow o _ -> o
+  TypeCapability o _ _ -> o
   TypeSynthesized o _ _ _ _ -> o
   TypeInvalid o -> o
 

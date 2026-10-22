@@ -58,13 +58,14 @@ Origin = FromSource range
 
 ## Types
 
-**Three forms of the surface stand in one position each**, and each is a type of its own rather than a form of `Type`, so none can stand elsewhere.
+**Two forms of the surface stand in one position each**, and each is a type of its own rather than a form of `Type`, so neither can stand elsewhere.
 
 | Written | Stands | Held as |
 | --- | --- | --- |
 | `forall ā. C => {{ d :: σ by f }} -> τ / ρ` | at the end of the spine of a computation declaration's signature | `ComputationType`: its spine — quantifiers, constraints, and synthesized parameters (`PrefixSynthesized`) — in the order written, the result, and the row |
 | `forall b̄. σ̄ ->* τ` | as an operation's signature | `OperationSignature`: its own type variables, the arguments, and the type it resumes with (D21) |
-| `forall ā. E ~> ( t̄ )` | as a handler declaration's signature, under its quantifiers | `HandlerSignature`'s `Capability`: the binders of each `forall` in front of `~>`, a group apiece in the order written, then the source and the targets, each an effect application |
+
+**`E ~> ( t̄ )` is a form of `Type`**, `TypeCapability`, standing wherever a type does: it holds its source and its targets, each an effect application, in the order written, and elaboration reads it as its expansion ([Effect Handlers](02-Effect-Handlers.md#the-type-of-a-handler)). A handler declaration's signature written `forall ā. E ~> ( t̄ )` is held apart, as `HandlerSignature`'s `Capability`: the binders of each `forall` in front of `~>`, a group apiece in the order written, then the source and the targets.
 
 **An arrow holds the row `/` puts on it.** `τ1 -> τ2 / ρ` is a `TypeFunction` with the row, and an arrow with none is pure. The arrow after a synthesized parameter is pure and takes no row; a `/` after it is the computation type its spine ends in.
 
@@ -149,7 +150,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | an attribute whose name does not resolve, or whose arguments do not match its declaration; any attribute on a fixity or an attribute declaration; one the compiler reads on a declaration it is not for, or a second use of it on one declaration | the attribute |
 | a keyword parameter an attribute declaration declares a second time | that parameter |
 | `@[elaborationOnly]` on a declaration that is not exactly one the compiler lists | the attribute; the declaration is what it would be without it |
-| an item a row's bracket does not admit; an effect element or instance, or a capability target, that is no effect applied to its arguments, or whose effect does not resolve | that item, or that target |
+| an item a row's bracket does not admit; an effect element or instance, or a capability target, that is no effect applied to its arguments, or whose effect does not resolve; a capability target whose effect the source or an earlier target names | that item, or that target |
 | an operation clause whose operation does not resolve or is not an operation of the effect handled, one with other than a pattern per argument of its operation and its continuation where it keeps one, a second clause for one operation, a second return clause | the clause |
 | a `var` of a handling expression after a group or a handler, or of a handler declaration after a clause | the cell |
 | a group whose effect cannot be determined | the group |
@@ -186,7 +187,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | `TypeForall`, `TypeConstrained` | `TypeForall` and `TypeConstrained`; on the spine of a computation declaration's signature, a `PrefixForall` and a `PrefixConstraint`; in front of `~>`, a `forall` is a group of `Capability`'s quantifiers |
 | `TypeEffect` | at the end of the spine of a computation declaration's signature, the result and the row of its `ComputationType`; after an arrow other than one from a synthesized parameter, the row of that arrow; anywhere else invalid |
 | `TypeOperationArrow` | as an operation's signature, its `OperationSignature`; anywhere else invalid |
-| `TypeCapability` | as a handler declaration's signature, under its `forall`s, `HandlerSignature`'s `Capability`; anywhere else invalid |
+| `TypeCapability` | as a handler declaration's signature, under its `forall`s, `HandlerSignature`'s `Capability`; anywhere else `TypeCapability`. Either way an effect written again among the source and the targets is dropped |
 | `TypeParens`, `TypeUnit` | the type it encloses, and `Prim.Unit` |
 | `TypeDirective` | invalid; no directive of this version stands in a type |
 | `RowItem` | the item of the row its bracket gives; one the bracket does not admit is dropped |

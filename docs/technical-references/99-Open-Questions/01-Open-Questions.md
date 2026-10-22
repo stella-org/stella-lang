@@ -8,28 +8,11 @@ Questions that v0.1 leaves open, with what is already known about each.
 
 This also changes the class of the calculus. Introducing a type-level lambda makes Core System Fω (D1) and brings type-level β-reduction into type equality, so that "equality is syntactic apart from row normalization" no longer holds and both equality and row unification need redesigning.
 
-**Whether to provide annotated predicative rank-n checking.** Core can express `forall` at any rank, and unification does not identify two binders across one: two `forall`s are compared through a correspondence of their binders, and a metavariable whose solution would need the other side's binder is refused rather than guessed at ([Elaboration](../02-Surface-Language/01-Elaboration.md)). Accepting an annotated higher-rank type is therefore a **separate judgement** rather than something unification grows into.
-
-What such a judgement does is standard, and it is bidirectional rather than equational. A `forall` is handled differently in each direction, and the two directions must not be run together.
-
-**An annotated parameter is bound at a polytype and instantiated at each use.**
-
-```purescript
-use :: (forall a. a -> a) -> Pair Int Boolean
-use f = Pair (f 1) (f true)
-```
-
-Checking the lambda against the arrow the annotation gives binds `f` at `forall a. a -> a` rather than at a monotype, and every occurrence of `f` instantiates that scheme afresh: `a := Int` at `f 1`, `a := Boolean` at `f true`, the two independent of each other. Opening `a` as one rigid variable instead would admit neither use, a single rigid `a` being neither `Int` nor `Boolean`.
-
-**An expression checked against an expected `forall` is where a binder is opened rigidly.** `(\x -> x) :: forall a. a -> a` is checked by opening `a` as a fresh rigid variable and checking the body at `a -> a`, so that what is accepted holds for every instantiation rather than for one; metavariables created under the opened binder record it in their scope. Which of the two a given position calls for is what **polarity** decides — a type the context supplies is instantiated, a type the context demands is skolemized — and the relation that puts them together, holding where the type an expression has can serve where the context's type is wanted, is **subsumption**.
-
-Neither direction asks unification to compare two written `forall`s: one instantiates a scheme into metavariables before unifying, the other opens a binder before creating any. So the case the unifier refuses, a metavariable whose scope is one side's binder meeting the other's, arises in neither. Three judgements come apart at that point and are better kept apart than pressed into one: **monotype unification**, **α-equality of polytypes**, and **subsumption with skolemization**.
-
-**How much higher-rank polymorphism to infer.** Little or none, and this is not the same question as the one above. Rank-1 inference is complete without any of it, a scheme being instantiated before unification sees it, so what is at stake is only how much an author may leave unwritten at a higher-rank boundary. The shape to expect is the one PureScript has: an unannotated `let` or `where` is inferred and generalized within rank-1, while polymorphic recursion and the introduction or use of a higher-rank type require a written signature.
+**How much higher-rank polymorphism to infer.** Little or none. A written higher-rank type is checked already: a parameter annotated at a polytype is bound at it and instantiated at each use, an expression checked against an expected `forall` opens it rigidly, and a function whose type is a `forall` where it is applied is instantiated there ([Elaboration](../02-Surface-Language/01-Elaboration.md#signatures)). Rank-1 inference is complete without any more, a scheme being instantiated before unification sees it, so what is at stake is only how much an author may leave unwritten at a higher-rank boundary. The one case standing today is a `forall` an application gives where it is not applied, `let h = runWithLimit 1000`, whose type a metavariable would have to be solved at; it is outside what this version elaborates. The binding is written at a function form under the type, either as a signature, `h :: Fuel ~> (); h t = runWithLimit 1000 t`, or as an annotation of its whole right-hand side, `let h = ((\t -> runWithLimit 1000 t) :: Fuel ~> ())`. The type alone over the application, `h :: Fuel ~> (); h = runWithLimit 1000` or `let h = (runWithLimit 1000 :: Fuel ~> ())`, is refused, the application being no form that may move under the `Λ`s the type opens. The shape to expect is the one PureScript has: polymorphic recursion and the introduction or use of a higher-rank type require a written signature.
 
 Note that this is independent of D3: kinds are rank-1 while types are unrestricted.
 
-**Impredicative polymorphism** is a third question again, and nothing in view asks for it.
+**Impredicative polymorphism** is another question again, and nothing in view asks for it.
 
 **Kind-polymorphic functions.** D3 places no kind quantifier in the type of a value.
 

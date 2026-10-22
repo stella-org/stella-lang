@@ -605,7 +605,19 @@ letBlock scope origin bindings = do
       [] -> infer inner h.body
       params -> infer inner (ExprLambda h.origin params h.body)
     lift (equate (siteAt inner h.origin) { kind: XKType, left: inferred.type, right: h.type })
+    -- a variable without a signature is bound at a scheme only where an
+    -- annotation of its right-hand side writes one, never at one an
+    -- application gives where it is not applied
+    metas <- lift currentMetas
+    unless (annotated h.body) $ for_ h.vars \v -> case substitute metas v.type of
+      XForall _ _ _ -> outside (OutsideSubset h.origin "a polymorphic value bound without a signature")
+      XConstrained _ _ -> outside (OutsideSubset h.origin "a polymorphic value bound without a signature")
+      _ -> pure unit
     { head: h, expr: inferred.expr, bound: _ } <$> matcher inner h
+
+  annotated = case _ of
+    ExprTyped _ _ _ -> true
+    _ -> false
 
   matcher inner h = case h.bound of
     Left p -> Left <$> irrefutable inner h.origin [ { pattern: p.pattern, vars: h.vars } ]
@@ -706,7 +718,7 @@ infer scope expr = case expr of
   ExprLocal o (LocalVar v) -> case lookupVar scope.context v.name of
     Just ty -> do
       metas <- lift currentMetas
-      instantiated o (EVar o v.name) (substitute metas ty)
+      instantiated scope o (EVar o v.name) (substitute metas ty)
     Nothing -> outside (OutsideSubset o "a variable bound outside what this version elaborates")
   ExprValue o name -> global o name
   ExprConstructor o name -> global o name
@@ -836,26 +848,13 @@ infer scope expr = case expr of
             kindsOf = Map.fromFoldable (Array.zip scheme.kindVars kinds)
             ty = substituteKindVars kindsOf scheme.body
           case Map.lookup name scope.surface.synthesizing of
-            Nothing -> instantiated o (EGlobal o name kinds) ty
+            Nothing -> instantiated scope o (EGlobal o name kinds) ty
             Just spine -> synthesized o name (substituteKindVars kindsOf <<< fromCore) spine Map.empty (EGlobal o name kinds) ty
 
   lookupScheme catalog name = case lookupEntry catalog name, Map.lookup name scope.surface.bindings of
     Just entry, _ -> Just entry.scheme
     Nothing, Just (Final scheme) -> Just { kindVars: scheme.kindVars, body: fromCore scheme.body }
     Nothing, _ -> Map.lookup name scope.internal
-
-  instantiated o e = case _ of
-    XForall a k rest -> do
-      m <- lift (instanceAt k)
-      instantiated o (ETyApp o e m) (substituteTyVars (Map.singleton a m) Map.empty rest)
-    XConstrained c rest -> do
-      lift (require (siteAt scope o) c)
-      instantiated o (EConstraintApp o e) rest
-    ty -> pure { expr: e, type: ty }
-
-  instanceAt = case _ of
-    XKRow RowEffect -> freshInstantiationRow scope.context
-    k -> freshTypeMeta scope.context k
 
   -- a global taking a synthesized parameter instantiated along the spine its
   -- interface gives it, which the scheme the catalog holds must be: each
@@ -867,7 +866,7 @@ infer scope expr = case expr of
   -- `(openEff [ρ] (λ (_ : Unit) / (). ?m)) Prim.Unit`
   synthesized o name core spine variables e ty = case spine, ty of
     Forall a _ rest, XForall b k body -> do
-      m <- lift (instanceAt k)
+      m <- lift (instanceAt scope k)
       synthesized o name core rest (Map.insert a m variables) (ETyApp o e m) (substituteTyVars (Map.singleton b m) Map.empty body)
     Constrained _ rest, XConstrained c body -> do
       lift (require (siteAt scope o) c)
@@ -889,6 +888,25 @@ infer scope expr = case expr of
     _, _ -> lift (break (SynthesizedSpineAmiss (AtSource { declaration: scope.declaration, origin: o }) name))
     where
     written = substituteTyVars variables Map.empty <<< core
+
+-- | An expression whose type is a `forall` or a constraint at its root,
+-- | instantiated where it stands, outermost first: each quantifier at a fresh
+-- | metavariable, a row quantifier's an instantiation row, and each constraint
+-- | required there, under a constraint application.
+instantiated :: Scope -> Surface.Origin -> XExpr Surface.Origin -> XType -> Surf { expr :: XExpr Surface.Origin, type :: XType }
+instantiated scope o e = case _ of
+  XForall a k rest -> do
+    m <- lift (instanceAt scope k)
+    instantiated scope o (ETyApp o e m) (substituteTyVars (Map.singleton a m) Map.empty rest)
+  XConstrained c rest -> do
+    lift (require (siteAt scope o) c)
+    instantiated scope o (EConstraintApp o e) rest
+  ty -> pure { expr: e, type: ty }
+
+instanceAt :: Scope -> XKind -> Elab XType
+instanceAt scope = case _ of
+  XKRow RowEffect -> freshInstantiationRow scope.context
+  k -> freshTypeMeta scope.context k
 
 -- | An operation referred to where it is written, its name and its label, and
 -- | the arguments it is applied to from the left, each with the application
@@ -1226,9 +1244,13 @@ tagsOf level metas ty = case substitute metas ty of
 
 -- | A function inferred where it stands, applied to the argument built at the
 -- | type it takes, and fitted there into the row ambient: the function's place,
--- | then the application's.
+-- | then the application's. **A function whose type is a `forall` or a
+-- | constraint is instantiated where it is applied**, as a global is where it
+-- | is referred to: a handler a field holds, or one an application gives.
 applyTo :: Scope -> Surface.Origin -> Surface.Origin -> { expr :: XExpr Surface.Origin, type :: XType } -> (XType -> Surf (XExpr Surface.Origin)) -> Surf { expr :: XExpr Surface.Origin, type :: XType }
-applyTo scope at whole f argument = do
+applyTo scope at whole function argument = do
+  metas <- lift currentMetas
+  f <- instantiated scope at function.expr (substitute metas function.type)
   parts <- arrow scope at f.type
   x <- argument parts.argument
   fit <- lift (placeFit (siteAt scope at) Wrapping parts.row scope.ambient)
@@ -1474,8 +1496,8 @@ pattern scope binder ty = case binder of
     p <- pattern scope inner ty
     pure { pattern: Match.PAs v.name <<< p.pattern, vars: Array.cons { name: v.name, type: ty } p.vars }
   BinderConstructor o name args -> do
-    instantiated <- infer scope (ExprConstructor o name)
-    fields <- fieldsOf o (Array.length args) instantiated.type
+    constructor <- infer scope (ExprConstructor o name)
+    fields <- fieldsOf o (Array.length args) constructor.type
     lift (equate (siteAt scope o) { kind: XKType, left: fields.result, right: ty })
     parts <- traverse (\(Tuple b t) -> pattern scope b t) (Array.zip args fields.arguments)
     pure { pattern: \metas -> Match.PCtor name (map (\p -> p.pattern metas) parts), vars: Array.concatMap _.vars parts }
