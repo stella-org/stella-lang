@@ -75,8 +75,13 @@ and a specifier in it is resolved against the fixture's directory.
 A fixture is built from Stella source by the compiler: the modules under
 `fixtures/source/<fixture>/`, the shared ones under `fixtures/source/common-lib/`
 it names, and the modules of the `stella-packages/base`, `lists`, and `maybe`
-packages those import. It holds the `.dmo` of each module it reaches and no other,
-`Base.Int.dmo` being the module the compiler carries. Which source directories make
+packages those import. **It holds what its program needs to run**: of the modules
+built, those its roots — `Main`, unless the fixture names others — reach through
+the `IMPORTS` of their `.dmo`, and no other, `Base.Int.dmo`, the module the
+compiler carries, among them only where they reach it. A module a header imports
+is built, and held only where what the values became names something it declares:
+`Data.List.Syntax`, which `Data.List` re-exports `ls` from, is built and not held
+in the `dependencies` fixture. Which source directories make
 each fixture, and what each must give, are in the end-to-end suite,
 `e2e/test/E2E/Fixtures.purs` and the modules beside it under `Fixtures/`;
 `Fixtures/Foreigns.purs` also holds each `host.mjs` and the signatures each foreign

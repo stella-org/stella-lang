@@ -11,8 +11,8 @@
 -- |
 -- | **A fixture holds what its program needs to run**, and no more: of the
 -- | modules built, those its runtime roots reach through the imports of their
--- | bytecode (D51), in the order built. A module a header imports for a macro,
--- | an attribute, a synthesizer, or a type alone is built, and not held.
+-- | bytecode (D51), in the order built. A module a header imports is built, and
+-- | held only where what the values became names something it declares.
 module E2E.Build
   ( Sources
   , readSources

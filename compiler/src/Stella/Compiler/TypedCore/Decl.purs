@@ -1,8 +1,9 @@
 -- | Declarations and modules of Typed Core.
 -- |
--- | Modules are namespaces (D22). `imports` records the dependencies name
--- | resolution established; since every Core name is fully qualified, it has no
--- | influence on type checking and is retained for build ordering and linking.
+-- | Modules are namespaces (D22). `imports` records the module's runtime
+-- | dependencies (D51): the modules declaring what its values' terms name. Since
+-- | every Core name is fully qualified, it has no influence on type checking and
+-- | is retained for linking.
 module Stella.Compiler.TypedCore.Decl
   ( Module
   , Export(..)

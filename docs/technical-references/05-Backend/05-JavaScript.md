@@ -132,7 +132,9 @@ therefore refuses a reference to what the declaring module does not export, befo
 anything runs, which is where Steam refuses one. Every module of `IMPORTS` is
 imported, its arity table at least, so an imported module is initialized before this
 one whether or not anything of it is named, which is the order module initialization
-owes ([Bytecode](01-Bytecode.md)).
+owes ([Bytecode](01-Bytecode.md)). `IMPORTS` are the modules the module needs when it
+runs (D51): a module having supplied a macro or a synthesizer is imported only where
+the generated module's code names something it declares.
 
 **What one module assumed of another is checked where the modules load.** A known
 call to an imported global supplied the definitional arity the importing module's

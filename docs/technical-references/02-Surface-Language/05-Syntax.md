@@ -191,7 +191,7 @@ item ::= import
 
 - **They join the declaration after them, which is their prefix.** A declaration given a signature has its prefix from before the signature and from before the definition alike, in the order written, so a prefix may stand between the two. Where the definition does not follow, the prefix before the signature goes with the signature, and to nothing after it.
 - **A signature is followed directly by the definition of its name**, and a kind signature by the declaration of its keyword and name: `data T :: Type -> Type` then `data T a = …`.
-- **The imports come before every declaration**, a signature counting as the start of one, so that the header, which the dependencies are read from, is the top of the module (D22).
+- **The imports come before every declaration**, a signature counting as the start of one, so that the header, which the source dependencies are read from (D51), is the top of the module (D22).
 - **A macro called at a declaration's position keeps the prefix before it as a unit with it.** What an attribute there means is the macro's to settle, and nothing in the prefix passes on to the declarations an expansion produces or to the one after the call.
 
 **Where the parser carries on past an error, an item it cannot read is skipped up to the next item** and stands in the tree as a broken one, so that everything else in the module is still read. The generated parser has an entry point that does so beside the one that stops at the first error.

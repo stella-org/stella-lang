@@ -81,18 +81,22 @@ elaboration, not of Core** — the Core type checker still never mentions
 What makes the name resolvable is a rule about the surface, not a privilege.
 
 ```text
-`import Prelude` is written, as every dependency but `Prim` is.
+`import Prelude` is written, as every source dependency but `Prim` is.
 Elaboration emits the fully qualified `Prelude.Partial` for a non-exhaustive match.
 A module that does not import `Prelude` therefore cannot contain one.
 ```
 
-The dependency is on the **module**, as every dependency is: a header names
+The dependency is on the **module**, as every source dependency is: a header names
 `Prelude`, never a name within it. Nothing has to enter scope unqualified
 either, since what elaboration emits is already fully qualified.
 
 Writing the import is what keeps D22 intact, and it keeps `Prim` the one thing a
 header omits. `Prelude` is an ordinary module in every other respect: the
-surface header names it, and the Core header records it as it records any import
+surface header names it, and the interface records it, as a source dependency
+(D51). **The Core imports it only where the module's values name a value or a
+constructor of it**: the `EffectKey` and the operation a `perform` of
+`Prelude.Partial` carries are no reference to one, so a module whose values reach
+`Prelude` only through that `perform` does not depend on it when it runs
 ([Modules](01-Modules.md)). `Prelude.Partial` reaches `Σ` by the ordinary route rather than
 being conjured by the elaborator; without the import an emitted `EffectKey`
 would name an effect no `Σ` holds, and the `perform` would not typecheck. A
@@ -283,7 +287,7 @@ Handing the checker a provenance to trust would not improve on this. It would ve
 
 Within a module, declaring one name twice in a namespace is ill-formed as it is anywhere.
 
-**Header completeness is unaffected** (D22). A module's header determines its dependencies, and `Prim` is a dependency of every module without exception, so a build system needs no entry to discover it. Nothing has to be written because nothing varies. `Base.*` is different: a module using `Base.Array.Array` imports `Base.Array`, and the header says so.
+**Header completeness is unaffected** (D22). A module's header determines its source dependencies (D51), and `Prim` is a dependency of every module without exception, so a build system needs no entry to discover it. Nothing has to be written because nothing varies. `Base.*` is different: a module using `Base.Array.Array` imports `Base.Array`, and the header says so.
 
 **Linking includes `Prim`.** The global environment `G` of [Semantics](../03-Typed-Core/06-Semantics.md) is built from `G_Prim`, which holds the data constructors of `Prim` — `Prim.Unit` alone — beside the definitions of the imported modules. `Prim` is not among those imports, so without `G_Prim` a `Prim.Unit` in the module would have nothing to unfold to and condition (1) of `Σ ⊨ G` would fail.
 

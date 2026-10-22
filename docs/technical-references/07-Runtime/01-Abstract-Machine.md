@@ -97,6 +97,10 @@ run.
 order nor looks for a `.dmo`: what it is given is what it loads, and in the order it
 is given. A module's `imports` is read as a **condition** — every one of them is
 already in the registry, or the load fails — and never as a way to find anything.
+They are the modules the module needs when it runs (D51): a module having supplied
+a macro's parser or a synthesizer is among them only where what the module's values
+became names something it declares, and `Stella.Syntax` and `Stella.Elab`, which
+those run on, are not needed on that account.
 Ordering is the front end's, which is where the source, the search paths, and the
 build plan are.
 

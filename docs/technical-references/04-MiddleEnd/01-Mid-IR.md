@@ -578,6 +578,12 @@ GlobalInit ::= run  FuncId        evaluate a function of no parameters and store
              | func FuncId        store a closure over an empty capture list
 ```
 
+`imports` are the Core module's, its runtime dependencies (D51), carried to the
+`.dmo` as they are. Translation and lowering add no runtime dependency and no
+reference to a value or constructor of a module the Core does not import; a
+qualified name of what is no runtime dependency may remain — the type a
+`Rep Data T` names, an effect, a key, an operation — and loads nothing.
+
 The constructor table is what survives of the data declarations: a tag, an
 arity, the type that owns them, and whether that type is a `newtype`. Field
 types do not survive, `Rep` on each binding carrying what a backend needs of

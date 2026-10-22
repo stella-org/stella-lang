@@ -1511,6 +1511,23 @@ Synthesized parameters supplied at a reference ([Elaboration](../02-Surface-Lang
 | The same of an open tail the site binds no fields of, and of `{ ratio: 1.5 }` | `A synthesizer failed here`, with what it said, where each goal stands |
 | A row of the labels `b`, `U+1F600`, `U+E000`, `a`, observed | `known` as `a`, `b`, `U+E000`, `U+1F600`: by scalar value, not by code unit |
 
+### Runtime dependencies (step 7)
+
+A module's source dependencies and its runtime dependencies (D51, [Modules](../06-Modules/01-Modules.md#what-an-interface-holds)): the interface's imports, and the Core's and the `.dmo`'s
+
+| Input | Required outcome |
+| --- | --- |
+| A module importing a macro alone, an attribute alone, a synthesizer named by `by` alone, or a type alone, what its values became naming nothing of it | Its interface imports the module; its `.dmo` does not |
+| A module importing a value beside the macro, from one module | Both import it |
+| `m = x`, the `x` `B` re-exports from `A`, and `B` the module imported | The interface imports `B`, the `.dmo` `A`; `B`'s interface imports `A`, and its `.dmo` nothing, no value of `B` naming `A` |
+| A module dispatching on constructors it applies nowhere | Its `.dmo` imports the module declaring them |
+| A module performing an operation, and handling the effect, of a module it names nothing else of | Its `.dmo` imports nothing for it |
+| A term naming modules `Lists`, `M` + `U+E000`, `M` + `U+1F600`, the module itself, and `Prim` | `Lists`, `M` + `U+E000`, `M` + `U+1F600`: the module and `Prim` aside, by scalar value |
+| A module written in Core, its interface projected with the imports given | Those imports, `Prim` aside, whatever its Core imports |
+| The `dependencies` fixture: `Main` using a value and a shape `Relay` re-exports from `Origin`, dispatching on the shape, and `List(..)` of `Data.List`, which re-exports `Data.List.Syntax`'s `ls` | Held as `Base.Int`, `Origin`, `Data.List`, `Main`, without `Relay` or `Data.List.Syntax`; loaded and its values observed on Steam and in JavaScript |
+| `xs = ls%[1, 2]` with `import Data.List (List(..), macro ls)`, built with the parser run on a session | `Main.dmo` imports `Data.List` alone, `Main.dmi` `Data.List`; `Cons(1, Cons(2, Nil))` with `Base.Int`, `Data.List`, and `Main` alone loaded |
+| The codec's `Main`, its goals solved by `Derive` and `Sample` | `Main.dmo` imports `Codec` alone; its strings written with neither the synthesizers' modules nor `Stella.Elab` loaded |
+
 ### Binding groups and generalization (step 7)
 
 [Elaboration](../02-Surface-Language/01-Elaboration.md#generalization) and the state of [Elaborator API](../02-Surface-Language/03-Elaborator-API.md#inference-state).

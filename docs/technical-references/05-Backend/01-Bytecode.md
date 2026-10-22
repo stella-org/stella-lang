@@ -172,8 +172,8 @@ later concern and changes nothing above this line.
 wrote on the binding ([Mid IR](../04-MiddleEnd/01-Mid-IR.md)). A consumer
 choosing a representation reads it there; one keeping a uniform representation
 ignores it. `Rep Data T` names a type constructor, whose constructors are found
-in the `CTORS` table of whichever module declares it — this one, or one it
-imports.
+in the `CTORS` table of the module declaring it, which a program holding a value
+of `T` has loaded; a module only passing such values on need not import it.
 
 Reusing a slot later would mean a slot holding two classes of value over its
 lifetime, so whatever does it records a `Rep` per definition rather than per
@@ -672,7 +672,7 @@ Nothing there adds to what a `.dmo` holds.
 | `CONSTANTS` | The literal pool: tagged `Int`, `Number`, `String`, `Char`, and `Boolean` values |
 | `KEYS` | Row keys: a tag and, for three of the four, a string or an integer |
 | `OPS` | Operation names |
-| `IMPORTS` | The modules this one depends on |
+| `IMPORTS` | The modules this one depends on when it runs, its Core's imports, in the order of their names' scalar values (D51) |
 | `CTORS` | Per constructor: name, owning type, tag, arity, and whether its type is a `newtype` |
 | `EFFECTS` | Per effect: name and the operations it declares |
 | `FOREIGNS` | Per foreign: qualified name and arity |
@@ -741,7 +741,9 @@ belong to this module or to one of its `IMPORTS`, and what it resolves to must
 be the kind of declaration the table it stands in calls for — a `CTORREFS` entry
 a constructor, a `FOREIGNREFS` entry a foreign, a `GLOBALREFS` entry a top-level
 value. A file naming something no import declares is rejected rather than
-resolved to whatever else is loaded.
+resolved to whatever else is loaded. A module the compiler writes is not: its
+`IMPORTS` are read off what its Core names (D51), so every module its code names
+is among them.
 
 ### The operations a module carries out
 
@@ -765,7 +767,9 @@ closure over an empty capture list without evaluating anything. Which one a
 value gets follows the shape of its right-hand side: a top-level lambda is a
 `func` and everything else a `run`, so a global a `CALLK` reaches holds a
 function of the arity that call supplies ([Mid IR](../04-MiddleEnd/01-Mid-IR.md)). A module's
-imports are initialized before it is.
+imports are initialized before it is, and those alone: they are the modules its
+code names (D51), and a module is not among them for having supplied a macro, an
+attribute, a synthesizer, or a type, so a program need not load it for that.
 
 A right-hand side that diverges hangs initialization whether or not anything
 refers to it, and one that faults ends it. Both follow from evaluating eagerly

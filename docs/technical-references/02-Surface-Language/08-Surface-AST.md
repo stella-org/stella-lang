@@ -133,7 +133,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 
 **An argument is a constant**: a literal, a global value, a constructor applied to constants, or a record of constants. A computation and an operation are no constant, a reference to either standing for what running it does. A name in a constant is held qualified by the module defining it, which may be one the header imports or one reached through a re-export; resolution adds nothing to the module's dependencies for it.
 
-**A module holds its name, its imports, and its declarations.** The imports are the dependencies its header declares (D22); `Prim` is never among them, an `import Prim` choosing how its names are written and nothing else. What it exports is computed with its interface, rather than held here.
+**A module holds its name, its imports, and its declarations.** The imports are the source dependencies its header declares (D22, D51); `Prim` is never among them, an `import Prim` choosing how its names are written and nothing else. What it exports is computed with its interface, rather than held here.
 
 ## What an error leaves
 

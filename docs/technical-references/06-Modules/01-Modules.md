@@ -23,7 +23,7 @@ decl ::= data    T forall k̄. (ā : κ̄) = Ctor_1 τ̄1 | … | Ctor_n τ̄n  
 
 **The order of value declarations is a dependency order.** A `nonrec` does not refer forwards, and every cycle is contained in a `rec` group.
 
-`import` records the dependencies of the module: those name resolution established, and the module of every reference elaboration wrote, which may be one the header reaches only transitively when a synthesizer chose an entry there ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)). Since every Core name is fully qualified, `import` has no effect on type checking; it is retained for build ordering and linking.
+`import` records the module's runtime dependencies (D51): the modules declaring what its values' terms name — a value, a foreign, or a constructor, applied or dispatched on — itself and `Prim` aside, in the order of their names' scalar values. One may be a module the header reaches only transitively, the one declaring a value re-exported to the module or an entry a synthesizer chose ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)), and supplying a macro, an attribute, a synthesizer, or a type makes a module none: it is one where what the values became names something it declares. Since every Core name is fully qualified, `import` has no effect on type checking; it is retained for linking. What a build is ordered by is the source dependencies, which the interface holds ([below](#what-an-interface-holds)).
 
 ## Modules are namespaces
 
@@ -74,7 +74,7 @@ continue (Continuation f) = f
 - **No synthesizer reaches it.** The catalog a synthesizer reads omits it, and the kernel refuses a global reference to it ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)).
 - **The Core type checker does not enforce any of this.** A reference to it is checked as an ordinary reference, whoever wrote it. The restriction is a property of surface elaboration and its trust boundary, and a hand-written Core module is outside it.
 
-**The module that holds one is a dependency like any other.** A module whose desugaring refers to an elaboration-only entry imports the module holding it, so its header still names every dependency.
+**The module that holds one is a dependency like any other.** A module whose desugaring refers to an elaboration-only entry imports the module holding it, so its header names that module as a source dependency. Because the desugared term names the entry, the Core imports the module as well, as a runtime dependency (D51).
 
 ## Local open and header completeness
 
@@ -82,7 +82,7 @@ ML's `M.( … )`, which brings `M`'s names into scope unqualified within one exp
 
 PureScript has a property worth preserving:
 
-> **A module's dependencies are determined by its header alone.**
+> **A module's source dependencies, and the bound of its runtime dependencies, are determined by its header alone** (D51).
 
 A build system can read the header to construct the dependency graph, making incremental builds and parallel compilation planning cheap. OCaml lacks this property and must scan module bodies for capitalized identifiers.
 
@@ -100,7 +100,7 @@ module Main where
   g xs = import DA in length xs              -- the block form does the same
 ```
 
-**All three record the dependency in the header**, so header completeness holds in every case and a build system need read no further.
+**All three record the dependency in the header**, so header completeness holds in every case and a build system need read no further. What the header determines is the module's source dependencies; those its values need when they run are read off its Core, and lie within what the header reaches (D51).
 
 `import lazy M as A` is the only form that satisfies both of the following at once.
 
@@ -354,7 +354,7 @@ The rule runs both ways, which is what it is for: a tool finds the file of a mod
 
 | Field | Holds |
 | --- | --- |
-| imports | the modules its header imports, which are its dependencies (D22); `Prim`, a dependency of every module, is never among them |
+| imports | the modules its header imports, which are its source dependencies (D22, D51); `Prim`, a dependency of every module, is never among them |
 | exports | the names it publishes, one table per namespace — value, type, operator, type operator, macro, attribute — and the modules it re-exports whole |
 | declarations | every top-level declaration it makes, by what each declares: values, types, effects, operators, type operators, attributes |
 | implicit handlers | the implicit handlers it declares, each with the element it handles and the elements it performs in its place ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md)) |
@@ -362,6 +362,12 @@ The rule runs both ways, which is what it is for: a tool finds the file of a mod
 | arities | the definitional arity of each value it declares, that a module downstream can reach, and that has one ([Interface](../05-Backend/03-Interface.md)) |
 
 **Names and entities are held apart.** An export is a name as an importer writes it, the entity it is another name for — qualified by the module declaring it — and the way it reached the module: declared there, or imported from a module the header names and re-exported. A type's export also lists the members published with it, a data type's constructors or an effect's operations, each of which is in the value table as well. What an entity is — its scheme, its constructors, its attributes — is held by the interface of the module declaring it and by no other, so a module re-exporting a name holds the name and the way it came, and nothing of the entity. **Core keeps nothing of the way**; it is for a tool, which may offer a name from a module re-exporting it or from the module declaring it.
+
+**A module has two sets of dependencies (D51), and the interface holds the first.** Its **source dependencies** are the modules its header imports, whatever each import brings: one bringing only a macro, an attribute, a synthesizer, a type, or a name to re-export is one of them, and a written `import Prim`, which brings names and no dependency, is none; and the build is ordered, names resolved, and macro calls expanded by them. Its **runtime dependencies** are the modules declaring what its values' terms name — a value, a foreign, or a constructor, applied or dispatched on — itself and `Prim` aside, read off the committed Core once the module is elaborated. They are the imports of its Core and of its `.dmo` ([Bytecode](../05-Backend/01-Bytecode.md)), and what a program loads and initializes before the module. An operation, an effect a handler names, a key, and a type are no runtime dependency: the first three are compared by identities loading assigns, and a type is erased, surviving only as what a representation names, which loads nothing.
+
+- **The runtime dependencies are within what the source dependencies reach.** The Core is checked against the signature the header's imports reach, so a reference outside it does not check; none is dropped.
+- **A runtime dependency need not be a source dependency.** A module importing `B` that uses the `x` `B` re-exports from `A` depends on `A` when it runs, and on `B` only where it names something `B` declares; so does a module whose synthesized argument names an entry of a module its header reaches only transitively.
+- **Supplying a macro, an attribute, or a synthesizer makes a module no runtime dependency.** It is one only where what the module's values became names something it declares, as an expansion or a synthesized argument may. `Data.List` re-exports `Data.List.Syntax`'s `ls`, whose expansion names `Cons` and `Nil` of `Data.List`, so a program using a list of `Data.List` — whether or not it calls `ls` — runs without `Data.List.Syntax` and without `Stella.Syntax`, which a macro's parser runs on. The codec's `Main`, whose goals `Derive` and `Sample` solve with terms naming `Codec` alone, runs with neither of them nor `Stella.Elab`; a synthesizer answering with a global of its own module would make that module one.
 
 **The declarations are every top-level declaration, not only those exported.** An exported scheme may mention a type the module keeps abstract or does not export, and Core refers to an entry published to the catalog alone. Which names source may write is the export tables' to say.
 

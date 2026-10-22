@@ -175,7 +175,7 @@ The order mirrors the three stages of declaration checking ([Modules](../06-Modu
   G_Prim = the data constructors of Prim, which is Prim.Unit alone
 
   G_decl = G_Prim
-         ∪ the definitions of the imported modules
+         ∪ the definitions of the imported modules, and of theirs
          ∪ every constructor declared by M
          ∪ every foreign implementation δ_f declared by M
 
@@ -195,6 +195,8 @@ The order mirrors the three stages of declaration checking ([Modules](../06-Modu
 ```
 
 **One store is threaded through the fold, and on into the run of `main`**: a value installed in `G` may be a closure reading a cell a local `letrec` allocated while it was evaluated, so the cells outlive the right-hand side that allocated them.
+
+**The imported modules are the module's runtime dependencies** (D51), the modules declaring what its values name, so every global a right-hand side mentions has its definition in `G_decl` however the module reached its name, a re-export or a synthesized argument among the ways; a module adds nothing to `G`, and is not initialized, for having supplied a macro, an attribute, a synthesizer, or a type, but only where what the module's values became names something it declares.
 
 `G_Prim` mirrors `Σ_Prim` on the value side ([Prim and Base](../06-Modules/02-Prim-and-Base.md)). `Prim` is not among the imports — a header's `import Prim` selects names and adds none — so without it a `Prim.Unit` occurring in the module would have nothing to unfold to, and condition (1) of `Σ ⊨ G` would fail. The implementations the runtime ABI is obliged to supply arrive with the imports, since the module that declares them is imported like any other.
 

@@ -17,7 +17,7 @@ optimizer is written** (D34): the bodies eligible for inlining are not here.
 | Part | Holds |
 | --- | --- |
 | Module | The module's name |
-| Imports | The modules its header imports, which are its dependencies (D22) |
+| Imports | The modules its header imports, which are its source dependencies (D22, D51); what it needs when it runs is its `.dmo`'s `IMPORTS` |
 | Exports | The names it publishes, one table per namespace — value, type, operator, type operator, macro, attribute — each the name as an importer writes it, the entity it stands for, qualified by the module declaring it, and the way it came: declared, or imported from a module and re-exported; a type's members; and the modules it re-exports whole |
 | Values | Every value it declares — a value, a computation, a foreign with its observation, a handler, a constructor with the type it builds, an operation with the effect declaring it — with its scheme, an operation's the type it is called at (D17, [Effects](../03-Typed-Core/03-Effects.md)), and its attributes |
 | Types | Every type it declares — a data type or newtype with its parameters and each constructor's fields, a synonym with its parameters and its body, a foreign type — with its kind and its attributes |
@@ -362,7 +362,7 @@ speak of one module.** An interface is made only where the checks pass.
 
 ### A module written in Core
 
-**A module written in Core has a canonical interface, read off the module and its checked signature.** Such a module has no source and so no surface part: a module a test writes in Core, the hand-written `Base` fixtures among them. No module the compiler carries is one, each being compiled from its source ([Modules](../06-Modules/01-Modules.md#stellac-build)). Its interface is `Stella.Compiler.Interface.FromCore` applied to the module, what checking it declared, and the arities of its translation. It is a projection of what Core holds, and no inverse of a surface part: what Core keeps nothing of is given one value.
+**A module written in Core has a canonical interface, read off the module and its checked signature.** Such a module has no source and so no surface part: a module a test writes in Core, the hand-written `Base` fixtures among them. No module the compiler carries is one, each being compiled from its source ([Modules](../06-Modules/01-Modules.md#stellac-build)). Its interface is `Stella.Compiler.Interface.FromCore` applied to the module, what checking it declared, the modules it imports, and the arities of its translation. **What it imports is given beside the module**, and not read off the module's imports, which are its runtime dependencies (D51): the writer names, of the modules the module was checked against, those whose interfaces a module reaching its own must reach. It is a projection of what Core holds, and no inverse of a surface part: what Core keeps nothing of is given one value.
 
 | What | In the interface |
 | --- | --- |
@@ -401,12 +401,13 @@ cannot be handed an arity nothing checked. **What it checks is the arity and not
 else**: whether the bytes are well formed is a reader's question, and whether an
 arity is the one the declaring module states is a loader's.
 
-**An arity is read for the modules the one being translated depends on**: those it
-imports, and those each of them imports in turn. A name a term carries is qualified
-by the module declaring it, which is among them, whether the term reached it through
-an import of that module or through a re-export, so a re-exported value is called
-with the arity its declaring module publishes. **A module outside the dependencies
-sharpens nothing**, and nor does the module being translated: the arity of its own
+**Translation is handed arities for the modules its Core imports**, its runtime
+dependencies (D51), **and for those the interface of each of them imports in turn**,
+a set wider than any call reaches. What a call is given is narrower: the name a term
+carries is qualified by the module declaring it, which the Core imports whether the
+term reached the name through an import of that module or through a re-export, so a
+re-exported value is called with the arity its declaring module publishes. **A module
+outside that set sharpens nothing**, and nor does the module being translated: the arity of its own
 values is read off their right-hand sides, and an interface claiming one for a value
 that has none, a `nonrec` holding a function rather than being one, would make a
 `callk` of a call that must stay a `callu`. An interface that is not consulted is not

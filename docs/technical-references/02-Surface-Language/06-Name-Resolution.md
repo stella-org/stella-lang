@@ -30,7 +30,7 @@ This document settles what a name written in source refers to. By the time a ter
 - **Every node is annotated with where it came from**: its source range, for a node built from source, and for one built from what an expansion produced, its range in that expansion, through which the call and what its tokens were written as are reached ([Surface AST](08-Surface-AST.md)).
 - **A name that does not resolve is an error node, and resolution carries on**, so that every error in the module is reported; a module holding one is not elaborated.
 
-**An expansion produces declarations and expressions, and never an import or a module header.** The header is what the dependencies are read from (D22), and the import scope has been fixed before any expansion runs.
+**An expansion produces declarations and expressions, and never an import or a module header.** The header is what the source dependencies are read from (D22, D51), and the import scope has been fixed before any expansion runs. What an expansion refers to is a runtime dependency where the module's values name it, as anything written in source is.
 
 ### Expanding a macro call
 
@@ -54,7 +54,7 @@ A name standing for two macros is ambiguous where it is called. A name the modul
 
 ### A quotation
 
-**A quotation is resolved into the expression building the syntax it quotes**, `Stella.Syntax.Syntax Stella.Syntax.Term` written as an application of `Stella.Syntax`'s constructors ([Syntax](05-Syntax.md)): each token as it is written — its kind, its text, and the trivia before it — each bracket and what it holds a group, and each block the layout opened a layout group, its items as the layout separated them. The braces of the quotation are none of it. **Nothing quoted is resolved**: a name in a quotation is resolved where the syntax is read, by the module a macro's expansion stands in, as every name an expansion produces is. So a module calling a macro imports what its quotations name: one calling `ls` of `Data.List`, whose quotations write `Cons` and `Nil`, imports `Data.List (List(..))`.
+**A quotation is resolved into the expression building the syntax it quotes**, `Stella.Syntax.Syntax Stella.Syntax.Term` written as an application of `Stella.Syntax`'s constructors ([Syntax](05-Syntax.md)): each token as it is written — its kind, its text, and the trivia before it — each bracket and what it holds a group, and each block the layout opened a layout group, its items as the layout separated them. The braces of the quotation are none of it. **Nothing quoted is resolved**: a name in a quotation is resolved where the syntax is read, by the module a macro's expansion stands in, as every name an expansion produces is. So a module calling a macro imports what its quotations name: one calling `ls`, whose quotations write `Cons` and `Nil`, imports `Data.List (List(..))`, and `Data.List` re-exports `ls` from `Data.List.Syntax`, which declares it, so that `import Data.List (List(..), macro ls)` brings both. The module calling it needs `Data.List` when it runs, and not `Data.List.Syntax` (D51).
 
 **An antiquotation is resolved where it stands**, as an expression of the module, and is syntax of a term; what it splices in stands in parentheses, so that it is one operand whatever it holds: `%term{ f $x }` with `x` holding `1 + 2` reads `f (1 + 2)`. A macro call inside an antiquotation is expanded as any other is.
 
@@ -127,7 +127,7 @@ A name standing for two macros is ambiguous where it is called. A name the modul
 | `import M (items) as A` | nothing | the items, as `A.x` |
 | `import lazy M as A` | nothing | nothing outside a local open of `A`; everything `M` exports inside one |
 
-- **Every form declares the dependency**, `import M ()` doing nothing else, and the header is what the dependencies are read from (D22).
+- **Every form declares the dependency**, `import M ()` doing nothing else, and the header is what the source dependencies are read from (D22). Those the module needs when it runs are the modules its values name, read off its Core, and lie within what the header reaches (D51).
 - **A reference reaches its entity through the export table of an import the header names**, and the module declaring the entity is then within the transitive closure of the header's imports. It need not be named there: where `C` imports `B` and `B` re-exports the `x` of `A`, a reference in `C` is `A.x`.
 - **An unqualified name and a qualified one are written as two imports**, which reach one entity and so do not conflict: `import M (a)` and `import M as M` make `a` and `M.a` the same reference.
 - **A lazy import is qualified and takes no list** ([Syntax](05-Syntax.md)).
@@ -194,7 +194,7 @@ g xs = A.( length xs )           -- length is A.length
 - **The two kinds of alias differ outside the construct alone.** `M.x` is usable anywhere in the module after `import … as M`, and nowhere after `import lazy … as M`, which is what keeps a lazy alias from adding anything to the module's scope ([Modules](../06-Modules/01-Modules.md)).
 - **What is opened is what a module can export**: the value, type, operator, type operator, and macro namespaces. An attribute is attached to a declaration and so never stands inside an expression, where an open is; `@[M.a]` and an import list reach one. A type in an annotation, an effect in a row, a constructor in a pattern, a discriminator, an operator, and a macro call inside `e` are resolved by the same rule; an operator opened this way takes its fixity from `M`. Local binders and cells are not a module's to open.
 - **What is opened is an alias.** A module imported without `as` has no qualifier, so its full name cannot be opened.
-- **The header still names every dependency.** The alias is declared by an import in either case, so local open adds nothing a build reads ([Modules](../06-Modules/01-Modules.md)).
+- **The header still names every source dependency.** The alias is declared by an import in either case, so local open adds no source dependency and nothing a build reads ([Modules](../06-Modules/01-Modules.md)); the runtime dependencies are read off the Core the module elaborates to (D51).
 - **An unqualified name is looked up in the innermost construct holding it**, a local open or a binding group, before the module's scope. A variable bound inside an open hides a name the open brings, and a name the open brings hides a local binding outside it, which is warned of at each reference it decides.
 - **An alias no import declares is an error**, and the open is invalid as a whole; what it encloses is not resolved.
 - **An operator means what its fixity declaration says wherever it is used.** The value a declared operator stands for is resolved where it is declared, so an open around a use changes which operator a spelling names and never what an operator stands for.
