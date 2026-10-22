@@ -1,0 +1,9 @@
+{
+  "description": "A program holding only the modules its values name: Origin, whose size and shape it reaches through Relay, which it does not hold, and whose constructors it dispatches on; and Data.List, whose type it imports beside the macro Data.List re-exports, the module declaring the macro not held",
+  "modules": ["Base.Int", "Origin", "Data.List", "Main"],
+  "outcome": {"loads": true},
+  "observe": [
+    {"global": "Main.listed", "value": {"data": "Data.List.Cons", "fields": [{"int": 7}, {"data": "Data.List.Nil", "fields": []}]}},
+    {"global": "Main.measured", "value": {"int": 3}}
+  ]
+}

@@ -13,8 +13,9 @@
 -- | where a goal is to fail. Each case builds `Base` and the package afresh in
 -- | a directory of its own, and reads nothing another case built.
 -- |
--- | The modules loaded to read a value are the ones the build wrote; which of
--- | them a program needs when it runs is not fixed here.
+-- | The modules loaded to read a value are those `Main` needs when it runs, of
+-- | the ones the builds wrote: `Codec` and what it reaches, and not `Derive`,
+-- | `Sample`, or `Stella.Elab`, which `Main` imports for its synthesizers alone.
 module Test.E2E.Codec (spec) where
 
 import Prelude
@@ -36,7 +37,6 @@ import Node.Encoding (Encoding(..))
 import Node.FS.Aff as FS
 import Run (runBaseEffect)
 import Run.Except as Except
-import Steam.CLI.Elaboration as Elaboration
 import Steam.Foreign (emptyTable)
 import Steam.Load (emptyStore, globalNamed, load, noIdentities)
 import Steam.Value (Value(..))
@@ -47,6 +47,7 @@ import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
 import Stella.Compiler.TypedCore.Domain (textOf)
 import Stellac.Dependencies (parse)
 import Stellac.Options (BuildOptions, Command(..))
+import E2E.Build (collectedFrom)
 import Stellac.Program (program)
 import Test.E2E.Process (buildBase, copyTree, removeTree)
 import Test.E2E.Synthesis (onDisk)
@@ -93,46 +94,52 @@ building name replacing = do
 said :: Ran -> String -> Boolean
 said r text = Array.any (contains (Pattern text)) r.said
 
--- | The string each global of `Main` named is, of the package built in the
--- | directory named, once `Stella.Elab`, the modules
--- | the compiler carries, the rest of `Base` as the map lists it, and the
--- | package's modules are loaded in that order.
-stringsOf :: String -> Array String -> Aff (Map String String)
-stringsOf name globals = do
+-- | The modules `Main` needs when it runs, of the package built in the
+-- | directory named: of the modules the compiler carries, the rest of `Base` as
+-- | the map lists it, and the package's modules, in that order, those `Main`
+-- | reaches through the imports of their bytecode.
+heldOf :: String -> Aff (Either String (Array Dmo))
+heldOf name = do
   let
     baseOutput = dir <> "/" <> name <> "/base"
     app = dir <> "/" <> name <> "/app"
   mapped <- FS.readTextFile UTF8 (baseOutput <> "/dependencies.json")
-  case parse "dependencies.json" mapped, Elaboration.prepare, compiled of
-    Left err, _, _ -> fail (show err) *> pure Map.empty
-    _, Left why, _ -> fail ("no Stella.Elab: " <> why) *> pure Map.empty
-    _, _, Left why -> fail ("no carried modules: " <> why) *> pure Map.empty
-    Right entries, Right elab, Right carried -> do
+  case parse "dependencies.json" mapped, compiled of
+    Left err, _ -> pure (Left (show err))
+    _, Left why -> pure (Left ("no carried modules: " <> why))
+    Right entries, Right carried -> do
       let
         carriedNames = map _.name carried.moduleInterfaces
         base = map (\e -> baseOutput <> "/" <> e.object) (Array.filter (\e -> not (Array.elem e.module carriedNames)) entries)
         own = map (\m -> app <> "/output/_build/" <> m <> ".dmo") [ "Codec", "Derive", "Sample", "Main" ]
       read <- for (base <> own) dmoAt
-      case sequence read of
-        Left why -> fail why *> pure Map.empty
-        Right dmos -> liftEffect do
-          identities <- Ref.new noIdentities
-          stored <- runBaseEffect (Except.runExcept (Array.foldM load (emptyStore emptyTable identities) ([ elab.dmo ] <> carried.modules <> dmos)))
-          case stored of
-            Left err -> pure (Map.singleton "load" (show err))
-            Right store -> Map.fromFoldable <$> for globals \global -> Tuple global <$> case globalNamed store (Qualified (ModuleName "Main") (Ident global)) of
-              Nothing -> pure "absent"
-              Just slot -> Ref.read slot <#> case _ of
-                Just (VString s) -> textOf s
-                Just _ -> "not a String"
-                Nothing -> "uninitialized"
-  where
-  dmoAt :: String -> Aff (Either String Dmo)
-  dmoAt path = do
-    bytes <- FS.readFile path >>= liftEffect <<< Buffer.toArray
-    pure case decode bytes of
-      Left err -> Left (path <> ": " <> show err)
-      Right dmo -> Right dmo
+      pure (sequence read >>= \dmos -> collectedFrom [ ModuleName "Main" ] (carried.modules <> dmos))
+
+-- | The string each global of `Main` named is, of the package built in the
+-- | directory named, once the modules `Main` needs when it runs are loaded.
+stringsOf :: String -> Array String -> Aff (Map String String)
+stringsOf name globals = do
+  held <- heldOf name
+  case held of
+    Left why -> fail why *> pure Map.empty
+    Right dmos -> liftEffect do
+      identities <- Ref.new noIdentities
+      stored <- runBaseEffect (Except.runExcept (Array.foldM load (emptyStore emptyTable identities) dmos))
+      case stored of
+        Left err -> pure (Map.singleton "load" (show err))
+        Right store -> Map.fromFoldable <$> for globals \global -> Tuple global <$> case globalNamed store (Qualified (ModuleName "Main") (Ident global)) of
+          Nothing -> pure "absent"
+          Just slot -> Ref.read slot <#> case _ of
+            Just (VString s) -> textOf s
+            Just _ -> "not a String"
+            Nothing -> "uninitialized"
+
+dmoAt :: String -> Aff (Either String Dmo)
+dmoAt path = do
+  bytes <- FS.readFile path >>= liftEffect <<< Buffer.toArray
+  pure case decode bytes of
+    Left err -> Left (path <> ": " <> show err)
+    Right dmo -> Right dmo
 
 spec :: Spec Unit
 spec = describe "stellac build of an encoder derived from the type of each goal" do
@@ -140,6 +147,18 @@ spec = describe "stellac build of an encoder derived from the type of each goal"
     r <- building "built" Nothing
     r.result `shouldEqual` Right unit
     said r "[4/4] Compiling Main" `shouldEqual` true
+
+  -- `Main` imports `Derive` and `Sample` for the synthesizers its goals name,
+  -- and what they answer with names `Codec` alone
+  it "makes a program needing neither the synthesizers nor `Stella.Elab` when it runs" do
+    r <- building "held" Nothing
+    r.result `shouldEqual` Right unit
+    held <- heldOf "held"
+    case held of
+      Left why -> fail why
+      Right dmos -> do
+        map _.imports (Array.find (\d -> d.name == ModuleName "Main") dmos) `shouldEqual` Just [ ModuleName "Codec" ]
+        Array.filter (\m -> Array.elem m (map _.name dmos)) (map ModuleName [ "Derive", "Sample", "Stella.Elab" ]) `shouldEqual` []
 
   it "writes a closed row's fields in key order, a nested record's by a subgoal of its own" do
     values <- solved "closed" [ "person", "nested" ]

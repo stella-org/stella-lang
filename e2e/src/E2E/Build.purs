@@ -6,12 +6,18 @@
 -- | that those reach by their imports. They are built as a package is, against
 -- | the modules the compiler carries; `Base.Int`, which the compiler carries, is
 -- | compiled from its source on its own once, for every fixture, and stands first
--- | among a fixture's modules where they reach it. The modules of a fixture are
--- | those, in the order they are built, and nothing else of the packages.
+-- | among the modules built where they reach it. The modules built are those,
+-- | in the order they are built, and nothing else of the packages.
+-- |
+-- | **A fixture holds what its program needs to run**, and no more: of the
+-- | modules built, those its runtime roots reach through the imports of their
+-- | bytecode (D51), in the order built. A module a header imports for a macro,
+-- | an attribute, a synthesizer, or a type alone is built, and not held.
 module E2E.Build
   ( Sources
   , readSources
   , builtFrom
+  , collectedFrom
   , packageModules
   , Prebuilt
   , OnSession
@@ -144,6 +150,23 @@ builtFrom sources dirs = do
   case result of
     Left err -> Left (String.joinWith "; " (map printBuildMessage (NonEmptyArray.toArray (buildMessages err))))
     Right _ -> pure (if Set.member baseIntName reached then Array.cons sources.baseInt dmos else dmos)
+
+-- | Of the modules given, those the roots named reach through the imports of
+-- | their bytecode, themselves among them, in the order given; or why not: a
+-- | root, or a module one of them imports, that is not among them.
+collectedFrom :: Array ModuleName -> Array Dmo -> Either String (Array Dmo)
+collectedFrom roots dmos = do
+  reached <- go Set.empty roots
+  pure (Array.filter (\d -> Set.member d.name reached) dmos)
+  where
+  byName = Map.fromFoldable (map (\d -> Tuple d.name d) dmos)
+  go seen pending = case Array.uncons pending of
+    Nothing -> Right seen
+    Just { head, tail }
+      | Set.member head seen -> go seen tail
+      | otherwise -> case Map.lookup head byName of
+          Nothing -> Left (nameText head <> " is not among the modules built")
+          Just d -> go (Set.insert head seen) (d.imports <> tail)
 
 -- Built on a session ----------------------------------------------------------------------
 

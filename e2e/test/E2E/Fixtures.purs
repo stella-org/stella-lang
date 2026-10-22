@@ -27,7 +27,7 @@ import Prelude
 import Prim as P
 
 import Data.Array as Array
-import Data.Either (Either(..))
+import Data.Either (Either(..), either)
 import Data.Foldable (foldM, for_)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String as String
@@ -51,7 +51,7 @@ import Stella.Compiler.MiddleEnd.IR (ClauseForm(..))
 import Test.E2E.Fixtures.Effects (effectsCoreExpected, effectsCoreModule, effectsSourceExpected)
 import Test.E2E.Fixtures.Regions (regionsCoreExpected, regionsCoreModule, regionsSourceExpected)
 import Test.E2E.Fixtures.Foreigns (ManifestModule, Result(..), RunCase, RunFault(..), addShrunkManifest, addShrunkSource, greetManifest, greetSource, deepIoResult, ioEffects, ioHostSource, ioManifest, ioName, hostName, ioModuleBindArity, ioModulePureArity, ioResult, runCases, runEffects, runHostSource, runManifest)
-import E2E.Build (Sources, builtFrom, packageModules)
+import E2E.Build (Sources, builtFrom, collectedFrom, packageModules)
 import Test.E2E.Fixtures.Programs (baseInt, coreOnlyExpected, coreOnlyModule, faultCases, sourceDeepExpected, sourceExpected, inInt, mainName, opsExpected)
 import Test.E2E.Fixtures.Value (Expected(..), jsonString, toJson)
 
@@ -123,10 +123,13 @@ data ForeignManifest
   = Checked (P.Array ManifestModule)
   | Unchecked (P.Array ManifestModule)
 
+-- | A fixture holds, of the modules `modules` gives, those `roots` reach
+-- | through the imports of their bytecode: what its program needs to run.
 type Fixture =
   { name :: P.String
   , description :: P.String
   , modules :: Either P.String (P.Array Dmo)
+  , roots :: P.Array ModuleName
   , outcome :: Outcome
   , observe :: P.Array (Tuple P.String Expected)
   , foreignManifest :: Maybe ForeignManifest
@@ -134,7 +137,7 @@ type Fixture =
   , host :: Maybe P.String
   }
 
--- | A fixture of no foreigns the host supplies.
+-- | A fixture of no foreigns the host supplies, `Main` its root.
 plain
   :: { name :: P.String
      , description :: P.String
@@ -147,6 +150,7 @@ plain f =
   { name: f.name
   , description: f.description
   , modules: f.modules
+  , roots: [ mainName ]
   , outcome: f.outcome
   , observe: f.observe
   , foreignManifest: Nothing
@@ -161,6 +165,16 @@ fixtures sources =
       , modules: builtFrom sources [ "programs", "common-lib/lib", "common-lib/programs-main" ]
       , outcome: Loads
       , observe: sourceExpected
+      }
+  , plain
+      { name: "dependencies"
+      , description: "A program holding only the modules its values name: Origin, whose size and shape it reaches through Relay, which it does not hold, and whose constructors it dispatches on; and Data.List, whose type it imports beside the macro Data.List re-exports, the module declaring the macro not held"
+      , modules: builtFrom sources [ "dependencies" ]
+      , outcome: Loads
+      , observe:
+          [ Tuple "listed" (EData "Data.List.Cons" [ EInt 7, EData "Data.List.Nil" [] ])
+          , Tuple "measured" (EInt 3)
+          ]
       }
   , plain
       { name: "programs-deep"
@@ -299,6 +313,7 @@ foreignFixtures sources =
   [ { name: "io"
     , description: "An entry point run to the value it produces: actions a foreign returns, performed in order; a left-nested chain of bind 200 deep; every value kind crossing in and out, and an action of each kind; an opaque value handed back; a partial application of a foreign another module declares, and a foreign the entry module declares"
     , modules: builtFrom sources [ "io", "common-lib/io-host", "common-lib/io-main" ]
+    , roots: [ mainName ]
     , outcome: Runs { entry: "Main.main", result: ioResult, effects: ioEffects }
     , observe: []
     , foreignManifest: Just (Checked ioManifest)
@@ -307,6 +322,7 @@ foreignFixtures sources =
   , { name: "io-deep"
     , description: "The entry point of io with its left-nested chain of bind 20000 deep, the depth stack safety is tested at"
     , modules: builtFrom sources [ "io-deep", "common-lib/io-host", "common-lib/io-main" ]
+    , roots: [ mainName ]
     , outcome: Runs { entry: "Main.main", result: deepIoResult, effects: ioEffects }
     , observe: []
     , foreignManifest: Just (Checked ioManifest)
@@ -360,14 +376,16 @@ foreignFixtures sources =
       , outcome: RefusedAtLoad "greet"
       , observe: []
       }
-  , plain
+  -- the module refused is the one the fixture holds
+  , rootedAt [ ioName ] $ plain
       { name: "io-entry-arity-pure"
       , description: "Base.IO declaring pure at arity two, where the runtime carries it out at arity one"
       , modules: map (map _.dmo) (compileAll [ ioModulePureArity ])
       , outcome: RefusedAtLoad "pure"
       , observe: []
       }
-  , plain
+  -- the module refused is the one the fixture holds
+  , rootedAt [ ioName ] $ plain
       { name: "io-entry-arity-bind"
       , description: "Base.IO declaring bind at arity three, where the runtime carries it out at arity two"
       , modules: map (map _.dmo) (compileAll [ ioModuleBindArity ])
@@ -382,6 +400,7 @@ foreignFixtures sources =
   , { name: "foreign-unexported"
     , description: "Main calls Host.greet, beside a Host changed after it was compiled to export nothing"
     , modules: map (map (unexporting (Qualified hostName (Ident "greet")))) (builtFrom sources [ "common-lib/greet" ])
+    , roots: [ mainName ]
     , outcome: RefusedAtLoad "greet"
     , observe: []
     , foreignManifest: Just (Checked (greetManifest "./host.mjs" [ greet ]))
@@ -412,6 +431,7 @@ foreignFixtures sources =
     { name
     , description: "Main calls Host.greet, beside " <> description
     , modules: builtFrom sources [ "common-lib/greet" ]
+    , roots: [ mainName ]
     , outcome: RefusedAtLoad mentions
     , observe: []
     , foreignManifest: Just manifest
@@ -422,6 +442,7 @@ foreignFixtures sources =
     { name
     , description: description <> ", and is loaded beside a Host whose add takes one"
     , modules: twoVersions sources [ name <> "/compiled", "common-lib/add-host" ] [ "common-lib/add-host-shrunk" ]
+    , roots: [ mainName ]
     , outcome: RefusedAtLoad "add"
     , observe: []
     , foreignManifest: Just (Checked addShrunkManifest)
@@ -460,6 +481,7 @@ runFixture sources c =
   { name: c.name
   , description: "An entry point that runs Host.say and then reaches " <> c.description
   , modules: builtFrom sources [ "common-lib/run-" <> kind ]
+  , roots: [ mainName ]
   , outcome: FaultsAtRun { entry: "Main.main", fault: c.fault, effects: runEffects }
   , observe: []
   , foreignManifest: Just (Checked (runManifest c))
@@ -737,7 +759,7 @@ data Content
 
 filesOf :: Fixture -> Either P.String (P.Array (Tuple P.String Content))
 filesOf f = do
-  dmos <- f.modules
+  dmos <- heldBy f
   encoded <- traverse (\d -> stage "encode" (encode d) <#> \bytes -> Tuple (moduleText d.name <> ".dmo") (Bytes bytes)) dmos
   foreignManifest <- case f.foreignManifest of
     Nothing -> pure []
@@ -751,6 +773,14 @@ filesOf f = do
         <> foreignManifest
         <> maybe [] (\source -> [ Tuple "host.mjs" (Text source) ]) f.host
     )
+
+-- | The modules a fixture holds.
+heldBy :: Fixture -> Either P.String (P.Array Dmo)
+heldBy f = f.modules >>= collectedFrom f.roots # either (\why -> Left (f.name <> ": " <> why)) Right
+
+-- | The fixture given, its roots the modules given.
+rootedAt :: P.Array ModuleName -> Fixture -> Fixture
+rootedAt roots f = f { roots = roots }
 
 -- The check ------------------------------------------------------------------------------
 
@@ -816,18 +846,28 @@ spec sources = describe "the bytecode fixtures" do
         Nothing -> fail (l.module <> " is not built from " <> String.joinWith ", " l.dirs)
         Just dmo -> Tuple l.dirs (Array.filter (\k -> not (Set.member k (kindsOf dmo))) l.kinds) `shouldEqual` Tuple l.dirs []
 
-  -- a package's module is built only where a fixture reaches it, so one no
-  -- fixture reaches could be missing or broken unseen. A module declaring a
-  -- macro is built where a parser runs, which no fixture does: the Lists tests
-  -- of the integration suite build it
-  it "reach every module of the lists and maybe packages but those declaring a macro" do
-    case traverse _.modules (fixtures sources) of
+  -- a package's module is held only where a fixture's values reach it, so one
+  -- no fixture reaches could be missing or broken unseen. A module declaring a
+  -- macro is built where a module importing it is, and held by none, its macro
+  -- running where a parser runs, which no fixture does: the Lists tests of the
+  -- integration suite run it
+  it "hold every module of the lists and maybe packages but those declaring a macro" do
+    case traverse heldBy (fixtures sources) of
       Left err -> fail err
       Right built -> do
         let
           reached = Set.fromFoldable (map _.name (Array.concat built))
           macros = [ ModuleName "Data.List.Syntax" ]
         Array.filter (\m -> not (Set.member m reached) && not (Array.elem m macros)) (Array.concatMap (packageModules sources) [ "lists", "maybe" ]) `shouldEqual` []
+
+  -- a module a header imports for a macro or a re-export alone is built, and
+  -- not held
+  it "hold the modules their roots reach through the imports of their bytecode, and no other" do
+    case builtFrom sources [ "dependencies" ] of
+      Left err -> fail err
+      Right built -> do
+        map _.name built `shouldEqual` map ModuleName [ "Base.Int", "Origin", "Relay", "Data.List.Syntax", "Data.List", "Main" ]
+        map (map _.name) (collectedFrom [ mainName ] built) `shouldEqual` Right (map ModuleName [ "Base.Int", "Origin", "Data.List", "Main" ])
 
   it "are what compiling their source gives now" do
     update <- liftEffect updating

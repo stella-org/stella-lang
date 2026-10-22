@@ -1,0 +1,16 @@
+-- A program needing at run time only the modules declaring what its values
+-- name: `Origin`, whose size and shape it reaches through `Relay` and whose
+-- constructors it dispatches on, and `Data.List`, of which it imports a type
+-- and its constructors beside the macro `Data.List` re-exports.
+module Main (listed, measured) where
+
+import Data.List (List(..))
+import Relay (Shape(..), shape, size)
+
+listed :: List Int
+listed = Cons size Nil
+
+measured :: Int
+measured = case shape of
+  Circle r -> r
+  Square s -> s

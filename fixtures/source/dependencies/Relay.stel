@@ -1,0 +1,4 @@
+-- `Origin`'s shape and size, re-exported; nothing of its own.
+module Relay (Shape(..), shape, size) where
+
+import Origin (Shape(..), shape, size)

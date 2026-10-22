@@ -1,0 +1,10 @@
+-- A shape and a size, which `Relay` re-exports.
+module Origin (Shape(..), shape, size) where
+
+data Shape = Circle Int | Square Int
+
+shape :: Shape
+shape = Square 3
+
+size :: Int
+size = 7

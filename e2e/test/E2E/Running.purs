@@ -24,13 +24,14 @@ import Steam.Value (Value(..))
 import Stella.Compiler.Bytecode.Module (Key(..))
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
 import Stella.Compiler.TypedCore.Name (Symbol(..), Tag(..))
-import E2E.Build (Sources, builtFrom)
+import E2E.Build (Sources, builtFrom, collectedFrom)
 import Test.Spec.Assertions (fail)
 
--- | The modules the directories of `fixtures/source` given build, loaded in the
--- | order they are built, and each global of `Main` named rendered.
+-- | Of the modules the directories of `fixtures/source` given build, those
+-- | `Main` needs when it runs, loaded in the order they are built, and each
+-- | global of `Main` named rendered.
 running :: Sources -> P.Array P.String -> P.Array P.String -> (Map.Map P.String P.String -> Aff Unit) -> Aff Unit
-running sources dirs globals k = case builtFrom sources dirs of
+running sources dirs globals k = case builtFrom sources dirs >>= collectedFrom [ ModuleName "Main" ] of
   Left failure -> fail failure
   Right dmos -> k =<< liftEffect do
     identities <- Ref.new noIdentities

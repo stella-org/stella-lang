@@ -24,7 +24,7 @@ import Data.Maybe (Maybe(..))
 import Data.String (joinWith)
 import Data.String as String
 import Data.Tuple (Tuple(..))
-import E2E.Build (OnSessionBuilt, Prebuilt, Sources, builtOnSession)
+import E2E.Build (OnSessionBuilt, Prebuilt, Sources, builtOnSession, collectedFrom)
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
 import Effect.Ref as Ref
@@ -159,17 +159,37 @@ spec sources = describe "the front end end to end, a macro run on a session" do
   describe "the list macro of the lists package, used by another module" do
     it "builds a list of what the brackets hold, a call among them, and of what the block holds" do
       building sources [] [] "package" [ "xs", "none", "nested", "block" ] \r -> do
-        r.result `shouldEqual` Right [ "Data.List", "Data.List.Syntax", "Main" ]
+        r.result `shouldEqual` Right [ "Data.List.Syntax", "Data.List", "Main" ]
         Map.lookup "xs" r.values `shouldEqual` Just "Cons(1, Cons(2, Nil))"
         Map.lookup "none" r.values `shouldEqual` Just "Nil"
         Map.lookup "nested" r.values `shouldEqual` Just "Cons(Cons(1, Cons(2, Nil)), Cons(Cons(3, Cons(4, Nil)), Cons(Cons(5, Cons(6, Nil)), Nil)))"
         Map.lookup "block" r.values `shouldEqual` Just "Cons(1, Cons(2, Nil))"
 
+    -- what a module imports for a macro alone is no module its program holds
+    -- to run: `Main` runs with `Data.List` and `Base.Int`, which its values
+    -- reach, and neither `Data.List.Syntax` nor `Stella.Syntax`
+    it "builds a list by the macro `Data.List` re-exports, and runs holding neither module the macro comes from" do
+      made <- onSession sources [] [] "reexported"
+      case compiled, made.outcome of
+        Left err, _ -> fail err
+        _, Left err -> fail err
+        Right syntax, Right names -> do
+          names `shouldEqual` [ "Data.List.Syntax", "Data.List", "Main" ]
+          let main = Array.find (\p -> p.dmo.name == ModuleName "Main") made.lowered
+          map _.dmo.imports main `shouldEqual` Just [ ModuleName "Data.List" ]
+          map _.interface.imports main `shouldEqual` Just [ ModuleName "Data.List" ]
+          case collectedFrom [ ModuleName "Main" ] (syntax.modules <> map _.dmo made.lowered) of
+            Left err -> fail err
+            Right held -> do
+              map _.name held `shouldEqual` map ModuleName [ "Base.Int", "Data.List", "Main" ]
+              values <- loaded held [ "xs" ]
+              Map.lookup "xs" values `shouldEqual` Just "Cons(1, Cons(2, Nil))"
+
     it "reports a constructor the call's module does not import at the call, written in the quotation" do
       building sources [] [] "unimported" [] \r ->
         r.result `shouldEqual` Left
-          """fixtures/source/lists/unimported/Main.stel:5:6: There is no constructor `Cons` in scope (written at stella-packages/lists/src/Data/List/Syntax.stel:18:23)
-fixtures/source/lists/unimported/Main.stel:5:6: There is no constructor `Nil` in scope (written at stella-packages/lists/src/Data/List/Syntax.stel:21:33)"""
+          """fixtures/source/lists/unimported/Main.stel:5:6: There is no constructor `Cons` in scope (written at stella-packages/lists/src/Data/List/Syntax.stel:19:23)
+fixtures/source/lists/unimported/Main.stel:5:6: There is no constructor `Nil` in scope (written at stella-packages/lists/src/Data/List/Syntax.stel:22:33)"""
 
     it "reports what an element names at the call, written in the call's input, through every call it stands in" do
       building sources [] [] "unbound" [] \r ->

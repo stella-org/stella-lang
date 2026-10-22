@@ -1,0 +1,8 @@
+-- A list the package's macro writes, the macro imported from `Data.List`, which
+-- re-exports it, beside the type and its constructors.
+module Main (xs) where
+
+import Data.List (List(..), macro ls)
+
+xs :: List Int
+xs = ls%[1, 2]

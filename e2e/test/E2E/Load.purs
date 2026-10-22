@@ -260,9 +260,9 @@ spec sources = describe "Steam.Load" do
         )
         (GlobalExpectsCaptures libAdd2 1)
 
-  describe "what a header says a term may name" do
+  describe "what a module's imports say a term may name" do
     it "refuses a reference to a module this one does not import" do
-      -- the order modules were loaded in adds nothing to the header: `Base.Int` is
+      -- the order modules were loaded in adds nothing to the imports: `Base.Int` is
       -- loaded, and `Main` does not import it
       refusedBy sources
         ( \dmos ->
