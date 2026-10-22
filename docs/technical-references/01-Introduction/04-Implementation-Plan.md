@@ -1722,7 +1722,7 @@ What a `stellac` command is given, and the ordinary build `stellac compile` runs
 | A `stella.json` lacking a field, in the file or in `options`; one with a field no rule names, in either; one whose `formatVersion` is not `0`; one with a field of another kind, or an empty string | Refused by `compile` and `graph` alike, each error naming its field; nothing read or written |
 | A `stella.json` standing elsewhere than the directory the command runs in, its `output`, paths, interfaces, and objects relative | Each resolved against the directory the file stands in |
 | `modules` listing one file as `src/A.stel` and as `src/./B/../A.stel` | Refused as a file listed twice |
-| `steamCommand` a bare name, a relative path, and an absolute path | Looked for on `PATH`; resolved against the directory the file stands in; taken as it stands |
+| `steamCmd` a bare name, a relative path, `./steam` of a `stella.json` in the directory the command runs in, and an absolute path | Looked for on `PATH`; resolved against the directory the file stands in to a path from the root, the third a path still; taken as it stands |
 | `modules` listing a module twice, a file twice, `Prim`, a module `dependencies` lists, or a name no module may have; `traceOptimizer` naming a module `modules` does not list | Refused by `compile` and `graph` alike, naming the entry; no file of `modules` read |
 | `modules` listing a seed module | Refused by `compile`; `graph` prints the graph of the seed modules' sources |
 | `modules` empty, with `dependencies` listing an interface that does not decode, and with a sound one | `compile` refuses the first and, for the second, writes nothing and succeeds; `graph` prints no module for both |
@@ -1730,6 +1730,6 @@ What a `stellac` command is given, and the ordinary build `stellac compile` runs
 | `modules` listing `B` before `A`, which `B` imports, and a module importing itself | Refused before any module is compiled, where the import is written |
 | The same listing `A` first, and two modules neither of which imports the other, in either order | Compiled in the order listed |
 | `traceOptimizer` naming two modules, and `[]` | `<output>/<M>.mir` for each module named; none |
-| `logLevel` `error`, and `monochrome` `true` | No progress said; messages without colour |
+| `logLevel` `error`; `logLevel` `debug` with `monochrome` `false`, and with `true` | No progress said; what is said coloured, and not |
 | `stellac compile` given no file, or more than one; `stellac build` | Refused |
 | A package built by `compile` | `<output>/<M>.dmo` and `<output>/<M>.dmi` for each module, and nothing else |

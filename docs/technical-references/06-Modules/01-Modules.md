@@ -495,7 +495,7 @@ No pass rewrites a module yet, so the optimizer stops before a first round, and 
 { "formatVersion": 0,
   "options": {
     "output": "output", "emitCore": false, "traceOptimizer": [],
-    "steamCommand": "steam", "logLevel": "info", "monochrome": false },
+    "steamCmd": "steam", "logLevel": "info", "monochrome": false },
   "modules": [
     { "module": "A.B.C", "path": "src/A/B/C.stel" },
     { "module": "Test.A.B.C", "path": "test/A/B/C.stel" } ],
@@ -513,7 +513,7 @@ No pass rewrites a module yet, so the optimizer stops before a first round, and 
   | `output` | the directory each module's files are written to |
   | `emitCore` | whether each module's Typed Core is written as `<M>.core.json`, which this version does not write and warns of |
   | `traceOptimizer` | the modules whose optimizer rounds are traced, each to `<M>.mir`: modules `modules` lists, none twice |
-  | `steamCommand` | the Steam executable a compile-time session is started with, run with no shell: a name holding no `/` is looked for on `PATH`, any other relative path is resolved against the directory the file stands in, and an absolute path is taken as it stands |
+  | `steamCmd` | the Steam executable a compile-time session is started with, run with no shell: a name holding no `/` is looked for on `PATH`, any other relative path is resolved against the directory the file stands in, to a path from the root of the file system so that it stays a path, and an absolute path is taken as it stands |
   | `logLevel` | `debug`, `info`, `warn`, or `error`: a message of a lower level is not said |
   | `monochrome` | whether messages are said without colour |
 
