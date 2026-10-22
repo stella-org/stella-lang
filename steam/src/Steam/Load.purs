@@ -193,9 +193,9 @@ data LoadError
   | NoSuchCtor (Qualified Ident)
   | NoSuchForeign (Qualified Ident)
   | NoSuchGlobal (Qualified Ident)
-  -- | A reference to a name of a module this one does not import. A header is what
-  -- | says which modules a term may name, and the order modules are loaded in adds
-  -- | nothing to it.
+  -- | A reference to a name of a module this one does not import. Its `IMPORTS` are
+  -- | what say which modules a term may name, and the order modules are loaded in
+  -- | adds nothing to them.
   | NotImported ModuleName (Qualified Ident)
   -- | A reference to a name the module declaring it does not export.
   | NotExported (Qualified Ident)
@@ -335,8 +335,8 @@ loadWith initialization store dmo = do
       }
 
   -- the references, against those tables and the registry. **A term names this
-  -- module or one it imports**, which the header says and the order of loading adds
-  -- nothing to
+  -- module or one it imports**, which its `IMPORTS` say and the order of loading
+  -- adds nothing to
   let scope = { here: dmo.name, allowed: Set.insert dmo.name (Set.fromFoldable dmo.imports) }
   ctorRefs <- traverse (resolveCtor withDeclarations scope) dmo.ctorRefs
   foreigns <- traverse (resolveForeign withDeclarations scope) dmo.foreignRefs
@@ -504,7 +504,7 @@ unitValue identities = map (\id -> VData id []) (internCtorIn identities unitCto
 -- | That a reference reaches a declaration of the kind its table calls for, and
 -- | that the module declaring it published the name where that module is not this
 -- | one.
--- | What a module's terms may name: itself, and the modules its header imports.
+-- | What a module's terms may name: itself, and the modules its `IMPORTS` hold.
 type Scope =
   { here :: ModuleName
   , allowed :: Set ModuleName

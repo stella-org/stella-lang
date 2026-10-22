@@ -1,17 +1,26 @@
--- | The global names a Core term refers to.
+-- | The global names a Core term refers to, and the modules a module's terms
+-- | depend on when it runs.
 -- |
--- | This is the one reading of what a term depends on. Declaration checking
--- | reads it to refuse a `nonrec` that refers forwards, and elaboration reads it
--- | off the right-hand sides it committed to compute the order of a module's
--- | value declarations; the two agree because they are the same function.
+-- | `globalsOf` is the one reading of what a term depends on as it is
+-- | initialized. Declaration checking reads it to refuse a `nonrec` that
+-- | refers forwards, and elaboration reads it off the right-hand sides it
+-- | committed to compute the order of a module's value declarations; the two
+-- | agree because they are the same function. `runtimeDependencies` reads the
+-- | same walk, with the constructors a dispatch names beside it.
 module Stella.Compiler.TypedCore.Reference
   ( globalsOf
+  , runtimeDependencies
   ) where
 
 import Prelude
 
-import Stella.Compiler.TypedCore.Name (Ident, Qualified)
+import Prim as P
+
+import Stella.Compiler.TypedCore.Domain (compareByScalar)
+import Stella.Compiler.TypedCore.Name (Ident, ModuleName(..), Qualified(..))
+import Stella.Compiler.TypedCore.Prim (primModule)
 import Stella.Compiler.TypedCore.Term (DecisionTree(..), Expr(..), Handler, opClauseBody)
+import Data.Array as Array
 import Data.Foldable (foldMap)
 import Data.Set (Set)
 import Data.Set as Set
@@ -24,50 +33,73 @@ import Data.Set as Set
 -- | type refer to no value declaration. A data constructor applied in the term is
 -- | reached through `Global` and is among what this returns.
 globalsOf :: forall a. Expr a -> Set (Qualified Ident)
-globalsOf = case _ of
-  Var _ _ -> Set.empty
-  Global _ name _ -> Set.singleton name
-  Lit _ _ -> Set.empty
-  Lam _ _ _ _ body -> globalsOf body
-  App _ f x -> globalsOf f <> globalsOf x
-  TyLam _ _ _ body -> globalsOf body
-  TyApp _ e _ -> globalsOf e
-  ConstraintLam _ _ body -> globalsOf body
-  ConstraintApp _ e -> globalsOf e
-  Let _ _ _ value body -> globalsOf value <> globalsOf body
-  LetRec _ bindings body -> foldMap (globalsOf <<< _.value) bindings <> globalsOf body
-  Case _ scrutinees tree -> foldMap globalsOf scrutinees <> treeGlobals tree
-  LetJoin _ _ _ _ value body -> globalsOf value <> globalsOf body
-  Jump _ _ args -> foldMap globalsOf args
-  RecordEmpty _ -> Set.empty
-  RecordExtend _ _ value rest -> globalsOf value <> globalsOf rest
-  RecordSelect _ _ e -> globalsOf e
-  RecordRestrict _ _ e -> globalsOf e
-  RecordUpdate _ _ rec value -> globalsOf rec <> globalsOf value
-  RecordMerge _ left right -> globalsOf left <> globalsOf right
-  VariantInject _ _ _ e -> globalsOf e
-  VariantWeaken _ _ _ e -> globalsOf e
-  VariantAbsurd _ _ e -> globalsOf e
-  Perform _ _ _ _ e -> globalsOf e
-  Handle _ e handler -> globalsOf e <> handlerGlobals handler
-  Region _ _ _ initial body -> foldMap globalsOf initial <> globalsOf body
-  ReadCell _ _ _ -> Set.empty
-  WriteCell _ _ _ value -> globalsOf value
-  OpenEff _ _ e -> globalsOf e
+globalsOf = namesOf false
 
-treeGlobals :: forall a. DecisionTree a -> Set (Qualified Ident)
-treeGlobals = case _ of
-  Leaf e -> globalsOf e
-  Bind _ _ tree -> treeGlobals tree
-  SwitchCtor _ branches fallback ->
-    foldMap (treeGlobals <<< _.tree) branches <> foldMap treeGlobals fallback
-  SwitchLit _ branches fallback ->
-    foldMap (treeGlobals <<< _.tree) branches <> treeGlobals fallback
-  SwitchKey _ branches fallback ->
-    foldMap (treeGlobals <<< _.tree) branches <> foldMap treeGlobals fallback
-  Guard condition consequent alternative ->
-    globalsOf condition <> treeGlobals consequent <> treeGlobals alternative
+-- | The modules the terms given depend on when they run, of the module named:
+-- | each module, other than that one and `Prim`, declaring what a `Global` of
+-- | them names or a constructor a `switchCtor` of them dispatches on, in the
+-- | order of the names' scalar values (D51).
+-- |
+-- | An operation, an effect a handler names, a key, and a type name no module a
+-- | program must hold to run: what they are compared by is an identity loading
+-- | assigns them.
+runtimeDependencies :: forall a. ModuleName -> P.Array (Expr a) -> P.Array ModuleName
+runtimeDependencies self terms =
+  Array.sortBy (\(ModuleName a) (ModuleName b) -> compareByScalar a b)
+    (Array.filter (\m -> m /= self && m /= primModule) (Array.fromFoldable modules))
+  where
+  modules = Set.map (\(Qualified m _) -> m) (foldMap (namesOf true) terms)
 
-handlerGlobals :: forall a. Handler a -> Set (Qualified Ident)
-handlerGlobals handler =
-  globalsOf handler.returnClause.body <> foldMap (globalsOf <<< opClauseBody) handler.opClauses
+-- | The names the term refers to: every `Global`'s, and, where the flag says so,
+-- | every constructor a `switchCtor` dispatches on.
+namesOf :: forall a. P.Boolean -> Expr a -> Set (Qualified Ident)
+namesOf dispatched = go
+  where
+  go = case _ of
+    Var _ _ -> Set.empty
+    Global _ name _ -> Set.singleton name
+    Lit _ _ -> Set.empty
+    Lam _ _ _ _ body -> go body
+    App _ f x -> go f <> go x
+    TyLam _ _ _ body -> go body
+    TyApp _ e _ -> go e
+    ConstraintLam _ _ body -> go body
+    ConstraintApp _ e -> go e
+    Let _ _ _ value body -> go value <> go body
+    LetRec _ bindings body -> foldMap (go <<< _.value) bindings <> go body
+    Case _ scrutinees tree -> foldMap go scrutinees <> treeNames tree
+    LetJoin _ _ _ _ value body -> go value <> go body
+    Jump _ _ args -> foldMap go args
+    RecordEmpty _ -> Set.empty
+    RecordExtend _ _ value rest -> go value <> go rest
+    RecordSelect _ _ e -> go e
+    RecordRestrict _ _ e -> go e
+    RecordUpdate _ _ rec value -> go rec <> go value
+    RecordMerge _ left right -> go left <> go right
+    VariantInject _ _ _ e -> go e
+    VariantWeaken _ _ _ e -> go e
+    VariantAbsurd _ _ e -> go e
+    Perform _ _ _ _ e -> go e
+    Handle _ e handler -> go e <> handlerNames handler
+    Region _ _ _ initial body -> foldMap go initial <> go body
+    ReadCell _ _ _ -> Set.empty
+    WriteCell _ _ _ value -> go value
+    OpenEff _ _ e -> go e
+
+  treeNames = case _ of
+    Leaf e -> go e
+    Bind _ _ tree -> treeNames tree
+    SwitchCtor _ branches fallback ->
+      (if dispatched then Set.fromFoldable (map _.ctor branches) else Set.empty)
+        <> foldMap (treeNames <<< _.tree) branches
+        <> foldMap treeNames fallback
+    SwitchLit _ branches fallback ->
+      foldMap (treeNames <<< _.tree) branches <> treeNames fallback
+    SwitchKey _ branches fallback ->
+      foldMap (treeNames <<< _.tree) branches <> foldMap treeNames fallback
+    Guard condition consequent alternative ->
+      go condition <> treeNames consequent <> treeNames alternative
+
+  handlerNames :: Handler a -> Set (Qualified Ident)
+  handlerNames handler =
+    go handler.returnClause.body <> foldMap (go <<< opClauseBody) handler.opClauses

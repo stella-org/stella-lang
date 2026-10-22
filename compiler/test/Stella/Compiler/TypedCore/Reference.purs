@@ -1,8 +1,11 @@
--- | The global names a Core term refers to.
+-- | The global names a Core term refers to, and the modules a module's terms
+-- | depend on when it runs.
 -- |
--- | What these cases are for is that **`Global` is the whole of it**: names a
--- | term carries for another purpose — the constructor a dispatch selects, the
--- | effect a handler removes — are no reference to a value declaration.
+-- | What the cases of `globalsOf` are for is that **`Global` is the whole of
+-- | it**: names a term carries for another purpose — the constructor a dispatch
+-- | selects, the effect a handler removes — are no reference to a value
+-- | declaration. A module a dispatch selects a constructor of is one the terms
+-- | depend on when they run.
 module Test.Stella.Compiler.TypedCore.Reference (spec) where
 
 import Prelude
@@ -10,6 +13,7 @@ import Prelude
 import Prim as P
 
 import Stella.Compiler.TypedCore (DecisionTree(..), EffName(..), Expr(..), Ident(..), Literal(..), ModuleName(..), OpClause(..), OpName(..), Occurrence(..), Qualified(..), RegionName(..), RowEntry(..), RowKey(..), Symbol(..), TyName(..), Type(..), globalsOf)
+import Stella.Compiler.TypedCore.Reference (runtimeDependencies)
 import Data.Maybe (Maybe(..))
 import Data.Set as Set
 import Test.Spec (Spec, describe, it)
@@ -58,3 +62,18 @@ spec = describe "Stella.Compiler.TypedCore.Reference" do
   it "names the globals of a region's initial values and its body" do
     globalsOf (Region 0 (RegionName "r") [ { key: SymbolKey (Symbol "n"), ty: unitTy } ] [ Global 0 (global "i") [] ] (WriteCell 0 (RegionName "r") (SymbolKey (Symbol "n")) (Global 0 (global "b") [])))
       `shouldEqual` Set.fromFoldable [ global "i", global "b" ]
+
+  it "depends at run time on the modules of the globals and of the constructors dispatched on, the module itself and Prim aside, in the order of their names' scalar values" do
+    let
+      -- `U+E000` stands below an astral character by scalar value, and above it
+      -- by UTF-16 code unit
+      inModule m x = Qualified (ModuleName m) (Ident x)
+      term =
+        Case 0 [ Global 0 (inModule "M\x1F600" "xs") [] ]
+          ( SwitchCtor (OccScrutinee 0)
+              [ { ctor: inModule "Lists" "Nil", tree: Leaf (Global 0 (global "f") []) }
+              , { ctor: inModule "Prim" "Unit", tree: Leaf (Global 0 (inModule "M\xE000" "y") []) }
+              ]
+              Nothing
+          )
+    runtimeDependencies main' [ term ] `shouldEqual` map ModuleName [ "Lists", "M\xE000", "M\x1F600" ]

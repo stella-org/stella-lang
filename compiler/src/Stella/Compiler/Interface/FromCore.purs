@@ -21,6 +21,12 @@
 -- | given under the module's name is a type of the module as a declared one
 -- | is. The order of a data type's constructors and of an
 -- | effect's operations is the declaration's.
+-- |
+-- | **What it imports is given beside it**, and not read off the Core module,
+-- | whose imports are the modules it depends on when it runs (D51). A module of
+-- | source imports what its header does; one written in Core has no header, so
+-- | its writer names the modules, of those it was checked against, whose
+-- | interfaces a module reaching its own must reach.
 module Stella.Compiler.Interface.FromCore
   ( FromCoreError(..)
   , interfaceOfCore
@@ -46,7 +52,7 @@ import Stella.Compiler.Interface.Scheme (plainScheme)
 import Stella.Compiler.Surface.Decl (Observation(..))
 import Stella.Compiler.TypedCore (Decl(..), Declared, Module)
 import Stella.Compiler.TypedCore.Decl (Export(..)) as Core
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), OpName(..), Qualified(..), TyName(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName, OpName(..), Qualified(..), TyName(..))
 import Stella.Compiler.TypedCore.Prim (primModule)
 import Stella.Compiler.TypedCore.Signature (TyConInfo(..))
 
@@ -60,16 +66,16 @@ data FromCoreError
   | ArityNotOwn Ident
   | ArityBelowOne Ident Int
 
--- | The interface of a module written in Core, checked as `Declared` says, with
--- | the arities its translation gave.
-interfaceOfCore :: forall a. Module a -> Declared a -> Map Ident Int -> Either FromCoreError ModuleInterface
-interfaceOfCore m declared arities = do
+-- | The interface of a module written in Core, checked as `Declared` says,
+-- | importing the modules given, with the arities its translation gave.
+interfaceOfCore :: forall a. Module a -> Declared a -> Array ModuleName -> Map Ident Int -> Either FromCoreError ModuleInterface
+interfaceOfCore m declared imports arities = do
   types <- for ownTypes typeEntry
   exports <- exportsOf
   traverse_ (arityOk exports) (Map.toUnfoldable arities :: Array (Tuple Ident Int))
   pure
     { name: self
-    , imports: Array.filter (_ /= primModule) m.imports
+    , imports: Array.filter (_ /= primModule) imports
     , exports
     , declarations: emptyDeclarations
         { values = values

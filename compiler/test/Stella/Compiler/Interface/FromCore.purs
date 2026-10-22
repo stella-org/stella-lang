@@ -57,9 +57,13 @@ libCore =
 
 -- | `Lib`'s interface, with the arities given.
 interfaceWith :: Map.Map Ident Int -> Either FromCoreError ModuleInterface
-interfaceWith arities = case declareAnnotated primSignature libCore of
+interfaceWith = interfaceImporting []
+
+-- | `Lib`'s interface, importing the modules given, with the arities given.
+interfaceImporting :: Array ModuleName -> Map.Map Ident Int -> Either FromCoreError ModuleInterface
+interfaceImporting imports arities = case declareAnnotated primSignature libCore of
   Left _ -> Left (DataTypeUndeclared (TyName "declare"))
-  Right declared -> interfaceOfCore libCore declared arities
+  Right declared -> interfaceOfCore libCore { imports = [ ModuleName "Ran" ] } declared imports arities
 
 withInterface :: (ModuleInterface -> Aff Unit) -> Aff Unit
 withInterface k = case interfaceWith (Map.singleton (Ident "ext") 1) of
@@ -78,6 +82,11 @@ spec = describe "Stella.Compiler.Interface.FromCore" do
         map show (sortOf "Box") `shouldEqual` Just (show (SortConstructor (Qualified lib (TyName "Box"))))
         map show (sortOf "get") `shouldEqual` Just (show (SortOperation (Qualified lib (EffName "E"))))
         map show (sortOf "mac") `shouldEqual` Just (show SortValue)
+
+    it "imports the modules given beside it, and not those its Core imports, Prim among none" do
+      case interfaceImporting [ ModuleName "Read", ModuleName "Prim" ] Map.empty of
+        Left err -> fail (show err)
+        Right i -> i.imports `shouldEqual` [ ModuleName "Read" ]
 
     it "exports a value carrying Prim.macro as a macro, and as no value" do
       withInterface \i -> do

@@ -136,7 +136,7 @@ import Stella.Compiler.TypedCore.Declare (ctorInfo, dataEntry)
 import Stella.Compiler.TypedCore.AttributeCheck (AttributeError, checkAttribute)
 import Stella.Compiler.TypedCore.Check (CheckError(NotAValueForm))
 import Stella.Compiler.TypedCore.Initialization (localGroupViolations, topLevelViolations)
-import Stella.Compiler.TypedCore.Reference (globalsOf)
+import Stella.Compiler.TypedCore.Reference (globalsOf, runtimeDependencies)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName, OpName(..), Qualified(..), TyName(..), TyVar, unqualified)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
 import Stella.Compiler.TypedCore.Kind (Kind(..), KindScheme, RowElemKind(..))
@@ -1440,10 +1440,12 @@ type ElaboratedModule =
 -- | each member reading only the members written before it, judged on what the
 -- | source writes, an η-expansion making no read later; a read that is not is
 -- | reported where the reference stands and where what made it immediate does.
--- | **A Core module is made only of a module with
--- | no error**: one missing a declaration would refer to what it does not bind. It imports what
--- | the module imports, and exports each value it declares that is reached from
--- | outside — by its name, as a macro, or through an operator it exports —
+-- | **A Core module is made only of a module with no error**: one missing a
+-- | declaration would refer to what it does not bind. **It imports the modules
+-- | its values depend on when they run** (D51), which are within what the header
+-- | reaches, the Core being checked against what the header reaches; and it
+-- | exports each value it declares that is reached from outside — by its name,
+-- | as a macro, or through an operator it exports —
 -- | each foreign so reached, and each data type and effect it declares and
 -- | exports, a data type with the constructors it exports of it. The Core part
 -- | of its interface holds each data type and newtype it declares, each synonym
@@ -1545,7 +1547,7 @@ assembled signature m exports elaborated =
   core =
     { annotation: m.origin
     , name: m.name
-    , imports: Array.nub (map _.module m.imports)
+    , imports: runtimeDependencies m.name (map _.body values)
     , exports: Array.concatMap typeExports elaborated.data
         <> Array.concatMap elaborationOnlyExports elaborated.data
         <> map (ExportEffect <<< _.decl.name) (Array.filter effectExported elaborated.effects)

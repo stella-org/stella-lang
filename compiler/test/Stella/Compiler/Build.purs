@@ -1348,6 +1348,32 @@ buildingAgainst inputs roots sources k = do
 moduleText :: ModuleName -> String
 moduleText (ModuleName m) = m
 
+-- | The modules each module of a package of the files given depends on, built
+-- | against `environment`: those its bytecode imports, its runtime
+-- | dependencies, and those its interface imports, its source dependencies.
+dependingOn :: Array (Tuple String String) -> (Either String (Map.Map String { runtime :: Array String, source :: Array String }) -> Aff Unit) -> Aff Unit
+dependingOn sources k = do
+  made <- liftEffect (Ref.new Map.empty)
+  let
+    files = map (\(Tuple p _) -> { path: p, within: String.split (String.Pattern "/") p }) sources
+
+    action :: CompilerAction Aff
+    action =
+      { readSource: \p -> pure case Array.find (\(Tuple q _) -> q == p) sources of
+          Just (Tuple _ text) -> Right text
+          Nothing -> Left "no such file"
+      , runParser: \_ q i -> pure (unwrapIdentity (parsers q i))
+      , synthesis: withoutSynthesizers
+      , hooks: defaultHooks
+          { onLowered = \b -> liftEffect (Ref.modify_ (Map.insert (moduleText b.dmo.name) { runtime: map moduleText b.dmo.imports, source: map moduleText b.interface.imports }) made)
+          }
+      }
+  result <- build action defaultSettings (ordinary environment) defaultSourceRoots (files :: Array PackageFile)
+  recorded <- liftEffect (Ref.read made)
+  k case result of
+    Left err -> Left (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+    Right _ -> Right recorded
+
 -- | A module's text: its header naming it and importing the modules given,
 -- | then `n = 1`, or the lines given.
 moduleOf :: String -> Array String -> Array String -> String
@@ -1458,6 +1484,61 @@ buildSpec = describe "a build" do
         Left (NameInEnvironment e) -> e.path `shouldEqual` "src/Macros.stel"
         _ -> fail "not refused"
       r.log `shouldEqual` []
+
+  describe "the modules a module depends on" do
+    let
+      -- `A` declares a type, its constructors, and values; `B` re-exports
+      -- one of the values and the type
+      declaring =
+        [ Tuple "src/A.stel" (joinWith "\n" [ "module A (T(..), t, x) where", "data T = T1 | T2", "t :: T", "t = T1", "x :: Int", "x = 1" ])
+        , Tuple "src/B.stel" (joinWith "\n" [ "module B (x, T) where", "import A (x, T)" ])
+        ]
+      dependencies files k = dependingOn (declaring <> files) case _ of
+        Left why -> fail why
+        Right made -> k made
+      of' m made = Map.lookup m made
+
+    it "are at run time those the values name, and at compile time every one the header imports" do
+      dependencies
+        [ Tuple "src/Mac.stel" (moduleOf "Mac" [ "Macros (macro unwrap)" ] [ "n :: Int", "n = unwrap%[1]" ])
+        , Tuple "src/Both.stel" (moduleOf "Both" [ "Macros (inc, macro unwrap)" ] [ "n :: Int", "n = unwrap%[inc 1]" ])
+        , Tuple "src/Attr.stel" (moduleOf "Attr" [ "Marks (attribute note)" ] [ "@[note 1]", "n :: Int", "n = 1" ])
+        , Tuple "src/By.stel" (moduleOf "By" [ "Synth (resolve)" ] [ "data Dict a = Dict a", "g :: {{ d :: Dict Int by resolve }} -> Int -> Int", "g d y = y" ])
+        , Tuple "src/Typed.stel" (moduleOf "Typed" [ "A (T)" ] [ "h :: T -> T", "h y = y" ])
+        ]
+        \made -> do
+          -- a macro, an attribute, a synthesizer, and a type are nothing a
+          -- program holds to run
+          of' "Mac" made `shouldEqual` Just { runtime: [], source: [ "Macros" ] }
+          of' "Attr" made `shouldEqual` Just { runtime: [], source: [ "Marks" ] }
+          of' "By" made `shouldEqual` Just { runtime: [], source: [ "Synth" ] }
+          of' "Typed" made `shouldEqual` Just { runtime: [], source: [ "A" ] }
+          -- a value of the module imported with the macro is
+          of' "Both" made `shouldEqual` Just { runtime: [ "Macros" ], source: [ "Macros" ] }
+
+    it "hold the module declaring a value re-exported, and not the one re-exporting it, and the one declaring a constructor a pattern dispatches on" do
+      dependencies
+        [ Tuple "src/Through.stel" (moduleOf "Through" [ "B (x)" ] [ "m :: Int", "m = x" ])
+        , Tuple "src/Dispatch.stel" (moduleOf "Dispatch" [ "A (T(..))" ] [ "k :: T -> Int", "k y = case y of", "  T1 -> 1", "  T2 -> 2" ])
+        ]
+        \made -> do
+          of' "Through" made `shouldEqual` Just { runtime: [ "A" ], source: [ "B" ] }
+          of' "Dispatch" made `shouldEqual` Just { runtime: [ "A" ], source: [ "A" ] }
+          of' "B" made `shouldEqual` Just { runtime: [], source: [ "A" ] }
+
+    it "hold no module only for an operation the values perform or an effect they handle" do
+      dependencies
+        [ Tuple "src/Ef.stel" (joinWith "\n" [ "module Ef (Console(..)) where", "effect Console where", "  log :: Int ->* Unit" ])
+        , Tuple "src/Eff.stel"
+            ( moduleOf "Eff" [ "Ef" ]
+                [ "p :: Unit -> Unit / {| Console |}", "p _ = log 1", "q :: Unit", "q = handle log 2 with", "  Console | log _ -> ()" ]
+            )
+        ]
+        \made -> of' "Eff" made `shouldEqual` Just { runtime: [], source: [ "Ef" ] }
+
+    it "are in the order of their names, whatever order the header writes" do
+      dependencies [ Tuple "src/Ordered.stel" (moduleOf "Ordered" [ "Macros (inc)", "A (x)" ] [ "n :: Int", "n = inc x" ]) ] \made ->
+        of' "Ordered" made `shouldEqual` Just { runtime: [ "A", "Macros" ], source: [ "Macros", "A" ] }
 
   describe "a toolchain build" do
     let
