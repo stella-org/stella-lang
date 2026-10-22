@@ -14,7 +14,8 @@
 -- | 1. A target whose remainder is one flexible tail `?m` takes the compatible
 -- |    union of the sources of every fit whose target's remainder is `?m`.
 -- | 2. A source whose remainder is one instantiation row `?t` takes its target's
--- |    remainder.
+-- |    remainder, but for the known keys the obligations on `?t` require it to
+-- |    lack, which stay with the fit as what it widens.
 -- |
 -- | **Each round's assignments are read off the state as it stands and made
 -- | together**, rule 1's before rule 2's; one that depends on another — its
@@ -54,7 +55,7 @@ import Stella.Compiler.Elaborate.CorePlus.Row (XRowNormalForm, rebuild)
 import Stella.Compiler.Elaborate.CorePlus.Term (FitId)
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType(..), metasOf)
 import Stella.Compiler.Elaborate.Driver.Loop (Attempter, AttempterM, RunResult(..), identically, runAttemptingM)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), SessionEnv, SolverState, atLevel, boundaryFits, currentMetas, fitRemainders, formUnion, runElabIn, unify)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), SessionEnv, SolverState, atLevel, boundaryFits, currentMetas, fitRemainders, formUnion, lackedKeys, runElabIn, unify)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitRecord, FitState(..))
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Entry, ObligationId, watchedBy)
 import Stella.Compiler.Elaborate.Mechanism.Pending (HandlerGoal, Job(..), Pending, PendingId, Site, goalOf)
@@ -384,14 +385,17 @@ assignmentsOf component boundaries = do
       into | Just first <- Array.head into ->
         map (map (\u -> [ { meta: m, solution: rebuild u, site: first.site } ])) (formUnion (map (\f -> { site: f.site, row: f.source }) into))
       _ -> pure (Right [])
+    -- an instantiation tail takes its target's remainder but for the keys it
+    -- is required to lack, which stay with the fit as what it widens; a tail
+    -- of the remainder stays in the solution, the obligations deciding it.
+    -- They are read once rule 1's unions have required what they need
+    rule2 <- map Array.catMaybes $ for fits \f -> case lone f.source of
+      Just t | isInstantiationRow metas t -> do
+        lacked <- lackedKeys t
+        pure (Just { meta: t, solution: rebuild f.target { known = Map.filterKeys (\key -> not (Set.member key lacked)) f.target.known }, site: f.site })
+      _ -> pure Nothing
     after <- currentMetas
     let
-      rule2 = Array.mapMaybe
-        ( \f -> case lone f.source of
-            Just t | isInstantiationRow metas t -> Just { meta: t, solution: rebuild f.target, site: f.site }
-            _ -> Nothing
-        )
-        fits
       formed = Array.concat (Array.mapMaybe (either (const Nothing) Just) rule1)
       unformed = Set.unions (Array.mapMaybe (either Just (const Nothing)) rule1)
     -- a union whose payloads were equated may have solved a row the rules

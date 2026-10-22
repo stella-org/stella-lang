@@ -59,7 +59,8 @@ import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, Decis
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), OpName(..), Qualified(..), RegionName(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, recordTy, stringTy, unitCtor, unitTy, variantTy)
-import Stella.Compiler.TypedCore.Type (RowEntry(..), RowKey(..), Type(..))
+import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), Type(..))
+import Stella.Compiler.TypedCore.Equality (typeEquiv)
 import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -1788,6 +1789,168 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     it "reports a value written to a cell not of the cell's type where the value stands" do
       elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle tick () with", "  var n := 0", "  Tick fast | tick _ -> let _ = n := \"x\" in 1" ]) \r ->
         map spanned r.errors `shouldEqual` [ "12:38-12:41 rejected" ]
+
+  describe "a handler type `~>`" do
+    let
+      schemeOf name values = map _.scheme.body (Array.find (\x -> x.name == inM name) values)
+      -- the scheme of the value named, α-equivalent to the type given
+      equivalent name values expected = case schemeOf name values of
+        Just t | typeEquiv t expected -> pure unit
+        Just t -> fail (printType (fromCore t) <> " is not " <> printType (fromCore expected))
+        Nothing -> fail ("no scheme of " <> name)
+      tv = TVar <<< TyVar
+      -- `forall e. C̄ => forall a. (Unit -{( E, t̄ | e )}-> a) -{( t̄ | e )}-> a`,
+      -- `C̄` each effect named absent from `e`, in the order given
+      expansion source targets absent =
+        TForall (TyVar "e") (KRow RowEffect)
+          ( Array.foldr (\n t -> TConstrained (Lacks (EffectKey (inEffect n)) (tv "e")) t)
+              (TForall (TyVar "a") KType (fn (fn (TCon unitTy []) (row (Array.cons source targets)) (tv "a")) (row targets) (tv "a")))
+              absent
+          )
+      row names = Array.foldr (\n r -> TRowExtend (RowEffectEntry (inEffect n) []) r) (tv "e") names
+      inEffect = Qualified (ModuleName "M") <<< EffName
+      -- lines 3 to 16
+      handlers =
+        [ "effect Fuel where"
+        , "  tick :: Unit ->* Unit"
+        , "effect Console where"
+        , "  say :: Int ->* Unit"
+        , "effect Lift where"
+        , "  lift :: Int ->* Unit"
+        , "effect Ask where"
+        , "  ask :: Unit ->* Int"
+        , "runWithLimit :: Int -> Fuel ~> ()"
+        , "runWithLimit limit thunk = handle thunk () with"
+        , "  Fuel | fast tick _ -> ()"
+        , "runConsole :: Console ~> ( Lift )"
+        , "runConsole thunk = handle thunk () with"
+        , "  Console | fast say n -> lift n"
+        ]
+
+    it "is read as its expansion, its atoms under the binder of its residual row, ahead of its answer's, and value parameters ahead of it" do
+      elaborating handlers \r -> do
+        map at r.errors `shouldEqual` []
+        equivalent "runWithLimit" r.values (pureFn int (expansion "Fuel" [] [ "Fuel" ]))
+        equivalent "runConsole" r.values (expansion "Console" [ "Lift" ] [ "Console", "Lift" ])
+        checked r \core -> shapes core `shouldEqual` [ "nonrec runWithLimit", "nonrec runConsole" ]
+
+    it "is expanded afresh where it is written, two in one type sharing no variable, and is one type whatever order its targets are written in" do
+      elaborating (handlers <> [ "two :: (Console ~> ( Lift )) -> (Fuel ~> ()) -> Int", "two _ _ = 1" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case schemeOf "two" r.values of
+          Just (TApp (TApp (TApp _ (TForall e1 _ (TConstrained _ (TConstrained _ (TForall a1 _ _))))) _) (TApp (TApp (TApp _ (TForall e2 _ (TConstrained _ (TForall a2 _ _)))) _) _)) ->
+            Array.length (Array.nub [ e1, a1, e2, a2 ]) `shouldEqual` 4
+          other -> fail ("not two expansions: " <> show other)
+        equivalent "two" r.values (pureFn (expansion "Console" [ "Lift" ] [ "Console", "Lift" ]) (pureFn (expansion "Fuel" [] [ "Fuel" ]) int))
+      let
+        lowering targets = handlers <> [ "lower :: Console ~> " <> targets, "lower thunk = handle thunk () with", "  Console | fast say n -> lift n" ]
+      elaborating (lowering "( Lift, Fuel )") \forward -> elaborating (lowering "( Fuel, Lift )") \backward -> do
+        map at (forward.errors <> backward.errors) `shouldEqual` []
+        equivalent "lower" forward.values (expansion "Console" [ "Lift", "Fuel" ] [ "Console", "Fuel", "Lift" ])
+        equivalent "lower" backward.values (expansion "Console" [ "Lift", "Fuel" ] [ "Console", "Fuel", "Lift" ])
+
+    it "stands as an argument, a result, a field of a record or of a data type, a synonym's body, an annotation, and a local signature" do
+      elaborating
+        ( handlers <>
+            [ "data Box = Box (Console ~> ( Lift ))"
+            , "type Lowering = Fuel ~> ()"
+            , "fromRecord :: { console :: Console ~> ( Lift ) } -> (Unit -> Int / {| Console |}) -> Int / {| Lift |}"
+            , "fromRecord r work = r.console work"
+            , "fromBox :: Box -> (Unit -> Int / {| Console |}) -> Int / {| Lift |}"
+            , "fromBox b work = case b of"
+            , "  Box h -> h work"
+            , "mkLimit :: Int -> Lowering"
+            , "mkLimit n t = runWithLimit n t"
+            , "limited :: (Unit -> Int / {| Fuel |}) -> Int"
+            , "limited w = mkLimit 1000 w"
+            , "annotated :: (Unit -> Int / {| Fuel |}) -> Int"
+            , "annotated w = ((\\t -> runWithLimit 1 t) :: Fuel ~> ()) w"
+            , "local :: (Unit -> Int / {| Fuel |}) -> Int"
+            , "local w = let"
+            , "    h :: Lowering"
+            , "    h t = runWithLimit 1000 t"
+            , "  in h w"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          equivalent "mkLimit" r.values (pureFn int (expansion "Fuel" [] [ "Fuel" ]))
+          checked r \core -> shapes core `shouldEqual`
+            [ "nonrec runWithLimit", "nonrec runConsole", "nonrec fromRecord", "nonrec fromBox", "nonrec mkLimit", "nonrec limited", "nonrec annotated", "nonrec local" ]
+
+    it "is a type of rank 2 where it stands as an argument, a handler passing as it is" do
+      elaborating
+        ( handlers <>
+            [ "applyHandler :: (Console ~> ( Lift )) -> (Unit -> Int / {| Console |}) -> Int / {| Lift |}"
+            , "applyHandler h work = h work"
+            , "applied :: (Unit -> Int / {| Console |}) -> Int / {| Lift |}"
+            , "applied w = applyHandler runConsole w"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          checked r \core -> shapes core `shouldEqual` [ "nonrec runWithLimit", "nonrec runConsole", "nonrec applyHandler", "nonrec applied" ]
+
+    it "is instantiated where an application gives it and it is applied, as a handler item among them" do
+      elaborating
+        ( handlers <>
+            [ "direct :: (Unit -> Int / {| Fuel |}) -> Int"
+            , "direct w = runWithLimit 1000 w"
+            , "item :: Unit -> Int"
+            , "item _ = handle (let _ = tick () in 1) with"
+            , "  runWithLimit 1000"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          checked r \core -> shapes core `shouldEqual` [ "nonrec runWithLimit", "nonrec runConsole", "nonrec direct", "nonrec item" ]
+
+    it "is held polymorphically by a binding only under a signature, its right-hand side a function where an application gives it" do
+      let
+        applyFuel = [ "applyFuel :: (Fuel ~> ()) -> (Unit -> Int / {| Fuel |}) -> Int", "applyFuel h work = h work" ]
+        withFuel = handlers <> applyFuel
+      -- the application is no form that may move under the `Λ` the argument's
+      -- quantifiers open
+      elaborating (withFuel <> [ "direct :: (Unit -> Int / {| Fuel |}) -> Int", "direct w = applyFuel (runWithLimit 1000) w" ]) \r ->
+        map at r.errors `shouldEqual` [ "20:23 rejected" ]
+      elaborating (withFuel <> [ "expanded :: (Unit -> Int / {| Fuel |}) -> Int", "expanded w = applyFuel (\\t -> runWithLimit 1000 t) w" ]) \r ->
+        map at r.errors `shouldEqual` []
+      elaborating (withFuel <> [ "unsigned :: (Unit -> Int / {| Fuel |}) -> Int", "unsigned w = let h = runWithLimit 1000 in h w" ]) \r ->
+        map at r.errors `shouldEqual` [ "20:18 outside: a polymorphic value bound without a signature" ]
+      elaborating (withFuel <> [ "signed :: (Unit -> Int / {| Fuel |}) -> Int", "signed w = let", "    h :: Fuel ~> ()", "    h t = runWithLimit 1000 t", "  in h w" ]) \r ->
+        map at r.errors `shouldEqual` []
+      elaborating (withFuel <> [ "signedOnly :: (Unit -> Int / {| Fuel |}) -> Int", "signedOnly w = let", "    h :: Fuel ~> ()", "    h = runWithLimit 1000", "  in h w" ]) \r ->
+        map at r.errors `shouldEqual` [ "22:9 rejected" ]
+      elaborating (withFuel <> [ "annotated :: (Unit -> Int / {| Fuel |}) -> Int", "annotated w = let h = ((\\t -> runWithLimit 1000 t) :: Fuel ~> ()) in h w" ]) \r ->
+        map at r.errors `shouldEqual` []
+      elaborating (withFuel <> [ "annotatedOnly :: (Unit -> Int / {| Fuel |}) -> Int", "annotatedOnly w = let h = (runWithLimit 1000 :: Fuel ~> ()) in h w" ]) \r ->
+        map at r.errors `shouldEqual` [ "20:28 rejected" ]
+
+    it "is held polymorphically by a top-level value without a signature, which is generalized" do
+      elaborating
+        ( handlers <>
+            [ "top = runWithLimit 1000"
+            , "used :: (Unit -> Int / {| Fuel |}) -> Int"
+            , "used w = top w"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          equivalent "top" r.values (expansion "Fuel" [] [ "Fuel" ])
+          checked r \core -> shapes core `shouldEqual` [ "nonrec runWithLimit", "nonrec runConsole", "nonrec top", "nonrec used" ]
+
+    it "composes, an intermediate target staying a target of the composite" do
+      let
+        composite targets =
+          handlers <>
+            [ "compose :: (Ask ~> ( Fuel )) -> (Fuel ~> ( Console )) -> Ask ~> " <> targets
+            , "compose h1 h2 thunk = h2 (\\_ -> h1 thunk)"
+            ]
+      elaborating (composite "( Fuel, Console )") \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec runWithLimit", "nonrec runConsole", "nonrec compose" ]
+      elaborating (composite "( Console )") \r ->
+        map spanned r.errors `shouldEqual` [ "18:23-18:25 obligation broken" ]
 
   describe "what a quantifier encloses" do
     let

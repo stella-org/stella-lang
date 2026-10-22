@@ -52,6 +52,7 @@ module Stella.Compiler.Elaborate.Kernel.Elab
   , runBoundary
   , fitRemainders
   , boundaryFits
+  , lackedKeys
   , formUnion
   , freshTypeMeta
   , freshKindMeta
@@ -103,7 +104,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Warning, Defect(..), Dia
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.Mechanism.Kinding (KindingEnv, emptyKindingEnv)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (Arena, ExprObject, GoalObject, Handle, HandleClass(..), HandleError(..), HandleObject(..), BinderObject, JoinObject, OccurrenceObject, ScopeId(..), ScopeObject, SessionId, TreeObject, TypeObject, emptyArena, issueIn, resolveIn)
-import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, emptyStore, introduce, recheck)
+import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, ResidualAtom(..), emptyStore, introduce, obligationOf, recheck, residualAtoms, touching)
 import Stella.Compiler.Elaborate.Mechanism.Pending (EqualityGoal, GoalRecord, HandlerGoal, Job(..), PendingId, Site, SynthRef, goalOf, newGoal)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm, rebuild, xnf)
 import Stella.Compiler.Elaborate.Mechanism.Fit (Classified(..), FitRecord, FitState(..), FitUse, classify, remaindersOf, sharedAcross, sharedEntries, unionOf)
@@ -809,6 +810,22 @@ boundaryFits site goal = do
   for (either (const (map _.source sources)) Array.singleton union) \source -> do
     settled <- equateShared site Set.empty (rebuild source) goal.expected
     pure (remaindersOf settled.source settled.target)
+
+-- | The known keys the obligations a row metavariable is watched by require it
+-- | to lack: each `k` of a `k ∉ ?t` they leave once what their known keys and
+-- | rigid tails need is decided.
+lackedKeys :: MetaVar -> Elab (Set RowKey)
+lackedKeys t = Elab \_ s ->
+  let
+    store = s.tentative.obligations
+    atoms = Array.concatMap
+      (either (const []) identity <<< residualAtoms (substitute s.tentative.metas) (regionScopeOf s.tentative.metas))
+      (Array.mapMaybe (obligationOf store) (Set.toUnfoldable (touching t store)))
+    lacked = case _ of
+      LacksAtom key m | m == t -> Just key
+      _ -> Nothing
+  in
+    Tuple (Done (Set.fromFoldable (Array.mapMaybe lacked atoms))) s
 
 -- | The compatible union of the rows given, each from the site given; or the
 -- | distinct flexible tails that keep it from being formed.

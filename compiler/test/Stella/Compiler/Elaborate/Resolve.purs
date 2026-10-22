@@ -23,6 +23,7 @@ import Stella.Compiler.Elaborate.Driver.Resolve (Ambiguity(..), ComponentOutcome
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), SessionEnv, SolverState, closeBoundary, drainWarnings, equate, formUnion, freshInstantiationRow, freshTypeMeta, initialState, openBoundary, placeFit, recordWarning, require)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitState(..), FitUse(..))
+import Stella.Compiler.Elaborate.Mechanism.Obligation (Breach(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (isInstantiationRow, substitute)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
@@ -166,6 +167,65 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Resolve" do
           map ambiguityOf (outcomes resolution) `shouldEqual` [ Nothing, Just "undecided" ]
           sameRow after r.instantiated (row [ clock ] e)
           substitute after.tentative.metas r.inferred `shouldEqual` r.inferred
+
+    it "takes the target's remainder but for the keys it is required to lack, which the fit widens by, whatever order they come in" do
+      let
+        -- `e`, apart from every effect the rows hold
+        apart = (bindTyVar emptyXContext (TyVar "e") rowEffect)
+          { assumed = map (\name -> XLacks (EffectKey (effect name)) e) [ "Console", "Clock", "State", "StateR" ] }
+        at = siteIn "f" apart
+        steps t =
+          [ void (placeFit at Wrapping (row [ console ] t) (row [ console, clock, state int, stateR int ] e))
+          , require at (XLacks (EffectKey (effect "Clock")) t)
+          , require at (XDisjoint t (closed [ state int ]))
+          ]
+      for_ [ identity, Array.reverse ] \order ->
+        resolving
+          ( do
+              t <- freshInstantiationRow apart
+              for_ (order (steps t)) identity
+              pure t
+          )
+          \t resolution after -> do
+            outcomes resolution `shouldEqual` [ Settled ]
+            sameRow after t (row [ stateR int ] e)
+            map (\f -> f.state) (Array.fromFoldable (Map.values after.tentative.metas.fits)) `shouldEqual` [ Widen (closed [ clock, state int ]) ]
+
+    it "lacks what a union of the same round requires it to, whatever order the fits come in" do
+      let
+        fits t m =
+          [ void (placeFit site Wrapping (row [ console ] t) m)
+          , void (placeFit site Wrapping (closed [ clock ]) m)
+          ]
+      for_ [ identity, Array.reverse ] \order ->
+        resolving
+          ( do
+              t <- freshInstantiationRow emptyXContext
+              m <- freshTypeMeta emptyXContext rowEffect
+              for_ (order (fits t m)) identity
+              -- the union into `?m` requires `Clock ∉ ?t`
+              into <- placeFit site Wrapping t (closed [ clock ])
+              pure { t, m, into }
+          )
+          \r resolution after -> do
+            outcomes resolution `shouldEqual` [ Settled ]
+            sameRow after r.t XRowEmpty
+            sameRow after r.m (closed [ console, clock ])
+            stateOf after r.into `shouldEqual` Just (Widen (closed [ clock ]))
+
+    it "keeps a rigid tail of the target, refused where the obligations' sites do not prove it lacks the keys" do
+      resolving
+        ( do
+            t <- freshInstantiationRow withE
+            require (siteIn "f" (bindTyVar emptyXContext (TyVar "e") rowEffect)) (XLacks (EffectKey (effect "Clock")) t)
+            _ <- placeFit (siteIn "f" withE) Wrapping (row [ console ] t) (row [ console, clock ] e)
+            pure t
+        )
+        \t resolution after -> do
+          case outcomes resolution of
+            [ Refused (ObligationBroken b) ] -> b.breach `shouldEqual` LacksUnprovenAtSite (EffectKey (effect "Clock")) (TyVar "e")
+            other -> fail ("not refused: " <> show other)
+          substitute after.tentative.metas t `shouldEqual` t
 
   describe "assignments of one round" do
     it "that depend on one another are not made, and the component is left" do
