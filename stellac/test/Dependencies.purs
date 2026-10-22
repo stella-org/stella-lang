@@ -1,5 +1,5 @@
--- | The dependency map: what is read of one, the order its interfaces enter
--- | the build environment, and how a map that cannot be used is reported.
+-- | `dependencies` of `stella.json`: the order its interfaces enter the build
+-- | environment, and how an interface that cannot be used is reported.
 -- |
 -- | The interfaces are empty but for their names and imports, which is all that
 -- | ordering reads; the files are a map from path to text or bytes.
@@ -28,7 +28,7 @@ import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, in
 import Stella.Compiler.Interface.File as Interface
 import Stella.Compiler.Interface.Module (ModuleInterface, emptyDeclarations, emptyExports)
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..))
-import Stellac.Dependencies (Dependency, DependencyError(..), dependedOn, extend, parse)
+import Stellac.Dependencies (Dependency, DependencyError(..), dependedOn, extend)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
@@ -89,11 +89,11 @@ reading files p = Run.extract (FS.interpret handler p)
           )
       )
     IsAbsolute path reply -> pure (reply (stripPrefix (Pattern "/") path /= Nothing))
+    Resolve path reply -> pure (reply path)
     WriteBytes _ _ reply -> pure (reply (Left "read only"))
     WriteText _ _ reply -> pure (reply (Left "read only"))
     MakeDirectory _ reply -> pure (reply (Left "read only"))
     Remove _ reply -> pure (reply (Left "read only"))
-    Resolve path reply -> pure (reply path)
     Glob _ _ reply -> pure (reply (Right []))
 
 bytesOf :: ModuleInterface -> File
@@ -102,30 +102,7 @@ bytesOf i = case Interface.encode { interface: i, buildHash: Nothing } of
   Left e -> unsafePerformEffect (throwException (error (show e)))
 
 spec :: Spec Unit
-spec = describe "the dependency map" do
-  describe "parsing" do
-    it "reads each entry, its paths as written" do
-      parse "deps.json" """{ "formatVersion": 0, "modules": [ { "module": "A", "interface": "a/A.dmi", "object": "/abs/A.dmo" } ] }"""
-        `shouldEqual` Right [ { module: ModuleName "A", interface: "a/A.dmi", object: "/abs/A.dmo" } ]
-
-    it "refuses a map giving no format version" do
-      parse "deps.json" """{ "modules": [] }""" `shouldEqual` Left (NoFormatVersion "deps.json")
-
-    it "refuses a format version it does not read" do
-      parse "deps.json" """{ "formatVersion": 1, "modules": [] }""" `shouldEqual` Left (UnsupportedFormatVersion "deps.json" 1)
-
-    it "refuses an entry missing a field" do
-      parse "deps.json" """{ "formatVersion": 0, "modules": [ { "module": "A", "interface": "A.dmi" } ] }"""
-        `shouldEqual` Left (MapMalformed "deps.json" "an entry of `modules` has no `object`")
-
-    it "refuses text that is no JSON object" do
-      case parse "deps.json" "[]" of
-        Left (MapMalformed _ _) -> pure unit
-        other -> fail (show other)
-      case parse "deps.json" "{" of
-        Left (MapMalformed _ _) -> pure unit
-        other -> fail (show other)
-
+spec = describe "`dependencies`" do
   describe "the environment" do
     it "adds the interfaces in the order their imports give, whatever order they are listed in" do
       let
@@ -148,10 +125,10 @@ spec = describe "the dependency map" do
       extended [ loaded "A" [ "B" ], loaded "B" [ "A" ], loaded "C" [ "Gone" ], loaded "E" [ "C" ] ]
         `shouldEqual` Left [ ImportUnlisted (ModuleName "C") (ModuleName "Gone"), ImportCycle (names "A" [ "B" ]) ]
 
-    it "accepts a module the compiler carries, listed with the interface it carries" do
+    it "accepts a seed module, listed with the interface of the seed module held" do
       extended [ loaded "A" [ "Base.Int" ], loaded "Base.Int" [] ] `shouldEqual` Right [ "A", "Base.Int", "Prim" ]
 
-    it "refuses a module the compiler carries, listed with another interface" do
+    it "refuses a seed module, listed with another interface" do
       extended [ (loaded "Base.Int" []) { interface { arities = Map.singleton (Ident "add") 2 } } ]
         `shouldEqual` Left [ DiffersFromCarried (ModuleName "Base.Int") ]
 
@@ -161,46 +138,32 @@ spec = describe "the dependency map" do
           `shouldEqual` Left [ ProvidedByCompiler (ModuleName "Prim") ]
       extended [ loaded "Prim" [] ] `shouldEqual` Left [ ProvidedByCompiler (ModuleName "Prim") ]
 
-    it "refuses a module listed twice, whether or not the compiler carries it" do
+    it "refuses a module listed twice, whether or not it is a seed module" do
       extended [ loaded "A" [], loaded "Base.Int" [], loaded "A" [], loaded "Base.Int" [] ]
         `shouldEqual` Left [ ListedTwice (ModuleName "A"), ListedTwice (ModuleName "Base.Int") ]
 
-  describe "reading the files" do
+  describe "reading the interfaces" do
     let
-      mapText =
-        """{ "formatVersion": 0, "modules": [
-        { "module": "A", "interface": "lib/A.dmi", "object": "lib/A.dmo" },
-        { "module": "B", "interface": "/abs/B.dmi", "object": "/abs/B.dmo" } ] }"""
+      at m = { module: ModuleName m, interface: m <> ".dmi", object: m <> ".dmo" }
 
-    it "resolves a relative path against the directory of the map, and keeps an absolute one" do
+    it "adds the interfaces of the entries given, read from their paths" do
       let
         files = Map.fromFoldable
-          [ Tuple "deps/map.json" (Text mapText)
-          , Tuple "deps/lib/A.dmi" (bytesOf (interfaceOf "A" []))
-          , Tuple "/abs/B.dmi" (bytesOf (interfaceOf "B" [ "A" ]))
+          [ Tuple "A.dmi" (bytesOf (interfaceOf "A" []))
+          , Tuple "B.dmi" (bytesOf (interfaceOf "B" [ "A" ]))
           ]
-      case reading files (dependedOn "deps/map.json" carried) of
+      case reading files (dependedOn [ at "B", at "A" ] carried) of
         Left errors -> fail (show errors)
-        Right r -> do
-          modulesOf r.environment `shouldEqual` [ "A", "B", "Base.Int", "Prim" ]
-          map _.object r.dependencies `shouldEqual` [ "deps/lib/A.dmo", "/abs/B.dmo" ]
+        Right env -> modulesOf env `shouldEqual` [ "A", "B", "Base.Int", "Prim" ]
 
     it "reports every interface that cannot be used, by its module and its path" do
       let
         files = Map.fromFoldable
-          [ Tuple "map.json"
-              ( Text
-                  """{ "formatVersion": 0, "modules": [
-              { "module": "A", "interface": "A.dmi", "object": "A.dmo" },
-              { "module": "B", "interface": "B.dmi", "object": "B.dmo" },
-              { "module": "C", "interface": "C.dmi", "object": "C.dmo" } ] }"""
-              )
-          , Tuple "B.dmi" (Binary [ 0x44, 0x4D, 0x4F, 0x00 ])
+          [ Tuple "B.dmi" (Binary [ 0x44, 0x4D, 0x4F, 0x00 ])
           , Tuple "C.dmi" (bytesOf (interfaceOf "D" []))
           ]
-        at m = { module: ModuleName m, interface: m <> ".dmi", object: m <> ".dmo" }
-      case reading files (dependedOn "map.json" carried) of
-        Right _ -> fail "the map was used"
+      case reading files (dependedOn [ at "A", at "B", at "C" ] carried) of
+        Right _ -> fail "the interfaces were used"
         Left errors -> case NonEmptyArray.toArray errors of
           [ InterfaceUnreadable a _, InterfaceRejected b _, InterfaceOfAnother c other ] -> do
             a `shouldEqual` at "A"
@@ -208,8 +171,3 @@ spec = describe "the dependency map" do
             c `shouldEqual` at "C"
             other `shouldEqual` ModuleName "D"
           other -> fail (show other)
-
-    it "reports a map that cannot be read" do
-      reading Map.empty (dependedOn "map.json" carried) # case _ of
-        Left errors -> NonEmptyArray.toArray errors `shouldEqual` [ MapUnreadable "map.json" "no such file" ]
-        Right _ -> fail "the map was used"

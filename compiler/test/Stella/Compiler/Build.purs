@@ -11,7 +11,7 @@ import Data.Array as Array
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Bifunctor (lmap)
 import Data.Either (Either(..), either)
-import Data.Foldable (foldM, for_)
+import Data.Foldable (foldM)
 import Data.Identity (Identity(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
@@ -45,7 +45,7 @@ import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (ParseOutcome(..), RunParser, defaultSettings)
 import Stella.Compiler.Macro.Tree (Position(..), Range(..), SyntaxNode(..), Token(..), TokenTree(..))
 import Stella.Compiler.Macro.Tree as Tree
-import Stella.Compiler.Build (BackendProblem(..), BuildError(..), BuiltModules, SourceRoot, defaultSourceRoots, CompileError(..), CompileWarning, CompilerAction, EnvironmentProblem(..), PackageFile, SyntaxProblem(..), build, buildMessages, buildSeeds, compileModule, defaultHooks, locationsOf, printBuildMessage, printCompileError, warningLocationOf, withoutSynthesizers)
+import Stella.Compiler.Build (BackendProblem(..), BuildError(..), BuiltModules, CompileError(..), CompileWarning, CompilerAction, EnvironmentProblem(..), SyntaxProblem(..), build, buildMessages, buildSeeds, compileModule, defaultHooks, locationsOf, printBuildMessage, printCompileError, warningLocationOf, withoutSynthesizers)
 import Stella.Compiler.Resolve.Module (ResolutionError(..))
 import Stella.Compiler.Resolve.Monad (ResolveError(..), ResolveReason(..)) as Resolve
 import Stella.Compiler.Surface.Origin as Surface
@@ -393,8 +393,8 @@ spec = describe "Stella.Compiler.Build" do
 
     it "is used at its scheme by a module importing the declaration" do
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "g :: { name :: Int } -> { name :: Int }", "g r = getName r" ])
-        , Tuple "src/A.stel" (moduleOf "A" [] [ "getName :: { name :: Int } -> { name :: Int }", "getName r = r" ])
+        [ Tuple "src/A.stel" (moduleOf "A" [] [ "getName :: { name :: Int } -> { name :: Int }", "getName r = r" ])
+        , Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "g :: { name :: Int } -> { name :: Int }", "g r = getName r" ])
         ]
         \r -> case r.result of
           Right built -> built `shouldEqual` [ "A", "B" ]
@@ -477,8 +477,8 @@ spec = describe "Stella.Compiler.Build" do
 
     it "is instantiated by a module importing the declaration, what it needs required there" do
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "g :: { name :: Int, age :: Int } -> { name :: Int, age :: Int }", "g r = keep r" ])
-        , Tuple "src/A.stel" (moduleOf "A" [] [ "keep :: { name :: Int, ... } -> { name :: Int, ... }", "keep r = r" ])
+        [ Tuple "src/A.stel" (moduleOf "A" [] [ "keep :: { name :: Int, ... } -> { name :: Int, ... }", "keep r = r" ])
+        , Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "g :: { name :: Int, age :: Int } -> { name :: Int, age :: Int }", "g r = keep r" ])
         ]
         \r -> case r.result of
           Right built -> built `shouldEqual` [ "A", "B" ]
@@ -549,8 +549,8 @@ spec = describe "Stella.Compiler.Build" do
 
     it "names a synthesizer source writes against `Stella.Elab`, compiled in a module before" do
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "showInt :: {{ d :: Int by one }} -> Int -> Int", "showInt d x = x" ])
-        , Tuple "src/A.stel" (moduleOf "A" [ "Stella.Elab" ] [ "one :: Handle -> Handle / {| Kernel |}", "one = synthesizer (\\_ -> literal (rootScope ()) (LitInt 1))" ])
+        [ Tuple "src/A.stel" (moduleOf "A" [ "Stella.Elab" ] [ "one :: Handle -> Handle / {| Kernel |}", "one = synthesizer (\\_ -> literal (rootScope ()) (LitInt 1))" ])
+        , Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "showInt :: {{ d :: Int by one }} -> Int -> Int", "showInt d x = x" ])
         ]
         \r -> case r.result of
           Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
@@ -567,8 +567,8 @@ spec = describe "Stella.Compiler.Build" do
         Left errors -> rendered errors `shouldEqual` [ " Internal compiler error: (SynthesizerUnavailable (Qualified \"Synth\" \"resolve\"))" ]
         Right _ -> fail "compiled"
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "use :: Int -> Int", "use x = showInt x" ])
-        , Tuple "src/A.stel" (moduleOf "A" [] lines)
+        [ Tuple "src/A.stel" (moduleOf "A" [] lines)
+        , Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "use :: Int -> Int", "use x = showInt x" ])
         ]
         \r -> case r.result of
           Left err -> map _.message (NonEmptyArray.toArray (buildMessages err)) `shouldEqual` [ "Internal compiler error: (SynthesizerUnavailable (Qualified \"Synth\" \"resolve\"))" ]
@@ -628,12 +628,12 @@ spec = describe "Stella.Compiler.Build" do
       let
         declaring = Tuple "src/A.stel" (moduleOf "A" [] [ "v :: Unit -> Int", "v u = 1", "c :: Int / {||}", "c = 1" ])
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "fromC :: Int", "fromC = c", "fromV :: Unit -> Int", "fromV = v" ]), declaring ]
+        [ declaring, Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "fromC :: Int", "fromC = c", "fromV :: Unit -> Int", "fromV = v" ]) ]
         \r -> case r.result of
           Right built -> built `shouldEqual` [ "A", "B" ]
           Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "fromC :: Unit -> Int", "fromC = c", "fromV :: Int", "fromV = v" ]), declaring ]
+        [ declaring, Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "fromC :: Unit -> Int", "fromC = c", "fromV :: Int", "fromV = v" ]) ]
         \r -> case r.result of
           -- the computation is forced to `Int`, and the value stays a function
           Left err -> map _.message (NonEmptyArray.toArray (buildMessages err)) `shouldEqual` [ "`Int` and `Unit -> Int` are different types", "`Unit -> Int` and `Int` are different types" ]
@@ -654,8 +654,8 @@ spec = describe "Stella.Compiler.Build" do
 
     it "is used at its scheme by a module importing it, at each type it is instantiated at" do
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "n :: Int", "n = ident 1", "s :: String", "s = ident \"s\"" ])
-        , Tuple "src/A.stel" (moduleOf "A" [] [ "ident = \\x -> x" ])
+        [ Tuple "src/A.stel" (moduleOf "A" [] [ "ident = \\x -> x" ])
+        , Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "n :: Int", "n = ident 1", "s :: String", "s = ident \"s\"" ])
         ]
         \r -> case r.result of
           Right built -> built `shouldEqual` [ "A", "B" ]
@@ -663,8 +663,8 @@ spec = describe "Stella.Compiler.Build" do
 
     it "is published at the scheme its partial signature is completed to, which a module importing it reads" do
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "n :: Int", "n = ident 1", "s :: String", "s = ident \"s\"" ])
-        , Tuple "src/A.stel" (moduleOf "A" [] [ "ident :: forall a. a -> _", "ident x = x" ])
+        [ Tuple "src/A.stel" (moduleOf "A" [] [ "ident :: forall a. a -> _", "ident x = x" ])
+        , Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "n :: Int", "n = ident 1", "s :: String", "s = ident \"s\"" ])
         ]
         \r -> case r.result of
           Right built -> built `shouldEqual` [ "A", "B" ]
@@ -672,8 +672,8 @@ spec = describe "Stella.Compiler.Build" do
 
     it "is generalized with the group it refers to, a `rec` of its module that another uses at two types" do
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "n :: Int", "n = ev 1", "s :: String", "s = od \"s\"" ])
-        , Tuple "src/A.stel" (moduleOf "A" [] [ "ev x = od x", "od x = ev x" ])
+        [ Tuple "src/A.stel" (moduleOf "A" [] [ "ev x = od x", "od x = ev x" ])
+        , Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "n :: Int", "n = ev 1", "s :: String", "s = od \"s\"" ])
         ]
         \r -> case r.result of
           Right built -> built `shouldEqual` [ "A", "B" ]
@@ -689,8 +689,8 @@ spec = describe "Stella.Compiler.Build" do
             Right stored -> stored.interface `shouldEqual` r.interface
             Left problem -> fail problem
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "data L (a :: Type) = L", "data P a = P", "data Uses = Uses (App L Int) (App P L)" ])
-        , Tuple "src/A.stel" (moduleOf "A" [] [ "data App f a = App (f a)" ])
+        [ Tuple "src/A.stel" (moduleOf "A" [] [ "data App f a = App (f a)" ])
+        , Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "data L (a :: Type) = L", "data P a = P", "data Uses = Uses (App L Int) (App P L)" ])
         ]
         \r -> case r.result of
           Right built -> built `shouldEqual` [ "A", "B" ]
@@ -714,8 +714,8 @@ spec = describe "Stella.Compiler.Build" do
             Right stored -> stored.interface `shouldEqual` r.interface
             Left problem -> fail problem
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "data L (a :: Type) = L", "data P a = P", "data Uses = Uses (P (I L)) (I Int) (S L) (S Int)", "f :: C Int L -> C (P L) Int -> I Int", "f x y = x" ])
-        , Tuple "src/A.stel" (moduleOf "A" [] [ "type I a = a", "type C a b = a", "type S a = D a", "data D a = D (S a)" ])
+        [ Tuple "src/A.stel" (moduleOf "A" [] [ "type I a = a", "type C a b = a", "type S a = D a", "data D a = D (S a)" ])
+        , Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "data L (a :: Type) = L", "data P a = P", "data Uses = Uses (P (I L)) (I Int) (S L) (S Int)", "f :: C Int L -> C (P L) Int -> I Int", "f x y = x" ])
         ]
         \r -> case r.result of
           Right built -> built `shouldEqual` [ "A", "B" ]
@@ -831,8 +831,8 @@ spec = describe "Stella.Compiler.Build" do
 
     it "give a module importing them the synonyms to expand" do
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A (Pair, Age(..))" ] [ "both :: Pair Age -> Pair Age", "both p = p" ])
-        , Tuple "src/A.stel" (moduleOf "A" [] typesModule)
+        [ Tuple "src/A.stel" (moduleOf "A" [] typesModule)
+        , Tuple "src/B.stel" (moduleOf "B" [ "A (Pair, Age(..))" ] [ "both :: Pair Age -> Pair Age", "both p = p" ])
         ]
         \r -> case r.result of
           Right built -> built `shouldEqual` [ "A", "B" ]
@@ -918,8 +918,8 @@ spec = describe "Stella.Compiler.Build" do
 
     it "is named in a row by a module importing it" do
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A (State)" ] [ "run :: (Unit -> Int / {| State Int |}) -> (Unit -> Int / {| State Int |})", "run k = k" ])
-        , Tuple "src/A.stel" (moduleOf "A" [] effectsModule')
+        [ Tuple "src/A.stel" (moduleOf "A" [] effectsModule')
+        , Tuple "src/B.stel" (moduleOf "B" [ "A (State)" ] [ "run :: (Unit -> Int / {| State Int |}) -> (Unit -> Int / {| State Int |})", "run k = k" ])
         ]
         \r -> case r.result of
           Right built -> built `shouldEqual` [ "A", "B" ]
@@ -927,8 +927,8 @@ spec = describe "Stella.Compiler.Build" do
 
     it "gives a module importing it its operations to call, given their arguments or short of them" do
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "f :: Unit -> Int / {| State Int |}", "f _ = get ()", "w :: String -> Unit / {| Log |}", "w = writeAt 0", "p = pick" ])
-        , Tuple "src/A.stel" (moduleOf "A" [] effectsModule')
+        [ Tuple "src/A.stel" (moduleOf "A" [] effectsModule')
+        , Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "f :: Unit -> Int / {| State Int |}", "f _ = get ()", "w :: String -> Unit / {| Log |}", "w = writeAt 0", "p = pick" ])
         ]
         \r -> case r.result of
           Right built -> do
@@ -1051,8 +1051,8 @@ spec = describe "Stella.Compiler.Build" do
 
     it "give a module importing them the foreigns to apply and the attribute to attach" do
       building
-        [ Tuple "src/B.stel" (moduleOf "B" [ "A (root, attribute level)" ] [ "@[level 3]", "half :: Number -> Number", "half x = root x" ])
-        , Tuple "src/A.stel" (moduleOf "A" [] foreignModule)
+        [ Tuple "src/A.stel" (moduleOf "A" [] foreignModule)
+        , Tuple "src/B.stel" (moduleOf "B" [ "A (root, attribute level)" ] [ "@[level 3]", "half :: Number -> Number", "half x = root x" ])
         ]
         \r -> case r.result of
           Right built -> built `shouldEqual` [ "A", "B" ]
@@ -1302,25 +1302,28 @@ spec = describe "Stella.Compiler.Build" do
 
 -- Building a package -----------------------------------------------------------------
 
--- | A package of the files given, each at its path from the root with its
--- | text; built, with every read, every phase shown, and every module handed
--- | over recorded in order.
+-- | A package of the files given, each at its path with its text, built in the
+-- | order given by an ordinary build, with every read, every phase shown, and
+-- | every module handed over recorded in order.
 building :: Array (Tuple String String) -> ({ result :: Either BuildError (Array String), log :: Array String } -> Aff Unit) -> Aff Unit
-building = buildingUnder defaultSourceRoots
-
--- | `building`, the package's source directories the ones given.
-buildingUnder :: Array SourceRoot -> Array (Tuple String String) -> ({ result :: Either BuildError (Array String), log :: Array String } -> Aff Unit) -> Aff Unit
-buildingUnder roots sources = buildingBy sources \action ->
-  build action defaultSettings environment roots (map (\(Tuple p _) -> { path: p, within: String.split (String.Pattern "/") p }) sources :: Array PackageFile)
+building sources = buildingBy sources \action ->
+  build action defaultSettings environment (map (\(Tuple p _) -> { path: p, name: nameOf p }) sources)
 
 -- | The files given, each a module of the environment, compiled anew by a
--- | seed build; each holds the module its path from `src` names.
+-- | seed build.
 rebuilding :: Array (Tuple String String) -> ({ result :: Either BuildError (Array String), log :: Array String } -> Aff Unit) -> Aff Unit
 rebuilding sources = buildingBy sources \action ->
-  buildSeeds action defaultSettings environment (map (\(Tuple p _) -> { path: p, name: ModuleName (nameOf p) }) sources)
+  buildSeeds action defaultSettings environment (map (\(Tuple p _) -> { path: p, name: nameOf p }) sources)
+
+-- | The module the file of the path given is given as here: its path from
+-- | `src`, or from `test` under `Test`.
+nameOf :: String -> ModuleName
+nameOf p = ModuleName (String.replaceAll (String.Pattern "/") (String.Replacement ".") (under (dropping ".stel" String.stripSuffix p)))
   where
-  nameOf p = String.replaceAll (String.Pattern "/") (String.Replacement ".") (dropping "src/" String.stripPrefix (dropping ".stel" String.stripSuffix p))
-  dropping s strip p = fromMaybe p (strip (String.Pattern s) p)
+  under q = case String.stripPrefix (String.Pattern "test/") q of
+    Just rest -> "Test/" <> rest
+    Nothing -> dropping "src/" String.stripPrefix q
+  dropping s strip q = fromMaybe q (strip (String.Pattern s) q)
 
 -- | The build the entry given runs over the files given, each at its path with
 -- | its text, every read, every phase shown, and every module handed over
@@ -1363,15 +1366,13 @@ buildingBy sources entry k = do
 moduleText :: ModuleName -> String
 moduleText (ModuleName m) = m
 
--- | The modules each module of a package of the files given depends on, built
--- | against `environment`: those its bytecode imports, its runtime
+-- | The modules each module of the files given depends on, built in the order
+-- | given against `environment`: those its bytecode imports, its runtime
 -- | dependencies, and those its interface imports, its source dependencies.
 dependingOn :: Array (Tuple String String) -> (Either String (Map.Map String { runtime :: Array String, source :: Array String }) -> Aff Unit) -> Aff Unit
 dependingOn sources k = do
   made <- liftEffect (Ref.new Map.empty)
   let
-    files = map (\(Tuple p _) -> { path: p, within: String.split (String.Pattern "/") p }) sources
-
     action :: CompilerAction Aff
     action =
       { readSource: \p -> pure case Array.find (\(Tuple q _) -> q == p) sources of
@@ -1383,7 +1384,7 @@ dependingOn sources k = do
           { onLowered = \b -> liftEffect (Ref.modify_ (Map.insert (moduleText b.dmo.name) { runtime: map moduleText b.dmo.imports, source: map moduleText b.interface.imports }) made)
           }
       }
-  result <- build action defaultSettings environment defaultSourceRoots (files :: Array PackageFile)
+  result <- build action defaultSettings environment (map (\(Tuple p _) -> { path: p, name: nameOf p }) sources)
   recorded <- liftEffect (Ref.read made)
   k case result of
     Left err -> Left (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
@@ -1425,33 +1426,35 @@ buildSpec = describe "a build" do
             <> [ "read test/B.stel", "start 2/2 Test.B", "elaborated", "translated", "optimize", "optimized", "lowered Test.B, exporting n", "done Test.B" ]
         )
 
-  it "names a module by its path, and refuses a header naming another" do
+  it "refuses a header naming another module than its file is given as, and a file or a module given twice" do
     building [ Tuple "src/A/B.stel" (valueModule "A.C" []) ] \r -> case r.result of
       Left (NameMismatch m) -> do
         moduleText m.expected `shouldEqual` "A.B"
         at m.at `shouldEqual` "1:8"
+        map _.message (buildMessages (NameMismatch m)) `shouldEqual` pure "This module is named `A.C`, and its file is given as `A.B`"
       _ -> fail "not refused"
-    building [ Tuple "src/Test/B.stel" (valueModule "Test.B" []) ] \r -> case r.result of
-      Left (NameReserved _) -> pure unit
-      _ -> fail "not reserved"
-    -- a segment of the path is no name a module's name may hold
-    for_ [ "src/A.B.stel", "src/Test.B.stel", "src/a/B.stel", "src/.stel" ] \p ->
-      building [ Tuple p (valueModule "A.B" []) ] \r -> case r.result of
-        Left (NotAModuleName q) -> q `shouldEqual` p
-        _ -> fail ("not refused: " <> p)
-    building [ Tuple "lib/B.stel" (valueModule "B" []) ] \r -> case r.result of
-      Left (OutsidePackage p) -> p `shouldEqual` "lib/B.stel"
-      _ -> fail "not outside"
     building [ Tuple "src/B.stel" (valueModule "B" []), Tuple "src/B.stel" (valueModule "B" []) ] \r -> case r.result of
       Left (ListedTwice _) -> pure unit
       _ -> fail "not listed twice"
+    buildingBy [] (\action -> build action defaultSettings environment [ { path: "a/B.stel", name: ModuleName "B" }, { path: "b/B.stel", name: ModuleName "B" } ]) \r -> case r.result of
+      Left (NamedTwice e) -> e.paths `shouldEqual` [ "a/B.stel", "b/B.stel" ]
+      _ -> fail "not named twice"
 
-  it "compiles a module after those of the build it imports, the one given first taken first, against them" do
-    building [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "m :: Int", "m = n" ]), Tuple "src/C.stel" (valueModule "C" []), Tuple "src/A.stel" (valueModule "A" []) ] \r -> do
+  it "compiles the modules in the order given, each against those before it it imports" do
+    building [ Tuple "src/C.stel" (valueModule "C" []), Tuple "src/A.stel" (valueModule "A" []), Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "m :: Int", "m = n" ]) ] \r -> do
       case r.result of
         Right built -> built `shouldEqual` [ "C", "A", "B" ]
         Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
       Array.filter (String.contains (String.Pattern "start")) r.log `shouldEqual` [ "start 1/3 C", "start 2/3 A", "start 3/3 B" ]
+
+  it "refuses a module given before a module of the build it imports, before compiling any, where the import is written" do
+    building [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "m :: Int", "m = n" ]), Tuple "src/C.stel" (valueModule "C" []), Tuple "src/A.stel" (valueModule "A" []) ] \r -> do
+      case r.result of
+        Left err@(ImportedLater e) -> do
+          { name: moduleText e.name, imported: moduleText e.imported, at: at e.at } `shouldEqual` { name: "B", imported: "A", at: "2:8" }
+          map _.message (buildMessages err) `shouldEqual` pure "This module imports `A`, which is given after it"
+        _ -> fail "not refused"
+      Array.filter (String.contains (String.Pattern "start")) r.log `shouldEqual` []
 
   describe "a data type of the build" do
     let
@@ -1462,17 +1465,17 @@ buildSpec = describe "a build" do
         Right _ -> []
 
     it "is used with its constructors by a module importing them" do
-      building [ Tuple "src/B.stel" (moduleOf "B" [ "A (List(..))" ] [ "ys :: List Int", "ys = Cons 2 Nil" ]), Tuple "src/A.stel" (lists "List(..), xs") ] \r ->
+      building [ Tuple "src/A.stel" (lists "List(..), xs"), Tuple "src/B.stel" (moduleOf "B" [ "A (List(..))" ] [ "ys :: List Int", "ys = Cons 2 Nil" ]) ] \r ->
         case r.result of
           Right built -> built `shouldEqual` [ "A", "B" ]
           Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
 
     it "exported without its constructors is used as a type, and its constructors are not in reach" do
-      building [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "ys :: List Int", "ys = xs" ]), Tuple "src/A.stel" (lists "List, xs") ] \r ->
+      building [ Tuple "src/A.stel" (lists "List, xs"), Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "ys :: List Int", "ys = xs" ]) ] \r ->
         case r.result of
           Right built -> built `shouldEqual` [ "A", "B" ]
           Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
-      building [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "ys :: List Int", "ys = Cons 2 Nil" ]), Tuple "src/A.stel" (lists "List, xs") ] \r ->
+      building [ Tuple "src/A.stel" (lists "List, xs"), Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "ys :: List Int", "ys = Cons 2 Nil" ]) ] \r ->
         failedAt r `shouldEqual`
           [ { path: Just "src/B.stel", at: [ "4:6" ], message: "There is no constructor `Cons` in scope" }
           , { path: Just "src/B.stel", at: [ "4:13" ], message: "There is no constructor `Nil` in scope" }
@@ -1483,7 +1486,7 @@ buildSpec = describe "a build" do
       -- `A` calls a macro of `Macros` while it is compiled, and declares one
       macros = moduleOf "A" [ "Stella.Syntax (Parser, Syntax, Term, fail)", "Macros (macro unwrap)" ]
         [ "k :: Int", "k = unwrap%[1]", "@[macro]", "wrap :: Parser (Syntax Term)", "wrap = fail \"unused\"" ]
-    building [ Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "m :: Int", "m = wrap%[1]" ]), Tuple "src/A.stel" macros ] \r -> do
+    building [ Tuple "src/A.stel" macros, Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "m :: Int", "m = wrap%[1]" ]) ] \r -> do
       case r.result of
         Right built -> built `shouldEqual` [ "A", "B" ]
         Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
@@ -1607,6 +1610,13 @@ buildSpec = describe "a build" do
           _ -> fail "not refused"
         r.log `shouldEqual` []
 
+    it "orders the modules by their imports, and reports modules importing one another before compiling any" do
+      rebuilding [ Tuple "src/Stella/Syntax.stel" (valueModule "Stella.Syntax" [ "Macros" ]), Tuple "src/Macros.stel" (valueModule "Macros" [ "Stella.Syntax" ]) ] \r -> do
+        case r.result of
+          Left (ImportCycle members) -> map (moduleText <<< _.name) (NonEmptyArray.toArray members) `shouldEqual` [ "Stella.Syntax", "Macros" ]
+          _ -> fail "no cycle"
+        Array.filter (String.contains (String.Pattern "start")) r.log `shouldEqual` []
+
     it "refuses two files holding one module" do
       baseInt <- baseIntFile
       buildingBy [ baseInt ] (\action -> buildSeeds action defaultSettings environment [ { path: "a/Int.stel", name: ModuleName "Base.Int" }, { path: "b/Int.stel", name: ModuleName "Base.Int" } ]) \r ->
@@ -1614,18 +1624,20 @@ buildSpec = describe "a build" do
           Left (NamedTwice e) -> e.paths `shouldEqual` [ "a/Int.stel", "b/Int.stel" ]
           _ -> fail "not refused"
 
-  it "reports a module importing itself before compiling any, a module being compiled against no interface of its own" do
+  it "refuses a module importing itself before compiling any, a module being compiled against no interface of its own" do
     building [ Tuple "src/A.stel" (valueModule "A" [ "A" ]) ] \r -> do
       case r.result of
-        Left (ImportCycle members) -> map (moduleText <<< _.name) (NonEmptyArray.toArray members) `shouldEqual` [ "A" ]
-        _ -> fail "no cycle"
+        Left err@(ImportedLater e) -> do
+          moduleText e.imported `shouldEqual` "A"
+          map _.message (buildMessages err) `shouldEqual` pure "This module imports itself"
+        _ -> fail "not refused"
       Array.filter (String.contains (String.Pattern "start")) r.log `shouldEqual` []
 
-  it "reports modules importing one another before compiling any" do
+  it "refuses modules importing one another before compiling any, the first importing the second given after it" do
     building [ Tuple "src/A.stel" (valueModule "A" [ "B" ]), Tuple "src/B.stel" (valueModule "B" [ "A" ]) ] \r -> do
       case r.result of
-        Left (ImportCycle members) -> map (moduleText <<< _.name) (NonEmptyArray.toArray members) `shouldEqual` [ "A", "B" ]
-        _ -> fail "no cycle"
+        Left (ImportedLater e) -> { name: moduleText e.name, imported: moduleText e.imported } `shouldEqual` { name: "A", imported: "B" }
+        _ -> fail "not refused"
       Array.filter (String.contains (String.Pattern "start")) r.log `shouldEqual` []
 
   it "stops at a module that does not compile, its errors said of its file" do
@@ -1662,29 +1674,3 @@ buildSpec = describe "a build" do
         _ -> fail "compiled"
       Array.filter (String.contains (String.Pattern "read")) r.log `shouldEqual` [ "read src/A.stel", "read src/A.stel" ]
 
-  it "names a module under the prefix of the source directory it stands in" do
-    let roots = defaultSourceRoots <> [ { prefix: [ "Bench", "Fast" ], dir: [ "bench" ] } ]
-    buildingUnder roots [ Tuple "bench/A.stel" (valueModule "Bench.Fast.A" []) ] \r -> case r.result of
-      Right built -> built `shouldEqual` [ "Bench.Fast.A" ]
-      Left _ -> fail "not built"
-    -- the name falls under `Bench.Fast`, whose modules `bench` keeps
-    buildingUnder roots [ Tuple "src/Bench/Fast/A.stel" (valueModule "Bench.Fast.A" []) ] \r -> case r.result of
-      Left (NameReserved e) -> e.owner.dir `shouldEqual` [ "bench" ]
-      _ -> fail "not reserved"
-    -- `Bench.A` falls under no prefix longer than `src`'s
-    buildingUnder roots [ Tuple "src/Bench/A.stel" (valueModule "Bench.A" []) ] \r -> case r.result of
-      Right built -> built `shouldEqual` [ "Bench.A" ]
-      Left _ -> fail "not built"
-
-  it "refuses source directories that do not name their modules apart" do
-    let
-      conflicting roots = buildingUnder roots [] \r -> case r.result of
-        Left (SourceRootsConflict _) -> pure unit
-        _ -> fail "no conflict"
-    -- one standing in the other
-    conflicting [ { prefix: [], dir: [ "src" ] }, { prefix: [ "Gen" ], dir: [ "src", "gen" ] } ]
-    -- two under one prefix
-    conflicting [ { prefix: [ "Test" ], dir: [ "test" ] }, { prefix: [ "Test" ], dir: [ "spec" ] } ]
-    buildingUnder [ { prefix: [ "bench" ], dir: [ "bench" ] } ] [] \r -> case r.result of
-      Left (SourceRootInvalid _) -> pure unit
-      _ -> fail "not refused"

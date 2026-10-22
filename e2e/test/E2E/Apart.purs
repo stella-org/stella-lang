@@ -1,15 +1,15 @@
--- | `stellac build --dependencies` of a package whose module calls a macro and
--- | names a synthesizer of a package built apart: the files on disk, the
--- | session a process, and the modules built then run on the machine.
+-- | `stellac compile` of a package whose module calls a macro and names a
+-- | synthesizer from a package built apart and listed in `dependencies`: files
+-- | on disk, the session a process, and the result run on the machine.
 -- |
 -- | The library `lib` is built first, under `e2e/.test-build/apart/lib`:
--- | `Lib.Pass` writes a macro against `Stella.Syntax`, `Lib.Synth` a
--- | synthesizer against `Stella.Elab`, and both import `Lib.Support`. The map
--- | `deps.json` lists the three by the files that build wrote. `Main` of the
--- | package `app` is then built through the map, a macro call and a goal in
--- | it. The session refuses a module whose imports it has not loaded, and a
--- | second module of a name it holds, so the build succeeds only where
--- | `Lib.Support` is loaded before both modules reaching it, and once.
+-- | `Lib.Pass` writes a macro against `Stella.Syntax` and `Lib.Synth` a
+-- | synthesizer against `Stella.Elab`, both importing `Lib.Support`. Then
+-- | `Main` of `app`, with a macro call and a goal, is built with
+-- | `dependencies` listing the three by the files the library's build wrote.
+-- | The session refuses a module whose imports it has not loaded, and a second
+-- | module of a name it holds, so the build succeeds only if `Lib.Support` is
+-- | loaded once, before both modules that reach it.
 module Test.E2E.Apart (spec) where
 
 import Prelude
@@ -17,7 +17,6 @@ import Prelude
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
-import Data.String (joinWith)
 import Data.Traversable (for)
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
@@ -29,12 +28,10 @@ import Steam.Foreign (emptyTable)
 import Steam.Load (emptyStore, globalNamed, load, noIdentities)
 import Steam.Value (Value(..))
 import Stella.CLI.Effect.FS as FS
-import Stella.CLI.Effect.Log (LogLevel(..))
 import Stella.Compiler.Bytecode (decode)
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
-import Stellac.Options (BuildOptions, Command(..))
-import Stellac.Program (program)
+import Test.E2E.StellaJson (Entry, compileAt, listedAt, settings, stellaJson)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 import Test.E2E.Process (copyTree, removeTree)
@@ -46,36 +43,28 @@ dir = "e2e/.test-build/apart"
 libraryModules :: Array String
 libraryModules = [ "Lib.Support", "Lib.Pass", "Lib.Synth" ]
 
--- | The map, beside both packages, listing the library's modules by the files
--- | its build wrote.
-depsMap :: String
-depsMap = "{ \"formatVersion\": 0, \"modules\": [ " <> joinWith ", " (map entry libraryModules) <> " ] }"
-  where
-  entry m = "{ \"module\": \"" <> m <> "\", \"interface\": \"lib/output/_build/" <> m <> ".dmi\", \"object\": \"lib/output/_build/" <> m <> ".dmo\" }"
+-- | `stella.json` of a package, listing the files given and, as `dependencies`,
+-- | the modules given.
+configOf :: Array String -> Array Entry -> String
+configOf paths dependencies = stellaJson ((settings (map listedAt paths)) { dependencies = dependencies })
 
-options :: String -> Maybe String -> BuildOptions
-options workdir dependencies =
-  { output: "output"
-  , workdir
-  , src: []
-  , traceOpt: Nothing
-  , emitCore: false
-  , steamCmd: "steam"
-  , dependencies
-  }
+-- | The library's modules, by the files its build wrote, from `app`.
+libraryEntries :: Array Entry
+libraryEntries = map (\m -> { module: m, interface: "../lib/output/" <> m <> ".dmi", object: "../lib/output/" <> m <> ".dmo" }) libraryModules
 
 type Ran = { result :: Either String Unit, said :: Array String }
 
--- | The library built, the map written, and `app` built through it.
+-- | The library built, then `app` against it.
 building :: (Ran -> Aff Unit) -> Aff Unit
 building k = do
   removeTree dir
   copyTree "fixtures/source/apart" dir
   said <- liftEffect (Ref.new [])
   result <- onDisk said do
-    _ <- FS.writeText (dir <> "/deps.json") depsMap
-    program { logLevel: Info, monochrome: true, command: Build (options (dir <> "/lib") Nothing) }
-    program { logLevel: Info, monochrome: true, command: Build (options (dir <> "/app") (Just "../deps.json")) }
+    _ <- FS.writeText (dir <> "/lib/stella.json") (configOf [ "src/Lib/Support.stel", "src/Lib/Pass.stel", "src/Lib/Synth.stel" ] [])
+    _ <- FS.writeText (dir <> "/app/stella.json") (configOf [ "src/Main.stel" ] libraryEntries)
+    compileAt (dir <> "/lib/stella.json")
+    compileAt (dir <> "/app/stella.json")
   lines <- liftEffect (Ref.read said)
   k { result, said: lines }
 
@@ -84,7 +73,7 @@ building k = do
 valueOf :: String -> Aff String
 valueOf global = do
   said <- liftEffect (Ref.new [])
-  let paths = map (\m -> dir <> "/lib/output/_build/" <> m <> ".dmo") libraryModules <> [ dir <> "/app/output/_build/Main.dmo" ]
+  let paths = map (\m -> dir <> "/lib/output/" <> m <> ".dmo") libraryModules <> [ dir <> "/app/output/Main.dmo" ]
   read <- onDisk said (for paths FS.readBytes)
   case Elaboration.prepare, compiled, read of
     Left why, _, _ -> pure ("no Stella.Elab: " <> why)
@@ -109,8 +98,8 @@ valueOf global = do
     Right dmo -> Right dmo
 
 spec :: Spec Unit
-spec = describe "stellac build of a package calling a macro and naming a synthesizer of a package built apart" do
-  it "loads the modules the map lists from the bytecode it names, each after those it imports and once, and the program runs on the machine" do
+spec = describe "stellac compile of a package calling a macro and naming a synthesizer of a package built apart" do
+  it "loads the modules `dependencies` lists from the bytecode it names, each after those it imports and once, and the program runs on the machine" do
     building \r -> do
       r.result `shouldEqual` Right unit
       Array.filter (\l -> l == "[1/1] Compiling Main (" <> dir <> "/app/src/Main.stel)") r.said `shouldEqual` [ "[1/1] Compiling Main (" <> dir <> "/app/src/Main.stel)" ]

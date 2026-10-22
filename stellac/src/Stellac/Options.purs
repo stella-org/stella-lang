@@ -1,3 +1,5 @@
+-- | The command line of `stellac`: the command, and the `stella.json` it is
+-- | given ([Config](Config.purs)), which holds whatever else a run is to do.
 module Stellac.Options where
 
 import Prelude
@@ -6,110 +8,37 @@ import ArgParse.Basic (ArgParser)
 import ArgParse.Basic as ArgParser
 import Data.Either (Either)
 import Data.Generic.Rep (class Generic)
-import Data.Maybe (Maybe)
 import Data.Show.Generic (genericShow)
 import Stella.CLI.Effect.FS (FilePath)
-import Stella.CLI.Effect.Log (LogLevel(..))
-import Stella.CLI.Options (loglevel, moduleName)
-import Stella.Compiler.TypedCore (ModuleName)
-
-type BuildOptions =
-  { output :: FilePath
-  , workdir :: FilePath
-  , src :: Array String
-  , traceOpt :: Maybe ModuleName
-  , emitCore :: Boolean
-  , steamCmd :: String
-  , dependencies :: Maybe FilePath
-  }
-
-type GraphOptions =
-  { workdir :: FilePath
-  , src :: Array String
-  }
 
 data Command
-  = Build BuildOptions
-  | Graph GraphOptions
+  = Compile FilePath
+  | Graph FilePath
 
 derive instance Generic Command _
 instance Show Command where
   show = genericShow
 
-type Options =
-  { logLevel :: LogLevel
-  , monochrome :: Boolean
-  , command :: Command
-  }
+-- | The `stella.json` a command reads.
+configOf :: Command -> FilePath
+configOf = case _ of
+  Compile path -> path
+  Graph path -> path
 
-options :: ArgParser Options
+options :: ArgParser Command
 options =
-  ArgParser.fromRecord
-    { logLevel:
-        ArgParser.argument [ "--log-level" ]
-          "Suppress log messages of level lower than"
-          # loglevel
-          # ArgParser.default Info
-    , monochrome:
-        ArgParser.flag [ "--monochrome" ]
-          "Disable coloring log messages"
-          # ArgParser.boolean
-    , command:
-        ArgParser.choose "command"
-          [ ArgParser.command [ "build" ]
-              "Build the modules of a package"
-              ((Build <$> buildOptions) <* ArgParser.flagHelp)
-          , ArgParser.command [ "graph" ]
-              "Print, as JSON, the modules of the source files and the modules each\n\
-              \imports, read from their headers alone"
-              ((Graph <$> graphOptions) <* ArgParser.flagHelp)
-          ]
-    }
+  ArgParser.choose "command"
+    [ ArgParser.command [ "compile" ]
+        "Compile the modules a stella.json lists, in the order it lists them"
+        ((Compile <$> config) <* ArgParser.flagHelp)
+    , ArgParser.command [ "graph" ]
+        "Print, as JSON, the modules a stella.json lists and the modules each\n\
+        \imports, read from their headers alone"
+        ((Graph <$> config) <* ArgParser.flagHelp)
+    ]
     <* ArgParser.flagHelp
   where
-  workdir =
-    ArgParser.argument [ "--workdir" ]
-      "The directory the source patterns and relative paths are under.\n\
-      \Defaults to the current directory"
-      # ArgParser.default "."
+  config = ArgParser.anyNotFlag "STELLA_JSON" "The stella.json to read"
 
-  src =
-    ArgParser.argument [ "--src" ]
-      "Glob pattern, from the working directory, of the source files.\n\
-      \May be given more than once. Defaults to `src/**/*.stel`"
-      # ArgParser.unfolded
-
-  graphOptions = ArgParser.fromRecord { workdir, src }
-
-  buildOptions = ArgParser.fromRecord
-    { output:
-        ArgParser.argument [ "-o", "--output" ]
-          "Path to output directory in which all module artifacts placed\n\
-          \Defaults to `output` in current directory"
-          # ArgParser.default "output"
-    , workdir
-    , src
-    , emitCore:
-        ArgParser.flag [ "--emit-core" ]
-          "Emit the Typed Core of each module as `<MODULE>.core.json`"
-          # ArgParser.boolean
-    , steamCmd:
-        ArgParser.argument [ "--steam-cmd" ]
-          "The Steam executable, which runs macros at compile time.\n\
-          \Defaults to `steam`"
-          # ArgParser.default "steam"
-    , traceOpt:
-        ArgParser.argument [ "--trace-opt" ]
-          "Emit optimizer trace of specified module.\n\
-          \Useful to inspect how module is simplified through optimizaion."
-          # moduleName
-          # ArgParser.optional
-    , dependencies:
-        ArgParser.argument [ "--dependencies" ]
-          "A JSON file naming, for each module the build is compiled against\n\
-          \but does not build, its interface and its bytecode"
-          # ArgParser.optional
-    }
-
-parse :: Array String -> Either ArgParser.ArgError Options
+parse :: Array String -> Either ArgParser.ArgError Command
 parse = ArgParser.parseArgs "stellac" "The Stella Compiler" options

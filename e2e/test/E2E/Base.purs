@@ -14,7 +14,8 @@ import Data.Array as Array
 import Data.String (Pattern(..), contains, split)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.E2E.Process (Outcome, copyTree, devtools, removeTree, steamRun, stellac)
+import Test.E2E.Process (Outcome, compile, copyTree, devtools, removeTree, steamRun, writeFiles)
+import Test.E2E.StellaJson (listedAt, settings, stellaJson)
 
 -- | Where this suite's files stand, written afresh for each run.
 dir :: String
@@ -39,12 +40,13 @@ spec = describe "`Base.Int` from its source" do
 
   it "runs a program over the bytecode it wrote, the package compiled against the seed `Base.Int`" do
     copyTree "fixtures/source/base" dir
-    built <- stellac [ "--workdir", dir <> "/app" ]
+    writeFiles dir [ { path: "app/stella.json", text: stellaJson (settings (map listedAt [ "src/Console.stel", "src/Main.stel" ])) } ]
+    built <- compile (dir <> "/app/stella.json")
     when (built.status /= 0) (fail ("the program did not build: " <> built.err))
     outcome <- steamRun
       { manifest: dir <> "/app/foreign.json"
       , entry: "Main"
-      , modules: [ baseIntDmo, dir <> "/app/output/_build/Console.dmo", dir <> "/app/output/_build/Main.dmo" ]
+      , modules: [ baseIntDmo, dir <> "/app/output/Console.dmo", dir <> "/app/output/Main.dmo" ]
       }
     outcome.err `shouldEqual` ""
     outcome.status `shouldEqual` 0

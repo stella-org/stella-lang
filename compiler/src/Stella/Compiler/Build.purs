@@ -1,72 +1,62 @@
--- | The build driver: the modules of a package compiled to bytecode, one at a
--- | time, in dependency order.
+-- | The build driver: the modules of a package compiled to bytecode one at a
+-- | time, each after the modules of the package it imports.
 -- |
--- | **The driver is neutral about effects.** Reading a file, running a macro's
--- | parser, and taking what each phase makes — to show it or to write it — are
--- | the host's, handed in as a `CompilerAction` over a monad of its choosing; the
--- | driver asks for `Monad` alone, and a build that cannot go on is a returned
--- | `Left`. Which files to build, and what is done with the bytecode once
--- | written — code for a target — are the host's too.
+-- | The driver is neutral about effects. Reading a file, running a macro's
+-- | parser, and taking what each phase makes (to show it or to write it) are
+-- | the host's, handed in as a `CompilerAction` over a monad of its choosing.
+-- | The driver asks only for `Monad`, and a build that cannot go on returns
+-- | `Left`. Which files to build, and what becomes of the bytecode, are the
+-- | host's too.
 -- |
--- | **A file's path names its module.** `src/A/B/C.stel` holds `A.B.C`, and
--- | `test/A/B/C.stel` holds `Test.A.B.C`; a module of `src` is never named under
--- | `Test`. The path is relative to the package's root.
+-- | Each file comes with the module it holds, and its header must name that
+-- | module; nothing is read off a path.
 -- |
--- | **A build holds one module at a time.** It reads every header first — the
--- | name and the imports, the declarations left unread — and orders the
--- | modules by their imports, the order they were given in deciding between
--- | modules neither of which imports the other; modules importing one another
--- | are reported before anything is compiled. Then each module is read again
--- | and compiled, and what a build keeps from one module to the next is the
--- | build environment alone, so that a module of the build is compiled against
--- | the modules of the build it imports.
+-- | A build holds one module at a time. It reads every header first (name and
+-- | imports, declarations left unread) and settles the compile order before
+-- | compiling anything. Each module is then read again and compiled, and only
+-- | the build environment carries over from one module to the next.
 -- |
--- | **Every stage of a module runs against one environment, which does not
--- | hold the module.** Its interface is added once the module is lowered
--- | and its interface assembled, for the modules after it alone; what a stage
--- | knows of the module itself comes from the module, never from the
--- | environment. An environment holding the module would let a stage take
--- | what the module published for what it is compiling — an optimizer inlining
--- | the module's own functions into themselves — so no module of the build may
--- | be named as one the environment holds already.
+-- | Every stage of a module runs against one environment that does not hold
+-- | the module; its interface is added once it is assembled, for the modules
+-- | after it. A stage that could see the module's own interface would take
+-- | what the module published for what it is compiling (an optimizer inlining
+-- | the module's functions into themselves), so no module of the build may
+-- | share a name with one the environment holds.
 -- |
--- | **The driver is parts, and each entry composes the ones it needs**:
--- | reading the headers, ordering them by their imports, and compiling one
--- | module and committing its interface. An entry decides which modules of the
--- | build may share a name with one the environment holds; no part does.
+-- | The driver is made of parts: reading the headers, ordering them by their
+-- | imports, and compiling one module and committing its interface. Each entry
+-- | composes the parts it needs and decides which modules of the build may
+-- | share a name with one the environment holds.
 -- |
--- | **An ordinary build (`build`) replaces nothing**: no module of the build is
--- | named as one the environment holds.
+-- | An ordinary build (`build`) replaces and reorders nothing. The modules are
+-- | compiled in the order given, and a module given before a module of the
+-- | build it imports is refused before any is compiled.
 -- |
--- | **A seed build (`buildSeeds`) compiles modules of the environment anew
--- | from their sources**, every module it is given one of them; it is how the
--- | seed modules, which are loaded as the compiler bootstraps, are built. Each
--- | is compiled against the environment without it, and its new interface
--- | takes the old one's place. Until then the old one stays, for the modules
--- | the environment holds that import it; where any of them is kept, the new
--- | interface must be the old one, which is what they were compiled against.
--- | Which modules import it is read off the environment the build starts
--- | from, so that a module rebuilt earlier hides nothing.
+-- | A seed build (`buildSeeds`) compiles modules of the environment anew from
+-- | their sources; it is how the seed modules, loaded as the compiler
+-- | bootstraps, are built. It orders the modules by their imports, the order
+-- | given breaking ties, and reports modules importing one another before
+-- | compiling any. Each is compiled against the environment without it, and
+-- | its new interface replaces the old one. Where a module the build keeps
+-- | imports the old one, the new interface must be the same. Which modules
+-- | import it is read off the environment the build starts from, so a module
+-- | rebuilt earlier hides nothing.
 -- |
--- | **Within a module, a phase's result is held no longer than the next phase
--- | reads it**: it is handed to the host as the phase ends, and what the next
--- | phase is given is what it reads, with what each stage decides of the
--- | module's interface.
+-- | Within a module, a phase's result lives only until the next phase reads
+-- | it: it is handed to the host as the phase ends.
 -- |
--- | **A module's stages run in this order**: the text is lexed, laid out, and
+-- | A module's stages run in this order: the text is lexed, laid out, and
 -- | parsed; the syntax is checked for what no later stage reads; the module is
--- | resolved, its macro calls expanded; its imports are looked up in the build
--- | environment, and the signature and the catalog they give are made, with the
--- | types the ABI manifest supplies to the module itself; it is elaborated and
--- | its Core checked; the interfaces translation reads are gathered; it is
--- | translated to Mid IR, optimized, and lowered to bytecode; and its interface
--- | is assembled. **A stage that
--- | reports an error is the last that runs**, and every error it reports is
--- | returned; a module that does not compile is the last the build compiles.
+-- | resolved and its macro calls expanded; its imports are looked up, and the
+-- | signature and catalog they give are made, with the types the ABI manifest
+-- | supplies to the module itself; it is elaborated and its Core checked; the
+-- | interfaces translation reads are gathered; it is translated to Mid IR,
+-- | optimized, and lowered to bytecode; and its interface is assembled. A
+-- | stage that reports an error is the last to run, every error it reports is
+-- | returned, and a module that does not compile is the last the build
+-- | compiles.
 module Stella.Compiler.Build
-  ( PackageFile
-  , defaultSourceRoots
-  , Progress
+  ( Progress
   , CompilerAction
   , Header
   , readHeaders
@@ -97,11 +87,8 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), maybe)
 import Data.Set (Set)
 import Data.Set as Set
-import Data.String (Pattern(..), joinWith, stripSuffix)
-import Data.String.CodeUnits as SCU
-import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.Build.Report (BackendProblem(..), BuildError(..), BuildMessage, SourceRoot, CompileError(..), CompileWarning, DiagnosticLocation, EnvironmentProblem(..), MessageLocation, SyntaxProblem(..), WrittenFile(..), WrittenLocation, WrittenSource(..), buildMessages, locationOf, locationsOf, originMessage, primaryLocationOf, printBuildMessage, printCompileError, printCompileWarning, warningLocationOf, warningMessage)
+import Stella.Compiler.Build.Report (BackendProblem(..), BuildError(..), BuildMessage, CompileError(..), CompileWarning, DiagnosticLocation, EnvironmentProblem(..), MessageLocation, SyntaxProblem(..), WrittenFile(..), WrittenLocation, WrittenSource(..), buildMessages, locationOf, locationsOf, originMessage, primaryLocationOf, printBuildMessage, printCompileError, printCompileWarning, warningLocationOf, warningMessage)
 import Stella.Compiler.Bytecode.Lower (lower)
 import Stella.Compiler.Bytecode.Module (Debug, Dmo) as Bytecode
 import Stella.Compiler.CST (parseHeader, parseModule)
@@ -128,27 +115,16 @@ import Stella.Compiler.TypedCore (Declared, Module) as Core
 import Stella.Compiler.TypedCore.Name (ModuleName(..))
 import Stella.Compiler.TypedCore.Prim (primModule)
 
--- | A file of the package: the path the host reads it by, and its path from
--- | the package's root, one segment each.
-type PackageFile = { path :: String, within :: Array String }
-
--- | The source directories of a package where it names none of its own: `src`,
--- | holding modules under no prefix, and `test`, holding those under `Test`.
-defaultSourceRoots :: Array SourceRoot
-defaultSourceRoots = [ { prefix: [], dir: [ "src" ] }, { prefix: [ "Test" ], dir: [ "test" ] } ]
-
 -- | How far a build has gone: the module now compiled, counting from 1, of how
 -- | many.
 type Progress = { current :: Int, total :: Int }
 
 -- | What the host does for a build: read a file, run a macro's parser, carry
--- | out the jobs of a module's elaboration, and take what each phase of a
--- | module makes as the phase ends — to show it, or to write it. A parser is run
--- | with the modules of the build compiled so far in hand, which a macro of the
--- | build is declared by. A job is carried out by the attempter made of those
--- | modules and the module's session, which runs a synthesis job by the
--- | synthesizers the host provides, one of the build among them; what that
--- | attempter stops with in `m` is the host's, and no diagnostic of the module.
+-- | out the jobs of a module's elaboration, and take what each phase makes as
+-- | it ends. Parsers and attempters get the modules of the build compiled so
+-- | far, since a macro or synthesizer of the build is declared by one of them.
+-- | What an attempter stops with in `m` is the host's, not a diagnostic of the
+-- | module.
 type CompilerAction m =
   { readSource :: String -> m (Either String String)
   , runParser :: BuiltModules -> RunParser m
@@ -165,22 +141,21 @@ withoutSynthesizers _ session id s = pure (attemptPending session id s)
 -- | The modules of the build compiled so far, each by its interface.
 type BuiltModules = Map ModuleName ModuleInterface
 
--- | What an entry lets its build replace, as the build compiles each module:
--- | the environment the module is compiled against, made of the one the build
--- | has reached, and what refuses the interface it made.
+-- | What an entry lets its build replace: the environment each module is
+-- | compiled against, made from the one the build has reached, and a check
+-- | that may refuse the interface the module made.
 type Replacing =
   { against :: ModuleName -> BuildEnvironment -> BuildEnvironment
   , refused :: Header -> ModuleInterface -> Maybe BuildError
   }
 
--- | An ordinary build's: nothing replaced, and no interface refused.
+-- | An ordinary build replaces nothing and refuses no interface.
 replacingNothing :: Replacing
 replacingNothing = { against: \_ env -> env, refused: \_ _ -> Nothing }
 
--- | A seed build's, the environment it starts from and the modules it
--- | compiles anew given: each compiled against the environment without it, and
--- | its interface refused where it is not the old one while a module of that
--- | environment the build keeps reaches it.
+-- | A seed build compiles each module given against the environment without
+-- | it, and refuses a new interface that differs from the old one while a kept
+-- | module of the starting environment reaches it.
 replacingAnew :: BuildEnvironment -> Set ModuleName -> Replacing
 replacingAnew before anew =
   { against: \name env -> if Set.member name anew then withoutInterface name env else env
@@ -197,13 +172,11 @@ replacingAnew before anew =
     _ -> false
 
 -- | What the host is handed as a build goes. `onStartCompile` comes as a
--- | module's compiling begins; each phase hook as the phase ends, with what it
--- | made, which the build keeps no longer than the next phase needs it; the
--- | optimizer's three as its rounds go — once before the first, once after
--- | each round that changed the module, and once when it stops. `onLowered`
--- | comes with the module's bytecode and interface once the module is added to
--- | the build environment, and `onModuleDone`, with the warnings compiling the
--- | module gave, after it.
+-- | module's compiling begins, and each phase hook as its phase ends. The
+-- | optimizer's three come before the first round, after each round that
+-- | changed the module, and when it stops. `onLowered` brings the bytecode and
+-- | interface once the module is in the build environment, and `onModuleDone`
+-- | the warnings, after it.
 type CompilerHooks m =
   { onStartCompile :: Progress -> { path :: String, name :: ModuleName } -> m Unit
   , onElaborated :: Core.Module Surface.Origin -> m Unit
@@ -227,41 +200,39 @@ defaultHooks =
   , onModuleDone: \_ -> pure unit
   }
 
--- | What a header gives a build: the module's file and name, and the modules it
--- | imports, which are its dependencies, in the order written, each with where
--- | it is written; `Prim`, which an import adds no dependency on, is not among
--- | them.
+-- | What a header gives a build: the module's file and name, and the modules
+-- | it imports, in the order written and each with where it is written. `Prim`
+-- | is left out, since importing it adds no dependency.
 type Header =
   { path :: String
   , name :: ModuleName
   , imports :: Array { module :: ModuleName, at :: DiagnosticLocation }
   }
 
--- | An ordinary build: the files given built against the environment given,
--- | in an order their imports allow, no module of them named as one the
--- | environment holds. The modules built, in the order built.
+-- | An ordinary build of the files given, each with its module, against the
+-- | environment given and in the order given. No module may share a name with
+-- | one the environment holds, and each must come after the modules of the
+-- | build it imports. Returns the modules built, in order.
 build
   :: forall m
    . MonadRec m
   => CompilerAction m
   -> ExpansionSettings
   -> BuildEnvironment
-  -> Array SourceRoot
-  -> Array PackageFile
+  -> Array { path :: String, name :: ModuleName }
   -> m (Either BuildError (Array { path :: String, name :: ModuleName }))
-build action settings env roots files = runExceptT do
-  except (rootsApart roots)
-  named <- except (placed roots files)
+build action settings env named = runExceptT do
+  except (pathsOnce (map _.path named))
+  except (namesOnce named)
   for_ (Array.find (\f -> Map.member f.name env.interfaces) named) (throwError <<< NameInEnvironment)
   let paths = Map.fromFoldable (map (\f -> Tuple f.name f.path) named)
   headers <- headersOf action.readSource paths named
-  order <- except (ordered headers)
-  compileAll action settings replacingNothing env paths order
+  except (inOrder headers)
+  compileAll action settings replacingNothing env paths headers
 
--- | A seed build: the files given, each with the module it holds, every
--- | one a module of the environment given, `Prim` aside, compiled anew from
--- | its source, in an order their imports allow. The modules built, in the
--- | order built.
+-- | A seed build of the files given, each with its module, every one a
+-- | module of the environment other than `Prim`, compiled anew in an order
+-- | their imports allow. Returns the modules built, in order.
 buildSeeds
   :: forall m
    . MonadRec m
@@ -279,32 +250,21 @@ buildSeeds action settings env named = runExceptT do
   order <- except (ordered headers)
   compileAll action settings (replacingAnew env (Set.fromFoldable (map _.name named))) env paths order
 
--- | The header of each file given, read as a build reads them before it orders
--- | anything: the source directories naming their modules apart, each file
--- | given its module's name off its path, and each header naming that module.
--- | Nothing past a header is read and nothing is compiled; the headers are in
--- | the order the files were given, and modules importing one another are not
--- | refused.
+-- | The header of each file given, read as a build reads them before it
+-- | compiles anything: no file given twice, no module held by two files, and
+-- | each header naming the module its file is given as. Nothing past a header
+-- | is read, the headers keep the order given, and modules importing one
+-- | another are not refused.
 readHeaders
   :: forall m
    . MonadRec m
   => (String -> m (Either String String))
-  -> Array SourceRoot
-  -> Array PackageFile
+  -> Array { path :: String, name :: ModuleName }
   -> m (Either BuildError (Array Header))
-readHeaders readSource roots files = runExceptT do
-  except (rootsApart roots)
-  named <- except (placed roots files)
+readHeaders readSource named = runExceptT do
+  except (pathsOnce (map _.path named))
+  except (namesOnce named)
   headersOf readSource (Map.fromFoldable (map (\f -> Tuple f.name f.path) named)) named
-
--- | Every file given its module's name, read off its path; no file given twice,
--- | and no module named twice.
-placed :: Array SourceRoot -> Array PackageFile -> Either BuildError (Array { path :: String, name :: ModuleName })
-placed roots files = do
-  pathsOnce (map _.path files)
-  named <- traverse (\f -> { path: f.path, name: _ } <$> moduleNameOf roots f) files
-  namesOnce named
-  pure named
 
 -- | No file given twice.
 pathsOnce :: Array String -> Either BuildError Unit
@@ -324,56 +284,6 @@ namesOnce named = for_ (foldl once { names: Map.empty, twice: Nothing } named).t
     | Just first <- Map.lookup f.name acc.names = acc { twice = Just { name: f.name, paths: [ first, f.path ] } }
     | otherwise = acc { names = Map.insert f.name f.path acc.names }
 
--- | Source directories that name their modules apart: each prefix made of
--- | segments a module's name may hold, no two under one prefix, and none
--- | standing in another.
-rootsApart :: Array SourceRoot -> Either BuildError Unit
-rootsApart roots = do
-  for_ roots \root ->
-    when (Array.null root.dir || not (Array.all isProperName root.prefix)) do
-      Left (SourceRootInvalid root)
-  for_ (Array.mapWithIndex Tuple roots) \(Tuple i first) ->
-    for_ (Array.drop (i + 1) roots) \second ->
-      when (first.prefix == second.prefix || isPrefixOf first.dir second.dir || isPrefixOf second.dir first.dir) do
-        Left (SourceRootsConflict { first, second })
-
--- | The module a file holds: the prefix of the source directory it stands in,
--- | then its path from there. The directory whose prefix the name falls under
--- | — the longest one it does — is the one it must stand in.
-moduleNameOf :: Array SourceRoot -> PackageFile -> Either BuildError ModuleName
-moduleNameOf roots f = case Array.find (\r -> isPrefixOf r.dir f.within) roots of
-  Nothing -> Left (OutsidePackage f.path)
-  Just root -> case Array.unsnoc (Array.drop (Array.length root.dir) f.within) of
-    Just { init, last } | Just stem <- stripSuffix (Pattern ".stel") last ->
-      let
-        parts = Array.snoc init stem
-        segments = root.prefix <> parts
-        name = ModuleName (joinWith "." segments)
-      in
-        if not (Array.all isProperName parts) then Left (NotAModuleName f.path)
-        else case ownerOf segments of
-          Just owner | owner /= root -> Left (NameReserved { path: f.path, name, owner })
-          _ -> Right name
-    _ -> Left (OutsidePackage f.path)
-  where
-  ownerOf segments = Array.foldl longer Nothing (Array.filter (\r -> isPrefixOf r.prefix segments) roots)
-  longer best r = case best of
-    Just b | Array.length b.prefix >= Array.length r.prefix -> best
-    _ -> Just r
-
-isPrefixOf :: forall a. Eq a => Array a -> Array a -> Boolean
-isPrefixOf prefix whole = Array.take (Array.length prefix) whole == prefix
-
--- | A name a segment of a module's name may be: an upper case letter, then
--- | letters, digits, `_`, and `'`.
-isProperName :: String -> Boolean
-isProperName segment = case SCU.uncons segment of
-  Just { head, tail } -> isUpper head && Array.all isNameChar (SCU.toCharArray tail)
-  Nothing -> false
-  where
-  isUpper c = c >= 'A' && c <= 'Z'
-  isNameChar c = c >= 'a' && c <= 'z' || isUpper c || c >= '0' && c <= '9' || c == '_' || c == '\''
-
 -- | The header of each file, read one file at a time.
 headersOf
   :: forall m
@@ -390,8 +300,8 @@ headersOf readSource paths named = tailRecM step { headers: [], i: 0 }
       header <- headerOf readSource paths file
       pure (Loop { headers: Array.snoc headers header, i: i + 1 })
 
--- | A file's header, its declarations left unread; the header naming the module
--- | the file's path does.
+-- | A file's header, its declarations left unread; the header must name the
+-- | module the file is given as.
 headerOf
   :: forall m
    . Monad m
@@ -411,9 +321,19 @@ headerOf readSource paths file = do
     ItemImport (Import r) | ModuleName r.module.name /= primModule -> Just { module: ModuleName r.module.name, at: locationOf r.module.range }
     _ -> Nothing
 
--- | The headers in an order their imports allow: each after every module of
--- | the build it imports, the one given first taken first; or the first
--- | modules found importing one another.
+-- | Each header comes after those of the build its module imports. The first
+-- | import of a module given at or after the importing one is refused where it
+-- | is written.
+inOrder :: Array Header -> Either BuildError Unit
+inOrder headers = for_ (Array.mapWithIndex Tuple headers) \(Tuple i h) ->
+  for_ (Array.find (\imported -> maybe false (_ >= i) (Map.lookup imported.module indexOf)) h.imports) \imported ->
+    Left (ImportedLater { path: h.path, name: h.name, imported: imported.module, at: imported.at })
+  where
+  indexOf = Map.fromFoldable (Array.mapWithIndex (\i h -> Tuple h.name i) headers)
+
+-- | The headers in an order their imports allow, the one given first taken
+-- | first among those ready; or the first modules found importing one
+-- | another.
 ordered :: Array Header -> Either BuildError (Array Header)
 ordered headers = case Array.findMap cycleOf grouped of
   Just cycle -> Left (ImportCycle cycle)
@@ -425,9 +345,9 @@ ordered headers = case Array.findMap cycleOf grouped of
     | g.recursive = NonEmptyArray.fromArray (Array.mapMaybe (\i -> map (\h -> { path: h.path, name: h.name }) (Array.index headers i)) g.members)
     | otherwise = Nothing
 
--- | Every module in the order given, one at a time, each against the build
--- | environment with the modules before it committed, as the entry's
--- | replacing makes it, and its interface committed unless that refuses it.
+-- | Every module in the order given, one at a time, each against the
+-- | environment holding the modules before it, as the entry's `Replacing`
+-- | shapes it; its interface is committed unless `Replacing` refuses it.
 compileAll
   :: forall m
    . MonadRec m
@@ -502,8 +422,8 @@ type Compiled =
 -- | parsers run with the modules of the build compiled so far, and what each
 -- | phase but the last makes handed over through the action given.
 -- |
--- | **Each phase is a function of what it reads alone**, so that what an
--- | earlier phase made and no later one reads is no longer held.
+-- | Each phase is a function of what it reads alone, so nothing an earlier
+-- | phase made outlives its last reader.
 compileModule
   :: forall m
    . MonadRec m

@@ -1,35 +1,24 @@
--- | `--dependencies`: the interfaces of modules built elsewhere, which a build
--- | is compiled against.
+-- | `dependencies` of `stella.json` ([Config](Config.purs)): the modules built
+-- | elsewhere that a build is compiled against, each with the paths of its
+-- | `.dmi` and `.dmo`, already resolved.
 -- |
--- | The **dependency map** is a JSON file naming, for each module, its
--- | interface (`.dmi`) and its bytecode (`.dmo`):
+-- | Every listed interface is read and checked, whether or not the build
+-- | imports it; bytecode paths are kept but not read. The interfaces enter the
+-- | build environment in the order their imports give, whatever order they are
+-- | listed in, so each may import only listed modules and those the compiler
+-- | provides.
 -- |
--- | ```json
--- | { "formatVersion": 0,
--- |   "modules": [ { "module": "Lib.Core", "interface": "lib/Lib.Core.dmi", "object": "lib/Lib.Core.dmo" } ] }
--- | ```
--- |
--- | A relative path is resolved against the directory the map stands in. Every
--- | interface the map lists is read and checked, whether or not the build
--- | imports it; a bytecode path is resolved and kept, and not read. The
--- | interfaces are added to the build environment in the order their imports
--- | give, whatever order the map lists them in, so each imports only modules of
--- | the map and modules the compiler provides.
--- |
--- | **A module the compiler carries may be listed, with the interface it
--- | carries**: the build is compiled against the module the compiler carries,
--- | and its bytecode path is kept for running the program, not loaded into the
--- | compile-time session in place of the module it holds. Listed with another
--- | interface, it is refused, and `Prim` is refused whatever it is listed with.
--- | The interfaces are compared whole, as decoded. That they are equal says
--- | nothing of the bytecode: artifacts are supported only where the compiler
--- | build reading them is the one that wrote them.
+-- | A seed module may be listed with the interface of the seed module the
+-- | compiler holds; with any other it is refused. The build is then compiled
+-- | against the module the compiler holds, and the listed bytecode path is
+-- | kept for running the program, never loaded into the compile-time session.
+-- | Interfaces are compared whole, as decoded. Equal interfaces say nothing of
+-- | the bytecode: artifacts are supported only when read by the compiler build
+-- | that wrote them.
 module Stellac.Dependencies
   ( Dependency
   , Loaded
   , DependencyError(..)
-  , formatVersion
-  , parse
   , extend
   , dependedOn
   , printDependencyError
@@ -37,15 +26,12 @@ module Stellac.Dependencies
 
 import Prelude
 
-import Data.Argonaut.Core (Json, caseJsonObject, toArray, toNumber, toString)
-import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
-import Data.Either (Either(..), either, note)
+import Data.Either (Either(..), either)
 import Data.Foldable (foldl)
 import Data.Generic.Rep (class Generic)
-import Data.Int (fromNumber)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), isJust, maybe)
@@ -53,11 +39,9 @@ import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
 import Data.String as String
-import Data.Traversable (for, traverse)
+import Data.Traversable (for)
 import Data.Tuple (Tuple(..))
 import Fmt (fmt)
-import Foreign.Object (Object)
-import Foreign.Object as Object
 import Run (Run)
 import Run.Except (EXCEPT, throw)
 import Run.Except as Except
@@ -71,30 +55,26 @@ import Stella.Compiler.TypedCore (ModuleName(..))
 import Stella.Compiler.TypedCore.Prim (primModule)
 import Type.Row (type (+))
 
--- | A module the map lists, with its two paths.
+-- | A module `dependencies` lists, with its two paths.
 type Dependency = { module :: ModuleName, interface :: FilePath, object :: FilePath }
 
 -- | A listed module and the interface its file holds.
 type Loaded = { dependency :: Dependency, interface :: ModuleInterface }
 
 data DependencyError
-  = MapUnreadable FilePath String
-  | MapMalformed FilePath String
-  | NoFormatVersion FilePath
-  | UnsupportedFormatVersion FilePath Int
-  | ListedTwice ModuleName
+  = ListedTwice ModuleName
   | InterfaceUnreadable Dependency String
   | InterfaceRejected Dependency DecodeError
   -- | A file holding the interface of another module than the one listed, the
   -- | second name.
   | InterfaceOfAnother Dependency ModuleName
-  -- | `Prim`, which no map lists.
+  -- | `Prim`, which `dependencies` never lists.
   | ProvidedByCompiler ModuleName
-  -- | A module the compiler carries, listed with another interface than the
-  -- | one it carries.
+  -- | A seed module, listed with another interface than the one of the seed
+  -- | module the compiler holds.
   | DiffersFromCarried ModuleName
   -- | An import of a listed module, the second name, that is neither listed nor
-  -- | in the environment the map extends.
+  -- | in the environment `dependencies` extends.
   | ImportUnlisted ModuleName ModuleName
   -- | Listed modules importing one another, in order of their names.
   | ImportCycle (NonEmptyArray ModuleName)
@@ -104,38 +84,6 @@ derive instance Generic DependencyError _
 
 instance Show DependencyError where
   show = genericShow
-
--- | The version of the map this compiler reads.
-formatVersion :: Int
-formatVersion = 0
-
--- | The entries of the map at the path given, their paths as written.
-parse :: FilePath -> String -> Either DependencyError (Array Dependency)
-parse path source = do
-  json <- either (Left <<< malformed) Right (jsonParser source)
-  fields <- object "the map" json
-  version <- case Object.lookup "formatVersion" fields of
-    Nothing -> Left (NoFormatVersion path)
-    Just v -> note (malformed "`formatVersion` is not a whole number") (fromNumber =<< toNumber v)
-  when (version /= formatVersion) (Left (UnsupportedFormatVersion path version))
-  modules <- note (malformed "the map has no `modules`") (Object.lookup "modules" fields)
-  traverse entry =<< note (malformed "`modules` is not an array") (toArray modules)
-  where
-  malformed = MapMalformed path
-
-  entry json = do
-    fields <- object "an entry of `modules`" json
-    name <- stringField fields "module"
-    interface <- stringField fields "interface"
-    obj <- stringField fields "object"
-    pure { module: ModuleName name, interface, object: obj }
-
-  object :: String -> Json -> Either DependencyError (Object Json)
-  object what = caseJsonObject (Left (malformed (fmt @"{what} is not an object" { what }))) Right
-
-  stringField fields name = do
-    json <- note (malformed (fmt @"an entry of `modules` has no `{name}`" { name })) (Object.lookup name fields)
-    note (malformed (fmt @"`{name}` is not a string" { name })) (toString json)
 
 -- | The environment given, the compiler's, with the interfaces added by
 -- | `addInterface` in the order their imports give. A module listed more than
@@ -215,35 +163,18 @@ cycles names edges = Array.mapMaybe component (Set.toUnfoldable names)
       if Set.member m from && Set.findMin members == Just m then NonEmptyArray.fromFoldable members
       else Nothing
 
--- | The environment given, extended with the interfaces the map at the path
--- | given lists, and the entries of the map, their paths resolved.
+-- | The environment given, extended with the interfaces of the modules given.
 dependedOn
   :: forall r
-   . FilePath
+   . Array Dependency
   -> BuildEnvironment
-  -> Run (FS + r) (Either (NonEmptyArray DependencyError) { environment :: BuildEnvironment, dependencies :: Array Dependency })
-dependedOn path env = Except.runExcept do
-  source <- FS.readText path >>= either (throw <<< pure <<< MapUnreadable path) pure
-  written <- either (throw <<< pure) pure (parse path source)
-  entries <- for written \e -> do
-    interface <- resolved e.interface
-    obj <- resolved e.object
-    pure e { interface = interface, object = obj }
+  -> Run (FS + r) (Either (NonEmptyArray DependencyError) BuildEnvironment)
+dependedOn entries env = Except.runExcept do
   results <- for entries (Except.runExcept <<< load)
   case NonEmptyArray.fromArray (Array.mapMaybe (either Just (const Nothing)) results) of
     Just errors -> throw errors
-    Nothing -> do
-      environment <- either throw pure (extend env (Array.mapMaybe (either (const Nothing) Just) results))
-      pure { environment, dependencies: entries }
+    Nothing -> either throw pure (extend env (Array.mapMaybe (either (const Nothing) Just) results))
   where
-  -- the directory of the map, which a map named without one has none of
-  base = map (\i -> String.take i path) (String.lastIndexOf (String.Pattern "/") path)
-
-  resolved :: forall r'. FilePath -> Run (FS + r') FilePath
-  resolved p = FS.isAbsolute p <#> case _, base of
-    false, Just dir -> fmt @"{dir}/{p}" { dir, p }
-    _, _ -> p
-
   load :: forall r'. Dependency -> Run (EXCEPT DependencyError + FS + r') Loaded
   load d = do
     bytes <- FS.readBytes d.interface >>= either (throw <<< InterfaceUnreadable d) pure
@@ -253,17 +184,13 @@ dependedOn path env = Except.runExcept do
 
 printDependencyError :: DependencyError -> String
 printDependencyError = case _ of
-  MapUnreadable path why -> fmt @"The dependency map `{path}` could not be read: {why}" { path, why }
-  MapMalformed path why -> fmt @"The dependency map `{path}` is malformed: {why}" { path, why }
-  NoFormatVersion path -> fmt @"The dependency map `{path}` gives no `formatVersion`; this compiler reads version {formatVersion}" { path, formatVersion }
-  UnsupportedFormatVersion path v -> fmt @"The dependency map `{path}` is of format version {v}; this compiler reads version {formatVersion}" { path, v, formatVersion }
-  ListedTwice m -> fmt @"The dependency map lists `{m}` more than once" { m: text m }
+  ListedTwice m -> fmt @"`dependencies` lists `{m}` more than once" { m: text m }
   InterfaceUnreadable d why -> fmt @"The interface of `{m}`, `{path}`, could not be read: {why}" { m: text d.module, path: d.interface, why }
   InterfaceRejected d err -> fmt @"The interface of `{m}`, `{path}`, is not one this compiler reads: {why}" { m: text d.module, path: d.interface, why: show err }
-  InterfaceOfAnother d other -> fmt @"The dependency map gives `{path}` as the interface of `{m}`, but it is the interface of `{other}`" { path: d.interface, m: text d.module, other: text other }
-  ProvidedByCompiler m -> fmt @"The dependency map lists `{m}`, which the compiler provides" { m: text m }
-  DiffersFromCarried m -> fmt @"The dependency map lists `{m}` with an interface that differs from the one of the module the compiler carries" { m: text m }
-  ImportUnlisted m missing -> fmt @"The interface of `{m}` imports `{missing}`, which the dependency map does not list" { m: text m, missing: text missing }
-  ImportCycle members -> fmt @"These modules of the dependency map import one another: {names}" { names: String.joinWith ", " (map text (NonEmptyArray.toArray members)) }
+  InterfaceOfAnother d other -> fmt @"`dependencies` gives `{path}` as the interface of `{m}`, but it is the interface of `{other}`" { path: d.interface, m: text d.module, other: text other }
+  ProvidedByCompiler m -> fmt @"`dependencies` lists `{m}`, which the compiler provides" { m: text m }
+  DiffersFromCarried m -> fmt @"`dependencies` lists `{m}` with an interface that differs from the one of the seed module the compiler holds" { m: text m }
+  ImportUnlisted m missing -> fmt @"The interface of `{m}` imports `{missing}`, which `dependencies` does not list" { m: text m, missing: text missing }
+  ImportCycle members -> fmt @"These modules of `dependencies` import one another: {names}" { names: String.joinWith ", " (map text (NonEmptyArray.toArray members)) }
   where
   text (ModuleName m) = m

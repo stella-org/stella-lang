@@ -21,8 +21,9 @@ import Stella.CLI.Effect.Log as Log
 import Stella.CLI.Effect.Process (PROCESS)
 import Stella.CLI.Effect.Process as ProcessEffect
 import Stella.CLI.Runner.Node as Node
+import Stellac.Options (configOf)
 import Stellac.Options as Options
-import Stellac.Program (program)
+import Stellac.Program (loaded, program)
 import Type.Row (type (+))
 
 type ErrorType = String
@@ -50,19 +51,24 @@ main = do
     Left err -> do
       Console.error (ArgParser.printArgError err)
       Process.exit' 1
-    Right opts -> launchAff_ (run opts)
+    Right command -> launchAff_ (run command)
   where
   asked err = Console.log (ArgParser.printArgError err)
 
-  run opts =
-    let
-      loggerConfig = Log.defaultLoggerConfig
-        { minLevel = opts.logLevel
-        , color = not opts.monochrome
-        }
-    in
-      runNode loggerConfig (program opts) >>= case _ of
-        Right _ -> pure unit
-        Left err -> liftEffect do
-          Console.error err
-          Process.exit' 1
+  failed err = liftEffect do
+    Console.error err
+    Process.exit' 1
+
+  -- the file read first, and what it says of messages taken for the run
+  run command = runNode Log.defaultLoggerConfig (loaded (configOf command)) >>= case _ of
+    Left err -> failed err
+    Right config ->
+      let
+        loggerConfig = Log.defaultLoggerConfig
+          { minLevel = config.options.logLevel
+          , color = not config.options.monochrome
+          }
+      in
+        runNode loggerConfig (program command config) >>= case _ of
+          Right _ -> pure unit
+          Left err -> failed err

@@ -1,8 +1,8 @@
 -- | The end-to-end tests over a child process or a session's protocol: the
--- | `steam` command run on programs built from source, sessions, `stellac build`
--- | and `stellac graph` of packages written to disk, with the programs `build`
--- | builds run, and `stella-devtools` writing the seed modules, which needs
--- | `stella-devtools` built. CI runs them with every change. Run with
+-- | `steam` command run on programs built from source, sessions, `stellac
+-- | compile` and `stellac graph` of packages written to disk, with the programs
+-- | `compile` builds run, and `stella-devtools` writing the seed modules, which
+-- | needs `stella-devtools` built. CI runs them with every change. Run with
 -- | `spago test -p e2e -m Test.E2E.Integration`.
 module Test.E2E.Integration where
 

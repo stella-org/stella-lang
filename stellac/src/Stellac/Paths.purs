@@ -1,21 +1,19 @@
--- | Where a build writes, under the output directory:
+-- | Where `stellac compile` writes, in the output directory `stella.json`
+-- | names:
 -- |
 -- | ```text
--- | <output>/_build/<M>.dmo   each module's bytecode
--- | <output>/_build/<M>.mir   the optimizer's trace of the module --trace-opt names
+-- | <output>/<M>.dmo   each module's bytecode
+-- | <output>/<M>.dmi   each module's interface
+-- | <output>/<M>.mir   the optimizer's trace of each module `traceOptimizer` names
 -- | ```
 module Stellac.Paths
-  ( buildDirectory
-  , builtPath
+  ( builtPath
   ) where
 
 import Fmt (fmt)
 import Stella.CLI.Effect.FS (FilePath)
 import Stella.Compiler.TypedCore (ModuleName(..))
 
-buildDirectory :: FilePath -> FilePath
-buildDirectory output = fmt @"{output}/_build" { output }
-
--- | The file of a module under `_build`, with the extension given.
+-- | The file of a module in the output directory, with the extension given.
 builtPath :: FilePath -> ModuleName -> String -> FilePath
-builtPath output (ModuleName m) extension = fmt @"{dir}/{m}.{extension}" { dir: buildDirectory output, m, extension }
+builtPath output (ModuleName m) extension = fmt @"{output}/{m}.{extension}" { output, m, extension }

@@ -1,32 +1,29 @@
--- | A build on disk: an entry of the compiler's driver run with what a command
--- | building modules does for it.
+-- | A build on disk: an entry of the compiler's driver, run with what a command
+-- | does around it.
 -- |
--- | **The host decides nothing of what a build may replace.** Its caller builds
--- | the environment, says where the bytecode of each module outside the build
--- | that the session may load is, and where each file a module of the build
--- | writes goes, and gives the entry of the driver to run; the host knows of
--- | no kind of build.
+-- | The host knows no kinds of build and decides nothing of what a build may
+-- | replace. Its caller gives it the environment, the bytecode of modules
+-- | outside the build that the session may load, where each written file goes,
+-- | and the entry to run.
 -- |
--- | **What it does for the driver**: each file read as the driver asks; each
--- | macro's parser and each goal's synthesizer run on one compile-time session,
--- | opened at the first of them, a module of the build run from the bytecode
--- | the build wrote for it; and what each phase makes written as the phase
--- | ends. The session holds the seed modules from its opening, and is never
--- | sent another module of their names: where a module it runs reaches one the
--- | build compiled anew, the build fails unless the interface the build made
--- | is the one the session holds.
+-- | For the driver, the host reads files as asked, runs every macro's parser
+-- | and goal's synthesizer on one compile-time session opened at the first of
+-- | them, runs a module of the build from the bytecode the build wrote, and
+-- | writes what each phase makes as the phase ends. The session holds the seed
+-- | modules from its opening and is never sent another module of their names.
+-- | Where a module it runs reaches one the build compiled anew, the build fails
+-- | unless the new interface is the one the session holds.
 -- |
--- | **A synthesizer that faults or uses up its budget fails the build where the
--- | goal it was solving stands**, against the synthesizer: it says nothing of
--- | whether the goal has a solution, so it is neither the program's error nor
--- | the compiler's.
+-- | A synthesizer that faults or uses up its budget fails the build where its
+-- | goal stands. That says nothing of whether the goal has a solution, so it is
+-- | neither the program's error nor the compiler's.
 -- |
--- | **A build succeeds only where everything it was to write was written**: a
--- | file a phase could not write fails the build once the modules are built, so
--- | that what an earlier build left is never taken for what this one made. **A
--- | module's bytecode and interface are written as a pair**: a module whose
--- | pair could not be written in full leaves neither file of it, and its macros
--- | are not run. A session that did not close cleanly fails the build too.
+-- | A build succeeds only where everything it was to write was written, so
+-- | what an earlier build left is never taken for this one's work; a file that
+-- | could not be written fails the build once the modules are built. Bytecode
+-- | and interface are written as a pair: where either fails, neither file is
+-- | left and the module's macros are not run. A session that does not close
+-- | cleanly fails the build too.
 module Stella.CLI.Build
   ( Host
   , Building
@@ -75,35 +72,32 @@ import Stella.Compiler.Macro.Compiled (Compiled)
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
 import Type.Row (type (+))
 
--- | What the caller of a build gives the host: the seed modules, which the
--- | session holds from its opening; the environment the build is compiled
--- | against; the bytecode of each module outside the build the session may
--- | load, the seed modules not among them; where the file of a module of the
--- | build with the extension given goes;
--- | the Steam executable the session is started with; the module whose
--- | optimizer rounds are traced; whether each module's Core is asked for; and
--- | what the build is said to be built to once it is.
+-- | What the caller gives the host. `seed` is what the session holds from its
+-- | opening; `objects` are the bytecode of modules outside the build that the
+-- | session may load, no seed module among them; `written` places a module's
+-- | file by extension; `traced` names the modules whose optimizer rounds are
+-- | traced; `destination` is what the closing message names.
 type Host =
   { seed :: Compiled
   , environment :: BuildEnvironment
   , objects :: Map ModuleName FilePath
   , written :: ModuleName -> String -> FilePath
   , steamCmd :: String
-  , traceOpt :: Maybe ModuleName
+  , traced :: Array ModuleName
   , emitCore :: Boolean
   , destination :: String
   }
 
--- | Where a build runs: the files, the log, and the session, a failure of the
--- | session thrown.
+-- | Where a build runs: the files, the log, and the session, whose failure is
+-- | thrown.
 type Building = Run (EXCEPT CompileTimeError + FS + LOG + PROCESS + AFF + EFFECT + ())
 
--- | What a build that succeeded built, in the order built, and the modules the
--- | session loaded.
+-- | What a successful build built, in order, and the modules the session
+-- | loaded.
 type Built = { modules :: Array { path :: String, name :: ModuleName }, loaded :: Set ModuleName }
 
--- | The entry given run with what the host does for it, given the action and
--- | the environment of the host given. A build that fails says why and throws.
+-- | Runs the entry given with the host's action and environment. A build that
+-- | fails says why and throws.
 onDisk
   :: forall r
    . Host
@@ -116,14 +110,14 @@ onDisk host entry = do
   -- the modules whose pair was written, and those the session loaded
   paired <- liftEffect (Ref.new Set.empty)
   loaded <- liftEffect (Ref.new Set.empty)
-  -- the path of each module begun, which a failure of a synthesizer is reported in
+  -- the path of each module begun, for reporting a synthesizer's failure
   paths <- liftEffect (Ref.new Map.empty)
-  -- what the synthesizers of the build run with, every one on the one session
+  -- what the build's synthesizers share, all on the one session
   cancellation <- liftEffect (newCancellation (Milliseconds 1000.0))
   attempts <- liftEffect (Ref.new 0)
   health <- liftEffect (Ref.new Reusable)
   let
-    -- what a phase could not write, kept to fail the build with once it ends
+    -- what a phase could not write, to fail the build with at the end
     failing :: String -> Building Unit
     failing why = liftEffect (Ref.modify_ (\ws -> Array.snoc ws why) unwritten)
 
@@ -191,14 +185,15 @@ onDisk host entry = do
                 pure { dmo, dmi }
           , onModuleDone = \done -> do
               for_ done.warnings (Log.warn <<< printBuildMessage <<< warningMessage done.paths done.path)
-              when (Just done.name == host.traceOpt) do
+              when (Array.elem done.name host.traced) do
                 chunks <- liftEffect (Ref.read trace)
+                liftEffect (Ref.write [] trace)
                 let path = host.written done.name "mir"
                 void (write path =<< FS.writeText path (traceText chunks))
           }
       }
 
-    traced name label = when (Just name == host.traceOpt) do
+    traced name label = when (Array.elem name host.traced) do
       liftEffect (Ref.modify_ (\chunks -> Array.snoc chunks (fmt @"=== {label} ===" { label })) trace)
 
   outcome <- expand (Except.runExcept (entry action host.environment))
@@ -241,10 +236,9 @@ onDisk host entry = do
     | otherwise = joinWith "\n" chunks <> "\n"
 
 -- | A failure of compile-time execution that is neither the program's error
--- | nor the compiler's, said where it stands, the path of each module begun
--- | given: a synthesizer that faulted, or used up its budget, where the goal it
--- | was solving stands; and a module compiled anew that the session runs the
--- | carried one of in its place, with another interface.
+-- | nor the compiler's, placed by the path of each module begun: a synthesizer
+-- | that faulted or used up its budget, at its goal; and a seed module compiled
+-- | anew with another interface than the one the session runs.
 compileTimeFailure :: Map ModuleName String -> CompileTimeError -> Maybe BuildMessage
 compileTimeFailure paths = case _ of
   SynthesizerFaulted r -> Just (at r.goal (fmt @"The synthesizer `{f}` faulted while solving this goal: {detail}" { f: qualifiedText r.synthesizer, detail: r.detail }))

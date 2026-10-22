@@ -1,5 +1,5 @@
 -- | A program whose `Base.IO` and `Base.Array` are written in source, built by
--- | `stellac build` and run by `steam run`, as processes.
+-- | `stellac compile` and run by `steam run`, as processes.
 -- |
 -- | The package declares the two `Base` modules at the schemes the ABI declares
 -- | their entries at, `Base.Array.Array` among them as a foreign type, beside
@@ -18,7 +18,8 @@ import Node.Encoding (Encoding(..))
 import Node.FS.Aff as FS
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.E2E.Process (Outcome, copyTree, removeTree, steamRun, stellac, writeFiles)
+import Test.E2E.Process (Outcome, compile, copyTree, removeTree, steamRun, writeFiles)
+import Test.E2E.StellaJson (listedAt, settings, stellaJson)
 
 -- | Where this suite's files stand, written afresh for each run.
 dir :: String
@@ -26,7 +27,7 @@ dir = "e2e/.test-integration/abi"
 
 -- | The bytecode of each module named, in the order named.
 program :: Array String -> Array String
-program = map \m -> dir <> "/output/_build/" <> m <> ".dmo"
+program = map \m -> dir <> "/output/" <> m <> ".dmo"
 
 -- | The lines a run printed, the development entry point's banner left out.
 printed :: Outcome -> Array String
@@ -43,7 +44,8 @@ spec = describe "steam run, over `Base` modules written in source" do
     for_ [ "IO", "Array" ] \m -> do
       text <- FS.readTextFile UTF8 ("stella-packages/base/src/Base/" <> m <> ".stel")
       writeFiles dir [ { path: "src/Base/" <> m <> ".stel", text } ]
-    built <- stellac [ "--workdir", dir ]
+    writeFiles dir [ { path: "stella.json", text: stellaJson (settings (map listedAt [ "src/Base/IO.stel", "src/Base/Array.stel", "src/Console.stel", "src/Main.stel" ])) } ]
+    built <- compile (dir <> "/stella.json")
     when (built.status /= 0) (fail ("the package did not build: " <> built.err))
 
   it "runs main, the runtime carrying out the `Base` entries the manifest does not name" do

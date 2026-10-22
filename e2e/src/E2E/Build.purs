@@ -4,10 +4,10 @@
 -- | directories of `fixtures/source/common-lib` it names beside it, and the
 -- | modules of the packages in `stella-packages` — `base`, `lists`, `maybe` —
 -- | that those reach by their imports. They are built as a package is, against
--- | the modules the compiler carries; `Base.Int`, which the compiler carries, is
--- | compiled from its source on its own once, for every fixture, and stands first
--- | among the modules built where they reach it. The modules built are those,
--- | in the order they are built, and nothing else of the packages.
+-- | the seed modules, each after the modules it imports; `Base.Int`, a seed
+-- | module, is compiled from its source on its own once, for every fixture, and
+-- | stands first among the modules built where they reach it. The modules built
+-- | are those, in the order they are built, and nothing else of the packages.
 -- |
 -- | **A fixture holds what its program needs to run**, and no more: of the
 -- | modules built, those its runtime roots reach through the imports of their
@@ -61,7 +61,7 @@ import Stella.CLI.Session.Client (Session)
 import Stella.CLI.Session.Client as Client
 import Stella.CLI.Session.CompileTime (CompileTimeError(..))
 import Stella.CLI.Session.RunParser (loadingParser)
-import Stella.Compiler.Build (CompilerAction, PackageFile, build, buildMessages, compileModule, defaultHooks, printBuildMessage, printCompileError, withoutSynthesizers)
+import Stella.Compiler.Build (CompilerAction, build, buildMessages, compileModule, defaultHooks, printBuildMessage, printCompileError, withoutSynthesizers)
 import Stella.Compiler.Bytecode (Dmo, encode)
 import Stella.Compiler.CST (parseHeader)
 import Stella.Compiler.CST.Types (Import(..), Item(..), Module(..))
@@ -75,7 +75,7 @@ foreign import readStelUnder :: Array String -> Effect (Array { path :: String, 
 
 -- | The sources a fixture may be built from, by their paths from the
 -- | repository's root, and what every build of one shares: the environment of
--- | the modules the compiler carries, and `Base.Int` compiled from its source.
+-- | the seed modules, and `Base.Int` compiled from its source.
 type Sources =
   { files :: Map String String
   , environment :: BuildEnvironment
@@ -121,20 +121,19 @@ action files placed =
   , hooks: defaultHooks { onLowered = \made -> modify_ (_ `Array.snoc` made.dmo) }
   }
 
--- | A source file as a build is given it: its path, and where it stands under
--- | the one source directory of the build, so that its place names its module.
-type Placed = { path :: String, within :: Array String, name :: ModuleName }
+-- | A source file as a build is given it: its path, and the module its place
+-- | under its directory names.
+type Placed = { path :: String, name :: ModuleName }
 
--- | Each file under the directory given, placed by its path below it.
+-- | Each file under the directory given, named by its path below it.
 placedUnder :: Map String String -> String -> Array Placed
 placedUnder files dir = Array.mapMaybe place (Array.fromFoldable (Map.keys files))
   where
   prefix = dir <> "/"
   place path = do
     rest <- String.stripPrefix (String.Pattern prefix) path
-    let segments = String.split (String.Pattern "/") rest
     stem <- String.stripSuffix (String.Pattern ".stel") rest
-    pure { path, within: [ "src" ] <> segments, name: ModuleName (String.replaceAll (String.Pattern "/") (String.Replacement ".") stem) }
+    pure { path, name: ModuleName (String.replaceAll (String.Pattern "/") (String.Replacement ".") stem) }
 
 -- | The fixture's modules built from the directories of `fixtures/source`
 -- | given, the first its own, or why they could not be.
@@ -144,9 +143,8 @@ builtFrom sources dirs = do
     own = Array.concatMap (\d -> placedUnder sources.files ("fixtures/source/" <> d)) dirs
     library = Map.fromFoldable (map (\p -> Tuple p.name p) (Array.concatMap (\p -> placedUnder sources.files ("stella-packages/" <> p <> "/src")) packages))
   reached <- reach sources.files library own
-  let
-    placed = own <> Array.mapMaybe (\m -> Map.lookup m library) (Array.fromFoldable (Set.delete baseIntName reached))
-    Tuple result dmos = runState (build (action sources.files placed) defaultSettings sources.environment [ { prefix: [], dir: [ "src" ] } ] (map (\f -> { path: f.path, within: f.within } :: PackageFile) placed)) []
+  placed <- inBuildOrder sources.files (own <> Array.mapMaybe (\m -> Map.lookup m library) (Array.fromFoldable (Set.delete baseIntName reached)))
+  let Tuple result dmos = runState (build (action sources.files placed) defaultSettings sources.environment placed) []
   case result of
     Left err -> Left (String.joinWith "; " (map printBuildMessage (NonEmptyArray.toArray (buildMessages err))))
     Right _ -> pure (if Set.member baseIntName reached then Array.cons sources.baseInt dmos else dmos)
@@ -198,9 +196,9 @@ type OnSessionBuilt = { outcome :: Either String (Array String), lowered :: Arra
 builtOnSession :: Sources -> OnSession -> Array String -> Aff OnSessionBuilt
 builtOnSession sources on dirs = case prepared of
   Left err -> pure { outcome: Left err, lowered: [] }
-  Right { syntax, env } -> case reach sources.files library own of
+  Right { syntax, env } -> case reach sources.files library own >>= placedOf of
     Left err -> pure { outcome: Left err, lowered: [] }
-    Right reached -> do
+    Right placed -> do
       FS.mkdir' on.dir { recursive: true, mode: Perms.mkPerms Perms.all Perms.all Perms.all }
       for_ on.prebuilt \p -> write p.dmo
       loaded <- liftEffect (Ref.new Set.empty)
@@ -211,7 +209,6 @@ builtOnSession sources on dirs = case prepared of
           lowered <- liftEffect (Ref.new [])
           written <- liftEffect (Ref.new Set.empty)
           let
-            placed = own <> Array.mapMaybe (\m -> Map.lookup m library) (Array.fromFoldable (Set.difference reached (Set.insert baseIntName prebuiltNames)))
             loading =
               { seed: syntax.preloaded
               , importsOf: const Nothing
@@ -233,7 +230,7 @@ builtOnSession sources on dirs = case prepared of
                         liftEffect (Ref.modify_ (Set.insert made.dmo.name) written)
                   }
               }
-          outcome <- runOnNode (Except.runExcept (build onSession defaultSettings env [ { prefix: [], dir: [ "src" ] } ] (map (\f -> { path: f.path, within: f.within } :: PackageFile) placed)))
+          outcome <- runOnNode (Except.runExcept (build onSession defaultSettings env placed))
           made <- liftEffect (Ref.read lowered)
           pure
             { outcome: case outcome of
@@ -250,6 +247,7 @@ builtOnSession sources on dirs = case prepared of
   own = Array.concatMap (\d -> placedUnder sources.files ("fixtures/source/" <> d)) dirs
   library = Map.fromFoldable (map (\p -> Tuple p.name p) (Array.concatMap (\p -> placedUnder sources.files ("stella-packages/" <> p <> "/src")) packages))
   prebuiltNames = Set.fromFoldable (map _.dmo.name on.prebuilt)
+  placedOf reached = inBuildOrder sources.files (own <> Array.mapMaybe (\m -> Map.lookup m library) (Array.fromFoldable (Set.difference reached (Set.insert baseIntName prebuiltNames))))
 
   pathOf name = on.dir <> "/" <> nameText name <> ".dmo"
 
@@ -280,20 +278,35 @@ packageModules sources p = map _.name (placedUnder sources.files ("stella-packag
 
 -- | The library modules the fixture's own reach by their imports, transitively.
 reach :: Map String String -> Map ModuleName Placed -> Array Placed -> Either String (Set ModuleName)
-reach files library own = go Set.empty (Array.concat <$> traverse importsOfFile own)
+reach files library own = go Set.empty (Array.concat <$> traverse (importsOf files) own)
   where
   go seen pending = pending >>= \ms -> case Array.uncons (Array.filter (\m -> not (Set.member m seen) && Map.member m library) ms) of
     Nothing -> Right seen
     Just { head, tail } -> case Map.lookup head library of
-      Just f -> go (Set.insert head seen) (map (tail <> _) (importsOfFile f))
+      Just f -> go (Set.insert head seen) (map (tail <> _) (importsOf files f))
       Nothing -> go seen (Right tail)
 
-  importsOfFile f = case Map.lookup f.path files of
-    Nothing -> Left ("no source " <> f.path)
-    Just text -> case parseHeader text of
-      Left _ -> Left (f.path <> " has no header")
-      Right (Module m) -> Right (Array.mapMaybe importOf m.items)
+-- | The files given in an order their imports allow, the one given first taken
+-- | first among those ready; or why not: files importing one another.
+inBuildOrder :: Map String String -> Array Placed -> Either String (Array Placed)
+inBuildOrder files placed = traverse (\f -> { file: f, imports: _ } <$> importsOf files f) placed >>= go []
+  where
+  go done remaining = case Array.find (ready remaining) remaining of
+    Just r -> go (Array.snoc done r.file) (Array.filter (\other -> other.file.path /= r.file.path) remaining)
+    Nothing
+      | Array.null remaining -> Right done
+      | otherwise -> Left (String.joinWith ", " (map (nameText <<< _.file.name) remaining) <> " import one another")
 
+  ready remaining r = not (Array.any (\other -> Array.elem other.file.name r.imports) remaining)
+
+-- | The modules the header of the file given imports.
+importsOf :: Map String String -> Placed -> Either String (Array ModuleName)
+importsOf files f = case Map.lookup f.path files of
+  Nothing -> Left ("no source " <> f.path)
+  Just text -> case parseHeader text of
+    Left _ -> Left (f.path <> " has no header")
+    Right (Module m) -> Right (Array.mapMaybe importOf m.items)
+  where
   importOf = case _ of
     ItemImport (Import r) -> Just (ModuleName r.module.name)
     _ -> Nothing

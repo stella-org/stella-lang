@@ -1,4 +1,4 @@
--- | `stellac build` of a package whose module names a synthesizer another of
+-- | `stellac compile` of a package whose module names a synthesizer another of
 -- | its modules writes: the files on disk, the session a process, and the
 -- | modules built then run on the machine.
 -- |
@@ -17,7 +17,7 @@ import Data.Foldable (for_)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set as Set
-import Data.String (Pattern(..), contains, joinWith, split)
+import Data.String (Pattern(..), contains, joinWith)
 import Data.Traversable (for)
 import Data.Tuple (Tuple(..))
 import Dodo as Dodo
@@ -35,7 +35,7 @@ import Steam.Load (emptyStore, globalNamed, load, noIdentities)
 import Steam.Value (Value(..))
 import Stella.CLI.Effect.FS (FS)
 import Stella.CLI.Effect.FS as FS
-import Stella.CLI.Effect.Log (LOG, Log(..), LogLevel(..))
+import Stella.CLI.Effect.Log (LOG, Log(..))
 import Stella.CLI.Effect.Log as Log
 import Stella.CLI.Effect.Process (Output(..), PROCESS, Process(..))
 import Stella.CLI.Effect.Process as Process
@@ -45,7 +45,7 @@ import Stella.CLI.Session.Client as Client
 import Stella.CLI.Session.CompileTime (CompileTimeError)
 import Stella.CLI.Session.RunParser (openingParser)
 import Stella.CLI.Session.Synthesis (Synthesizing, defaultSynthesisSettings, openingSynthesis)
-import Stella.Compiler.Build (BuiltModules, CompilerAction, build, buildMessages, defaultHooks, defaultSourceRoots, printBuildMessage)
+import Stella.Compiler.Build (BuiltModules, CompilerAction, build, buildMessages, defaultHooks, printBuildMessage)
 import Stella.Compiler.Bytecode (decode, encode)
 import Stella.Compiler.Elaborate.Driver.Loop (AttempterM)
 import Stella.Compiler.Elaborate.Driver.Synthesis (attemptJob)
@@ -56,11 +56,10 @@ import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Macro.Run (defaultSettings)
 import Stella.Compiler.TypedCore (Decl(..), Ident(..), ModuleName(..), Qualified(..))
 import Stella.Compiler.TypedCore.Term (Literal(..))
-import Stellac.Options (BuildOptions, Command(..))
-import Stellac.Program (program)
 import Node.Encoding (Encoding(..))
 import Node.FS.Aff as NodeFS
 import Test.E2E.Process (copyTree, removeTree)
+import Test.E2E.StellaJson (compileAt, listedAt, settings, stellaJson)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 import Type.Row (type (+))
@@ -82,7 +81,7 @@ mainNaming synthesizer =
 type Ran = { result :: Either String Unit, said :: Array String, dir :: String }
 
 -- | The package `Support`, `A`, and `Main` naming the synthesizer given, built with
--- | `stellac build` in the directory given.
+-- | `stellac compile` in the directory given.
 building :: String -> String -> (Ran -> Aff Unit) -> Aff Unit
 building name synthesizer k = do
   let dir = "e2e/.test-build/" <> name
@@ -91,20 +90,10 @@ building name synthesizer k = do
   said <- liftEffect (Ref.new [])
   result <- onDisk said do
     _ <- FS.writeText (dir <> "/src/Main.stel") (joinWith "\n" (mainNaming synthesizer))
-    program { logLevel: Info, monochrome: true, command: Build (options dir) }
+    _ <- FS.writeText (dir <> "/stella.json") (stellaJson (settings (map listedAt [ "src/Support.stel", "src/A.stel", "src/Main.stel" ])))
+    compileAt (dir <> "/stella.json")
   lines <- liftEffect (Ref.read said)
   k { result, said: lines, dir }
-
-options :: String -> BuildOptions
-options dir =
-  { output: "output"
-  , workdir: dir
-  , src: []
-  , traceOpt: Nothing
-  , emitCore: false
-  , steamCmd: "steam"
-  , dependencies: Nothing
-  }
 
 -- | Run on the disk and on real processes, `steam` started as the development
 -- | entry point, the log collected.
@@ -125,7 +114,7 @@ development (SpawnSession launch reply) = Node.nodeProcessHandler
 -- | the order given, after `Stella.Elab` and the modules the compiler carries.
 valueOf :: String -> Array String -> String -> Aff String
 valueOf dir modules global = do
-  read <- onDisk' (for modules \m -> FS.readBytes (dir <> "/output/_build/" <> m <> ".dmo"))
+  read <- onDisk' (for modules \m -> FS.readBytes (dir <> "/output/" <> m <> ".dmo"))
   case Elaboration.prepare, compiled, traverse' read of
     Left why, _, _ -> pure ("no Stella.Elab: " <> why)
     _, Left why, _ -> pure ("no carried modules: " <> why)
@@ -216,7 +205,7 @@ coreOfMain name synthesis = case compiled of
                     liftEffect (Ref.modify_ (Set.insert made.dmo.name) written)
               }
           }
-      outcome <- runOnDisk (Except.runExcept (build action defaultSettings env defaultSourceRoots (map (\(Tuple path _) -> { path, within: split (Pattern "/") path }) sources)))
+      outcome <- runOnDisk (Except.runExcept (build action defaultSettings env (map (\(Tuple path _) -> let l = listedAt path in { path, name: ModuleName l.module }) sources)))
       opened <- liftEffect (Ref.read held)
       for_ opened \session -> runOnDisk (void (Client.close session))
       made <- liftEffect (Ref.read core)
@@ -243,7 +232,7 @@ said' :: Ran -> String -> Boolean
 said' r text = Array.any (contains (Pattern text)) r.said
 
 spec :: Spec Unit
-spec = describe "stellac build of a synthesizer of the package" do
+spec = describe "stellac compile of a synthesizer of the package" do
   -- `A` loads only after `Support`, which it imports, and a second load of
   -- either is refused by the session: two goals reaching `A.one` build only
   -- where each module is loaded in dependency order, and once

@@ -23,6 +23,7 @@ package:
     - strings
     - tuples
     - typelevel-prelude
+    - validation
   run:
     main: Stellac.JS
   test:

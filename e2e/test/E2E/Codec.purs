@@ -1,4 +1,4 @@
--- | `stellac build` of a package whose synthesizer derives an encoder from the
+-- | `stellac compile` of a package whose synthesizer derives an encoder from the
 -- | type of each goal, over the `Base` package the development script builds:
 -- | the files on disk, the session a process, and the modules built then run on
 -- | the machine.
@@ -40,16 +40,13 @@ import Run.Except as Except
 import Steam.Foreign (emptyTable)
 import Steam.Load (emptyStore, globalNamed, load, noIdentities)
 import Steam.Value (Value(..))
-import Stella.CLI.Effect.Log (LogLevel(..))
 import Stella.Compiler.Bytecode (Dmo, decode)
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..), Qualified(..))
 import Stella.Compiler.TypedCore.Domain (textOf)
-import Stellac.Dependencies (parse)
-import Stellac.Options (BuildOptions, Command(..))
 import E2E.Build (collectedFrom)
-import Stellac.Program (program)
 import Test.E2E.Process (buildBase, copyTree, removeTree)
+import Test.E2E.StellaJson (Entry, compileAt, entriesIn, listedAt, settings, stellaJson)
 import Test.E2E.Synthesis (onDisk)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -58,23 +55,12 @@ import Test.Spec.Assertions (fail, shouldEqual)
 dir :: String
 dir = "e2e/.test-integration/codec"
 
-options :: String -> BuildOptions
-options workdir =
-  { output: "output"
-  , workdir
-  , src: []
-  , traceOpt: Nothing
-  , emitCore: false
-  , steamCmd: "steam"
-  , dependencies: Just "../base/dependencies.json"
-  }
-
 type Ran = { result :: Either String Unit, said :: Array String }
 
 -- | `Base` and then the package built afresh under `dir`, in the directory
 -- | named, the package's `Main` the one of the case named where one is: `Base`
--- | under `base`, where the script writes it and its map, and the package under
--- | `app`.
+-- | under `base`, where the script writes it and `dependencies.json`, and the
+-- | package under `app`, its `dependencies` the entries the script wrote.
 building :: String -> Maybe String -> Aff Ran
 building name replacing = do
   let workdir = dir <> "/" <> name <> "/app"
@@ -84,8 +70,10 @@ building name replacing = do
   copyTree "fixtures/source/codec/src" (workdir <> "/src")
   for_ replacing \chosen ->
     FS.readTextFile UTF8 ("fixtures/source/codec/cases/" <> chosen <> "/Main.stel") >>= FS.writeTextFile UTF8 (workdir <> "/src/Main.stel")
+  entries <- entriesOf name
+  FS.writeTextFile UTF8 (workdir <> "/stella.json") (stellaJson ((settings (map listedAt [ "src/Codec.stel", "src/Derive.stel", "src/Sample.stel", "src/Main.stel" ])) { dependencies = entries }))
   log <- liftEffect (Ref.new [])
-  result <- onDisk log (program { logLevel: Info, monochrome: true, command: Build (options workdir) })
+  result <- onDisk log (compileAt (workdir <> "/stella.json"))
   lines <- liftEffect (Ref.read log)
   pure { result, said: lines }
 
@@ -94,23 +82,20 @@ said :: Ran -> String -> Boolean
 said r text = Array.any (contains (Pattern text)) r.said
 
 -- | The modules `Main` needs when it runs, of the package built in the
--- | directory named: of the modules the compiler carries, the rest of `Base` as
--- | the map lists it, and the package's modules, in that order, those `Main`
--- | reaches through the imports of their bytecode.
+-- | directory named: of the seed modules, the rest of `Base` as
+-- | `dependencies.json` lists it, and the package's modules, in that order,
+-- | those `Main` reaches through the imports of their bytecode.
 heldOf :: String -> Aff (Either String (Array Dmo))
 heldOf name = do
-  let
-    baseOutput = dir <> "/" <> name <> "/base"
-    app = dir <> "/" <> name <> "/app"
-  mapped <- FS.readTextFile UTF8 (baseOutput <> "/dependencies.json")
-  case parse "dependencies.json" mapped, compiled of
-    Left err, _ -> pure (Left (show err))
-    _, Left why -> pure (Left ("no carried modules: " <> why))
-    Right entries, Right carried -> do
+  let app = dir <> "/" <> name <> "/app"
+  entries <- entriesOf name
+  case compiled of
+    Left why -> pure (Left ("no seed modules: " <> why))
+    Right carried -> do
       let
-        carriedNames = map _.name carried.moduleInterfaces
-        base = map (\e -> baseOutput <> "/" <> e.object) (Array.filter (\e -> not (Array.elem e.module carriedNames)) entries)
-        own = map (\m -> app <> "/output/_build/" <> m <> ".dmo") [ "Codec", "Derive", "Sample", "Main" ]
+        carriedNames = map (\(ModuleName m) -> m) (map _.name carried.moduleInterfaces)
+        base = map _.object (Array.filter (\e -> not (Array.elem e.module carriedNames)) entries)
+        own = map (\m -> app <> "/output/" <> m <> ".dmo") [ "Codec", "Derive", "Sample", "Main" ]
       read <- for (base <> own) dmoAt
       pure (sequence read >>= \dmos -> collectedFrom [ ModuleName "Main" ] (carried.modules <> dmos))
 
@@ -133,6 +118,14 @@ stringsOf name globals = do
             Just _ -> "not a String"
             Nothing -> "uninitialized"
 
+-- | The entries of `dependencies.json` the script wrote for the case named.
+entriesOf :: String -> Aff (Array Entry)
+entriesOf name = do
+  text <- FS.readTextFile UTF8 (dir <> "/" <> name <> "/base/dependencies.json")
+  case entriesIn text of
+    Left why -> fail why *> pure []
+    Right entries -> pure entries
+
 dmoAt :: String -> Aff (Either String Dmo)
 dmoAt path = do
   bytes <- FS.readFile path >>= liftEffect <<< Buffer.toArray
@@ -141,7 +134,7 @@ dmoAt path = do
     Right dmo -> Right dmo
 
 spec :: Spec Unit
-spec = describe "stellac build of an encoder derived from the type of each goal" do
+spec = describe "stellac compile of an encoder derived from the type of each goal" do
   it "builds `Base`, then the package, `derive` solving every goal of `Main`" do
     r <- building "built" Nothing
     r.result `shouldEqual` Right unit

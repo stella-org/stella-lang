@@ -1,14 +1,14 @@
 // Writes `compiler/src/Stella/Compiler/Bootstrap/Source.purs`: the interface and
-// the bytecode of each seed module, the modules loaded as the compiler
-// bootstraps, compiled from its source, so the compiler holds those modules
-// without reading a file or compiling anything as it starts.
+// the bytecode of each seed module compiled from its source, so the compiler
+// holds the seed modules without reading a file or compiling anything as it
+// starts.
 //
-// The files are what `stella-devtools build-seeds` writes, one seed build
-// compiling all of the sources anew, so what is written is a function of the
-// sources and of the compiler that builds them, and of no seed module the
-// compiler held before. It writes to a directory of its own, and the
-// compiler's file is written only once it has succeeded. It runs from the
-// workspace's build output, which needs the workspace built.
+// The files are what `stella-devtools build-seeds` writes in one seed build
+// that compiles every source anew, so they depend only on the sources and the
+// compiler building them, never on the seed modules it held before. The build
+// writes to a directory of its own, and the compiler's file is written only
+// once it succeeds. It runs from the workspace's build output, which needs
+// the workspace built.
 //
 // Run from the repository root or from `compiler/`: `npm run embed -w compiler`.
 

@@ -1,16 +1,17 @@
--- | The `Base` package built from its sources, `stella-packages/base`, by the
--- | development script, and a program built against the dependency map the
--- | script writes and run by `steam run`, as processes.
+-- | The `Base` package built from `stella-packages/base` by the development
+-- | script, and a program built against the entries the script writes and run
+-- | by `steam run`, as processes.
 -- |
--- | The map lists every module of the package, `Base.Int` among them, a seed
--- | module: `stella-devtools build-seeds` wrote it, the build of the
--- | package's other modules was given it by a map, and the compiler accepts it
--- | as the seed module it holds. `App` composes actions with `Base.IO`, over
--- | `Base.String` and `Base.Int`, beside `Console`, whose foreign the host
--- | implements, and handles an effect by a `reifiable full` clause, resuming
--- | with `Base.Continuation.continue`; it runs over the bytecode the map names.
--- | Maps listing a seed module with another interface, `Prim`, or a module
--- | twice are refused. The cases run in order: the first builds `Base`.
+-- | `dependencies.json` has an entry for every module of the package, the seed
+-- | module `Base.Int` among them: `stella-devtools build-seeds` wrote it, the
+-- | build of the other modules got it through `dependencies`, and the compiler
+-- | accepts it as the seed module it holds. `App` lists the entries as they
+-- | stand. It composes actions with `Base.IO` over `Base.String` and
+-- | `Base.Int`, calls `Console`, whose foreign the host implements, and handles
+-- | an effect by a `reifiable full` clause, resuming with
+-- | `Base.Continuation.continue`. `dependencies` listing a seed module with
+-- | another interface, `Prim`, or a module twice is refused. The cases run in
+-- | order: the first builds `Base`.
 module Test.E2E.BasePackage (spec) where
 
 import Prelude
@@ -18,22 +19,21 @@ import Prelude
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
-import Data.String (Pattern(..), contains, joinWith, split)
+import Data.String (Pattern(..), contains, split)
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
-import Fmt (DefaultConfig, SetOpenClose, fmtWith)
+import Fmt (fmt)
 import Node.Buffer as Buffer
 import Node.Encoding (Encoding(..))
 import Node.FS.Aff as FS
 import Stella.Compiler.Bytecode.Bytes (Bytes)
-import Stella.Compiler.Interface.Environment (initialEnvironment)
 import Stella.Compiler.Interface.File as Interface
-import Stella.Compiler.TypedCore (Ident(..), ModuleName(..))
-import Stellac.Dependencies (parse)
+import Stella.Compiler.TypedCore (Ident(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
-import Test.E2E.Process (Outcome, buildBase, copyTree, removeTree, steamRun, stellac, writeFiles)
+import Node.Process (cwd)
+import Test.E2E.Process (Outcome, buildBase, compile, copyTree, removeTree, steamRun, writeFiles)
+import Test.E2E.StellaJson (Entry, entriesIn, listedAt, settings, stellaJson)
 
 -- | Where this suite's files stand, written afresh for each run.
 dir :: String
@@ -43,25 +43,24 @@ dir = "e2e/.test-integration/base-package"
 baseOutput :: String
 baseOutput = dir <> "/base"
 
--- | A map under `maps`, listing each module given by the files of the path
--- | given, under where the script wrote, without the extension.
-mapOf :: Array { module :: String, file :: String } -> String
-mapOf entries = fmtWith @(SetOpenClose "<" ">" DefaultConfig) @"""{ "formatVersion": 0, "modules": [ <entries> ] }""" { entries: joinWith ", " (map entry entries) }
-  where
-  entry e = fmtWith @(SetOpenClose "<" ">" DefaultConfig) @"""{ "module": "<m>", "interface": "../base/<f>.dmi", "object": "../base/<f>.dmo" }""" { m: e.module, f: e.file }
+-- | `App` built by a `stella.json` written as the file given in `app`, against
+-- | the modules given.
+buildApp :: String -> Array Entry -> Aff Outcome
+buildApp file dependencies = do
+  writeFiles dir [ { path: "app/" <> file, text: stellaJson ((settings (map listedAt [ "src/Console.stel", "src/Main.stel" ])) { dependencies = dependencies }) } ]
+  compile (dir <> "/app/" <> file)
 
--- | `App` built against the map of the path given, relative to the package.
-buildApp :: String -> Aff Outcome
-buildApp depsMap = stellac [ "--workdir", dir <> "/app", "--dependencies", depsMap ]
-
--- | The bytecode of the modules the map the script wrote lists, as it lists
--- | them.
-listed :: Aff (Array String)
+-- | The entries of `dependencies.json`, which the script wrote.
+listed :: Aff (Array Entry)
 listed = do
   text <- FS.readTextFile UTF8 (baseOutput <> "/dependencies.json")
-  case parse "dependencies.json" text of
-    Left err -> fail (show err) *> pure []
-    Right entries -> pure (map (\e -> baseOutput <> "/" <> e.object) entries)
+  case entriesIn text of
+    Left why -> fail why *> pure []
+    Right entries -> pure entries
+
+-- | The entry of the module given, of those given.
+entryOf :: String -> Array Entry -> Array Entry
+entryOf m = Array.filter (\e -> e.module == m)
 
 bytesOf :: String -> Aff Bytes
 bytesOf path = FS.readFile path >>= liftEffect <<< Buffer.toArray
@@ -82,31 +81,34 @@ refused line o = do
   when (not (contains (Pattern line) o.err)) (fail ("the build did not say: " <> line <> "\n" <> o.err))
 
 spec :: Spec Unit
-spec = describe "the `Base` package, built from its sources and given by a map" do
-  it "builds `Base`, `Base.Int` by `stella-devtools`, and writes a map listing every module of it" do
+spec = describe "the `Base` package, built from its sources and listed by `dependencies`" do
+  it "builds `Base`, `Base.Int` by `stella-devtools`, and writes the entries of every module of it, each path absolute" do
     removeTree dir
     built <- buildBase [ "--output", baseOutput ]
     when (built.status /= 0) (fail ("`Base` did not build: " <> built.err))
-    modules <- listed
-    modules `shouldEqual` map (\m -> baseOutput <> "/" <> m <> ".dmo") [ "_build/Base.Array", "_build/Base.Char", "_build/Base.Continuation", "_build/Base.IO", "seeds/Base.Int", "_build/Base.Number", "_build/Base.String" ]
+    entries <- listed
+    root <- liftEffect cwd
+    map _.object entries `shouldEqual` map (\m -> fmt @"{root}/{out}/{m}.dmo" { root, out: baseOutput, m })
+      [ "Base.Array", "Base.Char", "Base.Continuation", "Base.IO", "seeds/Base.Int", "Base.Number", "Base.String" ]
 
-  it "builds a program against the map, `Base.Int` accepted as the seed module" do
+  it "builds a program listing those entries as they stand, `Base.Int` accepted as the seed module" do
     copyTree "fixtures/source/base-package" dir
-    built <- buildApp "../base/dependencies.json"
+    entries <- listed
+    built <- buildApp "stella.json" entries
     when (built.status /= 0) (fail ("the program did not build: " <> built.err))
 
-  it "runs the program over the bytecode the map names" do
-    modules <- listed
+  it "runs the program over the bytecode the entries name" do
+    entries <- listed
     outcome <- steamRun
       { manifest: dir <> "/app/foreign.json"
       , entry: "Main"
-      , modules: modules <> [ dir <> "/app/output/_build/Console.dmo", dir <> "/app/output/_build/Main.dmo" ]
+      , modules: map _.object entries <> [ dir <> "/app/output/Console.dmo", dir <> "/app/output/Main.dmo" ]
       }
     outcome.err `shouldEqual` ""
     outcome.status `shouldEqual` 0
     printed outcome `shouldEqual` [ "built apart", "12", "6" ]
 
-  it "refuses a map listing a seed module with another interface" do
+  it "refuses `dependencies` listing a seed module with another interface" do
     stored <- bytesOf (baseOutput <> "/seeds/Base.Int.dmi")
     case Interface.decode stored of
       Left err -> fail (show err)
@@ -116,23 +118,19 @@ spec = describe "the `Base` package, built from its sources and given by a map" 
           other = file.interface { declarations { values = values } }
         case Interface.encode file { interface = other } of
           Left err -> fail (show err)
-          Right bytes -> writeBytes (baseOutput <> "/_build/Other.Int.dmi") bytes
-    writeFiles dir [ { path: "maps/other.json", text: mapOf [ { module: "Base.String", file: "_build/Base.String" }, { module: "Base.Int", file: "_build/Other.Int" } ] } ]
-    buildApp "../maps/other.json" >>= refused "The dependency map lists `Base.Int` with an interface that differs from the one of the module the compiler carries"
+          Right bytes -> writeBytes (baseOutput <> "/Other.Int.dmi") bytes
+    entries <- listed
+    buildApp "other.json" (entryOf "Base.String" entries <> [ { module: "Base.Int", interface: "../base/Other.Int.dmi", object: "../base/seeds/Base.Int.dmo" } ])
+      >>= refused "`dependencies` lists `Base.Int` with an interface that differs from the one of the seed module the compiler holds"
 
-  it "refuses a map listing `Prim`" do
-    case Map.lookup (ModuleName "Prim") initialEnvironment.interfaces of
-      Nothing -> fail "no `Prim`"
-      Just prim -> case Interface.encode { interface: prim, buildHash: Nothing } of
-        Left err -> fail (show err)
-        Right bytes -> writeBytes (baseOutput <> "/_build/Prim.dmi") bytes
-    writeFiles dir [ { path: "maps/prim.json", text: mapOf [ { module: "Base.String", file: "_build/Base.String" }, { module: "Prim", file: "_build/Prim" } ] } ]
-    buildApp "../maps/prim.json" >>= refused "The dependency map lists `Prim`, which the compiler provides"
+  it "refuses `dependencies` listing `Prim`" do
+    entries <- listed
+    buildApp "prim.json" (entryOf "Base.String" entries <> [ { module: "Prim", interface: "../base/Prim.dmi", object: "../base/Prim.dmo" } ])
+      >>= refused "`dependencies[1].module` is `Prim`, which the compiler provides"
 
-  it "refuses a map listing a module twice, whether or not it is a seed module" do
-    let
-      twice = [ { module: "Base.String", file: "_build/Base.String" }, { module: "Base.Int", file: "seeds/Base.Int" } ]
-    writeFiles dir [ { path: "maps/twice.json", text: mapOf (twice <> twice) } ]
-    outcome <- buildApp "../maps/twice.json"
-    refused "The dependency map lists `Base.Int` more than once" outcome
-    refused "The dependency map lists `Base.String` more than once" outcome
+  it "refuses `dependencies` listing a module twice, whether or not it is a seed module" do
+    entries <- listed
+    let twice = entryOf "Base.String" entries <> entryOf "Base.Int" entries
+    outcome <- buildApp "twice.json" (twice <> twice)
+    refused "`dependencies` lists `Base.Int` more than once" outcome
+    refused "`dependencies` lists `Base.String` more than once" outcome

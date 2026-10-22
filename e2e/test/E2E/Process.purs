@@ -1,10 +1,10 @@
 -- | The commands the integration tests run as processes, from the root of the
--- | repository: `stellac build` and `stellac graph`, `steam run` as its command
+-- | repository: `stellac compile` and `stellac graph`, `steam run` as its command
 -- | line stands, `stella-devtools`, and the script building the `Base` package.
 -- | All run from the workspace's build output, which needs the packages built.
 module Test.E2E.Process
   ( Outcome
-  , stellac
+  , compile
   , graph
   , steamRun
   , devtools
@@ -44,13 +44,13 @@ run script args = do
     , err: result.stderr
     }
 
--- | `stellac build` with the arguments given.
-stellac :: Array String -> Aff Outcome
-stellac args = run "stellac/index.dev.js" ([ "build" ] <> args)
+-- | `stellac compile` given the `stella.json` at the path given.
+compile :: String -> Aff Outcome
+compile file = run "stellac/index.dev.js" [ "compile", file ]
 
--- | `stellac graph` with the arguments given.
-graph :: Array String -> Aff Outcome
-graph args = run "stellac/index.dev.js" ([ "graph" ] <> args)
+-- | `stellac graph` given the `stella.json` at the path given.
+graph :: String -> Aff Outcome
+graph file = run "stellac/index.dev.js" [ "graph", file ]
 
 -- | `steam run`, given the foreign manifest, the module whose `main` is the
 -- | entry point, and the bytecode of every module of the program in
@@ -63,7 +63,7 @@ devtools :: Array String -> Aff Outcome
 devtools = run "devtools/index.js"
 
 -- | `npm run build:base`, the development script building the `Base` package
--- | and writing its dependency map, with the arguments given.
+-- | and writing `dependencies.json`, with the arguments given.
 buildBase :: Array String -> Aff Outcome
 buildBase = run "scripts/build-base.mjs"
 

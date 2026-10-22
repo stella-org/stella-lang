@@ -1,6 +1,6 @@
--- | `stellac graph`: the modules of the source files given and the modules each
--- | imports, printed as JSON for whatever drives the compiler to plan a build
--- | with.
+-- | `stellac graph <stella.json>`: prints, as JSON, the modules `stella.json`
+-- | lists and the modules each imports, for whatever drives the compiler to
+-- | plan builds with.
 -- |
 -- | ```json
 -- | { "formatVersion": 0,
@@ -9,19 +9,20 @@
 -- |       "imports": [ { "module": "B.Api", "start": { "line": 3, "column": 8 }, "end": { "line": 3, "column": 13 } } ] } ] }
 -- | ```
 -- |
--- | **It reads the headers of the files `--workdir` and `--src` name, as a
--- | build does before it compiles anything, and nothing past them**: no macro
--- | is expanded, no synthesizer run, and nothing elaborated, so an error past a
--- | header is not reported. The modules are in order of their names, each with
--- | its file's path from the directory `--workdir` names. Its imports are the
--- | modules its header imports, which are its dependencies in source, in the
--- | order written, each with where its name is written: a line and the columns
--- | its name covers, the end just past it, as messages count them. An
--- | `import Prim` is no dependency and is left out. A module no file given
--- | holds is reported as any other, and modules importing one another are not
--- | refused.
+-- | It reads only the headers of the files in `modules`, as a build does
+-- | before compiling anything: no macro runs and nothing is elaborated, so an
+-- | error past a header goes unreported. It reads no file in `dependencies` and
+-- | skips the rules of the build environment, so the seed modules' own sources
+-- | may be listed.
 -- |
--- | The errors are those a build reports of directories, files, and headers.
+-- | Modules come in order of their names, each with its path as `stella.json`
+-- | writes it and the imports of its header in the order written. Each import
+-- | carries the line and the columns of its name, the end just past it, as
+-- | messages count them. `import Prim` is left out. An import of a module the
+-- | file does not list is reported like any other, and modules importing one
+-- | another are not refused.
+-- |
+-- | The errors are those a build reports of files and headers.
 module Stellac.Graph (cmd, formatVersion) where
 
 import Prelude
@@ -34,7 +35,6 @@ import Data.Foldable (for_)
 import Data.Int (toNumber)
 import Data.Map as Map
 import Data.Maybe (fromMaybe)
-import Data.String (joinWith)
 import Data.Tuple (Tuple(..))
 import Effect.Console as Console
 import Foreign.Object as Object
@@ -44,28 +44,26 @@ import Stella.CLI.Effect.FS (FS)
 import Stella.CLI.Effect.FS as FS
 import Stella.CLI.Effect.Log (LOG)
 import Stella.CLI.Effect.Log as Log
-import Stella.Compiler.Build (Header, buildMessages, defaultSourceRoots, printBuildMessage, readHeaders)
+import Stella.Compiler.Build (Header, buildMessages, printBuildMessage, readHeaders)
 import Stella.Compiler.CST.Types (SourcePos)
 import Stella.Compiler.TypedCore (ModuleName(..))
-import Stellac.Options (GraphOptions)
-import Stellac.Sources (sourceFiles)
+import Stellac.Config (Config)
 import Type.Row (type (+))
 
 -- | The version of what this command prints.
 formatVersion :: Int
 formatVersion = 0
 
-cmd :: forall r. GraphOptions -> Run (FS + LOG + EXCEPT String + EFFECT + r) Unit
-cmd opts = do
-  files <- sourceFiles opts.workdir opts.src
-  readHeaders FS.readText defaultSourceRoots files >>= case _ of
+cmd :: forall r. Config -> Run (FS + LOG + EXCEPT String + EFFECT + r) Unit
+cmd config = do
+  readHeaders FS.readText (map (\m -> { path: m.path, name: m.module }) config.modules) >>= case _ of
     Left err -> do
       for_ (NonEmptyArray.toArray (buildMessages err)) (Log.error <<< printBuildMessage)
       throw "The module graph could not be read"
     Right headers -> do
-      -- each file's path from the directory `--workdir` names
-      let within = Map.fromFoldable (map (\f -> Tuple f.path (joinWith "/" f.within)) files)
-      liftEffect (Console.log (stringifyWithIndent 2 (graphJson (\p -> fromMaybe p (Map.lookup p within)) headers)))
+      -- each file's path as `stella.json` writes it
+      let written = Map.fromFoldable (map (\m -> Tuple m.path m.written) config.modules)
+      liftEffect (Console.log (stringifyWithIndent 2 (graphJson (\p -> fromMaybe p (Map.lookup p written)) headers)))
 
 graphJson :: (String -> String) -> Array Header -> Json
 graphJson pathOf headers = fromObject
