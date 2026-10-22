@@ -309,6 +309,11 @@ The heading of each group names the step of the plan that the group belongs to.
 | `foreign make : forall a. a`, `foreign f : Int -> forall a. a`, and one with a constraint after its last arrow | Rejected, where it is declared and where a signature is assembled. A type or constraint argument would saturate the call, and erasure removes it, so the erased program would call the foreign at another point |
 | `foreign make : forall a. Unit -> a` | Accepted. Its quantifier stands before its last value |
 | An effect with an operation `liftIO : forall a. IO a ->* a` | **Accepted.** `perform` carries the opaque `IO` to the handler without executing it. What it costs is the granularity of the capability, not soundness |
+| `nonrec cached : forall k. Unit -> Witness [[k]] = letrec { cell : Witness [[k]] = Witness [[k]] } in λu. cell`, and a `let` under a kind scheme | Rejected, `KindGeneralizedNonValue`. Initialization would allocate a location typed under the abstract kind, which no closed `Γ_N` holds, shared by every instantiation (D52) |
+| A member of a `rec` group with a kind scheme and a non-value right-hand side, beside a member with none and a `let` | The first rejected, the second accepted. Each member is judged by its own kind scheme |
+| A kind-polymorphic alias `nonrec alias : forall k. Witness [[k]] = w [[k]]` of a defined global | Rejected. A global reference unfolds by a step and is no value |
+| Under a kind scheme: a constructor's chain, a `Λ` over one, a record of values, an unsaturated foreign's chain, and a `λ` whose body allocates | Accepted. Each is a value, and what the `λ` holds runs after an instantiation |
+| A non-value right-hand side with an empty kind scheme | Accepted and evaluated once at link time, as before |
 | `newtype` on a type with two constructors, or with one constructor of two fields | Rejected. The backend erases the representation on the strength of this flag |
 | A `nonrec` whose right-hand side refers to a `foreign` declared later in the text | Initializes. Constructors and foreign implementations enter the environment before any value declaration is evaluated |
 | A `nonrec` referring to a later `nonrec` | Rejected. Value declarations are in dependency order |
@@ -1305,6 +1310,7 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | `spread :: forall e a. a -> Tuple Int a / {\| ...e \|}; spread = Tuple 1` | Left expanded, with `openEff [e]` under the λ. The fit widens, and the spine is no value form without the λ |
 | `quiet :: forall a. a -> a; quiet = loudId`, `loudId` at `( Console )` | Outside the subset where the expansion's λ stands, its boundary asking for an implicit handler. Not refused by a fit placed outside the λ |
 | `bad :: forall a. a -> a; bad = const id 1` | Reported where the `Λ` stands as no value form, the author's to give a parameter; likewise under a constraint abstraction. Not the Core checker's refusal reported as the compiler's |
+| `x :: Proxy (Proxy :: k -> Type)` with `x = const Proxy 1`, and with `x = Proxy` | The first reported where `x` is declared, as the author's: the signature generalizes a kind and introduces no `Λ`, and the Core checker's refusal is the third exception to its being the elaborator's fault. The second accepted (D52) |
 | `k :: Int -> (forall a. Tuple Int (a -> a)) / {\| Console \|}; k x = Tuple 1 (\y -> y)` | Accepted as written. What a `Λ` or a constraint abstraction encloses is at `()`, whatever the λ around it performs |
 | A local function in a clause reading a cell | Its row is the region's element alone; applied in the clause, it is widened by the rest of the clause's row |
 | `x!` with no enclosing handling expression declaring `x`, under an open ambient row | Refused by name resolution. An open row is no evidence a cell exists |

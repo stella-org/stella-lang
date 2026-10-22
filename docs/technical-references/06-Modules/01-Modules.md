@@ -576,6 +576,7 @@ Declarations extend the signature, so the judgement makes `Σ` explicit.
 
 ```text
   σκ = forall k̄. σ      ·, k̄ ⊢ σ : Type      Σ ; ·, k̄ ; · ⊢ e : σ ! ()
+  k̄ = ·  or  value(e)                                 ← no step under abstract kinds
   ──────────────────────────────────────────────────────────────────
   Σ ⊢ nonrec x : σκ = e  ⊣  Σ, M.x : σκ
 
@@ -584,6 +585,7 @@ Declarations extend the signature, so the judgement makes `Σ` explicit.
   { x̄ = ē } is initialization-safe (D14)          ← each e_i reads only x_1 … x_{i-1}
   each i: ·, k̄_i ⊢ σ_i : Type
           Σ' ; ·, k̄_i ; · ⊢ e_i : σ_i ! ()          ← each e_i under its own k̄_i
+          k̄_i = ·  or  value(e_i)
   ──────────────────────────────────────────────────────────────────
   Σ ⊢ rec { x_i : σκ_i = e_i }  ⊣  Σ'
 
@@ -602,6 +604,10 @@ Declarations extend the signature, so the judgement makes `Σ` explicit.
   ──────────────────────────────────────────────────────────────────
   Σ ⊢ @[ attr ] decl ⊣ Σ'          the attribute is checked by the module rule
 ```
+
+**A definition generalized over kinds has a value right-hand side** (D52). `k̄ = ·  or  value(e)` asks it of a `nonrec` and of each member of a `rec` group alike, each by its own kind scheme, `value` being the value grammar of [Semantics](../03-Typed-Core/06-Semantics.md#values). The module fold evaluates a right-hand side once ([Module initialization](../03-Typed-Core/06-Semantics.md#module-initialization)), while a kind scheme is instantiated at each use, and no term binds the kind variables: a step taken under them could allocate a location or open a region whose type mentions an abstract kind, which the closed run-time contexts `Γ_N` and `Γ_R` have no place for, and every instantiation would share it. A value takes no step, and what its `λ`s hold runs after an instantiation has substituted the kinds. A type variable needs no such condition, being bound by a `Λ` whose body is a value already.
+
+The condition is the run-time one, wider than the value form a `Λ` encloses: an unsaturated foreign's chain of values, and `openEff` and `weaken` around a value, are values. A reference to a defined global is none, unfolding by a step, so a kind-polymorphic alias `nonrec M.x : forall k. σ = M.y [[k]]` is refused where it is not a function an elaborator writes as a `λ`. A right-hand side with an empty kind scheme is any pure term, evaluated once at link time as before. The checker reports a refusal with `KindGeneralizedNonValue`, after the body is typed.
 
 **An attribute declaration adds an entry to `Σ` and declares no value**: no term refers to one. Declaring it registers it and checks nothing, and neither does carrying one: both are checked once the whole module's signature is complete ([below](#the-module-rule)), so a declaration may carry an attribute declared after it, and a default or an argument may name a value declared after it.
 

@@ -202,6 +202,8 @@ The order mirrors the three stages of declaration checking ([Modules](../06-Modu
 
 A `rec` group installs **its members one by one, in the order written**, each right-hand side evaluated as a `nonrec`'s is, under the members installed before it; a function value evaluates to itself. A member written after it is not yet in `G`, and **initialization safety is what keeps every lookup during initialization off such a member** ([Initialization Safety](10-Initialization.md)): a right-hand side reads only members written before it, installed already, and one written after it only from inside a closure, which is applied after the group is installed. A recursive reference inside `e_j` is `M.x_k [[κ̄]]`, an ordinary global name resolved by the lookup rule. No local recursive closure is involved, and each member keeps the kind binder `k̄_j` under which it was checked.
 
+**A definition generalized over kinds is installed as it stands** (D52). Its right-hand side is a value, so `e →* v` takes no step and `v` is `e`: nothing is allocated and no region opened under the abstract kinds, and `N_{i+1}` is `N_i`. Each use `M.x [[κ̄]]` substitutes its kinds into that value as it unfolds, and what the value's `λ`s hold runs after that, an allocation they make kinded under `Γ_R` alone. This is what keeps the fold within `⊢ Γ_R ok` and `Γ_R ⊢ Γ_N ok`: a location or a layout made while a right-hand side is evaluated is made where the kind scheme is empty, and so under no kind variable. A definition with an empty kind scheme is any pure term, evaluated once as before.
+
 The fold over value declarations is well defined because they are in dependency order, cycles are confined to `rec` groups, and a `rec` group is initialization-safe.
 
 Evaluating eagerly rather than on first reference is the choice consistent with strict evaluation, and it is observable: **a top-level declaration whose right-hand side diverges hangs initialization even if nothing refers to it.** Lazy global lookup would leave such a declaration harmless. Stella takes the strict reading.
@@ -268,11 +270,14 @@ The third class is what a mutable array behind a pure interface is: `Base.Array.
       that is, a global definition is a well-typed value with no effects,
       reaching only the by-need cells Γ_N types
 
-  (3) for each (M.f : σκ = δ_f) ∈ G, and for every saturated chain M.f [[κ̄]] ᾱ
-      of values with cursorΣ(M.f [[κ̄]] ᾱ) = ⟨ σ ; θ ⟩  (Typing Rules),
+  (3) for each (M.f : σκ = δ_f) ∈ G, for all Γ_R and Γ_N with ⊢ Γ_R ok and
+      Γ_R ⊢ Γ_N ok, and for every saturated chain M.f [[κ̄]] ᾱ of values with
+      cursorΣ(M.f [[κ̄]] ᾱ) = ⟨ σ ; θ ⟩  (Typing Rules) that is well typed
+      under them, ·; · ⊢ M.f [[κ̄]] ᾱ : θ(σ) ! () under Γ_R and Γ_N,
       writing v̄ = values(ᾱ), and **where the ABI preconditions of M.f hold**:
         δ_f(v̄) is defined
-        δ_f(v̄) is either a value of type θ(σ) or a fault
+        δ_f(v̄) is either a fault or a value v with ·; · ⊢ v : θ(σ) ! ()
+               under the same Γ_R and Γ_N
         δ_f(v̄) performs no proper effect, and runs no reified computation
                it constructs
         δ_f(v̄) applies no Stella function value
@@ -282,7 +287,9 @@ The third class is what a mutable array behind a pure interface is: `Base.Array.
                where Σ records #observ(none) for M.f
 ```
 
-**Conformance is relative to the store's types** because a value installed in `G` may be a closure whose body forces a cell a local `letrec` allocated while it was evaluated ([Module initialization](#module-initialization)). It is stable under extending the store: where `Γ_N2` extends `Γ_N`, `Σ; Γ_N ⊨ G` gives `Σ; Γ_N2 ⊨ G`, a value typed under fewer locations being typed under more, so a step that allocates leaves `G` conforming. Conditions (1) and (3) mention no location, and **`Σ ⊨ G` is `Σ; · ⊨ G`**, what an environment owes before any store exists and what an implementation of a `δ_f` is held to.
+**Condition (3) asks of a call a typed program can make, and of no other.** A chain the cursor walks but whose values are not of the types it selects is no call a well-typed term reaches, and an implementation owes nothing for one; the result it owes is still at the instantiated result type `θ(σ)`, and the ABI preconditions still bound what it is asked. **The result is typed under the contexts the call is**, not merely under some: an argument may be a closure that forces a location or reaches a region, and a result may hand one back, so preservation needs the value `δ_f` returns at `θ(σ)` under the `Γ_R` and `Γ_N` the step stands under.
+
+**Conformance is relative to the store's types** because a value installed in `G` may be a closure whose body forces a cell a local `letrec` allocated while it was evaluated ([Module initialization](#module-initialization)). It is stable under extending the store: where `Γ_N2` extends `Γ_N`, `Σ; Γ_N ⊨ G` gives `Σ; Γ_N2 ⊨ G`, a value typed under fewer locations being typed under more, so a step that allocates leaves `G` conforming. Condition (1) mentions no location and (3) quantifies over every well-formed run-time context, and **`Σ ⊨ G` is `Σ; · ⊨ G`**, what an environment owes before any store exists and what an implementation of a `δ_f` is held to.
 
 **The environment a module's fold passes through is not yet conforming**, and holds an invariant of its own. Condition (1) asks for every global the module mentions, which the fold is still installing, and a `rec` group is installed member by member, a closure installed early mentioning a member written after it, latently. So the fold keeps the **initialization invariant** `Σ; Γ_N ⊨ᵢ G`, which is conditions (2) and (3) with (1′) in place of (1):
 
