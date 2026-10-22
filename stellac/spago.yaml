@@ -6,7 +6,10 @@ package:
     - argonaut-core
     - argparse-basic
     - arrays
+    - bifunctors
     - cli
+    - codec
+    - codec-argonaut
     - compiler
     - console
     - effect
@@ -19,11 +22,12 @@ package:
     - node-process
     - ordered-collections
     - prelude
+    - profunctor
+    - record-extra
     - run
     - strings
     - tuples
     - typelevel-prelude
-    - validation
   run:
     main: Stellac.JS
   test:

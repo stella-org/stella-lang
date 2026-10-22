@@ -294,7 +294,10 @@
             "argonaut-core",
             "argparse-basic",
             "arrays",
+            "bifunctors",
             "cli",
+            "codec",
+            "codec-argonaut",
             "compiler",
             "console",
             "effect",
@@ -307,11 +310,12 @@
             "node-process",
             "ordered-collections",
             "prelude",
+            "profunctor",
+            "record-extra",
             "run",
             "strings",
             "tuples",
-            "typelevel-prelude",
-            "validation"
+            "typelevel-prelude"
           ]
         },
         "test": {
@@ -1165,6 +1169,47 @@
         "prelude",
         "tuples",
         "unfoldable"
+      ]
+    },
+    "codec": {
+      "type": "registry",
+      "version": "6.1.0",
+      "integrity": "sha256-WzfYiZsnqHJ/K4IliEEOkLLmsKozy8c7/fbrGZHASOk=",
+      "dependencies": [
+        "bifunctors",
+        "control",
+        "invariant",
+        "prelude",
+        "profunctor",
+        "tuples"
+      ]
+    },
+    "codec-argonaut": {
+      "type": "registry",
+      "version": "10.0.0",
+      "integrity": "sha256-P6ha7D2ZaTZ+GFsm4v4lg1BgIT3XVTpU1tEGMjDDIR8=",
+      "dependencies": [
+        "argonaut-core",
+        "arrays",
+        "bifunctors",
+        "codec",
+        "control",
+        "either",
+        "foldable-traversable",
+        "foreign-object",
+        "integers",
+        "lists",
+        "maybe",
+        "ordered-collections",
+        "prelude",
+        "profunctor",
+        "record",
+        "safe-coerce",
+        "strings",
+        "tuples",
+        "type-equality",
+        "unsafe-coerce",
+        "variant"
       ]
     },
     "console": {
@@ -2137,6 +2182,20 @@
         "unsafe-coerce"
       ]
     },
+    "record-extra": {
+      "type": "registry",
+      "version": "5.0.1",
+      "integrity": "sha256-I+H7vgVDblDXeodgm4cj1qeBe4WFOOqWt3z0jnbxZlw=",
+      "dependencies": [
+        "arrays",
+        "functions",
+        "lists",
+        "prelude",
+        "record",
+        "tuples",
+        "typelevel-prelude"
+      ]
+    },
     "refs": {
       "type": "registry",
       "version": "6.0.0",
@@ -2377,19 +2436,6 @@
       "version": "5.0.0",
       "integrity": "sha256-ttSJTQUnK8AK2eGOsfRxLUJEDPL6pnmExjbiOqfwC6I=",
       "dependencies": [
-        "prelude"
-      ]
-    },
-    "validation": {
-      "type": "registry",
-      "version": "6.0.0",
-      "integrity": "sha256-wavSVs3zeQmO3iXJJlhyQuDOh6w3ngO3gwWqcwekG/U=",
-      "dependencies": [
-        "bifunctors",
-        "control",
-        "either",
-        "foldable-traversable",
-        "newtype",
         "prelude"
       ]
     },

@@ -30,11 +30,13 @@ import Run.Except (EXCEPT)
 import Run.Except as Except
 import Stella.CLI.Effect.FS (FS, FileSystem(..))
 import Stella.CLI.Effect.FS as FS
-import Stella.CLI.Effect.Log (LOG, Log(..))
+import Stella.CLI.Effect.Log (LOG, Log(..), LogLevel(..))
 import Stella.CLI.Effect.Log as Log
 import Stella.CLI.Effect.Process (PROCESS)
 import Stella.CLI.Effect.Process as Process
+import Stella.Compiler.TypedCore (ModuleName(..))
 import Stellac.Config (load, normalize)
+import Stellac.Config as Config
 import Stellac.Options (Command(..))
 import Stellac.Options as Options
 import Stellac.Program (loaded, program)
@@ -243,24 +245,45 @@ spec = describe "stellac compile" do
         written r `shouldEqual` []
       raw text = compilingAt "stella.json" noFaults [ mainModule, Tuple "stella.json" (Text text) ]
 
-    it "refuses a file lacking a field, or with one no rule names, in the file and in `options`" do
-      raw """{ "formatVersion": 0, "options": { "output": "o", "emitCore": false, "traceOptimizer": [], "steamCmd": "steam", "logLevel": "info", "monochrome": true, "colour": true }, "modules": [] }"""
-        $ refusedSaying [ "stella.json: `dependencies` is missing" ]
-      raw """{ "formatVersion": 0, "options": { "output": "o", "emitCore": false, "traceOptimizer": [], "steamCmd": "steam", "logLevel": "info", "colour": true }, "modules": [], "dependencies": [] }"""
-        $ refusedSaying [ "stella.json: `options.monochrome` is missing", "stella.json: `options.colour` is no field this compiler takes" ]
+    it "reads the file it writes" do
+      let
+        config =
+          { options: { output: "out", emitCore: true, traceOptimizer: [ ModuleName "Main" ], steamCmd: "./steam", logLevel: Debug, monochrome: false }
+          , modules: [ { module: ModuleName "Main", path: "src/Main.stel", written: "src/Main.stel" } ]
+          , dependencies: [ { module: ModuleName "Lib", interface: "lib/Lib.dmi", object: "lib/Lib.dmo" } ]
+          }
+      Config.decode (Config.encode config) `shouldEqual` Right config
 
-    it "refuses another format version, a field of another kind, and an empty string" do
+    it "refuses a file lacking a field, in the file and in `options`" do
+      raw """{ "formatVersion": 0, "options": { "output": "o", "emitCore": false, "traceOptimizer": [], "steamCmd": "steam", "logLevel": "info", "monochrome": true }, "modules": [] }"""
+        $ refusedSaying [ "stella.json: `dependencies` is missing" ]
+      raw """{ "formatVersion": 0, "options": { "output": "o", "emitCore": false, "traceOptimizer": [], "steamCmd": "steam", "logLevel": "info" }, "modules": [], "dependencies": [] }"""
+        $ refusedSaying [ "stella.json: `options.monochrome` is missing" ]
+
+    it "refuses a field no rule names, in the file, in `options`, and in an entry" do
+      raw (String.replace (Pattern "\"formatVersion\": 0") (String.Replacement "\"formatVersion\": 0, \"version\": 1") (stellaJson mainOnly))
+        $ refusedSaying [ "stella.json: `version` is no field this compiler takes" ]
+      raw (String.replace (Pattern "\"monochrome\": true") (String.Replacement "\"monochrome\": true, \"colour\": true") (stellaJson mainOnly))
+        $ refusedSaying [ "stella.json: `options.colour` is no field this compiler takes" ]
+      raw (String.replace (Pattern "\"path\": \"src/Main.stel\"") (String.Replacement "\"path\": \"src/Main.stel\", \"test\": false") (stellaJson mainOnly))
+        $ refusedSaying [ "stella.json: `modules[0].test` is no field this compiler takes" ]
+
+    it "refuses another format version, a field of another kind, an empty string, and a log level of no name" do
       raw (String.replace (Pattern "\"formatVersion\": 0") (String.Replacement "\"formatVersion\": 1") (stellaJson mainOnly))
-        $ refusedSaying [ "stella.json: `formatVersion` is 1; this compiler reads version 0" ]
-      raw (String.replace (Pattern "\"emitCore\": false") (String.Replacement "\"emitCore\": \"no\"") (stellaJson (mainOnly { output = "" })))
-        $ refusedSaying [ "stella.json: `options.output` is empty", "stella.json: `options.emitCore` is not a boolean" ]
-      raw (stellaJson (mainOnly { logLevel = "loud" }))
-        $ refusedSaying [ "stella.json: `options.logLevel`, `loud`, is none of `debug`, `info`, `warn`, and `error`" ]
+        $ refusedSaying [ "stella.json: `formatVersion`, `1`, is not 0, the version this compiler reads" ]
+      raw (String.replace (Pattern "\"emitCore\": false") (String.Replacement "\"emitCore\": \"no\"") (stellaJson mainOnly))
+        $ refusedSaying [ "stella.json: `options.emitCore` is not a boolean" ]
+      raw (stellaJson (mainOnly { output = "" }))
+        $ refusedSaying [ "stella.json: `options.output` is empty" ]
+      raw (String.replace (Pattern "\"logLevel\": \"info\"") (String.Replacement "\"logLevel\": \"loud\"") (stellaJson mainOnly))
+        $ refusedSaying [ "stella.json: `options.logLevel`, `loud`, is not one of `debug`, `info`, `warn`, and `error`" ]
+      raw "[]"
+        $ refusedSaying [ "stella.json: the file is not an object" ]
 
     it "refuses a module listed twice, a file listed twice once paths are normalized, `Prim`, and a name no module may have" do
       compiling (settings [ listed "Main" "src/Main.stel", listed "Other" "src/./Data/../Main.stel", listed "Main" "src/B.stel", listed "Prim" "src/Prim.stel", listed "a.B" "src/C.stel" ]) noFaults [ mainModule ]
         $ refusedSaying
-            [ "stella.json: `modules[4].module`, `a.B`, is no module's name" ]
+            [ "stella.json: `modules[4].module`, `a.B`, is not a module's name" ]
       compiling (settings [ listed "Main" "src/Main.stel", listed "Other" "src/./Data/../Main.stel", listed "Main" "src/B.stel", listed "Prim" "src/Prim.stel" ]) noFaults [ mainModule ]
         $ refusedSaying
             [ "stella.json: `modules` lists `Main` more than once"

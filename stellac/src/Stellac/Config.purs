@@ -1,6 +1,6 @@
 -- | `stella.json`: the modules to build with their files, the modules built
 -- | elsewhere with theirs, and the options. Whatever drives the compiler
--- | writes it.
+-- | writes it, and `codec` both reads and writes it.
 -- |
 -- | ```json
 -- | { "formatVersion": 0,
@@ -11,7 +11,8 @@
 -- | ```
 -- |
 -- | Every field is required and no other is accepted. Each has one kind, and
--- | no string is empty. Relative paths are resolved against the file's
+-- | no string is empty. A file the codec refuses is reported by the first
+-- | field found wrong. Relative paths are resolved against the file's
 -- | directory and normalized. `steamCmd` is resolved only when it contains
 -- | a `/`, and then to an absolute path so that it stays a path; a bare name is
 -- | looked up on `PATH`.
@@ -28,7 +29,9 @@ module Stellac.Config
   , Listed
   , ConfigError(..)
   , formatVersion
+  , codec
   , decode
+  , encode
   , load
   , printConfigError
   , normalize
@@ -36,27 +39,32 @@ module Stellac.Config
 
 import Prelude
 
-import Data.Argonaut.Core (Json, toArray, toBoolean, toNumber, toObject, toString)
+import Data.Argonaut.Core (stringify, stringifyWithIndent, toString)
 import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
 import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NonEmptyArray
+import Data.Bifunctor (lmap)
+import Data.Codec as Codec
+import Data.Codec.Argonaut (JsonCodec, JsonDecodeError(..))
+import Data.Codec.Argonaut as CA
+import Data.Codec.Argonaut.Record as CAR
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
 import Data.Generic.Rep (class Generic)
-import Data.Int (fromNumber)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Profunctor (dimap)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
 import Data.String as String
 import Data.String.CodeUnits as SCU
-import Data.Traversable (for, traverse)
+import Data.Traversable (for)
 import Data.Tuple (Tuple(..))
-import Data.Validation.Semigroup (V, invalid, toEither)
 import Fmt (fmt)
-import Foreign.Object (Object)
 import Foreign.Object as Object
+import Prim.RowList as RL
+import Record.Extra (class Keys, keys)
 import Run (Run)
 import Stella.CLI.Effect.FS (FS, FilePath)
 import Stella.CLI.Effect.FS as FS
@@ -88,20 +96,12 @@ type Config =
   , dependencies :: Array Dependency
   }
 
--- | What is wrong with a file. All but the first two name the field they are
--- | about by its place, such as `options.logLevel` or `modules[2].path`.
+-- | What is wrong with a file. A rule of the file names the field it is about
+-- | by its place, such as `options.traceOptimizer[2]` or `modules[2].path`.
 data ConfigError
   = Unreadable String
   | NotJson String
-  | Missing String
-  | NotTaken String
-  -- | A field, and the kind of value it must have.
-  | NotOfKind String String
-  | EmptyString String
-  | OtherFormatVersion Int
-  -- | A field, and what it holds.
-  | NotAModuleName String String
-  | NotALogLevel String String
+  | Undecodable JsonDecodeError
   -- | `modules` or `dependencies`, and the module it lists more than once.
   | ListedTwice String ModuleName
   -- | A field naming a file an earlier entry of `modules` names, and the file
@@ -119,101 +119,81 @@ derive instance Generic ConfigError _
 instance Show ConfigError where
   show = genericShow
 
--- | What a field gives, or every error found in it.
-type Checked = V (Array ConfigError)
+-- | `stella.json` as written, its paths not yet resolved. Writing a `Listed`
+-- | writes its `path`; reading one gives the path as `written` too.
+codec :: JsonCodec Config
+codec =
+  dimap (\c -> { formatVersion: unit, options: c.options, modules: c.modules, dependencies: c.dependencies })
+    (\c -> { options: c.options, modules: c.modules, dependencies: c.dependencies })
+    $ exactly "stella.json"
+        { formatVersion: version
+        , options: exactly "options"
+            { output: nonEmpty
+            , emitCore: CA.boolean
+            , traceOptimizer: CA.array moduleName
+            , steamCmd: nonEmpty
+            , logLevel
+            , monochrome: CA.boolean
+            }
+        , modules: CA.array listed
+        , dependencies: CA.array (exactly "dependency" { module: moduleName, interface: nonEmpty, object: nonEmpty })
+        }
+  where
+  version = CA.prismaticCodec (fmt @"{formatVersion}, the version this compiler reads" { formatVersion }) (\v -> if v == formatVersion then Just unit else Nothing) (const formatVersion) CA.int
+
+  listed = dimap (\l -> { module: l.module, path: l.path }) (\l -> { module: l.module, path: l.path, written: l.path })
+    $ exactly "module" { module: moduleName, path: nonEmpty }
+
+  nonEmpty = CA.prismaticCodec "a string with something in it" (\s -> if s == "" then Nothing else Just s) identity CA.string
+
+  moduleName = CA.prismaticCodec "a module's name" named (\(ModuleName m) -> m) CA.string
+    where
+    named m = if Array.all isProperName (String.split (String.Pattern ".") m) then Just (ModuleName m) else Nothing
+
+  logLevel = CA.prismaticCodec "one of `debug`, `info`, `warn`, and `error`" level written CA.string
+    where
+    level = case _ of
+      "debug" -> Just Debug
+      "info" -> Just Info
+      "warn" -> Just Warn
+      "error" -> Just Error
+      _ -> Nothing
+    written = case _ of
+      Debug -> "debug"
+      Info -> "info"
+      Warn -> "warn"
+      Error -> "error"
+
+-- | An object of exactly the fields the record gives a codec for. A field of
+-- | no codec is refused as `AtKey` the field and `UnexpectedValue` alone,
+-- | which no other codec of the file reports unnamed.
+exactly
+  :: forall ri ro rl
+   . RL.RowToList ri rl
+  => CAR.RowListCodec rl ri ro
+  => Keys rl
+  => String
+  -> Record ri
+  -> JsonCodec (Record ro)
+exactly name codecs = Codec.codec' decoded (Codec.encode object)
+  where
+  object = CAR.object name codecs
+  taken = Array.fromFoldable (keys codecs)
+  decoded json = do
+    fields <- Codec.decode CA.jobject json
+    case Array.find (\k -> not (Array.elem k taken)) (Array.sort (Object.keys fields)) of
+      Just other -> Left (Named name (AtKey other (UnexpectedValue (fromMaybe json (Object.lookup other fields)))))
+      Nothing -> Codec.decode object json
 
 -- | `stella.json` as written, its paths not yet resolved.
 decode :: String -> Either (NonEmptyArray ConfigError) Config
 decode text = case jsonParser text of
   Left why -> Left (pure (NotJson why))
-  Right json -> case toEither (file json) of
-    Left errors -> Left (fromMaybe (pure (NotJson "no error said")) (NonEmptyArray.fromArray errors))
-    Right config -> Right config
-  where
-  file json = fields "" [ "formatVersion", "options", "modules", "dependencies" ] json `andThen` \o ->
-    ( { options: _, modules: _, dependencies: _ }
-        <$ field o "" "formatVersion" version
-        <*> field o "" "options" options
-        <*> field o "" "modules" (list module_)
-        <*> field o "" "dependencies" (list dependency)
-    )
+  Right json -> lmap (pure <<< Undecodable) (Codec.decode codec json)
 
-  version at json = case fromNumber =<< toNumber json of
-    Nothing -> invalid [ NotOfKind at "a whole number" ]
-    Just v
-      | v == formatVersion -> pure unit
-      | otherwise -> invalid [ OtherFormatVersion v ]
-
-  options at json = fields at [ "output", "emitCore", "traceOptimizer", "steamCmd", "logLevel", "monochrome" ] json `andThen` \o ->
-    { output: _, emitCore: _, traceOptimizer: _, steamCmd: _, logLevel: _, monochrome: _ }
-      <$> field o at "output" string
-      <*> field o at "emitCore" boolean
-      <*> field o at "traceOptimizer" (list moduleName)
-      <*> field o at "steamCmd" string
-      <*> field o at "logLevel" logLevel
-      <*> field o at "monochrome" boolean
-
-  module_ at json = fields at [ "module", "path" ] json `andThen` \o ->
-    (\name path -> { module: name, path, written: path })
-      <$> field o at "module" moduleName
-      <*> field o at "path" string
-
-  dependency at json = fields at [ "module", "interface", "object" ] json `andThen` \o ->
-    { module: _, interface: _, object: _ }
-      <$> field o at "module" moduleName
-      <*> field o at "interface" string
-      <*> field o at "object" string
-
-  logLevel at json = string at json `andThen` case _ of
-    "debug" -> pure Debug
-    "info" -> pure Info
-    "warn" -> pure Warn
-    "error" -> pure Error
-    other -> invalid [ NotALogLevel at other ]
-
-  moduleName at json = string at json `andThen` \name ->
-    if Array.all isProperName (String.split (String.Pattern ".") name) then pure (ModuleName name)
-    else invalid [ NotAModuleName at name ]
-
--- | The fields of an object: exactly the ones named.
-fields :: String -> Array String -> Json -> Checked (Object Json)
-fields at names json = case toObject json of
-  Nothing -> invalid [ NotOfKind (orFile at) "an object" ]
-  Just o ->
-    let
-      missing = Array.filter (\n -> not (Object.member n o)) names
-      other = Array.filter (\n -> not (Array.elem n names)) (Array.sort (Object.keys o))
-    in
-      if Array.null missing && Array.null other then pure o
-      else invalid (map (Missing <<< inside at) missing <> map (NotTaken <<< inside at) other)
-  where
-  orFile a = if a == "" then "the file" else a
-
--- | A field of the object, read by the reader given.
-field :: forall a. Object Json -> String -> String -> (String -> Json -> Checked a) -> Checked a
-field o at name read = maybe (invalid [ Missing (inside at name) ]) (read (inside at name)) (Object.lookup name o)
-
-inside :: String -> String -> String
-inside at name = if at == "" then name else fmt @"{at}.{name}" { at, name }
-
-list :: forall a. (String -> Json -> Checked a) -> String -> Json -> Checked (Array a)
-list read at json = case toArray json of
-  Nothing -> invalid [ NotOfKind at "a list" ]
-  Just items -> traverse (\(Tuple i item) -> read (fmt @"{at}[{i}]" { at, i }) item) (Array.mapWithIndex Tuple items)
-
-string :: String -> Json -> Checked String
-string at json = case toString json of
-  Nothing -> invalid [ NotOfKind at "a string" ]
-  Just "" -> invalid [ EmptyString at ]
-  Just s -> pure s
-
-boolean :: String -> Json -> Checked Boolean
-boolean at json = maybe (invalid [ NotOfKind at "a boolean" ]) pure (toBoolean json)
-
-andThen :: forall a b. Checked a -> (a -> Checked b) -> Checked b
-andThen checked next = case toEither checked of
-  Left errors -> invalid errors
-  Right a -> next a
+-- | The file as `codec` writes it, indented.
+encode :: Config -> String
+encode config = stringifyWithIndent 2 (Codec.encode codec config)
 
 -- | A segment of a module's name: an upper case letter, then letters, digits,
 -- | `_`, and `'`.
@@ -310,13 +290,7 @@ printConfigError :: FilePath -> ConfigError -> String
 printConfigError file = case _ of
   Unreadable why -> fmt @"`{file}` could not be read: {why}" { file, why }
   NotJson why -> fmt @"`{file}` is not JSON: {why}" { file, why }
-  Missing at -> fmt @"{file}: `{at}` is missing" { file, at }
-  NotTaken at -> fmt @"{file}: `{at}` is no field this compiler takes" { file, at }
-  NotOfKind at kind -> fmt @"{file}: `{at}` is not {kind}" { file, at, kind }
-  EmptyString at -> fmt @"{file}: `{at}` is empty" { file, at }
-  OtherFormatVersion v -> fmt @"{file}: `formatVersion` is {v}; this compiler reads version {formatVersion}" { file, v, formatVersion }
-  NotAModuleName at name -> fmt @"{file}: `{at}`, `{name}`, is no module's name" { file, at, name }
-  NotALogLevel at level -> fmt @"{file}: `{at}`, `{level}`, is none of `debug`, `info`, `warn`, and `error`" { file, at, level }
+  Undecodable error -> undecodable "" error
   ListedTwice at m -> fmt @"{file}: `{at}` lists `{m}` more than once" { file, at, m: text m }
   FileTwice at path -> fmt @"{file}: `{at}`, `{path}`, is a file `modules` lists before it" { file, at, path }
   PrimListed at -> fmt @"{file}: `{at}` is `Prim`, which the compiler provides" { file, at }
@@ -325,3 +299,27 @@ printConfigError file = case _ of
   TracedTwice m -> fmt @"{file}: `options.traceOptimizer` names `{m}` more than once" { file, m: text m }
   where
   text (ModuleName m) = m
+
+  -- the field the error is about, by its place from the field given
+  undecodable at = case _ of
+    AtKey key error -> undecodable (if at == "" then key else fmt @"{at}.{key}" { at, key }) error
+    AtIndex i error -> undecodable (fmt @"{at}[{i}]" { at, i }) error
+    Named what (UnexpectedValue value) -> case shown value of
+      "" -> fmt @"{file}: {place} is empty" { file, place: place at }
+      given -> fmt @"{file}: {place}, `{given}`, is not {what}" { file, place: place at, given, what }
+    Named _ error -> undecodable at error
+    UnexpectedValue _ -> fmt @"{file}: {place} is no field this compiler takes" { file, place: place at }
+    MissingValue -> fmt @"{file}: {place} is missing" { file, place: place at }
+    TypeMismatch kind -> fmt @"{file}: {place} is not {kind}" { file, place: place at, kind: kindOf kind }
+
+  place at = if at == "" then "the file" else fmt @"`{at}`" { at }
+
+  shown value = fromMaybe (stringify value) (toString value)
+
+  kindOf = case _ of
+    "Object" -> "an object"
+    "Array" -> "a list"
+    "String" -> "a string"
+    "Boolean" -> "a boolean"
+    "Int" -> "a whole number"
+    kind -> kind

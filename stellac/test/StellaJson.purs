@@ -1,5 +1,6 @@
--- | `stella.json` as the tests write it: every field given, the options set to
--- | what a test asks and to the defaults below otherwise.
+-- | `stella.json` as the tests write it, by `Stellac.Config.encode`: every field
+-- | given, the options set to what a test asks and to the defaults below
+-- | otherwise.
 module Test.Stellac.StellaJson
   ( Settings
   , Entry
@@ -9,9 +10,9 @@ module Test.Stellac.StellaJson
 
 import Prelude
 
-import Data.Argonaut.Core (Json, fromArray, fromBoolean, fromNumber, fromObject, fromString, stringifyWithIndent)
-import Data.Tuple (Tuple(..))
-import Foreign.Object as Object
+import Stella.CLI.Effect.Log (LogLevel(..))
+import Stella.Compiler.TypedCore (ModuleName(..))
+import Stellac.Config as Config
 
 -- | A module built elsewhere, by its name and its two files.
 type Entry = { module :: String, interface :: String, object :: String }
@@ -21,7 +22,7 @@ type Settings =
   , emitCore :: Boolean
   , traceOptimizer :: Array String
   , steamCmd :: String
-  , logLevel :: String
+  , logLevel :: LogLevel
   , monochrome :: Boolean
   , modules :: Array { module :: String, path :: String }
   , dependencies :: Array Entry
@@ -36,33 +37,22 @@ settings modules =
   , emitCore: false
   , traceOptimizer: []
   , steamCmd: "steam"
-  , logLevel: "info"
+  , logLevel: Info
   , monochrome: true
   , modules
   , dependencies: []
   }
 
 stellaJson :: Settings -> String
-stellaJson s = stringifyWithIndent 2 do
-  object
-    [ Tuple "formatVersion" (fromNumber 0.0)
-    , Tuple "options" do
-        object
-          [ Tuple "output" (fromString s.output)
-          , Tuple "emitCore" (fromBoolean s.emitCore)
-          , Tuple "traceOptimizer" (fromArray (map fromString s.traceOptimizer))
-          , Tuple "steamCmd" (fromString s.steamCmd)
-          , Tuple "logLevel" (fromString s.logLevel)
-          , Tuple "monochrome" (fromBoolean s.monochrome)
-          ]
-    , Tuple "modules" (fromArray (map (\m -> object [ Tuple "module" (fromString m.module), Tuple "path" (fromString m.path) ]) s.modules))
-    , Tuple "dependencies" (listing s.dependencies)
-    ]
-
--- | Modules built elsewhere, as `dependencies` lists them.
-listing :: Array Entry -> Json
-listing entries = fromArray (map (\e -> object [ Tuple "module" (fromString e.module), Tuple "interface" (fromString e.interface), Tuple "object" (fromString e.object) ]) entries)
-
-object :: Array (Tuple String Json) -> Json
-object = fromObject <<< Object.fromFoldable
-
+stellaJson s = Config.encode
+  { options:
+      { output: s.output
+      , emitCore: s.emitCore
+      , traceOptimizer: map ModuleName s.traceOptimizer
+      , steamCmd: s.steamCmd
+      , logLevel: s.logLevel
+      , monochrome: s.monochrome
+      }
+  , modules: map (\m -> { module: ModuleName m.module, path: m.path, written: m.path }) s.modules
+  , dependencies: map (\d -> d { module = ModuleName d.module }) s.dependencies
+  }

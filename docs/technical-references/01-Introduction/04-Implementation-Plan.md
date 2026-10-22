@@ -1719,7 +1719,8 @@ What a `stellac` command is given, and the ordinary build `stellac compile` runs
 
 | Input | Required outcome |
 | --- | --- |
-| A `stella.json` lacking a field, in the file or in `options`; one with a field no rule names, in either; one whose `formatVersion` is not `0`; one with a field of another kind, or an empty string | Refused by `compile` and `graph` alike, each error naming its field; nothing read or written |
+| A `stella.json` lacking a field, in the file or in `options`; one with a field no rule names, in either or in an entry; one whose `formatVersion` is not `0`; one with a field of another kind, or an empty string | Refused by `compile` and `graph` alike, by the first field found wrong, named by its place; nothing read or written |
+| A `stella.json` that `Stellac.Config.encode` wrote | Read back by `decode` as the configuration written |
 | A `stella.json` standing elsewhere than the directory the command runs in, its `output`, paths, interfaces, and objects relative | Each resolved against the directory the file stands in |
 | `modules` listing one file as `src/A.stel` and as `src/./B/../A.stel` | Refused as a file listed twice |
 | `steamCmd` a bare name, a relative path, `./steam` of a `stella.json` in the directory the command runs in, and an absolute path | Looked for on `PATH`; resolved against the directory the file stands in to a path from the root, the third a path still; taken as it stands |

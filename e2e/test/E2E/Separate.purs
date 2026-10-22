@@ -22,6 +22,7 @@ import Node.Buffer as Buffer
 import Node.Encoding (Encoding(..))
 import Node.FS.Aff as FS
 import Node.FS.Sync as Sync
+import Stella.CLI.Effect.Log (LogLevel(..))
 import Stella.Compiler.Bytecode (decode)
 import Stella.Compiler.Bytecode.Bytes (Bytes)
 import Stella.Compiler.Interface.File as Interface
@@ -112,13 +113,13 @@ spec = describe "stellac compile against `dependencies`" do
     written `shouldEqual` false
 
   it "says no progress at `logLevel` `error`, and colours what it says only where `monochrome` is not set" do
-    FS.writeTextFile UTF8 (dir <> "/app/quiet.json") (stellaJson ((appSettings "out-quiet" libModules) { logLevel = "error" }))
+    FS.writeTextFile UTF8 (dir <> "/app/quiet.json") (stellaJson ((appSettings "out-quiet" libModules) { logLevel = Error }))
     quiet <- compile (dir <> "/app/quiet.json")
     quiet.status `shouldEqual` 0
     contains (Pattern "Compiling") (quiet.out <> quiet.err) `shouldEqual` false
-    FS.writeTextFile UTF8 (dir <> "/app/colour.json") (stellaJson ((appSettings "out-colour" [ "Lib.Extra" ]) { logLevel = "debug", monochrome = false }))
+    FS.writeTextFile UTF8 (dir <> "/app/colour.json") (stellaJson ((appSettings "out-colour" [ "Lib.Extra" ]) { logLevel = Debug, monochrome = false }))
     coloured <- compile (dir <> "/app/colour.json")
-    FS.writeTextFile UTF8 (dir <> "/app/plain.json") (stellaJson ((appSettings "out-plain" [ "Lib.Extra" ]) { logLevel = "debug" }))
+    FS.writeTextFile UTF8 (dir <> "/app/plain.json") (stellaJson ((appSettings "out-plain" [ "Lib.Extra" ]) { logLevel = Debug }))
     plain <- compile (dir <> "/app/plain.json")
     map _.status [ coloured, plain ] `shouldEqual` [ 1, 1 ]
     map (contains (Pattern "\x1b[") <<< _.err) [ coloured, plain ] `shouldEqual` [ true, false ]
