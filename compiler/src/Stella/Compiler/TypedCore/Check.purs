@@ -18,6 +18,7 @@ module Stella.Compiler.TypedCore.Check
   , envOf
   , infer
   , check
+  , isValue
   , isValueForm
   ) where
 
@@ -32,7 +33,7 @@ import Stella.Compiler.TypedCore.Initialization (localViolations)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..))
 import Stella.Compiler.TypedCore.Kinding (KindError(..), checkKind, quantifiableKind, wellFormedConstraint, wellFormedKey)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, JoinName, OpName, Qualified, RegionName, TyName, TyVar)
-import Stella.Compiler.TypedCore.Prim (asFunction, booleanTy, fn, litType, recordTy, unitTy, variantTy)
+import Stella.Compiler.TypedCore.Prim (asFunction, booleanTy, fn, foreignArity, litType, recordTy, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Row (RowError, RowNormalForm, fromNormalForm, nfSharp)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), CtorInfo, EffectInfo, GlobalEntry(..), Signature, TyConInfo(..), globalEntryScheme, lookupCtor, lookupEffect, lookupGlobal, lookupOperation, lookupTyCon)
 import Stella.Compiler.TypedCore.Term (Binding, DecisionTree(..), Expr(..), Cell, Handler, OpClause(..), Occurrence(..), Param, exprAnnotation, opClauseOp, withAnnotation)
@@ -1310,6 +1311,39 @@ isCtorSpine sig = case _ of
   TyApp _ e _ -> isCtorSpine sig e
   ConstraintApp _ e -> isCtorSpine sig e
   _ -> false
+
+-- | A value of the reduction relation, which takes no step: every value form,
+-- | and beside them an unsaturated foreign's chain of values and `openEff` and
+-- | `weaken` around a value. A global's right-hand side is one where its
+-- | declaration is generalized over kinds, so that installing it takes no step
+-- | under the abstract kinds (D52).
+-- |
+-- | A chain counts its values against the declared arity, which under `Σ ok` is
+-- | where it is saturated: a constructor's is a value at any count up to it, a
+-- | foreign's below it alone. A reference to a defined global is none, being
+-- | unfolded by a step.
+isValue :: forall a. Signature -> Expr a -> P.Boolean
+isValue sig = case _ of
+  Lit _ _ -> true
+  Lam _ _ _ _ _ -> true
+  TyLam _ _ _ body -> isValue sig body
+  ConstraintLam _ _ body -> isValue sig body
+  RecordEmpty _ -> true
+  RecordExtend _ _ value rest -> isValue sig value && isValue sig rest
+  VariantInject _ _ _ value -> isValue sig value
+  VariantWeaken _ _ _ value -> isValue sig value
+  OpenEff _ _ value -> isValue sig value
+  other -> chainOfValues 0 other
+  where
+  chainOfValues count = case _ of
+    App _ f x -> isValue sig x && chainOfValues (count + 1) f
+    TyApp _ e _ -> chainOfValues count e
+    ConstraintApp _ e -> chainOfValues count e
+    Global _ name _ -> case lookupGlobal sig name of
+      Just (GlobalCtor info) -> count <= Array.length info.fields
+      Just (GlobalValue info) | info.isForeign -> count < foreignArity info.scheme
+      _ -> false
+    _ -> false
 
 valueForm :: forall a. a -> Env -> Expr a -> Either (CheckFailure a) Unit
 valueForm at env body =

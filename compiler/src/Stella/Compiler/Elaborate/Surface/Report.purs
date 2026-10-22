@@ -85,6 +85,7 @@ elaborationOrigins = case _ of
   ExpressionHoleStands o _ _ _ -> [ o ]
   NonExhaustiveMatch o _ -> [ o ]
   ValueFormNeeded o -> [ o ]
+  KindValueNeeded o _ -> [ o ]
   ReadWhileInitializing o through _ _ -> Array.cons o (Array.fromFoldable through)
   LocalReadWhileInitializing o through _ _ -> Array.cons o (Array.fromFoldable through)
   EffectRowAmbiguous _ os -> os
@@ -150,6 +151,7 @@ printElaborationError = case _ of
       <> if Array.null context then "" else "\nIn scope:" <> foldMap (\x -> fmt @"\n  {x} : {t}" { x: localName x.name, t: printType x.type }) context
   NonExhaustiveMatch _ witness -> fmt @"This `case` does not match every value: it does not match `{w}`" { w: joinWith ", " (map (printWitness false) witness) }
   ValueFormNeeded _ -> "This stands under a `forall` or a constraint, where only a value form may stand; where it is a function, writing its parameter makes it one"
+  KindValueNeeded _ (Qualified _ (Ident name)) -> fmt @"The declaration `{name}` is generalized over a kind, and its right-hand side is no value; a declaration generalized over kinds is installed without being evaluated, so it is a function, a constructor applied to values, or another value" { name }
   ReadWhileInitializing _ _ reader read
     | reader == read -> fmt @"`{x}` is read here while it is being initialized" { x: nameOf read }
     | otherwise -> fmt @"`{y}` is read here while its recursive group is being initialized, before `{y}` is: it is written after `{x}`" { x: nameOf reader, y: nameOf read }

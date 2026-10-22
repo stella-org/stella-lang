@@ -26,7 +26,7 @@ import Prelude
 
 import Prim as P
 
-import Stella.Compiler.TypedCore.Check (CheckError, Typed, check, envOf)
+import Stella.Compiler.TypedCore.Check (CheckError, Typed, check, envOf, isValue)
 import Stella.Compiler.TypedCore.Initialization (topLevelViolations)
 import Stella.Compiler.TypedCore.Context (Context, bindKindVars, bindTyVar, emptyContext)
 import Stella.Compiler.TypedCore.Decl (CtorDecl, DataDecl, Decl(..), EffectDecl, Export(..), Module, OpDecl, ValueBinding)
@@ -85,6 +85,10 @@ data DeclError
   -- | A `nonrec` right-hand side referring to itself or to a later value
   -- | declaration, naming what it refers to.
   | ForwardReference (Qualified Ident)
+  -- | A top-level definition generalized over kinds whose right-hand side is no
+  -- | value: initialization would evaluate it once under the abstract kinds,
+  -- | and an allocation it made would mention them (D52).
+  | KindGeneralizedNonValue (Qualified Ident)
   | MissingExport Export
   -- | A right-hand side of a recursive group reading, while the group is
   -- | initialized, a member not written before it: the member whose right-hand
@@ -301,6 +305,7 @@ addValue' m sigTy acc = case _ of
   DeclNonRec at binding -> do
     checkScheme at sigTy binding.scheme
     value <- checkBody acc.signature binding
+    kindValue at m.name acc.signature binding
     signature <- addValue at m.name binding.name { scheme: binding.scheme, isForeign: false } acc.signature
     pure
       { signature
@@ -312,13 +317,14 @@ addValue' m sigTy acc = case _ of
   DeclRec at bindings -> do
     registered <- foldM (flip (addBinding at m.name sigTy)) acc.signature bindings
     initialized registered m.name bindings
-    checked <- traverse (checkedBinding registered) bindings
+    checked <- traverse (checkedBinding at registered) bindings
     pure { signature: registered, values: acc.values <> [ { recursive: true, bindings: checked } ] }
 
   _ -> pure acc
   where
-  checkedBinding registered binding = do
+  checkedBinding at registered binding = do
     value <- checkBody registered binding
+    kindValue at m.name registered binding
     pure (binding { value = value })
 
 addBinding
@@ -341,6 +347,17 @@ checkBody sig binding =
     Right value -> Right value
   where
   ctx = bindKindVars emptyContext binding.scheme.kindVars
+
+-- | A definition generalized over kinds has a value right-hand side (D52).
+-- | Module initialization evaluates it once, while its kind scheme is
+-- | instantiated at every use, so a step taken under the abstract kinds could
+-- | allocate a location or a region whose type mentions them. A value takes
+-- | none: what its λs hold runs after an instantiation has substituted the
+-- | kinds. Checked of each member of a group alike, after its body is typed.
+kindValue :: forall a. a -> ModuleName -> Signature -> ValueBinding a -> Either (DeclFailure a) Unit
+kindValue at moduleName sig binding =
+  when (not (Array.null binding.scheme.kindVars) && not (isValue sig binding.value))
+    (Left { at, error: KindGeneralizedNonValue (Qualified moduleName binding.name) })
 
 -- | A recursive group initialized in the order written, each right-hand side
 -- | reading only the members written before it; the first that does not is

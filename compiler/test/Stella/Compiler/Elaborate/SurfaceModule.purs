@@ -344,6 +344,7 @@ at = case _ of
   ExpressionHoleStands o name t context -> located o <> " expression hole " <> name <> " " <> printType t <> " [" <> joinWith ", " (map (\x -> let Ident n = x.name in n <> " : " <> printType x.type) context) <> "]"
   NonExhaustiveMatch o _ -> located o <> " non-exhaustive"
   ValueFormNeeded o -> located o <> " value form needed"
+  KindValueNeeded o (Qualified _ (Ident n)) -> located o <> " " <> n <> " kind value needed"
   ReadWhileInitializing o through _ (Qualified _ (Ident read)) -> located o <> " reads " <> read <> " early" <> maybe "" (\p -> " through " <> located p) through
   LocalReadWhileInitializing o through (Ident reader) (Ident read) -> located o <> " " <> reader <> " reads local " <> read <> " early" <> maybe "" (\p -> " through " <> located p) through
   EffectRowAmbiguous _ os -> joinWith " " (map located os) <> " effect row ambiguous"
@@ -2191,6 +2192,14 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         map at r.errors `shouldEqual` [ "4:1 value form needed" ]
       elaborating [ "pair :: forall a. Tuple Int (a -> a)", "pair = Tuple (inc 1) id" ] \r ->
         map at r.errors `shouldEqual` [ "4:1 value form needed" ]
+
+    it "is reported where a declaration a signature generalizes over a kind alone has no value" do
+      -- no `Λ` stands for a kind, so the value form a `Λ` encloses does not
+      -- catch it, and the Core checker's refusal is the author's (D52)
+      elaborating [ "data Proxy (a :: k) = Proxy", "x :: Proxy (Proxy :: k -> Type)", "x = const Proxy 1" ] \r ->
+        map at r.errors `shouldEqual` [ "5:1 x kind value needed" ]
+      elaborating [ "data Proxy (a :: k) = Proxy", "x :: Proxy (Proxy :: k -> Type)", "x = Proxy" ] \r ->
+        map at r.errors `shouldEqual` []
 
     it "keeps a reference made before any λ immediate once expanded, judged as it stands before the expansion" do
       elaborating [ "loop :: forall a. a -> a", "loop = loop" ] \r ->

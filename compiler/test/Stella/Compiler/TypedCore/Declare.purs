@@ -13,7 +13,7 @@ import Stella.Compiler.TypedCore (Constraint(..), CtorDecl, Decl(..), EffName(..
 import Stella.Compiler.TypedCore.Declare (DeclError(..), declare, initialSignature)
 import Stella.Compiler.TypedCore.SignatureCheck (SignatureError(..), sigOk)
 import Stella.Compiler.TypedCore.Kinding (KindError(..), Synthesized(..))
-import Stella.Compiler.TypedCore.Prim (fn, intTy, ioTy, primSignature, pureFn, recordTy, stringTy, unitTy)
+import Stella.Compiler.TypedCore.Prim (fn, intTy, ioTy, primSignature, pureFn, recordTy, stringTy, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..), emptySignature, lookupCtor)
 import Data.Either (Either(..))
 import Data.Map as Map
@@ -436,6 +436,116 @@ spec = describe "TypedCore.Declare" do
       verdict (moduleOf [ foreignDecl "after" (monoScheme (TForall r (KRow RowType) (pureFn int lacking))) ])
         `shouldEqual` Left (ErasedForeignTail (value "after"))
       verdict (moduleOf [ foreignDecl "make" (monoScheme (TForall a KType (pureFn unitTy' (TVar a)))) ])
+        `shouldEqual` Right unit
+
+  describe "a declaration generalized over kinds" do
+    -- initialization evaluates a right-hand side once, while its kind scheme is
+    -- instantiated at every use, so one that is no value would take a step under
+    -- the abstract kinds (D52)
+    let
+      k = KindVar "k"
+      witnessDecl = DeclData unit
+        { name: TyName "Witness"
+        , kindVars: [ k ]
+        , params: []
+        , constructors: [ { name: Ident "Witness", tag: 0, fields: [] } ]
+        , isNewtype: false
+        , attributes: []
+        }
+      witnessAt kind = TCon (tyCon "Witness") [ kind ]
+      madeAt kind = Global unit (value "Witness") [ kind ]
+      witness = witnessAt (KVar k)
+      made = madeAt (KVar k)
+      generalized body = { kindVars: [ k ], body }
+      bound kind = Let unit (Ident "w") (witnessAt kind) (madeAt kind) (Var unit (Ident "w"))
+      allocating = LetRec unit [ { name: Ident "cell", ty: witness, value: made } ] (lam "u" unitTy' (Var unit (Ident "cell")))
+
+    it "refuses a right-hand side that would allocate under the abstract kinds" do
+      verdict (moduleOf [ witnessDecl, nonrec "cached" (generalized (pureFn unitTy' witness)) allocating ])
+        `shouldEqual` Left (KindGeneralizedNonValue (value "cached"))
+      verdict (moduleOf [ witnessDecl, nonrec "bound" (generalized witness) (bound (KVar k)) ])
+        `shouldEqual` Left (KindGeneralizedNonValue (value "bound"))
+
+    it "refuses an alias of a defined global, which unfolds by a step" do
+      verdict
+        ( moduleOf
+            [ witnessDecl
+            , nonrec "w" (generalized witness) made
+            , nonrec "alias" (generalized witness) (Global unit (value "w") [ KVar k ])
+            ]
+        )
+        `shouldEqual` Left (KindGeneralizedNonValue (value "alias"))
+
+    it "accepts a value, an unsaturated foreign's chain among them, and an allocation beneath a λ" do
+      let
+        keyed = SymbolKey (Symbol "w")
+        partial = App unit (globalRef "pick") (Lit unit (LitInt 1))
+      verdict
+        ( moduleOf
+            [ witnessDecl
+            , foreignDecl "pick" (monoScheme (pureFn int (pureFn int int)))
+            , nonrec "made" (generalized witness) made
+            , nonrec "abstracted" (generalized (TForall (TyVar "a") (KVar k) witness)) (TyLam unit (TyVar "a") (KVar k) made)
+            , nonrec "held" (generalized (TApp (TCon recordTy []) (TRowExtend (RowTypeEntry keyed witness) TRowEmpty)))
+                (RecordExtend unit keyed made (RecordEmpty unit))
+            , nonrec "partial" (generalized (pureFn int int)) partial
+            , nonrec "later" (generalized (pureFn unitTy' (pureFn unitTy' witness))) (lam "v" unitTy' allocating)
+            ]
+        )
+        `shouldEqual` Right unit
+
+    it "refuses a saturated foreign's chain, a redex though it is pure" do
+      -- an unsaturated chain is a value and a saturated one a call: the count is
+      -- of values alone, a type or constraint argument counting for nothing
+      let
+        a = TyVar "a"
+        both = TyApp unit (globalRef "both") witness
+        declared = [ witnessDecl, foreignDecl "both" (monoScheme (TForall a KType (pureFn (TVar a) (pureFn (TVar a) (TVar a))))) ]
+      verdict (moduleOf (declared <> [ nonrec "half" (generalized (pureFn witness witness)) (App unit both made) ]))
+        `shouldEqual` Right unit
+      verdict (moduleOf (declared <> [ nonrec "full" (generalized witness) (App unit (App unit both made) made) ]))
+        `shouldEqual` Left (KindGeneralizedNonValue (value "full"))
+
+    it "counts the values of a chain beside its type and constraint arguments" do
+      let
+        r = TyVar "r"
+        lacking = Lacks (SymbolKey (Symbol "x")) (TVar r)
+        scheme = monoScheme (TForall r (KRow RowType) (TConstrained lacking (pureFn int (pureFn int int))))
+        instantiated = ConstraintApp unit (TyApp unit (globalRef "add") TRowEmpty)
+        declared = [ witnessDecl, foreignDecl "add" scheme ]
+      verdict (moduleOf (declared <> [ nonrec "addOne" (generalized (pureFn int int)) (App unit instantiated (Lit unit (LitInt 1))) ]))
+        `shouldEqual` Right unit
+      verdict (moduleOf (declared <> [ nonrec "sum" (generalized int) (App unit (App unit instantiated (Lit unit (LitInt 1))) (Lit unit (LitInt 2))) ]))
+        `shouldEqual` Left (KindGeneralizedNonValue (value "sum"))
+
+    it "accepts openEff and weaken around a value, which are values though no value forms" do
+      let
+        tagged = SymbolKey (Symbol "w")
+        other = SymbolKey (Symbol "o")
+        variantOf row = TApp (TCon variantTy []) row
+        injected = VariantInject unit tagged TRowEmpty made
+        wider = variantOf (TRowExtend (RowTypeEntry other int) (TRowExtend (RowTypeEntry tagged witness) TRowEmpty))
+      verdict
+        ( moduleOf
+            [ witnessDecl
+            , consoleDecl
+            , nonrec "widened" (generalized (fn witness consoleRow witness)) (OpenEff unit consoleRow (lam "w" witness (Var unit (Ident "w"))))
+            , nonrec "weakened" (generalized wider) (VariantWeaken unit other int injected)
+            ]
+        )
+        `shouldEqual` Right unit
+
+    it "keeps evaluating a right-hand side with no kind scheme" do
+      verdict (moduleOf [ witnessDecl, nonrec "once" (monoScheme (witnessAt KType)) (bound KType) ])
+        `shouldEqual` Right unit
+
+    it "judges each member of a recursive group by its own kind scheme" do
+      let
+        member name scheme expr = { name: Ident name, scheme, value: expr, attributes: [] }
+        mono = member "mono" (monoScheme (witnessAt KType)) (bound KType)
+      verdict (moduleOf [ witnessDecl, DeclRec unit [ mono, member "poly" (generalized witness) (bound (KVar k)) ] ])
+        `shouldEqual` Left (KindGeneralizedNonValue (value "poly"))
+      verdict (moduleOf [ witnessDecl, DeclRec unit [ mono, member "poly" (generalized witness) made ] ])
         `shouldEqual` Right unit
 
   describe "value declarations" do

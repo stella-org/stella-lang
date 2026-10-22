@@ -212,6 +212,9 @@ data ElaborationError
   -- | where the abstraction stands: the Core checker's refusal, and the
   -- | author's.
   | ValueFormNeeded Surface.Origin
+  -- | A definition generalized over kinds whose right-hand side is no value,
+  -- | where it is declared: the Core checker's refusal, and the author's (D52).
+  | KindValueNeeded Surface.Origin (Qualified Ident)
   -- | A right-hand side of a recursive group reading, while the group is
   -- | initialized, a member not written before it: where the reference stands,
   -- | where the form that made the read immediate stands, if one did, the
@@ -1472,8 +1475,10 @@ type ElaboratedModule =
 -- | its operations, each operation's scheme among the values', and each
 -- | attribute declaration at its parameters' types.
 -- | **The Core checker refusing it is the elaborator's fault**, reported as
--- | such, but for an attribute's arguments, which only the Core checker checks:
--- | one that does not check is reported where its declaration stands.
+-- | such, but for what only the Core checker checks: an attribute's arguments,
+-- | reported where its declaration stands; the value form a `Λ` encloses; and
+-- | the value right-hand side of a declaration generalized over kinds (D52),
+-- | reported where the declaration stands.
 elaborateModule
   :: Signature
   -> SurfaceEnv
@@ -1588,6 +1593,9 @@ assembled signature m exports elaborated =
       -- and so is the value form a `Λ` encloses, what was not η-expanded
       -- being the author's to give a parameter
       Left { at, error: IllTyped NotAValueForm } -> Left (NonEmptyArray.singleton (ValueFormNeeded at))
+      -- and so is a value right-hand side where a declaration is generalized
+      -- over kinds, the author's to give
+      Left { error: KindGeneralizedNonValue name } -> Left (NonEmptyArray.singleton (KindValueNeeded (entryOrigin name) name))
       Left refusal -> Left (NonEmptyArray.singleton (CoreRefused refusal))
 
   -- an entry declared otherwise than listed, where its declaration stands
