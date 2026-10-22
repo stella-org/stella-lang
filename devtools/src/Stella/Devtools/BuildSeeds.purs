@@ -1,20 +1,11 @@
--- | `stella-devtools build-seeds`: the seed modules, which are loaded as the
--- | compiler bootstraps, compiled anew from their sources by one seed build,
--- | each module's interface and bytecode written as `<output>/<M>.dmi` and
--- | `<output>/<M>.dmo`.
+-- | `stella-devtools build-seeds`: compiles the seed modules from the source, which are
+-- | loaded during compiler bootstrap and serve as basis for elaborator on the steam compile-time session. 
+-- | Unlike `stellac compile`, this command must be run from the repository root.
+-- | It ignores the `workdir` option and `dependencies`　in `stella.json`;　it reads
+-- | the sources from `stella-packages` and every module is compiled anew from scratch.
 -- |
--- | **The sources are read where the repository keeps them**, from the
--- | directory this runs in, which is the repository's root. The build is the
--- | driver's seed build, run on disk by the host `Stella.CLI.Build`, against
--- | `Prim` and the seed modules and given no dependency map; every module it
--- | is given is compiled anew, so none is kept, and their interfaces may
--- | change.
--- |
--- | **It never changes the seed modules the compiler holds**: it builds with
--- | them as they stand, into the directory given, and taking what it wrote
--- | into the compiler is another step's. Its macros and synthesizers run on
--- | the seed modules as the session holds them, and the session is never sent
--- | what the build wrote of them.
+-- | Note that during compile-time session the steam does not reload the seed modules
+-- | with the new ones
 module Stella.Devtools.BuildSeeds (seedModules, cmd) where
 
 import Prelude
@@ -23,7 +14,6 @@ import Data.Array as Array
 import Data.Either (either)
 import Data.Foldable (foldM)
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
 import Stella.Devtools.Options (BuildSeedsOptions)
 import Fmt (fmt)
 import Run (AFF, EFFECT, Run)
@@ -61,8 +51,8 @@ cmd opts = do
     , environment
     , objects: Map.empty
     , written: \(ModuleName m) extension -> fmt @"{dir}/{m}.{extension}" { dir: opts.output, m, extension }
-    , steamCmd: opts.steamCmd
-    , traceOpt: Nothing
+    , steamCommand: opts.steamCmd
+    , traced: []
     , emitCore: false
     , destination: opts.output
     }

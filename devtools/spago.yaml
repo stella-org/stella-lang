@@ -12,7 +12,6 @@ package:
     - either
     - fmt
     - foldable-traversable
-    - maybe
     - node-process
     - ordered-collections
     - prelude
@@ -24,6 +23,7 @@ package:
     main: Test.Stella.Devtools
     dependencies:
       - dodo-printer
+      - maybe
       - node-buffer
       - node-child-process
       - node-execa

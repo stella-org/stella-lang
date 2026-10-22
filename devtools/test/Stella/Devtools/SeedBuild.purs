@@ -1,14 +1,13 @@
--- | A seed build on the host `build-seeds` shares with `stellac build`,
--- | against an environment holding modules beside the seed modules: the files
--- | on disk, the session a process, and the modules built then run on the
--- | machine.
+-- | A seed build on the host `build-seeds` shares with `stellac compile`,
+-- | against an environment that holds modules besides the seed modules: files
+-- | on disk, the session a process, and the result run on the machine.
 -- |
--- | Each case builds in a directory of its own under `devtools/.test-build`.
--- | An ordinary build first writes `Pass`, a macro importing `Base.Int` and
--- | `Stella.Syntax`, and `Main`, which calls it, and their interfaces make the
--- | environment the seed build is given, which compiles `Base.Int`, `Pass`,
--- | and `Main` anew. The session refuses a second module of a name it
--- | holds, so a build that sent it what it wrote of `Base.Int` would fail.
+-- | Each case builds in its own directory under `devtools/.test-build`. An
+-- | ordinary build first writes `Pass`, a macro importing `Base.Int` and
+-- | `Stella.Syntax`, and `Main`, which calls it. Their interfaces join the
+-- | environment of the seed build, which compiles `Base.Int`, `Pass`, and
+-- | `Main` anew. The session refuses a second module of a name it holds, so a
+-- | build that sent it the rebuilt `Base.Int` would fail.
 module Test.Stella.Devtools.SeedBuild (spec, onDisk) where
 
 import Prelude
@@ -46,7 +45,7 @@ import Stella.CLI.Effect.Log as Log
 import Stella.CLI.Effect.Process (PROCESS, Process(..))
 import Stella.CLI.Effect.Process as Process
 import Stella.CLI.Runner.Node as Node
-import Stella.Compiler.Build (build, defaultSourceRoots, buildSeeds)
+import Stella.Compiler.Build (build, buildSeeds)
 import Stella.Compiler.Bytecode (decode)
 import Stella.Compiler.Interface.Environment (addInterface, initialEnvironment)
 import Stella.Compiler.Interface.File as Interface
@@ -99,14 +98,14 @@ rebuilding name files k = do
         , environment: env
         , objects: Map.empty
         , written: \(ModuleName m) extension -> fmt @"{dir}/{sub}/{m}.{extension}" { dir, sub, m, extension }
-        , steamCmd: "steam"
-        , traceOpt: Nothing
+        , steamCommand: "steam"
+        , traced: []
         , emitCore: false
         , destination: dir <> "/" <> sub
         }
     _ <- FS.makeDirectory (dir <> "/before/out")
     _ <- Host.onDisk (host seedEnv "before/out") \action env ->
-      build action defaultSettings env defaultSourceRoots (map (\p -> { path: dir <> "/before/src/" <> p, within: [ "src", p ] }) [ "Pass.stel", "Main.stel" ])
+      build action defaultSettings env (map (\m -> { path: fmt @"{dir}/before/src/{m}.stel" { dir, m }, name: ModuleName m }) [ "Pass", "Main" ])
     before <- for [ "Pass", "Main" ] \m -> do
       bytes <- FS.readBytes (fmt @"{dir}/before/out/{m}.dmi" { dir, m }) >>= either'
       either' (Interface.decode bytes)

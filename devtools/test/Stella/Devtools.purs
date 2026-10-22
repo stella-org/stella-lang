@@ -1,5 +1,5 @@
 -- | The tests of `stella-devtools`: a seed build on the host it shares with
--- | `stellac build`, and `build-seeds` run as a command. Both start processes,
+-- | `stellac compile`, and `build-seeds` run as a command. Both start processes,
 -- | `steam` by its development entry point and `stella-devtools` by
 -- | `devtools/index.js`, both of which need the workspace built.
 module Test.Stella.Devtools where
