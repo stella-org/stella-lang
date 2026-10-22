@@ -1,8 +1,9 @@
--- | `stella-devtools build-seeds`: compiles the seed modules from the source, which are
--- | loaded during compiler bootstrap and serve as basis for elaborator on the steam compile-time session. 
--- | Unlike `stellac compile`, this command must be run from the repository root.
--- | It ignores the `workdir` option and `dependencies`　in `stella.json`;　it reads
--- | the sources from `stella-packages` and every module is compiled anew from scratch.
+-- | `stella-devtools build-seeds`: compiles the seed modules from the source,
+-- | which are loaded during compiler bootstrap and serve as basis for elaborator
+-- | on the steam compile-time session.
+-- | Unlike `stellac compile`, it does not read `stella.json` so does not respect
+-- | `workdir` or `dependencies`; it assumes to be run on the project root and
+-- | reads the sources from `stella-packages` and every module is compiled anew from scratch.
 -- |
 -- | Note that during compile-time session the steam does not reload the seed modules
 -- | with the new ones
