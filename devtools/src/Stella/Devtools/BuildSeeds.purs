@@ -51,7 +51,7 @@ cmd opts = do
     , environment
     , objects: Map.empty
     , written: \(ModuleName m) extension -> fmt @"{dir}/{m}.{extension}" { dir: opts.output, m, extension }
-    , steamCommand: opts.steamCmd
+    , steamCmd: opts.steamCmd
     , traced: []
     , emitCore: false
     , destination: opts.output

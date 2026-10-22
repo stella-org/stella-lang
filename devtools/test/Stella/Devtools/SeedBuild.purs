@@ -98,7 +98,7 @@ rebuilding name files k = do
         , environment: env
         , objects: Map.empty
         , written: \(ModuleName m) extension -> fmt @"{dir}/{sub}/{m}.{extension}" { dir, sub, m, extension }
-        , steamCommand: "steam"
+        , steamCmd: "steam"
         , traced: []
         , emitCore: false
         , destination: dir <> "/" <> sub
