@@ -550,8 +550,14 @@ attributeParameterType:
 handlerDecl:
   | HANDLER n = ident DCOLON t = type
       { C.DeclHandlerSignature n t }
-  | HANDLER n = ident ps = binderAtoms WHERE is = handlerBlock
-      { C.DeclHandler n ps is }
+  | HANDLER n = ident DCOLON t = type WHERE is = handlerBlock
+      { C.DeclHandler n [] (Just t) is }
+  | HANDLER n = ident ps = binderAtoms1 DCOLON t = type WHERE is = handlerBlock
+      { C.DeclHandler n ps (Just t) is }
+  | HANDLER n = ident WHERE is = handlerBlock
+      { C.DeclHandler n [] Nothing is }
+  | HANDLER n = ident ps = binderAtoms1 WHERE is = handlerBlock
+      { C.DeclHandler n ps Nothing is }
 
 dataCtors:
   | cs = manySep(dataCtor, PIPE) { cs }

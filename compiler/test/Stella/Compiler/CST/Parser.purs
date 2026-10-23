@@ -273,11 +273,14 @@ spec = describe "Stella.Compiler.CST.Parser" do
       [ "implicit", "handler h :: E ~> ()", "handler h where", "  fast | op _ = 0" ] `itemsAre`
         [ "(modifier implicit)", "(handler-sig h (~> E ()))", "(handler h (group fast (| op _ 0)))" ]
 
-    it "reads a handler declaration's signature on a line of its own, and refuses one written in the declaration" do
+    it "reads a handler declaration's signature on a line of its own, or a type at the declaration's head" do
       [ "handler h :: Int -> E ~> ()", "implicit handler h n where", "  fast | op _ = n" ] `itemsAre`
         [ "(handler-sig h (-> Int (~> E ())))", "(modifier implicit)", "(handler h n (group fast (| op _ n)))" ]
-      rejects [ "handler h :: E ~> () where", "  fast | op _ = 0" ]
-      rejects [ "handler h n :: Int -> E ~> () where", "  fast | op _ = n" ]
+      [ "handler h :: E ~> () where", "  fast | op _ = 0" ] `itemsAre`
+        [ "(handler h (:: (~> E ())) (group fast (| op _ 0)))" ]
+      [ "handler h (n :: Int) m :: E ~> () where", "  fast | op _ = n" ] `itemsAre`
+        [ "(handler h (parens (:: n Int)) m (:: (~> E ())) (group fast (| op _ n)))" ]
+      rejects [ "handler h :: E ~> () where" ]
     it "reads a macro called at a declaration's position" do
       [ "class%{", "  Show a where", "    show :: a -> String", "}" ] `itemsAre`
         [ "(class% { Show a where show :: a -> String })" ]

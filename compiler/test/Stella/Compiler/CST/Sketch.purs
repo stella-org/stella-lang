@@ -136,7 +136,7 @@ sketchDecl = case _ of
   DeclEffect n vs os ->
     list ([ "effect", name n ] <> map typeVar vs <> map (\o -> list [ name o.name, sketchType o.type ]) os)
   DeclHandlerSignature n t -> list [ "handler-sig", name n, sketchType t ]
-  DeclHandler n ps is -> list ([ "handler", name n ] <> map sketchBinder ps <> map handlerItem is)
+  DeclHandler n ps t is -> list ([ "handler", name n ] <> map sketchBinder ps <> maybe [] (\t' -> [ list [ "::", sketchType t' ] ]) t <> map handlerItem is)
   DeclForeign n t -> list [ "foreign", name n, sketchType t ]
   DeclForeignType n k -> list [ "foreign-type", name n, sketchKind k ]
   DeclFixity f p n o -> list [ fixity f, p.raw, name n, name o ]

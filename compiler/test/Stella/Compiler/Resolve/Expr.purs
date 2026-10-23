@@ -20,7 +20,7 @@ import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, in
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
 import Stella.Compiler.Interface.Scheme (SchemeBody(..), plainScheme)
 import Stella.Compiler.Resolve.Expr (resolveDefinition, resolveExpr, resolveHandler)
-import Stella.Compiler.Resolve.Group (groupModule)
+import Stella.Compiler.Resolve.Group (Declaration(..), groupModule)
 import Stella.Compiler.Resolve.Monad (CellClosure(..), HandledEffectProblem(..), Resolve, ResolveError(..), ResolveReason(..), ResolveWarning(..), ResumeBlock(..), contextOf, runResolve)
 import Stella.Compiler.Resolve.Scope (resolveScope)
 import Stella.Compiler.Surface.Decl (Associativity(..), FixityTarget(..))
@@ -160,7 +160,7 @@ definition = definitionIn []
 
 -- | The same, the module importing what the lines given import besides.
 definitionIn :: Array String -> Array String -> (Ran -> Aff Unit) -> Aff Unit
-definitionIn imports body = inModule imports body (Array.findMap definitionOfF) \d ->
+definitionIn imports body = inModule imports body (\(CST.Module m) -> Array.findMap definitionOfF m.items) \d ->
   resolveDefinition d.params d.body d.local <#> \r -> renderExpr r.body
   where
   definitionOfF = case _ of
@@ -188,28 +188,23 @@ handlerDeclarationShown body render = inModule [] body handlerOfH \d ->
   resolveHandler d.params d.signature d.items <#> \r ->
     render { params: r.params, handled: r.handled, capabilityTargets: r.capabilityTargets, cells: r.cells, body: r.body }
   where
-  handlerOfH items = do
-    signature <- Array.findMap signatureOfH items
-    found <- Array.findMap definitionOfH items
-    pure { params: found.params, signature, items: found.items }
-  signatureOfH = case _ of
-    CST.ItemDecl (CST.DeclHandlerSignature n t) | n.name == "h" -> Just t
-    _ -> Nothing
-  definitionOfH = case _ of
-    CST.ItemDecl (CST.DeclHandler n params items) | n.name == "h" -> Just { params, items }
+  -- the declaration as grouped, its signature written before it or at its
+  -- head
+  handlerOfH m = (groupModule m).grouped.declarations # Array.findMap case _ of
+    DeclarationHandler _ h | h.name.name == "h", Just signature <- h.signature -> Just { params: h.binders, signature, items: h.items }
     _ -> Nothing
 
 inModule
   :: forall d
    . Array String
   -> Array String
-  -> (Array CST.Item -> Maybe d)
+  -> (CST.Module -> Maybe d)
   -> (d -> Resolve String)
   -> (Ran -> Aff Unit)
   -> Aff Unit
 inModule imports body pick resolve k = case parseModule (joinWith "\n" (header <> body)) of
   Left e -> fail (printSyntaxError e)
-  Right m@(CST.Module cst) -> case pick cst.items of
+  Right m -> case pick m of
     Nothing -> fail "no declaration to resolve"
     Just d -> do
       let
@@ -590,6 +585,15 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
       handlerTargets [ "handler h :: (Unit -> Int / {| Own |}) -> E ~> ()", "handler h p where", "  fast | get _ = 0", "  | put _ _ = 0" ] \r -> do
         r.result `shouldEqual` "A.E ~> "
         r.reasons `shouldEqual` []
+
+    it "read a type at their head as what follows their parameters' annotations, quantified as a signature is" do
+      handlerTargets [ "handler h :: E ~> ( Own ) where", "  fast | get _ = 0", "  | put _ _ = 0" ] \r -> do
+        r.result `shouldEqual` "A.E ~> M.Own"
+        r.reasons `shouldEqual` []
+      handles [ "handler h (n :: a) (m :: Int) :: forall b. E ~> () where", "  fast | get _ = (n :: a)", "  | put _ _ = (m :: b)" ]
+        "A.E{fast A.get _ -> (n#2 :: τ); fast A.put _ _ -> (m#3 :: τ)}"
+        []
+      handles [ "handler h (n :: Int) :: Int -> E ~> () where", "  | return r = r" ] "?{return r#1 -> r#1}" [ HandledEffect (HandlerParameters 1 2) ]
 
     it "read the handler's type past a kind annotation, written, in a synonym of their own, or in an imported one" do
       let clauses = [ "  fast | get _ = 0", "  | put _ _ = 0" ]

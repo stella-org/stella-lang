@@ -445,7 +445,10 @@ data Decl
   | DeclEffect Name (Array TypeVarBinding) (Array OperationSignature)
   -- | `handler h :: σ`, the signature of the handler declaration after it.
   | DeclHandlerSignature Name Type
-  | DeclHandler Name (Array Binder) (Array HandlerItem)
+  -- | A handler declaration, with the type written at its head where there is
+  -- | one, `handler h p̄ :: τ where`: what follows the arrows its parameters'
+  -- | annotations give.
+  | DeclHandler Name (Array Binder) (Maybe Type) (Array HandlerItem)
   | DeclForeign Name Type
   | DeclForeignType Name Kind
   | DeclFixity Fixity (Literal Int) Name Name

@@ -34,9 +34,12 @@ import Prelude
 import Prim hiding (Type)
 
 import Data.Array as Array
-import Data.Foldable (foldl)
-import Data.Maybe (Maybe(..), maybe)
-import Stella.Compiler.CST.Types (Attribute, Binder, Decl(..), DeclKeyword(..), Directive, Export, Expr, HandlerItem, Import(..), Item(..), Kind, LetBinding(..), Macro, Module(..), Name, SourceRange, Type(..), isSynthesized)
+import Data.Either (Either(..))
+import Data.Foldable (foldl, foldr)
+import Data.Maybe (Maybe(..), isNothing, maybe)
+import Data.Traversable (traverse)
+import Stella.Compiler.CST.Range (binderRange)
+import Stella.Compiler.CST.Types (Attribute, Binder(..), Decl(..), DeclKeyword(..), Directive, Export, Expr, HandlerItem, Import(..), Item(..), Kind, LetBinding(..), Macro, Module(..), Name, SourceRange, Type(..), isSynthesized)
 
 data PrefixItem
   = PrefixAttribute Attribute
@@ -91,8 +94,9 @@ type ValueDeclaration =
   , localBindings :: Array LocalBinding
   }
 
--- | A handler declaration, with the signature `handler h :: σ` before it. One
--- | without is reported, and kept for the name it declares.
+-- | A handler declaration, with its signature: `handler h :: σ` before it, or
+-- | the one its head gives. One without is reported, and kept for the name it
+-- | declares.
 type HandlerDeclaration =
   { name :: Name
   , signature :: Maybe Type
@@ -123,8 +127,12 @@ data GroupReason
   | SignatureWithoutDefinition
   -- | A second signature for the name a signature has just given one.
   | SignatureTwice
-  -- | A handler declaration with no signature `handler h :: σ` before it.
+  -- | A handler declaration with no signature `handler h :: σ` before it, and
+  -- | no type at its head.
   | HandlerWithoutSignature
+  -- | A parameter of a handler declaration with a type at its head, with no
+  -- | annotation of its own.
+  | HandlerParameterUnannotated
   -- | A kind signature not followed by a declaration of its name and keyword.
   | KindSignatureWithoutDeclaration
   -- | An import after a declaration has begun. The imports are the module's
@@ -150,6 +158,7 @@ instance Show GroupReason where
     SignatureWithoutDefinition -> "SignatureWithoutDefinition"
     SignatureTwice -> "SignatureTwice"
     HandlerWithoutSignature -> "HandlerWithoutSignature"
+    HandlerParameterUnannotated -> "HandlerParameterUnannotated"
     KindSignatureWithoutDeclaration -> "KindSignatureWithoutDeclaration"
     ImportAfterDeclaration -> "ImportAfterDeclaration"
     DirectiveNotBeforeForeign -> "DirectiveNotBeforeForeign"
@@ -161,7 +170,10 @@ printGroupReason = case _ of
   ModifierNotBeforeHandler -> "`implicit` can stand only before a handler declaration"
   SignatureWithoutDefinition -> "A signature must be followed directly by the definition of its name"
   SignatureTwice -> "This name already has a signature"
-  HandlerWithoutSignature -> "A handler declaration needs its signature, `handler name :: type`, directly before it"
+  HandlerWithoutSignature ->
+    "A handler declaration needs its signature, `handler name :: type` directly before it or `:: type` at its head"
+  HandlerParameterUnannotated ->
+    "A parameter of a handler declaration with its type at its head has its own type, `(x :: type)`; a handler with a parameter written without one takes its signature on a line of its own, `handler name :: type`"
   KindSignatureWithoutDeclaration ->
     "A kind signature must be followed directly by the declaration it gives a kind to"
   ImportAfterDeclaration -> "Imports must come before every declaration"
@@ -264,16 +276,20 @@ decl d s = case d of
   DeclData n _ _ -> typeLevel KeywordData n
   DeclNewtype n _ _ _ -> typeLevel KeywordNewtype n
   DeclType n _ _ -> typeLevel KeywordType n
-  DeclHandler n binders items -> case s.signature of
-    Just sig | sig.handler && sig.name.name == n.name ->
-      handler (sig.prefix <> s.prefix) (Just sig.type) (unmatched (s { signature = Nothing }))
-    _ ->
-      let
-        s' = unmatched s
-      in
-        handler s.prefix Nothing (s' { errors = Array.snoc s'.errors (GroupError n.range HandlerWithoutSignature) })
+  DeclHandler n binders written items -> case pendingFor, written of
+    Just sig, Nothing -> handler (sig.prefix <> s.prefix) (Just sig.type) (unmatched (s { signature = Nothing })) []
+    -- The type at the head is dropped.
+    Just sig, Just _ -> handler (sig.prefix <> s.prefix) (Just sig.type) (unmatched (s { signature = Nothing })) [ GroupError n.range SignatureTwice ]
+    Nothing, Just t -> case headSignature binders t of
+      Right signature -> handler s.prefix (Just signature) (unmatched s) []
+      Left unannotated -> handler s.prefix Nothing (unmatched s) (map (\b -> GroupError (binderRange b) HandlerParameterUnannotated) unannotated)
+    Nothing, Nothing -> handler s.prefix Nothing (unmatched s) [ GroupError n.range HandlerWithoutSignature ]
     where
-    handler prefix signature = declare (DeclarationHandler prefix { name: n, signature, binders, items })
+    pendingFor = case s.signature of
+      Just sig | sig.handler && sig.name.name == n.name -> Just sig
+      _ -> Nothing
+    handler prefix signature s' errors =
+      declare (DeclarationHandler prefix { name: n, signature, binders, items }) (s' { errors = s'.errors <> errors })
   _ -> declare (DeclarationOther s.prefix d) (unmatched s)
   where
   pending handler n t = case s.signature of
@@ -289,6 +305,19 @@ decl d s = case d of
     Just ks | ks.keyword == keyword && ks.name.name == n.name ->
       declare (DeclarationType (ks.prefix <> s.prefix) (Just ks.kind) d) (unmatched (s { kindSignature = Nothing }))
     _ -> declare (DeclarationType s.prefix Nothing d) (unmatched s)
+
+-- | The signature the head of a handler declaration gives, `handler h p̄ :: τ
+-- | where`: an arrow from each parameter's annotation, in front of `τ`. The
+-- | parameters with no annotation are given back instead.
+headSignature :: Array Binder -> Type -> Either (Array Binder) Type
+headSignature binders t = case traverse annotation binders of
+  Just annotations -> Right (foldr TypeArrow t annotations)
+  Nothing -> Left (Array.filter (isNothing <<< annotation) binders)
+  where
+  annotation = case _ of
+    BinderParens b -> annotation b
+    BinderTyped _ a -> Just a
+    _ -> Nothing
 
 -- | Records a declaration, the pending prefix having gone into it.
 declare :: Declaration -> State -> State

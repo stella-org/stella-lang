@@ -71,7 +71,7 @@ nameOf = case _ of
   DeclKindSignature _ n _ -> n.name
   DeclEffect n _ _ -> n.name
   DeclHandlerSignature n _ -> n.name
-  DeclHandler n _ _ -> n.name
+  DeclHandler n _ _ _ -> n.name
   DeclForeign n _ -> n.name
   DeclForeignType n _ -> n.name
   DeclFixity _ _ _ (n :: Name) -> n.name
@@ -241,6 +241,30 @@ spec = describe "Stella.Compiler.Resolve.Group" do
         [ { line: 2, column: 9, reason: SignatureWithoutDefinition }
         , { line: 5, column: 9, reason: SignatureTwice }
         , { line: 8, column: 9, reason: SignatureWithoutDefinition }
+        ]
+
+    it "are given by a type at the head of a handler declaration, an arrow from each parameter's annotation in front of it" do
+      grouped
+        [ "handler h :: E ~> () where"
+        , "  fast | op _ = 0"
+        , "handler k (n :: Int) ((Just m) :: Maybe Int) :: E ~> () where"
+        , "  fast | op _ = 0"
+        ]
+        [ "handler h signed", "handler k signed" ]
+        []
+
+    it "report a parameter with no annotation at a head with a type, and a type at the head of a declaration given a signature" do
+      grouped
+        [ "handler h (n :: Int) m _ :: E ~> () where"
+        , "  fast | op _ = 0"
+        , "handler k :: E ~> ()"
+        , "handler k :: E ~> () where"
+        , "  fast | op _ = 0"
+        ]
+        [ "handler h", "handler k signed" ]
+        [ { line: 2, column: 22, reason: HandlerParameterUnannotated }
+        , { line: 2, column: 24, reason: HandlerParameterUnannotated }
+        , { line: 5, column: 9, reason: SignatureTwice }
         ]
 
     it "are needed by a handler declaration, which a value's signature does not join" do

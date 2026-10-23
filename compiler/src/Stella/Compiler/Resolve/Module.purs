@@ -185,7 +185,7 @@ handler p h = case h.signature of
       , body: r.body
       }
   where
-  origin = originOf (declarationRange (CST.DeclHandler h.name h.binders h.items))
+  origin = originOf (declarationRange (CST.DeclHandler h.name h.binders Nothing h.items))
 
 other :: Prefix -> CST.Decl -> Resolve (Maybe Surface.Declaration)
 other p d = do
@@ -263,7 +263,7 @@ declarationRange = case _ of
   CST.DeclType n _ t -> covering n.range (typeRange t)
   CST.DeclEffect n _ ops -> nonEmpty ([ n.range ] <> map (\op -> covering op.name.range (typeRange op.type)) ops)
   CST.DeclHandlerSignature n t -> covering n.range (typeRange t)
-  CST.DeclHandler n ps items -> nonEmpty ([ n.range ] <> map binderRange ps <> Array.concatMap itemRanges items)
+  CST.DeclHandler n ps t items -> nonEmpty ([ n.range ] <> map binderRange ps <> maybe [] (pure <<< typeRange) t <> Array.concatMap itemRanges items)
   CST.DeclForeign n t -> covering n.range (typeRange t)
   CST.DeclForeignType n k -> covering n.range (kindRange k)
   CST.DeclFixity _ p _ op -> covering p.range op.range

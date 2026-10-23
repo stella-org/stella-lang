@@ -138,7 +138,7 @@ decl = case _ of
   DeclKindSignature _ _ _ -> []
   DeclEffect _ _ os -> foldMap operationSignature os
   DeclHandlerSignature _ t -> type_ t
-  DeclHandler _ ps is -> foldMap binder ps <> foldMap handlerItem is
+  DeclHandler _ ps t is -> foldMap binder ps <> foldMap type_ t <> foldMap handlerItem is
   DeclForeign _ t -> type_ t
   DeclForeignType _ _ -> []
   DeclFixity _ _ _ _ -> []
