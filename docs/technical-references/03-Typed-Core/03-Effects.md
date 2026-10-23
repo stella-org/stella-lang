@@ -537,9 +537,9 @@ foreign log :: String -> IO Unit
 -- the interpreter, in a module importing Base.Continuation as Continuation
 runConsoleIO :: forall a. (Unit -> a / {| Console |}) -> IO a
 runConsoleIO thunk = handle thunk () with
-  Console
-    | reifiable full log s k -> Base.IO.bind (Js.Console.log s) (Continuation.continue k)
-    | return x -> Base.IO.pure x
+  Console ->
+    | reifiable full log s k = Base.IO.bind (Js.Console.log s) (Continuation.continue k)
+    | return x = Base.IO.pure x
 ```
 
 The clause hands its continuation to `Base.IO.bind`, beyond the clause, so it is `reifiable full` ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md#clause-forms)).
@@ -571,9 +571,9 @@ program = liftIO (Js.Console.log "Hello")    -- builds an IO value; writes nothi
 
 main :: IO Unit
 main = handle program with
-  LiftIO
-    | reifiable full liftIO act k -> Base.IO.bind act (Continuation.continue k)
-    | return x -> Base.IO.pure x
+  LiftIO ->
+    | reifiable full liftIO act k = Base.IO.bind act (Continuation.continue k)
+    | return x = Base.IO.pure x
 ```
 
 That clause keeps `k` and runs it after `act`, and it typechecks for the same reason `runConsoleIO`'s does.

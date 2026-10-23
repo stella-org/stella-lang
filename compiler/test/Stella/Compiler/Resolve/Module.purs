@@ -127,7 +127,7 @@ spec = describe "Stella.Compiler.Resolve.Module" do
         , "effect Ask a where"
         , "  ask :: Unit ->* a"
         , "handler h :: Ask Int ~> () where"
-        , "  fast | ask _ -> 0"
+        , "  fast | ask _ = 0"
         , "#observ(none)"
         , "foreign sqrt :: Number -> Number"
         , "foreign type Ref :: Type -> Type"
@@ -157,7 +157,7 @@ spec = describe "Stella.Compiler.Resolve.Module" do
         , "infixl 6 nope as +++"
         , "infixr 0 type Nope as ***"
         , "handler h :: Int -> Int where"
-        , "  | return r -> r"
+        , "  | return r = r"
         , "m%( 1 )"
         ]
         []

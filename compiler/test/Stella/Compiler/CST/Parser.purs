@@ -4,6 +4,7 @@ module Test.Stella.Compiler.CST.Parser (spec) where
 import Prelude
 
 import Data.Either (Either(..))
+import Data.Foldable (for_)
 import Data.String (joinWith)
 import Effect.Aff (Aff)
 import Stella.Compiler.CST (parseExpr, parseModule, parseType, printSyntaxError)
@@ -155,26 +156,40 @@ spec = describe "Stella.Compiler.CST.Parser" do
 
   describe "handlers" do
     it "reads a handling expression mixing groups and handlers" do
-      "handle work with\n  runToStdout\n  runWithLimit 1_000\n  State full\n    | get _ -> resume 0\n    | set _ -> resume ()" `exprIs`
+      "handle work with\n  runToStdout\n  runWithLimit 1_000\n  State -> full\n           | get _ = resume 0\n           | set _ = resume ()" `exprIs`
         "(handle work runToStdout (runWithLimit 1_000) (group State full (| get _ (resume 0)) (| set _ (resume ()))))"
     it "reads the prefix form" do
-      "using\n  Emit fast | emit _ -> 42\nhandle\n  emit ()" `exprIs`
+      "using\n  Emit -> fast | emit _ = 42\nhandle\n  emit ()" `exprIs`
         "(using (group Emit fast (| emit _ 42)) (emit ()))"
     it "reads labelled groups" do
-      "handle work with\n  cache full | get _ -> resume 0\n             | set _ -> resume ()\n  counter    | fast get _ -> 0" `exprIs`
+      "handle work with\n  cache -> full | get _ = resume 0\n                | set _ = resume ()\n  counter -> | fast get _ = 0" `exprIs`
         "(handle work (group cache full (| get _ (resume 0)) (| set _ (resume ()))) (group counter (| fast get _ 0)))"
     it "reads `reifiable full` on a group and on a clause" do
-      "handle w with\n  Console\n    | full log s -> resume ()\n    | reifiable full terminal act k -> Base.IO.bind act (Continuation.continue k)" `exprIs`
+      "handle w with\n  Console ->\n    | full log s = resume ()\n    | reifiable full terminal act k = Base.IO.bind act (Continuation.continue k)" `exprIs`
         "(handle w (group Console (| full log s (resume ())) (| reifiable full terminal act k ((Base.IO.bind act) (parens (Continuation.continue k))))))"
     it "refuses `reifiable` before `fast`" do
-      exprRejected "handle w with\n  E | reifiable fast op _ -> 0"
+      exprRejected "handle w with\n  E -> | reifiable fast op _ = 0"
     it "reads a cell of the expression, ahead of its groups and handlers" do
-      "handle w with\n  var n := 0\n  Counter\n    | fast next _ -> n!\n  runEmit" `exprIs`
+      "handle w with\n  var n := 0\n  Counter ->\n    | fast next _ = n!\n  runEmit" `exprIs`
         "(handle w (var n 0) (group Counter (| fast next _ n!)) runEmit)"
-      "using\n  var n := 0\n  Counter fast | next _ -> n!\nhandle\n  w" `exprIs`
+      "using\n  var n := 0\n  Counter -> fast | next _ = n!\nhandle\n  w" `exprIs`
         "(using (var n 0) (group Counter fast (| next _ n!)) w)"
     it "refuses a cell written after a group's head" do
-      exprRejected "handle w with\n  Counter\n    var n := 0\n    | fast next _ -> n!"
+      exprRejected "handle w with\n  Counter ->\n    var n := 0\n    | fast next _ = n!"
+    it "reads a group's marker on the line of its `->` or on one of its own, its clauses after it or on the lines below" do
+      for_
+        [ "handle w with\n  State -> fast\n           | get _ = 1\n           | set s = s"
+        , "handle w with\n  State -> fast | get _ = 1\n                | set s = s"
+        , "handle w with\n  State ->\n    fast\n    | get _ = 1\n    | set s = s"
+        , "handle w with\n  State ->\n    fast | get _ = 1\n         | set s = s"
+        ]
+        \src -> src `exprIs` "(handle w (group State fast (| get _ 1) (| set s s)))"
+      "handle w with\n  State -> | fast get _ = 1\n  runA" `exprIs` "(handle w (group State (| fast get _ 1)) runA)"
+    it "refuses a group's marker after a clause, a group with no clause, and a clause written with `->`" do
+      exprRejected "handle w with\n  State ->\n    | get _ = 1\n    fast\n    | set s = s"
+      exprRejected "handle w with\n  State -> fast"
+      exprRejected "handle w with\n  State -> | get _ -> 1"
+      exprRejected "handle w with\n  State fast | get _ = 1"
 
   describe "declarations" do
     it "reads signatures and single-equation definitions" do
@@ -208,15 +223,15 @@ spec = describe "Stella.Compiler.CST.Parser" do
       [ "effect E where", "  op :: A ->* B -> C" ] `itemsAre`
         [ "(effect E (op (->* A (-> B C))))" ]
     it "reads handler declarations" do
-      [ "handler counter :: Counter ~> () where", "  var n := 0", "  fast | next _ -> n!" ] `itemsAre`
+      [ "handler counter :: Counter ~> () where", "  var n := 0", "  fast | next _ = n!" ] `itemsAre`
         [ "(handler counter (~> Counter ()) (var n 0) (group fast (| next _ n!)))" ]
-      [ "handler toMaybe :: forall a. (Unit -> a / {| Partial |}) -> Maybe a where", "  | return x -> Just x", "  | full abort _ -> Nothing" ] `itemsAre`
+      [ "handler toMaybe :: forall a. (Unit -> a / {| Partial |}) -> Maybe a where", "  | return x = Just x", "  | full abort _ = Nothing" ] `itemsAre`
         [ "(handler toMaybe (forall a (-> (parens (-> Unit (/ a (effects Partial)))) (Maybe a))) (group (| return x (Just x))) (group (| full abort _ Nothing)))" ]
-      [ "handler runWithLimit (limit :: Int) :: Fuel ~> () where", "  fast | burn k -> k" ] `itemsAre`
+      [ "handler runWithLimit (limit :: Int) :: Fuel ~> () where", "  fast | burn k = k" ] `itemsAre`
         [ "(handler runWithLimit (parens (:: limit Int)) (~> Fuel ()) (group fast (| burn k k)))" ]
     it "reads a terminal interpreter whose clauses keep their continuation" do
-      [ "handler runConsoleIO :: forall a. (Unit -> a / {| Console |}) -> IO a where", "  | return x -> Base.IO.pure x", "  reifiable full | log s k -> Base.IO.bind (Js.Console.log s) (Continuation.continue k)" ] `itemsAre`
-        [ "(handler runConsoleIO (forall a (-> (parens (-> Unit (/ a (effects Console)))) (IO a))) (group (| return x (Base.IO.pure x))) (group reifiable full (| log s k ((Base.IO.bind (parens (Js.Console.log s))) (parens (Continuation.continue k))))))" ]
+      [ "handler runConsoleIO :: forall a. (Unit -> a / {| Console |}) -> IO a where", "  | return x = Base.IO.pure x", "  | reifiable full log s k = Base.IO.bind (Js.Console.log s) (Continuation.continue k)" ] `itemsAre`
+        [ "(handler runConsoleIO (forall a (-> (parens (-> Unit (/ a (effects Console)))) (IO a))) (group (| return x (Base.IO.pure x))) (group (| reifiable full log s k ((Base.IO.bind (parens (Js.Console.log s))) (parens (Continuation.continue k))))))" ]
     it "reads foreign declarations and foreign types, a directive before them" do
       [ "#observ(none) foreign sqrt :: Number -> Number", "foreign type Window :: Type" ] `itemsAre`
         [ "(#observ (none))", "(foreign sqrt (-> Number Number))", "(foreign-type Window Type)" ]
@@ -247,8 +262,15 @@ spec = describe "Stella.Compiler.CST.Parser" do
     it "reads attributes as items of their own" do
       [ "@[json name=\"main\"]", "main :: Unit / {| Console |}", "@[TC.instance] showInt = 1" ] `itemsAre`
         [ "(@ json name=\"main\")", "(sig main (/ Unit (effects Console)))", "(@ TC.instance)", "(value showInt 1)" ]
+    it "reads a handler declaration's marker as the default of each of its clauses, a cell among them kept where it stands" do
+      [ "handler h :: E ~> () where", "  var n := 0", "  fast", "  | get _ = n!", "  var m := 1", "  | put _ _ = 0" ] `itemsAre`
+        [ "(handler h (~> E ()) (var n 0) (group fast (| get _ n!)) (var m 1) (group fast (| put _ _ 0)))" ]
+      rejects [ "handler h :: E ~> () where", "  | get _ = 0", "  fast | put _ _ = 0" ]
+      rejects [ "handler h :: E ~> () where", "  fast", "  var n := 0", "  | get _ = 0" ]
+      rejects [ "handler h :: E ~> () where", "  | get _ -> 0" ]
+
     it "reads a modifier before a handler" do
-      [ "implicit", "handler h :: E ~> () where", "  fast | op _ -> 0" ] `itemsAre`
+      [ "implicit", "handler h :: E ~> () where", "  fast | op _ = 0" ] `itemsAre`
         [ "(modifier implicit)", "(handler h (~> E ()) (group fast (| op _ 0)))" ]
     it "reads a macro called at a declaration's position" do
       [ "class%{", "  Show a where", "    show :: a -> String", "}" ] `itemsAre`

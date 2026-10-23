@@ -777,16 +777,16 @@ transact candidate = case command BeginTransaction of
 -- itself, and the transaction committed where it returns.
 committed :: forall a. (Unit -> a / {| Abort, Breach, Kernel |}) -> Maybe a / {| Breach, Kernel |}
 committed candidate = handle candidate () with
-  Abort | failed _ -> Nothing
-    | return result -> case command CommitTransaction of
-      TransactionCommitted -> Just result
-      CandidateFailed -> Nothing
-      _ -> breached ()
+  Abort -> | failed _ = Nothing
+           | return result = case command CommitTransaction of
+             TransactionCommitted -> Just result
+             CandidateFailed -> Nothing
+             _ -> breached ()
 
 -- A policy made into what an invocation calls. `Abort` reaching it, a candidate
 -- failing outside every transaction, and `Breach` both end the policy with the
 -- goal it was given, neither of which a conforming host brings about.
 synthesizer :: (Handle -> Handle / {| Abort, Breach, Kernel |}) -> Handle -> Handle / {| Kernel |}
 synthesizer policy goal = handle (handle policy goal with
-    Abort | failed _ -> goal) with
-  Breach | breached _ -> goal
+    Abort -> | failed _ = goal) with
+  Breach -> | breached _ = goal

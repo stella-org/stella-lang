@@ -2,6 +2,13 @@
 
 Status: Accepted
 
+> **Superseded spelling.** The spelling of groups and clauses below is superseded: a group is now
+> `Effect ->` followed by its block, whose marker stands once at the block's start, and a clause
+> body is introduced by `=` instead of `->`. The current syntax is specified in
+> [Syntax § Handler clauses](../technical-references/02-Surface-Language/05-Syntax.md#handler-clauses)
+> and [Effect Handlers § Clause forms](../technical-references/02-Surface-Language/02-Effect-Handlers.md#clause-forms).
+> The semantics of markers, `resume` and its boundaries stated here still apply.
+
 ## What is This?
 
 ### Background

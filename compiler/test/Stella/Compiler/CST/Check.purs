@@ -80,7 +80,7 @@ spec = describe "Stella.Compiler.CST.Check" do
     it "admits `/` on the arrow it follows" do
       [ "f :: Int -> String / {| Console |}"
       , "handler h :: forall a. (Unit -> a / {| E |}) -> a where"
-      , "  fast | op _ -> 0"
+      , "  fast | op _ = 0"
       ] `reports` []
 
     it "reads `/` after the arrow of a synthesized parameter, which is pure, as a computation type" do

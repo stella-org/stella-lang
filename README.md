@@ -74,9 +74,9 @@ program =
 main :: Unit / {| Console |}
 main = handle program
   with
-    Talker 
-      | say msg -> Console.log msg; resume ()
-      | listen _ -> resume "Alice"
+    Talker ->
+      | say msg = Console.log msg; resume ()
+      | listen _ = resume "Alice"
 ```
 
 ## Roadmap

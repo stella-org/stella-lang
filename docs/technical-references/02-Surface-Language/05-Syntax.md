@@ -70,7 +70,7 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 
 ### Blocks
 
-**A block opens after `where`, `let`, `of`, `with`, and `using`, at the column of the token that follows.** It opens only where that column is to the right of the block it stands in; otherwise nothing opens.
+**A block opens after `where`, `let`, `of`, `with`, and `using`, and after the `->` of a group, at the column of the token that follows.** The `->` of a group is one following a name alone at the start of an item of a `with` or a `using` block ([Handler clauses](#handler-clauses)). It opens only where that column is to the right of the block it stands in; otherwise nothing opens.
 
 **Within a block, a token at its column on a later line begins a new item**, and a `VSEP` is inserted before it. **A token to the left of its column closes it**, and a `VCLOSE` is inserted. Whatever is still open at the end of the input is closed there.
 
@@ -117,18 +117,23 @@ A `where` anywhere else closes every block whose column it does not stand to the
 
 ### Handler clauses
 
-**The clauses of a group may stand at the column of the block they are in**, each then an item of its own, or **further right**, continuing the item before them:
+**A group's `->` opens the block of its marker and its clauses**, at the column of the token after it. **A clause may stand at the column of that block**, an item of its own, or **further right**, continuing the item before it; the marker stands on a line of its own or begins the first item, clauses after it:
 
 ```stella
 handle work with
-  State full | get _ -> resume 0
-             | set _ -> resume ()
+  State -> full | get _ = resume 0
+                | set _ = resume ()
+  Ask ->
+    fast
+    | ask _ = 1
   runToStdout
 ```
 
 ```text
-handle work with { State full | get _ -> resume 0 | set _ -> resume () ; runToStdout }
+handle work with { State -> { full | get _ = resume 0 | set _ = resume () } ; Ask -> { fast ; | ask _ = 1 } ; runToStdout }
 ```
+
+**A top-level handler's block holds its cells, its marker, and its clauses as items of its own**, each clause again either at the block's column or continuing the item before it.
 
 ### Where no block opens
 
@@ -399,20 +404,24 @@ recordBinder  ::= label ":" binder | label
 ## Handlers
 
 ```text
-handlerDecl ::= "handler" ident binderAtom* "::" type "where" block(handlerItem)
-handlerItem ::= cellDecl
-              | marker? clause+
+handlerDecl ::= "handler" ident binderAtom* "::" type "where" VOPEN handlerBody VCLOSE
+handlerBody ::= (cellDecl VSEP)* groupStart (VSEP (cellDecl | clause+))*
 handlerListItem ::= cellDecl
-                  | (qualProperName | ident) marker? clause+
+                  | (qualProperName | ident) "->" VOPEN groupStart (VSEP clause+)* VCLOSE
                   | expr
+groupStart ::= marker clause+
+             | marker VSEP clause+
+             | clause+
 cellDecl ::= "var" ident ":=" expr
-clause ::= "|" marker? opName binderAtom* "->" expr
-         | "|" "return" binderAtom "->" expr
+clause ::= "|" marker? opName binderAtom* "=" expr
+         | "|" "return" binderAtom "=" expr
 marker ::= "full" | "fast" | "reifiable" "full"
 ```
 
-**An item of a handling expression is a cell declaration, a group written in place, or a handler.** A cell declaration begins with `var` and declares a cell of the expression, which every group of it reaches ([Effect Handlers](02-Effect-Handlers.md#cells)). A group is a head — an effect name or a label — followed by a marker or a clause; any other item is a handler, an expression. The two are told apart by the token after the head ([Handler Surface Syntax](../../proposals/02-Handler-Surface-Syntax.md)). The grammar admits a cell declaration among the items in any order, and name resolution rejects one after a group or a handler.
+**An item of a handling expression is a cell declaration, a group written in place, or a handler.** A cell declaration begins with `var` and declares a cell of the expression, which every group of it reaches ([Effect Handlers](02-Effect-Handlers.md#cells)). A group is a head — an effect name or a label — and `->`, then the block of its marker and its clauses ([Handler clauses](#handler-clauses)); any other item is a handler, an expression. The grammar admits a cell declaration among the items in any order, and name resolution rejects one after a group or a handler.
 
-**A top-level handler's block holds its cells and its clauses with no head**, the effect it handles following from its signature.
+**A group's marker stands first, before its first clause, and is the default of every clause of the group**; a clause's own marker, after its `|`, takes its place for that clause. A group holds one clause at least, its `return` clause counting as one.
+
+**A top-level handler's block holds its cells and its clauses with no head**, the effect it handles following from its signature, and its marker as a group's. The grammar admits a cell declaration among its clauses, and name resolution rejects one after a clause.
 
 **`reifiable` qualifies a marker that captures the continuation**, and today that is `full` alone: a `reifiable full` clause takes the continuation as a parameter after the operation's arguments, a value of the abstract type `Continuation` it may keep beyond the clause, where a `full` clause reaches it through `resume` alone ([Handler Surface Syntax](../../proposals/02-Handler-Surface-Syntax.md)).

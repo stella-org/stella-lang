@@ -335,7 +335,7 @@ spec = describe "Stella.Compiler.Resolve.Type" do
         CST.DeclHandler _ _ t _ -> Just (map f (resolveHandlerSignature t))
         _ -> Nothing
       handler = handlerWith renderHandler
-      clause = "  fast | get _ -> resume ()"
+      clause = "  fast | get _ = resume ()"
     it "read `E ~> ( t̄ )` as a capability translation" do
       resolving [ "handler h :: State s ~> ( E, Both s Int ) where", clause ] handler \r -> do
         r.result `shouldEqual` "[s#0] A.State s#0 ~> A.E, A.Both s#0 Prim.Int"

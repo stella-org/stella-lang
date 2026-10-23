@@ -177,9 +177,9 @@ sourceB =
   , "@[json name=\"x\"]"
   , "g = 1"
   , "h = handle g with"
-  , "  E | get _ -> resume 0"
+  , "  E -> | get _ = resume 0"
   , "handler run :: (Unit -> a / Program) -> a where"
-  , "  | get _ -> resume 0"
+  , "  | get _ = resume 0"
   ]
 
 name :: Surface.Declaration -> P.String

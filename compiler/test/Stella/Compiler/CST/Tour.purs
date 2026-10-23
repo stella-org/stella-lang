@@ -174,20 +174,20 @@ abs' n = cases%{
 }
 
 handler runEmit :: Emit ~> () where
-  fast | emit _ -> 42
+  fast | emit _ = 42
 
 handler toMaybe :: forall a e. (Unit -> a / {| Partial, ...e |}) -> Maybe a / {| ...e |} where
-  | return x -> Just x
-  | full abort _ -> Nothing
+  | return x = Just x
+  | full abort _ = Nothing
 
 handler counter :: Counter ~> () where
   var n := 0
-  fast | next _ -> let v = n! in let _ = n := v + 1 in v
+  fast | next _ = let v = n! in let _ = n := v + 1 in v
 
 implicit
 handler runWithLimit (limit :: Int) :: Fuel ~> () where
   var used := 0
-  fast | burn k -> used := used! + k
+  fast | burn k = used := used! + k
 
 program :: Unit / {| Logger |}
 program =
@@ -195,29 +195,29 @@ program =
     var saved := 0
     runToStdout
     runWithLimit 1_000
-    State full
-      | get _ -> resume saved!
-      | set n -> let _ = saved := n in resume ()
+    State -> full
+             | get _ = resume saved!
+             | set n = let _ = saved := n in resume ()
 
 main' :: Unit / {| Console |}
 main' =
   using
-    Emit fast | emit _ -> 42
+    Emit -> fast | emit _ = 42
   handle
     let ans = emit () in
     Console.log format%"The ultimate answer is {ans}"
 
 labelled =
   handle work with
-    cache full | get _ -> resume 0
-               | set _ -> resume ()
-    counter    | fast get _ -> 0
-               | fast set _ -> ()
+    cache -> full | get _ = resume 0
+                  | set _ = resume ()
+    counter -> | fast get _ = 0
+               | fast set _ = ()
 
 choices =
   handle choose' with
-    Choice
-      | full choose _ ->
+    Choice ->
+      | full choose _ =
           let x = resume true in
           let y = resume false in
           x ++ y

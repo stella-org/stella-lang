@@ -1453,11 +1453,11 @@ Handling expressions ([Elaboration](../02-Surface-Language/01-Elaboration.md#han
 | A group of `E` with no clause for `get` or `put`, one of `Own` with none for `tick`, and one headed by a label whose clause for `put` binds one pattern | Each reported once, its missing operations in the order the effect declares them, where its head stands; the last for its arity and for `get` alone, a clause reported for its patterns still naming its operation |
 | A handler declaration with no clause for `get` | Reported where its signature stands |
 | A clause binding one pattern for an imported operation its interface gives no argument, and one binding none | The first accepted, and elaborated at `Unit` the Core checker accepts; the second reported for its arity. Reading the arity off the interface's empty list would refuse the first and accept the second |
-| `handle ask () with Ask \| fast ask _ -> 1` | One `handle` of `Ask` around the `perform`, its clause `fast`, accepted by the Core checker |
-| `handle ask () with Ask \| ask _ -> resume 1`, and a `choose` handled with a return clause | The continuation applied where `resume` stands; the identity where no return clause is written |
+| `handle ask () with Ask -> \| fast ask _ = 1` | One `handle` of `Ask` around the `perform`, its clause `fast`, accepted by the Core checker |
+| `handle ask () with Ask -> \| ask _ = resume 1`, and a `choose` handled with a return clause | The continuation applied where `resume` stands; the identity where no return clause is written |
 | `handle choose () with runAsk; Choose \| …`, and the two items the other way round | `runAsk` applied to the thunk of the group's `handle`; and the group's `handle` of `runAsk` applied to the thunk of the computation. Accepted by the Core checker |
 | A group of `State` writing `put` before `get` | The clauses in the order `State` declares them |
-| `\| fast writeAt line text -> …` | The two patterns matched as a tuple pattern against the record of the two positions, accepted by the Core checker |
+| `\| fast writeAt line text = …` | The two patterns matched as a tuple pattern against the record of the two positions, accepted by the Core checker |
 | A group of `Choose` in a `full` clause of `Ask`, its own clause resuming | The inner clause's continuation applied, not the outer one's |
 | `n :: Int; n = handle ask () with …` | Accepted, the expression inferred and its type equated with `Int` |
 | `Ask` handled under `{\| Ask \|}` | An obligation broken where the group's head stands |
@@ -1476,7 +1476,7 @@ Handling expressions ([Elaboration](../02-Surface-Language/01-Elaboration.md#han
 
 | Input | Required outcome |
 | --- | --- |
-| `Log reifiable full \| writeAt line text k -> Continuation.continue k ()` in `Unit -> Unit` | One `full` clause, its argument the record of the two positions and its continuation `k0` bound apart; `k` a `let` of `$Continuation` applied to `k0`, at `Continuation Unit Unit ()`. Accepted by the Core checker, `continue` instantiated at the row the boundary owns |
+| `Log -> reifiable full \| writeAt line text k = Continuation.continue k ()` in `Unit -> Unit` | One `full` clause, its argument the record of the two positions and its continuation `k0` bound apart; `k` a `let` of `$Continuation` applied to `k0`, at `Continuation Unit Unit ()`. Accepted by the Core checker, `continue` instantiated at the row the boundary owns |
 | The same clause in `Unit -> Unit / {\| Ask \|}` | `$Continuation`'s pure arrow fitted into the row the clause leaves, `openEff [( Ask )]` around it; accepted. Applied as it stands, the Core checker refuses it |
 | A module importing a `Base.Continuation` whose `$Continuation` is at another scheme | The compiler's fault, reported for the module |
 | `Base.Continuation` compiled from its source | Its Core exports `$Continuation` once, by `ExportCtor`; its interface exports `Continuation` with no constructor, and declares `$Continuation` at its scheme |

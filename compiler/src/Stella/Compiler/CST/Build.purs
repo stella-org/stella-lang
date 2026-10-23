@@ -15,6 +15,7 @@ module Stella.Compiler.CST.Build
   , stringLiteral
   , binderApp
   , letBinding
+  , underMarker
   , toBinder
   , directive
   , quotation
@@ -26,7 +27,7 @@ import Prelude hiding (between)
 
 import Data.Array as Array
 import Data.Maybe (Maybe(..))
-import Stella.Compiler.CST.Types (Antiquote, Argument, Binder(..), Directive, Expr(..), LetBinding(..), Literal, Name, QuotePart(..), Quotation, RecordBinder(..), RecordField(..), SourceRange, SourceToken, Token(..), inSource)
+import Stella.Compiler.CST.Types (Antiquote, Argument, Binder(..), Directive, Expr(..), HandlerItem(..), LetBinding(..), Literal, Marker, Name, QuotePart(..), Quotation, RecordBinder(..), RecordField(..), SourceRange, SourceToken, Token(..), inSource)
 
 range :: SourceToken -> SourceRange
 range = _.range
@@ -99,6 +100,13 @@ letBinding left right = case left of
   BinderApp (BinderVar n) args -> LetValue n args right
   BinderVar n -> LetValue n [] right
   _ -> LetPattern left right
+
+-- | An item of a handler declaration's block under the marker the block's
+-- | clauses begin with, which is the default of every clause of it.
+underMarker :: Maybe Marker -> HandlerItem -> HandlerItem
+underMarker marker = case _ of
+  HandlerClauses _ clauses -> HandlerClauses marker clauses
+  item -> item
 
 -- | The left of a binding in a guard block, which the grammar reads as an
 -- | expression because a guard line may begin the same way.

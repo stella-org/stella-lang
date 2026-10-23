@@ -17,16 +17,16 @@ installed :: Int
 installed = Int.add (handle Int.add (bump ()) 1 with
     var reading := 0
     var spare := 0
-    Meter fast | bump _ -> let v = Int.add reading! 1 in let _ = reading := v in v
-      | peek _ -> spare!) (handle bump () with
-    Meter fast | bump _ -> 1
-      | peek _ -> 0)
+    Meter -> fast | bump _ = let v = Int.add reading! 1 in let _ = reading := v in v
+             | peek _ = spare!) (handle bump () with
+    Meter -> fast | bump _ = 1
+             | peek _ = 0)
 
 inBranch :: Boolean -> Int
 inBranch b = case b of
   true -> handle bump () with
     var reading := 0
     var spare := 0
-    Meter fast | bump _ -> let v = Int.add reading! 1 in let _ = reading := v in v
-      | peek _ -> spare!
+    Meter -> fast | bump _ = let v = Int.add reading! 1 in let _ = reading := v in v
+             | peek _ = spare!
   false -> 0

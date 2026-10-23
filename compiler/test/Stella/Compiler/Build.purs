@@ -1549,7 +1549,7 @@ buildSpec = describe "a build" do
         [ Tuple "src/Ef.stel" (joinWith "\n" [ "module Ef (Console(..)) where", "effect Console where", "  log :: Int ->* Unit" ])
         , Tuple "src/Eff.stel"
             ( moduleOf "Eff" [ "Ef" ]
-                [ "p :: Unit -> Unit / {| Console |}", "p _ = log 1", "q :: Unit", "q = handle log 2 with", "  Console | log _ -> ()" ]
+                [ "p :: Unit -> Unit / {| Console |}", "p _ = log 1", "q :: Unit", "q = handle log 2 with", "  Console -> | log _ = ()" ]
             )
         ]
         \made -> of' "Eff" made `shouldEqual` Just { runtime: [], source: [ "Ef" ] }

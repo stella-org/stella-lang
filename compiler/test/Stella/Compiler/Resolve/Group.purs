@@ -93,7 +93,7 @@ spec = describe "Stella.Compiler.Resolve.Group" do
         , "#observ(none) foreign sqrt :: Number -> Number"
         , "implicit"
         , "handler h :: E ~> () where"
-        , "  fast | op _ -> 0"
+        , "  fast | op _ = 0"
         ]
         [ "@entrypoint @other value main signed computation"
         , "#observ other sqrt"

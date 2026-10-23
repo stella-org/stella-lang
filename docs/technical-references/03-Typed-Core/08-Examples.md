@@ -221,8 +221,8 @@ In surface syntax:
 ```purescript
 toMaybe :: (Unit -> a / {| Partial, ... |}) -> Maybe a / {| ... |}
 toMaybe thunk = handle thunk () with
-  Partial | abort _ -> Nothing
-    | return x -> Just x
+  Partial -> | abort _ = Nothing
+             | return x = Just x
 ```
 
 Both anonymous spreads denote the same variable, so "remove `Partial`, leave the rest" reads directly. Neither `forall` nor `∉` is written, though the Core above has both.
@@ -234,7 +234,7 @@ import Base.Continuation as Continuation
 
 runConsoleIO :: forall a. (Unit -> a / {| Console |}) -> IO a
 runConsoleIO thunk = handle thunk () with
-  Console
-    | reifiable full log s k -> Base.IO.bind (Js.Console.log s) (Continuation.continue k)
-    | return x -> Base.IO.pure x
+  Console ->
+    | reifiable full log s k = Base.IO.bind (Js.Console.log s) (Continuation.continue k)
+    | return x = Base.IO.pure x
 ```

@@ -25,9 +25,9 @@ chosen =
       true -> 1
       false -> 2
   with
-    Choose
-      | choose _ -> append (resume true) (resume false)
-      | return x -> Cons x Nil
+    Choose ->
+      | choose _ = append (resume true) (resume false)
+      | return x = Cons x Nil
 
 reified :: List Int
 reified =
@@ -36,11 +36,11 @@ reified =
       true -> 1
       false -> 2
   with
-    Choose
+    Choose ->
       reifiable full
-      | choose _ k ->
+      | choose _ k =
           append (Continuation.continue k true) (Continuation.continue k false)
-      | return x -> Cons x Nil
+      | return x = Cons x Nil
 
 generate :: Unit -> Step
 generate _ =
@@ -49,10 +49,10 @@ generate _ =
     let b = yield 2 in
     yield 3
   with
-    Yield
+    Yield ->
       reifiable full
-      | yield n k -> Yielded n k
-      | return _ -> Done
+      | yield n k = Yielded n k
+      | return _ = Done
 
 collect :: Step -> List Int
 collect s = case s of

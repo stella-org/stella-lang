@@ -1,9 +1,11 @@
 -- | The offside rule.
 -- |
 -- | Indentation is turned into block tokens before parsing, from the tokens
--- | alone: a block opens after `where`, `let`, `of`, `with` and `using`, at the
--- | column of the token that follows; a token standing at that column on a later
--- | line begins a new item; and a token standing left of it closes the block.
+-- | alone: a block opens after `where`, `let`, `of`, `with` and `using`, and
+-- | after the `->` of a group of a handling expression, the one following a
+-- | name alone at the start of an item, at the column of the token that
+-- | follows; a token standing at that column on a later line begins a new
+-- | item; and a token standing left of it closes the block.
 -- | The grammar then matches `TokLayoutStart`, `TokLayoutSep` and
 -- | `TokLayoutEnd` as it would explicit braces and semicolons.
 -- |
@@ -49,6 +51,8 @@ data Delim
   | LytOf
   | LytWith
   | LytUsing
+  -- | The clauses of a group of a handling expression, after its `->`.
+  | LytGroup
 
 derive instance Eq Delim
 
@@ -64,6 +68,7 @@ isIndented = case _ of
   LytOf -> true
   LytWith -> true
   LytUsing -> true
+  LytGroup -> true
   _ -> false
 
 lytToken :: SourcePos -> Token -> SourceToken
@@ -145,7 +150,11 @@ insert src nextPos state = case state.stack of
 
     TokBackslash -> st # insertDefault # pushStack tokPos LytLambdaBinders
 
-    TokOperator Nothing "->" -> st # collapse arrowP # popStack binderP # insertToken src
+    -- After the head of an item of a handling expression, `->` opens the
+    -- block of the group's clauses.
+    TokOperator Nothing "->" -> case st # collapse arrowP # popStack binderP of
+      st' | groupHead st' -> st' # insertToken src # insertStart LytGroup
+      st' -> st' # insertToken src
 
     TokOperator Nothing "." -> case st # insertDefault of
       st'@{ stack: Tuple _ LytForall : stk' } -> st' { stack = stk' }
@@ -231,6 +240,21 @@ insert src nextPos state = case state.stack of
   usingP _ lyt = lyt /= LytUsing && isIndented lyt
 
   binderP lyt = lyt == LytCaseBinders || lyt == LytLambdaBinders
+
+  -- one name, an effect or a label, standing alone at the start of an item of
+  -- `with` or `using`
+  groupHead st' = case st'.stack, List.take 2 st'.acc of
+    Tuple _ lyt : _, head : start : Nil
+      | lyt == LytWith || lyt == LytUsing -> isName head.value && isItemStart start.value
+    _, _ -> false
+  isName = case _ of
+    TokUpperName _ _ -> true
+    TokLowerName Nothing _ -> true
+    _ -> false
+  isItemStart = case _ of
+    TokLayoutStart _ -> true
+    TokLayoutSep _ -> true
+    _ -> false
 
   sepP lytPos = tokPos.column == lytPos.column && tokPos.line /= lytPos.line
 

@@ -1464,7 +1464,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       inEffect n = Qualified (ModuleName "M") (EffName n)
 
     it "handles a group's element in the computation, under the row ambient, a `fast` clause at what the operation resumes with" do
-      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask | fast ask _ -> 1" ]) \r -> do
+      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask -> | fast ask _ = 1" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
           Just (Lam _ _ _ _ (Handle _ (Perform _ (EffectKey e) _ _ _) h)) | e == inEffect "Ask" -> do
@@ -1482,11 +1482,11 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
             , "f _ = handle (case choose () of"
             , "    true -> 1"
             , "    false -> 2) with"
-            , "  Choose | choose _ -> resume true"
-            , "    | return x -> x"
+            , "  Choose -> | choose _ = resume true"
+            , "            | return x = x"
             , "g :: Unit -> Int"
             , "g _ = handle ask () with"
-            , "  Ask | ask _ -> resume 1"
+            , "  Ask -> | ask _ = resume 1"
             ]
         )
         \r -> do
@@ -1501,14 +1501,14 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         ( effects <>
             [ "runAsk :: forall e. (Unit -> Boolean / {| Ask, ...e |}) -> Boolean / {| ...e |}"
             , "runAsk k = handle k () with"
-            , "  Ask | fast ask _ -> 1"
+            , "  Ask -> | fast ask _ = 1"
             , "f :: Unit -> Boolean"
             , "f _ = handle choose () with"
             , "  runAsk"
-            , "  Choose | fast choose _ -> true"
+            , "  Choose -> | fast choose _ = true"
             , "g :: Unit -> Boolean"
             , "g _ = handle choose () with"
-            , "  Choose | fast choose _ -> true"
+            , "  Choose -> | fast choose _ = true"
             , "  runAsk"
             ]
         )
@@ -1527,11 +1527,11 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         ( effects <>
             [ "f :: Unit -> Int"
             , "f _ = handle 0 with"
-            , "  State fast | put _ -> ()"
-            , "    | get _ -> 1"
+            , "  State -> fast | put _ = ()"
+            , "           | get _ = 1"
             , "w :: Unit -> Unit"
             , "w _ = handle writeAt 1 \"a\" with"
-            , "  Log | fast writeAt line text -> const () (Tuple line text)"
+            , "  Log -> | fast writeAt line text = const () (Tuple line text)"
             ]
         )
         \r -> do
@@ -1546,10 +1546,10 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         ( effects <>
             [ "f :: Unit -> Int"
             , "f _ = handle ask () with"
-            , "  Ask | ask _ -> handle (case choose () of"
-            , "          true -> 1"
-            , "          false -> 2) with"
-            , "        Choose | choose _ -> resume false"
+            , "  Ask -> | ask _ = handle (case choose () of"
+            , "             true -> 1"
+            , "             false -> 2) with"
+            , "           Choose -> | choose _ = resume false"
             ]
         )
         \r -> do
@@ -1564,31 +1564,31 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
           checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
 
     it "binds one pattern, at `Unit`, for an imported operation its interface gives no argument" do
-      elaborating [ "f :: Unit -> Int", "f _ = handle ping () with", "  Ping | fast ping _ -> 1" ] \r -> do
+      elaborating [ "f :: Unit -> Int", "f _ = handle ping () with", "  Ping -> | fast ping _ = 1" ] \r -> do
         map at r.errors `shouldEqual` []
         checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
 
     it "is inferred where a type is expected, and the type expected equated with what it gives" do
-      elaborating (effects <> [ "n :: Int", "n = handle ask () with", "  Ask | fast ask _ -> 1" ]) \r -> do
+      elaborating (effects <> [ "n :: Int", "n = handle ask () with", "  Ask -> | fast ask _ = 1" ]) \r -> do
         map at r.errors `shouldEqual` []
         checked r \core -> shapes core `shouldEqual` [ "nonrec n" ]
 
     it "reports a group whose element the row ambient holds already, where the group's head stands" do
-      elaborating (effects <> [ "f :: Unit -> Int / {| Ask |}", "f _ = handle ask () with", "  Ask | fast ask _ -> 1" ]) \r ->
+      elaborating (effects <> [ "f :: Unit -> Int / {| Ask |}", "f _ = handle ask () with", "  Ask -> | fast ask _ = 1" ]) \r ->
         map spanned r.errors `shouldEqual` [ "14:3-14:6 obligation broken" ]
 
     it "reports a clause body not of the type its form gives it" do
-      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask | fast ask _ -> \"x\"", "g :: Unit -> Int", "g _ = handle ask () with", "  Ask | ask _ -> \"x\"" ]) \r ->
-        map spanned r.errors `shouldEqual` [ "14:23-14:26 rejected", "17:18-17:21 rejected" ]
+      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask -> | fast ask _ = \"x\"", "g :: Unit -> Int", "g _ = handle ask () with", "  Ask -> | ask _ = \"x\"" ]) \r ->
+        map spanned r.errors `shouldEqual` [ "14:25-14:28 rejected", "17:20-17:23 rejected" ]
 
     it "reports a clause performing what the row ambient does not hold as asking for a handler, under a boundary" do
-      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask | fast ask _ -> get ()" ]) \r ->
+      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask -> | fast ask _ = get ()" ]) \r ->
         map spanned r.errors `shouldEqual` [ "13:3 outside: implicit-handler resolution at this checking boundary" ]
 
     -- the instance of `Continuation` written at the row a checking boundary
     -- owns, and `continue` applied to it, its own instantiation row the same
     it "wraps a `reifiable full` clause's continuation in `Continuation`, bound apart from the argument the operation takes" do
-      elaboratingUnder "module M where\nimport Base.Continuation as Continuation" (effects <> [ "f :: Unit -> Unit", "f _ = handle writeAt 1 \"a\" with", "  Log reifiable full | writeAt line text k -> Continuation.continue k ()" ]) \r -> do
+      elaboratingUnder "module M where\nimport Base.Continuation as Continuation" (effects <> [ "f :: Unit -> Unit", "f _ = handle writeAt 1 \"a\" with", "  Log -> reifiable full | writeAt line text k = Continuation.continue k ()" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
           Just (Lam _ _ _ _ (Handle _ _ { opClauses: [ FullClause clause ] })) -> do
@@ -1604,7 +1604,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
 
     it "fits the constructor, applied to the continuation, into the row ambient the clause leaves" do
-      elaboratingUnder "module M where\nimport Base.Continuation as Continuation" (effects <> [ "f :: Unit -> Unit / {| Ask |}", "f _ = handle writeAt 1 \"a\" with", "  Log reifiable full | writeAt line text k -> Continuation.continue k ()" ]) \r -> do
+      elaboratingUnder "module M where\nimport Base.Continuation as Continuation" (effects <> [ "f :: Unit -> Unit / {| Ask |}", "f _ = handle writeAt 1 \"a\" with", "  Log -> reifiable full | writeAt line text k = Continuation.continue k ()" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
           Just (Lam _ _ _ _ (Handle _ _ { opClauses: [ FullClause clause ] })) -> case clause.body of
@@ -1650,7 +1650,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
           errors -> fail ("not refused as undeclared: " <> show (map at errors))
 
     it "is outside this version where it is a handler declaration" do
-      elaborating (effects <> [ "handler h :: Ask ~> () where", "  fast | ask _ -> 1" ]) \r ->
+      elaborating (effects <> [ "handler h :: Ask ~> () where", "  fast | ask _ = 1" ]) \r ->
         map at r.errors `shouldEqual` [ "12:9 outside: this declaration" ]
   describe "a handling expression declaring cells" do
     let
@@ -1665,7 +1665,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         ]
 
     it "opens one region around its items, its initial values before it in the order declared, which its clauses read and write" do
-      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle tick () with", "  var n := 0", "  var m := 1", "  Tick fast | tick _ -> let v = n! in let _ = n := m! in v" ]) \r -> do
+      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle tick () with", "  var n := 0", "  var m := 1", "  Tick -> fast | tick _ = let v = n! in let _ = n := m! in v" ]) \r -> do
         map at r.errors `shouldEqual` []
         case bodyOf "f" r.values of
           Just (Lam _ _ _ _ (Region _ region [ n, m ] [ Lit _ (LitInt 0), Lit _ (LitInt 1) ] (Handle _ _ { opClauses: [ FastClause clause ] }))) -> do
@@ -1683,8 +1683,8 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
             [ "f :: Unit -> Int"
             , "f _ = handle (let _ = tick () in peek ()) with"
             , "  var n := 0"
-            , "  Tick fast | tick _ -> let _ = n := 1 in 0"
-            , "  Peek fast | peek _ -> let g = \\_ -> n! in g ()"
+            , "  Tick -> fast | tick _ = let _ = n := 1 in 0"
+            , "  Peek -> fast | peek _ = let g = \\_ -> n! in g ()"
             ]
         )
         \r -> do
@@ -1692,7 +1692,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
           checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
 
     it "evaluates its initial values outside the region, at the row it stands at" do
-      elaborating (effects <> [ "f :: Unit -> Int / {| Ask |}", "f _ = handle tick () with", "  var n := ask ()", "  Tick fast | tick _ -> n!" ]) \r -> do
+      elaborating (effects <> [ "f :: Unit -> Int / {| Ask |}", "f _ = handle tick () with", "  var n := ask ()", "  Tick -> fast | tick _ = n!" ]) \r -> do
         map at r.errors `shouldEqual` []
         checked r \core -> shapes core `shouldEqual` [ "nonrec f" ]
 
@@ -1702,18 +1702,18 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
             [ "runTick :: forall a e. (Unit -> a / {| Tick, ...e |}) -> a / {| ...e |}"
             , "runTick k = handle k () with"
             , "  var n := 0"
-            , "  Tick fast | tick _ -> n!"
+            , "  Tick -> fast | tick _ = n!"
             , "apart :: Unit -> Int"
             , "apart _ = handle (let _ = tick () in peek ()) with"
             , "  var n := 5"
             , "  runTick"
-            , "  Peek fast | peek _ -> n!"
+            , "  Peek -> fast | peek _ = n!"
             , "reached :: Unit -> Int"
             , "reached _ = handle ask () with"
             , "  var c := 1"
-            , "  Ask fast | ask _ -> let outer = \\_ -> c! in handle ask () with"
-            , "      var c := 0"
-            , "      Ask fast | ask _ -> outer ()"
+            , "  Ask -> fast | ask _ = let outer = \\_ -> c! in handle ask () with"
+            , "          var c := 0"
+            , "          Ask -> fast | ask _ = outer ()"
             ]
         )
         \r -> do
@@ -1726,15 +1726,15 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
             [ "f :: Unit -> Unit -> Int"
             , "f _ = handle ask () with"
             , "  var n := 0"
-            , "  Ask | ask _ -> \\_ -> n!"
-            , "    | return x -> \\_ -> x"
+            , "  Ask -> | ask _ = \\_ -> n!"
+            , "         | return x = \\_ -> x"
             , "g u = handle ask () with"
             , "  var n := 0"
-            , "  Ask | ask _ -> \\_ -> n!"
-            , "    | return x -> \\_ -> x"
+            , "  Ask -> | ask _ = \\_ -> n!"
+            , "         | return x = \\_ -> x"
             ]
         )
-        \r -> map at r.errors `shouldEqual` [ "16:24 n escapes 14:14", "12:24 n escapes 10:14" ]
+        \r -> map at r.errors `shouldEqual` [ "16:26 n escapes 14:14", "12:26 n escapes 10:14" ]
 
     it "reports, of nested expressions, the one owning the region that escapes" do
       elaborating
@@ -1742,22 +1742,22 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
             [ "inner :: Unit -> Unit -> Int"
             , "inner _ = handle ask () with"
             , "  var c := 0"
-            , "  Ask | ask _ -> handle ask () with"
-            , "      var d := 1"
-            , "      Ask | ask _ -> \\_ -> d!"
-            , "        | return x -> \\_ -> x"
-            , "    | return x -> \\_ -> x"
+            , "  Ask -> | ask _ = handle ask () with"
+            , "           var d := 1"
+            , "           Ask -> | ask _ = \\_ -> d!"
+            , "                  | return x = \\_ -> x"
+            , "         | return x = \\_ -> x"
             , "outer :: Unit -> Unit -> Int"
             , "outer _ = handle ask () with"
             , "  var c := 0"
-            , "  Ask | ask _ -> handle ask () with"
-            , "      var d := 1"
-            , "      Ask | ask _ -> \\_ -> c!"
-            , "        | return x -> \\_ -> x"
-            , "    | return x -> \\_ -> x"
+            , "  Ask -> | ask _ = handle ask () with"
+            , "           var d := 1"
+            , "           Ask -> | ask _ = \\_ -> c!"
+            , "                  | return x = \\_ -> x"
+            , "         | return x = \\_ -> x"
             ]
         )
-        \r -> map at r.errors `shouldEqual` [ "14:28 d escapes 12:25", "22:28 c escapes 18:18" ]
+        \r -> map at r.errors `shouldEqual` [ "14:35 d escapes 12:27", "22:35 c escapes 18:18" ]
 
     it "reports the first reference to a cell of the region, in the order elaborated, whichever reaches beyond it" do
       elaborating
@@ -1766,11 +1766,11 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
             , "f _ = handle ask () with"
             , "  var n := 0"
             , "  var m := 1"
-            , "  Ask | ask _ -> let _ = n := 2 in \\_ -> m!"
-            , "    | return x -> \\_ -> x"
+            , "  Ask -> | ask _ = let _ = n := 2 in \\_ -> m!"
+            , "         | return x = \\_ -> x"
             ]
         )
-        \r -> map at r.errors `shouldEqual` [ "13:26 n escapes 10:14" ]
+        \r -> map at r.errors `shouldEqual` [ "13:28 n escapes 10:14" ]
 
     it "reports a region escaping as a cell's only where the declaration it fails in noted the region" do
       let
@@ -1787,8 +1787,8 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         `shouldEqual` [ "5:1 n escapes 3:1", "9:1 rejected", "9:1 rejected" ]
 
     it "reports a value written to a cell not of the cell's type where the value stands" do
-      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle tick () with", "  var n := 0", "  Tick fast | tick _ -> let _ = n := \"x\" in 1" ]) \r ->
-        map spanned r.errors `shouldEqual` [ "12:38-12:41 rejected" ]
+      elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle tick () with", "  var n := 0", "  Tick -> fast | tick _ = let _ = n := \"x\" in 1" ]) \r ->
+        map spanned r.errors `shouldEqual` [ "12:40-12:43 rejected" ]
 
   describe "a handler type `~>`" do
     let
@@ -1821,10 +1821,10 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         , "  ask :: Unit ->* Int"
         , "runWithLimit :: Int -> Fuel ~> ()"
         , "runWithLimit limit thunk = handle thunk () with"
-        , "  Fuel | fast tick _ -> ()"
+        , "  Fuel -> | fast tick _ = ()"
         , "runConsole :: Console ~> ( Lift )"
         , "runConsole thunk = handle thunk () with"
-        , "  Console | fast say n -> lift n"
+        , "  Console -> | fast say n = lift n"
         ]
 
     it "is read as its expansion, its atoms under the binder of its residual row, ahead of its answer's, and value parameters ahead of it" do
@@ -1843,7 +1843,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
           other -> fail ("not two expansions: " <> show other)
         equivalent "two" r.values (pureFn (expansion "Console" [ "Lift" ] [ "Console", "Lift" ]) (pureFn (expansion "Fuel" [] [ "Fuel" ]) int))
       let
-        lowering targets = handlers <> [ "lower :: Console ~> " <> targets, "lower thunk = handle thunk () with", "  Console | fast say n -> lift n" ]
+        lowering targets = handlers <> [ "lower :: Console ~> " <> targets, "lower thunk = handle thunk () with", "  Console -> | fast say n = lift n" ]
       elaborating (lowering "( Lift, Fuel )") \forward -> elaborating (lowering "( Fuel, Lift )") \backward -> do
         map at (forward.errors <> backward.errors) `shouldEqual` []
         equivalent "lower" forward.values (expansion "Console" [ "Lift", "Fuel" ] [ "Console", "Fuel", "Lift" ])

@@ -10,7 +10,7 @@ A **handler declaration** binds a name to an interpreter.
 
 ```stella
 handler runConsole :: Console ~> ( LiftIO ) where
-  fast | log msg -> liftIO (Js.Console.log msg)
+  fast | log msg = liftIO (Js.Console.log msg)
 ```
 
 It desugars to a value declaration whose right-hand side is a `handle` under a thunk, and where it declares cells, the region around that `handle` ([Cells](#cells)).
@@ -87,7 +87,7 @@ compose h1 h2 thunk = h2 (\_ -> h1 thunk)
 ```stella
 -- effect Verbosity where level :: Unit ->* Int
 handler quiet :: Verbosity ~> () where
-  fast | level _ -> 0
+  fast | level _ = 0
 ```
 
 **The source element appears in the source row together with the target.** A handler declared `Console ~> ( LiftIO )` accepts a computation already performing `LiftIO` and returns one still performing it, which is the shape a hand-written adapter takes as well ([Prim and Base](../06-Modules/02-Prim-and-Base.md)).
@@ -100,9 +100,9 @@ A handler whose answer type differs from the computation's, or whose residual ro
 
 ```stella
 handler runConsoleIO :: forall a. (Unit -> a / {| Console |}) -> IO a where
-  | return x -> Base.IO.pure x
+  | return x = Base.IO.pure x
   reifiable full
-    | log s k -> Base.IO.bind (Js.Console.log s) (Continuation.continue k)
+    | log s k = Base.IO.bind (Js.Console.log s) (Continuation.continue k)
 ```
 
 Both properties belong to terminal interpreters, and both follow from what the clauses do rather than from a rule of this form. Sequencing a native action before the continuation requires a closed row, `Base.IO.bind` taking a pure arrow ([Effects](../03-Typed-Core/03-Effects.md)); supplying `IO a` where the computation gives `a` requires a `return` clause, and only a clause capturing the continuation can carry the answer onward. That this one hands the continuation to the host is why it is `reifiable` (below).
@@ -111,8 +111,8 @@ A handler interpreting an effect into a pure type is the same case.
 
 ```stella
 handler toMaybe :: forall a. (Unit -> a / {| Partial, ... |}) -> Maybe a / {| ... |} where
-  | return x -> Just x
-  | full abort _ -> Nothing
+  | return x = Just x
+  | full abort _ = Nothing
 ```
 
 **The effect handled is read off the signature.** Past its quantifiers, constraints, and synthesized parameters, the signature is a function from a thunk `Unit -> α / ρ` to a result, `β / ρ'` or a pure `β`, and the effect is the one element `ρ` holds and `ρ'` does not, elements being told apart by their keys: the effect, or the label of an instance.
@@ -131,11 +131,11 @@ handler runDatabase :: forall a. (Unit -> a / ProgramEffects) -> a / RuntimeEffe
 
 ### Clause forms
 
-A clause is a `|`, a marker, the operation, a pattern for each of its arguments, and a body after `->`. The marker of a group is the default of its clauses, and a clause's own overrides it ([Syntax](05-Syntax.md)).
+A clause is a `|`, a marker, the operation, a pattern for each of its arguments, and a body after `=`. The marker of a group, written once before its first clause, is the default of its clauses, and a clause's own overrides it ([Syntax](05-Syntax.md)). A group is its head, `->`, and the block of its marker and its clauses.
 
 ```text
-clause ::= "|" marker? op binder* "->" expr
-         | "|" "return" binder "->" expr
+clause ::= "|" marker? op binder* "=" expr
+         | "|" "return" binder "=" expr
 marker ::= "full" | "fast" | "reifiable" "full"
 ```
 
@@ -148,9 +148,9 @@ marker ::= "full" | "fast" | "reifiable" "full"
 | `reifiable full` | captured, a `Continuation` value taken as the clause's last parameter | is the answer |
 
 ```stella
-| fast log msg -> liftIO (Js.Console.log msg)
-| full choose _ -> let x = resume true in let y = resume false in x ++ y
-| reifiable full log s k -> Base.IO.bind (Js.Console.log s) (Continuation.continue k)
+| fast log msg = liftIO (Js.Console.log msg)
+| full choose _ = let x = resume true in let y = resume false in x ++ y
+| reifiable full log s k = Base.IO.bind (Js.Console.log s) (Continuation.continue k)
 ```
 
 **`resume` does not leave the clause it belongs to.** It stands in the clause's immediate body, and not inside a lambda, a local function, a `case _ of`, which is a function, or a handling expression, any of which could keep it: the body of a handling expression is a thunk, and every item after the first stands inside the thunk the item before it is applied to. A `full` clause of a group written inside it brings a `resume` of its own, and a `fast` or `reifiable full` one none. **`resume` stands applied**, `resume e`: it is no value, so one bound to a name, passed as an argument, or returned is rejected. Name resolution checks both, from the syntax alone ([Handler Surface Syntax](../../proposals/02-Handler-Surface-Syntax.md)). A clause that keeps its continuation beyond itself — handing it to the host, storing it, returning it — is `reifiable full`, and its continuation is an abstract `Continuation`, resumed by `Continuation.continue`. Both reach Core as the same `full` clause, the continuation an ordinary variable there, wrapped for a `reifiable full` clause by a constructor only that desugaring writes ([Elaboration](01-Elaboration.md#names-only-elaboration-writes)); a module holding such a clause imports `Base.Continuation`, which the examples here import as `Continuation`. The difference between the two is a lifetime the surface promises, which no backend relies on until the distinction is carried into Core or the `.dmo`.
@@ -165,7 +165,7 @@ An operation declared with several arguments binds them one by one, the record C
 
 ```stella
 -- writeAt :: Int -> String ->* Unit
-| fast writeAt line text -> liftIO (Js.Console.writeAt line text)
+| fast writeAt line text = liftIO (Js.Console.writeAt line text)
 ```
 
 The `return` clause is optional. A handler without one returns the computation's own value, which is the identity `return (x : α) -> x` in Core.
@@ -196,10 +196,10 @@ A handling expression may own **cells**. A cell is a mutable binding local to th
 -- effect Emit where emit :: String ->* Unit
 handle program with
   var n := 0
-  Counter
-    fast | next _ -> n!
-  Emit
-    fast | emit _ -> n := n! + 1
+  Counter ->
+    fast | next _ = n!
+  Emit ->
+    fast | emit _ = n := n! + 1
 ```
 
 `var x := e` declares a cell together with its initial value, `x!` reads it, and `x := e` writes it. A write evaluates to `Prim.Unit`. Both groups above reach the one `n`: what an `emit` writes is what the next `next` reads.
@@ -218,7 +218,7 @@ A handler declaration writes its cells in its block, ahead of its clauses. One a
 -- effect Counter where next :: Unit ->* Int
 handler counter :: Counter ~> () where
   var n := 0
-  fast | next _ -> let v = n! in let _ = n := v + 1 in v
+  fast | next _ = let v = n! in let _ = n := v + 1 in v
 ```
 
 **The cells belong to the prompt an application of the handler installs, not to the effect it handles.** A handler declaration is a handling expression holding one group, whose effect is the one its signature handles, and its cells are that expression's. Each application opens a region of its own: a handler is an ordinary function value and carries no state between applications, so two computations run under `counter` count separately, a recursive application included.
@@ -230,8 +230,8 @@ handler counter :: Counter ~> () where
 handle program with
   var c := 0
   counter
-  Emit
-    fast | emit _ -> c := c! + 1
+  Emit ->
+    fast | emit _ = c := c! + 1
 ```
 
 `counter`'s clause reaches `counter`'s own `n` and nothing else, and the `Emit` group reaches the expression's `c`. `counter` cannot take up the `c` of the expression it is applied in, and the `Emit` group cannot reach `n`. Effects that are to share one cell are written as groups of one handling expression, as in the first example above.
@@ -256,12 +256,12 @@ Cells are visible **in the operation clauses of the expression's groups**, every
 handle program with
   var n := 0
   var m := 0
-  E
-    fast | get _ ->
+  E ->
+    fast | get _ =
       handle work with
         var n := m!                 -- the outer m
-        Own
-          fast | tick _ -> n! + m!  -- the inner n, and the outer m
+        Own ->
+          fast | tick _ = n! + m!  -- the inner n, and the outer m
 ```
 
 **Nesting is unrestricted.** A handling expression with cells, and an application of a handler declaration with cells, may stand wherever an expression may, a clause of another included: each opens a region of its own, and every reference resolves, where it is written, to the cell of one expression.
@@ -337,9 +337,9 @@ runConsole (\_ -> program)
 ```stella
 handle program with
   runConsole
-  State full
-    | get _ -> resume 0
-    | set _ -> resume ()
+  State -> full
+           | get _ = resume 0
+           | set _ = resume ()
 ```
 
 A handling expression is no construct of its own: what reaches Core is the applications of its handlers and the `handle`s of its groups ([Elaboration](01-Elaboration.md#handling-expressions)).
@@ -353,7 +353,7 @@ The `implicit` modifier marks a handler the elaborator may supply where the auth
 ```stella
 implicit
 handler runConsole :: Console ~> ( LiftIO ) where
-  fast | log msg -> liftIO (Js.Console.log msg)
+  fast | log msg = liftIO (Js.Console.log msg)
 ```
 
 An implicit handler is subject to five conditions, each checked where it is declared.

@@ -166,7 +166,10 @@ import Stella.Compiler.CST.Types as C
 %type { Maybe C.Marker } markerOpt
 %type { C.Clause } clause
 %type { Array C.Clause } clauses
-%type { C.HandlerItem } handlerItem
+%type { Array C.HandlerItem } handlerBlock handlerBody
+%type { C.HandlerItem } handlerRest
+%type { { marker :: Maybe C.Marker, clauses :: Array C.Clause } } groupStart groupBlock
+%type { Array C.Clause } groupRest
 %type { C.HandlerListItem } handlerListItem
 %type { { name :: C.Name, value :: C.Expr } } cellDecl
 
@@ -545,7 +548,7 @@ attributeParameterType:
   | o = LSQUARE rs = rowItems c = RSQUARE                   { C.TypeVariant (B.between o c) rs }
 
 handlerDecl:
-  | HANDLER n = ident ps = binderAtoms DCOLON t = type WHERE is = layout(handlerItem)
+  | HANDLER n = ident ps = binderAtoms DCOLON t = type WHERE is = handlerBlock
       { C.DeclHandler n ps t is }
 
 dataCtors:
@@ -880,28 +883,53 @@ clauses:
   | cs = many(clause) { cs }
 
 clause:
-  | PIPE m = markerOpt n = opIdent bs = binderAtoms RARROW e = expr
+  | PIPE m = markerOpt n = opIdent bs = binderAtoms EQUALS e = expr
       { C.ClauseOperation m n bs e }
-  | PIPE RETURN b = binderAtom RARROW e = expr
+  | PIPE RETURN b = binderAtom EQUALS e = expr
       { C.ClauseReturn b e }
 
 cellDecl:
   | VAR n = ident COLONEQ e = expr { { name: n, value: e } }
 
--- An item of a handler declaration's block.
-handlerItem:
-  | c = cellDecl                   { C.HandlerCell c.name c.value }
-  | cs = clauses                   { C.HandlerClauses Nothing cs }
-  | m = marker cs = clauses        { C.HandlerClauses (Just m) cs }
+-- The first item of a group's clauses: the group's marker, which stands only
+-- here and is the default of every clause of the group, then clauses, in the
+-- item or in the next.
+groupStart:
+  | m = marker cs = clauses           { { marker: Just m, clauses: cs } }
+  | m = marker VSEP cs = clauses      { { marker: Just m, clauses: cs } }
+  | cs = clauses                      { { marker: Nothing, clauses: cs } }
+
+groupRest:
+  | VSEP cs = clauses { cs }
+
+-- The block a group's `->` opens.
+groupBlock:
+  | VOPEN g = groupStart rest = manyOrEmpty(groupRest) VCLOSE
+      { { marker: g.marker, clauses: g.clauses <> join rest } }
+
+-- A handler declaration's block: its cells, and its clauses as a group's.
+-- A cell may stand among the clauses, which name resolution rejects.
+handlerBlock:
+  | VOPEN is = handlerBody VCLOSE { is }
+
+handlerBody:
+  | g = groupStart rest = manyOrEmpty(handlerRest)
+      { [ C.HandlerClauses g.marker g.clauses ] <> map (B.underMarker g.marker) rest }
+  | c = cellDecl VSEP is = handlerBody
+      { [ C.HandlerCell c.name c.value ] <> is }
+
+handlerRest:
+  | VSEP c = cellDecl  { C.HandlerCell c.name c.value }
+  | VSEP cs = clauses  { C.HandlerClauses Nothing cs }
 
 -- An item of `handle … with` or `using … handle`: a cell of the expression, a
 -- group written in place, or a handler.
 handlerListItem:
   | c = cellDecl
       { C.ListCell c.name c.value }
-  | h = qualProperName m = markerOpt cls = clauses
-      { C.ListGroup { head: h, marker: m, clauses: cls } }
-  | h = ident m = markerOpt cls = clauses
-      { C.ListGroup { head: h, marker: m, clauses: cls } }
+  | h = qualProperName RARROW g = groupBlock
+      { C.ListGroup { head: h, marker: g.marker, clauses: g.clauses } }
+  | h = ident RARROW g = groupBlock
+      { C.ListGroup { head: h, marker: g.marker, clauses: g.clauses } }
   | e = expr
       { C.ListHandler e }

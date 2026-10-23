@@ -36,11 +36,11 @@ counted =
     Cons a (Cons b (Cons c Nil))
   with
     var n := Z
-    Tick fast
-      | tick _ ->
-          let v = n! in
-          let _ = n := S v in
-          v
+    Tick -> fast
+            | tick _ =
+                let v = n! in
+                let _ = n := S v in
+                v
 
 stated :: Nat
 stated =
@@ -51,9 +51,9 @@ stated =
     get ()
   with
     var s := Z
-    State fast
-      | get _ -> s!
-      | put v -> s := v
+    State -> fast
+             | get _ = s!
+             | put v = s := v
 
 shared :: Pair Nat Nat
 shared =
@@ -65,18 +65,18 @@ shared =
     Pair a b
   with
     var n := Z
-    Tick fast | tick _ ->
-      let v = n! in
-      let _ = n := S v in
-      v
-    Peek fast | peek _ -> n!
+    Tick -> fast | tick _ =
+             let v = n! in
+             let _ = n := S v in
+             v
+    Peek -> fast | peek _ = n!
 
 withState :: forall a. (Unit -> a / {| State Nat, Choose |}) -> a / {| Choose |}
 withState k = handle k () with
   var s := Z
-  State fast
-    | get _ -> s!
-    | put v -> s := v
+  State -> fast
+           | get _ = s!
+           | put v = s := v
 
 copied :: List Nat
 copied =
@@ -87,8 +87,8 @@ copied =
       let _ = put (S x) in
       Cons x Nil
   with
-    Choose
-      | choose _ -> append (resume true) (resume false)
+    Choose ->
+      | choose _ = append (resume true) (resume false)
 
 kept :: List Nat
 kept =
@@ -99,16 +99,16 @@ kept =
     Cons x Nil
   with
     var s := Z
-    State fast
-      | get _ -> s!
-      | put v -> s := v
-    Choose
-      | choose _ -> append (resume true) (resume false)
+    State -> fast
+             | get _ = s!
+             | put v = s := v
+    Choose ->
+      | choose _ = append (resume true) (resume false)
 
 runCounter :: forall a e. (Unit -> a / {| Tick, ...e |}) -> a / {| ...e |}
 runCounter k = handle k () with
   var n := Z
-  Tick fast | tick _ -> let v = n! in let _ = n := S v in v
+  Tick -> fast | tick _ = let v = n! in let _ = n := S v in v
 
 apart :: Pair Nat Nat
 apart =
@@ -119,13 +119,13 @@ apart =
   with
     var n := S (S Z)
     runCounter
-    Peek fast | peek _ -> n!
+    Peek -> fast | peek _ = n!
 
 reached :: Nat
 reached = handle ask () with
   var c := S Z
-  Ask fast | ask _ ->
-    let outer = \_ -> c! in
-    handle ask () with
-      var c := Z
-      Ask fast | ask _ -> outer ()
+  Ask -> fast | ask _ =
+          let outer = \_ -> c! in
+          handle ask () with
+            var c := Z
+            Ask -> fast | ask _ = outer ()

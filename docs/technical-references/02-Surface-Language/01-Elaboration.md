@@ -400,7 +400,7 @@ Residual computation over an unknown tail takes this shape: `normalizeRow` extra
 **The desugaring of a `reifiable full` clause refers to an elaboration-only entry**, the constructor `Base.Continuation.$Continuation` ([Modules](../06-Modules/01-Modules.md)). It wraps the clause's Core continuation in it, so that the clause holds an abstract `Continuation` where Core holds a function ([Effect Handlers](02-Effect-Handlers.md)), typed as [Handling expressions](#handling-expressions) gives:
 
 ```text
-| reifiable full op x k -> e
+| reifiable full op x k = e
   ⟹  full op (x, k0) -> let k = Base.Continuation.$Continuation k0 in e
 ```
 
@@ -531,7 +531,7 @@ Cells are prompt-local (D36): a cell belongs to the handling expression that dec
 ```stella
 handle program with
   var n := 0
-  E fast | op x -> let f = \_ -> n! in f ()
+  E -> fast | op x = let f = \_ -> n! in f ()
 ```
 
 ```text
@@ -912,8 +912,8 @@ ask () 1          (openEff [( Ask )] (perform Ask.ask [] Prim.Unit)) 1
 
 ```text
 handle (case choose () of true -> 1; false -> 2) with
-  Choose | choose _ -> resume true
-    | return x -> x
+  Choose -> | choose _ = resume true
+            | return x = x
 
 ⟹  handle (case perform Choose.choose [] Prim.Unit of …) with
       { handles Choose
@@ -925,7 +925,7 @@ handle (case choose () of true -> 1; false -> 2) with
 
 ```text
 handle writeAt 1 "a" with
-  Log reifiable full | writeAt line text k -> Continuation.continue k ()
+  Log -> reifiable full | writeAt line text k = Continuation.continue k ()
 
 ⟹  handle (… perform Log.writeAt [] p …) with
       { handles Log

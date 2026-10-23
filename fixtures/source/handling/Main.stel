@@ -30,13 +30,13 @@ append xs ys = case xs of
 
 asked :: Int
 asked = handle ask () with
-  Ask | fast ask _ -> 42
+  Ask -> | fast ask _ = 42
 
 aborted :: List Int
 aborted = handle Cons 1 (abort ()) with
-  Abort
-    | abort _ -> Nil
-    | return xs -> Cons 0 xs
+  Abort ->
+    | abort _ = Nil
+    | return xs = Cons 0 xs
 
 choices :: List Int
 choices =
@@ -45,9 +45,9 @@ choices =
       true -> 1
       false -> 2
   with
-    Choose 
-      | choose _ -> append (resume true) (resume false)
-      | return x -> Cons x Nil
+    Choose ->
+      | choose _ = append (resume true) (resume false)
+      | return x = Cons x Nil
 
 deep :: List Int
 deep =
@@ -59,9 +59,9 @@ deep =
           false -> 2
       false -> 3
   with
-    Choose
-      | choose _ -> append (resume true) (resume false)
-      | return x -> Cons x Nil
+    Choose ->
+      | choose _ = append (resume true) (resume false)
+      | return x = Cons x Nil
 
 innerAbort :: List Int
 innerAbort =
@@ -70,11 +70,11 @@ innerAbort =
       true -> ask ()
       false -> 0
   with
-    Choose
-      | choose _ -> append (resume true) (resume false)
-      | return x -> Cons x Nil
-    Ask
-      | ask _ -> 9
+    Choose ->
+      | choose _ = append (resume true) (resume false)
+      | return x = Cons x Nil
+    Ask ->
+      | ask _ = 9
 
 outerAbort :: List Int
 outerAbort =
@@ -83,18 +83,18 @@ outerAbort =
       true -> ask ()
       false -> 0
   with
-    Ask
-      | ask _ -> Cons 9 Nil
-    Choose
-      | choose _ -> append (resume true) (resume false)
-      | return x -> Cons x Nil
+    Ask ->
+      | ask _ = Cons 9 Nil
+    Choose ->
+      | choose _ = append (resume true) (resume false)
+      | return x = Cons x Nil
 
 runAsk
   :: forall e
    . (Unit -> Int / {| Ask, ...e |})
   -> Int / {| ...e |}
 runAsk k = handle k () with
-  Ask | fast ask _ -> 5
+  Ask -> | fast ask _ = 5
 
 viaItem :: Int
 viaItem = handle ask () with runAsk
@@ -104,24 +104,24 @@ labelled =
   handle
     Pair (get@a ()) (get@b ())
   with
-    a fast
-      | get _ -> 1
-      | put _ -> ()
-    b fast
-      | get _ -> 2
-      | put _ -> ()
+    a -> fast
+         | get _ = 1
+         | put _ = ()
+    b -> fast
+         | get _ = 2
+         | put _ = ()
 
 emitted :: List Int
 emitted = handle emit 1 2 with
-  Emit
-    | emit x y -> Cons x (Cons y Nil)
-    | return _ -> Nil
+  Emit ->
+    | emit x y = Cons x (Cons y Nil)
+    | return _ = Nil
 
 ordered :: List Int
 ordered = handle emit (note 1) (note 2) 
   with
-    Note
-      | note n -> Cons n (resume n)
-      | return _ -> Nil
-    Emit
-      | fast emit _ _ -> ()
+    Note ->
+      | note n = Cons n (resume n)
+      | return _ = Nil
+    Emit ->
+      | fast emit _ _ = ()

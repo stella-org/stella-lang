@@ -20,10 +20,10 @@ generate _ =
     let b = yield 2 in
     yield 3
   with
-    Yield
+    Yield ->
       reifiable full
-      | yield n k -> Yielded n k
-      | return _ -> Done
+      | yield n k = Yielded n k
+      | return _ = Done
 
 total :: Step -> Int
 total s = case s of

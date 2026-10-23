@@ -60,12 +60,24 @@ spec = describe "Stella.Compiler.CST.Layout" do
       "module M where { f x = g x where { g y = y } ; h = 1 }"
 
   it "separates handler items, a clause standing at the block's column" do
-    "module M where\nhandler h :: E ~> () where\n  var n := 0\n  | return x -> x\n  | full op _ -> 1" `laysOut`
-      "module M where { handler h :: E ~> ( ) where { var n := 0 ; | return x -> x ; | full op _ -> 1 } }"
+    "module M where\nhandler h :: E ~> () where\n  var n := 0\n  | return x = x\n  | full op _ = 1" `laysOut`
+      "module M where { handler h :: E ~> ( ) where { var n := 0 ; | return x = x ; | full op _ = 1 } }"
 
   it "continues a group whose clauses are indented under its first" do
-    "module M where\nx = handle w with\n  State full | get _ -> 0\n             | set _ -> 1\n  runA" `laysOut`
-      "module M where { x = handle w with { State full | get _ -> 0 | set _ -> 1 ; runA } }"
+    "module M where\nx = handle w with\n  State -> full | get _ = 0\n                | set _ = 1\n  runA" `laysOut`
+      "module M where { x = handle w with { State -> { full | get _ = 0 | set _ = 1 } ; runA } }"
+
+  it "opens a group's block at its `->`, a marker and each clause at its column an item of it" do
+    "module M where\nx = handle w with\n  State ->\n    fast\n    | get _ = 0\n    | set _ = 1\n  runA" `laysOut`
+      "module M where { x = handle w with { State -> { fast ; | get _ = 0 ; | set _ = 1 } ; runA } }"
+    "module M where\nx = handle w with\n  State -> fast\n           | get _ = 0\n  runA" `laysOut`
+      "module M where { x = handle w with { State -> { fast ; | get _ = 0 } ; runA } }"
+    "module M where\nx = using\n  M.State -> | get _ = 0\n  cache -> | get _ = 1\nhandle w" `laysOut`
+      "module M where { x = using { M.State -> { | get _ = 0 } ; cache -> { | get _ = 1 } } handle w }"
+
+  it "opens no group's block at a `->` of anything but a head alone at an item's start" do
+    "module M where\nx = handle w with\n  f (\\y -> y)\n  case y of\n    A -> h" `laysOut`
+      "module M where { x = handle w with { f ( \\ y -> y ) ; case y of { A -> h } } }"
 
   it "closes a `using` block at `handle`" do
     "module M where\nx = using runA handle w" `laysOut`
