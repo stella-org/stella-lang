@@ -382,6 +382,28 @@ normalSchemeOf name values =
     XRowUnion _ _ -> either (const t) rebuild (xnf t)
     _ -> t
 
+-- | The scheme of the value of `M` named, α-equivalent to the type given.
+schemeEquivalent :: String -> Array ElaboratedValue -> Type -> Aff Unit
+schemeEquivalent name values expected = case map _.scheme.body (Array.find (\x -> x.name == Qualified (ModuleName "M") (Ident name)) values) of
+  Just t | typeEquiv t expected -> pure unit
+  Just t -> fail (printType (fromCore t) <> " is not " <> printType (fromCore expected))
+  Nothing -> fail ("no scheme of " <> name)
+
+-- | `forall e. C̄ => forall a. (Unit -{( E, t̄ | e )}-> a) -{( t̄ | e )}-> a`, the
+-- | expansion of `E ~> ( t̄ )` over effects of `M`, `C̄` each effect named absent
+-- | from `e`, in the order given.
+handlerExpansion :: String -> Array String -> Array String -> Type
+handlerExpansion source targets absent =
+  TForall (TyVar "e") (KRow RowEffect)
+    ( Array.foldr (\n t -> TConstrained (Lacks (EffectKey (inEffect n)) (tv "e")) t)
+        (TForall (TyVar "a") KType (fn (fn (TCon unitTy []) (row (Array.cons source targets)) (tv "a")) (row targets) (tv "a")))
+        absent
+    )
+  where
+  tv = TVar <<< TyVar
+  row names = Array.foldr (\n r -> TRowExtend (RowEffectEntry (inEffect n) []) r) (tv "e") names
+  inEffect = Qualified (ModuleName "M") <<< EffName
+
 spec :: Spec Unit
 spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
   describe "a value declaration" do
@@ -1649,9 +1671,6 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
           [ InternalEntryDeclared _ name { declared: Nothing } ] -> name `shouldEqual` spliced
           errors -> fail ("not refused as undeclared: " <> show (map at errors))
 
-    it "is outside this version where it is a handler declaration" do
-      elaborating (effects <> [ "handler h :: Ask ~> ()", "handler h where", "  fast | ask _ = 1" ]) \r ->
-        map at r.errors `shouldEqual` [ "13:9 outside: this declaration" ]
   describe "a handling expression declaring cells" do
     let
       bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
@@ -1793,22 +1812,8 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
   describe "a handler type `~>`" do
     let
       schemeOf name values = map _.scheme.body (Array.find (\x -> x.name == inM name) values)
-      -- the scheme of the value named, α-equivalent to the type given
-      equivalent name values expected = case schemeOf name values of
-        Just t | typeEquiv t expected -> pure unit
-        Just t -> fail (printType (fromCore t) <> " is not " <> printType (fromCore expected))
-        Nothing -> fail ("no scheme of " <> name)
-      tv = TVar <<< TyVar
-      -- `forall e. C̄ => forall a. (Unit -{( E, t̄ | e )}-> a) -{( t̄ | e )}-> a`,
-      -- `C̄` each effect named absent from `e`, in the order given
-      expansion source targets absent =
-        TForall (TyVar "e") (KRow RowEffect)
-          ( Array.foldr (\n t -> TConstrained (Lacks (EffectKey (inEffect n)) (tv "e")) t)
-              (TForall (TyVar "a") KType (fn (fn (TCon unitTy []) (row (Array.cons source targets)) (tv "a")) (row targets) (tv "a")))
-              absent
-          )
-      row names = Array.foldr (\n r -> TRowExtend (RowEffectEntry (inEffect n) []) r) (tv "e") names
-      inEffect = Qualified (ModuleName "M") <<< EffName
+      equivalent = schemeEquivalent
+      expansion = handlerExpansion
       -- lines 3 to 16
       handlers =
         [ "effect Fuel where"
@@ -1951,6 +1956,132 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         checked r \core -> shapes core `shouldEqual` [ "nonrec runWithLimit", "nonrec runConsole", "nonrec compose" ]
       elaborating (composite "( Console )") \r ->
         map spanned r.errors `shouldEqual` [ "18:23-18:25 obligation broken" ]
+
+  describe "a handler declaration" do
+    let
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+      -- lines 3 to 10
+      effects =
+        [ "effect Fuel where"
+        , "  tick :: Unit ->* Unit"
+        , "effect Ask where"
+        , "  ask :: Unit ->* Int"
+        , "effect Count where"
+        , "  count :: Unit ->* Int"
+        , "effect Log where"
+        , "  logged :: Int ->* Unit"
+        ]
+      -- what the quantifiers and the constraints of a scheme open, and the
+      -- `λ`s after them
+      opened = case _ of
+        TyLam _ _ _ e -> opened e
+        ConstraintLam _ _ e -> opened e
+        e -> e
+
+    it "is a value at its signature's type, `~>` read as its expansion, the signature written apart or at its head" do
+      elaborating
+        ( effects <>
+            [ "handler answer :: Ask ~> ()"
+            , "handler answer where"
+            , "  fast | ask _ = 42"
+            , "handler limited (limit :: Int) :: Fuel ~> () where"
+            , "  fast | tick _ = ()"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          schemeEquivalent "answer" r.values (handlerExpansion "Ask" [] [ "Ask" ])
+          schemeEquivalent "limited" r.values (pureFn int (handlerExpansion "Fuel" [] [ "Fuel" ]))
+          checked r \core -> shapes core `shouldEqual` [ "nonrec answer", "nonrec limited" ]
+
+    it "binds its parameters, then the thunk of what it handles, and handles that thunk applied to `Prim.Unit`" do
+      elaborating (effects <> [ "handler scaled :: Int -> Int -> Ask ~> ()", "handler scaled n _ where", "  fast | ask _ = n" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case map opened (bodyOf "scaled" r.values) of
+          Just (Lam _ n _ _ (Lam _ _ _ _ inner)) -> case opened inner of
+            Lam _ t _ _ (Handle _ (App _ (Var _ t') (Global _ u _)) { opClauses: [ FastClause clause ] })
+              | t == t' && u == unitCtor -> case clause.body of
+                  Var _ n' | n == n' -> pure unit
+                  other -> fail ("not the parameter: " <> show other)
+            other -> fail ("not the thunk handled: " <> show other)
+          other -> fail ("not the parameters: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec scaled" ]
+
+    it "takes any handler's type, its answer what its return clause gives, and a clause keeping its continuation" do
+      elaborating
+        ( effects <>
+            [ "handler counted :: forall a. (Unit -> a / {| Count |}) -> Int"
+            , "handler counted where"
+            , "  full | count _ = resume 1"
+            , "       | return _ = 0"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          schemeEquivalent "counted" r.values (TForall (TyVar "a") KType (pureFn (fn (TCon unitTy []) (TRowExtend (RowEffectEntry (Qualified (ModuleName "M") (EffName "Count")) []) TRowEmpty) (TVar (TyVar "a"))) int))
+          checked r \core -> shapes core `shouldEqual` [ "nonrec counted" ]
+      elaboratingUnder "module M where\nimport Base.Continuation as Continuation" (effects <> [ "handler kept :: Count ~> ()", "handler kept where", "  reifiable full | count _ k = Continuation.continue k 3" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        checked r \core -> shapes core `shouldEqual` [ "nonrec kept" ]
+
+    it "opens the region of its cells inside the thunk's `λ`, a region of its own each time it is applied, which its scheme does not mention" do
+      elaborating
+        ( effects <>
+            [ "handler counter :: Count ~> () where"
+            , "  var n := 0"
+            , "  fast | count _ = let v = n! in let _ = n := 1 in v"
+            , "twice :: Unit -> Int"
+            , "twice _ = let a = counter (\\_ -> count ()) in counter (\\_ -> let _ = count () in a)"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          schemeEquivalent "counter" r.values (handlerExpansion "Count" [] [ "Count" ])
+          case map opened (bodyOf "counter" r.values) of
+            Just (Lam _ _ _ _ (Region _ region [ n ] [ Lit _ (LitInt 0) ] (Handle _ _ { opClauses: [ FastClause clause ] }))) -> do
+              n.key `shouldEqual` SymbolKey (Symbol "n")
+              case clause.body of
+                Let _ _ _ (ReadCell _ r1 _) (Let _ _ _ (WriteCell _ r2 _ _) _) | r1 == region && r2 == region -> pure unit
+                other -> fail ("not read and written: " <> show other)
+            other -> fail ("not one region inside the thunk's λ: " <> show other)
+          checked r \core -> shapes core `shouldEqual` [ "nonrec counter", "nonrec twice" ]
+
+    it "is applied again in a clause of its own, and keeps its cells apart from those of a handling expression applying it" do
+      elaborating
+        ( effects <>
+            [ "handler counter :: Count ~> () where"
+            , "  var n := 0"
+            , "  fast | count _ = let v = n! in let _ = n := 1 in counter (\\_ -> v)"
+            , "outer :: Unit -> Int"
+            , "outer _ = handle count () with"
+            , "  var n := 5"
+            , "  Ask -> fast | ask _ = n!"
+            , "  counter"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          checked r \core -> shapes core `shouldEqual` [ "rec counter", "nonrec outer" ]
+
+    it "is rejected where a clause or a parameter's annotation does not meet its signature" do
+      elaborating (effects <> [ "handler wrong :: Ask ~> ()", "handler wrong where", "  fast | ask _ = \"no\"" ]) \r ->
+        map at r.errors `shouldEqual` [ "13:18 rejected" ]
+      elaborating (effects <> [ "handler mismatched :: Int -> Ask ~> ()", "handler mismatched (n :: String) where", "  fast | ask _ = 1" ]) \r ->
+        map at r.errors `shouldEqual` [ "12:21 rejected" ]
+
+    it "is outside this version where it is implicit, its signature holds a wildcard, or it takes a synthesized parameter" do
+      elaborating (effects <> [ "implicit handler quiet :: Log ~> () where", "  fast | logged _ = ()" ]) \r ->
+        map at r.errors `shouldEqual` [ "11:18 outside: an implicit handler declaration" ]
+      elaborating (effects <> [ "handler loose (n :: _) :: Log ~> () where", "  fast | logged _ = ()" ]) \r ->
+        map at r.errors `shouldEqual` [ "11:21 outside: a wildcard" ]
+      synthesizing
+        [ "handler supplied :: {{ d :: Int by resolveInt }} -> Fuel ~> ()"
+        , "handler supplied where"
+        , "  fast | tick _ = ()"
+        , "effect Fuel where"
+        , "  tick :: Unit ->* Unit"
+        ]
+        \r -> map at r.errors `shouldEqual` [ "4:9 outside: a handler declaration taking a synthesized parameter" ]
 
   describe "what a quantifier encloses" do
     let

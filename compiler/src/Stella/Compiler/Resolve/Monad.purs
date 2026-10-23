@@ -33,6 +33,7 @@ module Stella.Compiler.Resolve.Monad
   , Operation
   , operationOf
   , operationsOf
+  , declaresNoOperations
   , Cell(..)
   , CellClosure(..)
   , withCells
@@ -74,7 +75,7 @@ import Data.Foldable (foldl)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.List (List(..), (:))
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.String (joinWith)
@@ -308,6 +309,9 @@ data ResolveReason
   -- | A group's head that names something of the type namespace other than
   -- | an effect.
   | NotAnEffect String
+  -- | A group headed by, or a handler declaration handling, an effect that
+  -- | declares no operations, which no handler removes.
+  | EffectWithoutOperations String
   -- | A clause naming no operation of the effect its handler handles: the
   -- | name, and the effect.
   | NotAnOperationOf String String
@@ -480,6 +484,7 @@ printResolveReason = case _ of
     InsideHandling -> "`resume` cannot stand inside a handling expression within its clause, whose handlers could keep it beyond the clause; mark the clause `reifiable full` to keep the continuation"
   ResumeNotApplied -> "`resume` is applied to the value the operation resumes with, as `resume x`, and is no value of its own"
   NotAnEffect n -> "`" <> n <> "` is not an effect; a group is headed by an effect or by a label"
+  EffectWithoutOperations e -> "The effect `" <> e <> "` declares no operations, and no handler removes it"
   NotAnOperationOf n e -> "`" <> n <> "` is not an operation of the effect `" <> e <> "`"
   UnknownOperation n -> "There is no operation `" <> n <> "` in scope"
   OperationOfOtherEffect n e first ->
@@ -738,6 +743,14 @@ operationsOf e@(Qualified owner name) = do
     else case ctx.view >>= Environment.lookupEffect e of
       Just entry -> map (\op -> { name: op.name, arity: importedArity e entry.params op }) entry.operations
       Nothing -> []
+
+-- | Whether an effect declares no operations. An imported effect the
+-- | interfaces do not give is not taken to.
+declaresNoOperations :: Qualified EffName -> Resolve Boolean
+declaresNoOperations e@(Qualified owner _) = do
+  ctx <- context
+  if owner == ctx.module then Array.null <$> operationsOf e
+  else pure (maybe false (Array.null <<< _.operations) (ctx.view >>= Environment.lookupEffect e))
 
 -- | The number of arguments an imported operation is written with, as the
 -- | surface calls it and its clauses bind them: at least one, an interface

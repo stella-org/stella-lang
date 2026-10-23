@@ -42,7 +42,10 @@
 -- | parameters are read at closed types against the module's types.
 -- |
 -- | **A computation declaration is a value whose Core type is a thunk**, its
--- | signature read as that type and its body under it.
+-- | signature read as that type and its body under it. **A handler declaration
+-- | is a value at its signature's type**, its body a handling expression under
+-- | its parameters and its thunk; an implicit one is outside what this version
+-- | elaborates.
 -- |
 -- | **A value without a signature is generalized**, each strongly connected
 -- | component of the references such values make to one another a group, the
@@ -53,8 +56,7 @@
 -- | its group, a member is referred to at the one type it has there. A
 -- | declaration referring to a value with no scheme — one its group did not
 -- | generalize, or one whose signature gave none — is left unchecked, and so is
--- | every member of a group one of which does. A fixity gives Core nothing, and
--- | a handler is outside what it elaborates.
+-- | every member of a group one of which does. A fixity gives Core nothing.
 module Stella.Compiler.Elaborate.Surface.Module
   ( ElaborationError(..)
   , ElaboratedValue
@@ -116,7 +118,7 @@ import Stella.Compiler.Elaborate.Mechanism.TermMeta (zonkExpr)
 import Stella.Compiler.Elaborate.Mechanism.Pending (Job(JobSynthesis), Site)
 import Stella.Compiler.Elaborate.Mechanism.Unify (MetaContext, UnifyError(..), substitute, substituteKind)
 import Stella.Compiler.Elaborate.Surface.Match (Witness)
-import Stella.Compiler.Elaborate.Surface.Expr (CellReference, CellRegion, ExpressionHole, PendingCase, UncoveredMatch, Parameter(..), asArrow, checkDefinition, elaborateComputation, elaborateValue, expandable, inferDefinition, references, runSurf)
+import Stella.Compiler.Elaborate.Surface.Expr (CellReference, CellRegion, ExpressionHole, PendingCase, UncoveredMatch, Parameter(..), asArrow, checkDefinition, elaborateComputation, elaborateHandler, elaborateValue, expandable, handlerReferences, inferDefinition, references, runSurf)
 import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported(..), Wildcard, elaborateComputationSignature, elaborateSignature, elaborateValueSignature, schemeOf, settledScheme)
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..), Warning)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
@@ -126,8 +128,8 @@ import Stella.Compiler.Interface.Assemble (CoreInterface, CoreTypeSort(..), core
 import Stella.Compiler.Interface.Module (Exports, TypeEntity(..), Via(..))
 import Stella.Compiler.Interface.Prim (primAttribute)
 import Stella.Compiler.Interface.Scheme (Scheme, plainScheme)
-import Stella.Compiler.Surface.Decl (Declaration(..), declarationOrigin)
-import Stella.Compiler.Surface.Decl (Attribute, Module) as Surface
+import Stella.Compiler.Surface.Decl (Declaration(..))
+import Stella.Compiler.Surface.Decl (Attribute, HandlerDeclaration, Module) as Surface
 import Stella.Compiler.Surface.Expr (Binder, Expr) as Surface
 import Stella.Compiler.Surface.Origin (Origin) as Surface
 import Stella.Compiler.TypedCore (Decl(DeclAttribute, DeclData, DeclEffect, DeclForeign), Expr, Module) as Core
@@ -453,6 +455,16 @@ elaborateValuesM attempterOf imports surface importedEntries m =
         { declared: { name: d.name, origin: d.origin, ordinal, attributes, definition: Right (ComputationBody d.body) }
         , read: \synonyms -> elaborateComputationSignature synonyms d.name d.signature
         }
+    -- a handler declaration is a value at its signature's type, `~>` read as
+    -- the function it stands for; an implicit one is outside this version
+    DeclHandler d
+      | d.implicit -> Just (Left (Unsupported (OutsideSubset d.origin "an implicit handler declaration")))
+      | otherwise -> Just case traverse coreAttribute d.attributes of
+          Left o -> Left (Unsupported (ReportedAlready o))
+          Right attributes -> Right
+            { declared: { name: d.name, origin: d.origin, ordinal, attributes, definition: Right (HandlerDefinition d) }
+            , read: \synonyms -> elaborateSignature synonyms d.name d.signature
+            }
     DeclAttribute _ -> Nothing
     DeclData _ -> Nothing
     DeclNewtype _ -> Nothing
@@ -461,7 +473,6 @@ elaborateValuesM attempterOf imports surface importedEntries m =
     DeclEffect _ -> Nothing
     DeclFixity _ -> Nothing
     DeclTypeFixity _ -> Nothing
-    other -> Just (Left (Unsupported (OutsideSubset (declarationOrigin other) "this declaration")))
   unsupported = Array.mapMaybe
     ( case _ of
         Left e -> Just e
@@ -608,6 +619,7 @@ elaborateValuesM attempterOf imports surface importedEntries m =
             ( case _ of
                 DeclValue d -> d.signature $> d.name
                 DeclComputation d -> Just d.name
+                DeclHandler d | not d.implicit -> Just d.name
                 DeclForeign d -> Just d.name
                 _ -> Nothing
             )
@@ -652,11 +664,16 @@ elaborateValuesM attempterOf imports surface importedEntries m =
   bodyOne generalized acc v = case v.definition of
     ValueBody _ body | meets (references body) generalized.unavailable -> unchecked acc v
     ComputationBody body | meets (references body) generalized.unavailable -> unchecked acc v
+    HandlerDefinition h | meets (handlerReferences h) generalized.unavailable -> unchecked acc v
     ValueBody params body -> attemptBody acc v (elaborateValue internal (withFinal generalized) v.declared.name v.declared.origin v.scheme params body)
     -- a synthesized parameter is supplied by a goal, which this version does
     -- not create, and a computation has no parameter to bind it to
     ComputationBody _ | takesSynthesized v.spine -> acc { errors = Array.snoc acc.errors (Unsupported (OutsideSubset v.declared.origin "a computation taking a synthesized parameter")) }
     ComputationBody body -> attemptBody acc v (elaborateComputation internal (withFinal generalized) v.declared.name v.declared.origin v.scheme body)
+    -- a synthesized parameter is not among the parameters a handler
+    -- declaration writes
+    HandlerDefinition _ | takesSynthesized v.spine -> acc { errors = Array.snoc acc.errors (Unsupported (OutsideSubset v.declared.origin "a handler declaration taking a synthesized parameter")) }
+    HandlerDefinition h -> attemptBody acc v (elaborateHandler internal (withFinal generalized) v.declared.name v.declared.origin v.scheme h)
   attemptBody acc v elaborating =
     case runAttempt session (runSurf elaborating) acc.state of
       Tuple (Done (Right built)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, spine: v.spine, body: built.value, holes: built.holes, wildcards: built.wildcards, unwritten: built.unwritten, expressionHoles: built.expressionHoles, uncovered: built.uncovered, pending: built.pending, regions: built.regions, references: built.references } }
@@ -684,11 +701,12 @@ addForeignType sig f = sig { types = Map.insert f.name (IntrinsicTyCon f.kind Ca
 addEffect :: Signature -> ElaboratedEffect -> Signature
 addEffect sig e = sig { effects = Map.insert e.name { params: e.decl.params, operations: Map.fromFoldable (map (\o -> Tuple o.name o) e.decl.operations) } sig.effects }
 
--- | The body a declaration defines: a value's, by its parameters, or a
--- | computation's, which has none.
+-- | The body a declaration defines: a value's, by its parameters, a
+-- | computation's, which has none, or a handler declaration's.
 data Body
   = ValueBody (Array Surface.Binder) Surface.Expr
   | ComputationBody Surface.Expr
+  | HandlerDefinition Surface.HandlerDeclaration
 
 -- | Whether a declaration's definition is a foreign's, which has no body.
 isForeignDefinition :: forall a b. Either a b -> Boolean

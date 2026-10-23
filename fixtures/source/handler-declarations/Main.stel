@@ -1,0 +1,64 @@
+module Main where
+
+import Base.Int as Int
+import Data.List (List(..))
+
+effect Tick where
+  tick :: Unit ->* Int
+
+effect Emit where
+  emit :: Int ->* Unit
+
+effect Async
+
+-- A counter from the value given, kept in a cell of the handler's own.
+handler countFrom (start :: Int) :: Tick ~> () where
+  var n := start
+  fast | tick _ = let v = n! in let _ = n := Int.add v 1 in v
+
+-- Every value emitted, in order, whatever the computation gives.
+handler collect :: forall a. (Unit -> a / {| Emit |}) -> List Int
+handler collect where
+  | emit x = Cons x (resume ())
+  | return _ = Nil
+
+-- A function whose row holds an effect declaring no operations, which no
+-- handler removes.
+idle :: Unit -> Int / {| Async |}
+idle _ = 0
+
+counted :: List Int
+counted = countFrom 5 \_ ->
+  let a = tick () in
+  let b = tick () in
+  Cons a (Cons b Nil)
+
+separate :: List Int
+separate =
+  let first = countFrom 0 (\_ -> let _ = tick () in tick ()) in
+  let second = countFrom 0 (\_ -> tick ()) in
+  Cons first (Cons second Nil)
+
+nested :: List Int
+nested = countFrom 0 \_ ->
+  let a = tick () in
+  let b = countFrom 100 (\_ -> tick ()) in
+  let c = tick () in
+  Cons a (Cons b (Cons c Nil))
+
+emitted :: List Int
+emitted = collect \_ ->
+  let _ = emit 1 in
+  let _ = emit 2 in
+  0
+
+asItem :: List Int
+asItem =
+  handle
+    let a = tick () in
+    let _ = emit a in
+    let _ = emit (tick ()) in
+    a
+  with
+    collect
+    countFrom 7

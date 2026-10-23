@@ -937,6 +937,26 @@ handle writeAt 1 "a" with
 
 **What a clause performs is ambient as `ρ` is**, a demanding fit of each element it performs into `ρ` ([Operations](#operations)). At an inference position, where `ρ` is flexible, the fit constrains it to hold the element, and only an element it cannot hold — a rigid row, or a constraint already standing against it — is a mismatch of rows, where the operation's name stands; under a checking boundary, what `ρ` cannot hold asks for an implicit handler, outside this version ([Explicit checking boundaries](#explicit-checking-boundaries)).
 
+### Handler declarations
+
+**A handler declaration is a value at its signature's type** ([Effect Handlers](02-Effect-Handlers.md#parameters)). Its signature is read as a value's is, `~>` as the function it stands for ([A signature's type](#a-signatures-type)), and its scheme is entered into the catalog and published in the interface as a handler's. A wildcard or a typed hole in the signature is outside this version, and so is a synthesized parameter on its spine, which none of the parameters the declaration writes binds.
+
+**Its body is elaborated as a value's**, the scheme opened along its spine ([A value declaration's body](#a-value-declarations-body)): a `λ` for each parameter, its pattern matched as a parameter's is, an annotated one such as `(start :: Int)` among them, then a `λ` binding the thunk of what it handles under a name no source writes, the checking boundary at the row of the handler's result. Under that `λ` stands the handling expression of the declaration's cells and of one group of its clauses, headed by the effect it handles, around the thunk applied to `Prim.Unit` ([Handling expressions](#handling-expressions)). The group's head is where the signature stands, so what is reported of the group, a clause missing among it, is reported there. **The declaration's cells are a region inside the thunk's `λ`**: each application opens one of its own, its initial values evaluated there, and the scheme mentions none. The thunk, bound outside the region, is fitted into it where it is applied ([Effect Handlers](02-Effect-Handlers.md#what-reaches-core)).
+
+```text
+handler countFrom (start :: Int) :: Tick ~> () where
+  var n := start
+  fast | tick _ = n!
+
+⟹  countFrom = λ (p : Int). Λ e. Λ (_ : Tick ∉ e). Λ a. λ (t : Unit -{( Tick | e )}-> a).
+      case p of start ->
+        region [ℓ] ( n : Int ) @ ( start ) in
+          handle ((openEff [( region ℓ )] t) Prim.Unit) with
+            { handles Tick ; return (x : a) -> x ; fast tick (_ : Unit) -> readCell ℓ.n }
+```
+
+**An implicit handler declaration is outside this version**, where it is declared.
+
 ### A module's type declarations
 
 **A module's type declarations are elaborated before any of its values** — its data types, newtypes, type synonyms, foreign types, and effects — **its data types, newtypes, and synonyms group by group, in dependency order.** The effects' heads, their parameters, are read first, and each foreign type's kind. The data types, newtypes, and synonyms are taken in the strongly connected components of the type constructors and synonyms their bodies and fields name, in a stable order of how they are declared ([Kinds](#kinds)), and each group is read as an attempt of its own: its heads first — a data type's or a newtype's parameters, each at the kind written or at a kind metavariable, and the kind the declaration writes for itself, where it writes one, equated with the kind they give it, the parameters' kinds to `Type`; a synonym's parameters and the kind of what it stands for — then its synonyms' bodies, at the kind each head gives what it stands for — `Type`, a row kind, or any other, `type Effects = {| Console |}` among them — and then its constructors' fields, at `Type`, each under its declaration's parameters; and its kinds are generalized before a later group reads it. Each operation's types are read once every group is. A declaration may name one written after it, and declarations referring to one another — `data A = MkA B` and `data B = MkB A` — are one group, their kinds decided by the same equations.

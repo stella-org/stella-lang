@@ -160,6 +160,9 @@ data CheckError
   -- | `perform k.op [σ̄]` supplying a number of types the operation does not
   -- | bind, as expected and actual.
   | OperationTypeArgCount OpName P.Int P.Int
+  -- | A handler of an effect that declares no operations, which no handler
+  -- | removes.
+  | EffectWithoutOperations (Qualified EffName)
   -- | A handler clause for an operation the effect does not declare, or an
   -- | operation of it that no clause handles.
   | MissingClause (Qualified EffName) OpName
@@ -637,7 +640,8 @@ effectInfoOf at env name = case lookupEffect env.signature name of
   Just info -> Right info
   Nothing -> Left { at, error: EffectNotDeclared name }
 
--- | The clauses exhaust the operations of the effect, each once.
+-- | The clauses exhaust the operations of the effect, each once. An effect
+-- | declaring none has no handler.
 checkClauses
   :: forall a
    . a
@@ -649,6 +653,7 @@ checkClauses
   -> P.Array (OpClause a)
   -> Either (CheckFailure a) (P.Array (OpClause (Typed a)))
 checkClauses at env rho beta payload info clauses = do
+  when (Map.isEmpty info.operations) (Left { at, error: EffectWithoutOperations payload.name })
   distinct at (map opClauseOp clauses)
   traverse_ declared (Array.fromFoldable (Map.keys info.operations))
   traverse (checkClause at env rho beta payload info) clauses

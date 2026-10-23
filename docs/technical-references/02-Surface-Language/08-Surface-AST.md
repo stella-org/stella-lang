@@ -153,8 +153,8 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | an item a row's bracket does not admit; an effect element or instance, or a capability target, that is no effect applied to its arguments, or whose effect does not resolve; a capability target whose effect the source or an earlier target names | that item, or that target |
 | an operation clause whose operation does not resolve or is not an operation of the effect handled, one with other than a pattern per argument of its operation and its continuation where it keeps one, a second clause for one operation, a second return clause | the clause |
 | a `var` of a handling expression after a group or a handler, or of a handler declaration after a clause | the cell |
-| a group whose effect cannot be determined | the group |
-| a handler declaration with no signature, or whose effect cannot be determined, a fixity declaration whose target does not resolve, a computation declaration with parameters, a macro called at a declaration's position, which this version does not expand | the declaration |
+| a group whose effect cannot be determined, or that handles an effect declaring no operations | the group |
+| a handler declaration with no signature, whose effect cannot be determined, or that handles an effect declaring no operations, a fixity declaration whose target does not resolve, a computation declaration with parameters, a macro called at a declaration's position, which this version does not expand | the declaration |
 
 **An import whose module is there keeps its dependency**, whatever else is wrong with it: a lazy import with no alias, or with a list, is reported and opens no name, and its module stays among the dependencies the header declares.
 

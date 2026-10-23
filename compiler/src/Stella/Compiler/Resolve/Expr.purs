@@ -47,7 +47,6 @@ module Stella.Compiler.Resolve.Expr
 import Prelude
 import Prim hiding (Type)
 
-import Control.Alt ((<|>))
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Enum (fromEnum)
@@ -68,7 +67,7 @@ import Stella.Compiler.Resolve.Label (reportLabelsTwice)
 import Stella.Compiler.Interface.Environment (reachable)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Resolve.Quotation (quotation)
-import Stella.Compiler.Resolve.Monad (Cell(..), CellClosure(..), Found(..), HandledEffectProblem(..), Resolve, SynonymBody(..), ResolveReason(..), ResumeBlock(..), ResumeState(..), TypeReference(..), ValueKind(..), ValueReference(..), blockResume, context, freshBinding, lookupCell, lookupOperator, lookupType, lookupValue, lookupValueReference, openedBy, operationOf, operationsOf, report, resumeState, speculatively, synonymBody, valueKind, withCells, withCellsClosed, withOpened, withResume, withTypeVariables, withValues)
+import Stella.Compiler.Resolve.Monad (Cell(..), CellClosure(..), Found(..), HandledEffectProblem(..), Resolve, SynonymBody(..), ResolveReason(..), ResumeBlock(..), ResumeState(..), TypeReference(..), ValueKind(..), ValueReference(..), blockResume, context, declaresNoOperations, freshBinding, lookupCell, lookupOperator, lookupType, lookupValue, lookupValueReference, openedBy, operationOf, operationsOf, report, resumeState, speculatively, synonymBody, valueKind, withCells, withCellsClosed, withOpened, withResume, withTypeVariables, withValues)
 import Stella.Compiler.Resolve.Type (resolveSignature, resolveType, scopeOf, signatureScope)
 import Stella.Compiler.Surface.Decl (Associativity(..))
 import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder(..), CellDeclaration, ClauseForm(..), Expr(..), Group, GuardLine(..), HandlerBody, HandlerItem(..), LetBinding(..), OperationClause, RecordField(..), exprOrigin)
@@ -492,7 +491,7 @@ resolveHandler params t items = do
   positions <- spinePositions signature.body
   let
     arity = Array.length params
-    scopeAt i = signature.implicit <> maybe [] _.scope (Array.index positions i <|> Array.last positions)
+    scopeAt i = signature.implicit <> maybe [] _.scope (Array.index positions (min i (Array.length positions - 1)))
   shape <- handlerShape arity positions
   r <- resolveScopedBinders (Array.mapWithIndex (\i p -> Tuple (scopeAt i) p) params)
   traverse_ requireIrrefutable r.binders
@@ -504,7 +503,7 @@ resolveHandler params t items = do
     pure
       { params: r.binders
       , signature
-      , handled: map _.handled shape
+      , handled: body.effect
       , capabilityTargets: shape >>= _.targets
       , cells: cellDeclarations source.cells initials c.cells
       , body: body.body
@@ -686,8 +685,22 @@ coreKeys = case _ of
 -- | The operations of the effect no clause names, a clause left out above still
 -- | naming its operation, are reported together at the range given: a group's
 -- | head, or a declaration's signature.
+-- |
+-- | An effect that declares no operations has no handler: it is reported at
+-- | that range ahead of the clauses, which are then read as against an effect
+-- | not known.
 handlerBody :: Handles -> CST.SourceRange -> Array CellVar -> HandlerSource -> Resolve { effect :: Maybe (Qualified EffName), body :: HandlerBody }
-handlerBody handles missingAt cells h = do
+handlerBody handles missingAt cells h = case handles of
+  HandlesEffect e -> declaresNoOperations e >>= case _ of
+    true -> do
+      report missingAt (EffectWithoutOperations (effectWord e))
+      clausesAgainst HandlesUnknown missingAt cells h
+    false -> clausesAgainst handles missingAt cells h
+  _ -> clausesAgainst handles missingAt cells h
+
+-- | A handler's body read against what it handles, as `handlerBody` reads one.
+clausesAgainst :: Handles -> CST.SourceRange -> Array CellVar -> HandlerSource -> Resolve { effect :: Maybe (Qualified EffName), body :: HandlerBody }
+clausesAgainst handles missingAt cells h = do
   heads <- traverse (operationHead <<< _.clause) h
   let
     resolvedHeads = Array.catMaybes heads

@@ -15,6 +15,7 @@ import Test.E2E.Continuations as Continuations
 import Test.E2E.Facade as Facade
 import Test.E2E.Fixtures as Fixtures
 import E2E.Build (readSources)
+import Test.E2E.HandlerDeclarations as HandlerDeclarations
 import Test.E2E.Handling as Handling
 import Test.E2E.Load as Load
 import Test.E2E.Matches as Matches
@@ -33,6 +34,7 @@ main = readSources >>= case _ of
     Matches.spec sources
     Handling.spec sources
     Cells.spec sources
+    HandlerDeclarations.spec sources
     Continuations.spec sources
     Records.spec sources
     Facade.spec sources

@@ -56,6 +56,7 @@ import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (booleanTy, fn, intTy, ioTy, numberTy, pureFn, recordTy, stringTy, unitTy)
 import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), Type(..))
+import Stella.Compiler.TypedCore.Equality (typeEquiv)
 import Test.Spec (Spec, describe, it)
 import Test.Stella.Compiler.Sources (baseIntPath, continuationSource, readRepositoryFile)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -356,6 +357,47 @@ spec = describe "Stella.Compiler.Build" do
             Map.keys r.interface.exports.values `shouldEqual` Set.fromFoldable [ "Box", "f" ]
             Map.keys r.interface.exports.macros `shouldEqual` Set.singleton "mac"
             r.interface.arities `shouldEqual` Map.singleton (Ident "f") 1
+
+  describe "a handler declaration" do
+    it "is published as a handler at its scheme, beside an effect declaring no operations, through the interface's file" do
+      compiling
+        [ "effect Fuel where"
+        , "  tick :: Unit ->* Unit"
+        , "effect Async"
+        , "effect Channel (a :: Type)"
+        , "handler limited (limit :: Int) :: Fuel ~> () where"
+        , "  fast | tick _ = ()"
+        ]
+        case _ of
+          Left errors -> fail (joinWith "; " (map printCompileError errors))
+          Right r -> do
+            let
+              fuel = Qualified (ModuleName "M") (EffName "Fuel")
+              e = TVar (TyVar "e")
+              a = TVar (TyVar "a")
+              expected = pureFn int (TForall (TyVar "e") (KRow RowEffect) (TConstrained (Lacks (EffectKey fuel) e) (TForall (TyVar "a") KType (fn (fn (TCon unitTy []) (TRowExtend (RowEffectEntry fuel []) e) a) e a))))
+              entry = Map.lookup (Ident "limited") r.interface.declarations.values
+            map _.sort entry `shouldEqual` Just SortHandler
+            case map (coreScheme <<< _.scheme) entry of
+              Just { kindVars: [], body } | typeEquiv body expected -> pure unit
+              other -> fail ("not the expansion: " <> show other)
+            map (\d -> Tuple (Array.length d.params) d.operations) (Map.lookup (EffName "Async") r.interface.declarations.effects) `shouldEqual` Just (Tuple 0 [])
+            map (\d -> Tuple (Array.length d.params) d.operations) (Map.lookup (EffName "Channel") r.interface.declarations.effects) `shouldEqual` Just (Tuple 1 [])
+            case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
+              Right stored -> stored.interface `shouldEqual` r.interface
+              Left problem -> fail problem
+
+    it "is applied by a module importing it, which no handler of an effect declaring no operations is written in" do
+      let
+        a = moduleOf "A" [] [ "effect Fuel where", "  tick :: Unit ->* Unit", "effect Async", "handler limited (limit :: Int) :: Fuel ~> () where", "  fast | tick _ = ()" ]
+      building [ Tuple "src/A.stel" a, Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "run :: Unit -> Unit", "run _ = limited 3 (\\_ -> tick ())" ]) ] \r ->
+        case r.result of
+          Right built -> built `shouldEqual` [ "A", "B" ]
+          Left err -> fail (joinWith "; " (map _.message (NonEmptyArray.toArray (buildMessages err))))
+      building [ Tuple "src/A.stel" a, Tuple "src/B.stel" (moduleOf "B" [ "A" ] [ "run :: Unit -> Unit", "run _ = handle () with", "  Async -> | return r = r" ]) ] \r ->
+        case r.result of
+          Right _ -> fail "built"
+          Left err -> map _.message (NonEmptyArray.toArray (buildMessages err)) `shouldEqual` [ "The effect `Async` declares no operations, and no handler removes it" ]
 
   describe "a structural type" do
     let

@@ -1210,7 +1210,7 @@ These belong with elaboration and are written once a surface language exists ([E
 
 ### Cells (step 7)
 
-The rows on where a cell is reached are the resolver's, and the rows on what a cell becomes elaboration's; those on a handler declaration wait on its elaboration ([Elaboration](../02-Surface-Language/01-Elaboration.md#cells), [Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md), [Name Resolution](../02-Surface-Language/06-Name-Resolution.md)).
+The rows on where a cell is reached are the resolver's, and the rows on what a cell becomes elaboration's ([Elaboration](../02-Surface-Language/01-Elaboration.md#cells), [Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md), [Name Resolution](../02-Surface-Language/06-Name-Resolution.md)).
 
 | Input | Expected |
 | --- | --- |
@@ -1226,7 +1226,7 @@ The rows on where a cell is reached are the resolver's, and the rows on what a c
 | A handling expression with no `var` | Opens no region |
 | A thunk handed to a handler applied as an item of an expression with cells, a group inside it reading a cell | Typed as any `λ` is, its row holding `region ℓ`, and fitted to the handler's argument, which instantiates its residual row with that row; no `openEff [( region ℓ )]` placed. One placed would add `region ℓ` to a row holding it, which the disjointness `openEff` asks refuses |
 | `var n := ask ()` under `{\| Ask \|}`, and `n := "x"` where `n` is at `Int` | The first accepted, the initial value inferred outside the region at the row the expression stands at, and the cell at its type; the second reported at `"x"` |
-| A handler declaration with `var` declarations | A function whose body is the `region` around its `handle`, its scheme mentioning no region: the residual row variable is bound outside `ℓ` and lacks `RegionKey ℓ` |
+| A handler declaration with `var` declarations | A function whose body is the `region` around its `handle`, its scheme mentioning no region: the residual row variable is bound outside `ℓ` and lacks `RegionKey ℓ`. Accepted by the Core checker |
 | One such handler applied twice, or applied again inside its own clause | Two regions. The initial values are evaluated at each application, so two computations run under it count separately |
 | A declared handler with a cell applied as an item of a handling expression with a cell of its own | Neither reaches the other's. The handler's clauses reach its own cells, and the expression's groups the expression's; two layouts never join |
 | A handler with cells applied in a clause of another handler with cells, explicitly or by insertion | Accepted. Each region has its own key, so nesting is unrestricted and no constraint is generated for it |
@@ -1469,7 +1469,13 @@ Handling expressions ([Elaboration](../02-Surface-Language/01-Elaboration.md#han
 | `Ask` handled under `{\| Ask \|}` | An obligation broken where the group's head stands |
 | A `fast` clause of `ask` answering `"x"`, and a `full` one where the answer is `Int` | Each reported at `"x"` |
 | A clause performing `get ()` under a boundary at `()` | Outside the subset, an implicit handler asked for at the boundary |
-| A handler declaration | Outside this version |
+| `handler answer :: Ask ~> ()` declared apart, and `handler countFrom (start :: Int) :: Tick ~> () where` with a cell | Values at their signatures' types, `~>` read as its expansion: a `λ` for each parameter, then one for the thunk, and under it the region of the cells around a `handle` of the clauses' group, the thunk applied to `Prim.Unit` and fitted into the region. Accepted by the Core checker, and published as handlers at those schemes, the same through the file and back |
+| A handler declaration in the general form, its return clause giving an answer of its own, one with a `reifiable full` clause, and one applied again in its own clause | Accepted by the Core checker |
+| A handler declaration's clause answering `"x"` where the operation resumes with `Int`, and a parameter annotated `String` where the signature gives `Int` | Each reported where it stands |
+| An `implicit` handler declaration, a handler signature holding `_`, and one taking a synthesized parameter | Outside this version |
+| A group headed by an effect declaring no operations, of the module or imported, and a handler declaration handling one through `~>`, a synonym, or the general form | Reported as `EffectWithoutOperations` where the head or the signature stands, before any clause's operation is looked up, a `return` clause alone among them; the clauses read as against an effect not known |
+| `effect Async` and `effect Channel (a :: Type)`, written without `where` | Effects declaring no operations, in the interface as any other, the same through the file and back |
+| On Steam: `countFrom 5` counting twice; `countFrom 0` applied twice in a row, and once inside another's computation; a handler gathering what is emitted through its return clause; and both as items of one handling expression | `[5, 6]`; `[1, 0]` and `[0, 100, 1]`, each application on a cell of its own; `[1, 2]`; `[7, 8]` |
 | On Steam: `ask` answered by a `fast` clause, and `abort` by a `full` one returning `Nil` beside a return clause | `42`, and `Nil`: the return clause is not reached |
 | On Steam: `choose` resumed with `true` and `false`, the answers appended, once and with a second `choose` after the first | `[1, 2]`, and `[1, 2, 3]`: the handler is deep |
 | On Steam: a group of `Choose` over one of `Ask` abandoning with `9`, and the same two the other way round | `[9, 0]`, and `[9]`: the first item is outermost |

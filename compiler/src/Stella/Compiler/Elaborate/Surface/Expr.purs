@@ -63,11 +63,13 @@ module Stella.Compiler.Elaborate.Surface.Expr
   , runSurf
   , elaborateValue
   , elaborateComputation
+  , elaborateHandler
   , inferDefinition
   , checkDefinition
   , Parameter(..)
   , expandable
   , references
+  , handlerReferences
   , asArrow
   ) where
 
@@ -108,7 +110,9 @@ import Stella.Compiler.Elaborate.Surface.Match as Match
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..))
 import Stella.Compiler.Elaborate.Surface.Type (Elaborated, TypeHole, Unsupported(..), Wildcard, elaborateLocalSignature, elaborateType, xFunction)
 import Stella.Compiler.Surface.Expr (Alternative, AlternativeBody(..), Binder(..), CellDeclaration, ClauseForm(..), Expr(..), Group, GuardLine(..), HandlerItem(..), LetBinding(..), RecordField(..), exprOrigin)
-import Stella.Compiler.Surface.Name (BindingId, CellVar(..), LocalVar(..))
+import Stella.Compiler.Surface.Decl (HandlerDeclaration)
+import Stella.Compiler.Surface.Name (BindingId(..), CellVar(..), LocalVar(..))
+import Stella.Compiler.Surface.Type (typeOrigin)
 import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore.Name (Ident(..), KindVar, Qualified, RegionName, Symbol(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (booleanTy, functionTy, litType, recordTy, unitCtor, unitTy, variantTy)
@@ -269,6 +273,43 @@ elaborateComputation
   -> Surf (XExpr Surface.Origin)
 elaborateComputation internal surface declaration origin scheme =
   definition internal surface declaration origin scheme [ Thunk ]
+
+-- | A handler declaration's definition, at its scheme: as a value's, its
+-- | parameters bound by `λ`s, then a `λ` binding the thunk of what it handles,
+-- | by a name the compiler makes, and its body the handling expression of the
+-- | declaration's cells and the group of its clauses around that thunk applied
+-- | to `Prim.Unit`. Each application of the handler so enters a region of its
+-- | own.
+elaborateHandler
+  :: Internal
+  -> SurfaceEnv
+  -> Qualified Ident
+  -> Surface.Origin
+  -> TypeScheme
+  -> HandlerDeclaration
+  -> Surf (XExpr Surface.Origin)
+elaborateHandler internal surface declaration origin scheme h = do
+  name <- lift (freshIdent Set.empty "thunk")
+  let thunk = LocalVar { id: thunkBinding, name }
+  definition internal surface declaration origin scheme (map Named h.params <> [ Named (BinderVar origin thunk) ])
+    (handlerExpr h (ExprApp origin (ExprLocal origin thunk) (ExprConstructor origin unitCtor)))
+
+-- | The binding of a handler declaration's thunk, numbered apart from every
+-- | binding resolution numbers.
+thunkBinding :: BindingId
+thunkBinding = BindingId (-1)
+
+-- | A handler declaration's cells and the group of its clauses, as a handling
+-- | expression around the computation given. The group's head is the
+-- | declaration's signature, which names the effect handled.
+handlerExpr :: HandlerDeclaration -> Expr -> Expr
+handlerExpr h computation =
+  ExprHandle h.origin h.cells [ HandlerGroup { origin: h.origin, head: typeOrigin h.signature.body, label: Nothing, effect: h.handled, body: h.body } ] computation
+
+-- | The top-level values and computations a handler declaration's cells and
+-- | clauses refer to.
+handlerReferences :: HandlerDeclaration -> Set (Qualified Ident)
+handlerReferences h = references (handlerExpr h (ExprInvalid h.origin))
 
 -- | A value declaration's definition where it has no signature, inferred: a
 -- | `λ` for each parameter at a fresh type, its body under a fresh inference
