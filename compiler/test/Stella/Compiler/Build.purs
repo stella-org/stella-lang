@@ -399,6 +399,73 @@ spec = describe "Stella.Compiler.Build" do
           Right _ -> fail "built"
           Left err -> map _.message (NonEmptyArray.toArray (buildMessages err)) `shouldEqual` [ "The effect `Async` declares no operations, and no handler removes it" ]
 
+  describe "an implicit handler declaration" do
+    it "is published as a handler, the interface recording it with what it removes and what it performs, through the interface's file" do
+      compiling
+        [ "effect Log where"
+        , "  logged :: Int ->* Unit"
+        , "effect Ask where"
+        , "  ask :: Unit ->* Int"
+        , "implicit"
+        , "handler quiet :: Log ~> ( Ask ) where"
+        , "  var n := 0"
+        , "  fast | logged _ = let _ = n := ask () in ()"
+        ]
+        case _ of
+          Left errors -> fail (joinWith "; " (map printCompileError errors))
+          Right r -> do
+            let element name = RowEffectEntry (Qualified (ModuleName "M") (EffName name)) []
+            map _.sort (Map.lookup (Ident "quiet") r.interface.declarations.values) `shouldEqual` Just SortHandler
+            r.interface.implicitHandlers `shouldEqual` [ { handler: Ident "quiet", source: element "Log", targets: [ element "Ask" ] } ]
+            case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
+              Right stored -> stored.interface `shouldEqual` r.interface
+              Left problem -> fail problem
+
+    it "is recorded in the order declared, its targets in the canonical order of their keys whatever order they are written in" do
+      compiling
+        [ "effect Log where"
+        , "  logged :: Int ->* Unit"
+        , "effect Ask where"
+        , "  ask :: Unit ->* Int"
+        , "effect Count where"
+        , "  count :: Unit ->* Int"
+        , "implicit"
+        , "handler zeta :: Count ~> ( Log, Ask ) where"
+        , "  fast | count _ = ask ()"
+        , "implicit"
+        , "handler alpha :: Log ~> () where"
+        , "  fast | logged _ = ()"
+        ]
+        case _ of
+          Left errors -> fail (joinWith "; " (map printCompileError errors))
+          Right r -> do
+            let element name = RowEffectEntry (Qualified (ModuleName "M") (EffName name)) []
+            case lmap show (encode { interface: r.interface, buildHash: Nothing }) >>= (lmap show <<< decode) of
+              Right stored -> stored.interface.implicitHandlers `shouldEqual`
+                [ { handler: Ident "zeta", source: element "Count", targets: [ element "Ask", element "Log" ] }
+                , { handler: Ident "alpha", source: element "Log", targets: [] }
+                ]
+              Left problem -> fail problem
+
+    it "reports the conditions it fails as an author reads them" do
+      compiling
+        [ "effect Ask where"
+        , "  ask :: Unit ->* Int"
+        , "implicit"
+        , "handler answer (k :: Int) :: Ask ~> () where"
+        , "  var c := (\\x -> x) 0"
+        , "  full | ask _ = resume k"
+        , "  | return x = x"
+        ]
+        case _ of
+          Right _ -> fail "compiled"
+          Left errors -> map printCompileError errors `shouldEqual`
+            [ "An implicit handler takes no parameter; where it is inserted, nothing supplies an argument"
+            , "Every clause of an implicit handler is `fast`, and the clause for `ask` captures its continuation; an inserted handler changes no control flow where nothing is written"
+            , "An implicit handler has no return clause; an inserted handler leaves the answer type as it is"
+            , "The initial value of the cell `c` is no value form; an implicit handler's cells are initialized by value forms, as an initial value runs wherever the handler is inserted"
+            ]
+
   describe "a structural type" do
     let
       consoleRow = TRowExtend (RowEffectEntry consoleName []) TRowEmpty

@@ -40,7 +40,7 @@ import Stella.Compiler.Elaborate.Surface.Types (readTypes)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Kinding (KindEvidence(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (PendingId(..))
-import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), cellRecords, elaborateModuleM, escapedCells, settleBodies)
+import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), ImplicitProblem(..), cellRecords, elaborateModuleM, escapedCells, settleBodies)
 import Data.Identity (Identity(..))
 import Stella.Compiler.Elaborate.Surface.Report (elaborationOrigins, printElaborationError, printType)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..))
@@ -48,6 +48,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(.
 import Stella.Compiler.Elaborate.Surface.Match (Tail(..), Witness(..))
 import Stella.Compiler.Elaborate.Surface.Expr (tagsOf)
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
+import Stella.Compiler.Interface.Assemble (CoreInterface)
 import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment, viewFor)
 import Stella.Compiler.Macro.Compiled (compiled)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
@@ -196,7 +197,7 @@ environmentWith continuations = do
 type Ran =
   { values :: Array ElaboratedValue
   , errors :: Array ElaborationError
-  , module :: Maybe { core :: Module Surface.Origin, declared :: Declared Surface.Origin }
+  , module :: Maybe { core :: Module Surface.Origin, declared :: Declared Surface.Origin, interface :: CoreInterface }
   }
 
 -- | The module `M`, importing `Lib`, declaring the lines given; elaborated.
@@ -234,7 +235,7 @@ elaboratingBy how header body k = case how.built of
             let Identity elaborated = elaborateModuleM (\session -> identically (attemptJob session how.registry)) signature (how.surface (importedSurface env view)) (importedCatalog env view) resolved.module resolved.exports
             k case elaborated.result of
               Left errors -> { values: elaborated.values, errors: NonEmptyArray.toArray errors, module: Nothing }
-              Right made -> { values: elaborated.values, errors: [], module: Just { core: made.core, declared: made.declared } }
+              Right made -> { values: elaborated.values, errors: [], module: Just { core: made.core, declared: made.declared, interface: made.interface } }
         errors, _ -> fail ("not resolved: " <> show errors)
 
 -- | The synthesizers `Lib` names: `resolveDict` answers `M.Dict 1`,
@@ -343,6 +344,12 @@ at = case _ of
   TypeHoleStands o name t -> located o <> " hole " <> name <> " " <> printType t
   ExpressionHoleStands o name t context -> located o <> " expression hole " <> name <> " " <> printType t <> " [" <> joinWith ", " (map (\x -> let Ident n = x.name in n <> " : " <> printType x.type) context) <> "]"
   NonExhaustiveMatch o _ -> located o <> " non-exhaustive"
+  ImplicitCondition o problem -> located o <> " implicit: " <> case problem of
+    ImplicitNotCapability -> "not ~>"
+    ImplicitClauseNotFast (Qualified _ (Ident op)) -> "not fast " <> op
+    ImplicitReturnClause -> "return clause"
+    ImplicitParameters -> "parameters"
+    ImplicitInitialNotValue n -> "not a value " <> n
   ValueFormNeeded o -> located o <> " value form needed"
   KindValueNeeded o (Qualified _ (Ident n)) -> located o <> " " <> n <> " kind value needed"
   ReadWhileInitializing o through _ (Qualified _ (Ident read)) -> located o <> " reads " <> read <> " early" <> maybe "" (\p -> " through " <> located p) through
@@ -2070,9 +2077,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (effects <> [ "handler mismatched :: Int -> Ask ~> ()", "handler mismatched (n :: String) where", "  fast | ask _ = 1" ]) \r ->
         map at r.errors `shouldEqual` [ "12:21 rejected" ]
 
-    it "is outside this version where it is implicit, its signature holds a wildcard, or it takes a synthesized parameter" do
-      elaborating (effects <> [ "implicit handler quiet :: Log ~> () where", "  fast | logged _ = ()" ]) \r ->
-        map at r.errors `shouldEqual` [ "11:18 outside: an implicit handler declaration" ]
+    it "is outside this version where its signature holds a wildcard, or it takes a synthesized parameter" do
       elaborating (effects <> [ "handler loose (n :: _) :: Log ~> () where", "  fast | logged _ = ()" ]) \r ->
         map at r.errors `shouldEqual` [ "11:21 outside: a wildcard" ]
       synthesizing
@@ -2083,6 +2088,87 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         , "  tick :: Unit ->* Unit"
         ]
         \r -> map at r.errors `shouldEqual` [ "4:9 outside: a handler declaration taking a synthesized parameter" ]
+
+  describe "an implicit handler declaration" do
+    let
+      -- lines 3 to 10
+      effects =
+        [ "effect Ask where"
+        , "  ask :: Unit ->* Int"
+        , "effect Count where"
+        , "  count :: Unit ->* Int"
+        , "effect Log where"
+        , "  logged :: Int ->* Unit"
+        , "effect Put s where"
+        , "  put :: s ->* Unit"
+        ]
+      inEffect n = Qualified (ModuleName "M") (EffName n)
+      element name = RowEffectEntry (inEffect name) []
+
+    it "is a handler declaration the Core checker accepts, the interface recording what it removes and what it performs" do
+      elaborating
+        ( effects <>
+            [ "implicit"
+            , "handler quiet :: Log ~> () where"
+            , "  fast | logged _ = ()"
+            , "implicit"
+            , "handler counter :: Count ~> ( Ask ) where"
+            , "  var n := 0"
+            , "  fast | count _ = let v = n! in let _ = n := v in ask ()"
+            , "implicit"
+            , "handler stored :: Put Int ~> () where"
+            , "  fast | put _ = ()"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          checked r \core -> shapes core `shouldEqual` [ "nonrec quiet", "nonrec counter", "nonrec stored" ]
+          case r.module of
+            Just made -> Map.toUnfoldable made.interface.implicitHandlers `shouldEqual`
+              [ Tuple (Ident "counter") { source: element "Count", targets: [ element "Ask" ] }
+              , Tuple (Ident "quiet") { source: element "Log", targets: [] }
+              , Tuple (Ident "stored") { source: RowEffectEntry (inEffect "Put") [ int ], targets: [] }
+              ]
+            Nothing -> fail "no Core module"
+
+    it "is refused where it is not written with `~>`, takes a parameter, has a clause not `fast`, or has a return clause, each where it stands" do
+      elaborating (effects <> [ "implicit", "handler general :: forall a. (Unit -> a / {| Ask |}) -> a where", "  fast | ask _ = 1" ]) \r ->
+        map at r.errors `shouldEqual` [ "12:31 implicit: not ~>" ]
+      elaborating (effects <> [ "type Quiet = Log ~> ()", "implicit", "handler quiet :: Quiet where", "  fast | logged _ = ()" ]) \r ->
+        map at r.errors `shouldEqual` [ "13:18 implicit: not ~>" ]
+      elaborating (effects <> [ "implicit", "handler scaled (n :: Int) :: Ask ~> () where", "  fast | ask _ = n" ]) \r ->
+        map at r.errors `shouldEqual` [ "12:17 implicit: parameters" ]
+      elaborating (effects <> [ "implicit", "handler answer :: Ask ~> () where", "  full | ask _ = resume 1" ]) \r ->
+        map at r.errors `shouldEqual` [ "13:10 implicit: not fast ask" ]
+      elaborating (effects <> [ "implicit", "handler answer :: Ask ~> () where", "  | ask _ = resume 1" ]) \r ->
+        map at r.errors `shouldEqual` [ "13:5 implicit: not fast ask" ]
+      elaborating (effects <> [ "implicit", "handler answer :: Ask ~> () where", "  fast | ask _ = 1", "  | return x = x" ]) \r ->
+        map at r.errors `shouldEqual` [ "14:12 implicit: return clause" ]
+
+    it "is refused where a cell's initial value is no value form, once its body is elaborated" do
+      elaborating (effects <> [ "implicit", "handler counter :: Count ~> () where", "  var n := (\\x -> x) 0", "  var m := 1", "  fast | count _ = n!" ]) \r ->
+        map at r.errors `shouldEqual` [ "13:7 implicit: not a value n" ]
+
+    it "is outside this version where what it removes or performs mentions a type variable, its body elaborated all the same" do
+      elaborating (effects <> [ "implicit", "handler dropped :: Put s ~> () where", "  fast | put _ = ()" ]) \r ->
+        map at r.errors `shouldEqual` [ "12:9 outside: an implicit handler whose effects mention a type or kind variable" ]
+      elaborating (effects <> [ "implicit", "handler dropped :: Put s ~> () where", "  fast | put _ = \"no\"" ]) \r ->
+        map at r.errors `shouldEqual` [ "12:9 outside: an implicit handler whose effects mention a type or kind variable", "13:18 rejected" ]
+
+    it "reports every condition it fails together where its body is elaborated, and those read off the declaration where it is not" do
+      let
+        failing clause =
+          effects <>
+            [ "implicit"
+            , "handler bad (k :: Int) :: forall a. (Unit -> a / {| Count |}) -> a where"
+            , "  var c := (\\x -> x) 0"
+            , clause
+            , "       | return x = x"
+            ]
+      elaborating (failing "  full | count _ = resume k") \r ->
+        map at r.errors `shouldEqual` [ "12:38 implicit: not ~>", "12:14 implicit: parameters", "14:10 implicit: not fast count", "15:17 implicit: return clause", "13:7 implicit: not a value c" ]
+      elaborating (failing "  full | count _ = resume \"no\"") \r ->
+        map at r.errors `shouldEqual` [ "12:38 implicit: not ~>", "12:14 implicit: parameters", "14:10 implicit: not fast count", "15:17 implicit: return clause", "14:27 rejected" ]
 
   describe "what a quantifier encloses" do
     let

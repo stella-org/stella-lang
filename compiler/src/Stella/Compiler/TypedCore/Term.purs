@@ -21,6 +21,7 @@ module Stella.Compiler.TypedCore.Term
   , KeyBranch
   , exprAnnotation
   , withAnnotation
+  , subterms
   ) where
 
 import Prelude
@@ -32,6 +33,8 @@ import Stella.Compiler.TypedCore.Kind (Kind)
 import Stella.Compiler.TypedCore.Name (Ident, JoinName, OpName, Qualified, RegionName, TyVar)
 import Stella.Compiler.TypedCore.Type (Constraint, RowEntry, RowKey, TyBinder, Type)
 import Data.Generic.Rep (class Generic)
+import Data.Array as Array
+import Data.Foldable (foldMap)
 import Data.Maybe (Maybe)
 import Data.Show.Generic (genericShow)
 
@@ -380,3 +383,41 @@ derive instance Generic (DecisionTree a) _
 
 instance Show a => Show (DecisionTree a) where
   show x = genericShow x
+
+-- | The terms a term holds directly, in the order it holds them: in its
+-- | decision tree and its handler's clauses as well as in its own fields.
+subterms :: forall a. Expr a -> P.Array (Expr a)
+subterms = case _ of
+  Lam _ _ _ _ body -> [ body ]
+  App _ f x -> [ f, x ]
+  TyLam _ _ _ body -> [ body ]
+  TyApp _ e _ -> [ e ]
+  ConstraintLam _ _ body -> [ body ]
+  ConstraintApp _ e -> [ e ]
+  Let _ _ _ v body -> [ v, body ]
+  LetRec _ bindings body -> map _.value bindings <> [ body ]
+  Case _ scrutinees dt -> scrutinees <> tree dt
+  LetJoin _ _ _ _ v body -> [ v, body ]
+  Jump _ _ args -> args
+  RecordExtend _ _ v rest -> [ v, rest ]
+  RecordSelect _ _ e -> [ e ]
+  RecordRestrict _ _ e -> [ e ]
+  RecordUpdate _ _ rec v -> [ rec, v ]
+  RecordMerge _ l r -> [ l, r ]
+  VariantInject _ _ _ v -> [ v ]
+  VariantWeaken _ _ _ e -> [ e ]
+  VariantAbsurd _ _ e -> [ e ]
+  Perform _ _ _ _ arg -> [ arg ]
+  Handle _ body h -> [ body, h.returnClause.body ] <> map opClauseBody h.opClauses
+  Region _ _ _ initial body -> initial <> [ body ]
+  WriteCell _ _ _ v -> [ v ]
+  OpenEff _ _ e -> [ e ]
+  _ -> []
+  where
+  tree = case _ of
+    Leaf e -> [ e ]
+    Bind _ _ dt -> tree dt
+    SwitchCtor _ branches d -> Array.concatMap (tree <<< _.tree) branches <> foldMap tree d
+    SwitchLit _ branches d -> Array.concatMap (tree <<< _.tree) branches <> tree d
+    SwitchKey _ branches d -> Array.concatMap (tree <<< _.tree) branches <> foldMap tree d
+    Guard e yes no -> [ e ] <> tree yes <> tree no

@@ -34,7 +34,7 @@ import Stella.Compiler.Elaborate.CorePlus.Row (XRowNormalForm, rebuild)
 import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Breach(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError(..))
-import Stella.Compiler.Elaborate.Surface.Module (ElaborationError(..))
+import Stella.Compiler.Elaborate.Surface.Module (ElaborationError(..), ImplicitProblem(..))
 import Stella.Compiler.Elaborate.Surface.Type (Atom(..), Unsupported(..))
 import Stella.Compiler.Elaborate.Surface.Match (Witness(..))
 import Stella.Compiler.TypedCore.Domain (codePointOf, textOf)
@@ -84,6 +84,7 @@ elaborationOrigins = case _ of
   TypeHoleStands o _ _ -> [ o ]
   ExpressionHoleStands o _ _ _ -> [ o ]
   NonExhaustiveMatch o _ -> [ o ]
+  ImplicitCondition o _ -> [ o ]
   ValueFormNeeded o -> [ o ]
   KindValueNeeded o _ -> [ o ]
   ReadWhileInitializing o through _ _ -> Array.cons o (Array.fromFoldable through)
@@ -150,6 +151,15 @@ printElaborationError = case _ of
     fmt @"The expression hole `?{name}` stands for `{t}`" { name, t: printType t }
       <> if Array.null context then "" else "\nIn scope:" <> foldMap (\x -> fmt @"\n  {x} : {t}" { x: localName x.name, t: printType x.type }) context
   NonExhaustiveMatch _ witness -> fmt @"This `case` does not match every value: it does not match `{w}`" { w: joinWith ", " (map (printWitness false) witness) }
+  ImplicitCondition _ problem -> case problem of
+    ImplicitNotCapability ->
+      "An implicit handler's signature writes `E ~> ( … )` itself, which tells the effect it removes and the effects it performs in its place"
+    ImplicitClauseNotFast (Qualified _ (Ident op)) ->
+      fmt @"Every clause of an implicit handler is `fast`, and the clause for `{op}` captures its continuation; an inserted handler changes no control flow where nothing is written" { op }
+    ImplicitReturnClause -> "An implicit handler has no return clause; an inserted handler leaves the answer type as it is"
+    ImplicitParameters -> "An implicit handler takes no parameter; where it is inserted, nothing supplies an argument"
+    ImplicitInitialNotValue n ->
+      fmt @"The initial value of the cell `{n}` is no value form; an implicit handler's cells are initialized by value forms, as an initial value runs wherever the handler is inserted" { n }
   ValueFormNeeded _ -> "This stands under a `forall` or a constraint, where only a value form may stand; where it is a function, writing its parameter makes it one"
   KindValueNeeded _ (Qualified _ (Ident name)) -> fmt @"The declaration `{name}` is generalized over a kind, and its right-hand side is no value; a declaration generalized over kinds is installed without being evaluated, so it is a function, a constructor applied to values, or another value" { name }
   ReadWhileInitializing _ _ reader read

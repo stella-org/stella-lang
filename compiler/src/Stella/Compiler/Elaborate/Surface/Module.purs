@@ -44,8 +44,11 @@
 -- | **A computation declaration is a value whose Core type is a thunk**, its
 -- | signature read as that type and its body under it. **A handler declaration
 -- | is a value at its signature's type**, its body a handling expression under
--- | its parameters and its thunk; an implicit one is outside what this version
--- | elaborates.
+-- | its parameters and its thunk. **An implicit one is also read against the
+-- | conditions of being one**: those its declaration shows, whether or not its
+-- | body elaborates, and its cells' initial values, judged on the Core the body
+-- | became. What it removes and performs mentions no variable in this version,
+-- | and the interface records it with those elements.
 -- |
 -- | **A value without a signature is generalized**, each strongly connected
 -- | component of the references such values make to one another a group, the
@@ -59,6 +62,7 @@
 -- | every member of a group one of which does. A fixity gives Core nothing.
 module Stella.Compiler.Elaborate.Surface.Module
   ( ElaborationError(..)
+  , ImplicitProblem(..)
   , ElaboratedValue
   , Elaborating
   , ElaboratedModule
@@ -94,7 +98,7 @@ import Data.Tuple (Tuple(..), fst, snd)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..), emptyXContext)
 import Stella.Compiler.Elaborate.CorePlus.Term (Residue(..), XExpr, isSettledValueForm, pendingCasesOf, replacePendingCases, toCoreExpr, toInitializationExpr)
 import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind(..), kindMetasOf)
-import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType(..), fromCore, kindMetasOfType, metasOf, toCore)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType(..), freeKindVars, fromCore, kindMetasOfType, metasOf, toCore)
 import Stella.Compiler.Elaborate.Surface.Types (readAttributeDeclaration, readTypes, settledTypes)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEntry)
 import Stella.Compiler.Elaborate.Surface.Internal (Internal, declaredEntryMismatches, internalEntries)
@@ -131,19 +135,25 @@ import Stella.Compiler.Interface.Scheme (Scheme, plainScheme)
 import Stella.Compiler.Surface.Decl (Declaration(..))
 import Stella.Compiler.Surface.Decl (Attribute, HandlerDeclaration, Module) as Surface
 import Stella.Compiler.Surface.Expr (Binder, Expr) as Surface
+import Stella.Compiler.Surface.Expr (ClauseForm(..), binderOrigin)
+import Stella.Compiler.Surface.Type (Type(..)) as Surface
+import Stella.Compiler.Surface.Type (typeOrigin)
 import Stella.Compiler.Surface.Origin (Origin) as Surface
-import Stella.Compiler.TypedCore (Decl(DeclAttribute, DeclData, DeclEffect, DeclForeign), Expr, Module) as Core
+import Stella.Compiler.Surface.Name (CellVar(..))
+import Stella.Compiler.TypedCore (Decl(DeclAttribute, DeclData, DeclEffect, DeclForeign), Module) as Core
 import Stella.Compiler.TypedCore (Attribute, AttributeDecl, DataDecl, DeclError(..), DeclFailure, Decl(DeclNonRec, DeclRec), Declared, EffectDecl, Export(..), ForeignDecl, declareAnnotated)
 import Stella.Compiler.TypedCore.Declare (ctorInfo, dataEntry)
 import Stella.Compiler.TypedCore.AttributeCheck (AttributeError, checkAttribute)
-import Stella.Compiler.TypedCore.Check (CheckError(NotAValueForm))
+import Stella.Compiler.TypedCore.Check (CheckError(NotAValueForm), isValueForm)
+import Stella.Compiler.TypedCore.Prim (asFunction)
+import Stella.Compiler.TypedCore.Term (Expr(..), subterms) as Core
 import Stella.Compiler.TypedCore.Initialization (localGroupViolations, topLevelViolations)
 import Stella.Compiler.TypedCore.Reference (globalsOf, runtimeDependencies)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName, OpName(..), Qualified(..), TyName(..), TyVar, unqualified)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyConInfo(..))
 import Stella.Compiler.TypedCore.Kind (Kind(..), KindScheme, RowElemKind(..))
 import Stella.Compiler.TypedCore.Kind as Kind
-import Stella.Compiler.TypedCore.Type (Type, TypeScheme)
+import Stella.Compiler.TypedCore.Type (RowEntry(..), RowKey(EffectKey), Type(..), TypeScheme, compareRowKeys, freeTypeVars, rowEntryKey)
 import Stella.Compiler.TypedCore.Equality (schemeEquiv)
 import Stella.Compiler.Primitive (abiTypeDescriptors, runtimeEntryNamed, schemeOfRuntimeEntry)
 
@@ -208,6 +218,9 @@ data ElaborationError
   -- | stands for as far as it is decided, and the locals in scope there that
   -- | source can name, each at its type.
   | ExpressionHoleStands Surface.Origin String XType (Array { name :: Ident, type :: XType })
+  -- | An implicit handler declaration failing a condition of being one, where
+  -- | what fails it stands.
+  | ImplicitCondition Surface.Origin ImplicitProblem
   -- | What a `Λ` or a constraint abstraction encloses that is no value form,
   -- | where the abstraction stands: the Core checker's refusal, and the
   -- | author's.
@@ -239,6 +252,19 @@ data ElaborationError
   -- | An attempt that postponed itself, which nothing the elaborator states
   -- | does: it is the elaborator's fault.
   | AttemptPostponed
+
+-- | Which condition of an implicit handler a declaration fails.
+data ImplicitProblem
+  -- | Its signature does not write `E ~> ( … )` itself.
+  = ImplicitNotCapability
+  -- | Its clause for the operation named is not `fast`.
+  | ImplicitClauseNotFast (Qualified Ident)
+  -- | It has a return clause.
+  | ImplicitReturnClause
+  -- | It takes parameters.
+  | ImplicitParameters
+  -- | The initial value of the cell named is no value form.
+  | ImplicitInitialNotValue String
 
 -- | A value declaration elaborated: its name, where it was declared and its
 -- | ordinal among the module's declarations, its attributes, its scheme, and
@@ -459,15 +485,13 @@ elaborateValuesM attempterOf imports surface importedEntries m =
         , read: \synonyms -> elaborateComputationSignature synonyms d.name d.signature
         }
     -- a handler declaration is a value at its signature's type, `~>` read as
-    -- the function it stands for; an implicit one is outside this version
-    DeclHandler d
-      | d.implicit -> Just (Left (Unsupported (OutsideSubset d.origin "an implicit handler declaration")))
-      | otherwise -> Just case traverse coreAttribute d.attributes of
-          Left o -> Left (Unsupported (ReportedAlready o))
-          Right attributes -> Right
-            { declared: { name: d.name, origin: d.origin, ordinal, attributes, definition: Right (HandlerDefinition d) }
-            , read: \synonyms -> elaborateSignature synonyms d.name d.signature
-            }
+    -- the function it stands for
+    DeclHandler d -> Just case traverse coreAttribute d.attributes of
+      Left o -> Left (Unsupported (ReportedAlready o))
+      Right attributes -> Right
+        { declared: { name: d.name, origin: d.origin, ordinal, attributes, definition: Right (HandlerDefinition d) }
+        , read: \synonyms -> elaborateSignature synonyms d.name d.signature
+        }
     DeclAttribute _ -> Nothing
     DeclData _ -> Nothing
     DeclNewtype _ -> Nothing
@@ -622,7 +646,7 @@ elaborateValuesM attempterOf imports surface importedEntries m =
             ( case _ of
                 DeclValue d -> d.signature $> d.name
                 DeclComputation d -> Just d.name
-                DeclHandler d | not d.implicit -> Just d.name
+                DeclHandler d -> Just d.name
                 DeclForeign d -> Just d.name
                 _ -> Nothing
             )
@@ -676,13 +700,20 @@ elaborateValuesM attempterOf imports surface importedEntries m =
     -- a synthesized parameter is not among the parameters a handler
     -- declaration writes
     HandlerDefinition _ | takesSynthesized v.spine -> acc { errors = Array.snoc acc.errors (Unsupported (OutsideSubset v.declared.origin "a handler declaration taking a synthesized parameter")) }
-    HandlerDefinition h -> attemptBody acc v (elaborateHandler internal (withFinal generalized) v.declared.name v.declared.origin v.scheme h)
+    -- an implicit handler is sought by the effects it removes and performs,
+    -- which this version reads only where they mention no variable; its body
+    -- is elaborated either way
+    HandlerDefinition h -> attemptBody (openElements h v acc) v (elaborateHandler internal (withFinal generalized) v.declared.name v.declared.origin v.scheme h)
   attemptBody acc v elaborating =
     case runAttempt session (runSurf elaborating) acc.state of
       Tuple (Done (Right built)) s -> acc { state = s, bodies = Array.snoc acc.bodies { name: v.declared.name, origin: v.declared.origin, ordinal: v.declared.ordinal, attributes: v.declared.attributes, scheme: v.scheme, spine: v.spine, body: built.value, holes: built.holes, wildcards: built.wildcards, unwritten: built.unwritten, expressionHoles: built.expressionHoles, uncovered: built.uncovered, pending: built.pending, regions: built.regions, references: built.references } }
       Tuple (Done (Left problem)) _ -> acc { errors = Array.snoc acc.errors (Unsupported problem) }
       Tuple outcome _ -> acc { errors = Array.snoc acc.errors (failure outcome) }
   unchecked acc v = acc { errors = Array.snoc acc.errors (LeftUnchecked v.declared.origin v.declared.name) }
+  openElements h v acc
+    | h.implicit, isJust h.capabilityTargets, not (maybe true closedElements (capabilityElements h.handled v.scheme.body)) =
+        acc { errors = Array.snoc acc.errors (Unsupported (OutsideSubset v.declared.origin "an implicit handler whose effects mention a type or kind variable")) }
+    | otherwise = acc
   withFinal generalized = withOwn { bindings = generalized.bindings }
 
 -- | A signature with a data type the module declares, and its constructors.
@@ -1472,8 +1503,9 @@ type ElaboratedModule =
 -- | of its interface holds each data type and newtype it declares, each synonym
 -- | at its parameters and the type it stands for, each foreign type at its
 -- | kind, the scheme of every value, foreign, and constructor, each effect with
--- | its operations, each operation's scheme among the values', and each
--- | attribute declaration at its parameters' types.
+-- | its operations, each operation's scheme among the values', each
+-- | attribute declaration at its parameters' types, and each implicit handler
+-- | with the element it handles and the elements it performs.
 -- | **The Core checker refusing it is the elaborator's fault**, reported as
 -- | such, but for what only the Core checker checks: an attribute's arguments,
 -- | reported where its declaration stands; the value form a `Λ` encloses; and
@@ -1545,7 +1577,30 @@ assembled signature m exports elaborated =
   initializing = foldl (\s f -> s { values = Map.insert f.name { scheme: f.decl.scheme, isForeign: true } s.values })
     (foldl (addData m.name) signature (map _.decl elaborated.data))
     elaborated.foreigns
-  errors = elaborated.errors <> localValues <> recursiveValues
+  errors = implicitConditions <> elaborated.errors <> localValues <> recursiveValues <> implicitInitials
+
+  -- the implicit handlers the module declares, each with its elaborated value
+  -- where its body elaborated
+  implicitDeclared = Array.mapMaybe
+    ( case _ of
+        DeclHandler d | d.implicit -> Just { declaration: d, value: Array.find (\v -> v.name == d.name) values }
+        _ -> Nothing
+    )
+    m.declarations
+  -- the conditions an implicit handler's declaration fails, whether or not its
+  -- body elaborated
+  implicitConditions = Array.concatMap (implicitFailures <<< _.declaration) implicitDeclared
+  -- each initial value of an implicit handler's cells is to be a value form,
+  -- judged on the Core it elaborated to; the region its handling expression
+  -- opens holds them in the order the cells are declared
+  implicitInitials = Array.concatMap
+    ( \i -> case i.value >>= (regionOpenedAt i.declaration.origin <<< _.body) of
+        Just initials -> Array.mapMaybe
+          (\(Tuple c e) -> if isValueForm initializing e then Nothing else Just (ImplicitCondition c.origin (ImplicitInitialNotValue (cellName c.cell))))
+          (Array.zip i.declaration.cells initials)
+        Nothing -> []
+    )
+    implicitDeclared
 
   decls = map (\d -> Core.DeclData d.origin d.decl) elaborated.data
     <> map (\e -> Core.DeclEffect e.origin e.decl) elaborated.effects
@@ -1641,7 +1696,8 @@ assembled signature m exports elaborated =
         )
     , effects: Map.fromFoldable (map (\e -> Tuple e.decl.name { params: e.decl.params, operations: Array.zipWith (\o arguments -> { binders: o.tyBinders, arguments, resumesWith: o.resumesWith }) e.decl.operations e.arguments }) elaborated.effects)
     , attributes: Map.fromFoldable (map (\a -> Tuple a.decl.name { positional: a.decl.positional, keyword: map _.type a.decl.keyword }) elaborated.attributes)
-    , implicitHandlers: Map.empty
+    , implicitHandlers: Map.fromFoldable
+        (Array.mapMaybe (\i -> i.value >>= \v -> Tuple (nameOf v.name) <$> capabilityElements i.declaration.handled v.scheme.body) implicitDeclared)
     }
 
   nameOf (Qualified _ n) = n
@@ -1677,3 +1733,72 @@ sameKindScheme :: KindScheme -> KindScheme -> Boolean
 sameKindScheme a b = Array.length a.kindVars == Array.length b.kindVars && renamed a == renamed b
   where
   renamed s = Kind.substituteKind (Map.fromFoldable (Array.mapWithIndex (\i k -> Tuple k (KVar (KindVar ("$k" <> show i)))) s.kindVars)) s.body
+
+-- | The element a handler declaration's type handles and the elements it
+-- | performs in its place, read off the expansion of `E ~> ( t̄ )`: the
+-- | thunk's row holds the handled element, and the result's row the performed
+-- | ones beside the residual row. The performed ones come in the canonical
+-- | order of their keys.
+capabilityElements :: Qualified EffName -> Type -> Maybe { source :: RowEntry, targets :: Array RowEntry }
+capabilityElements handled = case _ of
+  TForall _ _ body -> capabilityElements handled body
+  TConstrained _ body -> capabilityElements handled body
+  t -> do
+    f <- asFunction t
+    thunk <- asFunction f.argument
+    source <- Array.find (\e -> rowEntryKey e == EffectKey handled) (knownElements thunk.row)
+    pure { source, targets: Array.sortBy (\x y -> compareRowKeys (rowEntryKey x) (rowEntryKey y)) (knownElements f.row) }
+  where
+  knownElements = case _ of
+    TRowExtend entry rest -> Array.cons entry (knownElements rest)
+    TRowUnion left right -> knownElements left <> knownElements right
+    _ -> []
+
+-- | Whether the elements an implicit handler removes and performs mention no
+-- | type variable and no kind variable.
+closedElements :: { source :: RowEntry, targets :: Array RowEntry } -> Boolean
+closedElements e = Array.all closed (Array.cons e.source e.targets)
+  where
+  closed entry = Array.all (\t -> Set.isEmpty (freeTypeVars t) && Set.isEmpty (freeKindVars (fromCore t))) (payloadOf entry)
+  payloadOf = case _ of
+    RowEffectEntry _ args -> args
+    RowLabelledEffectEntry _ _ args -> args
+    RowTypeEntry _ t -> [ t ]
+    RowRegionEntry _ -> []
+
+-- | The initial values of the region opened by the handling expression
+-- | written at the given origin, taking the outermost such region in the term.
+regionOpenedAt :: Surface.Origin -> Core.Expr Surface.Origin -> Maybe (Array (Core.Expr Surface.Origin))
+regionOpenedAt at = case _ of
+  Core.Region o _ _ initials _ | o == at -> Just initials
+  e -> Array.findMap (regionOpenedAt at) (Core.subterms e)
+
+cellName :: CellVar -> String
+cellName (CellVar c) = case c.name of
+  Ident n -> n
+
+-- | The conditions of an implicit handler its declaration fails, each where
+-- | what fails it stands, read off the declaration before its body: written
+-- | with `~>`, no parameter, every clause `fast`, and no return clause.
+implicitFailures :: Surface.HandlerDeclaration -> Array ElaborationError
+implicitFailures h =
+  (if isJust h.capabilityTargets then [] else [ ImplicitCondition (typeOrigin (handlerTypeAfter (Array.length h.params) h.signature.body)) ImplicitNotCapability ])
+    <> maybe [] (\p -> [ ImplicitCondition (binderOrigin p) ImplicitParameters ]) (Array.head h.params)
+    <> Array.mapMaybe notFast h.body.operations
+    <> maybe [] (\r -> [ ImplicitCondition r.origin ImplicitReturnClause ]) h.body.return
+  where
+  notFast c = case c.form of
+    ClauseFast -> Nothing
+    _ -> Just (ImplicitCondition c.origin (ImplicitClauseNotFast c.operation))
+
+-- | The type a handler declaration's signature reaches after a pure arrow for
+-- | each of its parameters, past the quantifiers, constraints, synthesized
+-- | parameters, and kind annotations on the way.
+handlerTypeAfter :: Int -> Surface.Type -> Surface.Type
+handlerTypeAfter n t = case t of
+  Surface.TypeForall _ _ body -> handlerTypeAfter n body
+  Surface.TypeConstrained _ _ body -> handlerTypeAfter n body
+  Surface.TypeKinded _ body _ -> handlerTypeAfter n body
+  Surface.TypeFunction _ (Surface.TypeSynthesized _ _ _ _ _) rest Nothing -> handlerTypeAfter n rest
+  Surface.TypeFunction _ _ rest Nothing | n > 0 -> handlerTypeAfter (n - 1) rest
+  _ -> t

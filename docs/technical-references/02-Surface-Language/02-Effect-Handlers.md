@@ -387,6 +387,8 @@ The last two are the ones a reader is most likely to want relaxed, and they are 
 
 **The `return` restriction is not liftable in this form.** Were an implicit handler allowed to change the answer, insertion would be driven by a mismatch of types rather than by a difference of rows, and the search would no longer be finite or directed: the elaborator would look for a composition of answer-type transformations reconciling two types, which is implicit coercion rather than capability translation. That the keys to remove are determined by the row difference is what makes the search below terminate.
 
+**What an implicit handler removes and what it performs mention no type or kind variable in this version.** `implicit handler h :: State s ~> ()` is outside this version, where it is declared. A handler is chosen by the key of its source alone, and a payload decides neither which handler is chosen nor which of two is preferred. Reading a payload with variables would have the search instantiate the handler's scheme and match its source against the row's payload; how it would do so is left open ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
+
 ## Insertion
 
 ### Where it fires

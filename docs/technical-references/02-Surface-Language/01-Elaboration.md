@@ -957,7 +957,7 @@ handler countFrom (start :: Int) :: Tick ~> () where
             { handles Tick ; return (x : a) -> x ; fast tick (_ : Unit) -> readCell ℓ.n }
 ```
 
-**An implicit handler declaration is outside this version**, where it is declared.
+**An implicit handler declaration is elaborated as any other, and read against the conditions of being one** ([Effect Handlers](02-Effect-Handlers.md#implicit-handlers)). Four of them are read off the declaration, whether or not its body elaborates: written with `~>`, no parameter, every clause `fast`, and no return clause. The fifth, each cell's initial value being a value form, is judged on the Core the body became, so only where the body elaborates. Each failure is reported where it stands, all of them together. **In this version what it removes and what it performs mention no type or kind variable**: `implicit handler h :: State s ~> ()` is outside this version, where it is declared. The interface records each one accepted with the element it handles and the elements it performs, read off its scheme. A checking boundary inserts none in this version ([Explicit checking boundaries](#explicit-checking-boundaries)).
 
 ### A module's type declarations
 
