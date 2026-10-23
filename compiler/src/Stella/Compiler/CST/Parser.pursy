@@ -548,8 +548,10 @@ attributeParameterType:
   | o = LSQUARE rs = rowItems c = RSQUARE                   { C.TypeVariant (B.between o c) rs }
 
 handlerDecl:
-  | HANDLER n = ident ps = binderAtoms DCOLON t = type WHERE is = handlerBlock
-      { C.DeclHandler n ps t is }
+  | HANDLER n = ident DCOLON t = type
+      { C.DeclHandlerSignature n t }
+  | HANDLER n = ident ps = binderAtoms WHERE is = handlerBlock
+      { C.DeclHandler n ps is }
 
 dataCtors:
   | cs = manySep(dataCtor, PIPE) { cs }

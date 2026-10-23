@@ -27,10 +27,11 @@ import Stella.Compiler.Surface.Decl (Associativity(..), FixityTarget(..))
 import Stella.Compiler.Surface.Origin (Origin(..))
 import Stella.Compiler.Surface.Expr (exprOrigin, AlternativeBody(..), Binder(..), CellDeclaration, ClauseForm(..), Expr(..), GuardLine(..), HandlerBody, HandlerItem(..), LetBinding(..), RecordField(..))
 import Stella.Compiler.Surface.Name (BindingId(..), CellVar(..), LocalVar(..), OperatorName(..))
+import Stella.Compiler.Surface.Type (EffectApplication)
 import Stella.Compiler.TypedCore.Domain (codePointOf, textOf)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..), TyName(..))
-import Stella.Compiler.TypedCore.Prim (intTy)
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
+import Stella.Compiler.TypedCore.Prim (functionTy, intTy, unitTy)
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.TypedCore.Type (RowEntry(..), Type(..))
 import Test.Spec (Spec, describe, it)
@@ -52,13 +53,14 @@ inA = Qualified moduleA
 -- | `+` (`infixl 6 plus`), `*` (`infixl 7 times`), `<>` (`infixr 6 append`),
 -- | `==` (`infix 4 eq`), and `:|` (`infixr 5 Cons`). `B` declares `len`, and the
 -- | effect `E` with its operation `ping`, which its interface gives no argument,
--- | and `Base.Continuation` nothing. `A` also declares `type Effects = {| E |}`.
+-- | and `Base.Continuation` nothing. `A` also declares `type Effects = {| E |}`
+-- | and `type Lowering = E ~> ()`.
 environment :: BuildEnvironment
 environment = case addInterface interfaceA initialEnvironment >>= addInterface interfaceB >>= addInterface continuation of
   Right env -> env
   Left _ -> initialEnvironment
   where
-  interfaceA = withEffects $ interfaceOf moduleA
+  interfaceA = withSynonym "Lowering" lowering $ withSynonym "Effects" effects $ interfaceOf moduleA
     { values: [ "x", "plus", "times", "eq", "append" ]
     , computations: [ "comp" ]
     , types: [ Tuple "Maybe" [ Tuple "Nothing" 0, Tuple "Just" 1 ], Tuple "List" [ Tuple "Nil" 0, Tuple "Cons" 2 ] ]
@@ -74,15 +76,19 @@ environment = case addInterface interfaceA initialEnvironment >>= addInterface i
   interfaceB = interfaceOf moduleB { values: [ "len" ], computations: [], types: [], operations: [ Tuple "ping" 0 ], operators: [] }
   continuation = interfaceOf (ModuleName "Base.Continuation") { values: [], computations: [], types: [], operations: [], operators: [] }
   -- `type Effects = {| E |}`, a row synonym.
-  withEffects i = i
-    { exports = i.exports { types = Map.insert "Effects" { entity: TypeEntity (inA (TyName "Effects")), via: Declared, members: [] } i.exports.types }
+  effects = { kind: KRow RowEffect, body: TRowExtend (RowEffectEntry (inA (EffName "E")) []) TRowEmpty }
+  -- `type Lowering = E ~> ()`, its expansion.
+  lowering =
+    { kind: KType
+    , body:
+        TForall (TyVar "e") (KRow RowEffect) $ TForall (TyVar "a") KType $
+          function (function (TCon unitTy []) (TRowExtend (RowEffectEntry (inA (EffName "E")) []) (TVar (TyVar "e"))) (TVar (TyVar "a"))) (TVar (TyVar "e")) (TVar (TyVar "a"))
+    }
+  function a row b = TApp (TApp (TApp (TCon functionTy []) a) row) b
+  withSynonym name s i = i
+    { exports = i.exports { types = Map.insert name { entity: TypeEntity (inA (TyName name)), via: Declared, members: [] } i.exports.types }
     , declarations = i.declarations
-        { types = Map.insert (TyName "Effects")
-            { kind: monoScheme (KRow RowEffect)
-            , sort: Synonym { params: [], body: TRowExtend (RowEffectEntry (inA (EffName "E")) []) TRowEmpty }
-            , attributes: []
-            }
-            i.declarations.types
+        { types = Map.insert (TyName name) { kind: monoScheme s.kind, sort: Synonym { params: [], body: s.body }, attributes: [] } i.declarations.types
         }
     }
 
@@ -154,7 +160,7 @@ definition = definitionIn []
 
 -- | The same, the module importing what the lines given import besides.
 definitionIn :: Array String -> Array String -> (Ran -> Aff Unit) -> Aff Unit
-definitionIn imports body = inModule imports body definitionOfF \d ->
+definitionIn imports body = inModule imports body (Array.findMap definitionOfF) \d ->
   resolveDefinition d.params d.body d.local <#> \r -> renderExpr r.body
   where
   definitionOfF = case _ of
@@ -164,25 +170,46 @@ definitionIn imports body = inModule imports body definitionOfF \d ->
 -- | The handler declaration `h` in the module `M`, shown as the effect it
 -- | handles and its body.
 handlerDeclaration :: Array String -> (Ran -> Aff Unit) -> Aff Unit
-handlerDeclaration body = inModule [] body handlerOfH \d ->
+handlerDeclaration body = handlerDeclarationShown body \r ->
+  maybe "?" effectWord r.handled <> renderBody r.cells r.body
+
+-- | The same, shown as the effect it handles and the targets of the `~>` its
+-- | signature writes.
+handlerTargets :: Array String -> (Ran -> Aff Unit) -> Aff Unit
+handlerTargets body = handlerDeclarationShown body \r ->
+  maybe "?" effectWord r.handled <> " ~> " <> maybe "-" (joinWith ", " <<< map (effectWord <<< _.effect)) r.capabilityTargets
+
+handlerDeclarationShown
+  :: Array String
+  -> ({ params :: Array Binder, handled :: Maybe (Qualified EffName), capabilityTargets :: Maybe (Array EffectApplication), cells :: Array CellDeclaration, body :: HandlerBody } -> String)
+  -> (Ran -> Aff Unit)
+  -> Aff Unit
+handlerDeclarationShown body render = inModule [] body handlerOfH \d ->
   resolveHandler d.params d.signature d.items <#> \r ->
-    maybe "?" effectWord r.effect <> renderBody r.cells r.body
+    render { params: r.params, handled: r.handled, capabilityTargets: r.capabilityTargets, cells: r.cells, body: r.body }
   where
-  handlerOfH = case _ of
-    CST.ItemDecl (CST.DeclHandler n params signature items) | n.name == "h" -> Just { params, signature, items }
+  handlerOfH items = do
+    signature <- Array.findMap signatureOfH items
+    found <- Array.findMap definitionOfH items
+    pure { params: found.params, signature, items: found.items }
+  signatureOfH = case _ of
+    CST.ItemDecl (CST.DeclHandlerSignature n t) | n.name == "h" -> Just t
+    _ -> Nothing
+  definitionOfH = case _ of
+    CST.ItemDecl (CST.DeclHandler n params items) | n.name == "h" -> Just { params, items }
     _ -> Nothing
 
 inModule
   :: forall d
    . Array String
   -> Array String
-  -> (CST.Item -> Maybe d)
+  -> (Array CST.Item -> Maybe d)
   -> (d -> Resolve String)
   -> (Ran -> Aff Unit)
   -> Aff Unit
 inModule imports body pick resolve k = case parseModule (joinWith "\n" (header <> body)) of
   Left e -> fail (printSyntaxError e)
-  Right m@(CST.Module cst) -> case Array.findMap pick cst.items of
+  Right m@(CST.Module cst) -> case pick cst.items of
     Nothing -> fail "no declaration to resolve"
     Just d -> do
       let
@@ -491,57 +518,117 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
 
   describe "handler declarations" do
     it "handle the left of `~>`, or the one element a signature in full removes" do
-      handles [ "handler h :: E ~> () where", "  fast | get _ = 0", "  | put _ _ = 0" ] "A.E{fast A.get _ -> 0; fast A.put _ _ -> 0}" []
-      handles [ "handler h :: (Unit -> a / {| E |}) -> a where", "  | get _ = resume 0", "  | put _ _ = resume 0" ] "A.E{full A.get _ -> (resume 0); full A.put _ _ -> (resume 0)}" []
-      handles [ "handler h :: (Unit -> a / {| E, Own, ... |}) -> a / {| Own, ... |} where", "  | get _ = 0", "  | put _ _ = 0", "  | return r = r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}" []
+      handles [ "handler h :: E ~> ()", "handler h where", "  fast | get _ = 0", "  | put _ _ = 0" ] "A.E{fast A.get _ -> 0; fast A.put _ _ -> 0}" []
+      handles [ "handler h :: (Unit -> a / {| E |}) -> a", "handler h where", "  | get _ = resume 0", "  | put _ _ = resume 0" ] "A.E{full A.get _ -> (resume 0); full A.put _ _ -> (resume 0)}" []
+      handles [ "handler h :: (Unit -> a / {| E, Own, ... |}) -> a / {| Own, ... |}", "handler h where", "  | get _ = 0", "  | put _ _ = 0", "  | return r = r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}" []
 
     it "report a signature in full the effect handled is not read from" do
-      handles [ "handler h :: Int -> Int where", "  | return r = r" ] "?{return r#0 -> r#0}" [ HandledEffect HandlerShape ]
-      handles [ "handler h :: (Int -> a / {| E |}) -> a where", "  | return r = r" ] "?{return r#1 -> r#1}" [ HandledEffect HandlerShape ]
-      handles [ "handler h :: (Unit -> a / {| E |}) -> a / {| E |} where", "  | return r = r" ] "?{return r#1 -> r#1}" [ HandledEffect HandlesNothing ]
-      handles [ "handler h :: (Unit -> a / {| E, Own |}) -> a where", "  | return r = r" ] "?{return r#1 -> r#1}" [ HandledEffect HandlesSeveral ]
-      handles [ "handler h :: (Unit -> a / {| cache :: E |}) -> a where", "  | return r = r" ] "?{return r#1 -> r#1}" [ HandledEffect (HandlesInstance "cache") ]
+      handles [ "handler h :: Int -> Int", "handler h where", "  | return r = r" ] "?{return r#0 -> r#0}" [ HandledEffect HandlerShape ]
+      handles [ "handler h :: (Int -> a / {| E |}) -> a", "handler h where", "  | return r = r" ] "?{return r#1 -> r#1}" [ HandledEffect HandlerShape ]
+      handles [ "handler h :: (Unit -> a / {| E |}) -> a / {| E |}", "handler h where", "  | return r = r" ] "?{return r#1 -> r#1}" [ HandledEffect HandlesNothing ]
+      handles [ "handler h :: (Unit -> a / {| E, Own |}) -> a", "handler h where", "  | return r = r" ] "?{return r#1 -> r#1}" [ HandledEffect HandlesSeveral ]
+      handles [ "handler h :: (Unit -> a / {| cache :: E |}) -> a", "handler h where", "  | return r = r" ] "?{return r#1 -> r#1}" [ HandledEffect (HandlesInstance "cache") ]
 
     it "read a row a type synonym without parameters names, its own or an imported one, and the rows it spreads" do
       handles
         [ "type Program = {| E, Own |}"
         , "type Runtime = {| Own |}"
-        , "handler h :: (Unit -> a / Program) -> a / Runtime where"
+        , "handler h :: (Unit -> a / Program) -> a / Runtime"
+        , "handler h where"
         , "  | get _ = 0"
         , "  | put _ _ = 0"
         , "  | return r = r"
         ]
         "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}"
         []
-      handles [ "type Program = {| ...Effects, Own |}", "handler h :: (Unit -> a / {| ...Program, ... |}) -> a / {| Own, ... |} where", "  | get _ = 0", "  | put _ _ = 0", "  | return r = r" ]
+      handles [ "type Program = {| ...Effects, Own |}", "handler h :: (Unit -> a / {| ...Program, ... |}) -> a / {| Own, ... |}", "handler h where", "  | get _ = 0", "  | put _ _ = 0", "  | return r = r" ]
         "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}"
         []
-      handles [ "handler h :: (Unit -> a / Effects) -> a where", "  | get _ = 0", "  | put _ _ = 0", "  | return r = r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}" []
-      handles [ "type Program = ({| E |} :: Row Effect)", "handler h :: (Unit -> a / Program) -> a where", "  | get _ = 0", "  | put _ _ = 0", "  | return r = r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}" []
-      handles [ "type Program = ({| E |} :: Row Effect)", "handler h :: (Unit -> a / {| ...Program |}) -> a where", "  | get _ = 0", "  | put _ _ = 0", "  | return r = r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}" []
+      handles [ "handler h :: (Unit -> a / Effects) -> a", "handler h where", "  | get _ = 0", "  | put _ _ = 0", "  | return r = r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}" []
+      handles [ "type Program = ({| E |} :: Row Effect)", "handler h :: (Unit -> a / Program) -> a", "handler h where", "  | get _ = 0", "  | put _ _ = 0", "  | return r = r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}" []
+      handles [ "type Program = ({| E |} :: Row Effect)", "handler h :: (Unit -> a / {| ...Program |}) -> a", "handler h where", "  | get _ = 0", "  | put _ _ = 0", "  | return r = r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#1 -> r#1}" []
 
     it "do not read a row a synonym with parameters names, nor one naming itself" do
-      handles [ "type P x = {| E |}", "handler h :: (Unit -> a / (P Int)) -> a where", "  | return r = r" ] "?{return r#1 -> r#1}" [ HandledEffect HandlerShape ]
-      handles [ "type C = {| ...D |}", "type D = {| E, ...C |}", "handler h :: (Unit -> a / C) -> a where", "  | return r = r" ] "?{return r#1 -> r#1}"
+      handles [ "type P x = {| E |}", "handler h :: (Unit -> a / (P Int)) -> a", "handler h where", "  | return r = r" ] "?{return r#1 -> r#1}" [ HandledEffect HandlerShape ]
+      handles [ "type C = {| ...D |}", "type D = {| E, ...C |}", "handler h :: (Unit -> a / C) -> a", "handler h where", "  | return r = r" ] "?{return r#1 -> r#1}"
         [ HandledEffect HandlerShape ]
 
     it "see their parameters in every initial value and clause, and report a `var` after a clause" do
-      handles [ "handler h (n :: Int) :: E ~> () where", "  var c := n", "  fast | get _ = n", "  | put _ _ = n", "  var d := 0", "  | return r = c!" ]
+      handles [ "handler h :: Int -> E ~> ()", "handler h (n :: Int) where", "  var c := n", "  fast | get _ = n", "  | put _ _ = n", "  var d := 0", "  | return r = c!" ]
         "A.E{var c#1 := n#0; fast A.get _ -> n#0; fast A.put _ _ -> n#0; return r#2 -> !}"
         [ CellAfterClause "d", CellClosedHere "c" InReturnClause ]
-      handles [ "handler h (Just n) :: E ~> () where", "  fast | get _ = n", "  | put _ _ = n" ] "A.E{fast A.get _ -> n#0; fast A.put _ _ -> n#0}" [ RefutablePattern ]
+      handles [ "handler h :: Maybe Int -> E ~> ()", "handler h (Just n) where", "  fast | get _ = n", "  | put _ _ = n" ] "A.E{fast A.get _ -> n#0; fast A.put _ _ -> n#0}" [ RefutablePattern ]
 
     it "report the operations no clause names where the signature stands" do
-      handlerDeclaration [ "handler h :: E ~> () where", "  fast | put _ _ = 0" ] \r -> do
+      handlerDeclaration [ "handler h :: E ~> ()", "handler h where", "  fast | put _ _ = 0" ] \r -> do
         r.reasons `shouldEqual` [ ClauseMissing "E" [ "get" ] ]
         r.sites `shouldEqual` [ "11:14" ]
+
+    it "keep the targets of a `~>` the signature writes, and none of one reached in another form or through a synonym" do
+      let clauses = [ "  fast | get _ = 0", "  | put _ _ = 0" ]
+      handlerTargets ([ "handler h :: E ~> ( Own )", "handler h where" ] <> clauses) \r -> r.result `shouldEqual` "A.E ~> M.Own"
+      handlerTargets ([ "handler h :: forall s. E ~> ()", "handler h where" ] <> clauses) \r -> r.result `shouldEqual` "A.E ~> "
+      handlerTargets ([ "handler h :: (Unit -> a / {| E |}) -> a", "handler h where" ] <> clauses) \r -> r.result `shouldEqual` "A.E ~> -"
+      handlerTargets ([ "type L = K", "type K = E ~> ()", "handler h :: L", "handler h where" ] <> clauses) \r -> do
+        r.result `shouldEqual` "A.E ~> -"
+        r.reasons `shouldEqual` []
+      handlerTargets ([ "handler h :: Lowering", "handler h where" ] <> clauses) \r -> do
+        r.result `shouldEqual` "A.E ~> -"
+        r.reasons `shouldEqual` []
+
+    it "give each parameter a pure arrow of the signature, and read the handler's type after them" do
+      handlerTargets [ "handler h :: {{ d :: Int by plus }} -> Int -> Int -> E ~> ( Own )", "handler h a b where", "  fast | get _ = a", "  | put _ _ = b" ] \r -> do
+        r.result `shouldEqual` "A.E ~> M.Own"
+        r.reasons `shouldEqual` []
+      handlerTargets [ "type L = E ~> ()", "handler h :: Int -> L", "handler h a where", "  fast | get _ = a", "  | put _ _ = 0" ] \r -> do
+        r.result `shouldEqual` "A.E ~> -"
+        r.reasons `shouldEqual` []
+      handlerTargets [ "handler h :: Int -> Lowering", "handler h a where", "  fast | get _ = a", "  | put _ _ = 0" ] \r ->
+        r.result `shouldEqual` "A.E ~> -"
+      -- a parameter whose type a handler's would be, read where it stands, and
+      -- not as the handler's type
+      handlerTargets [ "handler h :: (Unit -> Int / {| Own |}) -> E ~> ()", "handler h p where", "  fast | get _ = 0", "  | put _ _ = 0" ] \r -> do
+        r.result `shouldEqual` "A.E ~> "
+        r.reasons `shouldEqual` []
+
+    it "read the handler's type past a kind annotation, written, in a synonym of their own, or in an imported one" do
+      let clauses = [ "  fast | get _ = 0", "  | put _ _ = 0" ]
+      handlerTargets ([ "handler h :: (E ~> () :: Type)", "handler h where" ] <> clauses) \r -> do
+        r.result `shouldEqual` "A.E ~> "
+        r.reasons `shouldEqual` []
+      handlerTargets ([ "type L = (E ~> () :: Type)", "handler h :: L", "handler h where" ] <> clauses) \r -> do
+        r.result `shouldEqual` "A.E ~> -"
+        r.reasons `shouldEqual` []
+      handlerTargets ([ "handler h :: (Lowering :: Type)", "handler h where" ] <> clauses) \r -> do
+        r.result `shouldEqual` "A.E ~> -"
+        r.reasons `shouldEqual` []
+
+    it "report parameters as many as the arrows the handler's type stands after where they are not, the arrow from the thunk none of them" do
+      handlerDeclaration [ "handler h :: Int -> E ~> ()", "handler h where", "  | return r = r" ] \r -> do
+        r.reasons `shouldEqual` [ HandledEffect (HandlerParameters 0 1) ]
+        r.sites `shouldEqual` [ "11:14" ]
+      handles [ "handler h :: E ~> ()", "handler h n where", "  | return r = r" ] "?{return r#1 -> r#1}" [ HandledEffect (HandlerParameters 1 0) ]
+      handles [ "handler h :: (Unit -> a / {| E |}) -> a", "handler h n where", "  | return r = r" ] "?{return r#2 -> r#2}" [ HandledEffect (HandlerParameters 1 0) ]
+      handles [ "handler h :: Int -> Int", "handler h n where", "  | return r = r" ] "?{return r#1 -> r#1}" [ HandledEffect HandlerShape ]
+
+    it "read no synonym with parameters, nor one reached again, as the handler's type" do
+      handles [ "type P x = E ~> ()", "handler h :: P Int", "handler h where", "  | return r = r" ] "?{return r#0 -> r#0}" [ HandledEffect HandlerShape ]
+      handles [ "type L = K", "type K = L", "handler h :: L", "handler h where", "  | return r = r" ] "?{return r#0 -> r#0}" [ HandledEffect HandlerShape ]
+
+    it "see the type variables quantified implicitly in every parameter, and those a `forall` binds in the parameters after it" do
+      handles [ "handler h :: a -> (forall b. b -> (forall s. E ~> ()))", "handler h (x :: a) (y :: b) where", "  fast | get _ = 0", "  | put _ _ = (0 :: s)" ]
+        "A.E{fast A.get _ -> 0; fast A.put _ _ -> (0 :: τ)}"
+        []
+      handles [ "handler h :: Int -> (forall b. b -> E ~> ())", "handler h (x :: b) (y :: b) where", "  fast | get _ = 0", "  | put _ _ = 0" ]
+        "A.E{fast A.get _ -> 0; fast A.put _ _ -> 0}"
+        [ UnknownTypeVariable "b" ]
 
   describe "row synonyms" do
     it "stand for a whole row, or are spread into one, and are no effect, in a row or on either side of `~>`" do
       shows [ "type Program = {| E |}", "f = (x :: Unit -> Int / Program, x :: Unit -> Int / {| Own, ...Program |})" ] "((A.x :: τ), (A.x :: τ))" []
       shows [ "type Program = {| E |}", "f = (x :: Unit -> Int / {| Program |})" ] "(A.x :: τ)" [ SynonymAsEffect "Program" ]
-      handles [ "type S = {| E |}", "handler h :: S ~> () where", "  | return r = r" ] "?{return r#0 -> r#0}" [ SynonymAtCapability "S" ]
-      handles [ "type S = {| E |}", "handler h :: E ~> ( S ) where", "  | get _ = 0", "  | put _ _ = 0", "  | return r = r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#0 -> r#0}" [ SynonymAtCapability "S" ]
+      handles [ "type S = {| E |}", "handler h :: S ~> ()", "handler h where", "  | return r = r" ] "?{return r#0 -> r#0}" [ SynonymAtCapability "S" ]
+      handles [ "type S = {| E |}", "handler h :: E ~> ( S )", "handler h where", "  | get _ = 0", "  | put _ _ = 0", "  | return r = r" ] "A.E{full A.get _ -> 0; full A.put _ _ -> 0; return r#0 -> r#0}" [ SynonymAtCapability "S" ]
 
   describe "`case _ of`" do
     it "is a λ around the `case`, a parameter for each anonymous scrutinee from the left" do

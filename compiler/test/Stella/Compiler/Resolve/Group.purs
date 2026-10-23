@@ -42,6 +42,7 @@ sketch = case _ of
       )
   DeclarationType p kind d ->
     words (prefix p <> [ keyword d, nameOf d ] <> if kind == Nothing then [] else [ "kinded" ])
+  DeclarationHandler p h -> words (prefix p <> [ "handler", h.name.name ] <> if h.signature == Nothing then [] else [ "signed" ])
   DeclarationOther p d -> words (prefix p <> [ "other", nameOf d ])
   DeclarationMacro p m -> words (prefix p <> [ "macro", m.name.name ])
   where
@@ -69,7 +70,8 @@ nameOf = case _ of
   DeclType n _ _ -> n.name
   DeclKindSignature _ n _ -> n.name
   DeclEffect n _ _ -> n.name
-  DeclHandler n _ _ _ -> n.name
+  DeclHandlerSignature n _ -> n.name
+  DeclHandler n _ _ -> n.name
   DeclForeign n _ -> n.name
   DeclForeignType n _ -> n.name
   DeclFixity _ _ _ (n :: Name) -> n.name
@@ -92,12 +94,13 @@ spec = describe "Stella.Compiler.Resolve.Group" do
         , "main = log \"x\""
         , "#observ(none) foreign sqrt :: Number -> Number"
         , "implicit"
-        , "handler h :: E ~> () where"
+        , "handler h :: E ~> ()"
+        , "handler h where"
         , "  fast | op _ = 0"
         ]
         [ "@entrypoint @other value main signed computation"
         , "#observ other sqrt"
-        , "implicit other h"
+        , "implicit handler h signed"
         ]
         []
 
@@ -206,6 +209,53 @@ spec = describe "Stella.Compiler.Resolve.Group" do
         ]
         [ "data Proxy kinded", "data T" ]
         [ { line: 4, column: 6, reason: KindSignatureWithoutDeclaration } ]
+
+  describe "handler signatures" do
+    it "join the handler declaration of their name after them, the prefixes of both in the order written" do
+      grouped
+        [ "@[a]"
+        , "implicit"
+        , "handler h :: E ~> ()"
+        , "@[b]"
+        , "handler h where"
+        , "  fast | op _ = 0"
+        , "handler k :: E ~> ()"
+        , "implicit"
+        , "handler k where"
+        , "  fast | op _ = 0"
+        ]
+        [ "@a implicit @b handler h signed", "implicit handler k signed" ]
+        []
+
+    it "are reported where the handler declaration of their name does not follow them, and given twice" do
+      grouped
+        [ "handler h :: E ~> ()"
+        , "h = 1"
+        , "handler k :: E ~> ()"
+        , "handler k :: E ~> ()"
+        , "handler k where"
+        , "  fast | op _ = 0"
+        , "handler z :: E ~> ()"
+        ]
+        [ "value h", "handler k signed" ]
+        [ { line: 2, column: 9, reason: SignatureWithoutDefinition }
+        , { line: 5, column: 9, reason: SignatureTwice }
+        , { line: 8, column: 9, reason: SignatureWithoutDefinition }
+        ]
+
+    it "are needed by a handler declaration, which a value's signature does not join" do
+      grouped
+        [ "handler h where"
+        , "  fast | op _ = 0"
+        , "k :: E ~> ()"
+        , "handler k where"
+        , "  fast | op _ = 0"
+        ]
+        [ "handler h", "handler k" ]
+        [ { line: 2, column: 9, reason: HandlerWithoutSignature }
+        , { line: 4, column: 1, reason: SignatureWithoutDefinition }
+        , { line: 5, column: 9, reason: HandlerWithoutSignature }
+        ]
 
   describe "directives" do
     it "report `#observ(none)` before anything but a foreign, and given twice" do

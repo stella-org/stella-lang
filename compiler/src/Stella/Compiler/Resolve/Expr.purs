@@ -47,6 +47,7 @@ module Stella.Compiler.Resolve.Expr
 import Prelude
 import Prim hiding (Type)
 
+import Control.Alt ((<|>))
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Enum (fromEnum)
@@ -60,7 +61,7 @@ import Data.Traversable (for, sequence, traverse)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.CST.Range (binderRange, covering, exprRange, letBindingRange, nonEmpty, typeRange)
 import Stella.Compiler.CST.Types as CST
-import Stella.Compiler.Resolve.Binder (Member(..), ResolvedMember(..), requireIrrefutable, resolveAlternative, resolveBinders, resolveCells, resolveGroup)
+import Stella.Compiler.Resolve.Binder (Member(..), ResolvedMember(..), requireIrrefutable, resolveAlternative, resolveBinders, resolveCells, resolveGroup, resolveScopedBinders)
 import Stella.Compiler.Resolve.Fixity (rebracket)
 import Stella.Compiler.Resolve.Group (GroupError(..), LocalBinding(..), groupBindings)
 import Stella.Compiler.Resolve.Label (reportLabelsTwice)
@@ -68,15 +69,15 @@ import Stella.Compiler.Interface.Environment (reachable)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Resolve.Quotation (quotation)
 import Stella.Compiler.Resolve.Monad (Cell(..), CellClosure(..), Found(..), HandledEffectProblem(..), Resolve, SynonymBody(..), ResolveReason(..), ResumeBlock(..), ResumeState(..), TypeReference(..), ValueKind(..), ValueReference(..), blockResume, context, freshBinding, lookupCell, lookupOperator, lookupType, lookupValue, lookupValueReference, openedBy, operationOf, operationsOf, report, resumeState, speculatively, synonymBody, valueKind, withCells, withCellsClosed, withOpened, withResume, withTypeVariables, withValues)
-import Stella.Compiler.Resolve.Type (handlerScope, resolveHandlerSignature, resolveSignature, resolveType, signatureScope)
+import Stella.Compiler.Resolve.Type (resolveSignature, resolveType, scopeOf, signatureScope)
 import Stella.Compiler.Surface.Decl (Associativity(..))
 import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder(..), CellDeclaration, ClauseForm(..), Expr(..), Group, GuardLine(..), HandlerBody, HandlerItem(..), LetBinding(..), OperationClause, RecordField(..), exprOrigin)
-import Stella.Compiler.Surface.Name (BindingId(..), CellVar, LocalVar(..))
+import Stella.Compiler.Surface.Name (BindingId(..), CellVar, LocalVar(..), TypeVar)
 import Stella.Compiler.Surface.Origin (Origin, originOf, spanning)
-import Stella.Compiler.Surface.Type (EffectRowItem(..), HandlerSignature(..), Signature, Type(..))
+import Stella.Compiler.Surface.Type (EffectApplication, EffectRowItem(..), Signature, Type(..))
 import Stella.Compiler.TypedCore.Domain (scalarString, scalarValue)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), Qualified(..), Symbol(..), Tag(..), TyName)
-import Stella.Compiler.TypedCore.Prim (unitCtor, unitTy)
+import Stella.Compiler.TypedCore.Prim (functionTy, unitCtor, unitTy)
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.TypedCore.Type as Core
 
@@ -467,34 +468,47 @@ group cells g = do
     Nothing -> false
 
 -- | A handler declaration's parts: its parameters, its signature, the effect
--- | it handles, its cells, and its body. The type variables of the signature
--- | are in scope in the parameters and the body, and the parameters, one
--- | binding group of irrefutable patterns, in every initial value and clause.
+-- | it handles, the targets of the `~>` its signature writes, its cells, and
+-- | its body. The signature's spine gives a pure arrow to each parameter, and
+-- | what follows them is the handler's type. The type variables the signature
+-- | quantifies implicitly are in scope in every parameter and the body, and
+-- | those a `forall` on its spine binds in the parameters after it and the
+-- | body. The parameters, one binding group of irrefutable patterns, are in
+-- | scope in every initial value and clause.
 resolveHandler
   :: Array CST.Binder
   -> CST.Type
   -> Array CST.HandlerItem
   -> Resolve
        { params :: Array Binder
-       , signature :: Signature HandlerSignature
-       , effect :: Maybe (Qualified EffName)
+       , signature :: Signature Type
+       , handled :: Maybe (Qualified EffName)
+       , capabilityTargets :: Maybe (Array EffectApplication)
        , cells :: Array CellDeclaration
        , body :: HandlerBody
        }
 resolveHandler params t items = do
-  signature <- resolveHandlerSignature t
-  withTypeVariables (handlerScope signature) do
-    effect <- case signature.body of
-      Capability c -> pure (Just c.source.effect)
-      General g -> handledBy (typeRange t) g
-    r <- resolveBinders params
-    traverse_ requireIrrefutable r.binders
-    source <- declared items
-    withValues r.bound do
-      c <- resolveCells (map _.name source.cells)
-      initials <- withCellsClosed InInitialValue c.bound (traverse (resolveExpr <<< _.value) source.cells)
-      body <- handlerBody (maybe HandlesUnknown HandlesEffect effect) (typeRange t) c.bound source.clauses
-      pure { params: r.binders, signature, effect, cells: cellDeclarations source.cells initials c.cells, body: body.body }
+  signature <- resolveSignature t
+  positions <- spinePositions signature.body
+  let
+    arity = Array.length params
+    scopeAt i = signature.implicit <> maybe [] _.scope (Array.index positions i <|> Array.last positions)
+  shape <- handlerShape arity positions
+  r <- resolveScopedBinders (Array.mapWithIndex (\i p -> Tuple (scopeAt i) p) params)
+  traverse_ requireIrrefutable r.binders
+  source <- declared items
+  withTypeVariables (scopeAt arity) $ withValues r.bound do
+    c <- resolveCells (map _.name source.cells)
+    initials <- withCellsClosed InInitialValue c.bound (traverse (resolveExpr <<< _.value) source.cells)
+    body <- handlerBody (maybe HandlesUnknown HandlesEffect (map _.handled shape)) (typeRange t) c.bound source.clauses
+    pure
+      { params: r.binders
+      , signature
+      , handled: map _.handled shape
+      , capabilityTargets: shape >>= _.targets
+      , cells: cellDeclarations source.cells initials c.cells
+      , body: body.body
+      }
   where
   -- Every `var` stands ahead of the clauses; one after them is reported and
   -- left out.
@@ -504,37 +518,115 @@ resolveHandler params t items = do
       | Array.null acc.clauses -> pure acc { cells = Array.snoc acc.cells { name: n, value: v } }
       | otherwise -> report n.range (CellAfterClause n.name) $> acc
     CST.HandlerClauses m cs -> pure acc { clauses = acc.clauses <> map { block: m, clause: _ } cs }
+  -- The handler's type stands after an arrow for each parameter. Where it
+  -- does not, the arrows after which it stands, the fewest, are reported with
+  -- the parameters. A spine reaching a type reported invalid is reported no
+  -- further.
+  handlerShape arity positions
+    | Array.any invalid positions = pure Nothing
+    | otherwise = do
+        atArity <- maybe (pure NotShaped) shapeAt (Array.index positions arity)
+        case atArity of
+          Shaped (Right s) -> pure (Just s)
+          Shaped (Left p) -> problem p
+          NotShaped -> do
+            shapes <- traverse shapeAt positions
+            problem case Array.findIndex isShaped shapes of
+              Just k -> HandlerParameters arity k
+              Nothing -> HandlerShape
+  problem p = report (typeRange t) (HandledEffect p) $> Nothing
+  isShaped = case _ of
+    Shaped _ -> true
+    NotShaped -> false
+  invalid p = case p.at of
+    SurfaceAt (TypeInvalid _) -> true
+    _ -> false
 
--- | The effect a signature written in full handles: past its quantifiers,
--- | constraints, and synthesized parameters, it is a function from a thunk
--- | `Unit -> α / ρ` to a result, under `/ ρ'` or pure, and the effect is the
--- | one element `ρ` holds and `ρ'` does not.
+-- | A position on the spine of a handler declaration's signature: the type
+-- | there, and the type variables the quantifiers before it bind. Past a
+-- | synonym, the type is its body, read in the surface or, for an imported
+-- | one, in Core, and the quantifiers in it bind nothing the declaration sees.
+type SpinePosition = { at :: SpineType, scope :: Array TypeVar, throughSynonym :: Boolean }
+
+data SpineType
+  = SurfaceAt Type
+  | CoreAt Core.Type
+
+-- | The positions of a signature's spine: the type at its top, then the one
+-- | after each pure arrow but that of a synthesized parameter, each past its
+-- | quantifiers, constraints, synthesized parameters, and kind annotations,
+-- | and with a synonym without parameters standing there read as its body.
+spinePositions :: Type -> Resolve (Array SpinePosition)
+spinePositions t = go [] Set.empty { at: SurfaceAt t, scope: [], throughSynonym: false }
+  where
+  go acc expanding p = settle expanding p >>= \s -> do
+    let acc' = Array.snoc acc s.position
+    case s.position.at of
+      SurfaceAt (TypeFunction _ _ rest Nothing) -> go acc' s.expanding s.position { at = SurfaceAt rest }
+      CoreAt ct | Just f <- coreFunction ct, f.row == Core.TRowEmpty -> go acc' s.expanding s.position { at = CoreAt f.result }
+      _ -> pure acc'
+  settle expanding p = case p.at of
+    SurfaceAt (TypeForall _ bs body) ->
+      settle expanding p { at = SurfaceAt body, scope = if p.throughSynonym then p.scope else p.scope <> scopeOf bs }
+    SurfaceAt (TypeConstrained _ _ body) -> settle expanding p { at = SurfaceAt body }
+    SurfaceAt (TypeKinded _ body _) -> settle expanding p { at = SurfaceAt body }
+    SurfaceAt (TypeFunction _ (TypeSynthesized _ _ _ _ _) body Nothing) -> settle expanding p { at = SurfaceAt body }
+    SurfaceAt (TypeSynonym _ q) | not (Set.member q expanding) ->
+      synonymBody q >>= case _ of
+        Just (OwnSynonym body) -> do
+          b <- speculatively (resolveType body)
+          settle (Set.insert q expanding) p { at = SurfaceAt b, throughSynonym = true }
+        Just (ImportedSynonym body) -> settle (Set.insert q expanding) p { at = CoreAt body, throughSynonym = true }
+        Nothing -> pure { position: p, expanding }
+    CoreAt (Core.TForall _ _ body) -> settle expanding p { at = CoreAt body }
+    CoreAt (Core.TConstrained _ body) -> settle expanding p { at = CoreAt body }
+    _ -> pure { position: p, expanding }
+
+-- | What stands at a position of the spine: a handler's type, with the effect
+-- | it handles and its targets or why neither is read, or something else.
+data SpineShape
+  = NotShaped
+  | Shaped (Either HandledEffectProblem { handled :: Qualified EffName, targets :: Maybe (Array EffectApplication) })
+
+-- | Whether the type at a position of the spine is a handler's: `E ~> ( t̄ )`,
+-- | or a function from a thunk `Unit -> α / ρ` to a result, under `/ ρ'` or
+-- | pure. A handler's handles `E`, or the one element `ρ` holds and `ρ'` does
+-- | not, and its targets are those of a `~>` the signature writes itself.
 -- |
 -- | A row is read as written, `{| … |}`, or as a type synonym without
--- | parameters names it, a kind annotation around either aside, and a spread contributes what the row it names holds:
--- | a synonym's, or none where it is a variable or left open. Elements are
--- | told apart by their keys, the effect or the label.
-handledBy :: CST.SourceRange -> Type -> Resolve (Maybe (Qualified EffName))
-handledBy r t = case afterSpine t of
-  TypeInvalid _ -> pure Nothing
-  TypeFunction _ (TypeFunction _ (TypeConstructor _ u) _ (Just thunk)) _ residual | u == unitTy -> do
+-- | parameters names it, a kind annotation around either aside, and a spread
+-- | contributes what the row it names holds: a synonym's, or none where it is
+-- | a variable or left open. Elements are told apart by their keys, the effect
+-- | or the label.
+shapeAt :: SpinePosition -> Resolve SpineShape
+shapeAt p = case p.at of
+  SurfaceAt (TypeCapability _ source targets) ->
+    pure (Shaped (Right { handled: source.effect, targets: if p.throughSynonym then Nothing else Just targets }))
+  SurfaceAt (TypeFunction _ (TypeFunction _ (TypeConstructor _ u) _ (Just thunk)) _ residual) | u == unitTy -> do
     source <- rowKeys Set.empty thunk
     result <- maybe (pure (Just [])) (rowKeys Set.empty) residual
-    case source, result of
-      Just s, Just res -> case Array.difference (Array.nub s) res of
-        [ Left e ] -> pure (Just e)
-        [ Right l ] -> problem (HandlesInstance l)
-        [] -> problem HandlesNothing
-        _ -> problem HandlesSeveral
-      _, _ -> problem HandlerShape
-  _ -> problem HandlerShape
+    pure (Shaped (removed source result))
+  CoreAt ct
+    | Just f <- coreFunction ct
+    , Just thunk <- coreFunction f.argument
+    , Core.TCon u _ <- thunk.argument
+    , u == unitTy -> pure (Shaped (removed (coreKeys thunk.row) (coreKeys f.row)))
+  _ -> pure NotShaped
   where
-  problem p = report r (HandledEffect p) $> Nothing
-  afterSpine = case _ of
-    TypeForall _ _ body -> afterSpine body
-    TypeConstrained _ _ body -> afterSpine body
-    TypeFunction _ (TypeSynthesized _ _ _ _ _) body Nothing -> afterSpine body
-    other -> other
+  removed source result = case source, result of
+    Just s, Just res -> case Array.difference (Array.nub s) res of
+      [ Left e ] -> Right { handled: e, targets: Nothing }
+      [ Right l ] -> Left (HandlesInstance l)
+      [] -> Left HandlesNothing
+      _ -> Left HandlesSeveral
+    _, _ -> Left HandlerShape
+
+-- | A function type of Core, `τ -{ρ}-> τ'`, taken apart.
+coreFunction :: Core.Type -> Maybe { argument :: Core.Type, row :: Core.Type, result :: Core.Type }
+coreFunction = case _ of
+  Core.TApp (Core.TApp (Core.TApp (Core.TCon f _) argument) row) result
+    | f == functionTy -> Just { argument, row, result }
+  _ -> Nothing
 
 -- | The key of an element of an effect row: the effect, or the label of an
 -- | instance.
@@ -567,17 +659,20 @@ synonymKeys expanding q
         Just (OwnSynonym body) -> speculatively (resolveType body) >>= rowKeys (Set.insert q expanding)
         Just (ImportedSynonym body) -> pure (coreKeys body)
         Nothing -> pure Nothing
-      where
-      coreKeys = case _ of
-        Core.TRowEmpty -> Just []
-        Core.TRowExtend entry rest -> Array.cons <$> entryKey entry <*> coreKeys rest
-        Core.TRowUnion a b -> (<>) <$> coreKeys a <*> coreKeys b
-        Core.TVar _ -> Just []
-        _ -> Nothing
-      entryKey = case _ of
-        Core.RowEffectEntry e _ -> Just (Left e)
-        Core.RowLabelledEffectEntry (Symbol l) _ _ -> Just (Right l)
-        _ -> Nothing
+
+-- | The keys a row of Core holds.
+coreKeys :: Core.Type -> Maybe (Array RowKey)
+coreKeys = case _ of
+  Core.TRowEmpty -> Just []
+  Core.TRowExtend entry rest -> Array.cons <$> entryKey entry <*> coreKeys rest
+  Core.TRowUnion a b -> (<>) <$> coreKeys a <*> coreKeys b
+  Core.TVar _ -> Just []
+  _ -> Nothing
+  where
+  entryKey = case _ of
+    Core.RowEffectEntry e _ -> Just (Left e)
+    Core.RowLabelledEffectEntry (Symbol l) _ _ -> Just (Right l)
+    _ -> Nothing
 
 -- | A handler's body: its clauses in the order written, over the cells of the
 -- | handling expression or handler declaration it belongs to. An operation

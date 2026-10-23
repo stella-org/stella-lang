@@ -30,6 +30,7 @@ module Stella.Compiler.Resolve.Binder
   , ResolvedMember(..)
   , resolveGroup
   , resolveBinders
+  , resolveScopedBinders
   , resolveAlternative
   , resolveCells
   , irrefutable
@@ -49,10 +50,10 @@ import Data.Tuple (Tuple(..))
 import Stella.Compiler.CST.Range (binderRange, covering)
 import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Resolve.Label (reportLabelsTwice)
-import Stella.Compiler.Resolve.Monad (Found(..), Resolve, ResolveReason(..), ResolveWarning(..), constructorOf, freshBinding, lookupValue, report, valueInScope, warn)
+import Stella.Compiler.Resolve.Monad (Found(..), Resolve, ResolveReason(..), ResolveWarning(..), constructorOf, freshBinding, lookupValue, report, valueInScope, warn, withTypeVariables)
 import Stella.Compiler.Resolve.Type (resolveType)
 import Stella.Compiler.Surface.Expr (Binder(..), RecordBinderField)
-import Stella.Compiler.Surface.Name (CellVar(..), LocalVar(..))
+import Stella.Compiler.Surface.Name (CellVar(..), LocalVar(..), TypeVar)
 import Stella.Compiler.Surface.Origin (Origin, originOf, rangeOf)
 import Stella.Compiler.TypedCore.Domain (scalarString, scalarValue)
 import Stella.Compiler.TypedCore.Name (Ident(..), Symbol(..), Tag(..))
@@ -63,6 +64,8 @@ import Stella.Compiler.TypedCore.Term (Literal(..))
 data Member
   = MemberName CST.Name
   | MemberPattern CST.Binder
+  -- | A pattern whose types are read with these type variables in scope too.
+  | MemberScoped (Array TypeVar) CST.Binder
 
 data ResolvedMember
   = ResolvedName LocalVar
@@ -83,6 +86,7 @@ resolveGroup ms = do
   namesOf = case _ of
     MemberName n -> [ n ]
     MemberPattern b -> variablesOf b
+    MemberScoped _ b -> variablesOf b
   number acc n = do
     if Array.any (\prior -> prior.name.name == n.name) acc then report n.range (BoundTwice n.name)
     else do
@@ -97,10 +101,18 @@ resolveGroup ms = do
     MemberPattern b -> do
       r <- binder acc.supply b
       pure { members: Array.snoc acc.members (ResolvedPattern r.binder), supply: r.supply }
+    MemberScoped scope b -> do
+      r <- withTypeVariables scope (binder acc.supply b)
+      pure { members: Array.snoc acc.members (ResolvedPattern r.binder), supply: r.supply }
 
 -- | Binds a group of patterns alone.
 resolveBinders :: Array CST.Binder -> Resolve { binders :: Array Binder, bound :: Array LocalVar }
-resolveBinders bs = resolveGroup (map MemberPattern bs) <#> \r ->
+resolveBinders bs = resolveScopedBinders (map (Tuple []) bs)
+
+-- | Binds a group of patterns alone, each with the type variables beside it in
+-- | scope.
+resolveScopedBinders :: Array (Tuple (Array TypeVar) CST.Binder) -> Resolve { binders :: Array Binder, bound :: Array LocalVar }
+resolveScopedBinders bs = resolveGroup (map (\(Tuple scope b) -> MemberScoped scope b) bs) <#> \r ->
   { binders: Array.mapMaybe patternOf r.members, bound: r.bound }
   where
   patternOf = case _ of

@@ -189,6 +189,8 @@ spec = describe "Stella.Compiler.Resolve.Scope" do
     it "report a name declared twice in one namespace, an operation and a value among them" do
       resolved [ "x = 1", "x = 2", "effect E where", "  get :: Unit ->* Int", "get = 3" ] \r ->
         reasons r `shouldEqual` [ DeclaredTwice ValueNamespace "x", DeclaredTwice ValueNamespace "get" ]
+      resolved [ "effect E where", "  get :: Unit ->* Int", "handler h :: E ~> ()", "handler h where", "  fast | get _ = 0", "h = 1" ] \r ->
+        reasons r `shouldEqual` [ DeclaredTwice ValueNamespace "h" ]
 
     it "keep one spelling apart in different namespaces" do
       resolved [ "data P = P", "infixl 6 add as +", "infixl 6 type P as +", "add = 1" ] \r -> do

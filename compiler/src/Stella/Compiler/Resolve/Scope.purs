@@ -539,13 +539,13 @@ declareAll m attributeOf = foldl declaration { declared: emptyNames, macros: Map
     DeclarationOther _ d -> case d of
       DeclEffect n _ ops ->
         foldl (\st o -> value o.name st) (typeName n (EffectEntity (own (EffName n.name))) (map (Ident <<< _.name.name) ops) s) ops
-      DeclHandler n _ _ _ -> value n s
       DeclForeign n _ -> value n s
       DeclForeignType n _ -> typeName n (TypeEntity (own (TyName n.name))) [] s
       DeclFixity _ _ _ o -> enter OperatorNamespace o (\st -> st { declared = st.declared { operators = addCandidate o.name (declared (own (OperatorName o.name))) st.declared.operators } }) s
       DeclTypeFixity _ _ _ o -> enter TypeOperatorNamespace o (\st -> st { declared = st.declared { typeOperators = addCandidate o.name (declared (own (OperatorName o.name))) st.declared.typeOperators } }) s
       DeclAttribute n _ -> enter AttributeNamespace n (\st -> st { declared = st.declared { attributes = addCandidate n.name (declared (own (Ident n.name))) st.declared.attributes } }) s
       _ -> s
+    DeclarationHandler _ h -> value h.name s
     DeclarationMacro _ _ -> s
 
   -- A value. One carrying `@[elaborationOnly]`, written bare, that is a value

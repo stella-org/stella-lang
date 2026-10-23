@@ -24,7 +24,6 @@ module Stella.Compiler.Surface.Type
   , ComputationType
   , SignaturePrefix(..)
   , OperationSignature
-  , HandlerSignature(..)
   ) where
 
 import Prelude
@@ -200,18 +199,6 @@ type OperationSignature =
   , resumesWith :: Type
   }
 
--- | A handler declaration's signature: the shape `forall ā. E ~> ( t̄ )` of a
--- | capability translation, with the binders of each `forall` in front of `~>`
--- | in the order written, or a type written in full.
-data HandlerSignature
-  = Capability
-      { origin :: Origin
-      , quantifiers :: Array (Array TypeVarBinder)
-      , source :: EffectApplication
-      , targets :: Array EffectApplication
-      }
-  | General Type
-
 derive instance Eq Kind
 derive instance Generic Kind _
 
@@ -252,10 +239,4 @@ derive instance Eq SignaturePrefix
 derive instance Generic SignaturePrefix _
 
 instance Show SignaturePrefix where
-  show = genericShow
-
-derive instance Eq HandlerSignature
-derive instance Generic HandlerSignature _
-
-instance Show HandlerSignature where
   show = genericShow

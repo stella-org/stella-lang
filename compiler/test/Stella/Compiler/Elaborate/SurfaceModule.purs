@@ -1650,8 +1650,8 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
           errors -> fail ("not refused as undeclared: " <> show (map at errors))
 
     it "is outside this version where it is a handler declaration" do
-      elaborating (effects <> [ "handler h :: Ask ~> () where", "  fast | ask _ = 1" ]) \r ->
-        map at r.errors `shouldEqual` [ "12:9 outside: this declaration" ]
+      elaborating (effects <> [ "handler h :: Ask ~> ()", "handler h where", "  fast | ask _ = 1" ]) \r ->
+        map at r.errors `shouldEqual` [ "13:9 outside: this declaration" ]
   describe "a handling expression declaring cells" do
     let
       bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)

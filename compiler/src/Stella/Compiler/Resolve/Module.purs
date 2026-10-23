@@ -30,7 +30,7 @@ import Stella.Compiler.Macro.Expand (ExpansionError, expandModule)
 import Stella.Compiler.Macro.Run (ExpansionSettings, RunParser)
 import Stella.Compiler.Resolve.Attribute (DeclarationSort(..), resolveAttributeDeclaration, resolveAttributes)
 import Stella.Compiler.Resolve.Expr (resolveHandler, resolveTopDefinition)
-import Stella.Compiler.Resolve.Group (Declaration(..), GroupError, GroupedModule, Prefix, ValueDeclaration, attributesOf, directivesOf, groupModule, modifiersOf)
+import Stella.Compiler.Resolve.Group (Declaration(..), GroupError, GroupedModule, HandlerDeclaration, Prefix, ValueDeclaration, attributesOf, directivesOf, groupModule, modifiersOf)
 import Stella.Compiler.Resolve.Monad (Found(..), Resolve, ResolveError, ResolveReason(..), ResolveWarning, TypeReference(..), ValueKind(..), context, contextOf, lookupType, lookupValue, ownValue, report, runResolve, valueKind, withTypeVariables)
 import Stella.Compiler.Resolve.Scope (ScopeError, ScopeWarning, elaborationOnlyEntry, elaborationOnlyValue, resolveScope)
 import Stella.Compiler.Resolve.Type (bindTypeVariables, computationScope, resolveComputationSignature, resolveKind, resolveOperationSignature, resolveSignature, resolveType, signatureScope)
@@ -103,6 +103,7 @@ declaration :: Declaration -> Resolve (Maybe Surface.Declaration)
 declaration = case _ of
   DeclarationValue p v -> value p v
   DeclarationType p kind d -> typeDeclaration p kind d
+  DeclarationHandler p h -> handler p h
   DeclarationOther p d -> other p d
   DeclarationMacro _ macro -> report macro.name.range (NotYetSupported "A macro call at a declaration's position") $> Nothing
 
@@ -162,6 +163,30 @@ typeDeclaration p kindSignature d = do
   origin = originOf (declarationRange d)
   listed m n isNewtype ctors = isJust (elaborationOnlyEntry m n.name isNewtype (map _.name ctors))
 
+-- | A handler declaration. One without its signature is reported where it is
+-- | grouped, and declares nothing more.
+handler :: Prefix -> HandlerDeclaration -> Resolve (Maybe Surface.Declaration)
+handler p h = case h.signature of
+  Nothing -> pure Nothing
+  Just t -> do
+    ctx <- context
+    attributes <- resolveAttributes OnHandler false (attributesOf p)
+    r <- resolveHandler h.binders t h.items
+    pure $ r.handled <#> \handled -> Surface.DeclHandler
+      { origin
+      , attributes
+      , implicit: not (Array.null (modifiersOf p))
+      , name: Qualified ctx.module (Ident h.name.name)
+      , params: r.params
+      , signature: r.signature
+      , handled
+      , capabilityTargets: r.capabilityTargets
+      , cells: r.cells
+      , body: r.body
+      }
+  where
+  origin = originOf (declarationRange (CST.DeclHandler h.name h.binders h.items))
+
 other :: Prefix -> CST.Decl -> Resolve (Maybe Surface.Declaration)
 other p d = do
   ctx <- context
@@ -176,20 +201,6 @@ other p d = do
         )
         ops
       pure (Just (Surface.DeclEffect { origin, attributes, name: Qualified ctx.module (EffName n.name), params: b.binders, operations }))
-    CST.DeclHandler n params t items -> do
-      attributes <- resolveAttributes OnHandler false (attributesOf p)
-      h <- resolveHandler params t items
-      pure $ h.effect <#> \effect -> Surface.DeclHandler
-        { origin
-        , attributes
-        , implicit: not (Array.null (modifiersOf p))
-        , name: Qualified ctx.module (Ident n.name)
-        , params: h.params
-        , signature: h.signature
-        , effect
-        , cells: h.cells
-        , body: h.body
-        }
     CST.DeclForeign n t -> do
       attributes <- resolveAttributes OnForeign false (attributesOf p)
       signature <- resolveSignature t
@@ -251,7 +262,8 @@ declarationRange = case _ of
   CST.DeclNewtype n _ _ t -> covering n.range (typeRange t)
   CST.DeclType n _ t -> covering n.range (typeRange t)
   CST.DeclEffect n _ ops -> nonEmpty ([ n.range ] <> map (\op -> covering op.name.range (typeRange op.type)) ops)
-  CST.DeclHandler n _ t items -> nonEmpty ([ n.range, typeRange t ] <> Array.concatMap itemRanges items)
+  CST.DeclHandlerSignature n t -> covering n.range (typeRange t)
+  CST.DeclHandler n ps items -> nonEmpty ([ n.range ] <> map binderRange ps <> Array.concatMap itemRanges items)
   CST.DeclForeign n t -> covering n.range (typeRange t)
   CST.DeclForeignType n k -> covering n.range (kindRange k)
   CST.DeclFixity _ p _ op -> covering p.range op.range

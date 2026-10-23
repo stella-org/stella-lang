@@ -173,19 +173,23 @@ abs' n = cases%{
   negate n   otherwise
 }
 
-handler runEmit :: Emit ~> () where
+handler runEmit :: Emit ~> ()
+handler runEmit where
   fast | emit _ = 42
 
-handler toMaybe :: forall a e. (Unit -> a / {| Partial, ...e |}) -> Maybe a / {| ...e |} where
+handler toMaybe :: forall a e. (Unit -> a / {| Partial, ...e |}) -> Maybe a / {| ...e |}
+handler toMaybe where
   | return x = Just x
   | full abort _ = Nothing
 
-handler counter :: Counter ~> () where
+handler counter :: Counter ~> ()
+handler counter where
   var n := 0
   fast | next _ = let v = n! in let _ = n := v + 1 in v
 
 implicit
-handler runWithLimit (limit :: Int) :: Fuel ~> () where
+handler runWithLimit :: Int -> Fuel ~> ()
+handler runWithLimit limit where
   var used := 0
   fast | burn k = used := used! + k
 

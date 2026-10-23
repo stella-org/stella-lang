@@ -178,14 +178,15 @@ sourceB =
   , "g = 1"
   , "h = handle g with"
   , "  E -> | get _ = resume 0"
-  , "handler run :: (Unit -> a / Program) -> a where"
+  , "handler run :: (Unit -> a / Program) -> a"
+  , "handler run where"
   , "  | get _ = resume 0"
   ]
 
 name :: Surface.Declaration -> P.String
 name = case _ of
   Surface.DeclValue d -> local d.name
-  Surface.DeclHandler d -> local d.name <> " of " <> case d.effect of
+  Surface.DeclHandler d -> local d.name <> " of " <> case d.handled of
     Qualified (ModuleName m) (EffName e) -> m <> "." <> e
   _ -> "?"
   where

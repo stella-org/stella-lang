@@ -443,7 +443,9 @@ data Decl
   | DeclType Name (Array TypeVarBinding) Type
   | DeclKindSignature DeclKeyword Name Kind
   | DeclEffect Name (Array TypeVarBinding) (Array OperationSignature)
-  | DeclHandler Name (Array Binder) Type (Array HandlerItem)
+  -- | `handler h :: σ`, the signature of the handler declaration after it.
+  | DeclHandlerSignature Name Type
+  | DeclHandler Name (Array Binder) (Array HandlerItem)
   | DeclForeign Name Type
   | DeclForeignType Name Kind
   | DeclFixity Fixity (Literal Int) Name Name

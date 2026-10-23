@@ -40,7 +40,7 @@ import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.CST.Check (CheckError(..), checkExpr, printCheckReason)
 import Stella.Compiler.CST.Range (exprRange)
-import Stella.Compiler.CST.Types (CaseBody(..), Clause(..), Decl(..), Expr(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Import(..), LetBinding(..), Macro, Name, QuotePart(..), RecordField(..), SourceRange)
+import Stella.Compiler.CST.Types (CaseBody(..), Clause(..), Expr(..), GuardLine(..), HandlerItem(..), HandlerListItem(..), Import(..), LetBinding(..), Macro, Name, QuotePart(..), RecordField(..), SourceRange)
 import Stella.Compiler.CST.Types as CST
 import Stella.Compiler.Interface.Environment (BuildEnvironment, ModuleView, lookupInterface, reachable, viewFor)
 import Stella.Compiler.Macro.Check (MacroRefusal(..), checkMacro)
@@ -156,8 +156,9 @@ declaration ctx = case _ of
     body <- expr ctx v.body
     localBindings <- traverse (localBinding ctx) v.localBindings
     pure (DeclarationValue prefix v { body = body, localBindings = localBindings })
-  DeclarationOther prefix (DeclHandler n params signature items) ->
-    DeclarationOther prefix <<< DeclHandler n params signature <$> traverse (handlerItem ctx) items
+  DeclarationHandler prefix h -> do
+    items <- traverse (handlerItem ctx) h.items
+    pure (DeclarationHandler prefix h { items = items })
   other -> pure other
 
 localBinding :: forall m. Monad m => Context m -> LocalBinding -> Ex m LocalBinding

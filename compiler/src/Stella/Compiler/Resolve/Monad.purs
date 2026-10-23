@@ -366,9 +366,14 @@ data ResolveReason
 
 -- | Why a handler declaration's signature does not tell the effect handled.
 data HandledEffectProblem
-  -- | The signature is neither `E ~> ( … )` nor a function from a thunk
-  -- | `Unit -> α / {| … |}` to a result, its rows written as rows.
+  -- | After an arrow for each parameter, the signature is neither
+  -- | `E ~> ( … )` nor a function from a thunk `Unit -> α / {| … |}` to a
+  -- | result, its rows written as rows, and no other count of arrows reaches
+  -- | either.
   = HandlerShape
+  -- | The declaration takes the first count of parameters, and its signature
+  -- | reaches a handler's type after the second count of arrows.
+  | HandlerParameters Int Int
   -- | The thunk's row holds no element the result's row does not.
   | HandlesNothing
   -- | The thunk's row holds several elements the result's row does not.
@@ -506,11 +511,18 @@ printResolveReason = case _ of
   ComputationWithParameters n -> "The computation `" <> n <> "` takes no parameter; one that does is a function, whose signature is an arrow"
   HandledEffect problem -> case problem of
     HandlerShape ->
-      "A handler's signature is `E ~> ( … )`, or a function from a thunk `Unit -> a / ρ` to its result, each row written with `{| … |}` or named by a type synonym without parameters"
+      "After an arrow for each parameter, a handler's signature is `E ~> ( … )`, or a function from a thunk `Unit -> a / ρ` to its result, each row written with `{| … |}` or named by a type synonym without parameters"
+    HandlerParameters params arrows ->
+      fmt @"This handler declaration takes {params}, and its signature reaches a handler's type after {arrows}; each parameter takes one arrow of it"
+        { params: counted params "parameter", arrows: counted arrows "arrow" }
     HandlesNothing -> "Every effect the thunk's row holds is in the result's row too; a handler declaration removes one"
     HandlesSeveral -> "The thunk's row holds several effects the result's row does not; a handler declaration removes one"
     HandlesInstance l ->
       "A handler declaration handles an effect, and `" <> l <> "` is a labelled instance; handle it with a group headed by `" <> l <> "`"
+
+-- | A count with what it counts, `1 arrow` or `2 arrows`.
+counted :: Int -> String -> String
+counted n noun = show n <> " " <> noun <> if n == 1 then "" else "s"
 
 printResolveWarning :: ResolveWarning -> String
 printResolveWarning = case _ of

@@ -19,6 +19,7 @@ module Stella.Compiler.Resolve.Group
   , modifiersOf
   , Declaration(..)
   , ValueDeclaration
+  , HandlerDeclaration
   , LocalBinding(..)
   , GroupedModule
   , GroupError(..)
@@ -35,7 +36,7 @@ import Prim hiding (Type)
 import Data.Array as Array
 import Data.Foldable (foldl)
 import Data.Maybe (Maybe(..), maybe)
-import Stella.Compiler.CST.Types (Attribute, Binder, Decl(..), DeclKeyword(..), Directive, Export, Expr, Import(..), Item(..), Kind, LetBinding(..), Macro, Module(..), Name, SourceRange, Type(..), isSynthesized)
+import Stella.Compiler.CST.Types (Attribute, Binder, Decl(..), DeclKeyword(..), Directive, Export, Expr, HandlerItem, Import(..), Item(..), Kind, LetBinding(..), Macro, Module(..), Name, SourceRange, Type(..), isSynthesized)
 
 data PrefixItem
   = PrefixAttribute Attribute
@@ -72,7 +73,9 @@ data Declaration
   = DeclarationValue Prefix ValueDeclaration
   -- | A `data`, `newtype`, or `type` declaration, with its kind signature.
   | DeclarationType Prefix (Maybe Kind) Decl
-  -- | An effect, a handler, a foreign, a foreign type, or a fixity.
+  -- | A handler declaration, with its signature.
+  | DeclarationHandler Prefix HandlerDeclaration
+  -- | An effect, a foreign, a foreign type, or a fixity.
   | DeclarationOther Prefix Decl
   -- | A macro called at a declaration's position, with the prefix before it.
   | DeclarationMacro Prefix Macro
@@ -86,6 +89,15 @@ type ValueDeclaration =
   , binders :: Array Binder
   , body :: Expr
   , localBindings :: Array LocalBinding
+  }
+
+-- | A handler declaration, with the signature `handler h :: σ` before it. One
+-- | without is reported, and kept for the name it declares.
+type HandlerDeclaration =
+  { name :: Name
+  , signature :: Maybe Type
+  , binders :: Array Binder
+  , items :: Array HandlerItem
   }
 
 -- | A binding of a `let` block or of a declaration's `where`.
@@ -111,6 +123,8 @@ data GroupReason
   | SignatureWithoutDefinition
   -- | A second signature for the name a signature has just given one.
   | SignatureTwice
+  -- | A handler declaration with no signature `handler h :: σ` before it.
+  | HandlerWithoutSignature
   -- | A kind signature not followed by a declaration of its name and keyword.
   | KindSignatureWithoutDeclaration
   -- | An import after a declaration has begun. The imports are the module's
@@ -135,6 +149,7 @@ instance Show GroupReason where
     ModifierNotBeforeHandler -> "ModifierNotBeforeHandler"
     SignatureWithoutDefinition -> "SignatureWithoutDefinition"
     SignatureTwice -> "SignatureTwice"
+    HandlerWithoutSignature -> "HandlerWithoutSignature"
     KindSignatureWithoutDeclaration -> "KindSignatureWithoutDeclaration"
     ImportAfterDeclaration -> "ImportAfterDeclaration"
     DirectiveNotBeforeForeign -> "DirectiveNotBeforeForeign"
@@ -146,6 +161,7 @@ printGroupReason = case _ of
   ModifierNotBeforeHandler -> "`implicit` can stand only before a handler declaration"
   SignatureWithoutDefinition -> "A signature must be followed directly by the definition of its name"
   SignatureTwice -> "This name already has a signature"
+  HandlerWithoutSignature -> "A handler declaration needs its signature, `handler name :: type`, directly before it"
   KindSignatureWithoutDeclaration ->
     "A kind signature must be followed directly by the declaration it gives a kind to"
   ImportAfterDeclaration -> "Imports must come before every declaration"
@@ -168,8 +184,9 @@ isComputationSignature = case _ of
   _ -> false
 
 -- | A signature, or a kind signature, waiting for the declaration it belongs
--- | to, with the prefix written before it.
-type PendingSignature = { prefix :: Prefix, name :: Name, type :: Type }
+-- | to, with the prefix written before it. A handler signature belongs to a
+-- | handler declaration, and any other to a value.
+type PendingSignature = { prefix :: Prefix, name :: Name, type :: Type, handler :: Boolean }
 
 type PendingKind = { prefix :: Prefix, keyword :: DeclKeyword, name :: Name, kind :: Kind }
 
@@ -217,22 +234,15 @@ step s = case _ of
 
 decl :: Decl -> State -> State
 decl d s = case d of
-  DeclSignature n t -> case s.signature of
-    Just sig | sig.name.name == n.name ->
-      -- The second signature is dropped, and the prefix written before it with it.
-      s { prefix = [], inBody = true, errors = Array.snoc s.errors (GroupError n.range SignatureTwice) }
-    _ ->
-      let
-        s' = unmatched s
-      in
-        s' { prefix = [], signature = Just { prefix: s.prefix, name: n, type: t }, inBody = true }
+  DeclSignature n t -> pending false n t
+  DeclHandlerSignature n t -> pending true n t
   DeclKindSignature keyword n k ->
     let
       s' = unmatched s
     in
       s' { prefix = [], kindSignature = Just { prefix: s.prefix, keyword, name: n, kind: k }, inBody = true }
   DeclValue n binders body localBindings -> case s.signature of
-    Just sig | sig.name.name == n.name ->
+    Just sig | not sig.handler && sig.name.name == n.name ->
       value (sig.prefix <> s.prefix) (Just sig.type) (unmatched (s { signature = Nothing }))
     _ -> value s.prefix Nothing (unmatched s)
     where
@@ -254,8 +264,27 @@ decl d s = case d of
   DeclData n _ _ -> typeLevel KeywordData n
   DeclNewtype n _ _ _ -> typeLevel KeywordNewtype n
   DeclType n _ _ -> typeLevel KeywordType n
+  DeclHandler n binders items -> case s.signature of
+    Just sig | sig.handler && sig.name.name == n.name ->
+      handler (sig.prefix <> s.prefix) (Just sig.type) (unmatched (s { signature = Nothing }))
+    _ ->
+      let
+        s' = unmatched s
+      in
+        handler s.prefix Nothing (s' { errors = Array.snoc s'.errors (GroupError n.range HandlerWithoutSignature) })
+    where
+    handler prefix signature = declare (DeclarationHandler prefix { name: n, signature, binders, items })
   _ -> declare (DeclarationOther s.prefix d) (unmatched s)
   where
+  pending handler n t = case s.signature of
+    Just sig | sig.handler == handler && sig.name.name == n.name ->
+      -- The second signature is dropped, and the prefix written before it with it.
+      s { prefix = [], inBody = true, errors = Array.snoc s.errors (GroupError n.range SignatureTwice) }
+    _ ->
+      let
+        s' = unmatched s
+      in
+        s' { prefix = [], signature = Just { prefix: s.prefix, name: n, type: t, handler }, inBody = true }
   typeLevel keyword n = case s.kindSignature of
     Just ks | ks.keyword == keyword && ks.name.name == n.name ->
       declare (DeclarationType (ks.prefix <> s.prefix) (Just ks.kind) d) (unmatched (s { kindSignature = Nothing }))
@@ -276,7 +305,7 @@ modifierErrors :: Declaration -> Array GroupError
 modifierErrors = case _ of
   DeclarationValue p _ -> misplaced p
   DeclarationType p _ _ -> misplaced p
-  DeclarationOther _ (DeclHandler _ _ _ _) -> []
+  DeclarationHandler _ _ -> []
   DeclarationOther p _ -> misplaced p
   DeclarationMacro _ _ -> []
   where
@@ -290,6 +319,7 @@ directiveErrors = case _ of
   DeclarationMacro _ _ -> []
   DeclarationValue p _ -> misplaced p
   DeclarationType p _ _ -> misplaced p
+  DeclarationHandler p _ -> misplaced p
   DeclarationOther p _ -> misplaced p
   where
   misplaced p = map (\d -> GroupError d.name.range DirectiveNotBeforeForeign) (directivesOf p)

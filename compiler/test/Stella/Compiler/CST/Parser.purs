@@ -223,15 +223,15 @@ spec = describe "Stella.Compiler.CST.Parser" do
       [ "effect E where", "  op :: A ->* B -> C" ] `itemsAre`
         [ "(effect E (op (->* A (-> B C))))" ]
     it "reads handler declarations" do
-      [ "handler counter :: Counter ~> () where", "  var n := 0", "  fast | next _ = n!" ] `itemsAre`
-        [ "(handler counter (~> Counter ()) (var n 0) (group fast (| next _ n!)))" ]
-      [ "handler toMaybe :: forall a. (Unit -> a / {| Partial |}) -> Maybe a where", "  | return x = Just x", "  | full abort _ = Nothing" ] `itemsAre`
-        [ "(handler toMaybe (forall a (-> (parens (-> Unit (/ a (effects Partial)))) (Maybe a))) (group (| return x (Just x))) (group (| full abort _ Nothing)))" ]
-      [ "handler runWithLimit (limit :: Int) :: Fuel ~> () where", "  fast | burn k = k" ] `itemsAre`
-        [ "(handler runWithLimit (parens (:: limit Int)) (~> Fuel ()) (group fast (| burn k k)))" ]
+      [ "handler counter :: Counter ~> ()", "handler counter where", "  var n := 0", "  fast | next _ = n!" ] `itemsAre`
+        [ "(handler-sig counter (~> Counter ()))", "(handler counter (var n 0) (group fast (| next _ n!)))" ]
+      [ "handler toMaybe :: forall a. (Unit -> a / {| Partial |}) -> Maybe a", "handler toMaybe where", "  | return x = Just x", "  | full abort _ = Nothing" ] `itemsAre`
+        [ "(handler-sig toMaybe (forall a (-> (parens (-> Unit (/ a (effects Partial)))) (Maybe a))))", "(handler toMaybe (group (| return x (Just x))) (group (| full abort _ Nothing)))" ]
+      [ "handler runWithLimit :: Int -> Fuel ~> ()", "handler runWithLimit (limit :: Int) where", "  fast | burn k = k" ] `itemsAre`
+        [ "(handler-sig runWithLimit (-> Int (~> Fuel ())))", "(handler runWithLimit (parens (:: limit Int)) (group fast (| burn k k)))" ]
     it "reads a terminal interpreter whose clauses keep their continuation" do
-      [ "handler runConsoleIO :: forall a. (Unit -> a / {| Console |}) -> IO a where", "  | return x = Base.IO.pure x", "  | reifiable full log s k = Base.IO.bind (Js.Console.log s) (Continuation.continue k)" ] `itemsAre`
-        [ "(handler runConsoleIO (forall a (-> (parens (-> Unit (/ a (effects Console)))) (IO a))) (group (| return x (Base.IO.pure x))) (group (| reifiable full log s k ((Base.IO.bind (parens (Js.Console.log s))) (parens (Continuation.continue k))))))" ]
+      [ "handler runConsoleIO :: forall a. (Unit -> a / {| Console |}) -> IO a", "handler runConsoleIO where", "  | return x = Base.IO.pure x", "  | reifiable full log s k = Base.IO.bind (Js.Console.log s) (Continuation.continue k)" ] `itemsAre`
+        [ "(handler-sig runConsoleIO (forall a (-> (parens (-> Unit (/ a (effects Console)))) (IO a))))", "(handler runConsoleIO (group (| return x (Base.IO.pure x))) (group (| reifiable full log s k ((Base.IO.bind (parens (Js.Console.log s))) (parens (Continuation.continue k))))))" ]
     it "reads foreign declarations and foreign types, a directive before them" do
       [ "#observ(none) foreign sqrt :: Number -> Number", "foreign type Window :: Type" ] `itemsAre`
         [ "(#observ (none))", "(foreign sqrt (-> Number Number))", "(foreign-type Window Type)" ]
@@ -263,15 +263,21 @@ spec = describe "Stella.Compiler.CST.Parser" do
       [ "@[json name=\"main\"]", "main :: Unit / {| Console |}", "@[TC.instance] showInt = 1" ] `itemsAre`
         [ "(@ json name=\"main\")", "(sig main (/ Unit (effects Console)))", "(@ TC.instance)", "(value showInt 1)" ]
     it "reads a handler declaration's marker as the default of each of its clauses, a cell among them kept where it stands" do
-      [ "handler h :: E ~> () where", "  var n := 0", "  fast", "  | get _ = n!", "  var m := 1", "  | put _ _ = 0" ] `itemsAre`
-        [ "(handler h (~> E ()) (var n 0) (group fast (| get _ n!)) (var m 1) (group fast (| put _ _ 0)))" ]
-      rejects [ "handler h :: E ~> () where", "  | get _ = 0", "  fast | put _ _ = 0" ]
-      rejects [ "handler h :: E ~> () where", "  fast", "  var n := 0", "  | get _ = 0" ]
-      rejects [ "handler h :: E ~> () where", "  | get _ -> 0" ]
+      [ "handler h :: E ~> ()", "handler h where", "  var n := 0", "  fast", "  | get _ = n!", "  var m := 1", "  | put _ _ = 0" ] `itemsAre`
+        [ "(handler-sig h (~> E ()))", "(handler h (var n 0) (group fast (| get _ n!)) (var m 1) (group fast (| put _ _ 0)))" ]
+      rejects [ "handler h :: E ~> ()", "handler h where", "  | get _ = 0", "  fast | put _ _ = 0" ]
+      rejects [ "handler h :: E ~> ()", "handler h where", "  fast", "  var n := 0", "  | get _ = 0" ]
+      rejects [ "handler h :: E ~> ()", "handler h where", "  | get _ -> 0" ]
 
     it "reads a modifier before a handler" do
-      [ "implicit", "handler h :: E ~> () where", "  fast | op _ = 0" ] `itemsAre`
-        [ "(modifier implicit)", "(handler h (~> E ()) (group fast (| op _ 0)))" ]
+      [ "implicit", "handler h :: E ~> ()", "handler h where", "  fast | op _ = 0" ] `itemsAre`
+        [ "(modifier implicit)", "(handler-sig h (~> E ()))", "(handler h (group fast (| op _ 0)))" ]
+
+    it "reads a handler declaration's signature on a line of its own, and refuses one written in the declaration" do
+      [ "handler h :: Int -> E ~> ()", "implicit handler h n where", "  fast | op _ = n" ] `itemsAre`
+        [ "(handler-sig h (-> Int (~> E ())))", "(modifier implicit)", "(handler h n (group fast (| op _ n)))" ]
+      rejects [ "handler h :: E ~> () where", "  fast | op _ = 0" ]
+      rejects [ "handler h n :: Int -> E ~> () where", "  fast | op _ = n" ]
     it "reads a macro called at a declaration's position" do
       [ "class%{", "  Show a where", "    show :: a -> String", "}" ] `itemsAre`
         [ "(class% { Show a where show :: a -> String })" ]

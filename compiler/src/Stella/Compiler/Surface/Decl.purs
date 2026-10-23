@@ -47,7 +47,7 @@ import Data.Show.Generic (genericShow)
 import Stella.Compiler.Surface.Expr (Binder, CellDeclaration, Expr, HandlerBody)
 import Stella.Compiler.Surface.Name (OperatorName)
 import Stella.Compiler.Surface.Origin (Origin)
-import Stella.Compiler.Surface.Type (ComputationType, HandlerSignature, Kind, OperationSignature, Signature, Type, TypeOperatorTarget, TypeVarBinder)
+import Stella.Compiler.Surface.Type (ComputationType, EffectApplication, Kind, OperationSignature, Signature, Type, TypeOperatorTarget, TypeVarBinder)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, ModuleName, Qualified, Symbol, TyName)
 import Stella.Compiler.TypedCore.Term (Literal)
 
@@ -160,17 +160,22 @@ type OperationDeclaration =
   , signature :: OperationSignature
   }
 
--- | A handler declaration. `effect` is the effect it handles: the left of `~>`,
--- | or, for a signature written in full, the one element the thunk's row holds
--- | and the result's row does not.
+-- | A handler declaration. Its signature is the whole type, its parameters'
+-- | arrows included, and what follows them is `E ~> ( t̄ )` or a function from a
+-- | thunk to a result. `handled` is the effect it handles: the left of `~>`, or
+-- | the one element the thunk's row holds and the result's row does not.
+-- | `capabilityTargets` are the right of a `~>` the signature writes itself, and
+-- | nothing where it reaches the handler's type in another form or through a
+-- | synonym.
 type HandlerDeclaration =
   { origin :: Origin
   , attributes :: Array Attribute
   , implicit :: Boolean
   , name :: Qualified Ident
   , params :: Array Binder
-  , signature :: Signature HandlerSignature
-  , effect :: Qualified EffName
+  , signature :: Signature Type
+  , handled :: Qualified EffName
+  , capabilityTargets :: Maybe (Array EffectApplication)
   -- | The cells of the handling expression an application of the handler is,
   -- | which its operation clauses reach.
   , cells :: Array CellDeclaration

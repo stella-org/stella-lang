@@ -20,10 +20,10 @@ import Stella.Compiler.Interface.Module (TypeEntity(..), TypeSort(..), Via(..), 
 import Stella.Compiler.Resolve.Group (groupModule)
 import Stella.Compiler.Resolve.Monad (Context, Resolve, ResolveError(..), ResolveReason(..), ResolveWarning(..), contextOf, runResolve, withTypeVariables)
 import Stella.Compiler.Resolve.Scope (resolveScope)
-import Stella.Compiler.Resolve.Type (bindTypeVariables, computationScope, handlerScope, resolveComputationSignature, resolveHandlerSignature, resolveKind, resolveOperationSignature, resolveSignature, resolveType, signatureScope)
+import Stella.Compiler.Resolve.Type (bindTypeVariables, computationScope, resolveComputationSignature, resolveKind, resolveOperationSignature, resolveSignature, resolveType, signatureScope)
 import Stella.Compiler.Surface.Decl (Associativity(..))
 import Stella.Compiler.Surface.Name (BindingId(..), OperatorName(..), TypeVar(..))
-import Stella.Compiler.Surface.Type (ComputationType, EffectApplication, EffectRowItem(..), HandlerSignature(..), Kind(..), OperationSignature, RecordRowItem(..), Signature, SignaturePrefix(..), Type(..), TypeOperatorTarget(..), TypeVarBinder, VariantRowItem(..))
+import Stella.Compiler.Surface.Type (ComputationType, EffectApplication, EffectRowItem(..), Kind(..), OperationSignature, RecordRowItem(..), Signature, SignaturePrefix(..), Type(..), TypeOperatorTarget(..), TypeVarBinder, VariantRowItem(..))
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme) as K
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy)
@@ -328,57 +328,6 @@ spec = describe "Stella.Compiler.Resolve.Type" do
         r.result `shouldEqual` "[] Prim.Unit ->* !"
         r.reasons `shouldEqual` [ UnknownTypeVariable "t" ]
 
-  describe "handler signatures" do
-    let
-      handlerWith :: forall a. (Signature HandlerSignature -> a) -> Array CST.Decl -> Maybe (Resolve a)
-      handlerWith f = Array.findMap case _ of
-        CST.DeclHandler _ _ t _ -> Just (map f (resolveHandlerSignature t))
-        _ -> Nothing
-      handler = handlerWith renderHandler
-      clause = "  fast | get _ = resume ()"
-    it "read `E ~> ( t̄ )` as a capability translation" do
-      resolving [ "handler h :: State s ~> ( E, Both s Int ) where", clause ] handler \r -> do
-        r.result `shouldEqual` "[s#0] A.State s#0 ~> A.E, A.Both s#0 Prim.Int"
-        r.reasons `shouldEqual` []
-      resolving [ "handler h :: E ~> () where", clause ] handler \r ->
-        r.result `shouldEqual` "[] A.E ~> "
-      resolving [ "handler h :: E ~> ( State Int ) where", clause ] handler \r ->
-        r.result `shouldEqual` "[] A.E ~> A.State Prim.Int"
-      resolving [ "handler h :: E ~> ( (Int & Int) String ) where", clause ] handler \r ->
-        r.result `shouldEqual` "[] A.E ~> A.Both Prim.Int Prim.Int Prim.String"
-
-    it "read each quantifier in front of `~>` as binding over the rest, all of them in scope over the handler" do
-      resolving [ "handler h :: forall s. (forall (t :: Type). State s ~> ( Both t u, E )) where", clause ] handler \r -> do
-        r.result `shouldEqual` "[u#0] forall s#1. forall (t#2 :: Type). A.State s#1 ~> A.Both t#2 u#0, A.E"
-        r.reasons `shouldEqual` []
-      resolving [ "handler h :: forall s. (forall (t :: Type). State s ~> ( Both t u, E )) where", clause ]
-        (handlerWith (renderVars <<< handlerScope))
-        \r -> r.result `shouldEqual` "u#0 s#1 t#2"
-      resolving [ "handler h :: forall s s. State s ~> () where", clause ] handler \r -> do
-        r.result `shouldEqual` "[] forall s#0 s#1. A.State s#0 ~> "
-        r.reasons `shouldEqual` [ BoundTwice "s" ]
-        r.warnings `shouldEqual` []
-      resolving [ "handler h :: forall s. forall s. State s ~> () where", clause ] handler \r -> do
-        r.result `shouldEqual` "[] forall s#0. forall s#1. A.State s#1 ~> "
-        r.reasons `shouldEqual` []
-        r.warnings `shouldEqual` [ "s" ]
-      resolving [ "handler h :: forall s. forall s. State s ~> () where", clause ] (handlerWith (renderVars <<< handlerScope)) \r ->
-        r.result `shouldEqual` "s#0 s#1"
-
-    it "report what `~>` translates into where it is no list of effects" do
-      resolving [ "handler h :: E ~> E where", clause ] handler \r -> do
-        r.result `shouldEqual` "[] A.E ~> "
-        r.reasons `shouldEqual` [ CapabilityTargetMalformed ]
-
-    it "report an effect written twice among the source and the targets, where it is written again" do
-      resolving [ "handler h :: State Int ~> ( E, State String ) where", clause ] handler \r -> do
-        r.result `shouldEqual` "[] A.State Prim.Int ~> A.E"
-        r.reasons `shouldEqual` [ CapabilityEffectTwice "State" ]
-
-    it "read any other type as written in full" do
-      resolving [ "handler h :: (Unit -> a / {| E |}) -> a where", clause ] handler \r ->
-        r.result `shouldEqual` "[a#0] ((Prim.Unit -> a#0 / {| A.E |}) -> a#0)"
-
   describe "`~>`" do
     it "stands wherever a type does, its source and its targets in the order written" do
       shows [ "f :: (State s ~> ( E, Both s Int )) -> Int -> E ~> ()" ]
@@ -431,14 +380,6 @@ renderOperation o =
     <> joinWith " " (map renderType o.arguments)
     <> " ->* "
     <> renderType o.resumesWith
-
-renderHandler :: Signature HandlerSignature -> String
-renderHandler s = "[" <> renderVars s.implicit <> "] " <> case s.body of
-  Capability c -> joinWith "" (map (\bs -> "forall " <> renderBinders bs <> ". ") c.quantifiers)
-    <> renderApplication c.source
-    <> " ~> "
-    <> joinWith ", " (map renderApplication c.targets)
-  General t -> renderType t
 
 renderBinders :: Array TypeVarBinder -> String
 renderBinders = joinWith " " <<< map \b -> case b.kind of

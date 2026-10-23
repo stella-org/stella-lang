@@ -60,8 +60,8 @@ spec = describe "Stella.Compiler.CST.Layout" do
       "module M where { f x = g x where { g y = y } ; h = 1 }"
 
   it "separates handler items, a clause standing at the block's column" do
-    "module M where\nhandler h :: E ~> () where\n  var n := 0\n  | return x = x\n  | full op _ = 1" `laysOut`
-      "module M where { handler h :: E ~> ( ) where { var n := 0 ; | return x = x ; | full op _ = 1 } }"
+    "module M where\nhandler h :: E ~> ()\nhandler h where\n  var n := 0\n  | return x = x\n  | full op _ = 1" `laysOut`
+      "module M where { handler h :: E ~> ( ) ; handler h where { var n := 0 ; | return x = x ; | full op _ = 1 } }"
 
   it "continues a group whose clauses are indented under its first" do
     "module M where\nx = handle w with\n  State -> full | get _ = 0\n                | set _ = 1\n  runA" `laysOut`

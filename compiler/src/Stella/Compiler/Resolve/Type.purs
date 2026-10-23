@@ -24,11 +24,10 @@ module Stella.Compiler.Resolve.Type
   , resolveSignature
   , resolveComputationSignature
   , resolveOperationSignature
-  , resolveHandlerSignature
   , bindTypeVariables
   , signatureScope
+  , scopeOf
   , computationScope
-  , handlerScope
   ) where
 
 import Prelude
@@ -51,7 +50,7 @@ import Stella.Compiler.Resolve.Label (reportLabelsTwice, reportTagsTwice)
 import Stella.Compiler.Resolve.Monad (Found(..), Resolve, ResolveReason(..), ResolveWarning(..), TypeReference(..), freshBinding, lookupType, lookupTypeOperator, lookupValue, report, typeVariable, typeVariables, warn, withTypeVariables)
 import Stella.Compiler.Surface.Name (TypeVar(..))
 import Stella.Compiler.Surface.Origin (Origin, originOf, spanning)
-import Stella.Compiler.Surface.Type (ComputationType, EffectApplication, EffectRowItem(..), HandlerSignature(..), Kind(..), OperationSignature, RecordRowItem(..), Signature, SignaturePrefix(..), Type(..), TypeOperatorTarget(..), TypeVarBinder, VariantRowItem(..), typeOrigin)
+import Stella.Compiler.Surface.Type (ComputationType, EffectApplication, EffectRowItem(..), Kind(..), OperationSignature, RecordRowItem(..), Signature, SignaturePrefix(..), Type(..), TypeOperatorTarget(..), TypeVarBinder, VariantRowItem(..), typeOrigin)
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), Qualified(..), Symbol(..), Tag(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (unitTy)
@@ -190,28 +189,6 @@ resolveOperationSignature t = go [] [] t
       resumesWith <- resolveType other
       pure { origin, binders, arguments, resumesWith }
 
--- | A handler declaration's signature: `forall ā. E ~> ( t̄ )`, each `forall`
--- | in front of `~>` binding over the rest, or a type written in full.
-resolveHandlerSignature :: CST.Type -> Resolve (Signature HandlerSignature)
-resolveHandlerSignature t = quantify t
-  if isCapability t then capability [] t else General <$> spine t
-  where
-  origin = originOf (typeRange t)
-  isCapability = case _ of
-    CST.TypeForall _ body -> isCapability body
-    CST.TypeParens inner -> isCapability inner
-    CST.TypeCapability _ _ -> true
-    _ -> false
-  capability quantifiers = case _ of
-    CST.TypeForall bs body -> do
-      b <- bindTypeVariables bs
-      withTypeVariables b.scope (capability (Array.snoc quantifiers b.binders) body)
-    CST.TypeParens inner -> capability quantifiers inner
-    CST.TypeCapability source target -> capabilityOf source target <#> case _ of
-      Just c -> Capability { origin, quantifiers, source: c.source, targets: c.targets }
-      Nothing -> General (TypeInvalid origin)
-    _ -> pure (General (TypeInvalid origin))
-
 -- | Binds a group of type variables, each with its kind where one is written.
 -- | A name bound twice in the group is reported, and the first binding is the
 -- | one in scope. The scope is what to put in scope for what the group binds
@@ -255,11 +232,6 @@ computationScope s = s.implicit <> foldMap binders s.body.prefix
     PrefixForall _ bs -> scopeOf bs
     PrefixConstraint _ -> []
     PrefixSynthesized _ -> []
-
-handlerScope :: Signature HandlerSignature -> Array TypeVar
-handlerScope s = case s.body of
-  Capability c -> s.implicit <> foldMap scopeOf c.quantifiers
-  General t -> signatureScope { implicit: s.implicit, body: t }
 
 -- | Quantifies a signature implicitly over the type variables it mentions that
 -- | nothing binds, and resolves it with them in scope.

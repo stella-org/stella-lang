@@ -126,7 +126,8 @@ spec = describe "Stella.Compiler.Resolve.Module" do
         , "type Pair a = (a, a)"
         , "effect Ask a where"
         , "  ask :: Unit ->* a"
-        , "handler h :: Ask Int ~> () where"
+        , "handler h :: Ask Int ~> ()"
+        , "handler h where"
         , "  fast | ask _ = 0"
         , "#observ(none)"
         , "foreign sqrt :: Number -> Number"
@@ -156,7 +157,8 @@ spec = describe "Stella.Compiler.Resolve.Module" do
         , "c n = 1"
         , "infixl 6 nope as +++"
         , "infixr 0 type Nope as ***"
-        , "handler h :: Int -> Int where"
+        , "handler h :: Int -> Int"
+        , "handler h where"
         , "  | return r = r"
         , "m%( 1 )"
         ]
@@ -269,7 +271,7 @@ renderDeclaration = case _ of
   Surface.DeclNewtype d -> "newtype " <> typeName d.name <> " (" <> qualified d.constructor.name <> ")" <> attributes d.attributes
   Surface.DeclSynonym d -> "synonym " <> typeName d.name <> maybe "" (const " kinded") d.kind <> attributes d.attributes
   Surface.DeclEffect d -> "effect " <> effectName d.name <> " (" <> joinWith ", " (map (qualified <<< _.name) d.operations) <> ")" <> attributes d.attributes
-  Surface.DeclHandler d -> "handler " <> qualified d.name <> " of " <> effectName d.effect <> attributes d.attributes
+  Surface.DeclHandler d -> "handler " <> qualified d.name <> " of " <> effectName d.handled <> attributes d.attributes
   Surface.DeclForeign d -> "foreign " <> qualified d.name <> (if d.observation == Surface.ObservesNone then " observes none" else "") <> attributes d.attributes
   Surface.DeclForeignType d -> "foreign type " <> typeName d.name <> attributes d.attributes
   Surface.DeclFixity d -> "infix " <> operator d.operator <> " " <> case d.target of
