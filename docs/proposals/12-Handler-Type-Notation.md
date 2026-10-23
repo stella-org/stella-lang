@@ -2,6 +2,15 @@
 
 Status: Accepted
 
+> **Superseded in part.** The Surface AST named below, `HandlerSignature`, is superseded: a handler
+> declaration holds its signature as a value's is, the whole type, giving each parameter a pure
+> arrow. The one-line form below, `handler h p̄ :: τ where`, stands with each parameter annotated,
+> and the signature is assembled from those annotations and `τ`; the signature may also stand on
+> a line of its own, `handler h :: σ`, before `handler h p̄ where`. The current syntax is specified
+> in [Effect Handlers § Parameters](../technical-references/02-Surface-Language/02-Effect-Handlers.md#parameters)
+> and [Syntax § Handlers](../technical-references/02-Surface-Language/05-Syntax.md#handlers).
+> What this proposal decides of `~>` still applies.
+
 ## What is This?
 
 ### Background

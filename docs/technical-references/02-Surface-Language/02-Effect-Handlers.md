@@ -6,7 +6,7 @@ Nothing here reaches Core. A handler declaration desugars to an ordinary functio
 
 ## Handler declarations
 
-A **handler declaration** binds a name to an interpreter.
+A **handler declaration** binds a name to an interpreter. Its signature is written at its head, `handler h :: σ where`, or on a line of its own before it, `handler h :: σ`, as a value's is ([Parameters](#parameters)).
 
 ```stella
 handler runConsole :: Console ~> ( LiftIO ) where
@@ -82,7 +82,9 @@ compose h1 h2 thunk = h2 (\_ -> h1 thunk)
 
 `E ~> ( G )` is refused for it, and rightly: nothing says its `e` does not hold `F`, and `h2`, installed around the computation, would then handle the operations of `F` the computation performs itself, which a handler of `E` must leave alone.
 
-**A handler declaration's signature is quantified as a signature is.** A type variable it mentions that nothing binds is quantified implicitly, and a `forall` may stand in front of it, to give a variable its kind: `forall (s :: Type). State s ~> ()`. Its variables are in scope in the handler's parameters and body ([Name Resolution](06-Name-Resolution.md)).
+**A handler declaration's signature is quantified as a signature is.** A type variable it mentions that nothing binds is quantified implicitly, and a `forall` may stand in front of it, to give a variable its kind: `forall (s :: Type). State s ~> ()`. A variable quantified implicitly is in scope in every parameter and the body, and one a `forall` binds in the parameters after it and the body ([Name Resolution](06-Name-Resolution.md)).
+
+**A declaration records the targets of a `~>` its signature writes itself.** A signature that reaches the handler's type in the general form, or through a synonym, as in `type Lowering = Fuel ~> ()` followed by `handler h :: Lowering`, declares the same handler and records no targets.
 
 ```stella
 -- effect Verbosity where level :: Unit ->* Int
@@ -115,8 +117,9 @@ handler toMaybe :: forall a. (Unit -> a / {| Partial, ... |}) -> Maybe a / {| ..
   | full abort _ = Nothing
 ```
 
-**The effect handled is read off the signature.** Past its quantifiers, constraints, and synthesized parameters, the signature is a function from a thunk `Unit -> α / ρ` to a result, `β / ρ'` or a pure `β`, and the effect is the one element `ρ` holds and `ρ'` does not, elements being told apart by their keys: the effect, or the label of an instance.
+**The effect handled is read off the signature.** Past its quantifiers, constraints, and synthesized parameters, and an arrow for each parameter, the signature is `E ~> ( t̄ )`, which handles `E`, or a function from a thunk `Unit -> α / ρ` to a result, `β / ρ'` or a pure `β`, and the effect is the one element `ρ` holds and `ρ'` does not, elements being told apart by their keys: the effect, or the label of an instance.
 
+- **A synonym without parameters is read through where it stands for the handler's type or for part of the spine before it**, whether the module declares it or imports it. A signature that needs a synonym with parameters, or one naming itself, to reach the handler's type is rejected.
 - **A row is written `{| … |}`, or named by a type synonym without parameters**, which is read through. A spread contributes the elements of the row it names: a synonym's, and none for a variable or `...` left open.
 - **Exactly one unlabelled element is removed.** A signature removing none, several, or a labelled instance is rejected, as is one whose rows are read neither way: a handler declaration handles one effect, and a labelled instance is handled in place by a group headed by its label.
 
@@ -172,13 +175,23 @@ The `return` clause is optional. A handler without one returns the computation's
 
 ### Parameters
 
-A handler declaration may take ordinary value parameters, written before the `::`.
+A handler declaration may take ordinary value parameters, irrefutable patterns written after its name. Its signature gives each one a pure arrow in front of the handler's type, and is written either way. On a line of its own, it is the whole type:
+
+```stella
+handler runWithLimit :: Int -> Fuel ~> ()
+handler runWithLimit limit where …
+```
+
+At the head, each parameter carries its type as an annotation, and the type after `::` is the handler's, what follows the parameters' arrows. The signature is those arrows in front of it, quantified as a signature is, so a type variable an annotation mentions is quantified implicitly over the whole:
 
 ```stella
 handler runWithLimit (limit :: Int) :: Fuel ~> () where …
+handler runState (initial :: s) :: State s ~> () where …   -- s -> State s ~> ()
 ```
 
-They become arguments of the generated function, ahead of the thunk and of the quantifiers of the expansion, and require nothing of Core.
+A parameter with no annotation at a head with a type is rejected, and so is a type at the head of a declaration given a signature on a line of its own. A `forall` written after `::` binds over the handler's type alone; one the parameters' types need, to give a variable its kind or to place it, is written in a signature on a line of its own.
+
+The parameters become arguments of the generated function, ahead of the thunk and of the quantifiers of the expansion, and require nothing of Core.
 
 ```text
 runWithLimit : Int -> forall (e : Row Effect). Fuel ∉ e =>
@@ -186,6 +199,8 @@ runWithLimit : Int -> forall (e : Row Effect). Fuel ∉ e =>
 ```
 
 `runWithLimit 1000` is at the type past the first arrow, which is instantiated where it is applied ([The type of a handler](#the-type-of-a-handler)).
+
+**The handler's type stands after as many arrows as the declaration takes parameters.** Where it stands after a different number, both numbers are reported. The arrow from the thunk of a signature written in full is not counted, so `handler h :: (Unit -> a / {| E |}) -> a` declared as `handler h n where` takes one parameter while its signature gives none.
 
 ## Cells
 

@@ -65,7 +65,7 @@ Origin = FromSource range
 | `forall ā. C => {{ d :: σ by f }} -> τ / ρ` | at the end of the spine of a computation declaration's signature | `ComputationType`: its spine — quantifiers, constraints, and synthesized parameters (`PrefixSynthesized`) — in the order written, the result, and the row |
 | `forall b̄. σ̄ ->* τ` | as an operation's signature | `OperationSignature`: its own type variables, the arguments, and the type it resumes with (D21) |
 
-**`E ~> ( t̄ )` is a form of `Type`**, `TypeCapability`, standing wherever a type does: it holds its source and its targets, each an effect application, in the order written, and elaboration reads it as its expansion ([Effect Handlers](02-Effect-Handlers.md#the-type-of-a-handler)). A handler declaration's signature written `forall ā. E ~> ( t̄ )` is held apart, as `HandlerSignature`'s `Capability`: the binders of each `forall` in front of `~>`, a group apiece in the order written, then the source and the targets.
+**`E ~> ( t̄ )` is a form of `Type`**, `TypeCapability`, standing wherever a type does: it holds its source and its targets, each an effect application, in the order written, and elaboration reads it as its expansion ([Effect Handlers](02-Effect-Handlers.md#the-type-of-a-handler)).
 
 **An arrow holds the row `/` puts on it.** `τ1 -> τ2 / ρ` is a `TypeFunction` with the row, and an arrow with none is pure. The arrow after a synthesized parameter is pure and takes no row; a `/` after it is the computation type its spine ends in.
 
@@ -104,7 +104,7 @@ Origin = FromSource range
 
 - **`handle e with …` and `using … handle e` are one node**, `ExprHandle`, holding the expression's cells, its items from the first, outermost, to the last, and the computation. An item is a handler applied, or a group written in place. **The cells are the expression's and not a group's**: every group of it reaches them, so they are held beside the items rather than in any of them ([Effect Handlers](02-Effect-Handlers.md#cells)).
 - **A group holds the effect it handles**, and the label where it handles an instance, with where its head — the effect or the label — is written, which is where what handling the element asks of the row is reported. A group headed by a label is given its effect from the operations its clauses name.
-- **A handler declaration holds the effect it handles**: the left of `~>`, or, for a signature written in full, the one element the thunk's row holds and the result's row does not, a row named by a type synonym read through it ([Effect Handlers](02-Effect-Handlers.md)).
+- **A handler declaration holds its signature as a value's is, its parameters' arrows included, and the effect it handles**, `handled`, read off what follows those arrows: the left of `~>`, or, for a signature in full, the one element the thunk's row holds and the result's row does not, a row named by a type synonym read through it ([Effect Handlers](02-Effect-Handlers.md)). It holds the targets of a `~>` the signature writes itself as `capabilityTargets`, and none where the handler's type is in full or reached through a synonym.
 - **A clause holds the form in effect for it**, a group's marker and the default resolved: `ClauseFast`, `ClauseFull`, or `ClauseReifiable` with the pattern its continuation is bound by, the clause's last parameter.
 - **A clause holds one pattern per argument of its operation**, a `reifiable full` clause's continuation apart from them, and **a handler resolved without error holds one clause per operation of its effect, and one return clause at most**: name resolution reports the operations no clause names. A clause with other than one pattern per argument still names its operation, so it is not reported missing, but is left out of the AST, and a handler of a module holding errors may lack that operation's clause ([Name Resolution](06-Name-Resolution.md)).
 - **`ExprResume` stands only as the function of an `ExprApp`**, `resume e`, in the immediate body of a `full` clause: not inside a lambda, a local function, a `case _ of`, or a handling expression there ([Effect Handlers](02-Effect-Handlers.md)).
@@ -121,7 +121,7 @@ Origin = FromSource range
 | newtype | its kind signature, its parameters, and its one constructor of one field |
 | type synonym | its kind signature, its parameters, and the type it stands for |
 | effect | its parameters and its operations |
-| handler | `implicit`, its parameters, its signature, the effect it handles, its cells, and its `HandlerBody` |
+| handler | `implicit`, its parameters, its signature, the effect it handles, the targets of the `~>` its signature writes, its cells, and its `HandlerBody` |
 | foreign | its `Observation` and its signature |
 | foreign type | its kind ([Foreign Types](../../proposals/06-Foreign-Types.md)) |
 | fixity | its associativity, its precedence, the value or constructor it names, a computation among the values, and the operator |
@@ -154,7 +154,7 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | an operation clause whose operation does not resolve or is not an operation of the effect handled, one with other than a pattern per argument of its operation and its continuation where it keeps one, a second clause for one operation, a second return clause | the clause |
 | a `var` of a handling expression after a group or a handler, or of a handler declaration after a clause | the cell |
 | a group whose effect cannot be determined | the group |
-| a handler declaration whose effect cannot be determined, a fixity declaration whose target does not resolve, a computation declaration with parameters, a macro called at a declaration's position, which this version does not expand | the declaration |
+| a handler declaration with no signature, or whose effect cannot be determined, a fixity declaration whose target does not resolve, a computation declaration with parameters, a macro called at a declaration's position, which this version does not expand | the declaration |
 
 **An import whose module is there keeps its dependency**, whatever else is wrong with it: a lazy import with no alias, or with a list, is reported and opens no name, and its module stays among the dependencies the header declares.
 
@@ -179,15 +179,16 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | `ItemBroken` | nothing; the parser reported it |
 | `DeclSignature` and `DeclValue` | a value, or a computation where the signature is a computation type |
 | `DeclKindSignature` and `DeclData`, `DeclNewtype`, `DeclType` | a data type, a newtype, or a type synonym, with its kind |
-| `DeclEffect`, `DeclHandler`, `DeclForeign`, `DeclForeignType`, `DeclFixity`, `DeclAttribute` | the declaration of that name |
+| `DeclHandlerSignature` and `DeclHandler` | a handler declaration, its signature the one before it or the one its head gives: an arrow from each parameter's annotation in front of the type written there |
+| `DeclEffect`, `DeclForeign`, `DeclForeignType`, `DeclFixity`, `DeclAttribute` | the declaration of that name |
 | `DeclTypeFixity` | a type fixity declaration |
 | `KindName`, `KindApp` | `KindType`, `KindEffect`, and `KindRow`; any other name or application is invalid |
 | `TypeOp` | `TypeOperator`, rebracketed by fixity; where it names an effect and stands where an effect application is called for — an element or an instance of an effect row, the source or a target of `~>` — an `EffectApplication`, any arguments an application adds following its two operands |
 | `TypeArrow` | `TypeFunction`, with the row where its result is a `TypeEffect`; one from a synthesized parameter is pure, a `TypeFunction` with no row in a value's signature and a `PrefixSynthesized` on the spine of a computation declaration's signature |
-| `TypeForall`, `TypeConstrained` | `TypeForall` and `TypeConstrained`; on the spine of a computation declaration's signature, a `PrefixForall` and a `PrefixConstraint`; in front of `~>`, a `forall` is a group of `Capability`'s quantifiers |
+| `TypeForall`, `TypeConstrained` | `TypeForall` and `TypeConstrained`; on the spine of a computation declaration's signature, a `PrefixForall` and a `PrefixConstraint` |
 | `TypeEffect` | at the end of the spine of a computation declaration's signature, the result and the row of its `ComputationType`; after an arrow other than one from a synthesized parameter, the row of that arrow; anywhere else invalid |
 | `TypeOperationArrow` | as an operation's signature, its `OperationSignature`; anywhere else invalid |
-| `TypeCapability` | as a handler declaration's signature, under its `forall`s, `HandlerSignature`'s `Capability`; anywhere else `TypeCapability`. Either way an effect written again among the source and the targets is dropped |
+| `TypeCapability` | `TypeCapability`, an effect written again among the source and the targets dropped |
 | `TypeParens`, `TypeUnit` | the type it encloses, and `Prim.Unit` |
 | `TypeDirective` | invalid; no directive of this version stands in a type |
 | `RowItem` | the item of the row its bracket gives; one the bracket does not admit is dropped |

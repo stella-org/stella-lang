@@ -44,7 +44,8 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | a computation type anywhere a type stands | a computation type other than at the end of the spine of a computation declaration's signature, the one a top-level value definition pairs with; a `foreign` declaration's signature among the rest (`Check`) |
 | `{{ … }}` wherever a type atom stands | one off the spine of a signature |
 | `E ~> ρ` wherever an arrow may stand | a source or a target that is no effect applied to its arguments, a type synonym among them; targets other than `()` or effects in parentheses; an effect written twice among the source and the targets |
-| any type as a handler declaration's signature | one in full whose thunk's row and result's row, each written `{| … |}` or named by a type synonym without parameters, do not differ by exactly one unlabelled effect ([Effect Handlers](02-Effect-Handlers.md)) |
+| any type as a handler declaration's signature | one where what follows a pure arrow for each parameter is neither `E ~> ( t̄ )` nor a function from a thunk whose row and the result's row, each written `{| … |}` or named by a type synonym without parameters, differ by exactly one unlabelled effect; one reaching either only through a synonym with parameters or through one naming itself ([Effect Handlers](02-Effect-Handlers.md#parameters)) |
+| `handler h :: σ` as an item of its own, and `handler h p̄ (:: τ)? where …` | a handler declaration with neither a signature before it nor a type at its head, or with both; a parameter with no annotation at a head with a type; a handler signature with no declaration of its name after it, or one given twice; a value's signature before a handler declaration, or a handler's before a value's definition |
 | any row item in any bracket | an item the bracket does not admit; an element of an effect row that is no effect applied to its arguments, a type synonym standing for a row among them ([Surface AST](08-Surface-AST.md)) |
 | any chain of operators | two operators of one precedence that cannot be chained |
 | a replacement `name = e` among any record literal's fields | one in a literal spreading no record ([Name Resolution](06-Name-Resolution.md#labels-are-not-resolved)) |
@@ -188,14 +189,14 @@ item ::= import
        | macroCall
        | attribute item?
        | directive item?
-       | "implicit" handlerDecl?
+       | "implicit" (handlerSignature | handlerDecl)?
        | ERROR
 ```
 
 **An attribute, a directive, and a modifier are items of their own**, standing on a line before the declaration they belong to or on the same line ahead of it. The modifier `implicit` stands only before a handler declaration ([Effect Handlers](02-Effect-Handlers.md)).
 
 - **They join the declaration after them, which is their prefix.** A declaration given a signature has its prefix from before the signature and from before the definition alike, in the order written, so a prefix may stand between the two. Where the definition does not follow, the prefix before the signature goes with the signature, and to nothing after it.
-- **A signature is followed directly by the definition of its name**, and a kind signature by the declaration of its keyword and name: `data T :: Type -> Type` then `data T a = …`.
+- **A signature is followed directly by the definition of its name**, and a kind signature by the declaration of its keyword and name: `data T :: Type -> Type` then `data T a = …`. A handler declaration's signature, `handler h :: σ`, is followed by the handler declaration of its name, and every handler declaration has one there or at its head. A value's signature does not join a handler declaration, and a handler's signature does not join a value's definition.
 - **The imports come before every declaration**, a signature counting as the start of one, so that the header, which the source dependencies are read from (D51), is the top of the module (D22).
 - **A macro called at a declaration's position keeps the prefix before it as a unit with it.** What an attribute there means is the macro's to settle, and nothing in the prefix passes on to the declarations an expansion produces or to the one after the call.
 
@@ -239,6 +240,7 @@ decl ::= ident "::" type
        | "type" properName typeVarBinding* "=" type
        | ("data" | "newtype" | "type") properName "::" kind
        | "effect" properName typeVarBinding* "where" block(ident "::" type)
+       | handlerSignature
        | handlerDecl
        | "foreign" ident "::" type
        | "foreign" "type" properName "::" kind
@@ -404,7 +406,8 @@ recordBinder  ::= label ":" binder | label
 ## Handlers
 
 ```text
-handlerDecl ::= "handler" ident binderAtom* "::" type "where" VOPEN handlerBody VCLOSE
+handlerSignature ::= "handler" ident "::" type
+handlerDecl ::= "handler" ident binderAtom* ("::" type)? "where" VOPEN handlerBody VCLOSE
 handlerBody ::= (cellDecl VSEP)* groupStart (VSEP (cellDecl | clause+))*
 handlerListItem ::= cellDecl
                   | (qualProperName | ident) "->" VOPEN groupStart (VSEP clause+)* VCLOSE
@@ -421,6 +424,8 @@ marker ::= "full" | "fast" | "reifiable" "full"
 **An item of a handling expression is a cell declaration, a group written in place, or a handler.** A cell declaration begins with `var` and declares a cell of the expression, which every group of it reaches ([Effect Handlers](02-Effect-Handlers.md#cells)). A group is a head — an effect name or a label — and `->`, then the block of its marker and its clauses ([Handler clauses](#handler-clauses)); any other item is a handler, an expression. The grammar admits a cell declaration among the items in any order, and name resolution rejects one after a group or a handler.
 
 **A group's marker stands first, before its first clause, and is the default of every clause of the group**; a clause's own marker, after its `|`, takes its place for that clause. A group holds one clause at least, its `return` clause counting as one.
+
+**A top-level handler's signature stands at its head or on a line of its own.** At the head, `handler h p̄ :: τ where`, each parameter is annotated with its type and `τ` is what follows their arrows; on a line of its own, `handler h :: σ`, as a value's does, `σ` is the whole type and the declaration after it, `handler h p̄ where`, has no `::` ([Effect Handlers](02-Effect-Handlers.md#parameters)).
 
 **A top-level handler's block holds its cells and its clauses with no head**, the effect it handles following from its signature, and its marker as a group's. The grammar admits a cell declaration among its clauses, and name resolution rejects one after a clause.
 
