@@ -283,11 +283,34 @@ eraseOutcome(value v) = value ⌊v⌋        eraseOutcome(fault φ) = fault φ
 
 **The typed view is chosen with the environment, and is not derived from the implementation.** The implementation fixes the erasure of each outcome and not the outcome: values carrying different annotations — inside the body of a returned closure, say — may have one type and one erasure. What is asked of a typed view is that it be a function, one outcome for each state, instance, and argument list, and that it erase to what the implementation returns; conformance asks the rest.
 
+#### Coverage
+
+**A global name is covered when `G` has its entry**: a definition for a defined value, an implementation for a foreign, an entry for a constructor. Coverage is asked of a term at every node, latent ones included:
+
+```text
+globals(e)        the global value names occurring in e, wherever they occur:
+                  under a λ or a Λ, in a handler's clauses, in a decision
+                  tree, in a region frame's values, or at the head of a chain;
+                  globals(ē) for a sequence is the union
+
+G covers e        when globals(e) ⊆ dom(G)
+
+G covers N; e     when G covers e and the term of every cell of N, the
+                  initializer of a Suspended cell and the value of a Ready one
+
+G covers e except R,  G covers N; e except R
+                  the same with dom(G) ∪ R in place of dom(G), a name of the
+                  set R being allowed no entry; G covers e is
+                  G covers e except ∅
+```
+
+**A name under a binder counts as much as one in evaluation position.** A closure is applied later, and a name in its body that `G` lacks leaves that application with nothing to unfold to. The exception set is for the module fold alone, where a closure may name a member of its `rec` group not yet installed (below); a run outside the fold is covered with no exception.
+
 ```text
 Σ; Γ_N ⊨ G   holds when
 
-  (1) G covers every global name mentioned by the module under evaluation,
-      and by the definitions in G itself
+  (1) G covers the module under evaluation, its right-hand sides and its
+      entry point, and G covers v for each (M.x : σκ = v) ∈ G
 
   (2) for each (M.x : forall k̄. σ = v) ∈ G,  under Σ and Γ_N:
         ·, k̄ ; · ; · ⊢ v : σ ! ()
@@ -303,6 +326,7 @@ eraseOutcome(value v) = value ⌊v⌋        eraseOutcome(fault φ) = fault φ
         δ_f(H, ⌊v̄⌋) is defined
         δᵀ_f(H, ξ, v̄) is either a fault or a value v with
                ·; · ⊢ v : θ(σ) ! () under the same Γ_R and Γ_N
+        where it is a value v, globals(v) ⊆ dom(G) ∪ globals(v̄)
         the call performs no proper effect, and runs no reified computation
                it constructs
         the call applies no Stella function value
@@ -312,20 +336,24 @@ eraseOutcome(value v) = value ⌊v⌋        eraseOutcome(fault φ) = fault φ
                where Σ records #observ(none) for M.f
 ```
 
-**Condition (3) asks of a call a typed program can make, and of no other.** A chain the cursor walks but whose values are not of the types it selects is no call a well-typed term reaches, and an implementation owes nothing for one; the typed view of what it returns is still at the instantiated result type `θ(σ)`, and the ABI precondition still bounds what it is asked. **The result is typed under the contexts the call is**, not merely under some: an argument may be a closure that forces a location or reaches a region, and a result may hand one back, so preservation needs the value the typed view gives at `θ(σ)` under the `Γ_R` and `Γ_N` the step stands under. The clauses after the second are about the call as the implementation makes it, which is where an effect, an application, and divergence happen.
+**Condition (3) asks of a call a typed program can make, and of no other.** A chain the cursor walks but whose values are not of the types it selects is no call a well-typed term reaches, and an implementation owes nothing for one; the typed view of what it returns is still at the instantiated result type `θ(σ)`, and the ABI precondition still bounds what it is asked. **The result is typed under the contexts the call is**, not merely under some: an argument may be a closure that forces a location or reaches a region, and a result may hand one back, so preservation needs the value the typed view gives at `θ(σ)` under the `Γ_R` and `Γ_N` the step stands under. The clauses after the third are about the call as the implementation makes it, which is where an effect, an application, and divergence happen.
+
+**A call introduces no name `G` does not cover, and typing it is not enough.** An implementation could return `M.MkTask (λ (u : Unit) / (). M.missing)`, `M.missing` declared in `Σ`, defined nowhere in `G`, and in none of the arguments: the step succeeds, the result is well typed, and applying the closure later has no unfolding step. Condition (1) covers the definitions installed in `G` and says nothing of a value a call produces, so the obligation stands in (3), on each value the typed view gives, and is met when the value is produced rather than when the closure is entered. A constructor needs its entry and no more; a defined global needs its definition, and a foreign its implementation.
+
+**What the obligation preserves is coverage, and it does not ask for more.** Being well typed does not make a call's arguments covered, so a condition asking every returned value to be covered would refuse an identity: `M.id [Unit -> Int] (λ (u : Unit) / (). M.missing)` is well typed with `M.missing` in `Σ` alone, and the correct implementation returns its argument. The clause bounds the names of the result by those of `G` and of the arguments instead, which gives both coverages the properties use from one statement: arguments covered give a result covered, and arguments covered except `R` a result covered except `R` — a closure handed to a foreign during a `rec` group's installation, naming a member not yet installed, may come back as it went.
 
 **Conformance is relative to the store's types** because a value installed in `G` may be a closure whose body forces a cell a local `letrec` allocated while it was evaluated ([Module initialization](#module-initialization)). It is stable under extending the store: where `Γ_N2` extends `Γ_N`, `Σ; Γ_N ⊨ G` gives `Σ; Γ_N2 ⊨ G`, a value typed under fewer locations being typed under more, so a step that allocates leaves `G` conforming. Condition (1) mentions no location and (3) quantifies over every well-formed run-time context, and **`Σ ⊨ G` is `Σ; · ⊨ G`**, what an environment owes before any store exists and what an implementation of a `δ_f` is held to.
 
 **The environment a module's fold passes through is not yet conforming**, and holds an invariant of its own. Condition (1) asks for every global the module mentions, which the fold is still installing, and a `rec` group is installed member by member, a closure installed early mentioning a member written after it, latently. So the fold keeps the **initialization invariant** `Σ; Γ_N ⊨ᵢ G`, which is conditions (2) and (3) with (1′) in place of (1):
 
 ```text
-  (1′) every global name a definition in G mentions is in G, or is a member,
-       not yet installed, of the rec group being installed
+  (1′) G covers v except R for each (M.x : σκ = v) ∈ G, R being the
+       members of the rec group being installed that are not yet installed
 ```
 
-It holds of `G_decl` at `·`, the imports' definitions mentioning nothing of the module and its constructors and foreigns nothing at all, which linking establishes. **Each step of the fold keeps it**: a right-hand side is evaluated under the environment the fold has reached, a `nonrec` mentioning nothing after it and a member of a `rec` group reaching a later member only latently, initialization safety keeping every lookup during the evaluation off one not yet installed; and the value installed is typed under the store reached, conformance's stability under extending the store carrying the rest. **Where a group is installed whole, (1′) is (1) for the definitions in `G`**, every name they mention being installed, a cycle being confined to its group. **Where the fold ends, `Σ; Γ_N ⊨ G` holds**, every global of the module installed, and the run of `main` begins under it.
+It holds of `G_decl` at `·`, the imports' definitions mentioning nothing of the module and its constructors and foreigns nothing at all, which linking establishes. **Each step of the fold keeps it**: a right-hand side is evaluated under the environment the fold has reached, a `nonrec` mentioning nothing after it and a member of a `rec` group reaching a later member only latently, initialization safety keeping every lookup during the evaluation off one not yet installed; and the value installed is typed under the store reached, conformance's stability under extending the store carrying the rest. **Where a group is installed whole, `R` is empty and (1′) is (1) for the definitions in `G`**, every name they mention being installed, a cycle being confined to its group; the exception is never carried past the group that needed it. **Where the fold ends, `Σ; Γ_N ⊨ G` holds**, every global of the module installed, and the run of `main` begins under it.
 
-The properties below are stated of a conforming environment. **During the fold they hold under `⊨ᵢ` in place of `⊨`**, with one premise more for Progress: a lookup of a member not yet installed has no rule, and what keeps evaluation off one is that the group being installed is initialization-safe.
+The properties below are stated of a conforming environment. **During the fold they hold under `⊨ᵢ` in place of `⊨`**, and with `G covers N; e except R`, `R` that of (1′), in place of `G covers N; e`, which the right-hand side being evaluated meets, a `nonrec` mentioning nothing after it; and with one premise more for Progress: a lookup of a member not yet installed has no rule, and what keeps evaluation off one is that the group being installed is initialization-safe.
 
 #### An ABI precondition is where condition (3) stops asking
 
@@ -1086,7 +1114,7 @@ Every property assumes three things, and each does work the others do not (above
 
 **The third is the one a reader is likely to want narrower, and it cannot be.** It is not a condition on `G`, since the same environment runs a program that reads only written slots and one that does not; and it is not decidable here, since nothing in these documents analyses which slots a program has written. **What it is, is a debt the library owes**, and `Data.Array` is where it is paid: an array leaves its constructors with every slot written, and an application reaching `Base.Array.unsafeIndex` through that library is a term that respects preconditions without its author having thought about it.
 
-**Preservation.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ Γ_R ok`, `Γ_R ⊢ Γ_N ok`, `⊢ N : Γ_N`, `·; · ⊢ e : τ ! ρ` under `Γ_R` and `Γ_N`, and `G ⊢ N; e → N2; e2` for a **term** `e2`, then there are a `Γ_R2` extending `Γ_R` and a `Γ_N2` extending `Γ_N`, with `⊢ Γ_R2 ok`, `Γ_R2 ⊢ Γ_N2 ok`, `⊢ N2 : Γ_N2`, `Σ; Γ_N2 ⊨ G`, and `·; · ⊢ e2 : τ ! ρ` under `Γ_R2` and `Γ_N2`.
+**Preservation.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ Γ_R ok`, `Γ_R ⊢ Γ_N ok`, `⊢ N : Γ_N`, `·; · ⊢ e : τ ! ρ` under `Γ_R` and `Γ_N`, and `G ⊢ N; e → N2; e2` for a **term** `e2`, then there are a `Γ_R2` extending `Γ_R` and a `Γ_N2` extending `Γ_N`, with `⊢ Γ_R2 ok`, `Γ_R2 ⊢ Γ_N2 ok`, `⊢ N2 : Γ_N2`, `Σ; Γ_N2 ⊨ G`, and `·; · ⊢ e2 : τ ! ρ` under `Γ_R2` and `Γ_N2`; and where `G covers N; e`, `G covers N2; e2`.
 
 A step to `fault φ` is outside the statement: a fault carries no type.
 
@@ -1094,13 +1122,13 @@ Both the type and the ambient row are preserved exactly. Widening is never disca
 
 **The term is closed**, as it is in Progress and Effect safety. A step is taken where no binder of the term encloses it, which is what makes a region frame's answer type and residual row closed ([Run-time forms](#run-time-forms)); an open term is reached by substitution rather than by a step, and what a substitution preserves is a lemma of the typing rules, not of the relation.
 
-**Progress.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ N : Γ_N`, and `·; · ⊢ e : τ ! ()` under `Γ_N`, then `e` is a value, or there exist `N2` and `e2` with `G ⊢ N; e → N2; e2`, or `G ⊢ N; e → N2; fault φ` for some fault φ. A `force` has a rule in every state of its cell, and a `fill` of a value always steps.
+**Progress.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `G covers N; e`, `⊢ N : Γ_N`, and `·; · ⊢ e : τ ! ()` under `Γ_N`, then `e` is a value, or there exist `N2` and `e2` with `G ⊢ N; e → N2; e2`, or `G ⊢ N; e → N2; fault φ` for some fault φ. A `force` has a rule in every state of its cell, and a `fill` of a value always steps.
 
 **Initialization safety.** If `G_decl` holds the initialization invariant at `·`, which linking establishes, every recursive group of a program — in its modules' right-hand sides and in its entry point — is initialization-safe ([Initialization Safety](10-Initialization.md)), and the program respects preconditions, then neither the module fold nor the run of `main` that follows it, threading one store from `·`, reaches `φ_init`: every `force` a group's own sequence performs finds its cell `Suspended`, and every other finds its cell `Ready`.
 
 The third case of Progress is what admitting faults in condition (3) of `Σ ⊨ G` buys. A saturated `foreign` whose implementation fails would otherwise be neither a value nor a redex.
 
-Condition (1) of `Σ ⊨ G` is what linking establishes. Without it a global name has nothing to unfold to, and the property fails for a reason unrelated to the type system.
+**Coverage is what Progress needs of the term, and Preservation carries it.** Without it a global name has nothing to unfold to, and Progress fails for a reason unrelated to the type system. The run of `main` begins covered, condition (1) covering the module and the definitions its fold installed, and each step keeps it: a definition unfolded from `G` is covered by (1), a value a foreign returns names nothing outside `G` its covered arguments did not by (3), and every other step substitutes, rearranges, or stores in a cell what the term already held, a kind or a type substituted carrying no global name. Typing is preserved whether or not the term is covered, which is why coverage is a conclusion of Preservation under its own premise rather than a premise of the whole statement. Condition (1) is what linking establishes.
 
 **Effect safety.** If `Σ; Γ_N ⊨ G`, `G` is Core-modelled, `e` respects preconditions under `G`, `⊢ N : Γ_N`, and `·; · ⊢ e : τ ! ()` under `Γ_N`, then no reduction sequence from `N; e` reaches a store and a term of the form `Ev_k[ perform k.op [σ̄] v ]` in which no handler of key `k` encloses the hole. A cell's initializer is checked at row `()`, so forcing one inside `e` performs nothing outside the handlers it installs itself.
 
