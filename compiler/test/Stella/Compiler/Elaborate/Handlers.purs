@@ -59,6 +59,9 @@ state = effect "State"
 counter :: Qualified EffName
 counter = effect "Counter"
 
+async :: Qualified EffName
+async = effect "Async"
+
 poly :: Qualified EffName
 poly = effect "Poly"
 
@@ -93,8 +96,8 @@ fnType :: XType -> XType -> XType -> XType
 fnType argument row result = XApp (XApp (XApp (XCon functionTy []) argument) row) result
 
 -- | `effect State (s : Type) { get : Unit ->* s; put : s ->* Unit }`,
--- | `effect Counter { next : Unit ->* Int }`, and
--- | `effect Poly { ident : forall (b : Type). b ->* b }`.
+-- | `effect Counter { next : Unit ->* Int }`,
+-- | `effect Poly { ident : forall (b : Type). b ->* b }`, and `effect Async {}`.
 effectsModule :: Module P.Int
 effectsModule =
   { annotation: 0
@@ -124,6 +127,7 @@ effectsModule =
               [ { name: ident, tyBinders: [ { name: TyVar "b", kind: Core.KType } ], argument: TVar (TyVar "b"), resumesWith: TVar (TyVar "b") } ]
           , attributes: []
           }
+      , DeclEffect 4 { name: EffName "Async", params: [], operations: [], attributes: [] }
       ]
   }
 
@@ -304,6 +308,18 @@ spec = describe "Elaborate.BuildHandler" do
               h.returnClause.body `shouldEqual` EVar unit h.returnClause.binder
             other -> fail ("not the handle expected: " <> show other)
         other -> fail (show other)
+
+    it "refuses a handler of an effect declaring no operations" do
+      let
+        quiet = do
+          root <- rootScope
+          c <- var root "c"
+          i <- int root
+          rho <- emptyRow root
+          openHandle root c (EffectKey async) (EffectPayload async []) i rho []
+      refuses quiet case _ of
+        EffectWithoutOperations named -> named == async
+        _ -> false
 
     it "binds a full clause's continuation at the resumption into the answer, over the clauses' row" do
       let

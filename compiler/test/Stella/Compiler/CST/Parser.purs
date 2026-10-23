@@ -219,6 +219,10 @@ spec = describe "Stella.Compiler.CST.Parser" do
         [ "(effect Console (writeAt (-> Int (->* String Unit))))" ]
       [ "effect Partial where", "  abort :: forall b. Unit ->* b" ] `itemsAre`
         [ "(effect Partial (abort (forall b (->* Unit b))))" ]
+    it "reads an effect declaring no operations, written without `where`" do
+      [ "effect Async", "effect Channel (a :: Type)", "x = 1" ] `itemsAre`
+        [ "(effect Async)", "(effect Channel (:: a Type))", "(value x 1)" ]
+      rejects [ "effect Async where" ]
     it "reads a resumption type that is a function" do
       [ "effect E where", "  op :: A ->* B -> C" ] `itemsAre`
         [ "(effect E (op (->* A (-> B C))))" ]

@@ -246,6 +246,7 @@ The heading of each group names the step of the plan that the group belongs to.
 | `perform cache.get` at `( cache : State Int ) ⊎ ( cache : State Int )`, and an occurrence `o . name` of a record at `( name : Int ) ⊎ ( name : Int )`, each under the inconsistent assumption that the key is absent from its one element | Accepted, at `Int`. A `perform` and a record occurrence read the element the row decomposes into, as a `switchKey` does |
 | The same with two payloads at the key | Reported, `NotARowType`, as for a `switchKey` |
 | A handler omitting an operation of `E` | Rejected. `handle` removes the keyed element, so an operation without a clause has nowhere to go |
+| A handler of an effect declaring no operations, its clauses none | Rejected, `EffectWithoutOperations`. No `handle` removes such an element from a row |
 | A handler clause that does not respect an operation's own `forall b̄` | Rejected |
 | An interpreter sequencing a native action before resuming a continuation, the residual row not being closed | Rejected. That continuation is `a -{ρ}-> IO r`, which the pure arrow of `Base.IO.bind` does not take. Abandoning the continuation, or resuming it first, is admitted |
 | A foreign applied where the ambient row is not empty, as `Base.Int.add n 1` is under `( State Int \| e )` | Accepted without `openEff`. A foreign's chain consumes pure arrows alone, and its value arguments are checked at the ambient row of the whole chain |
@@ -1053,6 +1054,7 @@ no identifier is at once ready and blocked
 | `extendRow` by `region ℓ` over such a `?m`, and `openEff` by `( region ℓ )` of a function standing at it | Built with nothing left to watch where `?m` was created outside the region; the `Lacks` or the `Disjoint` watched under `?m` where it was created inside |
 | A `full` clause | Its continuation at `τ -{ρ}-> β`, the resumption into the answer over the clauses' row |
 | A handler naming an operation twice, or missing one, or whose computation jumps to a join point | Refused |
+| `openHandle` given an element whose effect declares no operations | Refused, `EffectWithoutOperations`, so no guest removes such an effect with a handler of no clauses |
 | A handler closed with fewer bodies than clauses, or the return clause's variable as an operation clause's body | Refused |
 | `perform` or `openHandle` given a region element | Refused. Both name an effect, and a region is none |
 | `readCell` and `writeCell` in a clause standing in the region, and inside a lambda there | Built: the cell's type, and `Unit`. A cell is reached in any scope the region stands around, an abstraction's body included |

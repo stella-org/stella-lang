@@ -54,13 +54,14 @@ inA = Qualified moduleA
 -- | `==` (`infix 4 eq`), and `:|` (`infixr 5 Cons`). `B` declares `len`, and the
 -- | effect `E` with its operation `ping`, which its interface gives no argument,
 -- | and `Base.Continuation` nothing. `A` also declares `type Effects = {| E |}`
--- | and `type Lowering = E ~> ()`.
+-- | and `type Lowering = E ~> ()`, and the effect `Quiet`, which declares no
+-- | operations.
 environment :: BuildEnvironment
 environment = case addInterface interfaceA initialEnvironment >>= addInterface interfaceB >>= addInterface continuation of
   Right env -> env
   Left _ -> initialEnvironment
   where
-  interfaceA = withSynonym "Lowering" lowering $ withSynonym "Effects" effects $ interfaceOf moduleA
+  interfaceA = withOperationless "Quiet" $ withSynonym "Lowering" lowering $ withSynonym "Effects" effects $ interfaceOf moduleA
     { values: [ "x", "plus", "times", "eq", "append" ]
     , computations: [ "comp" ]
     , types: [ Tuple "Maybe" [ Tuple "Nothing" 0, Tuple "Just" 1 ], Tuple "List" [ Tuple "Nil" 0, Tuple "Cons" 2 ] ]
@@ -90,6 +91,10 @@ environment = case addInterface interfaceA initialEnvironment >>= addInterface i
     , declarations = i.declarations
         { types = Map.insert (TyName name) { kind: monoScheme s.kind, sort: Synonym { params: [], body: s.body }, attributes: [] } i.declarations.types
         }
+    }
+  withOperationless name i = i
+    { exports = i.exports { types = Map.insert name { entity: EffectEntity (inA (EffName name)), via: Declared, members: [] } i.exports.types }
+    , declarations = i.declarations { effects = Map.insert (EffName name) { params: [], operations: [], attributes: [] } i.declarations.effects }
     }
 
 interfaceOf
@@ -430,6 +435,16 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
         r.reasons `shouldEqual` [ ClauseMissing "E" [ "get" ], ClauseArity "put" 2 1 false ]
         r.sites `shouldEqual` [ "12:3", "12:14" ]
 
+    it "report an effect that declares no operations where the head stands, ahead of the clauses, a return clause among them" do
+      definition [ "f = handle x with", "  Quiet -> | get _ = 0", "           | return r = r" ] \r -> do
+        r.result `shouldEqual` "(handle A.x with )"
+        r.reasons `shouldEqual` [ EffectWithoutOperations "Quiet" ]
+        r.sites `shouldEqual` [ "12:3" ]
+      definition [ "effect Hush", "f = handle x with", "  Hush -> | return r = r", "  x" ] \r -> do
+        r.result `shouldEqual` "(handle A.x with A.x)"
+        r.reasons `shouldEqual` [ EffectWithoutOperations "Hush" ]
+        r.sites `shouldEqual` [ "13:3" ]
+
   describe "cells" do
     it "are one group, open in the operation clauses, beside a value of their name" do
       shows [ "f n = handle x with", "  var n := n", "  var n := 1", "  E ->", "    | fast get _ = n := n! + n", "    | fast put _ _ = 0" ]
@@ -558,6 +573,15 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
       handlerDeclaration [ "handler h :: E ~> ()", "handler h where", "  fast | put _ _ = 0" ] \r -> do
         r.reasons `shouldEqual` [ ClauseMissing "E" [ "get" ] ]
         r.sites `shouldEqual` [ "11:14" ]
+
+    it "report an effect handled that declares no operations where the signature stands, however the signature reaches it" do
+      handlerDeclaration [ "handler h :: Quiet ~> ()", "handler h where", "  fast | get _ = 0", "  | return r = r" ] \r -> do
+        r.result `shouldEqual` "?{return r#0 -> r#0}"
+        r.reasons `shouldEqual` [ EffectWithoutOperations "Quiet" ]
+        r.sites `shouldEqual` [ "11:14" ]
+      handles [ "type Q = Quiet ~> ()", "handler h :: Q", "handler h where", "  | return r = r" ] "?{return r#0 -> r#0}" [ EffectWithoutOperations "Quiet" ]
+      handles [ "handler h :: (Unit -> a / {| Quiet |}) -> a", "handler h where", "  | return r = r" ] "?{return r#1 -> r#1}" [ EffectWithoutOperations "Quiet" ]
+      handles [ "effect Hush", "handler h :: Int -> Hush ~> ()", "handler h (n :: Int) where", "  | return r = n" ] "?{return r#1 -> n#0}" [ EffectWithoutOperations "Hush" ]
 
     it "keep the targets of a `~>` the signature writes, and none of one reached in another form or through a synonym" do
       let clauses = [ "  fast | get _ = 0", "  | put _ _ = 0" ]

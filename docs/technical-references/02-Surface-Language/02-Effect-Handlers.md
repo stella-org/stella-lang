@@ -34,6 +34,8 @@ Js.Effect.Console.runConsole
 
 `handler` is a declaration form and not a new kind of entity. The name it binds is an ordinary global, exported by an ordinary export list, applied at an ordinary call site.
 
+**An effect declaring no operations has no handler.** `effect Async`, written without `where`, declares an effect a row carries as any other; no group and no handler declaration handles it, nor does a Core `handle` ([Typing Rules](../03-Typed-Core/05-Typing-Rules.md)), so nothing a program writes or an elaborator builds removes it from a row ([Name Resolution](06-Name-Resolution.md#namespaces)). Only a boundary outside every handler could discharge it, and none is settled ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
+
 ### The type of a handler
 
 `E ~> ( t̄ )` reads "handles `E`, performs `t̄`", and is the type every capability translation has: effect-polymorphic in a residual row, and leaving the answer type alone. It is a derived notation of the surface, read as its expansion wherever it is written; Core has no handler type.

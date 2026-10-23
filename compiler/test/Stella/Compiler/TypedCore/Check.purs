@@ -34,6 +34,9 @@ value name = Qualified main (Ident name)
 consoleEff :: Qualified EffName
 consoleEff = Qualified main (EffName "Console")
 
+asyncEff :: Qualified EffName
+asyncEff = Qualified main (EffName "Async")
+
 stateEff :: Qualified EffName
 stateEff = Qualified main (EffName "State")
 
@@ -125,6 +128,8 @@ fixtures =
           , operations: [ { name: OpName "next", tyBinders: [], argument: unitT, resumesWith: int } ]
           , attributes: []
           }
+      -- an effect declaring no operations, which no handler removes
+      , DeclEffect unit { name: EffName "Async", params: [], operations: [], attributes: [] }
       -- a second abort-shaped effect, so that one can be translated into the
       -- other by a clause that resumes at neither
       , DeclEffect unit
@@ -670,6 +675,16 @@ spec = describe "TypedCore.Check" do
             }
         )
         `shouldEqual` Left (MissingClause consoleEff (OpName "log"))
+
+    it "refuses a handler of an effect declaring no operations" do
+      inferAt TRowEmpty
+        ( Handle unit oneLit
+            { element: RowEffectEntry asyncEff []
+            , returnClause: { binder: Ident "x", ty: int, body: oneLit }
+            , opClauses: []
+            }
+        )
+        `shouldEqual` Left (EffectWithoutOperations asyncEff)
 
     it "gives the continuation the row outside the handle and the result of it" do
       -- a shallow handler would resume at the inner row and the inner result

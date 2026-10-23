@@ -510,6 +510,8 @@ decl:
       { C.DeclKindSignature C.KeywordNewtype n k }
   | TYPE n = properName DCOLON k = kind
       { C.DeclKindSignature C.KeywordType n k }
+  | EFFECT n = properName vs = typeVarBindings
+      { C.DeclEffect n vs [] }
   | EFFECT n = properName vs = typeVarBindings WHERE os = layout(operationSignature)
       { C.DeclEffect n vs os }
   | d = handlerDecl

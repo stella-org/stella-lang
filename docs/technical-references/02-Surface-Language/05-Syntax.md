@@ -54,7 +54,8 @@ Three passes turn text into the tree and a fourth checks it, each a module of `S
 | any name after a clause's `\|` | one naming no operation of the effect handled; in a group headed by a label, operations of several effects, or none |
 | any number of clauses for one operation | a second clause for one operation, a second `return` clause; no clause for an operation of the effect handled, which name resolution reports with the others missing |
 | `var` anywhere among the items of a handling expression or a handler declaration | one after a group or a handler of a handling expression, or after a clause of a handler declaration; two of one name in one expression or declaration |
-| any type name or label at the head of a group | a type name that is no effect |
+| any type name or label at the head of a group | a type name that is no effect; an effect declaring no operations |
+| any type as a handler declaration's signature, as to the effect it handles | one handling an effect declaring no operations |
 | a `reifiable full` clause in any module | one in a module that does not import `Base.Continuation`, which its desugaring depends on |
 | an attribute, a directive, or a modifier with no declaration after it | the same |
 | any attribute before any declaration | one on a fixity or an attribute declaration; one the compiler reads on a declaration it is not for, or used twice on one ([Attributes, Modifiers, and Directives](07-Attributes-Modifiers-and-Directives.md)); arguments that do not match the attribute's declaration |
@@ -239,7 +240,7 @@ decl ::= ident "::" type
        | "newtype" properName typeVarBinding* "=" properName typeAtom
        | "type" properName typeVarBinding* "=" type
        | ("data" | "newtype" | "type") properName "::" kind
-       | "effect" properName typeVarBinding* "where" block(ident "::" type)
+       | "effect" properName typeVarBinding* ("where" block(ident "::" type))?
        | handlerSignature
        | handlerDecl
        | "foreign" ident "::" type
@@ -259,6 +260,7 @@ typeVar        ::= any ident but "by"
 
 - **A function is defined by one equation**, its parameters written as pattern atoms ([Pattern Matching](../../proposals/03-Pattern-Matching-Syntax.md)).
 - **A constructor list may begin with `|`**, so that constructors on lines of their own align.
+- **An effect written without `where` declares no operations**, `effect Async`; one with `where` declares at least one. A parameter of such an effect has no operation to decide its kind, so it is written with one, `effect Channel (a :: Type)`, and none of its handlers can be written ([Name Resolution](06-Name-Resolution.md#namespaces)).
 - **A kind or a type is given to a declared name by a signature of its own**, never inline: `type T :: Type`, not `type (T :: Type)`. A parameter is a binder and may carry one: `data Proxy (a :: k) = Proxy`.
 - **An operation's type has exactly one `->*` on its spine, and no other type has one** (D21), which `Check` confirms, the grammar reading `->*` wherever an arrow may stand: `writeAt :: Int -> String ->* Unit`, `abort :: forall b. Unit ->* b`. It stands at the precedence of `->` and associates to the right, so what follows it is the type the continuation resumes with, a function included: `op :: A ->* B -> C` resumes with `B -> C`. Parentheses around the rest of the spine change nothing, `op :: A -> (B ->* C)`. **The `->*` is written in the signature itself**: no type synonym stands for an operation's signature, since a synonym's right side is no operation's signature and holds no `->*`. The rule is that of first-order operations, the only kind there is; a higher-order operation has a signature `->*` cannot write, and admitting one restates it ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
 - **A precedence is a decimal integer** from 0 to 2³¹−1, with no sign and no `_` ([Lexical Structure](04-Lexical-Structure.md)).

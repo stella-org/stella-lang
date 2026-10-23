@@ -95,10 +95,11 @@ perform scopeHandle key payload op typeArgHandles argumentHandle = do
 -- | what it binds.
 -- |
 -- | `e` is a term the scope may use, jumping to no join point. The element is
--- | judged as `perform` judges one; the clauses name every operation its effect
--- | declares, once each, and `full` ones bind a continuation. `β` is a type the
--- | scope may use at `Type`, and `ρ` one at `Row Effect`, which every clause
--- | stands at. The names are the host's, fresh where they are bound.
+-- | judged as `perform` judges one; its effect declares an operation, and the
+-- | clauses name every operation it declares, once each, and `full` ones bind a
+-- | continuation. `β` is a type the scope may use at `Type`, and `ρ` one at
+-- | `Row Effect`, which every clause stands at. The names are the host's, fresh
+-- | where they are bound.
 openHandle
   :: Handle
   -> Handle
@@ -124,6 +125,7 @@ openHandle scopeHandle computationHandle key payload answerHandle residualHandle
   unless (Set.isEmpty (freeVarsOf computation.term).joins) (rejected (JoinOutOfScope computationHandle))
   element <- elementIn scope key payload
   effect <- effectShape element.effect
+  when (Map.isEmpty effect.operations) (rejected (EffectWithoutOperations element.effect))
   answer <- valueType scope answerHandle
   residualObject <- usableIn scope residualHandle
   case residualObject.kind of

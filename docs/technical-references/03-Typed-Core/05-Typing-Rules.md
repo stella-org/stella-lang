@@ -360,6 +360,7 @@ merge : forall (r : Row Type). forall (s : Row Type).
               Γ, b̄_i : κ̄_i, x_i : σ_i', k_i : τ_i' -{ρ}-> β; · ⊢ e_i : β    ! ρ
            if cl_i = fast op_i [b̄_i] (x_i : σ_i') -> e_i
               Γ, b̄_i : κ̄_i, x_i : σ_i'                    ; · ⊢ e_i : τ_i' ! ρ
+  dom(Σ(E)) ≠ ∅                                     ← an effect declaring no operations has no handler
   { op_i } = dom(Σ(E))    and the op_i are distinct   ← the clauses exhaust E's operations, once each
   ───────────────────────────────────────────────────────────────────────
   Γ;Δ ⊢ handle e with h : β ! ρ
@@ -409,6 +410,8 @@ The explicitness is the price of D8. The elaborator inserts it, so an author doe
 ### Regions
 
 **`handle` has one rule, and a region is a binder of its own** (D36). The handled computation, the return clause, and the operation clauses of a `handle` stand at rows the context gives — `( ent | ρ )`, `ρ`, and `ρ` — so a region open where the `handle` stands is open in all three. Which of them names its cells is the surface's decision ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md)).
+
+**An effect declaring no operations has no handler.** `dom(Σ(E))` is not empty, so no `handle` removes such an element from a row: it stands in rows as any other, and only a boundary outside every handler could discharge it ([Effect Handlers](../02-Surface-Language/02-Effect-Handlers.md)).
 
 **A `return` clause reading a cell is admitted by Core on purpose.** Region and `handle` are separate binders, so nothing in Core can tell a return clause inside a region from any other term inside one. The surface produces no such read; a backend and an optimizer must not assume that a return clause reads no cell.
 

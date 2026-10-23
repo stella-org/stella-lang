@@ -428,6 +428,9 @@ data BuildError
   -- | effect's operations.
   | DuplicateClause OpName
   | MissingClause OpName
+  -- | A handler of an effect that declares no operations, which no handler
+  -- | removes.
+  | EffectWithoutOperations (Qualified EffName)
   -- | A handler closed with another number of clause bodies than it was opened
   -- | with, or a `region` with another number of initial values than it has
   -- | cells.

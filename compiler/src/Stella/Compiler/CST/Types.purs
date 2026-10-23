@@ -442,6 +442,7 @@ data Decl
   | DeclNewtype Name (Array TypeVarBinding) Name Type
   | DeclType Name (Array TypeVarBinding) Type
   | DeclKindSignature DeclKeyword Name Kind
+  -- | `effect E p̄ where …`, or `effect E p̄`, which declares no operations.
   | DeclEffect Name (Array TypeVarBinding) (Array OperationSignature)
   -- | `handler h :: σ`, the signature of the handler declaration after it.
   | DeclHandlerSignature Name Type
