@@ -344,6 +344,7 @@ at = case _ of
   TypeHoleStands o name t -> located o <> " hole " <> name <> " " <> printType t
   ExpressionHoleStands o name t context -> located o <> " expression hole " <> name <> " " <> printType t <> " [" <> joinWith ", " (map (\x -> let Ident n = x.name in n <> " : " <> printType x.type) context) <> "]"
   NonExhaustiveMatch o _ -> located o <> " non-exhaustive"
+  ImplicitCycle o handlers -> located o <> " implicit cycle: " <> joinWith " " (map (\(Qualified (ModuleName mn) (Ident n)) -> mn <> "." <> n) handlers)
   ImplicitCondition o problem -> located o <> " implicit: " <> case problem of
     ImplicitNotCapability -> "not ~>"
     ImplicitClauseNotFast (Qualified _ (Ident op)) -> "not fast " <> op

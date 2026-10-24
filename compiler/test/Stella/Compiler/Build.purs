@@ -26,6 +26,7 @@ import Stella.Compiler.Bytecode.Lower (LowerError(..))
 import Stella.Compiler.CST.Types (ExpansionId(..), RangeSpace(..), SourcePos, inSource)
 import Stella.Compiler.Elaborate.CorePlus.Context (Origin(..))
 import Stella.Compiler.Elaborate.Environment.Imported (compilationSignature, importedSignature)
+import Stella.Compiler.Elaborate.Environment.Implicit (compareIdentity, importedImplicits)
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..))
 import Stella.Compiler.Elaborate.Surface.Module (ElaborationError(..))
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Diagnostic(..))
@@ -446,6 +447,111 @@ spec = describe "Stella.Compiler.Build" do
                 , { handler: Ident "alpha", source: element "Log", targets: [] }
                 ]
               Left problem -> fail problem
+
+    it "is taken by a module importing the one exporting it, directly or as a re-export, and by none that only reaches it" do
+      compiledAll [ effectsE, handlerA, wholeR, namedR, merelyQ, hiddenH, beyondT ] case _ of
+        Left problem -> fail problem
+        Right env -> do
+          let
+            candidates imports = case viewFor (map ModuleName imports) env of
+              Right view -> map (\c -> identityText c.handler) (importedImplicits view)
+              Left problem -> [ show problem ]
+          candidates [ "A" ] `shouldEqual` [ "A.xy" ]
+          candidates [ "R" ] `shouldEqual` [ "A.xy" ]
+          candidates [ "N" ] `shouldEqual` [ "A.xy" ]
+          candidates [ "A", "R", "N" ] `shouldEqual` [ "A.xy" ]
+          candidates [ "Q" ] `shouldEqual` []
+          candidates [ "H" ] `shouldEqual` []
+          candidates [ "T" ] `shouldEqual` []
+          candidates [ "E" ] `shouldEqual` []
+
+    it "is told apart by its identity, the module's name and then the global's compared by scalar value" do
+      let
+        -- U+E000 is below U+1F600 by scalar value, and above it by UTF-16 code
+        -- unit, where U+1F600 is a surrogate pair
+        private = "\xE000"
+        astral = "\x1F600"
+        identity m n = Qualified (ModuleName m) (Ident n)
+      compareIdentity (identity private "h") (identity astral "h") `shouldEqual` LT
+      compareIdentity (identity "M" private) (identity "M" astral) `shouldEqual` LT
+      compareIdentity (identity "A" astral) (identity "B" private) `shouldEqual` LT
+
+    it "is rejected where the imports of a module make implicit handlers lowering into one another available together, however they are written" do
+      compiledAll [ effectsE, handlerA, handlerB ] case _ of
+        Left problem -> fail problem
+        Right env -> do
+          let
+            cycleOf imports = compilingAgainst env withoutSynthesizers ([ "module C where" ] <> imports) [ "c :: Int", "c = 1" ] case _ of
+              Right _ -> fail "compiled"
+              Left errors -> map printCompileError errors `shouldEqual`
+                [ "The implicit handlers `A.xy`, `B.yx`, which this module and the modules it imports make available together, lower into one another in a cycle" ]
+          cycleOf [ "import A", "import B" ]
+          cycleOf [ "import A (aval)", "import B ()" ]
+          cycleOf [ "import A hiding (xy)", "import B as Bq" ]
+          cycleOf [ "import lazy A as La", "import B (yval)" ]
+          compilingAgainst env withoutSynthesizers [ "module C where", "import A" ] [ "c :: Int", "c = 1" ] case _ of
+            Right _ -> pure unit
+            Left errors -> fail (joinWith "; " (map printCompileError errors))
+
+    it "is rejected in a cycle of the module's own handlers, or of its own and those it imports, once for each component" do
+      compiledAll [ effectsE, handlerA ] case _ of
+        Left problem -> fail problem
+        Right env -> do
+          let
+            within lines k = compilingAgainst env withoutSynthesizers [ "module C where", "import E" ] lines case _ of
+              Right _ -> k []
+              Left errors -> k (map printCompileError errors)
+            cycle handlers = "The implicit handlers " <> handlers <> ", which this module and the modules it imports make available together, lower into one another in a cycle"
+          within [ "implicit", "handler zw :: Z ~> ( W ) where", "  fast | z _ = w ()", "implicit", "handler wz :: W ~> ( Z ) where", "  fast | w _ = z ()" ] \errors ->
+            errors `shouldEqual` [ cycle "`C.wz`, `C.zw`" ]
+          -- a member whose cell is initialized otherwise than by a value form
+          -- is in the cycle, and both are reported
+          within [ "implicit", "handler zw :: Z ~> ( W ) where", "  var c := (\\v -> v) 0", "  fast | z _ = w ()", "implicit", "handler wz :: W ~> ( Z ) where", "  fast | w _ = z ()" ] \errors ->
+            errors `shouldEqual`
+              [ cycle "`C.wz`, `C.zw`"
+              , "The initial value of the cell `c` is no value form; an implicit handler's cells are initialized by value forms, as an initial value runs wherever the handler is inserted"
+              ]
+          compilingAgainst env withoutSynthesizers [ "module C where", "import E", "import A" ] [ "implicit", "handler yx :: Y ~> ( X ) where", "  fast | y _ = x ()" ] case _ of
+            Right _ -> fail "compiled"
+            Left errors -> map printCompileError errors `shouldEqual` [ cycle "`A.xy`, `C.yx`" ]
+          -- two cycles sharing `xz`, one component, beside another
+          within
+            [ "implicit"
+            , "handler xz :: X ~> ( Z ) where"
+            , "  fast | x _ = z ()"
+            , "implicit"
+            , "handler zx :: Z ~> ( X ) where"
+            , "  fast | z _ = x ()"
+            , "implicit"
+            , "handler yw :: Y ~> ( W ) where"
+            , "  fast | y _ = w ()"
+            , "implicit"
+            , "handler wy :: W ~> ( Y ) where"
+            , "  fast | w _ = y ()"
+            , "implicit"
+            , "handler zy :: Z ~> ( Y, X ) where"
+            , "  fast | z _ = y ()"
+            ]
+            \errors -> errors `shouldEqual` [ cycle "`C.wy`, `C.yw`", cycle "`C.xz`, `C.zx`, `C.zy`" ]
+
+    it "is no cycle where handlers form a chain, or two handle one effect" do
+      compiledAll [ effectsE ] case _ of
+        Left problem -> fail problem
+        Right env ->
+          compilingAgainst env withoutSynthesizers [ "module C where", "import E" ]
+            [ "implicit"
+            , "handler xy :: X ~> ( Y ) where"
+            , "  fast | x _ = y ()"
+            , "implicit"
+            , "handler yz :: Y ~> ( Z ) where"
+            , "  fast | y _ = z ()"
+            , "implicit"
+            , "handler yw :: Y ~> ( W ) where"
+            , "  fast | y _ = w ()"
+            ]
+            case _ of
+              Right _ -> pure unit
+              Left errors -> fail (joinWith "; " (map printCompileError errors))
 
     it "reports the conditions it fails as an author reads them" do
       compiling
@@ -1417,6 +1523,65 @@ spec = describe "Stella.Compiler.Build" do
 building :: Array (Tuple String String) -> ({ result :: Either BuildError (Array String), log :: Array String } -> Aff Unit) -> Aff Unit
 building sources = buildingBy sources \action ->
   build action defaultSettings environment (map (\(Tuple p _) -> { path: p, name: nameOf p }) sources)
+
+-- | The modules given, each its header and declarations, compiled into the
+-- | environment in order, each against those before it.
+compiledAll :: Array (Array String) -> (Either String BuildEnvironment -> Aff Unit) -> Aff Unit
+compiledAll sources k = foldM step (Right environment) sources >>= k
+  where
+  step (Left problem) _ = pure (Left problem)
+  step (Right env) lines = compileModule action defaultSettings env Map.empty (joinWith "\n" lines) <#> case _ of
+    Left errors -> Left (joinWith "; " (map printCompileError (NonEmptyArray.toArray errors)))
+    Right made -> lmap show (addInterface made.interface env)
+
+  action :: CompilerAction Aff
+  action =
+    { readSource: \_ -> pure (Left "no file")
+    , runParser: \_ q i -> pure (unwrapIdentity (parsers q i))
+    , synthesis: withoutSynthesizers
+    , hooks: defaultHooks
+    }
+
+-- | The modules the implicit handlers' tests are built of: `E` declaring the
+-- | effects, `A` and `B` a handler each lowering into the other's source, `R`
+-- | and `N` re-exporting `A` whole and by name, `Q` importing it without
+-- | exporting it, `H` declaring one it does not export, and `T` importing `R`.
+effectsE :: Array String
+effectsE =
+  [ "module E where"
+  , "effect X where"
+  , "  x :: Unit ->* Unit"
+  , "effect Y where"
+  , "  y :: Unit ->* Unit"
+  , "effect Z where"
+  , "  z :: Unit ->* Unit"
+  , "effect W where"
+  , "  w :: Unit ->* Unit"
+  ]
+
+handlerA :: Array String
+handlerA = [ "module A where", "import E", "implicit", "handler xy :: X ~> ( Y ) where", "  fast | x _ = y ()", "aval :: Int", "aval = 1" ]
+
+handlerB :: Array String
+handlerB = [ "module B where", "import E", "implicit", "handler yx :: Y ~> ( X ) where", "  fast | y _ = x ()", "yval :: Int", "yval = 1" ]
+
+wholeR :: Array String
+wholeR = [ "module R (module A) where", "import A" ]
+
+namedR :: Array String
+namedR = [ "module N (xy) where", "import A" ]
+
+merelyQ :: Array String
+merelyQ = [ "module Q (q) where", "import A", "q :: Int", "q = aval" ]
+
+hiddenH :: Array String
+hiddenH = [ "module H (other) where", "import E", "implicit", "handler hidden :: Z ~> () where", "  fast | z _ = ()", "other :: Int", "other = 1" ]
+
+beyondT :: Array String
+beyondT = [ "module T (t) where", "import R", "t :: Int", "t = aval" ]
+
+identityText :: Qualified Ident -> String
+identityText (Qualified (ModuleName m) (Ident n)) = m <> "." <> n
 
 -- | The files given, each a module of the environment, compiled anew by a
 -- | seed build.

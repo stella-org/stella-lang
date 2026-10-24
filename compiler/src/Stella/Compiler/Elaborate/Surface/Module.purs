@@ -113,6 +113,7 @@ import Stella.Compiler.Elaborate.Environment.Catalog (CatalogEntry, EntrySort(..
 import Stella.Compiler.Elaborate.CorePlus.Row (rebuild, xnf)
 import Stella.Compiler.Elaborate.Protocol.Guest (synthesizerType)
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
+import Stella.Compiler.Elaborate.Environment.Implicit (cyclicComponents)
 import Stella.Compiler.Elaborate.Environment.Operations (HandledEffect)
 import Stella.Compiler.Interface.Operation (Operation, operationOf, operationScheme)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv, takesSynthesized)
@@ -218,6 +219,10 @@ data ElaborationError
   -- | stands for as far as it is decided, and the locals in scope there that
   -- | source can name, each at its type.
   | ExpressionHoleStands Surface.Origin String XType (Array { name :: Ident, type :: XType })
+  -- | Implicit handlers the module and its imports make available together that
+  -- | lower into one another, where the module's header stands: the members of
+  -- | one strongly connected component, in the order of their identities.
+  | ImplicitCycle Surface.Origin (Array (Qualified Ident))
   -- | An implicit handler declaration failing a condition of being one, where
   -- | what fails it stands.
   | ImplicitCondition Surface.Origin ImplicitProblem
@@ -385,7 +390,7 @@ elaborateValuesM attempterOf imports surface importedEntries m =
       , foreigns: crossing.foreigns
       , attributes: attributesRead.declared
       , values: Array.sortWith _.ordinal (generalized.values <> settled'.values)
-      , errors: internalErrors <> unsupported <> signatureErrors <> partialErrors <> crossing.errors <> attributesRead.errors <> generalized.errors <> attributeErrorsOf generalized <> bodies.errors <> settled'.errors
+      , errors: internalErrors <> unsupported <> signatureErrors <> partialErrors <> crossing.errors <> attributesRead.errors <> cycleErrors <> generalized.errors <> attributeErrorsOf generalized <> bodies.errors <> settled'.errors
       , warnings: generalized.warnings
       }
   else pure { data: [], synonyms: [], foreignTypes: [], effects: [], foreigns: [], attributes: [], values: [], errors: dataErrors <> unsupported, warnings: [] }
@@ -568,6 +573,23 @@ elaborateValuesM attempterOf imports surface importedEntries m =
         Right _ -> []
     )
     settled
+
+  -- the implicit handlers the search may take: those the imports publish, and
+  -- each one the module declares, exported or not, once its signature is read
+  -- and it meets the conditions read off its declaration; one whose cell is
+  -- initialized otherwise than by a value form is taken all the same, the
+  -- module failing once its body is elaborated
+  implicits = surface.implicits <> Array.mapMaybe ownImplicit schemes
+  ownImplicit v = case v.declared.definition of
+    Right (HandlerDefinition h)
+      | h.implicit
+      , Array.null (implicitFailures h)
+      , Just e <- capabilityElements h.handled v.scheme.body
+      , closedElements e -> Just { handler: v.declared.name, source: e.source, targets: e.targets }
+    _ -> Nothing
+  -- the handlers among them that lower into one another, reported where the
+  -- module's imports are, whether or not a boundary would take one
+  cycleErrors = map (ImplicitCycle m.origin) (cyclicComponents implicits)
 
   -- the values, each with its body
   defined = Array.mapMaybe (\v -> either (const Nothing) (\d -> Just { declared: v.declared, scheme: v.scheme, spine: v.spine, definition: d }) v.declared.definition) schemes

@@ -34,6 +34,7 @@ module Stella.Compiler.Interface.Environment
   , lookupOperator
   , lookupTypeOperator
   , lookupAttribute
+  , lookupImplicitHandler
   ) where
 
 import Prelude
@@ -48,7 +49,7 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
-import Stella.Compiler.Interface.Module (AttributeEntry, EffectEntry, Exports, ModuleInterface, OperatorEntry, TypeEntry, TypeOperatorEntry, ValueEntry)
+import Stella.Compiler.Interface.Module (AttributeEntry, EffectEntry, Exports, ImplicitHandler, ModuleInterface, OperatorEntry, TypeEntry, TypeOperatorEntry, ValueEntry)
 import Stella.Compiler.Interface.Prim (primInterface)
 import Stella.Compiler.Surface.Name (OperatorName)
 import Stella.Compiler.TypedCore.Name (EffName, Ident, ModuleName, Qualified(..), TyName)
@@ -153,6 +154,12 @@ lookupTypeOperator q@(Qualified _ name) view = declaring q view >>= \i -> Map.lo
 
 lookupAttribute :: Qualified Ident -> ModuleView -> Maybe AttributeEntry
 lookupAttribute q@(Qualified _ name) view = declaring q view >>= \i -> Map.lookup name i.declarations.attributes
+
+-- | The record of the global named as an implicit handler, in the interface of
+-- | the module declaring it, where the view reaches that module and it records
+-- | one.
+lookupImplicitHandler :: Qualified Ident -> ModuleView -> Maybe ImplicitHandler
+lookupImplicitHandler q@(Qualified _ name) view = declaring q view >>= \i -> Array.find (\h -> h.handler == name) i.implicitHandlers
 
 derive instance Eq EnvironmentError
 derive instance Generic EnvironmentError _

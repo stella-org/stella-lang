@@ -415,11 +415,13 @@ spine ::= τ                      a Core type, headed by no forall and no constr
 | names | the export tables of the modules its header imports, and of `Prim`, opened as the header's `import Prim` says, or unqualified where it writes none |
 | entities | the declarations of every module its header reaches, directly or transitively, and of `Prim` |
 | the catalog | the same modules as entities ([Elaborator API](../02-Surface-Language/03-Elaborator-API.md)) |
-| implicit handlers, `Ξ` | the module itself, and the modules its header imports directly |
+| implicit handlers, `Ξ` | the module itself, and the value exports of the modules its header imports directly |
 
 A name resolves through the first and the entity it stands for is read from the second, wherever it is declared: where `C` imports `B` and `B` re-exports the `x` of `A`, `C` writes `x`, resolves it to `A.x`, and reads `A.x` from `A`'s interface, `A` being reached through `B`. A module reached only through another publishes no name to this one. How names are written — an import list, an alias, `lazy` — selects among the names of the first row and changes none of the other three.
 
 **`Ξ` is taken from direct imports alone, where the catalog is taken from the closure.** An implicit handler is inserted where its plan is unique (D29), so a handler that entered `Ξ` by being reached transitively could make a plan ambiguous because a dependency added an import of its own, a change no header of this module records.
+
+**`Ξ` is read through the value exports, as names are, and is not narrowed as they are.** An export names a global by its identity, and a re-export names the same one, so where the interface of the module declaring that global records it as an implicit handler, the handler is in `Ξ`, wherever the export was made. How the header writes an import selects among names and not among handlers: `import IO.Console.Effect (Console(..))` brings the effect's name alone, and `Ξ` every implicit handler `IO.Console.Effect` exports. A module re-exporting an effect for others to use re-exports the handlers lowering it too, or `Ξ` holds none of them for a module importing that module alone. There is no table of implicit handlers apart from the value exports ([Implicit Effect Runner](../../proposals/01-Implicit-Effect-Runner.md)).
 
 ### How a build proceeds
 

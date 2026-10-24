@@ -403,9 +403,9 @@ The last two are the ones a reader is most likely to want relaxed, and they are 
 Ξ ; Γ ⊢ e : α ! ρ1  ⇝  e' : α ! ρ2
 ```
 
-`Ξ` is the environment of implicit handlers the module declares itself and the modules its header imports directly declare, and not those of a module reached only through another ([Modules](../06-Modules/01-Modules.md)). `Γ`, `Δ`, `Ω`, and `Ψ` are taken by the contexts of Core and of Core⁺, so the environment takes a letter of its own.
+`Ξ` is the environment of implicit handlers the module declares itself, exported or not, and of those the value exports of the modules its header imports directly publish, a re-export publishing the handler it names. It holds neither one declared by a module reached only through another, nor one a module imports without exporting ([Modules](../06-Modules/01-Modules.md#what-a-module-sees)). `Γ`, `Δ`, `Ω`, and `Ψ` are taken by the contexts of Core and of Core⁺, so the environment takes a letter of its own.
 
-**`Ξ` is checked where it is assembled**, which is where the module's imports are resolved rather than where any one declaration is. Acyclicity is a property of the environment and not of a declaration: two modules declaring `A ~> ( B )` and `B ~> ( A )` are each coherent on their own, and the cycle exists only for a module importing both. Checking it at assembly is early enough that no use site sees it, and late enough to see it at all.
+**`Ξ` is checked where it is assembled**, which is where the module's imports are resolved rather than where any one declaration is. Acyclicity is a property of the environment and not of a declaration: two modules declaring `A ~> ( B )` and `B ~> ( A )` are each coherent on their own, and the cycle exists only for a module importing both. Checking it at assembly is early enough that no use site sees it, and late enough to see it at all. **A cycle is a recursive strongly connected component** of the graph in which a handler leads to each one whose source it performs (one with several handlers, or one leading to itself), and each such component is reported once, its members named in the order of their identities. Overlapping cycles are one component, and listing every simple cycle in it would repeat one report many times over. A module's own handlers are in `Ξ` from the moment their signatures are read, so a cycle through one is reported whether or not its body elaborates.
 
 The judgement holds when a **plan** exists, and the elaborator inserts a plan only when it is unique.
 
@@ -526,7 +526,7 @@ A row problem is reported as a row problem, naming what is missing rather than w
 - A key with no implicit handler names the key and the row it stands in
 - A key with several names the candidates and the modules they come from
 - An ambiguous order names the handlers that the dependency relation leaves unordered, and says that writing the composition settles it
-- A cycle is reported against the import environment that closes it, naming the modules whose declarations form it
+- A cycle is reported against the import environment that closes it, where the module's header stands: once for each strongly connected component, naming its handlers and the modules declaring them
 
 A cell problem names the cell and where cells stand.
 

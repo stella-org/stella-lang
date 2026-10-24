@@ -85,6 +85,7 @@ elaborationOrigins = case _ of
   ExpressionHoleStands o _ _ _ -> [ o ]
   NonExhaustiveMatch o _ -> [ o ]
   ImplicitCondition o _ -> [ o ]
+  ImplicitCycle o _ -> [ o ]
   ValueFormNeeded o -> [ o ]
   KindValueNeeded o _ -> [ o ]
   ReadWhileInitializing o through _ _ -> Array.cons o (Array.fromFoldable through)
@@ -151,6 +152,9 @@ printElaborationError = case _ of
     fmt @"The expression hole `?{name}` stands for `{t}`" { name, t: printType t }
       <> if Array.null context then "" else "\nIn scope:" <> foldMap (\x -> fmt @"\n  {x} : {t}" { x: localName x.name, t: printType x.type }) context
   NonExhaustiveMatch _ witness -> fmt @"This `case` does not match every value: it does not match `{w}`" { w: joinWith ", " (map (printWitness false) witness) }
+  ImplicitCycle _ handlers ->
+    fmt @"The implicit handlers {handlers}, which this module and the modules it imports make available together, lower into one another in a cycle"
+      { handlers: joinWith ", " (map (\(Qualified (ModuleName mn) (Ident n)) -> "`" <> mn <> "." <> n <> "`") handlers) }
   ImplicitCondition _ problem -> case problem of
     ImplicitNotCapability ->
       "An implicit handler's signature writes `E ~> ( … )` itself, which tells the effect it removes and the effects it performs in its place"

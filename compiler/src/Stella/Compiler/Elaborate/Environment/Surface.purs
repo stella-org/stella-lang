@@ -24,6 +24,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
+import Stella.Compiler.Elaborate.Environment.Implicit (ImplicitCandidate, importedImplicits)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEnv, emptySynonyms, importedSynonyms)
 import Stella.Compiler.Interface.Environment (BuildEnvironment, ModuleView, lookupInterface, reachable)
 import Stella.Compiler.Interface.Scheme (Scheme, SchemeBody(..))
@@ -34,13 +35,15 @@ import Stella.Compiler.Elaborate.Environment.Operations (EffectEnv, OperationEnv
 
 -- | The synonyms, the operations, the effects, the values taking a synthesized
 -- | argument at the spine their interface gives them, and the module's values
--- | without a signature, each by the qualified name of its declaration.
+-- | without a signature, each by the qualified name of its declaration; and
+-- | the implicit handlers the imports publish.
 type SurfaceEnv =
   { synonyms :: SynonymEnv
   , operations :: OperationEnv
   , effects :: EffectEnv
   , synthesizing :: Map (Qualified Ident) SchemeBody
   , bindings :: Map (Qualified Ident) SurfaceBinding
+  , implicits :: Array ImplicitCandidate
   }
 
 -- | A value without a signature, as a reference to it reads it: at the scheme
@@ -55,7 +58,7 @@ data SurfaceBinding
   | ProvisionalScheme
 
 emptySurface :: SurfaceEnv
-emptySurface = { synonyms: emptySynonyms, operations: Map.empty, effects: Map.empty, synthesizing: Map.empty, bindings: Map.empty }
+emptySurface = { synonyms: emptySynonyms, operations: Map.empty, effects: Map.empty, synthesizing: Map.empty, bindings: Map.empty, implicits: [] }
 
 -- | What the modules the imports reach declare.
 importedSurface :: BuildEnvironment -> ModuleView -> SurfaceEnv
@@ -65,6 +68,7 @@ importedSurface env view =
   , effects: importedEffects env view
   , synthesizing: Map.fromFoldable (Array.concatMap synthesizingOf (Set.toUnfoldable (reachable view)))
   , bindings: Map.empty
+  , implicits: importedImplicits view
   }
   where
   synthesizingOf m = case lookupInterface m env of

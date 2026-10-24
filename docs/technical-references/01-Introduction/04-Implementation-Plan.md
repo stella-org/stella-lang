@@ -1222,6 +1222,11 @@ These belong with elaboration and are written once a surface language exists ([E
 | A plan of no handlers at all | The term is `q0 Prim.Unit`, the widened thunk forced. A rule written as a nest of applications has no term here |
 | Two implicit handlers for one key | Ambiguity, naming both and the modules they come from |
 | Implicit declarations forming a cycle across two modules | Rejected where `Ξ` is assembled from the imports. Neither declaration is wrong on its own, so checking one at a time does not see it |
+| `A` and `B`, importing only the module declaring the effects, declaring `X ~> ( Y )` and `Y ~> ( X )`, and `C` importing both, by a list of names, `hiding`, an alias, or `lazy` | `A` and `B` each compiled; `C` rejected where its header stands, naming `A.xy` and `B.yx` |
+| A cycle of a module's own handlers, and one through its own and an imported one | Rejected the same way; a member whose cell is initialized otherwise than by a value form is in the cycle, the cycle and the cell's error both reported |
+| Two cycles sharing a handler, beside a third apart from them | One report for each strongly connected component, its members in the order of their identities, the components in the order of their first members |
+| A chain of handlers, and two handlers of one effect | No cycle. Two handlers of one key are an ambiguity only where a search reaches the key |
+| A handler a direct import exports, re-exports by name or as `module A`, imports without exporting, declares without exporting, or one reached only through another import | In `Ξ` for the first three, once however many imports publish it; not in the others |
 | An implicit handler for a labelled instance's key | Out of scope for v0.1, `Ξ` being keyed and the spelling of labelled instances unsettled |
 
 ### Cells (step 7)
