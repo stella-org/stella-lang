@@ -368,9 +368,9 @@ data Parameter
   = Named Binder
   | Thunk
 
--- | What the action given builds under a checking boundary's ambient row, at
--- | the type given, the boundary closed against the row expected once it is
--- | built.
+-- | What the action given builds under a checking boundary's ambient row. Once
+-- | it is built, the boundary is closed against the row expected, its body
+-- | answering with the type given.
 boundary :: forall a. Scope -> Surface.Origin -> XType -> XType -> (Scope -> Surf a) -> Surf a
 boundary scope origin expected answer inside = do
   sigma <- lift (openBoundary scope.context)
