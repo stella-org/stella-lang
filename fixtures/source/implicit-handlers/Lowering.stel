@@ -1,0 +1,20 @@
+module Lowering where
+
+effect Tick where
+  tick :: Unit ->* Int
+
+effect Log where
+  log :: Int ->* Unit
+
+effect Verbose where
+  say :: Unit ->* Unit
+
+-- A message logged is a tick.
+implicit
+handler logAsTick :: Log ~> ( Tick ) where
+  fast | log _ = let _ = tick () in ()
+
+-- A thing said is two messages logged.
+implicit
+handler verboseAsLog :: Verbose ~> ( Log ) where
+  fast | say _ = let _ = log 0 in log 0

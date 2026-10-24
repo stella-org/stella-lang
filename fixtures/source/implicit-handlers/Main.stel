@@ -1,0 +1,57 @@
+module Main where
+
+import Base.Int as Int
+-- The effects alone are imported by name; the handlers `Lowering` exports are
+-- inserted all the same.
+import Lowering (Tick(..), Log(..), Verbose(..))
+
+effect Quiet where
+  hush :: Unit ->* Int
+
+-- A counter from the value given, kept in a cell of the handler's own.
+handler countFrom (start :: Int) :: Tick ~> () where
+  var n := start
+  fast | tick _ = let v = n! in let _ = n := Int.add v 1 in v
+
+-- Two messages logged, each a tick `logAsTick` inserted here makes of it.
+logged :: Unit -> Int / {| Tick |}
+logged _ =
+  let _ = log 1 in
+  let _ = log 2 in
+  tick ()
+
+-- Two things said, each two messages logged, each a tick: `verboseAsLog`
+-- inside `logAsTick`.
+chained :: Unit -> Int / {| Tick |}
+chained _ =
+  let _ = say () in
+  let _ = say () in
+  tick ()
+
+counted :: Int
+counted = countFrom 10 logged
+
+lowered :: Int
+lowered = countFrom 10 chained
+
+-- What `silence`, declared after it, answers, and one more.
+quietly :: Unit -> Int
+quietly _ = Int.add (hush ()) 1
+
+hushed :: Int
+hushed = quietly ()
+
+implicit
+handler silence :: Quiet ~> () where
+  fast | hush _ = 7
+
+-- A function at `()` that is no λ, η-expanded where it is defined: `silence`
+-- is inserted under the expansion's λ.
+loudId :: forall a. a -> a / {| Quiet |}
+loudId x = let _ = hush () in x
+
+quietId :: forall a. a -> a
+quietId = loudId
+
+echoed :: Int
+echoed = quietId 5
