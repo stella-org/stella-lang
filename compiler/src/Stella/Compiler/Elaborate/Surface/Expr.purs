@@ -371,12 +371,12 @@ data Parameter
 -- | What the action given builds under a checking boundary's ambient row. Once
 -- | it is built, the boundary is closed against the row expected, its body
 -- | answering with the type given.
-boundary :: forall a. Scope -> Surface.Origin -> XType -> XType -> (Scope -> Surf a) -> Surf a
+boundary :: Scope -> Surface.Origin -> XType -> XType -> (Scope -> Surf (XExpr Surface.Origin)) -> Surf (XExpr Surface.Origin)
 boundary scope origin expected answer inside = do
   sigma <- lift (openBoundary scope.context)
   built <- inside (scope { ambient = XMeta sigma })
   lift (closeBoundary (siteAt scope origin) sigma expected answer)
-  pure built
+  pure (EImplicit origin sigma Nothing built)
 
 -- | The expected type opened along its spine: a `Λ` for each quantifier and a
 -- | constraint abstraction for each constraint, the constraint assumed in what
@@ -469,9 +469,11 @@ expansion origin lambda = do
   env <- lift askEnv
   let
     isConstructor = isJust <<< lookupConstructor env.session.constructors
-    -- what the λ applies, under the fits around the application
+    -- what the λ applies, under the fits and the boundary around the
+    -- application
     applies = case _ of
       EFit _ _ e -> applies e
+      EImplicit _ _ _ e -> applies e
       EApp _ f _ -> Just f
       _ -> Nothing
     contractible = case lambda of

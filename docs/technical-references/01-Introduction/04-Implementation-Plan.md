@@ -1293,7 +1293,7 @@ A fit decided, waited on, resolved by direction, and made Core, and a checking b
 | Two owners' fits sharing a metavariable | The host's defect. Their components could not be resolved apart |
 | A boundary's body fitting `( Console )` into `?σ`, closed at `( Console, Clock )` | `?σ := ( Console, Clock )` and the fit `Widen ( Clock )`, with no resolution. The fits inside are decided again against the row expected |
 | A boundary's body fitting `( Console \| ?t1 )` and `( Clock \| ?t2 )`, instantiation rows, closed at `( Console, Clock \| e )` | `?t1 := ( Clock \| e )`, `?t2 := ( Console \| e )`, then `?σ := ρ`. The union is not formed, and the boundary stands in for its fits by `fit(Sᵢ, ρ)` |
-| A boundary's body fitting `( Console, Clock )` into `( Console \| ?σ )`, closed at `( Console )` | Refused, naming `( Clock )`, in this version: no implicit handler is sought before the surface asks for one. A boundary's fits are chosen by their target's remainder |
+| A boundary's body fitting `( Console, Clock )` into `( Console \| ?σ )`, closed at `( Console )` | Refused, naming `Clock`, which no implicit handler handles. A boundary's fits are chosen by their target's remainder |
 | `?r ≡ ?σ` and `?σ ≡ ?r`, `?σ` a boundary's ambient row, bare and as rows | `?r := ?σ` either way, `?σ` unassigned: an ordinary tail takes the row its boundary alone writes |
 | `?σ ≡ ( a : A \| ?r )`, `?σ ≡ ( a : A )`, and `?σ1 ≡ ?σ2` of two boundaries | Each waiting on the boundary's row, neither row written |
 | `?r ≡ ?σ` once the boundary has decided `?σ := ( a : A )` | `?r := ( a : A )`, the row read as any other |
@@ -1324,30 +1324,30 @@ The judgement, fits, and computation references of [Elaboration](../02-Surface-L
 | `g :: Int -> (forall b. b -> b); g x = id`, and `Poly id` at `data Poly = Poly (forall a. a -> a)` | `λ x. Λ b. λ y. id [b] y`, and the field's `∀` opened where the argument stands. Every `∀` and constraint expected is opened where the form stands, a signature's, an annotation's, or an argument's |
 | `t :: forall a. a -> Tuple Int a; t = Tuple 1` | The constructor spine as written. Expanded where it is built, and contracted once its fit is decided equal |
 | `spread :: forall e a. a -> Tuple Int a / {\| ...e \|}; spread = Tuple 1` | Left expanded, with `openEff [e]` under the λ. The fit widens, and the spine is no value form without the λ |
-| `quiet :: forall a. a -> a; quiet = loudId`, `loudId` at `( Console )` | Outside the subset where the expansion's λ stands, its boundary asking for an implicit handler. Not refused by a fit placed outside the λ |
+| `quiet :: forall a. a -> a; quiet = loudId`, `loudId` at `( Console )` | Reported where the expansion's λ stands, no implicit handler handling `Console` at its boundary. Not refused by a fit placed outside the λ |
 | `bad :: forall a. a -> a; bad = const id 1` | Reported where the `Λ` stands as no value form, the author's to give a parameter; likewise under a constraint abstraction. Not the Core checker's refusal reported as the compiler's |
 | `x :: Proxy (Proxy :: k -> Type)` with `x = const Proxy 1`, and with `x = Proxy` | The first reported where `x` is declared, as the author's: the signature generalizes a kind and introduces no `Λ`, and the Core checker's refusal is the third exception to its being the elaborator's fault. The second accepted (D52) |
 | `k :: Int -> (forall a. Tuple Int (a -> a)) / {\| Console \|}; k x = Tuple 1 (\y -> y)` | Accepted as written. What a `Λ` or a constraint abstraction encloses is at `()`, whatever the λ around it performs |
 | A local function in a clause reading a cell | Its row is the region's element alone; applied in the clause, it is widened by the rest of the clause's row |
 | `x!` with no enclosing handling expression declaring `x`, under an open ambient row | Refused by name resolution. An open row is no evidence a cell exists |
-| `use k = k ()` at `(Unit -> Int / {\| Console \|}) -> Int` | Outside the subset in this version, where the boundary stands: the row expected cannot hold `Console`, and no implicit handler is sought. A row mismatch would refuse what a handler may resolve |
+| `use k = k ()` at `(Unit -> Int / {\| Console \|}) -> Int` | Reported where the boundary stands: the row expected cannot hold `Console`, and no implicit handler handles it. The boundary reports it, and not a fit, since a handler could resolve it |
 | `wider k u = k u` at `(Unit -> Int / {\| Console \|}) -> Unit -> Int / {\| Console, Clock \|}` | `openEff [( Clock )]` around `k`, accepted by Core and lowered. The fit is the application's, against the boundary's row once decided |
 | `logged k u = twice k u`, `twice : forall e. (Unit -{e}-> Unit) -> Unit -{e}-> Unit`, at `( Console )` | `twice`'s `e` an instantiation row, decided `( Console )` by the fits of its argument and its application. An inference row would not take the ambient one |
 | `apply k u = (\v -> k v) u` at `(Unit -> Unit / {\| Console \|}) -> Unit -> Unit / {\| Console \|}` | Accepted, the λ's row `( Console )` by rule 1 |
 | `c u = (\_ -> asked ()) u` at `Unit -> Int / {\| Ask, Log \|}`, `asked` at `( Ask )` | Accepted, the λ writing `( Ask )` under `openEff [( Log )]`. A λ taking the row ambient where it stands would hold `Log` before the widening |
-| The same at `(Unit -> Unit / {\| Console \|}) -> Unit -> Unit` | Outside the subset in this version, where the boundary stands. The boundary is decided only once the λ's row is, after the resolution |
+| The same at `(Unit -> Unit / {\| Console \|}) -> Unit -> Unit` | Reported where the boundary stands, no implicit handler handling `Console`. The boundary is decided only once the λ's row is, after the resolution |
 | A form inferred at `Unit -{( Console )}-> Unit` where `Unit -{( Console, Clock )}-> Unit` is expected | The arguments and results equated, and `( Console )` fitted into `( Console, Clock )` around the form. Subsumption is the outermost row's containment alone |
 | `n = (\u -> 1) ()` and `m = (\x -> x) 1`, at `Int` | Accepted, each λ's row closed to `()`: no fit needs anything of it. Left open, it would be an ambiguous effect row |
 | A row named by two fits and standing once in a type the term writes; one standing there twice | Closed; left open. A fit finds a candidate and is no occurrence of it |
 | A row only a λ inside a body writes, `f u = { ignored: \(x :: Int) -> x, kept: u }.kept`; and `id = \x -> x`, whose λ writes the row its type holds | Closed, `f` at `∀a. a -> a`; closed. The row a λ writes finds a candidate and is no occurrence apart from the λ's arrow: left out of the search, `f`'s is undetermined, and counted again, `id`'s stays open |
 | `f b = let g y = 1 in g b`, `m b = let g = \y -> inc y in g b`, and `r b = let go y = go y in go b` | Closed: `∀a. a -> Int`, `Int -> Int`, and `∀a b. a -> b`. A local binding's type repeats its right-hand side's type; if counted as another occurrence, it would keep the row shared with the applying value open |
 | `( Console \| ?a ) ⊆ ?e` and `( Clock \| ?b ) ⊆ ?e`, nothing else deciding them | `?a` and `?b` closed, then `?e := ( Console, Clock )` by rule 1. A row in a fit's target is required of, and not closed |
-| A boundary at `()` whose body's sources `( Console \| ?a )` and `( Clock \| ?b )` form a union only once their tails are closed | The closing undone, and the declaration reported outside the subset where the boundary stands. What the closing met is the report, not the ambiguity left once it is undone |
+| A boundary at `()` whose body's sources `( Console \| ?a )` and `( Clock \| ?b )` form a union only once their tails are closed | The closing undone, and the declaration reported where the boundary stands, no implicit handler meeting it. What the closing met is the report, not the ambiguity left once it is undone |
 | A row a waiting equation awaits, neither of its sides showing it | Left open. What an equation could still assign is required of |
 | A row an atom `Lacks` names — `?e # ( Clock )` among them — and one an atom `Disjoint` names, `?e # ?d` | Closed, `()` meeting the `Lacks`; left open. The atoms are the obligations decomposed, not the constraints as written |
 | A pure function applied under a λ with no expected type, its fit decided a widening of the λ's row | The row closed. The row a decided widening carries is the fit's, and no occurrence |
 | `n :: Int / {\|\|}; n = 1`, and `v :: Int; v = n` | `n = λ(u : Unit). 1` at `Unit -> Int`, published as `Computation`; `v = n Prim.Unit` |
-| `w :: Int; w = loud`, `loud :: Int / {\| Console \|}` | Outside the subset where `w`'s right-hand side stands, a boundary at `()`. Not at the reference, whose fit is decided against the boundary's row |
+| `w :: Int; w = loud`, `loud :: Int / {\| Console \|}` | Reported where `w`'s right-hand side stands, a boundary at `()` no implicit handler meets. Not at the reference, whose fit is decided against the boundary's row |
 | An imported value `v : Unit -> Int` and an imported computation `c :: Int / {\|\|}`, of one Core type | `c` forced to `Int`, and `v` a function. What the interface marks a computation decides the forcing, and nothing in its Core type |
 | A computation whose spine takes a synthesized parameter | Outside the subset where it is declared, its scheme still entered into the module-local catalog before every body. The thunk's λ would otherwise take the synthesized parameter's arrow |
 | `again :: Int / {\| Console \|}; again = again` | A `DeclRec`, the reference standing under the thunk's λ |
@@ -1462,7 +1462,7 @@ Operations called as functions ([Elaboration](../02-Surface-Language/01-Elaborat
 | `f _ = get@cache ()` under `{\| cache :: State Int \|}`, and `loud = get@cache ()` | `perform cache.get`, accepted by the Core checker; `loud` a mismatch of rows reported at `get` alone, where the fit stands |
 | `w _ = writeAt "a" "b"` under `{\| Log \|}` | Reported at `"a"`, the argument checked against the type it takes |
 | `f _ = put "x"` under `{\| State Int \|}` | A failed equation of `String` and `Int`, reported where the boundary deciding the fit stands |
-| `f _ = get ()` under `{\| Log \|}`, and `loud = get ()` | `f` outside the subset, an implicit handler asked for at its boundary; `loud` a mismatch of rows at `get` |
+| `f _ = get ()` under `{\| Log \|}`, and `loud = get ()` | `f` reported at its boundary, no implicit handler handling `State`; `loud` a mismatch of rows at `get` |
 | The interface of a module declaring `get`, `writeAt`, and `pick` | Each at its scheme (D17): `get` at `∀s e. State ∉ e => Unit -{( State s \| e )}-> s`, `writeAt` at `∀e. Log ∉ e => Int -> String -{( Log \| e )}-> Unit`, the same through the file and back |
 | The interface of a module written in Core declaring `get` | At the scheme a declaration with its one Core argument is called at. A pure function of that argument would give it another type than a module calling it from source expects |
 | `B` importing `A` and calling `get ()`, `writeAt 0`, and `pick` | Built through lowering |
@@ -1490,7 +1490,7 @@ Handling expressions ([Elaboration](../02-Surface-Language/01-Elaboration.md#han
 | `n :: Int; n = handle ask () with …` | Accepted, the expression inferred and its type equated with `Int` |
 | `Ask` handled under `{\| Ask \|}` | An obligation broken where the group's head stands |
 | A `fast` clause of `ask` answering `"x"`, and a `full` one where the answer is `Int` | Each reported at `"x"` |
-| A clause performing `get ()` under a boundary at `()` | Outside the subset, an implicit handler asked for at the boundary |
+| A clause performing `get ()` under a boundary at `()` | Reported at the boundary, no implicit handler handling the effect |
 | `handler answer :: Ask ~> ()` declared apart, and `handler countFrom (start :: Int) :: Tick ~> () where` with a cell | Values at their signatures' types, `~>` read as its expansion: a `λ` for each parameter, then one for the thunk, and under it the region of the cells around a `handle` of the clauses' group, the thunk applied to `Prim.Unit` and fitted into the region. Accepted by the Core checker, and published as handlers at those schemes, the same through the file and back |
 | A handler declaration in the general form, its return clause giving an answer of its own, one with a `reifiable full` clause, and one applied again in its own clause | Accepted by the Core checker |
 | A handler declaration's clause answering `"x"` where the operation resumes with `Int`, and a parameter annotated `String` where the signature gives `Int` | Each reported where it stands |
@@ -1600,7 +1600,7 @@ A module's source dependencies and its runtime dependencies (D51, [Modules](../0
 | `p :: ?t -> Int; p y = inc y`, and `q :: forall f. Int` bound locally | The hole reported standing for `Int`; `f`'s kind reported where it is left unwritten |
 | `h :: Unit -> Unit / {\| Console, ...r \|}` bound locally under `forall r` | Accepted where the signature around it assumes `Console ∉ r`, refused where it does not |
 | `q :: forall (a :: k). a` bound locally, `k` bound by nothing around it | Outside this version where the signature stands, read no further |
-| `n :: Unit; n = shout 1` bound locally in `Unit -> Int / {\| Console \|}`, and in `Unit -> Int` | Accepted, performed under the λ's row; the λ's boundary asks for an implicit handler |
+| `n :: Unit; n = shout 1` bound locally in `Unit -> Int / {\| Console \|}`, and in `Unit -> Int` | Accepted, performed under the λ's row; the λ's boundary reports that no implicit handler handles `Console` |
 | A top-level declaration whose right-hand side is an application leaving its type undetermined | A signature asked for. Not left monomorphic for a later declaration to fix |
 | A non-value right-hand side whose metavariables a later goal of the same group solves | Accepted. A restricted metavariable is reported only if it is unsolved at the end |
 | Two mutually recursive declarations without signatures, used at two types afterwards | Each generalized over what its own type reaches; the recursive references carry the type arguments of the callee's final scheme |
@@ -1677,6 +1677,10 @@ A module's source dependencies and its runtime dependencies (D51, [Modules](../0
 | The same value without a signature | A row mismatch: the right-hand side is an inference position, and nothing is inserted |
 | A boundary rolled back with the attempt that built its body | Its job is gone with it; nothing of the boundary survives the rollback |
 | A position whose expected row nothing fixes — a λ with no expected type, a top-level value without a signature | No insertion |
+| `logged :: Unit -> Int / {| Tick |}` performing `Log`, `logAsTick :: Log ~> ( Tick )` implicit | The λ's body is `logAsTick` applied, its quantifiers and constraints as the plan opened them, to `openEff [( Tick )]` of a thunk of the body at `( Log )`; accepted by the Core checker |
+| Several handlers of one key, two the dependencies leave unordered, and a rigid tail alone, from the surface | Each reported where the boundary stands, the handlers named with their modules; the tail a mismatch of rows |
+| `quiet :: forall a. a -> a; quiet = loud`, `loud` at `( Shout )`, `silence :: Shout ~> ()` implicit | The handler inserted under the expansion's λ, and the initialization judged on `loud`, what the expansion expands: the boundary holds the lowering beside the body as written. On Steam, `quietId 5` is `5` |
+| On Steam: a handler a module imports by an import list naming the effects alone, a chain of two, and one the module declares after the boundary it meets | `12`, `14`, and `8`: each message logged a tick, each thing said two messages, and `silence` answering `7` |
 
 ### Seed builds and the compile-time session (step 7)
 

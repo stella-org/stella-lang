@@ -553,6 +553,27 @@ spec = describe "Stella.Compiler.Build" do
               Right _ -> pure unit
               Left errors -> fail (joinWith "; " (map printCompileError errors))
 
+    it "reports a boundary no single plan meets, and a rigid tail it cannot hold, as an author reads them" do
+      let
+        lowering =
+          [ "effect Tick where"
+          , "  tick :: Unit ->* Int"
+          , "effect Log where"
+          , "  log :: Int ->* Unit"
+          , "implicit"
+          , "handler logAsTick :: Log ~> ( Tick ) where"
+          , "  fast | log _ = let _ = tick () in ()"
+          ]
+        messages lines expected = compiling (lowering <> lines) case _ of
+          Right _ -> fail "compiled"
+          Left errors -> Array.take 1 (map printCompileError errors) `shouldEqual` [ expected ]
+      messages [ "implicit", "handler drop :: Log ~> () where", "  fast | log _ = ()", "logged :: Unit -> Int / {| Tick |}", "logged _ = let _ = log 1 in tick ()" ]
+        "Several implicit handlers available here handle `Log`: `M.drop`, `M.logAsTick`; apply the one meant where it is needed"
+      messages [ "effect Beep where", "  beep :: Unit ->* Unit", "implicit", "handler beepAsTick :: Beep ~> ( Tick ) where", "  fast | beep _ = let _ = tick () in ()", "both :: Unit -> Int / {| Tick |}", "both _ = let _ = beep () in let _ = log 1 in tick ()" ]
+        "The implicit handlers `M.beepAsTick`, `M.logAsTick` would each be inserted here, and nothing orders them; apply them in the order meant where they are needed"
+      messages [ "apply :: forall e. (Unit -> Int / e) -> Int", "apply k = k ()" ]
+        "This performs `{| ...e |}`, which is not among the effects expected here"
+
     it "reports the conditions it fails as an author reads them" do
       compiling
         [ "effect Ask where"
@@ -625,7 +646,7 @@ spec = describe "Stella.Compiler.Build" do
         [ "run :: Int -> Int / {| Console |}", "run x = x", "use :: (Unit -> Int / {| Console |}) -> Int", "use k = k ()" ]
         case _ of
           Left errors -> map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors `shouldEqual`
-            [ "6:5 This version of the compiler does not elaborate implicit-handler resolution at this checking boundary yet" ]
+            [ "6:5 This performs `{| Console |}` beyond the effects expected here, and no implicit handler available here handles `Console`" ]
           Right _ -> fail "compiled"
 
     it "fits a function into the row ambient where it is applied, widening it there, through to the module's bytecode" do
@@ -656,7 +677,7 @@ spec = describe "Stella.Compiler.Build" do
         case _ of
           -- the boundary is decided only once the λ's row is
           Left errors -> map (\e -> joinWith " " (map at (locationsOf e)) <> " " <> printCompileError e) errors `shouldEqual`
-            [ "4:9 This version of the compiler does not elaborate implicit-handler resolution at this checking boundary yet" ]
+            [ "4:9 This performs `{| Console |}` beyond the effects expected here, and no implicit handler available here handles `Console`" ]
           Right _ -> fail "compiled"
 
     it "closes the row of a λ nothing needs anything of, a pure local function then applied at any row" do
@@ -807,7 +828,7 @@ spec = describe "Stella.Compiler.Build" do
 
     it "asks for an implicit handler at the λ it makes where what it applies performs what the row expected cannot hold" do
       compilingUnder [ "module M where", "import Effects" ] [ "loud :: forall a. a -> a / {| Console |}", "loud x = x", "quiet :: forall a. a -> a", "quiet = loud" ] case _ of
-        Left errors -> rendered errors `shouldEqual` [ "6:9 This version of the compiler does not elaborate implicit-handler resolution at this checking boundary yet" ]
+        Left errors -> rendered errors `shouldEqual` [ "6:9 This performs `{| Console |}` beyond the effects expected here, and no implicit handler available here handles `Console`" ]
         Right _ -> fail "compiled"
 
     it "is reported where it is no value form and cannot be expanded, as the author's" do
@@ -836,7 +857,7 @@ spec = describe "Stella.Compiler.Build" do
 
     it "forced at a value's right-hand side with a row it performs asks for an implicit handler at the value's boundary" do
       compilingUnder [ "module M where", "import Effects" ] (computations <> [ "w :: Int", "w = loud" ]) case _ of
-        Left errors -> rendered errors `shouldEqual` [ "10:1 This version of the compiler does not elaborate implicit-handler resolution at this checking boundary yet" ]
+        Left errors -> rendered errors `shouldEqual` [ "10:1 This performs `{| Console |}` beyond the effects expected here, and no implicit handler available here handles `Console`" ]
         Right _ -> fail "compiled"
 
     it "is forced where it is referred to by the mark its interface carries, and a value of the same Core type is not" do

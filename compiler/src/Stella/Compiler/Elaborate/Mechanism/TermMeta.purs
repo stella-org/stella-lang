@@ -203,6 +203,7 @@ zonkExpr ctx = go
     EReadCell a name key -> EReadCell a name key
     EWriteCell a name key v -> EWriteCell a name key (go v)
     EOpenEff a row e -> EOpenEff a (ty row) (go e)
+    EImplicit a m lowered e -> EImplicit a m (map go lowered) (go e)
     EEta a contractible e -> EEta a contractible (go e)
     -- one its group's generalization resolved is the ordinary reference it is,
     -- every node of it taking its annotation

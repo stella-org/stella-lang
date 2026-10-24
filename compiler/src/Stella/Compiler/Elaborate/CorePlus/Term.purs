@@ -23,6 +23,7 @@ module Stella.Compiler.Elaborate.CorePlus.Term
   , PendingCaseId(..)
   , pendingCasesOf
   , replacePendingCases
+  , mapSubterms
   , XExpr(..)
   , XParam
   , XBinding
@@ -66,7 +67,7 @@ import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either(..))
 import Data.Foldable (foldMap)
 import Data.Generic.Rep (class Generic)
-import Data.Maybe (Maybe(..), maybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
@@ -126,6 +127,12 @@ data XExpr a
   | EReadCell a RegionName RowKey
   | EWriteCell a RegionName RowKey (XExpr a)
   | EOpenEff a XType (XExpr a)
+  -- | What a checking boundary encloses, by the boundary's ambient row: the
+  -- | lowering of the plan recorded for it, where one was, made once its
+  -- | declaration is settled; and the body as written. The lowering is what the
+  -- | boundary stands for, and the body as written is what an η-expansion
+  -- | around it expands.
+  | EImplicit a MetaVar (Maybe (XExpr a)) (XExpr a)
   -- | The expression a wrapping fit holds: `openEff [w]` around it where the fit
   -- | is decided `Widen w`, and the expression alone where it is decided equal.
   | EFit a FitId (XExpr a)
@@ -296,6 +303,7 @@ xExprAnnotation = case _ of
   EReadCell a _ _ -> a
   EWriteCell a _ _ _ -> a
   EOpenEff a _ _ -> a
+  EImplicit a _ _ _ -> a
   EFit a _ _ -> a
   EEta a _ _ -> a
   ERecursiveRef a _ -> a
@@ -412,6 +420,7 @@ expanded term = case through term of
   through = case _ of
     EFit _ _ e -> through e
     EOpenEff _ _ e -> through e
+    EImplicit _ _ _ e -> through e
     other -> other
 
 -- | A conversion that keeps every residue it meets, as an applicative: where
@@ -471,11 +480,12 @@ convExpr view = case _ of
   EReadCell a name key -> pure (ReadCell a name key)
   EWriteCell a name key value -> WriteCell a name key <$> convExpr view value
   EOpenEff a row e -> OpenEff a <$> convType a row <*> convExpr view e
+  EImplicit _ _ lowered e -> convExpr view (fromMaybe e lowered)
   EFit a f e -> convExpr view e *> residue (ResidualFit a f)
   ERecursiveRef a id -> residue (ResidualRecursiveRef a id)
   EEta a contractible lambda -> case view of
     AsBuilt -> case lambda of
-      ELam _ x _ _ (EApp _ f (EVar _ x')) | contractible && x == x' && isValueForm (const true) f -> convExpr view f
+      ELam _ x _ _ body | contractible, EApp _ f (EVar _ x') <- unenclosed body, x == x', isValueForm (const true) f -> convExpr view f
       _ -> convExpr view lambda
     AsWritten -> case expanded lambda of
       Just f -> convExpr view f
@@ -618,6 +628,7 @@ freeVarsOf = case _ of
   EReadCell _ name _ -> regionVar name
   EWriteCell _ name _ v -> regionVar name <> freeVarsOf v
   EOpenEff _ row e -> typeVars row <> freeVarsOf e
+  EImplicit _ _ lowered e -> foldMap freeVarsOf lowered <> freeVarsOf e
   EFit _ _ e -> freeVarsOf e
   EEta _ _ e -> freeVarsOf e
   ERecursiveRef _ _ -> none
@@ -726,6 +737,7 @@ metasOfTerm = case _ of
   EReadCell _ _ _ -> noMetas
   EWriteCell _ _ _ v -> metasOfTerm v
   EOpenEff _ row e -> typeMetas row <> metasOfTerm e
+  EImplicit _ _ lowered e -> foldMap metasOfTerm lowered <> metasOfTerm e
   EFit _ _ e -> metasOfTerm e
   EEta _ _ e -> metasOfTerm e
   ERecursiveRef _ _ -> noMetas
@@ -804,6 +816,7 @@ typesWritten again = go
     EReadCell _ _ _ -> []
     EWriteCell _ _ _ v -> go v
     EOpenEff _ row e -> [ row ] <> go e
+    EImplicit _ _ lowered e -> foldMap go lowered <> go e
     EFit _ _ e -> go e
     EEta _ _ e -> go e
     ERecursiveRef _ _ -> []
@@ -870,6 +883,7 @@ termMetasUnderRegions = go Set.empty
     EReadCell _ _ _ -> []
     EWriteCell _ _ _ v -> go bound v
     EOpenEff _ _ e -> go bound e
+    EImplicit _ _ lowered e -> foldMap (go bound) lowered <> go bound e
     EFit _ _ e -> go bound e
     EEta _ _ e -> go bound e
     ERecursiveRef _ _ -> []
@@ -954,6 +968,7 @@ subterms = case _ of
   ERegion _ _ _ initial body -> initial <> [ body ]
   EWriteCell _ _ _ v -> [ v ]
   EOpenEff _ _ e -> [ e ]
+  EImplicit _ _ lowered e -> Array.fromFoldable lowered <> [ e ]
   EFit _ _ e -> [ e ]
   EEta _ _ e -> [ e ]
   _ -> []
@@ -998,6 +1013,7 @@ mapSubterms f = case _ of
   ERegion a name cells initial body -> ERegion a name cells (map f initial) (f body)
   EWriteCell a name key v -> EWriteCell a name key (f v)
   EOpenEff a row e -> EOpenEff a row (f e)
+  EImplicit a m lowered e -> EImplicit a m (map f lowered) (f e)
   EFit a fit e -> EFit a fit (f e)
   EEta a contractible e -> EEta a contractible (f e)
   e -> e
@@ -1070,6 +1086,7 @@ valueFormWith throughFits isConstructor = value
     EEta _ _ _ -> true
     EHole _ _ -> true
     EFit _ _ e -> throughFits && value e
+    EImplicit _ _ lowered e -> value (fromMaybe e lowered)
     ETyLam _ _ _ body -> value body
     EConstraintLam _ _ body -> value body
     ERecordEmpty _ -> true
@@ -1116,6 +1133,7 @@ typeVarsOfTerm term = Set.unions (map typeVarsOfType (typesOfTerm term)) <> bind
     ERegion _ _ _ initial body -> foldMap binders initial <> binders body
     EWriteCell _ _ _ v -> binders v
     EOpenEff _ _ e -> binders e
+    EImplicit _ _ lowered e -> foldMap binders lowered <> binders e
     EFit _ _ e -> binders e
     EEta _ _ e -> binders e
     _ -> Set.empty
@@ -1152,3 +1170,9 @@ typeVarsOfType ty = freeRigids ty <> forallBinders ty
     XRowEffectEntry _ args -> foldMap forallBinders args
     XRowLabelledEffectEntry _ _ args -> foldMap forallBinders args
     XRowRegionEntry _ -> Set.empty
+
+-- | What a checking boundary no plan settled encloses, as it stands.
+unenclosed :: forall a. XExpr a -> XExpr a
+unenclosed = case _ of
+  EImplicit _ _ Nothing e -> unenclosed e
+  e -> e

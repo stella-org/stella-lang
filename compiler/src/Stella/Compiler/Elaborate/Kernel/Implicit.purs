@@ -32,7 +32,7 @@ import Stella.Compiler.Elaborate.CorePlus.Kind (XKind(..))
 import Stella.Compiler.Elaborate.CorePlus.Row (rebuild)
 import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry, XType(..), fromCore, fromCoreEntry, xRowEntryKey)
 import Stella.Compiler.Elaborate.Kernel.Builder.Common (substituteKindVars, substituteTyVars)
-import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, freshKindMeta, freshTypeMeta, raiseDiagnostic, recordPlan, releaseBoundary, require, transact, unify)
+import Stella.Compiler.Elaborate.Kernel.Elab (Elab, askEnv, freshIdent, freshKindMeta, freshTypeMeta, raiseDiagnostic, recordPlan, releaseBoundary, require, transact, unify)
 import Stella.Compiler.Elaborate.Mechanism.Fit (Remainders)
 import Stella.Compiler.Elaborate.Mechanism.Pending (HandlerGoal, Site)
 import Stella.Compiler.Elaborate.Mechanism.Plan (PlanFailure(..), SpineStep(..), searchPlan)
@@ -72,7 +72,8 @@ insertImplicit site goal settled remainders = do
     start = rebuild settled.source { known = Map.union settled.source.known (Map.fromFoldable (map (\e -> Tuple (xRowEntryKey e) e) widening)) }
   applied <- foldM apply { row: start, steps: [] } plan
   unify site { kind: rowEffect, left: applied.row, right: goal.expected }
-  recordPlan goal.boundary { source: rebuild settled.source, widening, answer: goal.answer, steps: applied.steps }
+  binder <- freshIdent (Map.keys site.context.vars) "u"
+  recordPlan goal.boundary { source: rebuild settled.source, binder, widening, answer: goal.answer, steps: applied.steps }
   where
   rowEffect = XKRow RowEffect
 

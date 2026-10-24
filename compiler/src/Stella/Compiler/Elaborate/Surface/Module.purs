@@ -27,11 +27,11 @@
 -- | undecided are resolved by direction, each declaration's apart
 -- | ([Resolve](../Driver/Resolve.purs)); a declaration whose effect rows nothing
 -- | decides is reported, and a checking boundary its body cannot meet without
--- | an implicit handler is outside what this version elaborates. Then each
--- | body is zonked and made a Core term, and a type nothing decided is
--- | reported where it stands. A body is a value only once every equation and
--- | fit stated for it holds; one the loop stopped before deciding is reported,
--- | never returned.
+-- | an implicit handler is met by the plan its job recorded, lowered around what
+-- | it encloses once the body is settled. Then each body is zonked and made a
+-- | Core term, and a type nothing decided is reported where it stands. A body
+-- | is a value only once every equation and fit stated for it holds; one the
+-- | loop stopped before deciding is reported, never returned.
 -- |
 -- | **A foreign is read as a value's signature is, and has no body**: what it
 -- | takes and gives must cross to the host ([ForeignBoundary](../../ForeignBoundary.purs)),
@@ -114,6 +114,7 @@ import Stella.Compiler.Elaborate.CorePlus.Row (rebuild, xnf)
 import Stella.Compiler.Elaborate.Protocol.Guest (synthesizerType)
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
 import Stella.Compiler.Elaborate.Environment.Implicit (cyclicComponents)
+import Stella.Compiler.Elaborate.Mechanism.Plan (lowerImplicits)
 import Stella.Compiler.Elaborate.Environment.Operations (HandledEffect)
 import Stella.Compiler.Interface.Operation (Operation, operationOf, operationScheme)
 import Stella.Compiler.Elaborate.Environment.Surface (SurfaceBinding(..), SurfaceEnv, takesSynthesized)
@@ -646,9 +647,9 @@ elaborateValuesM attempterOf imports surface importedEntries m =
 
   -- the catalog the bodies are elaborated against: what the imports publish,
   -- and every value and foreign the module declares at its scheme, with its
-  -- attributes
+  -- attributes; and the implicit handlers a boundary in a body may insert
   own = map (\v -> { name: v.declared.name, sort: if isForeignDefinition v.declared.definition then ForeignEntry else ValueEntry, scheme: { kindVars: v.scheme.kindVars, body: fromCore v.scheme.body }, attributes: v.declared.attributes }) schemes
-  session = sessionEnvOf signature (imported <> own)
+  session = (sessionEnvOf signature (imported <> own)) { implicits = implicits }
   -- what the bodies read beyond: the module's values taking a synthesized
   -- argument, at their spines, among those the imports declare
   withOwn = withSynonyms { synthesizing = Map.union (Map.fromFoldable (map (\v -> Tuple v.declared.name v.spine.body) (Array.filter (takesSynthesized <<< _.spine) schemes))) withSynonyms.synthesizing }
@@ -1008,9 +1009,11 @@ closeTails session level tails = runAttempt session (atLevel level (for_ tails \
 
 -- | A term with each pending `case` it holds replaced by the match built for
 -- | it, the `case`s built once each in the order of their numbers against the
--- | metavariables as they stand, and the matches they leave uncovered. A
--- | `case` held with no record, one recorded and held nowhere, one held more
--- | than once, and one still held once replaced are the host's defects.
+-- | metavariables as they stand, and the matches they leave uncovered; and
+-- | with what each checking boundary encloses lowered by the plan it settled,
+-- | while the plan's metavariables are live. A `case` held with no record, one
+-- | recorded and held nowhere, one held more than once, and one still held
+-- | once replaced are the host's defects.
 settlePending
   :: SessionEnv
   -> Int
@@ -1019,7 +1022,7 @@ settlePending
   -> Tuple (Either ElaborationError { term :: XExpr Surface.Origin, uncovered :: Array UncoveredMatch }) SolverState
 settlePending session level b state = case foldl build (Tuple (Right []) state) (Array.sortWith _.id b.pending) of
   Tuple (Left e) s -> Tuple (Left e) s
-  Tuple (Right built) s -> Tuple (replaced built) s
+  Tuple (Right built) s -> Tuple (map (\r -> r { term = lowerImplicits s.tentative.plans r.term }) (replaced built)) s
   where
   metas = state.tentative.metas
 
@@ -1071,13 +1074,9 @@ defectOf = case _ of
   ResidualPendingCase _ id -> Just (PendingCaseLeft id)
   _ -> Nothing
 
--- | A diagnostic as the author is told it: a boundary no row expected of it
--- | contains asks for an implicit handler, which this version does not resolve.
+-- | A diagnostic as the author is told it.
 rejected :: Diagnostic -> ElaborationError
-rejected d = case d of
-  BoundaryNotContained o _ | Just at <- sourceOrigin o -> Unsupported (OutsideSubset at "implicit-handler resolution at this checking boundary")
-  ImplicitHandlerMissing o _ _ | Just at <- sourceOrigin o -> Unsupported (OutsideSubset at "implicit-handler resolution at this checking boundary")
-  _ -> Rejected d
+rejected = Rejected
 
 -- | Why a closing was undone, as the declaration is reported by it.
 undoneError :: Undoing -> ElaborationError

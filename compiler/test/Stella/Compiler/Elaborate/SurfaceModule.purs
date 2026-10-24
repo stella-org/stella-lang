@@ -63,6 +63,7 @@ import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, recordTy, stringTy, un
 import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), Type(..))
 import Stella.Compiler.TypedCore.Equality (typeEquiv)
 import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
+import Stella.Compiler.TypedCore.Reference (globalsOf)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
@@ -330,6 +331,11 @@ at = case _ of
   ConstraintUnwritten o -> located o <> " constraint unwritten"
   KindUndetermined o -> located o <> " kind undetermined"
   Rejected (EquationFailed (AtSource s) _) -> located s.origin <> " rejected"
+  Rejected (ImplicitHandlerMissing (AtSource s) _ _) -> located s.origin <> " no implicit handler"
+  Rejected (BoundaryNotContained (AtSource s) _) -> located s.origin <> " boundary not contained"
+  Rejected (ImplicitHandlerAmbiguous (AtSource s) _ _) -> located s.origin <> " implicit handlers ambiguous"
+  Rejected (ImplicitOrderAmbiguous (AtSource s) _) -> located s.origin <> " implicit order ambiguous"
+  Rejected (ImplicitPayloadConflict (AtSource s) _) -> located s.origin <> " implicit payload conflict"
   Rejected (SynthesisFailed { goal: { origin: AtSource s } }) -> located s.origin <> " synthesis failed"
   Rejected (ObligationRejected { obligation: AtSource s }) -> located s.origin <> " obligation rejected"
   Rejected (CellEscapes { reference: AtSource r, boundary: AtSource b, cell: Ident c }) -> located r.origin <> " " <> c <> " escapes " <> located b.origin
@@ -868,7 +874,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       -- a row its signature does not write reaches the boundary of its
       -- definition, as any application's does
       elaborating (types <> [ "effect Ask where", "  ask :: Unit ->* Int", "asked :: Unit -> Int / {| Ask |}", "asked u = asked u", "quiet :: Opt Int -> Int", "quiet o = case o of", "  None -> asked ()", "  Some x -> x" ]) \r ->
-        map at r.errors `shouldEqual` [ "10:7 outside: implicit-handler resolution at this checking boundary", "8:1 left unchecked" ]
+        map at r.errors `shouldEqual` [ "10:7 no implicit handler", "8:1 left unchecked" ]
 
     it "under a λ reads nothing while a recursive group is initialized, and its scrutinee is read where it stands" do
       elaborating
@@ -949,9 +955,9 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (prelude <> effects <> [ "g :: Int -> Int / {| Ask |}", "g n = case n of", "  m where", "      a = asked ()", "      asks () -> a", "      otherwise -> m" ]) \r ->
         map at r.errors `shouldEqual` []
       elaborating (prelude <> effects <> [ "h :: Int -> Int", "h n = case n of", "  m where", "      a = asked ()", "      otherwise -> m" ]) \r ->
-        map at r.errors `shouldEqual` [ "16:3 outside: implicit-handler resolution at this checking boundary", "12:1 left unchecked", "14:1 left unchecked" ]
+        map at r.errors `shouldEqual` [ "16:3 no implicit handler", "12:1 left unchecked", "14:1 left unchecked" ]
       elaborating (prelude <> effects <> [ "h :: Int -> Int", "h n = case n of", "  m where", "      asks () -> 1", "      otherwise -> m" ]) \r ->
-        map at r.errors `shouldEqual` [ "16:3 outside: implicit-handler resolution at this checking boundary", "12:1 left unchecked", "14:1 left unchecked" ]
+        map at r.errors `shouldEqual` [ "16:3 no implicit handler", "12:1 left unchecked", "14:1 left unchecked" ]
 
     it "binds a pattern over the lines after it, matching the value it is bound to" do
       elaborating (prelude <> [ "f :: Int -> Int", "f n = case n of", "  m where", "      _ = isZero m", "      Tuple a b = Tuple m 1", "      otherwise -> b" ]) \r -> do
@@ -1035,7 +1041,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
           Just (Lam _ _ _ _ (Case _ [ App _ (Global _ _ _) (Var _ (Ident "u")) ] (SwitchCtor _ [ { tree: Leaf (Lit _ (LitInt 1)) } ] Nothing))) -> pure unit
           other -> fail ("not kept: " <> show other)
       elaborating (effects <> [ "f :: Unit -> Int", "f u = let () = told u in 1" ]) \r ->
-        map at r.errors `shouldEqual` [ "8:3 outside: implicit-handler resolution at this checking boundary", "6:1 left unchecked" ]
+        map at r.errors `shouldEqual` [ "8:3 no implicit handler", "6:1 left unchecked" ]
 
     it "is one node, every variable it binds depended on there" do
       elaborating [ "f :: Int -> Tuple Int Boolean", "f n = Tuple x y", "  where", "    x = a", "    y = b", "    Tuple a b = Tuple n true" ] \r -> do
@@ -1152,7 +1158,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (effects <> [ "f :: Unit -> { a :: Int } / {| Ask |}", "f u = { a: asked u }" ]) \r ->
         map at r.errors `shouldEqual` []
       elaborating (effects <> [ "f :: Unit -> { a :: Int }", "f u = { a: asked u }" ]) \r ->
-        map at r.errors `shouldEqual` [ "8:3 outside: implicit-handler resolution at this checking boundary", "6:1 left unchecked" ]
+        map at r.errors `shouldEqual` [ "8:3 no implicit handler", "6:1 left unchecked" ]
 
   describe "a tuple" do
     let
@@ -1476,7 +1482,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
 
     it "performed where the row does not hold its element is a mismatch of rows, outside the boundary, and needs a handler under one" do
       elaborating (state <> logs <> [ "f :: Unit -> Int / {| Log |}", "f _ = get ()", "loud = get ()" ]) \r ->
-        map spanned r.errors `shouldEqual` [ "10:8-10:11 row not contained", "9:3 outside: implicit-handler resolution at this checking boundary" ]
+        map spanned r.errors `shouldEqual` [ "10:8-10:11 row not contained", "9:3 no implicit handler" ]
 
   describe "a handling expression" do
     let
@@ -1614,7 +1620,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
 
     it "reports a clause performing what the row ambient does not hold as asking for a handler, under a boundary" do
       elaborating (effects <> [ "f :: Unit -> Int", "f _ = handle ask () with", "  Ask -> | fast ask _ = get ()" ]) \r ->
-        map spanned r.errors `shouldEqual` [ "13:3 outside: implicit-handler resolution at this checking boundary" ]
+        map spanned r.errors `shouldEqual` [ "13:3 no implicit handler" ]
 
     -- the instance of `Continuation` written at the row a checking boundary
     -- owns, and `continue` applied to it, its own instantiation row the same
@@ -2171,6 +2177,87 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (failing "  full | count _ = resume \"no\"") \r ->
         map at r.errors `shouldEqual` [ "12:38 implicit: not ~>", "12:14 implicit: parameters", "14:10 implicit: not fast count", "15:17 implicit: return clause", "14:27 rejected" ]
 
+  describe "an implicit handler inserted" do
+    let
+      -- lines 3 to 9
+      lowering =
+        [ "effect Tick where"
+        , "  tick :: Unit ->* Int"
+        , "effect Log where"
+        , "  log :: Int ->* Unit"
+        , "implicit"
+        , "handler logAsTick :: Log ~> ( Tick ) where"
+        , "  fast | log _ = let _ = tick () in ()"
+        ]
+      bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == inM name) values)
+      -- the global a spine of applications, type applications, and constraint
+      -- applications stands on
+      headOf = case _ of
+        App _ f _ -> headOf f
+        TyApp _ e _ -> headOf e
+        ConstraintApp _ e -> headOf e
+        Global _ name _ -> Just name
+        _ -> Nothing
+
+    it "applies the handler to the thunk of the body a written arrow's λ encloses, widened by its target, and the Core checker accepts it" do
+      elaborating (lowering <> [ "logged :: Unit -> Int / {| Tick |}", "logged _ = let _ = log 1 in 0" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        case bodyOf "logged" r.values of
+          Just (Lam _ _ _ _ (App _ handler (OpenEff _ widening (Lam _ _ _ _ _)))) -> do
+            headOf handler `shouldEqual` Just (inM "logAsTick")
+            widening `shouldEqual` TRowExtend (RowEffectEntry (Qualified (ModuleName "M") (EffName "Tick")) []) TRowEmpty
+          other -> fail ("not the handler applied to the widened thunk: " <> show other)
+        checked r \core -> shapes core `shouldEqual` [ "nonrec logAsTick", "nonrec logged" ]
+
+    it "meets a top-level value's boundary at `()`, and none where nothing is written" do
+      elaborating
+        ( lowering <>
+            [ "implicit"
+            , "handler ticks :: Tick ~> () where"
+            , "  fast | tick _ = 1"
+            , "forced :: Int"
+            , "forced = let _ = log 1 in tick ()"
+            , "inferred _ = let _ = log 1 in tick ()"
+            ]
+        )
+        \r -> do
+          map at r.errors `shouldEqual` []
+          map headOf (bodyOf "forced" r.values) `shouldEqual` Just (Just (inM "ticks"))
+          map (\term -> Set.member (inM "logAsTick") (globalsOf term)) (bodyOf "inferred" r.values) `shouldEqual` Just false
+          checked r \_ -> pure unit
+
+    it "is inserted under the λ an η-expansion makes, the expansion read as what it expands where its initialization is judged" do
+      elaborating
+        [ "effect Shout where"
+        , "  shout :: Unit ->* Unit"
+        , "implicit"
+        , "handler silence :: Shout ~> () where"
+        , "  fast | shout _ = ()"
+        , "loud :: forall a. a -> a / {| Shout |}"
+        , "loud x = let _ = shout () in x"
+        , "quiet :: forall a. a -> a"
+        , "quiet = loud"
+        ]
+        \r -> do
+          map at r.errors `shouldEqual` []
+          case bodyOf "quiet" r.values of
+            Just (TyLam _ _ _ (Lam _ _ _ _ applied)) -> headOf applied `shouldEqual` Just (inM "silence")
+            other -> fail ("not the handler under the expansion's λ: " <> show other)
+          case map (map (const unit) <<< _.initialization) (Array.find (\v -> v.name == inM "quiet") r.values) of
+            Just (TyLam _ _ _ (TyApp _ (Global _ name _) _)) -> name `shouldEqual` inM "loud"
+            other -> fail ("not judged as what it expands: " <> show other)
+          checked r \_ -> pure unit
+
+    it "is refused where no handler, several, or no order meets the boundary, and a rigid tail alone is a mismatch of rows" do
+      elaborating (lowering <> [ "quiet :: Unit -> Int", "quiet _ = let _ = log 1 in 0" ]) \r ->
+        map at r.errors `shouldEqual` [ "11:7 no implicit handler", "8:9 left unchecked" ]
+      elaborating (lowering <> [ "implicit", "handler drop :: Log ~> () where", "  fast | log _ = ()", "logged :: Unit -> Int / {| Tick |}", "logged _ = let _ = log 1 in tick ()" ]) \r ->
+        map at r.errors `shouldEqual` [ "14:8 implicit handlers ambiguous", "8:9 left unchecked", "11:9 left unchecked" ]
+      elaborating (lowering <> [ "effect Beep where", "  beep :: Unit ->* Unit", "implicit", "handler beepAsTick :: Beep ~> ( Tick ) where", "  fast | beep _ = let _ = tick () in ()", "both :: Unit -> Int / {| Tick |}", "both _ = let _ = beep () in let _ = log 1 in tick ()" ]) \r ->
+        map at r.errors `shouldEqual` [ "16:6 implicit order ambiguous", "8:9 left unchecked", "13:9 left unchecked" ]
+      elaborating (lowering <> [ "apply :: forall e. (Unit -> Int / e) -> Int", "apply k = k ()" ]) \r ->
+        map at r.errors `shouldEqual` [ "11:7 boundary not contained", "8:9 left unchecked" ]
+
   describe "what a quantifier encloses" do
     let
       bodyOf name values = map (map (const unit) <<< _.body) (Array.find (\x -> x.name == Qualified (ModuleName "M") (Ident name)) values)
@@ -2262,7 +2349,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         , "quiet :: forall a. a -> a"
         , "quiet = loudId"
         ]
-        \r -> map at r.errors `shouldEqual` [ "8:9 outside: implicit-handler resolution at this checking boundary" ]
+        \r -> map at r.errors `shouldEqual` [ "8:9 no implicit handler" ]
       elaborating [ "wrong :: forall a. a -> a", "wrong = inc" ] \r ->
         map at r.errors `shouldEqual` [ "4:9 rejected" ]
 
@@ -2689,7 +2776,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
       elaborating (effects <> [ "run :: Unit -> Int / {| Console |}", "run u = let", "      n :: Unit", "      n = shout 1", "    in 1" ]) \r ->
         map at r.errors `shouldEqual` []
       elaborating (effects <> [ "quiet :: Unit -> Int", "quiet u = let", "      n :: Unit", "      n = shout 1", "    in 1" ]) \r ->
-        map at r.errors `shouldEqual` [ "8:7 outside: implicit-handler resolution at this checking boundary", "6:1 left unchecked" ]
+        map at r.errors `shouldEqual` [ "8:7 no implicit handler", "6:1 left unchecked" ]
 
     it "requires of the variables around it what its rows need, where it stands" do
 
@@ -2750,7 +2837,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
 
     it "forced at a value's right-hand side with a row the value's boundary cannot meet asks for an implicit handler there" do
       elaborating [ "effect Console where", "  log :: Int ->* Unit", "loud :: Int / {| Console |}", "loud = 1", "w :: Int", "w = loud" ] \r ->
-        map at r.errors `shouldEqual` [ "8:1 outside: implicit-handler resolution at this checking boundary" ]
+        map at r.errors `shouldEqual` [ "8:1 no implicit handler" ]
 
     it "taking a synthesized parameter is read and published to the other bodies, its own body outside this version" do
       synthesizing
@@ -3041,7 +3128,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
           )
           (initialState (SessionId 0) 100)
         r = settleBodies primSession (attemptPending primSession) (snd afterF) (map body [ Tuple "f" 1, Tuple "h" 3 ])
-      map at r.errors `shouldEqual` [ "1:1 outside: implicit-handler resolution at this checking boundary" ]
+      map at r.errors `shouldEqual` [ "1:1 no implicit handler" ]
       map _.name r.values `shouldEqual` [ inM "h" ]
 
     it "closes, a round at a time, a tail a pending `case` comes to need once another's is closed" do

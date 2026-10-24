@@ -305,6 +305,7 @@ forms = case _ of
   EReadCell _ _ _ -> [ "EReadCell" ]
   EWriteCell _ _ _ v -> [ "EWriteCell" ] <> forms v
   EOpenEff _ _ e -> [ "EOpenEff" ] <> forms e
+  EImplicit _ _ lowered e -> [ "EImplicit" ] <> foldMap forms lowered <> forms e
   EFit _ _ e -> [ "EFit" ] <> forms e
   EEta _ _ e -> [ "EEta" ] <> forms e
   ERecursiveRef _ _ -> [ "ERecursiveRef" ]

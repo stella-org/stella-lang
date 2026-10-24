@@ -275,7 +275,7 @@ printDiagnostic = case _ of
     | Array.null s.message -> "A synthesizer failed here"
     | otherwise -> fmt @"A synthesizer failed here: {message}" { message: printMessage s.message }
   RowNotContained _ r -> fmt @"This performs `{s}`, which is not among the effects allowed here" { s: printEffectRow (rebuild r.source) }
-  BoundaryNotContained _ r -> fmt @"This performs `{s}` beyond the effects expected here, which this version of the compiler does not resolve with an implicit handler yet" { s: printEffectRow (rebuild r.source) }
+  BoundaryNotContained _ r -> fmt @"This performs `{s}`, which is not among the effects expected here" { s: printEffectRow (rebuild r.source) }
   ImplicitHandlerMissing _ k r -> fmt @"This performs `{s}` beyond the effects expected here, and no implicit handler available here handles `{key}`" { s: printEffectRow (rebuild r), key: keyName k }
   ImplicitHandlerAmbiguous _ k handlers -> fmt @"Several implicit handlers available here handle `{key}`: {handlers}; apply the one meant where it is needed" { key: keyName k, handlers: identities handlers }
   ImplicitOrderAmbiguous _ handlers -> fmt @"The implicit handlers {handlers} would each be inserted here, and nothing orders them; apply them in the order meant where they are needed" { handlers: identities handlers }

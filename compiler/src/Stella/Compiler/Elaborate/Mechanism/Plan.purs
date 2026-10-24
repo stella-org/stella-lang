@@ -16,6 +16,7 @@ module Stella.Compiler.Elaborate.Mechanism.Plan
   , PlanStep
   , SpineStep(..)
   , searchPlan
+  , lowerImplicits
   ) where
 
 import Prelude
@@ -23,22 +24,29 @@ import Prelude
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Generic.Rep (class Generic)
+import Data.Foldable (foldl, foldr)
+import Data.Map (Map)
+import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
 import Stella.Compiler.Elaborate.CorePlus.Kind (XKind)
-import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry, XType)
+import Stella.Compiler.Elaborate.CorePlus.Term (XExpr(..), mapSubterms)
+import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XRowEntry, XType(..))
 import Stella.Compiler.Elaborate.Environment.Implicit (ImplicitCandidate, compareIdentity)
 import Stella.Compiler.TypedCore.Name (Ident, Qualified)
+import Stella.Compiler.TypedCore.Prim (unitTy)
 import Stella.Compiler.TypedCore.Type (RowKey, compareRowKeys, rowEntryKey)
 
 -- | A plan a boundary settled, as its lowering reads it: the body's row `ρ1`,
 -- | the elements the thunk of the body is widened by, the type the body
--- | answers with, and each handler, innermost first, with what applying it
--- | took.
+-- | answers with, the name each thunk binds its `Unit` to, apart from every
+-- | local in scope at the boundary, and each handler, innermost first, with
+-- | what applying it took.
 type ImplicitPlan =
   { source :: XType
+  , binder :: Ident
   , widening :: Array XRowEntry
   , answer :: XType
   , steps :: Array PlanStep
@@ -98,6 +106,39 @@ searchPlan candidates removed expected = found [] Set.empty (Array.fromFoldable 
       [] -> Left (PlanUnordered (map _.handler (Array.sortBy (\a b -> compareIdentity a.handler b.handler) left)))
       [ h ] -> go (Array.snoc acc h) (Array.filter (\h' -> h'.handler /= h.handler) left)
       ready -> Left (PlanUnordered (map _.handler (Array.sortBy (\a b -> compareIdentity a.handler b.handler) ready)))
+
+-- | A term in which each checking boundary a plan settled holds the lowering
+-- | of that plan
+-- | ([Effect Handlers](../../../../../docs/technical-references/02-Surface-Language/02-Effect-Handlers.md#what-reaches-core))
+-- | beside the body as written, and every other boundary holds its body alone.
+-- |
+-- | **The handlers are applied to thunks, innermost first**: the body's thunk at
+-- | `ρ1`, widened once by what the plan widens it by, then the result of each
+-- | handler thunked again at the row it leaves before the next receives it. The
+-- | last application stands where the body stood.
+lowerImplicits :: forall a. Map MetaVar ImplicitPlan -> XExpr a -> XExpr a
+lowerImplicits plans = go
+  where
+  go = case _ of
+    EImplicit a m _ body ->
+      let
+        written = go body
+      in
+        EImplicit a m (Map.lookup m plans <#> \plan -> lowered a plan written) written
+    e -> mapSubterms go e
+
+  lowered a plan body = case Array.unsnoc plan.steps of
+    Just { init, last } -> applied last (foldl (\q s -> thunk s.output (applied s q)) widened init)
+    Nothing -> body
+    where
+    widened
+      | Array.null plan.widening = thunk plan.source body
+      | otherwise = EOpenEff a (foldr XRowExtend XRowEmpty plan.widening) (thunk plan.source body)
+    thunk row e = ELam a plan.binder (XCon unitTy []) row e
+    applied s q = EApp a (foldl spine (EGlobal a s.handler s.kinds) s.spine) q
+    spine e = case _ of
+      SpineType t -> ETyApp a e t
+      SpineConstraint -> EConstraintApp a e
 
 derive instance Eq SpineStep
 derive instance Generic SpineStep _
