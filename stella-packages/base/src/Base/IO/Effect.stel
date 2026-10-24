@@ -1,0 +1,17 @@
+-- `LiftIO`, the capability carrying an `IO` value, and `runIO`, the standard
+-- runner, which the ABI of `stella-base-0.1` names at its scheme.
+module Base.IO.Effect where
+
+import Base.IO (pure, bind)
+import Base.Continuation as Continuation
+
+effect LiftIO where
+  liftIO :: forall a. IO a ->* a
+
+runIO :: forall a. (Unit -> a / {| LiftIO |}) -> IO a
+runIO thunk =
+  handle thunk () with
+    LiftIO ->
+      reifiable full
+      | liftIO action k = bind action (Continuation.continue k)
+      | return x = pure x
