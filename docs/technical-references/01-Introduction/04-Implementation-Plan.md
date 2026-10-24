@@ -1213,13 +1213,13 @@ These belong with elaboration and are written once a surface language exists ([E
 | A flexible tail surviving the cancellation of shared tails | Stuck on the metavariables awaited, in the queue synthesis goals use. Not a failure |
 | A rigid tail shared by both rows | Not a reason to wait. It cancels, and nothing in the goal can assign it a key |
 | A computation already performing the target, `( Console, LiftIO \| e )` checked against `( LiftIO \| e )` | Accepted, and widened by nothing. Adding an element the row already carries is not well-kinded |
-| A key carried only by the expected row, with an empty plan | Accepted. Step 4 widens, and the term is the widened thunk forced at once rather than a nest of applications |
+| A key carried only by the expected row, beside one a handler removes | Accepted. Step 4 widens the thunk of the body by it, and the handler's residual row carries it on to the row expected |
 | A key on both sides whose payloads differ | Failure. A widening adds elements and reconciles no payload |
 | One key contributed to `W` twice with different payloads, by two targets or by a target and the expected row | Failure where `W` is formed. It is a union of finite maps and is partial |
 | `{ Console, File }` checked against `{ LiftIO }`, with an implicit handler for each | Ambiguity. The dependency relation orders neither, so the plan is not unique (D29) |
 | `{ Console }` checked against `{ LiftIO }` through `Console ~> Logging` and `Logging ~> LiftIO` | Accepted. The order is unique under the **transitive closure**, which the direct edges alone do not make total for a chain of three |
 | Two handlers nested by one plan | The inner result is thunked again before the outer receives it, a handler taking a thunk and returning a computation |
-| A plan of no handlers at all | The term is `q0 Prim.Unit`, the widened thunk forced. A rule written as a nest of applications has no term here |
+| A rigid tail of the body's row that the row expected does not hold, with no key the body performs that the row expected lacks | A row mismatch. No plan is sought: there is no key to choose a handler by, and no handler can remove what a rigid row holds without knowing it, so the plan is never empty |
 | Two implicit handlers for one key | Ambiguity, naming both and the modules they come from |
 | Implicit declarations forming a cycle across two modules | Rejected where `Ξ` is assembled from the imports. Neither declaration is wrong on its own, so checking one at a time does not see it |
 | `A` and `B`, importing only the module declaring the effects, declaring `X ~> ( Y )` and `Y ~> ( X )`, and `C` importing both, by a list of names, `hiding`, an alias, or `lazy` | `A` and `B` each compiled; `C` rejected where its header stands, naming `A.xy` and `B.yx` |

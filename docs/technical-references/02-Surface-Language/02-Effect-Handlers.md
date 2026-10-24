@@ -494,7 +494,8 @@ The search shares the machinery of [Elaboration](01-Elaboration.md) and adds non
 | `fit(ρ1, ρ2)` | Branch |
 | --- | --- |
 | Equal or Widen | **No handler.** The boundary's row is assigned `ρ2`, and every fit inside the body is decided again against it, widening as each needs; nothing is placed at the boundary. Insertion is not attempted, and a row a fit can reach needs no handler |
-| a definite mismatch — a known key or a rigid tail of `ρ1` that `ρ2` does not contain, with no flexible tail left to absorb it | **Insertion.** The boundary's row is assigned `ρ1`, the body is fixed at it, and the plan is read off the complete difference ([The plan](#the-plan)); its lowering is [below](#what-reaches-core) |
+| a definite mismatch — a known key of `ρ1` that `ρ2` does not contain, with no flexible tail left to absorb it | **Insertion.** The boundary's row is assigned `ρ1`, the body is fixed at it, and the plan is read off the complete difference ([The plan](#the-plan)); its lowering is [below](#what-reaches-core) |
+| a definite mismatch of a tail alone — no known key of `ρ1` that `ρ2` lacks, and a rigid tail of `ρ1` that `ρ2` does not hold | **A row mismatch.** No handler is sought: there is no key to choose one by, and no handler can remove what a rigid row holds without knowing it |
 | undecided once the shared tails cancel | **Waiting.** The boundary's job postpones on the flexible tails left, and the boundary's row stays unassigned |
 
 **Shared tails cancel before anything waits.** The fit removes the tails the two sides have in common before it decides, and the plan is read after the same cancellation. A boundary waits only where a **flexible tail survives that cancellation** and can still decide the fit: a tail of `ρ2` that can still absorb what `ρ1` has left, or a tail of `ρ1` with nothing else left beside it. A known key or a rigid tail of `ρ1` that `ρ2` cannot absorb is a mismatch whatever tail `ρ1` keeps, since assigning that tail only adds to `ρ1`. It then joins the queue every other job joins and is resumed when one of the metavariables it awaits is assigned. A source whose remainder is empty is a `Widen` whatever flexible tail the target holds, and waits for nothing.
@@ -526,6 +527,7 @@ A row problem is reported as a row problem, naming what is missing rather than w
 - A key with no implicit handler names the key and the row it stands in
 - A key with several names the candidates and the modules they come from
 - An ambiguous order names the handlers that the dependency relation leaves unordered, and says that writing the composition settles it
+- A key carried with two payloads names the key, whether by two targets, by a target and the row expected, by a target and the body's row, or by the body's row and the source of the handler chosen for it
 - A cycle is reported against the import environment that closes it, where the module's header stands: once for each strongly connected component, naming its handlers and the modules declaring them
 
 A cell problem names the cell and where cells stand.
