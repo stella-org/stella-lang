@@ -61,7 +61,8 @@ are written. Otherwise `Prelude` and a library downstream of it each need the ot
 | `Maybe` | `Prelude` | `Data.Maybe` |
 | `Array` | `Base.Array`, being a manifest intrinsic | `Data.Array`, with a construction macro from `Prelude` |
 | `Partial` | `Prelude` | handlers, wherever they are written |
-| `Console`, `LiftIO` | `Base.Effect.*`, being standard primitive capabilities | target adapters, and the terminal interpreter |
+| `Console` | `Base.Effect.Console`, being a standard primitive capability | target adapters |
+| `LiftIO` | `Base.IO.Effect`, beside the standard runner | target adapters, and the standard runner `Base.IO.Effect.runIO`, the terminal interpreter |
 | `State`, `Except` | the `Effect.*` library declaring each | the same library |
 
 `Array` is the case where the split does visible work. The macro building an
@@ -294,12 +295,13 @@ Within a module, declaring one name twice in a namespace is ill-formed as it is 
 ## The Base runtime contract
 
 `Base.*` is the versioned runtime contract: the portable primitive protocols and
-the common ABI surface. It holds two kinds of thing, and only one of them is
+the common ABI surface. It holds three kinds of thing, and only one of them is
 something a backend implements.
 
 | Kind | What it is | Implemented by a backend |
 | --- | --- | --- |
 | **ABI entry** | a `foreign` whose implementation a backend supplies, `Base.IO.bind` and the arithmetic among them | **yes**, where a profile designates it |
+| **standard entry** | a Stella global whose qualified name and scheme the ABI fixes, written in `Base` source: `Base.IO.Effect.runIO` | no; a backend compiles it as it compiles any module |
 | **protocol** | a standard primitive capability, declared as an effect and nothing more | no; it names operations and has no implementation to supply |
 
 An ABI entry is a `foreign` declaration, checked where it is written; what sets
@@ -310,6 +312,15 @@ crosses to no host, so what a host foreign is held to (D44) does not apply to it
 declares operations without implementations ([Effects](../03-Typed-Core/03-Effects.md)) — there
 is nothing for a backend to supply, and what interprets one is ordinary Stella
 code.
+
+A standard entry is an ordinary value declaration, and nothing of it is hidden in
+the toolchain. `Base.IO.Effect.runIO` runs a computation performing `LiftIO`
+alone as an `IO` action: a `reifiable full` clause sequences each lifted action
+before the continuation by `Base.IO.bind`, and the return clause gives the
+result by `Base.IO.pure`. The row it takes is closed because `Base.IO.bind`'s
+continuation is a pure arrow ([Effects](../03-Typed-Core/03-Effects.md)). **The
+compiler holds `Base.IO.Effect` to the scheme the ABI fixes**
+([Modules](01-Modules.md#a-standard-entry)).
 
 ```text
 -- ABI entries
@@ -352,9 +363,12 @@ Base.Function.Uncurried.Fn2  : Type -> Type -> Type -> Type   -- manifest intrin
 Base.IO.pure                 : forall a. a -> IO a
 Base.IO.bind                 : forall a b. IO a -> (a -> IO b) -> IO b
 
+-- standard entries
+Base.IO.Effect.runIO         : forall a. (Unit -> a / {| LiftIO |}) -> IO a
+
 -- protocols
 Base.Effect.Console          effect Console where log : String ->* Unit
-Base.Effect.LiftIO           effect LiftIO  where liftIO : forall a. IO a ->* a
+Base.IO.Effect.LiftIO        effect LiftIO  where liftIO : forall a. IO a ->* a
 ```
 
 **A public `IO`, `Int`, or `Array` module is ordinary Stella code over `Base.*`.**
