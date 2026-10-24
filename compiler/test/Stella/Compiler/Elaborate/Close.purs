@@ -104,7 +104,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Close" do
           sigma <- openBoundary emptyXContext
           lambda <- freshTypeMeta emptyXContext rowEffect
           f <- placeFit site Wrapping lambda (XMeta sigma)
-          closeBoundary site sigma XRowEmpty
+          closeBoundary site sigma XRowEmpty unit'
           pure { term: EFit unit f literal, keep: { sigma, lambda } }
       )
       \r closed after -> do
@@ -118,7 +118,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Close" do
           sigma <- openBoundary emptyXContext
           a <- freshTypeMeta emptyXContext rowEffect
           f <- placeFit site Wrapping a (XMeta sigma)
-          closeBoundary site sigma (row [ console ] XRowEmpty)
+          closeBoundary site sigma (row [ console ] XRowEmpty) unit'
           pure { term: EFit unit f literal, keep: { sigma, a } }
       )
       \r closed after -> do
@@ -213,12 +213,12 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Close" do
           b <- freshTypeMeta emptyXContext rowEffect
           f <- placeFit site Wrapping (row [ console ] a) (XMeta sigma)
           _ <- placeFit site Wrapping (row [ clock ] b) (XMeta sigma)
-          closeBoundary site sigma XRowEmpty
+          closeBoundary site sigma XRowEmpty unit'
           pure { term: EFit unit f literal, keep: a }
       )
       \a closed after -> do
         case closed of
-          Undone { cause: UndoneBy (BoundaryNotContained _ _) } -> pure unit
+          Undone { cause: UndoneBy (ImplicitHandlerMissing _ _ _) } -> pure unit
           other -> fail ("not undone by the boundary: " <> show other)
         substitute after.tentative.metas a `shouldEqual` a
 

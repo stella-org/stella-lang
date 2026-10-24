@@ -125,6 +125,7 @@ session =
   , constructors: constructorsOf signature
   , effects: effectsOf signature
   , tracing: TraceDisabled
+  , implicits: []
   }
 
 keyN :: RowKey

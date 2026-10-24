@@ -21,6 +21,7 @@ import Stella.Compiler.Elaborate.Driver.Attempt (Runner, attemptPendingWith, hos
 import Stella.Compiler.Elaborate.Driver.Loop (RunResult(..), run, runWith)
 import Stella.Compiler.Elaborate.Driver.Resolve (Ambiguity(..), ComponentOutcome(..), Resolution(..), resolveByDirection)
 import Stella.Compiler.Elaborate.Environment.Imported (sessionEnvOf)
+import Stella.Compiler.Elaborate.Environment.Implicit (ImplicitCandidate)
 import Stella.Compiler.Elaborate.Kernel.Elab (Elab, Outcome(..), SessionEnv, SolverState, closeBoundary, drainWarnings, equate, formUnion, freshInstantiationRow, freshTypeMeta, initialState, openBoundary, placeFit, recordWarning, require)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitState(..), FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Breach(..))
@@ -29,11 +30,11 @@ import Stella.Compiler.Elaborate.Mechanism.Unify (isInstantiationRow, substitute
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (SessionId(..))
 import Stella.Compiler.TypedCore (primSignature)
-import Stella.Compiler.TypedCore.Prim (intTy)
+import Stella.Compiler.TypedCore.Prim (fn, intTy, unitTy)
 import Stella.Compiler.Elaborate.Vocabulary.Message (FrozenMessagePart(..))
-import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), TyVar(..))
-import Stella.Compiler.TypedCore.Type (RowKey(..))
+import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), TyName, TyVar(..))
+import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), Type(..), TypeScheme, rowEntryKey)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
@@ -515,19 +516,99 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Resolve" do
           map (stateOf after) r.fits `shouldEqual` [ Just (Widen (closed [ clock ])) ]
         _ -> fail "not done"
 
-    it "is refused where its body performs what the row expected cannot hold" do
+    it "is refused where its body performs what the row expected cannot hold, no implicit handler handling it" do
       case runAttempt session (boundaryWith XRowEmpty (\sigma -> [ Tuple (closed [ console ]) sigma ])) (initialState (SessionId 0) 100) of
         Tuple (Done _) s -> case run session s of
-          Tuple { result: Rejected (BoundaryNotContained _ r) } _ -> r.source `shouldEqual` (emptyXNormalForm { known = Map.singleton (EffectKey (effect "Console")) console })
+          Tuple { result: Rejected (ImplicitHandlerMissing _ k r) } _ -> do
+            k `shouldEqual` EffectKey (effect "Console")
+            r `shouldEqual` (emptyXNormalForm { known = Map.singleton (EffectKey (effect "Console")) console })
           Tuple report _ -> fail ("not refused: " <> show report.result)
         _ -> fail "not done"
 
     it "takes as its own a fit whose target's remainder is its ambient row alone, whatever the target holds besides" do
       case runAttempt session (boundaryWith (closed [ console ]) (\sigma -> [ Tuple (closed [ console, clock ]) (row [ console ] sigma) ])) (initialState (SessionId 0) 100) of
         Tuple (Done _) s -> case run session s of
-          Tuple { result: Rejected (BoundaryNotContained _ r) } _ -> r.source `shouldEqual` (emptyXNormalForm { known = Map.singleton (EffectKey (effect "Clock")) clock })
+          Tuple { result: Rejected (ImplicitHandlerMissing _ _ r) } _ -> r `shouldEqual` (emptyXNormalForm { known = Map.singleton (EffectKey (effect "Clock")) clock })
           Tuple report _ -> fail ("not refused: " <> show report.result)
         _ -> fail "not done"
+
+    it "inserts the one implicit handler of the key its body performs, the thunk widened by the target, the plan recorded" do
+      planned [ lowering "lowerConsole" "Console" [ "LiftIO" ] ] (boundaryWith (closed [ liftIO ]) (\sigma -> [ Tuple (closed [ console ]) sigma ])) \result r after -> do
+        result `shouldEqual` Completed
+        sameRow after (XMeta r.sigma) (closed [ console ])
+        planOf after r.sigma `shouldEqual` Just { handlers: [ "lowerConsole" ], widening: [ liftIO ] }
+
+    it "cancels a flexible tail both rows share before reading the plan, and waits on nothing" do
+      planned [ lowering "lowerConsole" "Console" [ "LiftIO" ] ]
+        ( do
+            t <- freshTypeMeta emptyXContext rowEffect
+            boundaryWith (row [ liftIO ] t) (\sigma -> [ Tuple (row [ console ] t) sigma ])
+        )
+        \result r after -> do
+          result `shouldEqual` Completed
+          planOf after r.sigma `shouldEqual` Just { handlers: [ "lowerConsole" ], widening: [ liftIO ] }
+
+    it "widens by nothing a target the body performs already, and by a key only the row expected carries" do
+      planned [ lowering "lowerConsole" "Console" [ "LiftIO" ] ] (boundaryWith (closed [ liftIO ]) (\sigma -> [ Tuple (closed [ console, liftIO ]) sigma ])) \result r after -> do
+        result `shouldEqual` Completed
+        planOf after r.sigma `shouldEqual` Just { handlers: [ "lowerConsole" ], widening: [] }
+      planned [ lowering "lowerConsole" "Console" [ "LiftIO" ] ] (boundaryWith (closed [ liftIO, clock ]) (\sigma -> [ Tuple (closed [ console ]) sigma ])) \result r after -> do
+        result `shouldEqual` Completed
+        planOf after r.sigma `shouldEqual` Just { handlers: [ "lowerConsole" ], widening: [ clock, liftIO ] }
+
+    it "orders a chain by the transitive closure of what each handler performs, innermost first" do
+      planned [ lowering "lowerLogging" "Logging" [ "LiftIO" ], lowering "lowerConsole" "Console" [ "Logging" ] ] (boundaryWith (closed [ liftIO ]) (\sigma -> [ Tuple (closed [ console ]) sigma ])) \result r after -> do
+        result `shouldEqual` Completed
+        planOf after r.sigma `shouldEqual` Just { handlers: [ "lowerConsole", "lowerLogging" ], widening: [ liftIO, logging ] }
+
+    it "is refused where two handlers lower independently into one target, or two handle one key, and records no plan" do
+      planned [ lowering "lowerConsole" "Console" [ "LiftIO" ], lowering "lowerClock" "Clock" [ "LiftIO" ] ] (boundaryWith (closed [ liftIO ]) (\sigma -> [ Tuple (closed [ console, clock ]) sigma ])) \result r after -> do
+        result `shouldEqual` Rejected (ImplicitOrderAmbiguous (InDeclaration (declaration "f")) [ declaration "lowerClock", declaration "lowerConsole" ])
+        planOf after r.sigma `shouldEqual` Nothing
+      planned [ lowering "quiet" "Console" [], lowering "loud" "Console" [ "LiftIO" ] ] (boundaryWith (closed [ liftIO ]) (\sigma -> [ Tuple (closed [ console ]) sigma ])) \result _ _ ->
+        result `shouldEqual` Rejected (ImplicitHandlerAmbiguous (InDeclaration (declaration "f")) (EffectKey (effect "Console")) [ declaration "loud", declaration "quiet" ])
+
+    it "is refused where a target and the row expected carry one key with payloads that differ" do
+      planned [ loweringOf "stateful" (RowEffectEntry (effect "Console") []) [ stateEntry intTy ] ]
+        (boundaryWith (closed [ state (XCon unitTy []) ]) (\sigma -> [ Tuple (closed [ console ]) sigma ]))
+        \result _ _ -> result `shouldEqual` Rejected (ImplicitPayloadConflict (InDeclaration (declaration "f")) (EffectKey (effect "State")))
+
+    it "is refused where a target carries a key the body performs with another payload, or a handler's source is not the element it was chosen for" do
+      -- `State Unit` performed and handled, `State Int` performed in place of `Console`
+      planned [ loweringOf "lowerConsole" (RowEffectEntry (effect "Console") []) [ stateEntry intTy ], loweringOf "dropState" (stateEntry unitTy) [] ]
+        (boundaryWith XRowEmpty (\sigma -> [ Tuple (closed [ console, state (XCon unitTy []) ]) sigma ]))
+        \result _ _ -> result `shouldEqual` Rejected (ImplicitPayloadConflict (InDeclaration (declaration "f")) (EffectKey (effect "State")))
+      -- the one handler of `State` handles `State Unit`, and the body performs `State Int`
+      planned [ loweringOf "dropState" (stateEntry unitTy) [] ]
+        (boundaryWith XRowEmpty (\sigma -> [ Tuple (closed [ state int ]) sigma ]))
+        \result _ _ -> result `shouldEqual` Rejected (ImplicitPayloadConflict (InDeclaration (declaration "f")) (EffectKey (effect "State")))
+
+    it "opens a handler's kind quantifiers at fresh kinds, recorded with the plan" do
+      let
+        quiet = lowering "quiet" "Console" []
+        kinded = quiet { scheme = { kindVars: [ KindVar "k" ], body: TForall (TyVar "p") (KVar (KindVar "k")) quiet.scheme.body } }
+      planned [ kinded ] (boundaryWith XRowEmpty (\sigma -> [ Tuple (closed [ console ]) sigma ])) \result r after -> do
+        result `shouldEqual` Completed
+        map (\p -> map (Array.length <<< _.kinds) p.steps) (Map.lookup r.sigma after.tentative.plans) `shouldEqual` Just [ 1 ]
+
+    it "fixes a tail only the body's row holds by the plan's last equation, the handler's constraints required at the boundary" do
+      planned [ lowering "lowerConsole" "Console" [ "Clock" ] ]
+        ( do
+            t <- freshInstantiationRow withE
+            r <- boundaryIn (siteIn "f" withE) (row [ clock ] e) (\sigma -> [ Tuple (row [ console ] t) sigma ])
+            pure { sigma: r.sigma, fits: r.fits, t }
+        )
+        \result r after -> do
+          result `shouldEqual` Completed
+          sameRow after r.t e
+      planned [ lowering "lowerConsole" "Console" [ "LiftIO" ] ]
+        ( do
+            t <- freshInstantiationRow withE
+            boundaryIn (siteIn "f" withE) (row [ liftIO ] e) (\sigma -> [ Tuple (row [ console ] t) sigma ])
+        )
+        \result _ _ -> case result of
+          Rejected (ObligationBroken b) -> b.breach `shouldEqual` LacksUnprovenAtSite (EffectKey (effect "LiftIO")) (TyVar "e")
+          other -> fail ("not the constraint `LiftIO ∉ e`: " <> show other)
 
     it "stands in for its fits by its own against the row expected, where the union of its sources is not formed" do
       resolving
@@ -671,5 +752,58 @@ boundaryIn :: Site -> XType -> (XType -> Array (Tuple XType XType)) -> Elab { si
 boundaryIn at expected body = do
   sigma <- openBoundary at.context
   fits <- traverse (\(Tuple source target) -> placeFit at Wrapping source target) (body (XMeta sigma))
-  closeBoundary at sigma expected
+  closeBoundary at sigma expected (XCon unitTy [])
   pure { sigma, fits }
+
+liftIO :: XRowEntry
+liftIO = XRowEffectEntry (effect "LiftIO") []
+
+logging :: XRowEntry
+logging = XRowEffectEntry (effect "Logging") []
+
+-- | `E ~> ( t̄ )` in `M`, under the name given, as `Ξ` holds it.
+lowering :: String -> String -> Array String -> ImplicitCandidate
+lowering name source targets = loweringOf name (entry source) (map entry targets)
+  where
+  entry n = RowEffectEntry (effect n) []
+
+-- | `E τ̄ ~> ( t̄ )` under the name given, its elements as written.
+loweringOf :: String -> RowEntry -> Array RowEntry -> ImplicitCandidate
+loweringOf name source targets = { handler: declaration name, source, targets, scheme: capabilityScheme source targets }
+
+-- | The expansion of `E τ̄ ~> ( t̄ )`.
+capabilityScheme :: RowEntry -> Array RowEntry -> TypeScheme
+capabilityScheme source targets = { kindVars: [], body }
+  where
+  residual = TVar (TyVar "q")
+  answer = TVar (TyVar "b")
+  elements = Array.cons source targets
+  rowOf entries tail = foldr TRowExtend tail entries
+  lacking = map (\entry -> Lacks (rowEntryKey entry) residual) elements
+  body = TForall (TyVar "q") (KRow RowEffect)
+    (foldr TConstrained (TForall (TyVar "b") KType (fn (fn (TCon unitTy []) (rowOf elements residual) answer) (rowOf targets residual) answer)) lacking)
+
+-- | The boundary the action builds, decided with `Ξ` holding the handlers
+-- | given: what the loop came to, what the action gave, and the state after.
+planned
+  :: forall r
+   . Array ImplicitCandidate
+  -> Elab { sigma :: MetaVar | r }
+  -> (RunResult -> { sigma :: MetaVar | r } -> SolverState -> Aff Unit)
+  -> Aff Unit
+planned implicits action k = case runAttempt withXi action (initialState (SessionId 0) 100) of
+  Tuple (Done r) s -> case run withXi s of
+    Tuple report after -> k report.result r after
+  _ -> fail "not done"
+  where
+  withXi = session { implicits = implicits }
+
+-- | The plan a boundary recorded: its handlers by name, innermost first, and
+-- | what the thunk of its body is widened by.
+planOf :: SolverState -> MetaVar -> Maybe { handlers :: Array String, widening :: Array XRowEntry }
+planOf s sigma = Map.lookup sigma s.tentative.plans <#> \p ->
+  { handlers: map (\step -> case step.handler of Qualified _ (Ident n) -> n) p.steps, widening: p.widening }
+
+-- | `State τ`, the type constructor given at no kind.
+stateEntry :: Qualified TyName -> RowEntry
+stateEntry t = RowEffectEntry (effect "State") [ TCon t [] ]

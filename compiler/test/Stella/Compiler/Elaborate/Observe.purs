@@ -89,6 +89,7 @@ session =
   , constructors: emptyConstructorEnv
   , effects: emptyEffectEnv
   , tracing: TraceDisabled
+  , implicits: []
   }
 
 x :: Ident

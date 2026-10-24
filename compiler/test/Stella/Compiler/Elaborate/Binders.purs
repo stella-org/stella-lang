@@ -69,7 +69,7 @@ kinding =
     { types = Map.insert (tyName "List") { kindVars: [], body: KFun KType KType } (kindingOf primSignature).types }
 
 session :: SessionEnv
-session = { catalog: catalogOf [], kinding, constructors: emptyConstructorEnv, effects: emptyEffectEnv, tracing: TraceDisabled }
+session = { catalog: catalogOf [], kinding, constructors: emptyConstructorEnv, effects: emptyEffectEnv, tracing: TraceDisabled, implicits: [] }
 
 r :: TyVar
 r = TyVar "r"

@@ -102,7 +102,7 @@ context =
     ]
 
 session :: SessionEnv
-session = { catalog: catalogOf [], kinding: kindingOf primSignature, constructors: constructorsOf primSignature, effects: effectsOf primSignature, tracing: TraceDisabled }
+session = { catalog: catalogOf [], kinding: kindingOf primSignature, constructors: constructorsOf primSignature, effects: effectsOf primSignature, tracing: TraceDisabled, implicits: [] }
 
 site :: Site
 site = { context, origin: InDeclaration (Qualified (ModuleName "Main") (Ident "decl")) }

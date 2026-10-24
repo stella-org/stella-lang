@@ -43,7 +43,7 @@ import Stella.Compiler.Elaborate.Vocabulary.View (TypeView(..))
 import Stella.Compiler.TypedCore (Ident(..), Literal(..), ModuleName(..), Qualified(..))
 import Stella.Compiler.TypedCore.Kind (RowElemKind(..))
 import Stella.Compiler.TypedCore.Name (EffName(..), KindVar(..), RegionName(..), Symbol(..), TyName(..), TyVar(..))
-import Stella.Compiler.TypedCore.Prim (intTy, primSignature, recordTy)
+import Stella.Compiler.TypedCore.Prim (intTy, primSignature, recordTy, unitTy)
 import Stella.Compiler.TypedCore.Type (RowKey(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -55,6 +55,7 @@ session =
   , constructors: emptyConstructorEnv
   , effects: emptyEffectEnv
   , tracing: TraceDisabled
+  , implicits: []
   }
 
 decl :: P.String -> Qualified Ident
@@ -788,7 +789,7 @@ spec = describe "Stella.Compiler.Elaborate.Driver.Generalize" do
             sigma <- openBoundary emptyXContext
             inner <- freshTypeMeta emptyXContext rowEffect
             _ <- placeFit (siteIn f) Wrapping inner (XMeta sigma)
-            closeBoundary (siteIn f) sigma XRowEmpty
+            closeBoundary (siteIn f) sigma XRowEmpty (XCon unitTy [])
             x <- freshTypeMeta emptyXContext rowType
             y <- freshTypeMeta emptyXContext rowType
             equate (siteIn f) { kind: rowType, left: XRowUnion x y, right: XRowExtend (field "a") XRowEmpty }

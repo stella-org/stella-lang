@@ -61,6 +61,7 @@ session =
   , constructors: emptyConstructorEnv
   , effects: emptyEffectEnv
   , tracing: TraceEnabled
+  , implicits: []
   }
 
 site :: Site

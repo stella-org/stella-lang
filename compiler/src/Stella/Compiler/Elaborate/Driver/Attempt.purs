@@ -33,6 +33,7 @@ import Prim as P
 
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Defect(..), Diagnostic, Inadmissible(..))
 import Stella.Compiler.Elaborate.Vocabulary.Handle (Handle, HandleObject(..), emptyArena)
+import Stella.Compiler.Elaborate.Kernel.Implicit (insertImplicit)
 import Stella.Compiler.Elaborate.Kernel.Elab (Cause(..), Elab, Frame, Outcome(..), SessionEnv, SolverState, Tentative, break, checkSynthesisTarget, issue, requireClosed, runBoundary, runElabIn, runFit, unify, withFrame)
 import Stella.Compiler.Elaborate.Vocabulary.Outcome (Attempt(..))
 import Stella.Compiler.Elaborate.Vocabulary.Outcome (Attempt(..)) as Exports
@@ -137,7 +138,7 @@ hostRunner :: Runner
 hostRunner p = case p.job of
   JobUnify goal -> unify p.site goal
   JobEffectFit f -> runFit f
-  JobImplicitHandler goal -> runBoundary p.site goal
+  JobImplicitHandler goal -> runBoundary insertImplicit p.site goal
   JobSynthesis goal -> break (SynthesizerUnavailable (goalOf goal).synthesizer)
 
 -- | `attemptPendingWith hostRunner`.

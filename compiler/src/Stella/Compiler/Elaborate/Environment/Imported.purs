@@ -187,6 +187,7 @@ sessionEnvOf sig entries =
   , constructors: constructorsOf sig
   , effects: effectsOf sig
   , tracing: TraceDisabled
+  , implicits: []
   }
 
 derive instance Eq ImportError

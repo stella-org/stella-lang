@@ -94,6 +94,17 @@ data Diagnostic
   -- | hold, which only an implicit handler could take it to: what is left of
   -- | each once what the two share has cancelled.
   | BoundaryNotContained Origin { source :: XRowNormalForm, target :: XRowNormalForm }
+  -- | A checking boundary whose body performs a key no implicit handler of `Ξ`
+  -- | handles: the key, and what is left of the body's row once what it shares
+  -- | with the row expected has cancelled.
+  | ImplicitHandlerMissing Origin RowKey XRowNormalForm
+  -- | A key several implicit handlers handle, in the order of their identities.
+  | ImplicitHandlerAmbiguous Origin RowKey (P.Array (Qualified Ident))
+  -- | Implicit handlers a plan needs whose dependencies leave them unordered,
+  -- | in the order of their identities.
+  | ImplicitOrderAmbiguous Origin (P.Array (Qualified Ident))
+  -- | A key a plan's rows carry with payloads that are not equal.
+  | ImplicitPayloadConflict Origin RowKey
 
 -- | Something the mechanism, or whoever drove it, got wrong.
 -- |

@@ -53,7 +53,7 @@ xInt :: XType
 xInt = XCon intTy []
 
 session :: SessionEnv
-session = { catalog: catalogOf [], kinding: kindingOf primSignature, constructors: emptyConstructorEnv, effects: emptyEffectEnv, tracing: TraceDisabled }
+session = { catalog: catalogOf [], kinding: kindingOf primSignature, constructors: emptyConstructorEnv, effects: emptyEffectEnv, tracing: TraceDisabled, implicits: [] }
 
 resolver :: Qualified Ident
 resolver = Qualified (ModuleName "Typeclass") (Ident "resolve")

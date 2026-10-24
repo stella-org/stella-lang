@@ -151,6 +151,7 @@ sessionWith tracing =
   , constructors: constructorsOf signature
   , effects: effectsOf signature
   , tracing
+  , implicits: []
   }
 
 resolver :: Qualified Ident

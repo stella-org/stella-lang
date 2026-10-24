@@ -29,18 +29,21 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set as Set
 import Stella.Compiler.Elaborate.Surface.Group (groups)
-import Stella.Compiler.Interface.Environment (ModuleView, exportsOf, lookupImplicitHandler, reachable)
+import Stella.Compiler.Interface.Environment (ModuleView, exportsOf, lookupImplicitHandler, lookupValue, reachable)
+import Stella.Compiler.Interface.Scheme (coreScheme)
 import Stella.Compiler.TypedCore.Domain (compareByScalar)
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..))
 import Stella.Compiler.TypedCore.Prim (primModule)
-import Stella.Compiler.TypedCore.Type (RowEntry, rowEntryKey)
+import Stella.Compiler.TypedCore.Type (RowEntry, TypeScheme, rowEntryKey)
 
 -- | An implicit handler the search may take: the global, the element it
--- | handles, and the elements it performs in its place.
+-- | handles, the elements it performs in its place, and its scheme, which an
+-- | insertion instantiates.
 type ImplicitCandidate =
   { handler :: Qualified Ident
   , source :: RowEntry
   , targets :: Array RowEntry
+  , scheme :: TypeScheme
   }
 
 -- | The implicit handlers the value exports of the modules a view's header
@@ -51,7 +54,10 @@ importedImplicits view = Array.sortBy (\a b -> compareIdentity a.handler b.handl
   where
   published = Array.nubBy compareIdentity
     (foldMap (\m -> foldMap (map _.entity <<< Array.fromFoldable <<< Map.values <<< _.values) (exportsOf m view)) (Array.filter (_ /= primModule) (Array.fromFoldable (reachable view))))
-  candidate q = lookupImplicitHandler q view <#> \h -> { handler: q, source: h.source, targets: h.targets }
+  candidate q = do
+    h <- lookupImplicitHandler q view
+    entry <- lookupValue q view
+    pure { handler: q, source: h.source, targets: h.targets, scheme: coreScheme entry.scheme }
 
 -- | The order of identities: the module's name, then the global's, each
 -- | compared by scalar value.

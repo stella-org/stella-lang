@@ -50,6 +50,8 @@ module Stella.Compiler.Elaborate.Kernel.Elab
   , openBoundary
   , closeBoundary
   , runBoundary
+  , releaseBoundary
+  , recordPlan
   , fitRemainders
   , boundaryFits
   , lackedKeys
@@ -98,6 +100,8 @@ import Prim as P
 import Stella.Compiler.Elaborate.Environment.Catalog (ModuleCatalog, catalogOf)
 import Stella.Compiler.Elaborate.Environment.Constructors (ConstructorEnv, emptyConstructorEnv)
 import Stella.Compiler.Elaborate.Environment.Effects (EffectEnv, emptyEffectEnv)
+import Stella.Compiler.Elaborate.Environment.Implicit (ImplicitCandidate)
+import Stella.Compiler.Elaborate.Mechanism.Plan (ImplicitPlan)
 import Stella.Compiler.Elaborate.CorePlus.Context (XContext)
 import Stella.Compiler.Elaborate.CorePlus.Context as Context
 import Stella.Compiler.Elaborate.Vocabulary.Diagnostic (Warning, Defect(..), Diagnostic(..), MalformedGoal(..))
@@ -107,7 +111,7 @@ import Stella.Compiler.Elaborate.Vocabulary.Handle (Arena, ExprObject, GoalObjec
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Basis(..), Breach(..), Obligation, ObligationStore, ResidualAtom(..), emptyStore, introduce, obligationOf, recheck, residualAtoms, touching)
 import Stella.Compiler.Elaborate.Mechanism.Pending (EqualityGoal, GoalRecord, HandlerGoal, Job(..), PendingId, Site, SynthRef, goalOf, newGoal)
 import Stella.Compiler.Elaborate.CorePlus.Row (XRowError, XRowNormalForm, rebuild, xnf)
-import Stella.Compiler.Elaborate.Mechanism.Fit (Classified(..), FitRecord, FitState(..), FitUse, classify, remaindersOf, sharedAcross, sharedEntries, unionOf)
+import Stella.Compiler.Elaborate.Mechanism.Fit (Classified(..), FitRecord, FitState(..), FitUse, Remainders, classify, remaindersOf, sharedAcross, sharedEntries, unionOf)
 import Stella.Compiler.Elaborate.Mechanism.Scheduler (Scheduler, create, emptyScheduler, enqueueInitial, wake)
 import Stella.Compiler.Elaborate.CorePlus.Term (CoverageId(..), FitId(..), PendingCaseId(..), RecRefId(..), TermMetaVar, XExpr)
 import Stella.Compiler.Elaborate.Mechanism.TermMeta (TermError(..), assignTermMeta, termScopeOf, zonkExpr)
@@ -182,6 +186,9 @@ type Tentative =
   , names :: { nextScope :: P.Int, nextBinder :: P.Int, nextIdent :: P.Int, nextJoin :: P.Int, nextCoverage :: P.Int, nextPendingCase :: P.Int }
   , open :: Map ScopeId (Set ScopeId)
   , warnings :: P.Array Warning
+  -- | The plan each checking boundary settled by implicit handlers, by its
+  -- | ambient row.
+  , plans :: Map MetaVar ImplicitPlan
   }
 
 -- | What a rollback leaves alone.
@@ -273,6 +280,7 @@ type SessionEnv =
   , constructors :: ConstructorEnv
   , effects :: EffectEnv
   , tracing :: Tracing
+  , implicits :: P.Array ImplicitCandidate
   }
 
 -- | Where the running attempt stands, and the level its job was created at. An
@@ -284,7 +292,7 @@ type Frame =
   }
 
 emptySessionEnv :: SessionEnv
-emptySessionEnv = { catalog: catalogOf [], kinding: emptyKindingEnv, constructors: emptyConstructorEnv, effects: emptyEffectEnv, tracing: TraceDisabled }
+emptySessionEnv = { catalog: catalogOf [], kinding: emptyKindingEnv, constructors: emptyConstructorEnv, effects: emptyEffectEnv, tracing: TraceDisabled, implicits: [] }
 
 -- | Run an action outside any attempt, reading the session given.
 runElabIn :: forall a. SessionEnv -> SolverState -> Elab a -> Tuple (Outcome a) SolverState
@@ -330,6 +338,7 @@ initialState session fuel =
       , names: { nextScope: 1, nextBinder: 0, nextIdent: 0, nextJoin: 0, nextCoverage: 0, nextPendingCase: 0 }
       , open: Map.empty
       , warnings: []
+      , plans: Map.empty
       }
   , retained: { session, nextGeneration: 0, nextConversation: 0, fuel, trace: [] }
   }
@@ -711,12 +720,13 @@ openBoundary context = Elab \env s ->
     Tuple (Done m) (s { tentative { metas = metas { boundaryRows = Set.insert m metas.boundaryRows } } })
 
 -- | Close a checking boundary once its body is built under `?σ`: a
--- | `JobImplicitHandler` holding `?σ` and the row expected, queued for a first
--- | attempt as a job created inside an attempt is.
-closeBoundary :: Site -> MetaVar -> XType -> Elab Unit
-closeBoundary site boundary expected = Elab \env s ->
+-- | `JobImplicitHandler` holding `?σ`, the row expected, and the type the body
+-- | answers with, queued for a first attempt as a job created inside an attempt
+-- | is.
+closeBoundary :: Site -> MetaVar -> XType -> XType -> Elab Unit
+closeBoundary site boundary expected answer = Elab \env s ->
   let
-    Tuple id created = create env.level site (JobImplicitHandler { boundary, expected }) s.tentative.scheduler
+    Tuple id created = create env.level site (JobImplicitHandler { boundary, expected, answer }) s.tentative.scheduler
   in
     Tuple (Done unit) (s { tentative { scheduler = enqueueInitial id created } })
 
@@ -726,10 +736,12 @@ closeBoundary site boundary expected = Elab \env s ->
 -- | of the boundary's fits**, those whose target is `?σ` alone, and the job
 -- | waits only where the union cannot be formed. Then `fit(U, ρ)`: contained,
 -- | `?σ := ρ`, which wakes the fits inside to be decided against `ρ`; not
--- | contained, a failure no implicit handler is sought for here; undecided, the
+-- | contained, where `U` performs a key `ρ` lacks, the insertion given, which
+-- | is passed `U`, `ρ`, and what is left of each and seeks the implicit
+-- | handlers of `Ξ`, and where only a tail is left, a failure; undecided, the
 -- | job waits on the flexible tails left.
-runBoundary :: Site -> HandlerGoal -> Elab Unit
-runBoundary site goal = do
+runBoundary :: (Site -> HandlerGoal -> Remainders -> Remainders -> Elab Unit) -> Site -> HandlerGoal -> Elab Unit
+runBoundary insert site goal = do
   metas <- metaContext
   case lookupMeta metas goal.boundary of
     Just (Unsolved _) -> do
@@ -752,9 +764,16 @@ runBoundary site goal = do
                 case lookupMeta after goal.boundary of
                   Just (Assigned _) -> pure unit
                   _ -> break (BoundaryRowUnwritten goal.boundary)
-            NotContained remainders -> raiseDiagnostic (BoundaryNotContained site.origin remainders)
+            NotContained remainders
+              | Map.isEmpty remainders.source.known -> raiseDiagnostic (BoundaryNotContained site.origin remainders)
+              | otherwise -> insert site goal { source: settled.source, target: settled.target } remainders
             Waiting on -> waitOn on
     _ -> break (BoundaryRowAbsent goal.boundary)
+
+-- | Record the plan a checking boundary settled, by its ambient row.
+recordPlan :: MetaVar -> ImplicitPlan -> Elab Unit
+recordPlan m plan = Elab \_ s ->
+  Tuple (Done unit) (s { tentative { plans = Map.insert m plan s.tentative.plans } })
 
 -- | A checking boundary's ambient row given over to unification, which writes
 -- | no boundary's row: its boundary is deciding it.

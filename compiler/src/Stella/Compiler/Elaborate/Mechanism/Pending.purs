@@ -121,11 +121,12 @@ data Job
   -- | A checking boundary, decided once its body is built.
   | JobImplicitHandler HandlerGoal
 
--- | A checking boundary: the ambient row `?σ` its body was built under, and the
--- | row expected of it.
+-- | A checking boundary: the ambient row `?σ` its body was built under, the
+-- | row expected of it, and the type its body answers with.
 type HandlerGoal =
   { boundary :: MetaVar
   , expected :: XType
+  , answer :: XType
   }
 
 -- | `awaiting` is the metavariables the job last postponed on.

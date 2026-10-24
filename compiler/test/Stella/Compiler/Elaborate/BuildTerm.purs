@@ -88,6 +88,7 @@ session =
   , constructors: emptyConstructorEnv
   , effects: emptyEffectEnv
   , tracing: TraceDisabled
+  , implicits: []
   }
   where
   entry name kindVars body = { name: global name, sort: ValueEntry, scheme: { kindVars, body }, attributes: [] }

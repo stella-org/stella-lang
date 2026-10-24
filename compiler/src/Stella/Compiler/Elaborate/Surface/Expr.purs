@@ -358,7 +358,7 @@ definition internal surface declaration origin scheme =
 -- | them.
 checkDefinition :: Internal -> SurfaceEnv -> Qualified Ident -> Surface.Origin -> { kindVars :: Array KindVar, body :: XType } -> Array Parameter -> Expr -> Surf (XExpr Surface.Origin)
 checkDefinition internal surface declaration origin scheme params body =
-  boundary scope0 origin XRowEmpty \scope -> abstractions origin true false Written scope params body scheme.body
+  boundary scope0 origin XRowEmpty scheme.body \scope -> abstractions origin true false Written scope params body scheme.body
   where
   scope0 = { declaration, context: bindKindVars emptyXContext scheme.kindVars, ambient: XRowEmpty, internal, surface, cells: Map.empty, resume: Nothing }
 
@@ -368,13 +368,14 @@ data Parameter
   = Named Binder
   | Thunk
 
--- | What the action given builds under a checking boundary's ambient row, the
--- | boundary closed against the row expected once it is built.
-boundary :: forall a. Scope -> Surface.Origin -> XType -> (Scope -> Surf a) -> Surf a
-boundary scope origin expected inside = do
+-- | What the action given builds under a checking boundary's ambient row, at
+-- | the type given, the boundary closed against the row expected once it is
+-- | built.
+boundary :: forall a. Scope -> Surface.Origin -> XType -> XType -> (Scope -> Surf a) -> Surf a
+boundary scope origin expected answer inside = do
   sigma <- lift (openBoundary scope.context)
   built <- inside (scope { ambient = XMeta sigma })
-  lift (closeBoundary (siteAt scope origin) sigma expected)
+  lift (closeBoundary (siteAt scope origin) sigma expected answer)
   pure built
 
 -- | The expected type opened along its spine: a `Λ` for each quantifier and a
@@ -432,7 +433,7 @@ abstractions origin = opened []
 lambdaAt :: Scope -> Surface.Origin -> Expected -> Ident -> { argument :: XType, row :: XType, result :: XType } -> (Scope -> Surf (XExpr Surface.Origin)) -> Surf (XExpr Surface.Origin)
 lambdaAt scope origin expected name parts body =
   ELam origin name parts.argument parts.row <$> case expected of
-    Written -> boundary inner origin parts.row body
+    Written -> boundary inner origin parts.row parts.result body
     Derived -> body (inner { ambient = parts.row })
   where
   inner = scope { context = bindVar scope.context name parts.argument }

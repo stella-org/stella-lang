@@ -88,6 +88,7 @@ sessionTracing tracing =
   , constructors: constructorsOf signature
   , effects: effectsOf signature
   , tracing
+  , implicits: []
   }
   where
   entry name = { name: qualified name, sort: ValueEntry, scheme: { kindVars: [], body: xInt }, attributes: [] }

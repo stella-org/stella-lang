@@ -106,6 +106,10 @@ diagnosticOrigins = case _ of
   SynthesisFailed s -> sourceOf s.goal.origin
   RowNotContained o _ -> sourceOf o
   BoundaryNotContained o _ -> sourceOf o
+  ImplicitHandlerMissing o _ _ -> sourceOf o
+  ImplicitHandlerAmbiguous o _ _ -> sourceOf o
+  ImplicitOrderAmbiguous o _ -> sourceOf o
+  ImplicitPayloadConflict o _ -> sourceOf o
   CellEscapes e -> sourceOf e.reference <> sourceOf e.boundary
 
 sourceOf :: Origin -> Array Surface.Origin
@@ -154,7 +158,7 @@ printElaborationError = case _ of
   NonExhaustiveMatch _ witness -> fmt @"This `case` does not match every value: it does not match `{w}`" { w: joinWith ", " (map (printWitness false) witness) }
   ImplicitCycle _ handlers ->
     fmt @"The implicit handlers {handlers}, which this module and the modules it imports make available together, lower into one another in a cycle"
-      { handlers: joinWith ", " (map (\(Qualified (ModuleName mn) (Ident n)) -> "`" <> mn <> "." <> n <> "`") handlers) }
+      { handlers: identities handlers }
   ImplicitCondition _ problem -> case problem of
     ImplicitNotCapability ->
       "An implicit handler's signature writes `E ~> ( … )` itself, which tells the effect it removes and the effects it performs in its place"
@@ -272,6 +276,10 @@ printDiagnostic = case _ of
     | otherwise -> fmt @"A synthesizer failed here: {message}" { message: printMessage s.message }
   RowNotContained _ r -> fmt @"This performs `{s}`, which is not among the effects allowed here" { s: printEffectRow (rebuild r.source) }
   BoundaryNotContained _ r -> fmt @"This performs `{s}` beyond the effects expected here, which this version of the compiler does not resolve with an implicit handler yet" { s: printEffectRow (rebuild r.source) }
+  ImplicitHandlerMissing _ k r -> fmt @"This performs `{s}` beyond the effects expected here, and no implicit handler available here handles `{key}`" { s: printEffectRow (rebuild r), key: keyName k }
+  ImplicitHandlerAmbiguous _ k handlers -> fmt @"Several implicit handlers available here handle `{key}`: {handlers}; apply the one meant where it is needed" { key: keyName k, handlers: identities handlers }
+  ImplicitOrderAmbiguous _ handlers -> fmt @"The implicit handlers {handlers} would each be inserted here, and nothing orders them; apply them in the order meant where they are needed" { handlers: identities handlers }
+  ImplicitPayloadConflict _ k -> fmt @"Lowering the effects performed here into those expected carries `{key}` with two different payloads" { key: keyName k }
   CellEscapes e -> fmt @"The cell `{cell}` is the first cell referenced in a region that would be carried beyond the handling expression declaring its cells; a cell lives only as long as that expression" { cell: case e.cell of Ident n -> n }
 
 -- | Why a row's sharpness does not hold: the key or the row variables it is
@@ -417,6 +425,10 @@ bracketed open close = case _ of
   items -> fmt @"{open} {items} {close}" { open, items: joinWith ", " items, close }
 
 -- | A row's key as source writes it.
+-- | Globals named by their modules, each between backquotes.
+identities :: Array (Qualified Ident) -> String
+identities = joinWith ", " <<< map (\(Qualified (ModuleName m) (Ident n)) -> "`" <> m <> "." <> n <> "`")
+
 keyName :: RowKey -> String
 keyName = case _ of
   SymbolKey (Symbol s) -> s

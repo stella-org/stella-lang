@@ -100,6 +100,7 @@ session =
   , constructors: constructorsOf signature
   , effects: effectsOf signature
   , tracing: TraceDisabled
+  , implicits: []
   }
 
 -- | A site binding a list, a variant, the empty variant, and a unit.

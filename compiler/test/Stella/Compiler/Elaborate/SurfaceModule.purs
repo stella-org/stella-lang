@@ -3037,7 +3037,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
               b <- freshTypeMeta emptyXContext (XKRow RowEffect)
               _ <- placeFit (siteIn "f" 1) Wrapping (XRowExtend (effect "Console") a) (XMeta sigma)
               _ <- placeFit (siteIn "f" 1) Wrapping (XRowExtend (effect "Clock") b) (XMeta sigma)
-              closeBoundary (siteIn "f" 1) sigma XRowEmpty
+              closeBoundary (siteIn "f" 1) sigma XRowEmpty (XCon unitTy [])
           )
           (initialState (SessionId 0) 100)
         r = settleBodies primSession (attemptPending primSession) (snd afterF) (map body [ Tuple "f" 1, Tuple "h" 3 ])

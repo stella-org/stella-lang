@@ -585,7 +585,7 @@ elaborateValuesM attempterOf imports surface importedEntries m =
       | h.implicit
       , Array.null (implicitFailures h)
       , Just e <- capabilityElements h.handled v.scheme.body
-      , closedElements e -> Just { handler: v.declared.name, source: e.source, targets: e.targets }
+      , closedElements e -> Just { handler: v.declared.name, source: e.source, targets: e.targets, scheme: v.scheme }
     _ -> Nothing
   -- the handlers among them that lower into one another, reported where the
   -- module's imports are, whether or not a boundary would take one
@@ -1076,6 +1076,7 @@ defectOf = case _ of
 rejected :: Diagnostic -> ElaborationError
 rejected d = case d of
   BoundaryNotContained o _ | Just at <- sourceOrigin o -> Unsupported (OutsideSubset at "implicit-handler resolution at this checking boundary")
+  ImplicitHandlerMissing o _ _ | Just at <- sourceOrigin o -> Unsupported (OutsideSubset at "implicit-handler resolution at this checking boundary")
   _ -> Rejected d
 
 -- | Why a closing was undone, as the declaration is reported by it.
@@ -1461,6 +1462,10 @@ diagnosticDeclarations = case _ of
   SynthesisFailed s -> [ declarationOf s.goal.origin ]
   RowNotContained o _ -> [ declarationOf o ]
   BoundaryNotContained o _ -> [ declarationOf o ]
+  ImplicitHandlerMissing o _ _ -> [ declarationOf o ]
+  ImplicitHandlerAmbiguous o _ _ -> [ declarationOf o ]
+  ImplicitOrderAmbiguous o _ -> [ declarationOf o ]
+  ImplicitPayloadConflict o _ -> [ declarationOf o ]
   CellEscapes e -> [ declarationOf e.reference ]
 
 -- | What each body noted of its cells, by its declaration: the regions it
