@@ -145,6 +145,7 @@ env =
   , constructors: constructorsOf signature
   , effects: effectsOf signature
   , tracing: TraceEnabled
+  , implicits: []
   }
 
 site :: Site
