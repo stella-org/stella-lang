@@ -7,6 +7,7 @@ import Prim hiding (Type)
 
 import Data.Array as Array
 import Data.Array.NonEmpty as NonEmptyArray
+import Data.Bifunctor (lmap)
 import Data.Either (Either(..), either)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), isNothing, maybe)
@@ -40,6 +41,7 @@ import Stella.Compiler.Elaborate.Surface.Types (readTypes)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Kinding (KindEvidence(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (PendingId(..))
+import Stella.Compiler.Elaborate.Surface.Internal (EntryDeclaration(..), standardRunner)
 import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), ImplicitProblem(..), cellRecords, elaborateModuleM, escapedCells, settleBodies)
 import Data.Identity (Identity(..))
 import Stella.Compiler.Elaborate.Surface.Report (elaborationOrigins, printElaborationError, printType)
@@ -59,7 +61,7 @@ import Stella.Compiler.Surface.Origin as Surface
 import Stella.Compiler.TypedCore (Attribute, DataDecl, Decl(..), Declared, DecisionTree(..), Export(..), Expr(..), Module, OpClause(..), primSignature)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), OpName(..), Qualified(..), RegionName(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
-import Stella.Compiler.TypedCore.Prim (fn, intTy, pureFn, recordTy, stringTy, unitCtor, unitTy, variantTy)
+import Stella.Compiler.TypedCore.Prim (fn, intTy, ioTy, pureFn, recordTy, stringTy, unitCtor, unitTy, variantTy)
 import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), Type(..))
 import Stella.Compiler.TypedCore.Equality (typeEquiv)
 import Stella.Compiler.TypedCore.Term (Literal(..), Occurrence(..))
@@ -1660,7 +1662,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
     it "is refused where `Base.Continuation` declares its constructor at another scheme, in that module" do
       elaboratingUnder "module Base.Continuation (Continuation) where" [ "@[elaborationOnly]", "newtype Continuation a b (r :: Row Effect) = Continuation (a -> b)" ] \r ->
         case r.errors of
-          [ InternalEntryDeclared _ name { declared: Just _ } ] -> name `shouldEqual` Qualified (ModuleName "Base.Continuation") (Ident "$Continuation")
+          [ InternalEntryDeclared _ name { declared: EntryAt _ } ] -> name `shouldEqual` Qualified (ModuleName "Base.Continuation") (Ident "$Continuation")
           errors -> fail ("not refused as declared: " <> show (map at errors))
 
     it "is refused where `Stella.Syntax` declares what an antiquotation is written with at another scheme, or not at all, in that module" do
@@ -1677,14 +1679,65 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         spliced = Qualified (ModuleName "Stella.Syntax") (Ident "$spliced")
       elaboratingUnder "module Stella.Syntax where" (syntaxTypes <> [ "@[elaborationOnly]", "spliced :: Int", "spliced = 1" ]) \r ->
         case r.errors of
-          [ InternalEntryDeclared _ name { declared } ] -> do
+          [ InternalEntryDeclared _ name { declared: EntryAt declared } ] -> do
             name `shouldEqual` spliced
-            map _.body declared `shouldEqual` Just (TCon (Qualified (ModuleName "Prim") (TyName "Int")) [])
+            declared.body `shouldEqual` TCon (Qualified (ModuleName "Prim") (TyName "Int")) []
           errors -> fail ("not refused as declared: " <> show (map at errors))
       elaboratingUnder "module Stella.Syntax where" syntaxTypes \r ->
         case r.errors of
-          [ InternalEntryDeclared _ name { declared: Nothing } ] -> name `shouldEqual` spliced
+          [ InternalEntryDeclared _ name { declared: EntryAbsent } ] -> name `shouldEqual` spliced
           errors -> fail ("not refused as undeclared: " <> show (map at errors))
+
+    it "holds `Base.IO.Effect` to the standard runner at its scheme, up to the names the scheme binds, a value and exported, refusing it at another, absent, unexported, or a handler" do
+      let
+        liftIO = [ "effect LiftIO where", "  liftIO :: forall a. IO a ->* a" ]
+      elaboratingUnder "module Base.IO.Effect where" (liftIO <> [ "runIO :: forall b. (Unit -> b / {| LiftIO |}) -> IO b", "runIO thunk = runIO thunk" ]) \r ->
+        map at r.errors `shouldEqual` []
+      elaboratingUnder "module Base.IO.Effect where" (liftIO <> [ "runIO :: forall a. (Unit -> a / {| LiftIO |}) -> Int", "runIO _ = 1" ]) \r ->
+        case r.errors of
+          [ InternalEntryDeclared _ name { declared: EntryAt _ } ] -> name `shouldEqual` standardRunner
+          errors -> fail ("not refused as declared: " <> show (map at errors))
+      elaboratingUnder "module Base.IO.Effect where" liftIO \r ->
+        case r.errors of
+          [ InternalEntryDeclared _ name { declared: EntryAbsent } ] -> name `shouldEqual` standardRunner
+          errors -> fail ("not refused as undeclared: " <> show (map at errors))
+      elaboratingUnder "module Base.IO.Effect (LiftIO(..)) where" (liftIO <> [ "runIO :: forall a. (Unit -> a / {| LiftIO |}) -> IO a", "runIO thunk = runIO thunk" ]) \r ->
+        case r.errors of
+          [ InternalEntryDeclared _ name { declared: EntryUnexported } ] -> name `shouldEqual` standardRunner
+          errors -> fail ("not refused as unexported: " <> show (map at errors))
+      -- a handler of the general form, at the scheme listed
+      elaboratingUnder "module Base.IO.Effect where" (liftIO <> [ "loop :: forall b. Unit -> b", "loop u = loop u", "handler runIO :: forall a. (Unit -> a / {| LiftIO |}) -> IO a", "handler runIO where", "  fast | liftIO _ = loop ()", "  | return _ = loop ()" ]) \r ->
+        case r.errors of
+          [ InternalEntryDeclared _ name { declared: EntryUnexported } ] -> name `shouldEqual` standardRunner
+          errors -> fail ("not refused as no value: " <> show (map at errors))
+
+    it "is refused, its module importing a `Base.IO.Effect` whose standard runner is at another scheme, unexported, or a handler, as the compiler's fault" do
+      let
+        effectModule = ModuleName "Base.IO.Effect"
+        liftIO = Qualified effectModule (EffName "LiftIO")
+        a = TyVar "a"
+        listed = TForall a KType (pureFn (fn (TCon unitTy []) (TRowExtend (RowEffectEntry liftIO []) TRowEmpty) (TVar a)) (TApp (TCon ioTy []) (TVar a)))
+        other = TForall a KType (pureFn (fn (TCon unitTy []) (TRowExtend (RowEffectEntry liftIO []) TRowEmpty) (TVar a)) (TVar a))
+        importing exported sort ty k = elaboratingIn (environment >>= (lmap show <<< addInterface (holding exported sort ty))) "module M where\nimport Base.IO.Effect" [ "f :: Int", "f = 1" ] k
+        refused r = case r.errors of
+          [ InternalEntryMismatch name ] -> name `shouldEqual` standardRunner
+          errors -> fail ("not a mismatch: " <> show (map at errors))
+        holding exported sort ty = libInterface
+          { name = effectModule
+          , imports = []
+          , exports = emptyExports
+              { values = if exported then Map.singleton "runIO" { entity: standardRunner, via: Declared } else Map.empty
+              , types = Map.singleton "LiftIO" { entity: EffectEntity liftIO, via: Declared, members: [] }
+              }
+          , declarations = emptyDeclarations
+              { values = Map.singleton (Ident "runIO") { sort, scheme: plainScheme (monoScheme ty), attributes: [] }
+              , effects = Map.singleton (EffName "LiftIO") { params: [], operations: [], attributes: [] }
+              }
+          }
+      importing true SortValue listed \r -> map at r.errors `shouldEqual` []
+      importing true SortValue other refused
+      importing false SortValue listed refused
+      importing true SortHandler listed refused
 
   describe "a handling expression declaring cells" do
     let

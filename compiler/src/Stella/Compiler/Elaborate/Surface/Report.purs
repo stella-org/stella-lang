@@ -34,6 +34,7 @@ import Stella.Compiler.Elaborate.CorePlus.Row (XRowNormalForm, rebuild)
 import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), fromCore)
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Breach(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError(..))
+import Stella.Compiler.Elaborate.Surface.Internal (EntryDeclaration(..))
 import Stella.Compiler.Elaborate.Surface.Module (ElaborationError(..), ImplicitProblem(..))
 import Stella.Compiler.Elaborate.Surface.Type (Atom(..), Unsupported(..))
 import Stella.Compiler.Elaborate.Surface.Match (Witness(..))
@@ -180,10 +181,11 @@ printElaborationError = case _ of
     | otherwise -> fmt @"`{y}` is read here while its recursive group is being initialized, before `{y}` is" { y: localName read }
   EffectRowAmbiguous _ _ -> "Nothing here determines which effects this performs; an annotation of its type decides them"
   CoreRefused failure -> internal ("the Core checker refused what was elaborated: " <> show failure.error)
-  InternalEntryMismatch name -> internal ("an entry the compiler refers to is missing or at another scheme than listed: " <> show name)
+  InternalEntryMismatch name -> internal ("an entry the compiler refers to is missing, at another scheme than listed, or not exported as listed: " <> show name)
   InternalEntryDeclared _ name r -> case r.declared of
-    Just declared -> fmt @"`{name}` is an entry the compiler refers to, at `{expected}`; it cannot be declared at `{declared}`" { name: qualifiedText name, expected: printType (fromCore r.expected.body), declared: printType (fromCore declared.body) }
-    Nothing -> fmt @"`{name}` is an entry the compiler refers to, at `{expected}`, which this module is to declare" { name: qualifiedText name, expected: printType (fromCore r.expected.body) }
+    EntryAt declared -> fmt @"`{name}` is an entry the compiler refers to, at `{expected}`; it cannot be declared at `{declared}`" { name: qualifiedText name, expected: printType (fromCore r.expected.body), declared: printType (fromCore declared.body) }
+    EntryAbsent -> fmt @"`{name}` is an entry the compiler refers to, at `{expected}`, which this module is to declare" { name: qualifiedText name, expected: printType (fromCore r.expected.body) }
+    EntryUnexported -> fmt @"`{name}` is an entry the compiler refers to, which this module is to declare as a value and export" { name: qualifiedText name }
   Broken defect -> internal (show defect)
   AttemptPostponed -> internal "an elaboration attempt postponed itself"
   where

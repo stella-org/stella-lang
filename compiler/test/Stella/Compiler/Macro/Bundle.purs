@@ -11,6 +11,7 @@ import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Generic.Rep (class Generic, Argument, Constructor, NoArguments, Product, Sum)
 import Data.Map as Map
+import Data.Set as Set
 import Data.Maybe (Maybe(..))
 import Data.Symbol (class IsSymbol, reflectSymbol)
 import Data.Tuple (Tuple(..))
@@ -172,21 +173,21 @@ spec = describe "Stella.Compiler.Macro.Bundle" do
     case compiled of
       Left e -> fail e
       Right c -> do
-        map (Array.fromFoldable <<< Map.keys) (internalEntries main c.signature)
+        map (Array.fromFoldable <<< Map.keys) (internalEntries main c.signature Set.empty)
           `shouldEqual` Right (map (Qualified syntaxModuleName <<< Ident) [ "$QuotedOrigin", "$spliced" ])
         let
           spliced = Qualified syntaxModuleName (Ident "$spliced")
           changed = c.signature { values = Map.update (\v -> Just v { scheme = { kindVars: [], body: TCon (Qualified syntaxModuleName (TyName "Term")) [] } }) spliced c.signature.values }
-        internalEntries main changed `shouldEqual` Left spliced
+        internalEntries main changed Set.empty `shouldEqual` Left spliced
         -- reaching Stella.Syntax, a signature lacking either entry is as wrong
         let
           quotedOrigin = Qualified syntaxModuleName (Ident "$QuotedOrigin")
-        internalEntries main c.signature { values = Map.delete spliced c.signature.values } `shouldEqual` Left spliced
-        internalEntries main c.signature { ctors = Map.delete quotedOrigin c.signature.ctors } `shouldEqual` Left quotedOrigin
+        internalEntries main c.signature { values = Map.delete spliced c.signature.values } Set.empty `shouldEqual` Left spliced
+        internalEntries main c.signature { ctors = Map.delete quotedOrigin c.signature.ctors } Set.empty `shouldEqual` Left quotedOrigin
         -- a signature that does not reach Stella.Syntax holds none
-        map Map.isEmpty (internalEntries main primSignature) `shouldEqual` Right true
+        map Map.isEmpty (internalEntries main primSignature Set.empty) `shouldEqual` Right true
         -- and the module declaring them is held to none of its own
-        map Map.isEmpty (internalEntries syntaxModuleName c.signature) `shouldEqual` Right true
+        map Map.isEmpty (internalEntries syntaxModuleName c.signature Set.empty) `shouldEqual` Right true
 
   it "names as what a session holds before a build loads anything a set closed under imports, which a build stops at" do
     case compiled of

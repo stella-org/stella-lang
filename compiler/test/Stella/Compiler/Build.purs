@@ -18,6 +18,7 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Data.String (joinWith)
 import Data.String as String
+import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
@@ -43,7 +44,7 @@ import Stella.Compiler.Interface.Prim (primAttribute)
 import Stella.Compiler.Interface.Scheme (SchemeBody(..), coreScheme, plainScheme)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Macro.Compiled (compiled)
-import Stella.Compiler.Macro.Run (ParseOutcome(..), RunParser, defaultSettings)
+import Stella.Compiler.Macro.Run (ExecutionReason(..), ParseOutcome(..), RunParser, defaultSettings)
 import Stella.Compiler.Macro.Tree (Position(..), Range(..), SyntaxNode(..), Token(..), TokenTree(..))
 import Stella.Compiler.Macro.Tree as Tree
 import Stella.Compiler.Build (BackendProblem(..), BuildError(..), BuiltModules, CompileError(..), CompileWarning, CompilerAction, EnvironmentProblem(..), SyntaxProblem(..), build, buildMessages, buildSeeds, compileModule, defaultHooks, locationsOf, printBuildMessage, printCompileError, warningLocationOf, withoutSynthesizers)
@@ -1304,6 +1305,40 @@ spec = describe "Stella.Compiler.Build" do
                     }
                 )
             )
+
+  describe "the standard runner" do
+    -- `Base.IO`, `Base.Continuation`, and `Base.IO.Effect`, each compiled
+    -- against the interfaces of those before it
+    it "is declared by `Base.IO.Effect` compiled from its source, under its own name, exported, at the scheme listed" do
+      texts <- liftEffect (traverse (\m -> readRepositoryFile ("stella-packages/base/src/Base/" <> m <> ".stel")) [ "IO", "Continuation", "IO/Effect" ])
+      let
+        action :: CompilerAction Identity
+        action =
+          { readSource: \_ -> pure (Left "no file")
+          , runParser: \_ _ _ -> pure (ExecutionFailedAs { reason: NoSuchModule, detail: "no parser runs" })
+          , synthesis: withoutSynthesizers
+          , hooks: defaultHooks
+          }
+        onto built text = case compileModule action defaultSettings built.environment Map.empty text of
+          Identity (Left errors) -> Left (joinWith "; " (map printCompileError (NonEmptyArray.toArray errors)))
+          Identity (Right made) -> do
+            env <- lmap show (addInterface made.interface built.environment)
+            pure { environment: env, last: Just made.interface }
+        effectModule = ModuleName "Base.IO.Effect"
+        runner = Qualified effectModule (Ident "runIO")
+        a = TyVar "a"
+        expected = TForall a KType (pureFn (fn (TCon unitTy []) (TRowExtend (RowEffectEntry (Qualified effectModule (EffName "LiftIO")) []) TRowEmpty) (TVar a)) (TApp (TCon ioTy []) (TVar a)))
+      case foldM onto { environment: initialEnvironment, last: Nothing } texts of
+        Left why -> fail why
+        Right { last: Nothing } -> fail "nothing compiled"
+        Right { last: Just i } -> do
+          map _.entity (Map.lookup "runIO" i.exports.values) `shouldEqual` Just runner
+          map _.entity (Map.lookup "LiftIO" i.exports.types) `shouldEqual` Just (EffectEntity (Qualified effectModule (EffName "LiftIO")))
+          case Map.lookup (Ident "runIO") i.declarations.values of
+            Just v -> do
+              show v.sort `shouldEqual` show SortValue
+              typeEquiv (coreScheme v.scheme).body expected `shouldEqual` true
+            Nothing -> fail "`runIO` is not declared"
 
   describe "a foreign and an attribute the module declares" do
     let
