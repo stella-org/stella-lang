@@ -98,11 +98,42 @@ Passing it exercises the goal record, the three-way outcome, the blocked table, 
 
 Division 6 is what establishes that the bootstrap cycle is cut, and it does not wait on a complete resolver: one `f` solving one goal is the whole of what is being shown.
 
-## Testing the properties instead of proving them
+## Proving the properties, and testing what the proofs do not reach
 
-[Semantics](../03-Typed-Core/06-Semantics.md) states progress, preservation, effect safety, and erasure without proof. Proving them for a calculus with rows, effect rows, and handlers is a substantial undertaking, and most of the confidence it would buy is available more cheaply: **each property can be turned into a property test.**
+[Semantics](../03-Typed-Core/06-Semantics.md) states preservation, progress, effect safety, initialization safety, and erasure. **They are being proved in F\***, in [stella-spec-verified](https://github.com/stella-org/stella-spec-verified), which embeds Typed Core deeply and checks every result it lists as proven without adding any assumption or axiom other than F\*'s builtin.
+Its README records the state of each result; what follows is what the proofs establish of this specification, what they rest on, and what testing is still for.
 
-This requires a Core evaluator, the unit of its own that the notes on step 5 name. Type checking a hand-written module confirms that it is well typed; running it is what confirms that it computes.
+### What is proved
+
+**Type safety and effect safety are proved for the pure fragment and for programs with effects.** Under a well-formed `Σ` and a conforming global environment:
+
+| Property | Proved of |
+| --- | --- |
+| Preservation of type, ambient row, and coverage | every step that uses no rule of regions and cells: β, `let`, the record and variant rules, `case` and `match`, join points, a saturated foreign's chain through its typed adapter, and handlers, `full` and `fast` clauses alike, deep and multi-shot |
+| Progress | a closed, covered term typed at the empty row, calling foreigns only inside their preconditions, and holding no region, cell, `letrec`, `force`, or `fill`: it is a value, steps, or faults |
+| Effect safety | the same rules, along every reduction sequence: no sequence from a closed term typed at the empty row reaches a `perform` that no handler of its key encloses |
+
+**The rest of the properties are being extended to.** Preservation and effect safety over the rules of regions and cells are under review, and progress over them is not yet stated. `letrec`, `force`, and `fill` with their store are still to be added, and with them initialization safety. Erasure is planned: the semantic environment already separates each foreign's typed adapter from its erased function and carries erasure coherence (D53), so the obligation it will discharge is in place.
+
+**Proving them repaired the specification.** Where a property failed to go through, the cause was a hole in these documents, and the repairs are the decisions it led to: total type equality and the checked `Σ ok` ([Core Soundness Repairs](../../proposals/14-Core-Soundness-Repairs.md)), application chains (D49), relative scoping of join points (D50), the value restriction on kind-generalized definitions (D52), and typed foreign adapters with coverage preservation (D53).
+
+### What the proofs rest on
+
+**A proof is of the F\* encoding, and reaches this specification through adequacy.** The encoding is meant to type what the typing rules type and to step as the reduction rules step; that is a design property, not a theorem, and the repository lists the known differences. Beyond it, the proofs assume:
+
+- a well-formed signature, `Σ ok`. Checking declarations and modules is not formalized;
+- foreigns that are Core-modelled, conform to `Σ`, and are erasure coherent, each entry an adapter, an erased function, and a precondition on erased arguments; progress assumes every call respects its precondition. An entry reading hidden state, `Base.Array.unsafe*` among them, is outside the model, as it is outside the relation here (D41);
+- nothing about the implementation. **The reference Core checker and Steam are not verified against the relation**: that the checker accepts only what the typing rules type, and that a backend runs a program as the reduction rules do, are not consequences of the proofs.
+
+### What testing is still for
+
+**The proofs establish that the specified relation is sound, and the implementation still has to be shown to be that relation.** The checker is the trusted base the whole design rests on: macros and the elaborator run arbitrary user code, and a Core program reaches a backend only through the checker. A defect in the checker, in lowering, or in a machine is invisible to a proof about the specification, and it is what the property tests below exercise. They also cover what is not yet proved, until it is.
+
+**A Core evaluator extracted from the mechanization would strengthen this**: differential testing against it would compare the implementation with the relation the proofs are about, rather than with an evaluator written beside it. None exists yet.
+
+### The property tests
+
+Each property becomes a property test. This requires a Core evaluator, the unit of its own that the notes on step 5 name. Type checking a hand-written module confirms that it is well typed; running it is what confirms that it computes.
 
 **Preservation** is the most directly testable. Generate a well-typed Core term, reduce one step, and re-run the type checker.
 
@@ -135,9 +166,7 @@ Generating terms that call effectful functions and wrap them in handlers is what
 
 Extending the generator to `foreign` declarations is worthwhile once the FFI surface exists, since D23 together with condition (3) of `Σ ⊨ G` is what keeps effect safety from being violated at that boundary. D23 alone constrains only the declared type.
 
-**Machine-checked or paper proofs are deferred.** They become worth revisiting if the work is to be published, or if one subsystem keeps producing subtle bugs that property testing does not catch.
-
-**Conformance of the global environment** is a premise of every property above, not something they establish. A test harness supplies `G` and must therefore guarantee `Σ ⊨ G` itself: global definitions are well-typed values, and each `δ_f` is read through a typed view giving either a value of the instantiated result type — the one the typing of its chain gives — or a permitted fault, performs no proper effect and runs no reified computation it constructs, applies no Stella function value, terminates, and has no observational effect — faulting among them — where the declaration asserts `#observ(none)`; and every value it returns names no global outside `G` that its arguments did not ([Semantics](../03-Typed-Core/06-Semantics.md)).
+**Conformance of the global environment** is a premise of every property above, in the proofs as in the tests, and not something they establish. A test harness supplies `G` and must therefore guarantee `Σ ⊨ G` itself: global definitions are well-typed values, and each `δ_f` is read through a typed view giving either a value of the instantiated result type — the one the typing of its chain gives — or a permitted fault, performs no proper effect and runs no reified computation it constructs, applies no Stella function value, terminates, and has no observational effect — faulting among them — where the declaration asserts `#observ(none)`; and every value it returns names no global outside `G` that its arguments did not ([Semantics](../03-Typed-Core/06-Semantics.md)).
 
 **The separate Core-modelled premise is the other thing the generator has to respect, and it is the easier of the two to miss.** It is not a clause of `Σ ⊨ G` and is not implied by it: it asks that returning an outcome the arguments fix be the **whole** of what a saturated call does, so no hidden read, no write, and no identity the arguments do not determine. A harness whose `δ_f` reads a counter or a clock, or writes to a cell the next call reads, invalidates the property rather than testing it, and it does so silently — the run completes and the assertion passes. **Faulting is not what the premise excludes**: a `δ_f` that faults on an argument it always faults on satisfies it, which is what keeps `Base.String.codePointAt` and the fault branch of progress inside the properties. A generator that produces a hidden read or a write is producing a term the relation gives no step to.
 

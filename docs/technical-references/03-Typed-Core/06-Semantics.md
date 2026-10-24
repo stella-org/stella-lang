@@ -1108,7 +1108,7 @@ A step under a context is a step under its erasure, the context forms erasure re
 
 ## Properties
 
-The following are stated as the properties the implementation is expected to have. They are not proved here. [Implementation Plan](../01-Introduction/04-Implementation-Plan.md) describes how each becomes a property test.
+The following are stated as the properties the implementation is expected to have. They are not proved here: they are being proved in an F\* mechanization of Typed Core, and [Implementation Plan](../01-Introduction/04-Implementation-Plan.md#proving-the-properties-and-testing-what-the-proofs-do-not-reach) records which of them are proved, what the proofs rest on, and how each also becomes a property test.
 
 Every property assumes three things, and each does work the others do not (above), together with well-formed run-time contexts, `⊢ Γ_R ok` and `Γ_R ⊢ Γ_N ok`, and a store `Γ_N` types, `⊢ N : Γ_N`, which conformance and the term are read under. Without `Σ; Γ_N ⊨ G` the global environment may supply an ill-typed definition or a `δ_f` that returns the wrong thing. Without `G` being **Core-modelled** the relation gives a saturated `foreign` no step at all, so there is no reduction sequence to quantify over — which is why an environment holding `Base.Array.unsafeSet` is outside every statement below, and one holding `Base.String.codePointAt` is not. Without `e` **respecting preconditions** a step is reached whose outcome the ABI declined to fix, so what follows it is not a term these statements describe.
 
