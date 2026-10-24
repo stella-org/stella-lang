@@ -11,7 +11,7 @@ import Data.Array as Array
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Bifunctor (lmap)
 import Data.Either (Either(..), either)
-import Data.Foldable (foldM)
+import Data.Foldable (foldM, for_)
 import Data.Identity (Identity(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
@@ -35,7 +35,7 @@ import Stella.Compiler.Elaborate.Driver.Synthesis (attemptJob)
 import Stella.Compiler.Elaborate.Kernel.Elab (SessionEnv)
 import Stella.Compiler.Elaborate.Protocol.Facade as F
 import Stella.Compiler.Elaborate.Protocol.Guest (synthesizerType)
-import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment, viewFor)
+import Stella.Compiler.Interface.Environment (BuildEnvironment, addInterface, initialEnvironment, lookupInterface, viewFor)
 import Stella.Compiler.Primitive (PrimOp(..))
 import Stella.Compiler.Interface.File (decode, encode)
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeSort(..), ValueSort(..), Via(..), emptyDeclarations, emptyExports)
@@ -50,7 +50,9 @@ import Stella.Compiler.Build (BackendProblem(..), BuildError(..), BuiltModules, 
 import Stella.Compiler.Resolve.Module (ResolutionError(..))
 import Stella.Compiler.Resolve.Monad (ResolveError(..), ResolveReason(..)) as Resolve
 import Stella.Compiler.Surface.Origin as Surface
-import Stella.Compiler.Surface.Decl (Observation(..))
+import Stella.Compiler.Surface.Decl (Associativity(..), FixityTarget(..), Observation(..))
+import Stella.Compiler.Surface.Name (OperatorName(..))
+import Stella.Compiler.Surface.Type (TypeOperatorTarget(..))
 import Stella.Compiler.TypedCore (Constant(..), Decl(..), Export(..))
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Term (Literal(..))
@@ -592,6 +594,65 @@ spec = describe "Stella.Compiler.Build" do
             , "An implicit handler has no return clause; an inserted handler leaves the answer type as it is"
             , "The initial value of the cell `c` is no value form; an implicit handler's cells are initialized by value forms, as an initial value runs wherever the handler is inserted"
             ]
+
+  describe "a module's interface audited" do
+    it "carries every kind of declaration, and every form a field takes, compiled from source, through its file unchanged" do
+      compiledAll [ auditModule, renamedModule, rewholeModule ] case _ of
+        Left problem -> fail problem
+        Right env -> do
+          let
+            audit = ModuleName "Audit"
+
+            inAudit :: forall a. a -> Qualified a
+            inAudit = Qualified audit
+            interfaceOf m = lookupInterface (ModuleName m) env
+            throughFile i = case lmap show (encode { interface: i, buildHash: Nothing }) >>= (lmap show <<< decode) of
+              Right stored -> stored.interface `shouldEqual` i
+              Left problem -> fail problem
+          for_ [ "Audit", "Renamed", "Rewhole" ] \m -> case interfaceOf m of
+            Just i -> throughFile i
+            Nothing -> fail ("no interface of " <> m)
+          case interfaceOf "Audit" of
+            Nothing -> fail "no interface of Audit"
+            Just i -> do
+              let value n = Map.lookup (Ident n) i.declarations.values
+              -- each sort of value
+              map (map _.sort <<< value) [ "area", "Circle", "log", "root", "lowerLog", "quietly", "mac" ] `shouldEqual`
+                map Just [ SortValue, SortConstructor (inAudit (TyName "Shape")), SortOperation (inAudit (EffName "Log")), SortForeign MayObserve, SortHandler, SortHandler, SortValue ]
+              -- each fixity, its associativity and its target
+              map (\o -> Tuple o.associativity o.target) (Map.lookup (OperatorName "+++") i.declarations.operators) `shouldEqual` Just (Tuple AssociateLeft (FixityValue (inAudit (Ident "area"))))
+              map (\o -> Tuple o.associativity o.target) (Map.lookup (OperatorName "<:") i.declarations.operators) `shouldEqual` Just (Tuple AssociateNone (FixityConstructor (inAudit (Ident "Circle"))))
+              map (\o -> Tuple o.associativity o.target) (Map.lookup (OperatorName "&&&") i.declarations.typeOperators) `shouldEqual` Just (Tuple AssociateRight (TargetTypeConstructor (inAudit (TyName "Both"))))
+              map (\o -> Tuple o.associativity o.target) (Map.lookup (OperatorName "***") i.declarations.typeOperators) `shouldEqual` Just (Tuple AssociateNone (TargetTypeSynonym (inAudit (TyName "Twice"))))
+              map (\o -> Tuple o.associativity o.target) (Map.lookup (OperatorName "<~>") i.declarations.typeOperators) `shouldEqual` Just (Tuple AssociateLeft (TargetEffect (inAudit (EffName "Duo"))))
+              -- an effect's attributes, and constants of every form
+              map _.attributes (Map.lookup (EffName "Log") i.declarations.effects) `shouldEqual` Just [ { name: inAudit (Ident "tagged"), positional: [ ConstantConstructor (inAudit (Ident "Circle")) [ ConstantLiteral (LitInt 1) ] ], keyword: [] } ]
+              map (map _.name <<< _.attributes) (value "area") `shouldEqual` Just [ inAudit (Ident "described") ]
+              -- the implicit handler, and the macro published as one
+              map _.handler i.implicitHandlers `shouldEqual` [ Ident "quietly" ]
+              Map.keys i.exports.macros `shouldEqual` Set.singleton "mac"
+              Map.keys i.exports.typeOperators `shouldEqual` Set.fromFoldable [ "&&&", "***", "<~>" ]
+              -- a synthesized parameter with no name, a labelled instance, and two
+              -- spreads a constraint keeps apart
+              case map _.scheme.body (value "unnamed") of
+                Just (Synthesized s _) -> s.name `shouldEqual` Nothing
+                other -> fail ("not a synthesized parameter: " <> show other)
+              map _.scheme.body (value "labelled") `shouldEqual` Just (Plain (fn (TCon unitTy []) (TRowExtend (RowLabelledEffectEntry (Symbol "logger") (inAudit (EffName "Log")) []) TRowEmpty) int))
+              case map _.scheme.body (value "glue") of
+                Just (Forall _ _ (Forall _ _ (Constrained (Disjoint _ _) _))) -> pure unit
+                other -> fail ("not two spreads kept apart: " <> show other)
+              -- a default of each literal's form, and a record
+              map (map (map constantForm <<< _.default) <<< _.keyword) (Map.lookup (Ident "described") i.declarations.attributes)
+                `shouldEqual` Just (map Just [ "string", "char", "number", "boolean", "record" ])
+          case interfaceOf "Renamed" of
+            Nothing -> fail "no interface of Renamed"
+            Just i -> do
+              Map.lookup "area" i.exports.values `shouldEqual` Just { entity: inAudit (Ident "area"), via: ThroughImport audit }
+              map (\t -> Tuple t.via t.members) (Map.lookup "Shape" i.exports.types) `shouldEqual` Just (Tuple (ThroughImport audit) [ Ident "Circle", Ident "Square" ])
+              Map.lookup "+++" i.exports.operators `shouldEqual` Just { entity: inAudit (OperatorName "+++"), via: ThroughImport audit }
+          case interfaceOf "Rewhole" of
+            Nothing -> fail "no interface of Rewhole"
+            Just i -> i.exports.modules `shouldEqual` [ audit ]
 
   describe "a structural type" do
     let
@@ -1969,3 +2030,70 @@ buildSpec = describe "a build" do
         _ -> fail "compiled"
       Array.filter (String.contains (String.Pattern "read")) r.log `shouldEqual` [ "read src/A.stel", "read src/A.stel" ]
 
+-- | A module declaring something of every kind, each field of its interface
+-- | taking each form source can give it: `Renamed` re-exports some of it by
+-- | name, and `Rewhole` all of it as a module.
+auditModule :: Array String
+auditModule =
+  [ "module Audit where"
+  , "import Stella.Syntax (Parser, Syntax, Term, fail)"
+  , "import Synth"
+  , "data Shape = Circle Int | Square Int"
+  , "data Both a b = Both a b"
+  , "newtype Age = Age Int"
+  , "type Twice a = Both a a"
+  , "foreign type Handle :: Type"
+  , "effect Duo (a :: Type) (b :: Type)"
+  , "attribute tagged Shape"
+  , "attribute described (name :: String = \"x\") (letter :: Char = 'c') (scale :: Number = 1.5) (on :: Boolean = true) (box :: { n :: Int } = { n: 2 })"
+  , "@[tagged (Circle 1)]"
+  , "effect Log where"
+  , "  log :: Int ->* Unit"
+  , "effect Quiet where"
+  , "  hush :: Unit ->* Int"
+  , "infixl 6 area as +++"
+  , "infix 4 Circle as <:"
+  , "infixr 3 type Both as &&&"
+  , "infix 2 type Twice as ***"
+  , "infixl 1 type Duo as <~>"
+  , "@[described]"
+  , "area :: Shape -> Int -> Int"
+  , "area s n = n"
+  , "foreign root :: Number -> Number"
+  , "handler lowerLog :: Log ~> () where"
+  , "  fast | log _ = ()"
+  , "implicit"
+  , "handler quietly :: Quiet ~> () where"
+  , "  fast | hush _ = 0"
+  , "@[macro]"
+  , "mac :: Parser (Syntax Term)"
+  , "mac = fail \"unused\""
+  , "count :: Int / {| Log |}"
+  , "count = let _ = log 1 in 1"
+  , "named :: {{ d :: Int by resolve }} -> Int -> Int"
+  , "named d x = x"
+  , "unnamed :: {{ _ :: Int by resolve }} -> Int -> Int"
+  , "unnamed d x = x"
+  , "labelled :: Unit -> Int / {| logger :: Log |}"
+  , "labelled _ = 0"
+  , "glue :: forall r s. { ...r, ...s } -> { ...r, ...s }"
+  , "glue x = x"
+  ]
+
+renamedModule :: Array String
+renamedModule = [ "module Renamed (area, Shape(..), (+++)) where", "import Audit" ]
+
+rewholeModule :: Array String
+rewholeModule = [ "module Rewhole (module Audit) where", "import Audit" ]
+
+-- | The form of a constant, as a word.
+constantForm :: Constant -> String
+constantForm = case _ of
+  ConstantLiteral (LitInt _) -> "int"
+  ConstantLiteral (LitNumber _) -> "number"
+  ConstantLiteral (LitString _) -> "string"
+  ConstantLiteral (LitChar _) -> "char"
+  ConstantLiteral (LitBoolean _) -> "boolean"
+  ConstantValue _ -> "value"
+  ConstantConstructor _ _ -> "constructor"
+  ConstantRecord _ -> "record"

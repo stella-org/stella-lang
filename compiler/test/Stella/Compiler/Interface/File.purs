@@ -55,8 +55,15 @@ rich =
           [ Tuple "T" { entity: TypeEntity (inM (TyName "T")), via: Declared, members: [ Ident "Leaf", Ident "Node" ] }
           , Tuple "E" { entity: EffectEntity (inM (EffName "E")), via: Declared, members: [ Ident "get" ] }
           ]
-      , operators: Map.singleton "+++" { entity: inM (OperatorName "+++"), via: Declared }
-      , typeOperators: Map.singleton "***" { entity: inM (OperatorName "***"), via: Declared }
+      , operators: Map.fromFoldable
+          [ Tuple "+++" { entity: inM (OperatorName "+++"), via: Declared }
+          , Tuple "<:" { entity: inM (OperatorName "<:"), via: Declared }
+          ]
+      , typeOperators: Map.fromFoldable
+          [ Tuple "***" { entity: inM (OperatorName "***"), via: Declared }
+          , Tuple "~~" { entity: inM (OperatorName "~~"), via: Declared }
+          , Tuple "!!" { entity: inM (OperatorName "!!"), via: Declared }
+          ]
       , macros: Map.singleton "m" { entity: inM (Ident "m"), via: Declared }
       , attributes: Map.singleton "json" { entity: inM (Ident "json"), via: Declared }
       , modules: [ ModuleName "B" ]
@@ -67,6 +74,8 @@ rich =
           , Tuple (Ident "c") { sort: SortValue, scheme: { kindVars: [], body: Computation int row }, attributes: [] }
           , Tuple (Ident "sqrt") { sort: SortForeign ObservesNone, scheme: plain, attributes: [] }
           , Tuple (Ident "h") { sort: SortHandler, scheme: plain, attributes: [] }
+          , Tuple (Ident "g") { sort: SortValue, scheme: { kindVars: [], body: Synthesized { name: Nothing, argumentType: int, synthesizer: inM (Ident "resolve") } (Plain int) }, attributes: [] }
+          , Tuple (Ident "k") { sort: SortValue, scheme: { kindVars: [], body: Plain (TForall (TyVar "e") (KRow RowEffect) (TConstrained (Lacks (EffectKey (inM (EffName "E"))) (TVar (TyVar "e"))) int)) }, attributes: [] }
           , Tuple (Ident "Leaf") { sort: SortConstructor (inM (TyName "T")), scheme: plain, attributes: [] }
           , Tuple (Ident "get") { sort: SortOperation (inM (EffName "E")), scheme: plain, attributes: [] }
           ]
@@ -77,16 +86,28 @@ rich =
               , attributes: []
               }
           , Tuple (TyName "S") { kind: monoScheme (KRow RowEffect), sort: Synonym { params: [], body: row }, attributes: [] }
-          , Tuple (TyName "Ref") { kind: monoScheme (KFun KType KType), sort: ForeignType, attributes: [] }
+          , Tuple (TyName "Ref") { kind: monoScheme (KFun KType KType), sort: ForeignType, attributes: [ attribute ] }
+          , Tuple (TyName "Lift") { kind: monoScheme (KFun KEffect KType), sort: ForeignType, attributes: [] }
           , Tuple (TyName "Raw") { kind: monoScheme KType, sort: Intrinsic CanonicalOpaque, attributes: [] }
+          , Tuple (TyName "Lit") { kind: monoScheme KType, sort: Intrinsic CanonicalLiteral, attributes: [] }
+          , Tuple (TyName "Fn") { kind: monoScheme (KFun KType (KFun (KRow RowEffect) (KFun KType KType))), sort: Intrinsic CanonicalFunction, attributes: [] }
+          , Tuple (TyName "Rec") { kind: monoScheme (KFun (KRow RowType) KType), sort: Intrinsic CanonicalRecord, attributes: [] }
+          , Tuple (TyName "Var") { kind: monoScheme (KFun (KRow RowType) KType), sort: Intrinsic CanonicalVariant, attributes: [] }
           ]
       , effects: Map.singleton (EffName "E")
           { params: [ { name: a, kind: KType } ]
           , operations: [ { name: Ident "get", binders: [ { name: TyVar "b", kind: KType } ], arguments: [ int ], resumesWith: TVar a } ]
-          , attributes: []
+          , attributes: [ { name: inM (Ident "json"), positional: [ ConstantLiteral (LitBoolean true) ], keyword: [] } ]
           }
-      , operators: Map.singleton (OperatorName "+++") { associativity: AssociateLeft, precedence: 6, target: FixityValue (inM (Ident "f")) }
-      , typeOperators: Map.singleton (OperatorName "***") { associativity: AssociateRight, precedence: 0, target: TargetTypeSynonym (inM (TyName "S")) }
+      , operators: Map.fromFoldable
+          [ Tuple (OperatorName "+++") { associativity: AssociateLeft, precedence: 6, target: FixityValue (inM (Ident "f")) }
+          , Tuple (OperatorName "<:") { associativity: AssociateNone, precedence: 4, target: FixityConstructor (inM (Ident "Leaf")) }
+          ]
+      , typeOperators: Map.fromFoldable
+          [ Tuple (OperatorName "***") { associativity: AssociateRight, precedence: 0, target: TargetTypeSynonym (inM (TyName "S")) }
+          , Tuple (OperatorName "~~") { associativity: AssociateNone, precedence: 2, target: TargetTypeConstructor (inM (TyName "T")) }
+          , Tuple (OperatorName "!!") { associativity: AssociateLeft, precedence: 9, target: TargetEffect (inM (EffName "E")) }
+          ]
       , attributes: Map.singleton (Ident "json")
           { positional: [ int ]
           , keyword: [ { label: "name", type: int, default: Nothing }, { label: "level", type: int, default: Just (ConstantLiteral (LitInt 3)) } ]
@@ -254,6 +275,8 @@ spec = describe "Stella.Compiler.Interface.File" do
         Nothing -> fail "a code unit is the only way to write one"
         Just name -> encode (stored empty { arities = Map.singleton (Ident name) 1 }) `shouldEqual` Left (NotScalarText name)
 
-    it "a region name, which no published scheme mentions" do
+    it "a region name, which no published scheme mentions, as an element of a row or as a key" do
       encode (stored empty { implicitHandlers = [ { handler: Ident "h", source: RowRegionEntry (RegionName "r"), targets: [] } ] })
         `shouldEqual` Left (RegionInInterface (RegionName "r"))
+      encode (stored empty { declarations = emptyDeclarations { values = Map.singleton (Ident "v") { sort: SortValue, scheme: { kindVars: [], body: Plain (TForall (TyVar "e") (KRow RowEffect) (TConstrained (Lacks (RegionKey (RegionName "q")) (TVar (TyVar "e"))) int)) }, attributes: [] } } })
+        `shouldEqual` Left (RegionInInterface (RegionName "q"))

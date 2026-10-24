@@ -23,10 +23,11 @@ import Stella.Compiler.Interface.Scheme (SchemeBody(..))
 import Stella.Compiler.Resolve.Module (resolveModule)
 import Stella.Compiler.Surface.Decl (Constant(..), Declaration(..)) as Surface
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
-import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), TyName(..))
+import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), ModuleName(..), Qualified(..), TyName(..), TyVar(..))
 import Stella.Compiler.TypedCore.Prim (intTy, pureFn, stringTy, unitTy)
+import Stella.Compiler.TypedCore.Prim (fn) as Arrow
 import Stella.Compiler.TypedCore.Term (Literal(..))
-import Stella.Compiler.TypedCore.Type (RowEntry(..), Type(..))
+import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), Type(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
@@ -53,6 +54,9 @@ sourceA =
   , "type Program = {| E |}"
   , "@[macro]"
   , "m x = x"
+  , "implicit"
+  , "handler quiet :: E ~> () where"
+  , "  fast | get _ = 0"
   ]
 
 -- | What elaboration would decide of `A`, written out.
@@ -64,6 +68,7 @@ coreA =
       , Tuple (Ident "get") (plain (fn (TCon unitTy []) int))
       , Tuple (Ident "area") (plain (fn shape (fn int int)))
       , Tuple (Ident "m") (plain (fn int int))
+      , Tuple (Ident "quiet") quiet
       ]
   , types: Map.fromFoldable
       [ Tuple (TyName "Shape") { kind: monoScheme KType, sort: CoreData { params: [], fields: [ [ int ], [ int ] ] } }
@@ -71,10 +76,22 @@ coreA =
       ]
   , effects: Map.singleton (EffName "E") { params: [], operations: [ { binders: [], arguments: [ TCon unitTy [] ], resumesWith: int } ] }
   , attributes: Map.singleton (Ident "json") { positional: [], keyword: [ TCon stringTy [], int ] }
-  , implicitHandlers: Map.empty
+  , implicitHandlers: Map.singleton (Ident "quiet") { source: RowEffectEntry (inA (EffName "E")) [], targets: [] }
   }
   where
   shape = TCon (inA (TyName "Shape")) []
+  -- `E ~> ()`, expanded
+  quiet =
+    { kindVars: []
+    , body:
+        Forall residual (KRow RowEffect)
+          ( Constrained (Lacks (EffectKey effectE) (TVar residual))
+              (Forall answer KType (Plain (Arrow.fn (Arrow.fn (TCon unitTy []) (TRowExtend (RowEffectEntry effectE []) (TVar residual)) (TVar answer)) (TVar residual) (TVar answer))))
+          )
+    }
+  effectE = inA (EffName "E")
+  residual = TyVar "e"
+  answer = TyVar "a"
   plain t = { kindVars: [], body: Plain t }
   fn = pureFn
 
@@ -114,11 +131,20 @@ spec = describe "Stella.Compiler.Interface.Assemble" do
           map _.isNewtype (Array.head (Array.mapMaybe dataOf (Array.fromFoldable (Map.values i.declarations.types)))) `shouldEqual` Just false
           map (map _.label <<< _.keyword) (Map.lookup (Ident "json") i.declarations.attributes) `shouldEqual` Just [ "name", "level" ]
 
-    it "are refused where a declaration has no Core entry, or a Core entry no declaration" do
+    it "are refused where a declaration has no Core entry, or a Core entry no declaration, in each table" do
       surfaceA \s -> do
         assemble s coreA { schemes = Map.delete (Ident "area") coreA.schemes } aritiesA `shouldEqual` Left (CoreMissing ValueTable "area")
+        assemble s coreA { schemes = Map.insert (Ident "extra") { kindVars: [], body: Plain int } coreA.schemes } aritiesA `shouldEqual` Left (CoreExtra ValueTable "extra")
+        assemble s coreA { types = Map.delete (TyName "Program") coreA.types } aritiesA `shouldEqual` Left (CoreMissing TypeTable "Program")
         assemble s coreA { types = Map.insert (TyName "Extra") { kind: monoScheme KType, sort: CoreForeign } coreA.types } aritiesA
           `shouldEqual` Left (CoreExtra TypeTable "Extra")
+        assemble s coreA { effects = Map.empty } aritiesA `shouldEqual` Left (CoreMissing EffectTable "E")
+        assemble s coreA { effects = Map.insert (EffName "F") { params: [], operations: [] } coreA.effects } aritiesA `shouldEqual` Left (CoreExtra EffectTable "F")
+        assemble s coreA { attributes = Map.empty } aritiesA `shouldEqual` Left (CoreMissing AttributeTable "json")
+        assemble s coreA { attributes = Map.insert (Ident "yaml") { positional: [], keyword: [] } coreA.attributes } aritiesA `shouldEqual` Left (CoreExtra AttributeTable "yaml")
+        assemble s coreA { implicitHandlers = Map.empty } aritiesA `shouldEqual` Left (CoreMissing ImplicitHandlerTable "quiet")
+        assemble s coreA { implicitHandlers = Map.insert (Ident "loud") { source: RowEffectEntry (inA (EffName "E")) [], targets: [] } coreA.implicitHandlers } aritiesA
+          `shouldEqual` Left (CoreExtra ImplicitHandlerTable "loud")
 
     it "are refused where they disagree on what a declaration is or holds" do
       surfaceA \s -> do
@@ -130,6 +156,8 @@ spec = describe "Stella.Compiler.Interface.Assemble" do
           `shouldEqual` Left (OperationCount (EffName "E") 1 0)
         assemble s coreA { attributes = Map.singleton (Ident "json") { positional: [], keyword: [ int ] } } aritiesA
           `shouldEqual` Left (AttributeParameterCount (Ident "json") 2 1)
+        assemble s coreA { attributes = Map.singleton (Ident "json") { positional: [ int ], keyword: [ TCon stringTy [], int ] } } aritiesA
+          `shouldEqual` Left (AttributeParameterCount (Ident "json") 0 1)
 
     it "take the arity of a macro, which is published in the macro namespace" do
       surfaceA \s -> do
@@ -145,7 +173,7 @@ spec = describe "Stella.Compiler.Interface.Assemble" do
           case surfaceInterface r.module r.exports of
             Nothing -> fail "P holds an invalid constant"
             Just s -> do
-              let core = coreA { schemes = Map.singleton (Ident "f") { kindVars: [], body: Plain (pureFn int (pureFn int int)) }, types = Map.empty, effects = Map.empty, attributes = Map.empty }
+              let core = coreA { schemes = Map.singleton (Ident "f") { kindVars: [], body: Plain (pureFn int (pureFn int int)) }, types = Map.empty, effects = Map.empty, attributes = Map.empty, implicitHandlers = Map.empty }
               map (Map.lookup (Ident "f") <<< _.arities) (assemble s core (Map.singleton (Ident "f") 2)) `shouldEqual` Right (Just 2)
 
     it "are refused with an arity of no value the module declares and exports, or one below one" do

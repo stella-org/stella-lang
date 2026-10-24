@@ -271,9 +271,8 @@ assemble s c arities = do
     if v.positional /= Array.length core.positional then Left (AttributeParameterCount k v.positional (Array.length core.positional))
     else if Array.length v.keyword /= Array.length core.keyword then Left (AttributeParameterCount k (Array.length v.keyword) (Array.length core.keyword))
     else pure (Tuple k { positional: core.positional, keyword: Array.zipWith (\p t -> { label: p.label, type: t, default: p.default }) v.keyword core.keyword })
-  implicitHandlers <- for s.implicit \h -> case Map.lookup h c.implicitHandlers of
-    Just core -> pure { handler: h, source: core.source, targets: core.targets }
-    Nothing -> Left (CoreMissing ImplicitHandlerTable (identText h))
+  -- each in the order declared, its Core entry there, the keys being compared
+  let implicitHandlers = Array.mapMaybe (\h -> Map.lookup h c.implicitHandlers <#> \core -> { handler: h, source: core.source, targets: core.targets }) s.implicit
   for_' (Map.toUnfoldable arities :: Array (Tuple Ident Int)) \(Tuple k n) ->
     if not (ownExport k) then Left (ArityNotOwn k)
     else if n < 1 then Left (ArityBelowOne k n)

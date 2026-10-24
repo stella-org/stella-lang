@@ -1682,6 +1682,18 @@ A module's source dependencies and its runtime dependencies (D51, [Modules](../0
 | `quiet :: forall a. a -> a; quiet = loud`, `loud` at `( Shout )`, `silence :: Shout ~> ()` implicit | The handler inserted under the expansion's λ, and the initialization judged on `loud`, what the expansion expands: the boundary holds the lowering beside the body as written. On Steam, `quietId 5` is `5` |
 | On Steam: a handler a module imports by an import list naming the effects alone, a chain of two, and one the module declares after the boundary it meets | `12`, `14`, and `8`: each message logged a tick, each thing said two messages, and `silence` answering `7` |
 
+### A module's interface through its file (step 7)
+
+What [Interface](../05-Backend/03-Interface.md) holds, assembled from a module's surface and Core parts ([Modules](../06-Modules/01-Modules.md#a-modules-interface-and-the-build-environment)) and carried through its `.dmi`.
+
+| Input | Required outcome |
+| --- | --- |
+| A module compiled from source declaring one of every kind — data, newtype, synonym, foreign type, an effect with operations and one without, attributes, fixities of a value and of a constructor, type fixities of a type constructor, a synonym, and an effect, a value, a foreign, a handler and an implicit one, a macro, a computation, synthesized parameters with a name and with none, a labelled instance, and two spreads kept apart | Its interface the same through its file and back; each value's sort, each fixity's associativity and target, an effect's attributes, and an attribute's defaults of every literal's form and a record as written |
+| A module re-exporting another's names, and one re-exporting it whole | Each name standing for the entity it names, imported from the other, a type with its members; the other among the modules re-exported whole; each the same through its file |
+| An interface written by hand holding every form a file carries, the intrinsic classes and entries published to the catalog alone among them | The same through its bytes. Neither comes of source: an intrinsic is `Prim`'s, and no declaration is published to the catalog alone in this version |
+| A region name in an interface, as an element of a row or as a key | Refused where the file is written |
+| A surface part and a Core part holding different keys, in each table and each way, and an attribute whose positional or keyword parameters they count differently | Refused, naming the table and the entry, or the attribute and the two counts |
+
 ### Seed builds and the compile-time session (step 7)
 
 The driver's seed build, apart from its ordinary one ([Modules](../06-Modules/01-Modules.md#how-a-build-proceeds)), `stella-devtools build-seeds`, which runs it ([Modules](../06-Modules/01-Modules.md#stella-devtools)), and what the compile-time session of [`stellac compile`](../06-Modules/01-Modules.md#stellac-compile) loads.

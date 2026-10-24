@@ -20,12 +20,12 @@ optimizer is written** (D34): the bodies eligible for inlining are not here.
 | Imports | The modules its header imports, which are its source dependencies (D22, D51); what it needs when it runs is its `.dmo`'s `IMPORTS` |
 | Exports | The names it publishes, one table per namespace — value, type, operator, type operator, macro, attribute — each the name as an importer writes it, the entity it stands for, qualified by the module declaring it, and the way it came: declared, or imported from a module and re-exported; a type's members; and the modules it re-exports whole |
 | Values | Every value it declares — a value, a computation, a foreign with its observation, a handler, a constructor with the type it builds, an operation with the effect declaring it — with its scheme, an operation's the type it is called at (D17, [Effects](../03-Typed-Core/03-Effects.md)), and its attributes |
-| Types | Every type it declares — a data type or newtype with its parameters and each constructor's fields, a synonym with its parameters and its body, a foreign type — with its kind and its attributes |
+| Types | Every type it declares — a data type or newtype with its parameters and each constructor's fields, a synonym with its parameters and its body, a foreign type, or an intrinsic with its canonical class, which only `Prim` and Core written by hand declare — with its kind and its attributes |
 | Effects | Every effect it declares, with its parameters, each operation's own type variables, arguments, and the type it resumes with, and its attributes |
 | Operators, type operators | Every fixity it declares: the associativity, the precedence, and what the operator stands for |
 | Attributes | Every attribute it declares: its positional parameter types, and its keyword parameters with their types and defaults |
 | Implicit handlers | Each handler it declares `implicit`, with the element it handles and the elements it performs in its place |
-| Catalog only | The values it publishes to the catalog without exporting them to source |
+| Catalog only | The values it publishes to the catalog without exporting them to source. In this version no declaration is: which one is marked so is left open ([Open Questions](../99-Open-Questions/01-Open-Questions.md)), and every interface a build writes holds none |
 | Arities | The definitional arity of each value it declares that a module downstream can reach, where it has one |
 | Build hash | Where one was computed, the module's build hash |
 
