@@ -52,6 +52,7 @@ env =
   , constructors: constructorsOf primSignature
   , effects: effectsOf primSignature
   , tracing: TraceEnabled
+  , implicits: []
   }
 
 site :: Site

@@ -75,6 +75,7 @@ env =
   , constructors: constructorsOf primSignature
   , effects: effectsOf primSignature
   , tracing: TraceEnabled
+  , implicits: []
   }
 
 -- | A synthesis job at `Int`, taken from the ready queue.
