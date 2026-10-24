@@ -9,7 +9,10 @@
 -- | stand. It composes actions with `Base.IO` over `Base.String` and
 -- | `Base.Int`, calls `Console`, whose foreign the host implements, and handles
 -- | an effect by a `reifiable full` clause, resuming with
--- | `Base.Continuation.continue`. `dependencies` listing a seed module with
+-- | `Base.Continuation.continue`. `Lifted` runs a computation by
+-- | `Base.IO.Effect.runIO`, written by hand under an annotation whose boundary
+-- | an implicit handler of its own meets, lowering a greeting to a `LiftIO`
+-- | carrying a `Console` action. `dependencies` listing a seed module with
 -- | another interface, `Prim`, or a module twice is refused. The cases run in
 -- | order: the first builds `Base`.
 module Test.E2E.BasePackage (spec) where
@@ -47,7 +50,7 @@ baseOutput = dir <> "/base"
 -- | the modules given.
 buildApp :: String -> Array Entry -> Aff Outcome
 buildApp file dependencies = do
-  writeFiles dir [ { path: "app/" <> file, text: stellaJson ((settings (map listedAt [ "src/Console.stel", "src/Main.stel" ])) { dependencies = dependencies }) } ]
+  writeFiles dir [ { path: "app/" <> file, text: stellaJson ((settings (map listedAt [ "src/Console.stel", "src/Main.stel", "src/Lifted.stel" ])) { dependencies = dependencies }) } ]
   compile (dir <> "/app/" <> file)
 
 -- | The entries of `dependencies.json`, which the script wrote.
@@ -89,7 +92,7 @@ spec = describe "the `Base` package, built from its sources and listed by `depen
     entries <- listed
     root <- liftEffect cwd
     map _.object entries `shouldEqual` map (\m -> fmt @"{root}/{out}/{m}.dmo" { root, out: baseOutput, m })
-      [ "Base.Array", "Base.Char", "Base.Continuation", "Base.IO", "seeds/Base.Int", "Base.Number", "Base.String" ]
+      [ "Base.Array", "Base.Char", "Base.Continuation", "Base.IO", "Base.IO.Effect", "seeds/Base.Int", "Base.Number", "Base.String" ]
 
   it "builds a program listing those entries as they stand, `Base.Int` accepted as the seed module" do
     copyTree "fixtures/source/base-package" dir
@@ -107,6 +110,17 @@ spec = describe "the `Base` package, built from its sources and listed by `depen
     outcome.err `shouldEqual` ""
     outcome.status `shouldEqual` 0
     printed outcome `shouldEqual` [ "built apart", "12", "6" ]
+
+  it "runs a computation by the standard runner, an implicit handler lowering what it performs to `LiftIO`" do
+    entries <- listed
+    outcome <- steamRun
+      { manifest: dir <> "/app/foreign.json"
+      , entry: "Lifted"
+      , modules: map _.object entries <> [ dir <> "/app/output/Console.dmo", dir <> "/app/output/Lifted.dmo" ]
+      }
+    outcome.err `shouldEqual` ""
+    outcome.status `shouldEqual` 0
+    printed outcome `shouldEqual` [ "hello, runner", "hello, LiftIO" ]
 
   it "refuses `dependencies` listing a seed module with another interface" do
     stored <- bytesOf (baseOutput <> "/seeds/Base.Int.dmi")

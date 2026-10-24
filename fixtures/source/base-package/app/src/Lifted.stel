@@ -1,0 +1,23 @@
+module Lifted where
+
+import Base.IO.Effect (LiftIO(..), runIO)
+import Base.String (append)
+import Console (log)
+
+effect Greet where
+  greet :: String ->* Unit
+
+-- A greeting is a line logged.
+implicit
+handler greetAsLift :: Greet ~> ( LiftIO ) where
+  fast | greet name = liftIO (log (append "hello, " name))
+
+greetings :: Unit / {| Greet |}
+greetings =
+  let _ = greet "runner" in
+  greet "LiftIO"
+
+-- The annotation makes the λ a boundary at `LiftIO`, which `greetAsLift`
+-- meets.
+main :: IO Unit
+main = runIO ((\_ -> greetings) :: Unit -> Unit / {| LiftIO |})
