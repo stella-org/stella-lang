@@ -81,6 +81,18 @@ main = handle program
 
 ## Roadmap
 
+### Milestone towards v0.1
+
+Once the following features are implemented, we will release Stella v0.1:
+
+- Optimizer
+- Hygenic macros
+- Macros at declaration position
+- Typeclasses over macros
+- Deriving certain typeclasses
+- Build with Lazuli
+- IDE support (LSP, formatter)
+
 ### Language Features
 
 - ✅️ `TypedCore`, the central representation with explicit types and kinds
@@ -93,7 +105,7 @@ main = handle program
 - ✅️ Hindley-Milner Type Inference
 - 🎯 More macro demo: array syntax `ar%[1,2,3]` and format string with `fmt%"Hello {world}"` ... *WIP*
 - ☑️ Macro at declaration position: `m%{ ... }`
-- 🎯 Implicit handlers insertion ... *WIP*
+- ✅️ Implicit handlers insertion
 - 🎯 E2E testing on whole set of language features ... *WIP*
 - ☑️ Typeclasses over macro
 - ☑️ MiddleEnd: IR design and optimization
