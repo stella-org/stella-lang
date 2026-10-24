@@ -93,19 +93,19 @@ main = handle program
 - ✅️ Hindley-Milner Type Inference
 - 🎯 More macro demo: array syntax `ar%[1,2,3]` and format string with `fmt%"Hello {world}"` ... *WIP*
 - ☑️ Macro at declaration position: `m%{ ... }`
-- ☑️ Implicit handlers insertion
+- 🎯 Implicit handlers insertion ... *WIP*
 - 🎯 E2E testing on whole set of language features ... *WIP*
 - ☑️ Typeclasses over macro
 - ☑️ MiddleEnd: IR design and optimization
 - ☑️ Suspension and concurrent primitives, `Async` effect
-- 🎯 [Verification of the Core semantics soundness and metatheory](https://github.com/stella-org/stella-spec-verified) ... *WIP*
+- 🎯 [Formal Verification of the Core semantics soundness and metatheory](https://github.com/stella-org/stella-spec-verified) ... *WIP* Type safety (progress and preservation) and effect safefy is proven
 
 ### Ecosystem
 
 - ☑️ The standard library `Prelude`
 - ☑️ portable libraries on top of `Prelude`
 - ☑️ The first two backends: JavaScript and WebAssembly ... Prototype JS backend is done
-- ☑️ Build system: [the Lazuli package manager](https://github.com/stella-org/lazuli)
+- 🎯 Build system: [the Lazuli package manager](https://github.com/stella-org/lazuli) ... *WIP*
 - ☑️ Language Server Protocol
 - ☑️ Formatter
 - ☑️ IDE support
