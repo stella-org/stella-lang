@@ -38,6 +38,7 @@ import Effect.Aff.Compat (EffectFnAff, fromEffectFnAff)
 import Effect.Class (liftEffect)
 import Stella.Backend.JavaScript (JsError(..), Options, fileName, generate)
 import Stella.Compiler.ForeignManifest as ForeignManifest
+import Stella.Compiler.ProgramDescriptor as ProgramDescriptor
 import Stella.Compiler.Bytecode (Dmo, EncodeError(..), FuncIx(..), GlobalInit(..), Instr(..), decode, encode)
 import Stella.Compiler.Bytecode as B
 import Stella.Compiler.MiddleEnd.Rep (Rep(..))
@@ -399,6 +400,31 @@ spec = describe "the JavaScript backend" do
     names <- liftEffect (caseNames fixturesRoot)
     Array.filter (\n -> not (Array.elem n names)) (map _.name generationRefusals)
       `shouldEqual` []
+
+  describe "a program descriptor" do
+    -- the backend takes the entry point as Steam does: from a descriptor held to
+    -- the bytecode it lists by the rules both share
+    it "runs from the entry point it names, once its bytecode is held to it" do
+      let
+        dir = fixturesRoot <> "io"
+        entry = Qualified (ModuleName "Main") (Ident "main")
+      modules <- fixtureModules "io"
+      source <- liftEffect (readText (dir <> "/foreign-manifest.json"))
+      case modules, ForeignManifest.parse "javascript" source of
+        Right dmos, Right held -> do
+          let written = ProgramDescriptor.print { entry, modules: map (\d -> { module: d.name, object: (\(ModuleName n) -> n <> ".dmo") d.name }) dmos, foreign: Nothing }
+          case ProgramDescriptor.parse written of
+            Left err -> fail (show err)
+            Right descriptor -> do
+              ProgramDescriptor.validate descriptor dmos `shouldEqual` Right unit
+              let Qualified (ModuleName m) (Ident x) = descriptor.entry
+              case generatedOrRefused (fixtureOptions dir (Just held) (Just (m <> "." <> x))) dmos of
+                Left err -> fail (show err)
+                Right files -> do
+                  ended <- fromEffectFnAff (runEntryImpl files (fileName (ModuleName m)) (m <> "." <> x) dir)
+                  ended.ended `shouldEqual` "produced"
+        Left err, _ -> fail err
+        _, Left err -> fail (show err)
 
   describe "what the generated code holds" do
     it "captures a computed local, and the closure reads it through CAPT" do
