@@ -4,38 +4,18 @@ import Prelude
 
 import ArgParse.Basic (ArgParser)
 import ArgParse.Basic as ArgParser
-import Data.Array as Array
 import Data.Maybe (Maybe)
 import Data.Either (Either)
 import Data.Generic.Rep (class Generic)
 import Data.Show.Generic (genericShow)
 import Stella.CLI.Effect.Log (LogLevel(..))
-import Stella.CLI.Options (loglevel, moduleName)
-import Stella.Compiler.TypedCore (Ident(..), ModuleName(..))
+import Stella.CLI.Options (loglevel)
 
--- | What `run` is given: the modules, and where the entry point is.
--- |
--- | **The two halves of the entry point are two options.** A module name has dots
--- | in it, so one option carrying both would leave `A.B` reading as the module
--- | `A.B` and as the global `B` of the module `A`, with nothing in the spelling to
--- | separate them. Deciding by which modules were loaded is the answer to avoid:
--- | the same command line would mean different things for different sets of files.
-type RunOptions =
-  { entry :: ModuleName
-  -- | The manifest saying where the implementations of the foreigns this program
-  -- | declares are. **Absent is not an error**: a program over `Base` alone declares
-  -- | nothing for one to say.
-  , manifest :: Maybe String
-  , entryGlobal :: Ident
-  -- | The `.dmo` files, in dependency order. **Nothing here is sorted**: they are
-  -- | loaded left to right, and a module whose imports are not already loaded is
-  -- | refused. No path is searched and no name resolved to a file.
-  , modules :: Array String
-  }
+type RunOptions = { program :: String }
 
 -- | What `session` is given: where the implementations of the foreigns the
--- | modules it will load declare are. **Absent is not an error**, as for `run`: a
--- | module over `Base` alone declares nothing for one to say.
+-- | modules it will load declare are. **Absent is not an error**: a module over `Base`
+-- | alone declares nothing for one to say.
 type SessionOptions = { manifest :: Maybe String }
 
 data Command
@@ -85,24 +65,8 @@ options =
     }
 
   runOptions = ArgParser.fromRecord
-    { entry:
-        ArgParser.argument [ "--entry", "-e" ]
-          "Module holding the entry point"
-          # moduleName
-          # ArgParser.default (ModuleName "Main")
-    , entryGlobal:
-        ArgParser.argument [ "--entry-global" ]
-          "Name of the entry point within that module"
-          # map Ident
-          # ArgParser.default (Ident "main")
-    , manifest:
-        ArgParser.argument [ "--manifest" ]
-          "Where the foreign manifest is"
-          # ArgParser.optional
-    , modules:
-        ArgParser.anyNotFlag "MODULE.dmo" "Bytecode files, in dependency order"
-          # ArgParser.many
-          # map Array.fromFoldable
+    { program:
+        ArgParser.anyNotFlag "PROGRAM.json" "The program descriptor"
     }
 
 parse :: Array String -> Either ArgParser.ArgError Options

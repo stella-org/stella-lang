@@ -28,6 +28,7 @@ import Steam.CLI.Assemble (AssembleError(..))
 import Steam.Load (LoadError)
 import Stella.Compiler.ForeignManifest (ManifestError)
 import Stella.Compiler.Bytecode (DecodeError)
+import Stella.Compiler.ProgramDescriptor (DescriptorError(..))
 import Stella.Compiler.TypedCore.Name (Ident(..), ModuleName(..), Qualified(..))
 import Stella.CLI.Session.Frame (FrameFailure(..))
 import Stella.CLI.Session.Peer (SessionFailure(..))
@@ -43,10 +44,7 @@ data ErrorType
   -- | A module whose global faulted as it was evaluated. The module did not load,
   -- | so the program never started.
   | InitializationFailed (Qualified Ident) Failure
-  -- | No module of that name among the ones given.
-  | NoEntryModule ModuleName
-  -- | The entry module holds no global of that name.
-  | NoEntryGlobal (Qualified Ident)
+  | DescriptorRefused P.String DescriptorError
   -- | The entry point holds something that is not an `IO`, so there is nothing to
   -- | execute. What it does hold is not reported: a `.dmo` carries no type, and
   -- | naming a class here would suggest one was checked.
@@ -119,8 +117,7 @@ exitStatus = case _ of
   FileNotBytecode _ _ -> 1
   ModuleRefused _ -> 1
   InitializationFailed _ _ -> 1
-  NoEntryModule _ -> 1
-  NoEntryGlobal _ -> 1
+  DescriptorRefused _ _ -> 1
   EntryNotAnAction _ -> 1
   ManifestRefused _ _ -> 1
   ForeignsUnreachable _ -> 1
@@ -159,13 +156,8 @@ report = case _ of
     fmt @"Failed while initializing {name}: {reason}"
       { name: qualified name, reason: describe failure }
 
-  NoEntryModule name ->
-    fmt @"No module named {name} among the files given.\n  Give the module holding the entry point with --entry."
-      { name: unModule name }
-
-  NoEntryGlobal name ->
-    fmt @"No {name} to run.\n  Name the entry point within the module with --entry-global."
-      { name: qualified name }
+  DescriptorRefused path err ->
+    fmt @"The program descriptor {path} is refused: {reason}" { path, reason: descriptorProblem err }
 
   EntryNotAnAction name ->
     fmt @"{name} is not an action, so there is nothing to run."
@@ -215,6 +207,20 @@ report = case _ of
 
   SessionDefect (AnswerInconsistent reason) ->
     "Internal error in the interpreter: an answer the descriptor admits could not be taken in at " <> reason
+
+descriptorProblem :: DescriptorError -> P.String
+descriptorProblem = case _ of
+  NotJson why -> "it is not JSON: " <> why
+  UnknownFormatVersion known given -> fmt @"its formatVersion is {given}, and this interpreter reads {known}" { given, known }
+  MalformedDescriptor why -> why
+  UnknownField at name -> fmt @"{at} has `{name}`, which is no field of it" { at, name }
+  ModuleTwice name -> fmt @"it lists {name} more than once" { name: unModule name }
+  EntryUnlisted name -> fmt @"it does not list {name}, which holds the entry point" { name: unModule name }
+  ObjectOfAnother name other -> fmt @"the file listed for {name} is {other}" { name: unModule name, other: unModule other }
+  ImportNotBefore name imported -> fmt @"{name} imports {imported}, which it does not list before it" { name: unModule name, imported: unModule imported }
+  Unreached name -> fmt @"it lists {name}, which the entry module does not reach" { name: unModule name }
+  NoEntryGlobal name -> fmt @"{name} is no global to run" { name: qualified name }
+  ObjectsUnmatched listed given -> fmt @"it lists {listed} modules, and {given} bytecode files are given for them" { listed, given }
 
 refused :: RefusalReason -> P.String
 refused = case _ of
