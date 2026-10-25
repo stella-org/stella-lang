@@ -18,6 +18,8 @@ module Stella.Compiler.ForeignManifest
   , ValueKind(..)
   , formatVersion
   , parse
+  , readBody
+  , kindSpelling
   , entryFor
   ) where
 
@@ -27,6 +29,7 @@ import Prim as P
 
 import Data.Argonaut.Core (Json, caseJsonObject, toArray, toNumber, toString)
 import Data.Argonaut.Parser (jsonParser)
+import Data.Array as Array
 import Data.Either (Either(..), note)
 import Data.Foldable (foldM)
 import Data.Generic.Rep (class Generic)
@@ -122,6 +125,13 @@ parse target source = do
   version <- intField fields "formatVersion"
   when (version /= formatVersion)
     (Left (UnknownFormatVersion formatVersion version))
+  readBody target json
+
+-- | A manifest embedded in another file has no version of its own: that
+-- | file's covers it.
+readBody :: P.String -> Json -> Either ManifestError Manifest
+readBody target body = do
+  fields <- object "the manifest" body
   named <- stringField fields "target"
   when (named /= target) (Left (WrongTarget target named))
   raw <- arrayField fields "modules"
@@ -161,19 +171,21 @@ parse target source = do
     spelled <- note (MalformedManifest "a kind is not a string") (toString json)
     kindNamed spelled
 
-  kindNamed = case _ of
-    "int" -> Right AsInt
-    "number" -> Right AsNumber
-    "char" -> Right AsChar
-    "string" -> Right AsString
-    "boolean" -> Right AsBoolean
-    "unit" -> Right AsUnit
-    "opaque" -> Right AsOpaque
-    other -> Left (UnknownKind other)
+  kindNamed spelled = note (UnknownKind spelled) (Array.find (\k -> kindSpelling k == spelled) [ AsInt, AsNumber, AsChar, AsString, AsBoolean, AsUnit, AsOpaque ])
 
   insert acc e
     | Map.member e.module acc = Left (ModuleTwice e.module)
     | otherwise = Right (Map.insert e.module e acc)
+
+kindSpelling :: ValueKind -> P.String
+kindSpelling = case _ of
+  AsInt -> "int"
+  AsNumber -> "number"
+  AsChar -> "char"
+  AsString -> "string"
+  AsBoolean -> "boolean"
+  AsUnit -> "unit"
+  AsOpaque -> "opaque"
 
 -- | What the manifest says about that module, where it says anything.
 -- |

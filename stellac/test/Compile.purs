@@ -10,6 +10,8 @@ module Test.Stellac.Compile (spec) where
 
 import Prelude
 
+import Data.Argonaut.Core (toObject)
+import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
 import Data.Either (Either(..), isLeft)
 import Data.Foldable (for_)
@@ -25,6 +27,7 @@ import Effect.Class (liftEffect)
 import Effect.Exception (error, throwException)
 import Effect.Ref (Ref)
 import Effect.Ref as Ref
+import Foreign.Object as Object
 import Run (AFF, EFFECT, Run, runBaseAff')
 import Run as Run
 import Run.Except (EXCEPT)
@@ -35,6 +38,7 @@ import Stella.CLI.Effect.Log (LOG, Log(..), LogLevel(..))
 import Stella.CLI.Effect.Log as Log
 import Stella.CLI.Effect.Process (PROCESS)
 import Stella.CLI.Effect.Process as Process
+import Stella.Compiler.ForeignManifest (ResultKind(..), ValueKind(..), readBody)
 import Stella.Compiler.TypedCore (Ident(..), ModuleName(..))
 import Stellac.Config (load, normalize)
 import Stellac.Config as Config
@@ -231,7 +235,9 @@ spec = describe "stellac compile" do
       types = source "src/Data/Types.stel" [ "module Data.Types where", "type Count = Int" ]
       entryModule = source "src/Main.stel"
         [ "module Main where", "import Data.A", "import Data.B", "import Data.Types", "n :: Count", "n = a", "foreign io :: IO Unit", "@[entrypoint]", "main :: IO Unit", "main = io" ]
-      four = settings [ listed "Data.B" "src/Data/B.stel", listed "Data.A" "src/Data/A.stel", listed "Data.Types" "src/Data/Types.stel", listed "Main" "src/Main.stel" ]
+      -- `Main` declares `io`, which the host supplies
+      four = (settings [ listed "Data.B" "src/Data/B.stel", listed "Data.A" "src/Data/A.stel", listed "Data.Types" "src/Data/Types.stel", listed "Main" "src/Main.stel" ])
+        { target = Just "javascript", foreigns = [ { module: "Main", specifier: "./js/main.mjs" } ] }
       stated r = case Map.lookup "output/output.json" r.files of
         Just (Text text) -> pure (Output.decode text)
         _ -> liftEffect (throwException (error "no `output.json` was written"))
@@ -249,6 +255,7 @@ spec = describe "stellac compile" do
                   , built "Data.Types" [] Nothing
                   , built "Main" [ "Data.A" ] (Just "main")
                   ]
+              , foreign: Just { target: "javascript", modules: [ { module: ModuleName "Main", specifier: "../js/main.mjs", foreigns: [ { name: "io", params: [], result: AsAction AsUnit } ] } ] }
               }
           )
         Array.last r.said `shouldEqual` Just "✓ Built 4 module(s) → output"
@@ -279,18 +286,101 @@ spec = describe "stellac compile" do
         saying r "`output/output.json` could not be written: the disk is full" `shouldEqual` true
         Array.filter (contains (Pattern "✓")) r.said `shouldEqual` []
 
-    it "is read back as written, and refused with another version, a field no rule names, an empty string, or a module listed twice" do
+    it "is read back as written, with and without `foreign`, and refused with another version, a field no rule names, an empty string, a module or a foreign listed twice, a kind of no name, a module not built, or none of what `foreign` holds" do
       let
-        output = { modules: [ built "Data.A" [ "Data.B" ] Nothing, built "Main" [ "Data.A" ] (Just "$entrypoint") ] }
+        output =
+          { modules: [ built "Data.A" [ "Data.B" ] Nothing, built "Main" [ "Data.A" ] (Just "$entrypoint") ]
+          , foreign: Just
+              { target: "javascript"
+              , modules:
+                  [ { module: ModuleName "Main", specifier: "./js/main.mjs", foreigns: [ { name: "open", params: [ AsString ], result: AsAction AsOpaque }, { name: "root", params: [ AsNumber ], result: AsValue AsNumber } ] } ]
+              }
+          }
         text = Output.encode output
         refused by = isLeft (Output.decode by)
       Output.decode text `shouldEqual` Right output
+      Output.decode (Output.encode (output { foreign = Nothing })) `shouldEqual` Right (output { foreign = Nothing })
       refused (String.replace (Pattern "\"formatVersion\": 0") (String.Replacement "\"formatVersion\": 1") text) `shouldEqual` true
       refused (String.replace (Pattern "\"formatVersion\": 0") (String.Replacement "\"formatVersion\": 0, \"target\": \"javascript\"") text) `shouldEqual` true
       refused (String.replace (Pattern "\"entrypoint\": \"$entrypoint\"") (String.Replacement "\"entrypoint\": \"\"") text) `shouldEqual` true
       refused (String.replace (Pattern "\"object\": \"Main.dmo\"") (String.Replacement "\"object\": \"Main.dmo\", \"arity\": 0") text) `shouldEqual` true
       -- a module listed twice
-      refused (Output.encode { modules: [ built "Main" [] Nothing, built "Main" [] Nothing ] }) `shouldEqual` true
+      refused (Output.encode { modules: [ built "Main" [] Nothing, built "Main" [] Nothing ], foreign: Nothing }) `shouldEqual` true
+      -- in `foreign`, a module or a foreign listed twice, and a kind of no name
+      refused (String.replace (Pattern "\"name\": \"root\"") (String.Replacement "\"name\": \"open\"") text) `shouldEqual` true
+      refused (Output.encode (output { foreign = map (\f -> f { modules = f.modules <> f.modules }) output.foreign })) `shouldEqual` true
+      refused (String.replace (Pattern "\"number\"") (String.Replacement "\"float\"") text) `shouldEqual` true
+      -- `foreign` naming a module not built, with no module, and a module with no foreign
+      refused (Output.encode (output { foreign = map (\f -> f { modules = map (_ { module = ModuleName "Gone" }) f.modules }) output.foreign })) `shouldEqual` true
+      refused (Output.encode (output { foreign = map (_ { modules = [] }) output.foreign })) `shouldEqual` true
+      refused (Output.encode (output { foreign = map (\f -> f { modules = map (_ { foreigns = [] }) f.modules }) output.foreign })) `shouldEqual` true
+
+  describe "host foreigns" do
+    let
+      console = source "src/Js/Console.stel" [ "module Js.Console where", "foreign log :: String -> IO Unit" ]
+      math = source "src/Js/Math.stel" [ "module Js.Math where", "foreign root :: Number -> Number" ]
+      fileModule = source "src/Js/File.stel" [ "module Js.File where", "foreign type Handle :: Type", "foreign open :: String -> IO Handle", "foreign close :: Handle -> IO Unit" ]
+      time = source "src/Js/Time.stel" [ "module Js.Time where", "foreign now :: IO Number" ]
+      plain = source "src/Plain.stel" [ "module Plain where", "n :: Int", "n = 1" ]
+      supplied m specifier = { module: m, specifier }
+      foreignOf r path = case Map.lookup path r.files of
+        Just (Text text) -> pure (map _.foreign (Output.decode text))
+        _ -> liftEffect (throwException (error "no `output.json` was written"))
+      under dir = map (\(Tuple path file) -> Tuple (dir <> path) file)
+
+    it "are stated for the target, each module with its specifier, a relative one written from the output directory as relative still, and each foreign as it crosses, in order of their names" do
+      let
+        s = (settings [ listed "Js.Console" "src/Js/Console.stel", listed "Js.Math" "src/Js/Math.stel", listed "Js.File" "src/Js/File.stel", listed "Js.Time" "src/Js/Time.stel", listed "Plain" "src/Plain.stel" ])
+          { output = "out"
+          , target = Just "javascript"
+          , foreigns =
+              [ supplied "Js.Console" "./js/console.mjs"
+              -- a file in the output directory
+              , supplied "Js.Math" "./out/math.mjs"
+              , supplied "Js.File" "@acme/file/index.mjs"
+              , supplied "Js.Time" "/opt/time.mjs"
+              ]
+          }
+      compilingAt "pkg/stella.json" noFaults (under "pkg/" [ console, math, fileModule, time, plain, Tuple "stella.json" (Text (stellaJson s)) ]) \r -> do
+        r.result `shouldEqual` Right unit
+        foreignOf r "pkg/out/output.json" >>= shouldEqual
+          ( Right
+              ( Just
+                  { target: "javascript"
+                  , modules:
+                      [ { module: ModuleName "Js.Console", specifier: "../js/console.mjs", foreigns: [ { name: "log", params: [ AsString ], result: AsAction AsUnit } ] }
+                      , { module: ModuleName "Js.Math", specifier: "./math.mjs", foreigns: [ { name: "root", params: [ AsNumber ], result: AsValue AsNumber } ] }
+                      , { module: ModuleName "Js.File", specifier: "@acme/file/index.mjs", foreigns: [ { name: "close", params: [ AsOpaque ], result: AsAction AsUnit }, { name: "open", params: [ AsString ], result: AsAction AsOpaque } ] }
+                      , { module: ModuleName "Js.Time", specifier: "/opt/time.mjs", foreigns: [ { name: "now", params: [], result: AsAction AsNumber } ] }
+                      ]
+                  }
+              )
+          )
+        -- what a foreign manifest's reader reads of it
+        case Map.lookup "pkg/out/output.json" r.files of
+          Just (Text text)
+            | Right json <- jsonParser text
+            , Just body <- Object.lookup "foreign" =<< toObject json -> map (map _.module <<< Array.fromFoldable <<< Map.values <<< _.entries) (readBody "javascript" body) `shouldEqual` Right (map ModuleName [ "Js.Console", "Js.File", "Js.Math", "Js.Time" ])
+          _ -> fail "no `foreign` was written"
+
+    it "are stated nowhere where no module built declares one, whatever `target` names" do
+      compiling ((settings [ listed "Plain" "src/Plain.stel" ]) { target = Just "javascript" }) noFaults [ plain ] \r -> do
+        r.result `shouldEqual` Right unit
+        foreignOf r "output/output.json" >>= shouldEqual (Right Nothing)
+
+    it "fail the build, each reported and no `output.json` written, where one is declared with no `target` or no specifier, and where a specifier is given for a module declaring none" do
+      let three = settings [ listed "Js.Console" "src/Js/Console.stel", listed "Js.Math" "src/Js/Math.stel", listed "Plain" "src/Plain.stel" ]
+      compiling three noFaults [ console, math, plain ] \r -> do
+        r.result `shouldEqual` Left "The build failed"
+        saying r "`Js.Console` declares foreigns the host supplies, `log`, and `stella.json` names no `target` to supply them for" `shouldEqual` true
+        saying r "`Js.Math` declares foreigns the host supplies, `root`, and `stella.json` names no `target` to supply them for" `shouldEqual` true
+        Map.member "output/output.json" r.files `shouldEqual` false
+      compiling (three { target = Just "javascript", foreigns = [ supplied "Js.Console" "./js/console.mjs", supplied "Plain" "./js/plain.mjs" ] }) noFaults [ console, math, plain ] \r -> do
+        r.result `shouldEqual` Left "The build failed"
+        saying r "`Js.Math` declares foreigns the host supplies, `root`, and `foreigns` gives no specifier for it" `shouldEqual` true
+        saying r "`foreigns` gives a specifier for `Plain`, which declares no foreign the host supplies" `shouldEqual` true
+        Array.filter (contains (Pattern "✓")) r.said `shouldEqual` []
+        Map.member "output/output.json" r.files `shouldEqual` false
 
   describe "a build that fails" do
     it "reports a module that does not compile where it stands" do
@@ -325,8 +415,11 @@ spec = describe "stellac compile" do
           { options: { output: "out", emitCore: true, traceOptimizer: [ ModuleName "Main" ], steamCmd: "./steam", logLevel: Debug, monochrome: false }
           , modules: [ { module: ModuleName "Main", path: "src/Main.stel", written: "src/Main.stel" } ]
           , dependencies: [ { module: ModuleName "Lib", interface: "lib/Lib.dmi", object: "lib/Lib.dmo" } ]
+          , target: Just "javascript"
+          , foreigns: [ { module: ModuleName "Main", specifier: "./js/main.mjs", written: "./js/main.mjs" } ]
           }
       Config.decode (Config.encode config) `shouldEqual` Right config
+      Config.decode (Config.encode (config { target = Nothing, foreigns = [] })) `shouldEqual` Right (config { target = Nothing, foreigns = [] })
 
     it "refuses a file lacking a field, in the file and in `options`" do
       raw """{ "formatVersion": 0, "options": { "output": "o", "emitCore": false, "traceOptimizer": [], "steamCmd": "steam", "logLevel": "info", "monochrome": true }, "modules": [] }"""
@@ -357,7 +450,7 @@ spec = describe "stellac compile" do
     it "refuses a module listed twice, a file listed twice once paths are normalized, `Prim`, and a name no module may have" do
       compiling (settings [ listed "Main" "src/Main.stel", listed "Other" "src/./Data/../Main.stel", listed "Main" "src/B.stel", listed "Prim" "src/Prim.stel", listed "a.B" "src/C.stel" ]) noFaults [ mainModule ]
         $ refusedSaying
-            [ "stella.json: `modules[4].module`, `a.B`, is not a module's name" ]
+            [ "stella.json: `modules[4].module`, `a.B`, is not ModuleName" ]
       compiling (settings [ listed "Main" "src/Main.stel", listed "Other" "src/./Data/../Main.stel", listed "Main" "src/B.stel", listed "Prim" "src/Prim.stel" ]) noFaults [ mainModule ]
         $ refusedSaying
             [ "stella.json: `modules` lists `Main` more than once"
@@ -372,6 +465,12 @@ spec = describe "stellac compile" do
             , "stella.json: `options.traceOptimizer[1]`, `Gone`, is no module `modules` lists"
             , "stella.json: `options.traceOptimizer` names `Main` more than once"
             ]
+
+    it "refuses `foreigns` with no `target`, naming a module `modules` does not list, or naming one twice" do
+      compiling (mainOnly { foreigns = [ { module: "Main", specifier: "./m.mjs" } ] }) noFaults [ mainModule ]
+        $ refusedSaying [ "stella.json: `foreigns` gives specifiers, and no `target` says what they supply" ]
+      compiling (mainOnly { target = Just "javascript", foreigns = [ { module: "Gone", specifier: "./g.mjs" }, { module: "Main", specifier: "./m.mjs" }, { module: "Main", specifier: "./n.mjs" } ] }) noFaults [ mainModule ]
+        $ refusedSaying [ "stella.json: `foreigns` lists `Main` more than once", "stella.json: `foreigns[0].module`, `Gone`, is no module `modules` lists" ]
 
     it "looks a bare `steamCmd` up on `PATH`, resolves another relative one against its directory to a path from the root, and keeps an absolute one" do
       for_

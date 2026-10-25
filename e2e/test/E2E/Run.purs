@@ -12,6 +12,7 @@ module Test.E2E.Run (spec) where
 
 import Prelude
 
+import Data.Maybe (Maybe(..))
 import Data.Array as Array
 import Data.String (Pattern(..), contains, split)
 import Effect.Aff (Aff)
@@ -33,7 +34,7 @@ libModules = [ "Lib.Console", "Lib.Greet" ]
 -- | `stella.json` of each package.
 configs :: Array { path :: String, text :: String }
 configs =
-  [ { path: "lib/stella.json", text: stellaJson (settings (map listedAt [ "src/Lib/Console.stel", "src/Lib/Greet.stel" ])) }
+  [ { path: "lib/stella.json", text: stellaJson ((settings (map listedAt [ "src/Lib/Console.stel", "src/Lib/Greet.stel" ])) { target = Just "javascript", foreigns = [ { module: "Lib.Console", specifier: "../host/console.mjs" } ] }) }
   , { path: "app/stella.json"
     , text: stellaJson ((settings [ listedAt "src/App/Main.stel" ]) { dependencies = map (\m -> { module: m, interface: fmt @"../store/{m}.dmi" { m }, object: fmt @"../store/{m}.dmo" { m } }) libModules })
     }

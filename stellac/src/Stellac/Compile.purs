@@ -70,7 +70,7 @@ cmd config = do
       , steamCmd: config.options.steamCmd
       , traced: config.options.traceOptimizer
       , emitCore: config.options.emitCore
-      , finish: either (pure <<< printOutputError) (const []) <$> Output.written config
+      , finish: either (map printOutputError) (const []) <$> Output.written config linked
       , destination: output
       }
       \action env -> build action defaultSettings env (map (\m -> { path: m.path, name: m.module }) config.modules)

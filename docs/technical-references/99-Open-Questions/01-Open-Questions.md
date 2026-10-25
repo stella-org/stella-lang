@@ -197,7 +197,7 @@ What D40 settles is the part that would otherwise be hardest: the protocol holds
 
 **Runtime representations shared between the JavaScript and Wasm backends.** How far these can coincide.
 
-**How the package manager drives a backend.** The package manager chooses the backend, starts the compiler and the backend, and hands the backend the pairs of `.dmo` and `.dmi` a build wrote, with the program's foreign manifest for the backend's target and the settings of its toolchain (D47). Four things are open: whether it starts a backend as a command or loads it as a library; how it learns what a backend can do — whether it finishes a program, and into what; how finishing is chosen for a backend that may leave it to a bundler; and how it asks the compiler for a manifest, naming the target, which the compiler command of this version does not write.
+**How the package manager drives a backend.** The package manager chooses the backend, starts the compiler and the backend, and hands the backend the pairs of `.dmo` and `.dmi` a build wrote, with the program's foreign manifest for the backend's target and the settings of its toolchain (D47). Four things are open: whether it starts a backend as a command or loads it as a library; how it learns what a backend can do — whether it finishes a program, and into what; how finishing is chosen for a backend that may leave it to a bundler; and on what base it resolves a bare specifier once it gathers a package's entries away from where the package's `output.json` stands ([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md#where-the-mapping-comes-from)).
 
 ## Modules and surface syntax
 

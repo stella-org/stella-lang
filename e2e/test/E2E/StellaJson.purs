@@ -17,7 +17,7 @@ import Data.Argonaut.Core (toArray, toObject, toString)
 import Data.Argonaut.Parser (jsonParser)
 import Data.Either (Either, note)
 import Data.Traversable (traverse)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String (Pattern(..), Replacement(..), replaceAll, stripPrefix, stripSuffix)
 import Foreign.Object as Object
 import Run (AFF, EFFECT, Run)
@@ -43,11 +43,13 @@ type Settings =
   , monochrome :: Boolean
   , modules :: Array { module :: String, path :: String }
   , dependencies :: Array Entry
+  , target :: Maybe String
+  , foreigns :: Array { module :: String, specifier :: String }
   }
 
 -- | The modules given, each by its name and its file, and nothing else: output
 -- | to `output`, nothing traced, Steam as `steam`, messages from `info` and
--- | without colour.
+-- | without colour, and no host foreign supplied.
 settings :: Array { module :: String, path :: String } -> Settings
 settings modules =
   { output: "output"
@@ -58,6 +60,8 @@ settings modules =
   , monochrome: true
   , modules
   , dependencies: []
+  , target: Nothing
+  , foreigns: []
   }
 
 stellaJson :: Settings -> String
@@ -72,6 +76,8 @@ stellaJson s = Config.encode
       }
   , modules: map (\m -> { module: ModuleName m.module, path: m.path, written: m.path }) s.modules
   , dependencies: map (\d -> d { module = ModuleName d.module }) s.dependencies
+  , target: s.target
+  , foreigns: map (\f -> { module: ModuleName f.module, specifier: f.specifier, written: f.specifier }) s.foreigns
   }
 
 -- | The file of the path given, from its package's root, listed as the module

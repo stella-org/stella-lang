@@ -54,7 +54,7 @@ baseOutput = dir <> "/base"
 -- | the modules given.
 buildApp :: String -> Array Entry -> Aff Outcome
 buildApp file dependencies = do
-  writeFiles dir [ { path: "app/" <> file, text: stellaJson ((settings (map listedAt [ "src/Console.stel", "src/Main.stel", "src/Lifted.stel", "src/Entry.stel" ])) { dependencies = dependencies }) } ]
+  writeFiles dir [ { path: "app/" <> file, text: stellaJson ((settings (map listedAt [ "src/Console.stel", "src/Main.stel", "src/Lifted.stel", "src/Entry.stel" ])) { dependencies = dependencies, target = Just "javascript", foreigns = [ { module: "Console", specifier: "./host/console.mjs" } ] }) } ]
   compile (dir <> "/app/" <> file)
 
 -- | The entries of `dependencies.json`, which the script wrote.

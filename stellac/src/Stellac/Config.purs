@@ -7,26 +7,31 @@
 -- |   "options": { "output": "output", "emitCore": false, "traceOptimizer": [],
 -- |                "steamCmd": "steam", "logLevel": "info", "monochrome": false },
 -- |   "modules": [ { "module": "A.B", "path": "src/A/B.stel" } ],
--- |   "dependencies": [ { "module": "Lib.Core", "interface": "lib/Lib.Core.dmi", "object": "lib/Lib.Core.dmo" } ] }
+-- |   "dependencies": [ { "module": "Lib.Core", "interface": "lib/Lib.Core.dmi", "object": "lib/Lib.Core.dmo" } ],
+-- |   "target": "javascript",
+-- |   "foreigns": [ { "module": "A.B", "specifier": "./js/a-b.mjs" } ] }
 -- | ```
 -- |
--- | Every field is required and no other is accepted. Each has one kind, and
--- | no string is empty. A file the codec refuses is reported by the first
--- | field found wrong. Relative paths are resolved against the file's
--- | directory and normalized. `steamCmd` is resolved only when it contains
--- | a `/`, and then to an absolute path so that it stays a path; a bare name is
--- | looked up on `PATH`.
+-- | Every field but `target` and `foreigns` is required and no other is
+-- | accepted. Each has one kind, and no string is empty. A file the codec
+-- | refuses is reported by the first field found wrong. Relative paths are
+-- | resolved against the file's directory and normalized, a specifier among
+-- | them where it begins with `./` or `../`. `steamCmd` is resolved only
+-- | when it contains a `/`, and then to an absolute path so that it stays a
+-- | path; a bare name is looked up on `PATH`.
 -- |
 -- | The rules checked here are those of the file, which every command checks:
 -- | no module twice in `modules` or in `dependencies`, no file twice in
--- | `modules` (compared once resolved), no `Prim`, no module in both lists, and
--- | `traceOptimizer` naming listed modules once each. Rules of the build
+-- | `modules` (compared once resolved), no `Prim`, no module in both lists,
+-- | `traceOptimizer` naming listed modules once each, and `foreigns` naming
+-- | listed modules once each, under a `target`. Rules of the build
 -- | environment, such as a seed module in `modules`, belong to the command
 -- | that builds.
 module Stellac.Config
   ( Config
   , Options
   , Listed
+  , Supplied
   , ConfigError(..)
   , formatVersion
   , codec
@@ -35,6 +40,7 @@ module Stellac.Config
   , load
   , printConfigError
   , normalize
+  , relativeSpecifier
   ) where
 
 import Prelude
@@ -48,6 +54,7 @@ import Data.Bifunctor (lmap)
 import Data.Codec as Codec
 import Data.Codec.Argonaut (JsonCodec, JsonDecodeError(..))
 import Data.Codec.Argonaut as CA
+import Data.Codec.Argonaut.Record as CAR
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
 import Data.Generic.Rep (class Generic)
@@ -86,10 +93,14 @@ type Options =
 -- | A module to build: its name, its file resolved, and its file as written.
 type Listed = { module :: ModuleName, path :: FilePath, written :: String }
 
+type Supplied = { module :: ModuleName, specifier :: String, written :: String }
+
 type Config =
   { options :: Options
   , modules :: Array Listed
   , dependencies :: Array Dependency
+  , target :: Maybe String
+  , foreigns :: Array Supplied
   }
 
 -- | What is wrong with a file. A rule of the file names the field it is about
@@ -108,6 +119,8 @@ data ConfigError
   -- | A field of `traceOptimizer`, and the module it names.
   | TracedUnlisted String ModuleName
   | TracedTwice ModuleName
+  | ForeignsUntargeted
+  | SuppliedUnlisted String ModuleName
 
 derive instance Eq ConfigError
 derive instance Generic ConfigError _
@@ -119,8 +132,8 @@ instance Show ConfigError where
 -- | writes its `path`; reading one gives the path as `written` too.
 codec :: JsonCodec Config
 codec =
-  dimap (\c -> { formatVersion: unit, options: c.options, modules: c.modules, dependencies: c.dependencies })
-    (\c -> { options: c.options, modules: c.modules, dependencies: c.dependencies })
+  dimap (\c -> { formatVersion: unit, options: c.options, modules: c.modules, dependencies: c.dependencies, target: c.target, foreigns: if Array.null c.foreigns then Nothing else Just c.foreigns })
+    (\c -> { options: c.options, modules: c.modules, dependencies: c.dependencies, target: c.target, foreigns: fromMaybe [] c.foreigns })
     $ exactly "stella.json"
         { formatVersion: version
         , options: exactly "options"
@@ -133,12 +146,17 @@ codec =
             }
         , modules: CA.array listed
         , dependencies: CA.array (exactly "dependency" { module: moduleName, interface: nonEmpty, object: nonEmpty })
+        , target: CAR.optional nonEmpty
+        , foreigns: CAR.optional (CA.array supplied)
         }
   where
   version = CA.prismaticCodec (fmt @"{formatVersion}, the version this compiler reads" { formatVersion }) (\v -> if v == formatVersion then Just unit else Nothing) (const formatVersion) CA.int
 
   listed = dimap (\l -> { module: l.module, path: l.path }) (\l -> { module: l.module, path: l.path, written: l.path })
     $ exactly "module" { module: moduleName, path: nonEmpty }
+
+  supplied = dimap (\s -> { module: s.module, specifier: s.specifier }) (\s -> { module: s.module, specifier: s.specifier, written: s.specifier })
+    $ exactly "Supplied" { module: moduleName, specifier: nonEmpty }
 
   logLevel = CA.prismaticCodec "one of `debug`, `info`, `warn`, and `error`" level written CA.string
     where
@@ -180,8 +198,9 @@ load file = FS.readText file >>= case _ of
         else pure written.options.steamCmd
       modules <- for written.modules \m -> m { path = _ } <$> resolved m.path
       dependencies <- for written.dependencies \d -> { module: d.module, interface: _, object: _ } <$> resolved d.interface <*> resolved d.object
+      foreigns <- for written.foreigns \s -> if relativeSpecifier s.written then s { specifier = _ } <$> resolved s.written else pure s
       absolute <- for modules \m -> FS.resolve m.path
-      let config = { options: written.options { output = output, steamCmd = steamCmd }, modules, dependencies }
+      let config = { options: written.options { output = output, steamCmd = steamCmd }, modules, dependencies, target: written.target, foreigns }
       pure case NonEmptyArray.fromArray (fileRules config absolute) of
         Just errors -> Left errors
         Nothing -> Right config
@@ -207,6 +226,8 @@ fileRules config absolute =
     <> primListed "dependencies" (map _.module config.dependencies)
     <> map BuiltAndDepended (Array.filter (\m -> Set.member m built) (Array.nub (map _.module config.dependencies)))
     <> traced
+    <> twice "foreigns" (map _.module config.foreigns)
+    <> supplied
   where
   built = Set.fromFoldable (map _.module config.modules)
 
@@ -222,9 +243,18 @@ fileRules config absolute =
 
   primListed at names = Array.catMaybes (Array.mapWithIndex (\i n -> if n == primModule then Just (PrimListed (fmt @"{at}[{i}].module" { at, i })) else Nothing) names)
 
+  supplied =
+    (if Array.null config.foreigns || config.target /= Nothing then [] else [ ForeignsUntargeted ])
+      <> Array.catMaybes (Array.mapWithIndex (\i s -> if Set.member s.module built then Nothing else Just (SuppliedUnlisted (fmt @"foreigns[{i}].module" { i }) s.module)) config.foreigns)
+
   traced =
     Array.catMaybes (Array.mapWithIndex (\i m -> if Set.member m built then Nothing else Just (TracedUnlisted (fmt @"options.traceOptimizer[{i}]" { i }) m)) config.options.traceOptimizer)
       <> map TracedTwice (Array.fromFoldable (Map.keys (Map.filter (_ > 1) (counted config.options.traceOptimizer))))
+
+-- | A bare or absolute specifier is the target's to resolve, so only one
+-- | beginning with `./` or `../` is a path of the file.
+relativeSpecifier :: String -> Boolean
+relativeSpecifier s = String.take 2 s == "./" || String.take 3 s == "../"
 
 -- | A path with `.` and `..` taken away where possible. A leading `..` of a
 -- | relative path stays; one above the root of an absolute path is dropped.
@@ -256,6 +286,8 @@ printConfigError file = case _ of
   BuiltAndDepended m -> fmt @"{file}: `{m}` is listed by both `modules` and `dependencies`" { file, m: text m }
   TracedUnlisted at m -> fmt @"{file}: `{at}`, `{m}`, is no module `modules` lists" { file, at, m: text m }
   TracedTwice m -> fmt @"{file}: `options.traceOptimizer` names `{m}` more than once" { file, m: text m }
+  ForeignsUntargeted -> fmt @"{file}: `foreigns` gives specifiers, and no `target` says what they supply" { file }
+  SuppliedUnlisted at m -> fmt @"{file}: `{at}`, `{m}`, is no module `modules` lists" { file, at, m: text m }
   where
   text (ModuleName m) = m
 

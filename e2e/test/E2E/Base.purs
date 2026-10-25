@@ -10,6 +10,7 @@ module Test.E2E.Base (spec) where
 
 import Prelude
 
+import Data.Maybe (Maybe(..))
 import Data.Array as Array
 import Data.String (Pattern(..), contains, split)
 import Test.Spec (Spec, describe, it)
@@ -40,7 +41,7 @@ spec = describe "`Base.Int` from its source" do
 
   it "runs a program over the bytecode it wrote, the package compiled against the seed `Base.Int`" do
     copyTree "fixtures/source/base" dir
-    writeFiles dir [ { path: "app/stella.json", text: stellaJson (settings (map listedAt [ "src/Console.stel", "src/Main.stel" ])) } ]
+    writeFiles dir [ { path: "app/stella.json", text: stellaJson ((settings (map listedAt [ "src/Console.stel", "src/Main.stel" ])) { target = Just "javascript", foreigns = [ { module: "Console", specifier: "./host/console.mjs" } ] }) } ]
     built <- compile (dir <> "/app/stella.json")
     when (built.status /= 0) (fail ("the program did not build: " <> built.err))
     outcome <- steamRun

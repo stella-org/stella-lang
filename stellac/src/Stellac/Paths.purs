@@ -10,8 +10,13 @@
 module Stellac.Paths
   ( builtPath
   , outputPath
+  , relativeTo
   ) where
 
+import Prelude
+
+import Data.Array as Array
+import Data.String as String
 import Fmt (fmt)
 import Stella.CLI.Effect.FS (FilePath)
 import Stella.Compiler.TypedCore (ModuleName(..))
@@ -23,3 +28,12 @@ builtPath output (ModuleName m) extension = fmt @"{output}/{m}.{extension}" { ou
 -- | `output.json` in the output directory.
 outputPath :: FilePath -> FilePath
 outputPath output = fmt @"{output}/output.json" { output }
+
+-- | The path of a file from a directory, both absolute and normalized.
+relativeTo :: FilePath -> FilePath -> FilePath
+relativeTo directory file = String.joinWith "/" (map (const "..") (Array.drop common from) <> Array.drop common to)
+  where
+  from = segments directory
+  to = segments file
+  common = Array.length (Array.takeWhile identity (Array.zipWith (==) from to))
+  segments = Array.filter (_ /= "") <<< String.split (String.Pattern "/")

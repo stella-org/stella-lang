@@ -5,8 +5,11 @@ A `foreign` declaration says a name and a type and nothing about what carries it
 said** — one file per program, naming for each module the thing a runtime reaches its
 implementations through.
 
-It is a compiler output like a `.dmo` and a `.dmi`, and it is read by whatever runs
-the program: on this interpreter, in time for the module that declares the foreign —
+**The compiler states each build's part**, the entries of the modules it compiled,
+in `output.json` ([Modules](../06-Modules/01-Modules.md#outputjson)), and the
+package manager gathers the parts of every package in a program into the manifest the
+program is run with (D47). It is read by whatever runs the program: on this
+interpreter, in time for the module that declares the foreign —
 which a run satisfies by reaching everything before the first load and a session by
 reaching a module's implementations as that module arrives
 ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md), D43).
@@ -20,7 +23,8 @@ requirement it is shaped by rather than a property it happens to have.
 beside `Foo`'s source is enough for a backend whose implementations are source files
 in the tree, and excludes every backend whose are not: a native backend reaching Rust
 cannot put a crate inside a Stella source tree, so the location of its
-implementations is a fact about the build rather than about the module. A convention
+implementations is a fact its package states rather than one the module's place
+implies. A convention
 that fits one target makes adding the second a change to the format.
 
 **So the mapping is written rather than inferred, and what the compiler reads of an
@@ -47,7 +51,7 @@ its place, means.
 | | |
 | --- | --- |
 | `formatVersion` | this document's version, which is **1**. A reader rejects a version it does not implement |
-| `target` | the backend the payloads are written for. A reader rejects a target that is not its own |
+| `target` | the contract the payloads and the implementations they name are written to, `javascript` among them, which any backend implementing it reads; to the compiler a label. A reader rejects a target it does not implement |
 | `modules` | one entry per Stella module whose foreigns that target supplies |
 
 **Two fields inside an entry are fixed here, and the rest is the target's.** `module`
@@ -55,6 +59,9 @@ is the qualified module name as a `.dmo` writes it, and `foreigns` is how each o
 that module's foreigns crosses the boundary. `specifier` above is JavaScript's; a
 native target would name whatever it needs, and a reader of another target never sees
 it, having rejected the file already.
+
+**Embedded in another file, a manifest is `target` and `modules` alone**, as
+`output.json` holds it: the version of the file holding it covers it.
 
 ### How a value crosses
 
@@ -159,16 +166,16 @@ to pick.
 does**, for the reason above read one level down: an array makes order meaningful
 where order means nothing.
 
-**A compiler writes one entry per module and one per foreign, each in order of its
-name.** Where a package declaration and a build override name the same module, the
-aggregation resolves them to one entry before anything is written — the override
-wins, that being what an override is — so the file a build produces is the same file
-for the same inputs.
+**A compiler writes one entry per module, in the order its build lists the modules, and
+one per foreign, in order of its name**, so what a build writes is the same for the
+same inputs; a module is supplied from one place, so no two entries can compete for
+it.
 
 ### The JavaScript target
 
-**A `specifier` is resolved against the manifest's own location.** That is the one
-base that makes the file mean the same thing wherever it is read from: the working
+**A `specifier` is resolved against the manifest's own location**, a manifest embedded
+in another file standing where that file does. That is the one base that makes the
+file mean the same thing wherever it is read from: the working
 directory would make the same manifest name different modules on different
 invocations, and the location of whatever does the importing is an implementation
 detail of the runtime rather than something a build can know.
@@ -326,27 +333,36 @@ package but the one that owns the name could declare it anyway.
 
 ## Where the mapping comes from
 
-**A package declares where its own implementations are**, per target, so that a
-library carrying foreigns is usable without every consumer configuring it.
+**A package declares where its own implementations are**, so that a library carrying
+foreigns is usable without every consumer configuring it. **Where they are is fixed by
+the package that supplies them, and nothing overrides it**: a package whose
+implementations differ by target is published as a package for each target, beside
+one declaring what is shared, an effect and its operations, and a program chooses a
+target by the packages it depends on — a thin entry module per target over shared
+logic, each importing that target's package. A package for one target in a program
+for another is refused where its entries are read, by a reader rejecting the target.
 
-**A build may supply or override one**, which is what an implementation outside the
-source tree needs: where a crate lives is a fact about the build, and a package that
-wrote it down would be wrong on the next machine.
+**The package manager hands the compiler the package's declaration** through
+`stella.json`: the `target` and, for each module declaring a host foreign, a
+`specifier` ([Modules](../06-Modules/01-Modules.md#stellajson)). The compiler writes
+the entries of the modules it compiled, each specifier as given but for a relative
+one, a path from where `stella.json` stands, which it writes from where `output.json`
+stands, beginning with `./` or `../`. That is the one part of the payload it reads;
+any other specifier it passes through.
 
-**Both are needed, and neither alone is enough.** With only the first, a target whose
-implementations cannot live in the tree has nowhere to say so. With only the second,
-no library can describe itself and the knowledge spreads to every program that
-depends on one.
-
-**What the compiler does with them is aggregate.** It collects the declarations of
-every package in the program, for the target the package manager names (D47), and
-writes one file. It resolves no path and interprets no payload.
+**Gathering the entries of a program is the package manager's.** It collects the
+entries of every package the program runs from what each build wrote, and keeps what
+each specifier refers to as it moves it: a relative one is rewritten from the
+manifest's new location. A bare one is resolved by a host from the manifest's
+directory, and on what base it is resolved once moved is open
+([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
 
 ## What the compiler checks
 
-**Coverage and the signatures, and nothing of the target's part.** Every module in the
-program that declares a foreign the ABI manifest does not fix must have an entry, and
-every such foreign must have a signature its declared type gives. Both questions are
+**Coverage and the signatures, and nothing of the target's part.** Every module a build
+compiles that declares a foreign the ABI manifest does not fix must have an entry, and
+a `target` to have it for, and every such foreign has the signature its declared type
+gives; a module given an entry must declare such a foreign. Both questions are
 target-independent, which is what lets a compiler that reads no payload ask them.
 
 **It is caught here because here is where the source is.** A build that omitted a

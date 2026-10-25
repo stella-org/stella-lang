@@ -509,7 +509,7 @@ No pass rewrites a module yet, so the optimizer stops before a first round, and 
     { "module": "Base.String", "interface": "store/Base.String.dmi", "object": "store/Base.String.dmo" } ] }
 ```
 
-- **Every field is required and no other is taken**, in the file and in `options` alike, so that what wrote it says everything it means: a list with nothing to say is `[]`. **Each field is of one kind**: a string, a boolean, or a list, as this section gives it, and no string may be empty. **`formatVersion` is `0`**; a file without it, or with another, is refused.
+- **Every field but `target` and `foreigns` is required and no other is taken**, in the file, in `options`, and in an entry alike, so that what wrote it says everything it means: a list with nothing to say is `[]`. **Each field is of one kind**: a string, a boolean, or a list, as this section gives it, and no string may be empty. **`formatVersion` is `0`**; a file without it, or with another, is refused.
 - **A relative path is resolved against the directory the file stands in**, `output`, a module's file, an interface, and a bytecode path alike, and a path is normalized as it is resolved: `.` and `..` are taken away, and nothing else of the file system is consulted. Two paths are the same file where they resolve to the same path.
 - **A file that breaks any rule of this section is refused**, each error naming the field it is about, before anything is read or written. **One codec both reads and writes the file**, `Stellac.Config.codec`, and a file it cannot read is reported by the first field found wrong: the file is written by a tool, so one error is enough to correct what wrote it. The rules are of two kinds: **those of the file**, which both commands check, and **those of the build environment**, which `stellac compile` checks alone, so that `stellac graph` can be given what no build may be, the seed modules' own sources among it.
 - **`options` are what the command does besides building**:
@@ -531,6 +531,7 @@ No pass rewrites a module yet, so the optimizer stops before a first round, and 
   - **A seed module may be listed, with the interface of the seed module the compiler holds**, so that a package can be listed whole, `Base` with `Base.Int` among its modules. The interfaces are compared whole, as decoded, the build hash aside; one listed with another interface is refused, whatever wrote it, `stella-devtools` among them. The build is compiled against the seed module the compiler holds, and the compile-time session runs the one it holds, never loading the bytecode listed for it; that path is kept for running the program. Equal interfaces say nothing of the bytecode: the guarantee below is the only one.
   - **It confines nothing: what it lists, every module of the build may import.** The compiler knows no packages, so which modules a package's source may import — its own and those of the packages it depends on directly, the interfaces of the others there to be compiled against alone — is for whatever drives it to decide, before the build, from the imports `stellac graph` reports ([below](#stellac-graph)).
   - **Compatibility is guaranteed only between files written and read by the same compiler build.** The format and ABI versions an interface carries are checked as its reader always checks them, and an interface that decodes is not thereby one this build can use.
+- **`target` and `foreigns` say where the build's host foreigns are supplied from**, the foreigns its modules declare that the ABI manifest fixes no entry for ([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)). `target` names the contract the implementations are written to, `javascript` among them, a label to the compiler; `foreigns` gives each module declaring such a foreign a `specifier`, which is the target's to resolve. One `stella.json` is for one target: a package whose implementations differ by target is a package for each, chosen by the program depending on it. **A specifier beginning with `./` or `../` is a path from the directory the file stands in**, resolved as any path of the file is; any other, bare or absolute, is taken as written. **Of the file**: `foreigns` names modules `modules` lists, none twice, and is refused where it names any and `target` is absent. **Of the build**: a module declaring a host foreign must have a `target` and an entry of `foreigns`, and a module `foreigns` names must declare one; either fails the build, every such module reported.
 
 #### `output.json`
 
@@ -541,15 +542,19 @@ No pass rewrites a module yet, so the optimizer stops before a first round, and 
   "modules": [
     { "module": "App.Util", "interface": "App.Util.dmi", "object": "App.Util.dmo", "imports": [] },
     { "module": "App.Main", "interface": "App.Main.dmi", "object": "App.Main.dmo",
-      "imports": [ "App.Util" ], "entrypoint": "$entrypoint" } ] }
+      "imports": [ "App.Util" ], "entrypoint": "$entrypoint" } ],
+  "foreign": { "target": "javascript", "modules": [
+    { "module": "App.Util", "specifier": "../js/util.mjs",
+      "foreigns": [ { "name": "log", "params": [ "string" ], "result": { "action": "unit" } } ] } ] } }
 ```
 
 - **`modules` lists the modules the build compiled, in the order `stella.json` lists them**, and no other: a package whose modules were built in several builds is described by what each wrote.
 - **`interface` and `object` are the module's pair**, by their paths from the directory `output.json` stands in.
 - **`imports` are the module's runtime dependencies**, those its bytecode records (D51), in the order it records them; a module supplying it nothing but a name resolved away, a type, a macro, or a synthesizer is not among them.
 - **`entrypoint` is the global its interface names as its entry point** ([below](#the-entry-point)), the value carrying the attribute or the stub that runs it, and is there only for a module that has one.
+- **`foreign` is what a foreign manifest says of the modules built that declare host foreigns**, for the `target` `stella.json` names, in the order `modules` lists them: each with its `specifier`, and each of its host foreigns, in order of their names, with how it crosses, read off the interface (D44, [Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)). **A relative specifier is written from the directory `output.json` stands in**, and begins with `./` where it does not with `../`, so that a target reads it as relative still; a bare or an absolute one is written as given. It carries no version of its own, the file's covering it, and is absent where no module built declares a host foreign, whatever `target` names.
 - **What it states is read back off the files the build wrote**, each checked to hold the module it was written for; one holding another fails the build.
-- **Every field but `entrypoint` is required and no other is accepted**, no string is empty, and no module is listed twice. `formatVersion` is `0`. One codec both writes and reads the file, `Stellac.Output.codec`.
+- **Every field but `entrypoint` and `foreign` is required and no other is accepted**, no string is empty, and no module is listed twice, in `modules` or in `foreign`, nor a foreign twice in a module's entry. `foreign` names modules `modules` lists, and is absent rather than empty, as is a module's list of foreigns. `formatVersion` is `0`. One codec both writes and reads the file, `Stellac.Output.codec`.
 
 ### `stellac graph`
 
