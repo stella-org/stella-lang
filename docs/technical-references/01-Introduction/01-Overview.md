@@ -96,12 +96,12 @@ Its output, a **`.dmo` module object** with the **`.dmi` interface** beside it, 
 
 | Tool | Does | Stops at |
 | --- | --- | --- |
-| `stellac`, the compiler command | compiles a package's modules — expanding their macros on a compile-time session it starts — and writes each module's `.dmo` and `.dmi` | the pairs it writes; it knows no backend, and no package of another |
+| `stellac`, the compiler command | compiles a package's modules — expanding their macros on a compile-time session it starts — and writes each module's `.dmo` and `.dmi`, and `output.json`, what only it knows of them | the pairs it writes; it knows no backend, and no package of another |
 | a backend | is handed a program's pairs, optimizes as it alone can, and makes each module into what its target runs; finishing the program — linking it into one executable — is a capability a backend may have | each module made, or the program finished where it finishes one; a JavaScript or WebAssembly backend may stop at the modules and leave the rest to a bundler |
-| `steam`, the machine | runs `.dmo` files, given in dependency order with the entry point ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)) | one program, or one session |
-| the package manager | resolves and fetches a package's dependencies, chooses the backend and what is run, and starts the compiler and the backend, handing the backend the pairs | |
+| `steam`, the machine | runs a program a program descriptor describes: its `.dmo` files in dependency order, its entry point, and its foreign manifest ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)) | one program, or one session |
+| the package manager | resolves and fetches a package's dependencies, chooses the backend and what is run, starts the compiler, writes the program descriptor from what the builds stated, and starts the backend or the machine with it | |
 
-**There is no package manager yet**, so a program is built with `stellac compile`, from a `stella.json` a script writes, and run on the machine with `steam run`, which is also the reference a backend is checked against. The boundary is the pair, which `stellac` writes for each module ([Modules](../06-Modules/01-Modules.md)). **What `stellac` does is what needs the compiler's knowledge of the language** — the syntax, the names, the types: a command reading the dependency graph off the headers, or what a package's documentation is made from, belongs with it, and drawing a page, running a program, or managing dependencies does not ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
+**There is no package manager yet**, so a program is built with `stellac compile`, from a `stella.json` a script writes, and run on the machine with `steam run`, from a program descriptor the tests write in its place, which is also the reference a backend is checked against. The boundary is the pair, which `stellac` writes for each module ([Modules](../06-Modules/01-Modules.md)). **What `stellac` does is what needs the compiler's knowledge of the language** — the syntax, the names, the types: a command reading the dependency graph off the headers, or what a package's documentation is made from, belongs with it, and drawing a page, running a program, or managing dependencies does not ([Open Questions](../99-Open-Questions/01-Open-Questions.md)).
 
 ## Backend strategy
 

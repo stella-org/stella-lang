@@ -655,25 +655,24 @@ Executing an `IO` is the one place the host side enters the interpreter, and it 
 
 ### The `run` command (step 5, interpreter 7)
 
-What the command adds over the pieces below it is the wiring — reading files, loading them in the order given, finding the entry point, executing it, and turning what came back into an exit status ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
+What the command adds over the pieces below it is the wiring — reading a program descriptor, holding it to the bytecode it lists, loading the modules in its order, executing its entry point, and turning what came back into an exit status ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)).
 
 | Input | Required outcome |
 | --- | --- |
-| Modules in dependency order, with an entry point whose `IO` ends in a value | Exit status `0`, and nothing printed of the value |
-| The same modules in an order an import does not admit | Status `1`. **Nothing is sorted**: the command has no import graph, and a wrong order is the front end's mistake to hear about |
-| A file that is not a `.dmo`, or one the decoder rejects | Status `1`, reported as the decoding failure it is rather than as a missing module |
-| No `--entry`, with a module named `Main` among those given | That module's `main` is the entry point |
-| No `--entry`, and no module named `Main` | Status `1`, whatever else was loaded |
-| `--entry` naming a module that was not given | Status `1`, naming what was asked for |
-| `--entry` naming a module that has no `main` | Status `1`. The global is read from the module's own globals and not through its exports |
-| `--entry-global` naming another global of the entry module | That global is the entry point, whatever it is called. This is how an `@[entrypoint]` resolved above the interpreter arrives |
-| `--entry-global` naming a global the entry module does not have | Status `1` |
-| An argument that could read as a module or as a qualified global, such as `A.B` | Not a case: the two halves are separate options, so nothing has to be disambiguated |
-| Two modules declaring `main`, one of them the entry module | Loaded and run. **Nothing is searched across modules**, so the other is not a competitor and not an ambiguity |
-| A dependency declaring `main`, where the entry module does not | Status `1`. Nothing looks outside the entry module, which is what keeps a runnable library from being picked up |
+| A descriptor of modules in dependency order, with an entry point whose `IO` ends in a value | Exit status `0`, and nothing printed of the value |
+| The descriptor naming another global of the entry module | That global is the entry point, whatever it is called |
+| No descriptor, one that is not JSON, or one of another `formatVersion` | Status `1`, naming the descriptor |
+| The same modules in an order an import does not admit | Status `1`. **Nothing is sorted**: a wrong order is the plan's mistake to hear about |
+| A module listed that the entry module does not reach, a module declaring a `main` among them | Status `1`, before any module is loaded, so nothing the program never reaches is initialized |
+| A file that is not there; one that is not a `.dmo`, or one the decoder rejects | Status `1`; the second reported as the decoding failure it is rather than as a missing module |
+| A descriptor whose entry module it does not list, or whose entry point the entry module does not hold | Status `1`, naming what was asked for. The global is read from the module's own globals and not through its exports |
+| `steam run` given flags in place of a descriptor | Refused |
+| A descriptor that `ProgramDescriptor.print` wrote, with and without `foreign`; one with another `formatVersion`, a field no rule names, an empty string, a module listed twice, an entry module it does not list, or a `foreign` that is no object | Read back as written; each of the rest refused |
+| `ProgramDescriptor.validate` given the runtime closure in dependency order, `Prim` among the imports; bytecode beyond the modules listed, importing nothing unlisted, and bytecode short of them; a file of another module, a module before one it imports or importing one unlisted, a module the entry module does not reach, and an entry point the entry module does not hold | The first accepted; each of the rest refused |
+| A JavaScript program generated from a fixture's bytecode held to a descriptor by `ProgramDescriptor.validate`, its entry point the descriptor's | Generated and run, the entry point producing its value |
 | An entry point whose global holds something that is not an `IO` | Status `1`, before anything is executed |
 | An entry point whose `IO` produced something other than `Prim.Unit` | Status `0`. The value is discarded, and **requiring it would be a type check performed with no types** |
-| A program declaring a foreign the interpreter does not claim | Status `1`. The command assembles no table, and this is the limitation to state rather than to work around |
+| A program declaring a foreign the interpreter does not claim, its descriptor holding no `foreign` | Status `1`, naming the foreign |
 | A module that faults while initializing | Status `1`: the program never started, which is what a caller must act on |
 | A fault while the entry point runs | Status `2`, the fault on standard error |
 | An interpreter bug while a module initializes | Status `3` and not `1`. The question asked first is whose the defect is, not when it happened |
@@ -1756,7 +1755,7 @@ A `foreign` the ABI fixes, against one a host implements ([Prim and Base](../06-
 | An entry declared at another result, at another body with its type variables renamed, and at another arity, one of them at a scheme a host foreign could take | Each refused where its name is declared, naming the scheme the ABI declares it at |
 | `foreign type Array :: Type` in `Base.Array` | Refused where it is declared, naming the kind the ABI gives it |
 | A foreign of a `Base` module the catalog does not name, taking a function, a type variable, or an `IO` | Refused as a host foreign is (D44) |
-| A package with `Base.IO` and `Base.Array` in source and a module of host foreigns, built by `stellac compile` and run by `steam run` over a manifest naming that module alone | Run, the runtime carrying out the `Base` entries |
+| A package with `Base.IO` and `Base.Array` in source and a module of host foreigns, built by `stellac compile` and run by `steam run` from the descriptor made of what the build stated | The descriptor's manifest naming that module alone; run, the runtime carrying out the `Base` entries |
 
 ### The modules the compiler carries, from their sources (step 7)
 
@@ -1802,7 +1801,7 @@ A `foreign` the ABI fixes, against one a host implements ([Prim and Base](../06-
 | The attribute on two declarations; on a value with no signature, a partial signature, a quantifier, or a synthesized parameter; on a computation whose row has a tail; on a value not at `IO Unit`, or a computation whose result is not `Unit`; on a computation in a module importing no runner | Each refused where the attribute stands, both of the two; a module carrying several has no entry point |
 | A computation entry point whose row no implicit handler lowers to `LiftIO` | Reported where the attribute stands |
 | An interface whose entry point names no value it declares, a handler, or a value not exactly at `IO Unit`; the same bytes, the entry point written in | Refused by the encoder, and by the decoder |
-| A program built from source with an entry module whose entry point is a computation | Run by `steam run` from the global its `.dmi` names |
+| A program built from source with an entry module whose entry point is a computation | Run by `steam run` from the entry point its build states, through a descriptor |
 
 ### Source dependencies, read from headers (step 7)
 

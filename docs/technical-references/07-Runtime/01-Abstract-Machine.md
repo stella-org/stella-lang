@@ -131,7 +131,7 @@ edge: it says nothing about who integrates whom.
 **Nothing links the interpreter, and that is the point of D43.** `compiler → steam`
 would be a cycle, so the compiler could never have called the interpreter as a
 library; a command built on it could have, and none needs to. What passes
-between a command and `steam` is a command line — paths, a name, and a manifest — so the
+between a command and `steam` is a command line — the path of a program descriptor — so the
 boundary is a process for `run` exactly as it must be for `session`, and one design
 serves both.
 
@@ -142,8 +142,8 @@ the table.
 
 **What crosses between them is a command line, and that is enough** (D43). Running a
 program is a function of three things — the modules in order, the entry point, and the
-foreign table — and the third is **assembled by the interpreter** from a manifest
-naming where the implementations are
+foreign table — and the third is **assembled by the interpreter** from the manifest
+the program descriptor holds, naming where the implementations are
 ([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)). A path is a thing an
 argument vector carries, so what starts a program starts this command rather than
 linking it.
@@ -163,49 +163,56 @@ program reaches the machine through. What it adds beyond being that path is that
 `.dmo` already built can be run without rebuilding it.
 
 ```text
-steam run --entry Main  base/Base.Int.dmo  lib/Lib.dmo  main/Main.dmo
+steam run app/program.json
 ```
 
-**The files are given in dependency order and the command sorts nothing.** That is
-the rule above read at the command line: the arguments are loaded left to right, a
-module whose imports are not already loaded is refused, and no path is searched and
-no name resolved to a file. **A wrong order is a load error and not a reordering** —
-the command has no import graph to sort by, and inventing one here would put a second
-answer beside the build plan's.
+**`run` is given a program descriptor and nothing else.** The package manager writes
+it from what the builds of a program stated
+([Modules](../06-Modules/01-Modules.md#outputjson)), and it names the entry point, the
+bytecode of every module the program runs, and, where one of them declares a foreign
+a host supplies, the program's foreign manifest. Each path in it is read from the
+directory it stands in.
 
-**The entry point is named by two options, one for each half**, and each has a
-default. The global is read from the named module's own globals and not through its
-exports (above).
+```json
+{ "formatVersion": 0,
+  "entry": { "module": "App.Main", "global": "$entrypoint" },
+  "modules": [
+    { "module": "Lib.Console", "object": "../lib/Lib.Console.dmo" },
+    { "module": "App.Main", "object": "output/App.Main.dmo" } ],
+  "foreign": { "target": "javascript", "modules": [ … ] } }
+```
 
-| | Names | Default |
-| --- | --- | --- |
-| `--entry` | the module | `Main` |
-| `--entry-global` | the global within it | `main` |
+| | |
+| --- | --- |
+| `entry` | the entry module and the global within it, two fields: a module name has dots in it, so one string carrying both would read `A.B` as the module `A.B` and as the global `B` of `A` alike |
+| `modules` | the runtime closure of the entry module, each module after every module its bytecode imports |
+| `foreign` | the program's foreign manifest, `target` and `modules`, with no version of its own ([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)); absent where no module declares a foreign a host supplies |
 
-**One option carrying both halves would be ambiguous, and the ambiguity is not
-resolvable.** A module name has dots in it, so `A.B` reads as the module `A.B` and
-as the global `B` of the module `A`, and nothing in the spelling separates them.
-**Deciding by looking at which modules were loaded is the one answer to rule out**:
-the same argument would mean different things for different sets of files, so a
-command line that worked would stop working when a module was added.
+Every field but `foreign` is required and no other is taken, no string is empty, no
+module is listed twice, and the entry module is listed. `formatVersion` is `0`. One
+reader serves every runner, `Stella.Compiler.ProgramDescriptor`.
 
-**Two options say it without a separator to invent.** A qualified name could be
-spelled with something other than a dot — `Main::main`, say — but `::` already means
-something in the language, any other choice is a private convention of this command,
-and the split matches what is actually being said: the module is settled first, and
-only then is a global looked up inside it.
+**What the descriptor says is held to the bytecode before anything is loaded**, by
+the rule every runner of a descriptor shares, `ProgramDescriptor.validate`, which the
+package manager's driver of a backend calls as this command does: one bytecode file
+is given for each module listed and no other, each file is the module it is listed as, each module comes after every module its bytecode imports,
+the modules are exactly those the entry module reaches, and the entry point is a
+global of the entry module. **A module the entry module does not reach is refused
+rather than loaded**: loading a module runs its initialization, and a program must
+not run what it never reaches. **Nothing is sorted and nothing is searched for**: an
+order the imports do not admit is refused and not repaired, since a descriptor is
+the plan of whoever wrote it, and inventing a second plan here would put two
+answers side by side.
 
-**Nothing is ever searched for across modules**, and that is the whole of why the
-question of a duplicate does not arise. The entry module is settled before anything
-is looked up — by the default or by the flag — and only its own globals are
-consulted, so a second module declaring a `main` is not a competitor, not an
-ambiguity, and not consulted at all.
+**The entry point is named, and never found.** The global is read from the entry
+module's own globals and not through its exports (above), and nothing is searched
+for across modules, so a second module declaring a `main` is not a competitor, not
+an ambiguity, and not consulted at all.
 
 | | |
 | --- | --- |
 | a module declaring a global called `main` | **loads**, wherever it stands. Nothing about the name is reserved, and a session that never wants an entry point is not refused one |
 | two of them | likewise. The entry module is named, so which one is meant was never in question |
-| no module named `Main`, and no `--entry` | a failure of `run`, and of nothing below it |
 
 **Making a duplicate a load error instead would reserve `main` across everything
 that links together.** A `.dmo` carries no type, so what a loader could compare is
@@ -214,14 +221,14 @@ reasons, and legitimately — would then refuse every program that imported it. 
 cost would fall on library authors, and it buys nothing that naming the module does
 not already give.
 
-**An `@[entrypoint]` attribute would be resolved above the interpreter and never
-here.** A `.dmo` carries no attribute, and the runtime reads no `.dmi`
+**`@[entrypoint]` is resolved above the interpreter and never here.** A `.dmo`
+carries no attribute, and the runtime reads no `.dmi`
 ([Bytecode](../05-Backend/01-Bytecode.md), [Interface](../05-Backend/03-Interface.md)),
-so nothing Steam is given would let it search for one. What the attribute changes is
-therefore the front end's question, and what reaches Steam is what reaches it now: a
-resolved module and global, which is what the two options above carry. **That the entry
-point is named rather than found holds unchanged**, which is the point of routing it
-this way rather than teaching the runtime a new input.
+so nothing Steam is given would let it search for one. The build states the entry
+point its interface names, and the package manager writes it as the descriptor's
+`entry`: what reaches Steam is a resolved module and global. **That the entry point is
+named rather than found holds unchanged**, which is the point of routing it this way
+rather than teaching the runtime a new input.
 
 **Nor is the entry point written into the module as code to run.** `GLOBALS` is
 already the initialization section — a `run` entry is evaluated once as the module
@@ -233,27 +240,17 @@ unlinked and in dependency order, so there is no linking stage to carry the
 decision, and a module that ran its own entry point as it loaded would run it in a
 session too — which is what loading must not do (D25).
 
-**The search the attribute implies stays inside the entry module**, and that is the
-front end's rule to keep. A dependency may carry the attribute — a library that is
-also runnable is an ordinary thing to write — and a search that ranged over
-everything linked would find it. What is under the program's control is the entry
-module, so that is what is asked; what the runtime then receives is one name and no
-question at all.
+**The foreign table is assembled from the manifest the descriptor holds**, and is
+complete for a module before that module is loaded
+([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)), its specifiers resolved
+from the descriptor's directory. A program declaring a foreign that neither the
+interpreter claims nor the manifest covers does not load.
 
-**The foreign table is assembled from a manifest the command is pointed at**, and is
-complete for a module before that module is loaded ([Foreign Manifest](../05-Backend/04-Foreign-Manifest.md)).
-A program declaring a foreign that neither the interpreter claims nor the manifest
-covers does not load, as before; what has changed is who fills the gap.
-
-```text
-steam run --manifest build/foreign-manifest.json --entry Main  … .dmo
-```
-
-**A manifest is not required, and its absence is not an error.** A program over
-`Base` alone declares no foreign anything needs to supply, so there is nothing for a
-manifest to say; a program that does declare one and was given no manifest is refused
-where that module loads, naming the foreign rather than the missing file — the
-declaration is what was unmet, and the manifest is one way to meet it.
+**A descriptor without `foreign` is no error.** A program over `Base` alone declares
+no foreign anything needs to supply, so there is nothing for a manifest to say; a
+program that does declare one and has no manifest is refused where that module loads,
+naming the foreign rather than the missing field — the declaration is what was unmet,
+and the manifest is one way to meet it.
 
 **The long-lived command is `session`, and it waits.** It speaks on a channel of its
 own, fixed below, and answers each request there; the `run` mode needs none of that,
@@ -377,8 +374,8 @@ on.
 
 #### Loading modules and applying guest functions
 
-**`steam session [--manifest path]`.** The manifest is optional, as for `run`, and read
-before the channel is opened. Without one, a module declaring a foreign a host must
+**`steam session [--manifest path]`.** The manifest is optional, and read before the
+channel is opened. Without one, a module declaring a foreign a host must
 supply is refused where it loads.
 
 | capability | request | answered by |

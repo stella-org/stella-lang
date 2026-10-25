@@ -8,7 +8,8 @@ implementations through.
 **The compiler states each build's part**, the entries of the modules it compiled,
 in `output.json` ([Modules](../06-Modules/01-Modules.md#outputjson)), and the
 package manager gathers the parts of every package in a program into the manifest the
-program is run with (D47). It is read by whatever runs the program: on this
+program is run with, the program descriptor's `foreign`
+([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)) (D47). It is read by whatever runs the program: on this
 interpreter, in time for the module that declares the foreign —
 which a run satisfies by reaching everything before the first load and a session by
 reaching a module's implementations as that module arrives

@@ -120,7 +120,7 @@ given in the settings the package manager hands the backend (D47).
 | `ctor Name` | the descriptor of a constructor the module declares. Every constructor is exported: a `.dmo` does not record which a module publishes, a type checker having settled that before the file existed |
 | `foreign name` | the descriptor of a foreign of `EXPORTS`, whatever carries it out (below) |
 | `arity table` | the definitional arity of each exported global installed as a function |
-| `entry point` | the global the build names as the program's entry point, in the module holding it |
+| `entry point` | the global the program descriptor names as the program's entry point, in the module holding it: the package manager holds the descriptor to the bytecode by `ProgramDescriptor.validate`, as `steam run` does ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)), and hands the backend its `entry` |
 
 Every name but a global's holds a space, so no Stella identifier is one of them.
 

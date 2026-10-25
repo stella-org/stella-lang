@@ -535,7 +535,7 @@ No pass rewrites a module yet, so the optimizer stops before a first round, and 
 
 #### `output.json`
 
-**`output.json` states what only the compiler knows of the modules a build compiled**, so that whatever drives the compiler can put a program together from it. Which modules a program runs, and which of them it starts from, is worked out by the package manager, not by the compiler (D47), from this file and from what the builds of the other packages wrote. It describes the build and is no input to a backend or to the machine.
+**`output.json` states what only the compiler knows of the modules a build compiled**, so that whatever drives the compiler can put a program together from it. Which modules a program runs, and which of them it starts from, is worked out by the package manager, not by the compiler (D47), from this file and from what the builds of the other packages wrote, and written as the program descriptor a runner is given ([Abstract Machine](../07-Runtime/01-Abstract-Machine.md)). It describes the build and is no input to a backend or to the machine.
 
 ```json
 { "formatVersion": 0,
