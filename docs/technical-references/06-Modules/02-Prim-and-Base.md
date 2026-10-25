@@ -320,7 +320,8 @@ before the continuation by `Base.IO.bind`, and the return clause gives the
 result by `Base.IO.pure`. The row it takes is closed because `Base.IO.bind`'s
 continuation is a pure arrow ([Effects](../03-Typed-Core/03-Effects.md)). **The
 compiler holds `Base.IO.Effect` to the scheme the ABI fixes**
-([Modules](01-Modules.md#a-standard-entry)).
+([Modules](01-Modules.md#a-standard-entry)), and the stub that runs an entry point
+that is a computation applies it ([Modules](01-Modules.md#the-entry-point)).
 
 ```text
 -- ABI entries

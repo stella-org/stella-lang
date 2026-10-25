@@ -14,6 +14,7 @@ import Prelude
 
 import Data.Array as Array
 import Data.Map as Map
+import Data.Maybe (Maybe(..))
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.Interface.Module (ModuleInterface, TypeEntity(..), TypeEntry, TypeSort(..), ValueSort(..), Via(..), emptyExports)
@@ -54,6 +55,7 @@ primInterface =
       }
   , implicitHandlers: []
   , catalogOnly: Set.empty
+  , entrypoint: Nothing
   , arities: Map.empty
   }
   where

@@ -79,6 +79,7 @@ exporting name macros =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
   where
   declared n = { entity: Qualified name (Ident n), via: Declared }

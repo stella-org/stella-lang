@@ -8,22 +8,24 @@
 -- | at**: `Stella.Syntax.$QuotedOrigin` and `Stella.Syntax.$spliced`, which a
 -- | quotation is written with, `Base.Continuation.$Continuation`, which a
 -- | `reifiable full` clause wraps its continuation in, and `Base.IO.Effect.runIO`,
--- | the standard runner. A signature that holds a module's type or effect —
--- | `Stella.Syntax.OriginRef`, `Base.Continuation.Continuation`,
--- | `Base.IO.Effect.LiftIO` — reaches that module, and then holds its entries
--- | at the schemes listed, up to the names the schemes bind. **The module
--- | declaring them is held to them as it is declared**, so a declaration at
--- | another scheme, or a standard entry left unexported, is refused where it is
--- | compiled; an entry a module importing it lacks or holds at another scheme,
--- | or a standard one it does not find exported as a value, is the compiler's
--- | fault. A
--- | signature that does not reach a module holds none of its entries. Nothing
--- | else of the signature is reached this way, and no synthesizer, which reads
--- | the catalog, reaches an elaboration-only entry.
+-- | the standard runner, which the stub running an entry point applies. A
+-- | signature that holds a module's type or effect — `Stella.Syntax.OriginRef`,
+-- | `Base.Continuation.Continuation`, `Base.IO.Effect.LiftIO` — reaches that
+-- | module, and then holds its entries at the schemes listed, up to the names
+-- | the schemes bind. **The module declaring them is held to them as it is
+-- | declared**, so a declaration at another scheme, or a standard entry left
+-- | unexported, is refused where it is compiled; an entry a module importing it
+-- | lacks or holds at another scheme, or a standard one it does not find
+-- | exported as a value, is the compiler's fault. A signature that does not
+-- | reach a module holds none of its entries. Nothing else of the signature is
+-- | reached this way, and no synthesizer, which reads the catalog, reaches an
+-- | elaboration-only entry.
 module Stella.Compiler.Elaborate.Surface.Internal
   ( Internal
   , continuationConstructor
   , standardRunner
+  , liftIOEffect
+  , entrypointStub
   , internalEntries
   , EntryMismatch
   , EntryDeclaration(..)
@@ -69,6 +71,15 @@ ioEffectModule = ModuleName "Base.IO.Effect"
 -- | an `IO` action.
 standardRunner :: Qualified Ident
 standardRunner = Qualified ioEffectModule (Ident "runIO")
+
+-- | The effect the standard runner handles.
+liftIOEffect :: Qualified EffName
+liftIOEffect = Qualified ioEffectModule (EffName "LiftIO")
+
+-- | The value elaboration declares to run an entry point that is a computation,
+-- | under a name no source writes, one in a module.
+entrypointStub :: Ident
+entrypointStub = Ident "$entrypoint"
 
 -- | Each entry the compiler's desugarings refer to, at its scheme.
 type Internal = Map (Qualified Ident) XScheme
@@ -158,12 +169,12 @@ listed =
           }
         ]
     }
-  , { reaching: ByEffect liftIO
+  , { reaching: ByEffect liftIOEffect
     , entries:
         [ { name: standardRunner
           , constructor: false
           , standard: true
-          , expected: mono (TForall a KType (pureFn (fn (TCon unitTy []) (TRowExtend (RowEffectEntry liftIO []) TRowEmpty) (TVar a)) (TApp (TCon ioTy []) (TVar a))))
+          , expected: mono (TForall a KType (pureFn (fn (TCon unitTy []) (TRowExtend (RowEffectEntry liftIOEffect []) TRowEmpty) (TVar a)) (TApp (TCon ioTy []) (TVar a))))
           }
         ]
     }
@@ -171,7 +182,6 @@ listed =
   where
   quotedOrigin = Qualified syntaxModuleName (Ident "$QuotedOrigin")
   spliced = Qualified syntaxModuleName (Ident "$spliced")
-  liftIO = Qualified ioEffectModule (EffName "LiftIO")
   a = TyVar "a"
   b = TyVar "b"
   c = TyVar "c"

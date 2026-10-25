@@ -63,6 +63,7 @@
 module Stella.Compiler.Elaborate.Surface.Module
   ( ElaborationError(..)
   , ImplicitProblem(..)
+  , EntrypointProblem(..)
   , ElaboratedValue
   , Elaborating
   , ElaboratedModule
@@ -101,7 +102,7 @@ import Stella.Compiler.Elaborate.CorePlus.Kind (KindMetaVar, XKind(..), kindMeta
 import Stella.Compiler.Elaborate.CorePlus.Type (MetaVar, XType(..), freeKindVars, fromCore, kindMetasOfType, metasOf, toCore)
 import Stella.Compiler.Elaborate.Surface.Types (readAttributeDeclaration, readTypes, settledTypes)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEntry)
-import Stella.Compiler.Elaborate.Surface.Internal (EntryDeclaration, Internal, declaredEntryMismatches, internalEntries)
+import Stella.Compiler.Elaborate.Surface.Internal (EntryDeclaration, Internal, declaredEntryMismatches, entrypointStub, internalEntries, liftIOEffect, standardRunner)
 import Stella.Compiler.Elaborate.Driver.Attempt (attemptPending, runAttempt)
 import Stella.Compiler.Elaborate.Driver.Loop (Attempter, AttempterM, identically, runAttemptingM)
 import Stella.Compiler.Elaborate.Driver.Loop as Loop
@@ -133,13 +134,13 @@ import Stella.Compiler.ForeignBoundary (Refused, crossingOf)
 import Stella.Compiler.Interface.Assemble (CoreInterface, CoreTypeSort(..), coreAttribute, reachedFromOutside)
 import Stella.Compiler.Interface.Module (Exports, TypeEntity(..), Via(..))
 import Stella.Compiler.Interface.Prim (primAttribute)
-import Stella.Compiler.Interface.Scheme (Scheme, plainScheme)
+import Stella.Compiler.Interface.Scheme (Scheme, SchemeBody(..), plainScheme)
 import Stella.Compiler.Surface.Decl (Declaration(..))
 import Stella.Compiler.Surface.Decl (Attribute, HandlerDeclaration, Module) as Surface
 import Stella.Compiler.Surface.Expr (Binder, Expr) as Surface
-import Stella.Compiler.Surface.Expr (ClauseForm(..), binderOrigin)
+import Stella.Compiler.Surface.Expr (Binder(..), ClauseForm(..), Expr(..), binderOrigin)
 import Stella.Compiler.Surface.Type (Type(..)) as Surface
-import Stella.Compiler.Surface.Type (typeOrigin)
+import Stella.Compiler.Surface.Type (EffectRowItem(..), typeOrigin)
 import Stella.Compiler.Surface.Origin (Origin) as Surface
 import Stella.Compiler.Surface.Name (CellVar(..))
 import Stella.Compiler.TypedCore (Decl(DeclAttribute, DeclData, DeclEffect, DeclForeign), Module) as Core
@@ -147,7 +148,7 @@ import Stella.Compiler.TypedCore (Attribute, AttributeDecl, DataDecl, DeclError(
 import Stella.Compiler.TypedCore.Declare (ctorInfo, dataEntry)
 import Stella.Compiler.TypedCore.AttributeCheck (AttributeError, checkAttribute)
 import Stella.Compiler.TypedCore.Check (CheckError(NotAValueForm), isValueForm)
-import Stella.Compiler.TypedCore.Prim (asFunction)
+import Stella.Compiler.TypedCore.Prim (asFunction, ioTy, unitTy)
 import Stella.Compiler.TypedCore.Term (Expr(..), subterms) as Core
 import Stella.Compiler.TypedCore.Initialization (localGroupViolations, topLevelViolations)
 import Stella.Compiler.TypedCore.Reference (globalsOf, runtimeDependencies)
@@ -156,7 +157,7 @@ import Stella.Compiler.TypedCore.Signature (CanonicalClass(..), Signature, TyCon
 import Stella.Compiler.TypedCore.Kind (Kind(..), KindScheme, RowElemKind(..))
 import Stella.Compiler.TypedCore.Kind as Kind
 import Stella.Compiler.TypedCore.Type (RowEntry(..), RowKey(EffectKey), Type(..), TypeScheme, compareRowKeys, freeTypeVars, rowEntryKey)
-import Stella.Compiler.TypedCore.Equality (schemeEquiv)
+import Stella.Compiler.TypedCore.Equality (schemeEquiv, typeEquiv)
 import Stella.Compiler.Primitive (abiTypeDescriptors, runtimeEntryNamed, schemeOfRuntimeEntry)
 
 data ElaborationError
@@ -259,6 +260,9 @@ data ElaborationError
   -- | An attempt that postponed itself, which nothing the elaborator states
   -- | does: it is the elaborator's fault.
   | AttemptPostponed
+  -- | A declaration carrying `@[entrypoint]` that is no entry point, where the
+  -- | attribute stands.
+  | EntrypointRefused Surface.Origin EntrypointProblem
 
 -- | Which condition of an implicit handler a declaration fails.
 data ImplicitProblem
@@ -272,6 +276,28 @@ data ImplicitProblem
   | ImplicitParameters
   -- | The initial value of the cell named is no value form.
   | ImplicitInitialNotValue String
+
+-- | Why a declaration carrying `@[entrypoint]` is no entry point.
+data EntrypointProblem
+  -- | Another declaration of the module carries the attribute too.
+  = EntrypointSeveral
+  -- | It has no signature.
+  | EntrypointUnsigned
+  -- | Its signature is partial.
+  | EntrypointPartial
+  -- | Its spine quantifies a variable other than its row's tail, or holds a
+  -- | constraint.
+  | EntrypointQuantified
+  -- | Its spine holds a synthesized parameter.
+  | EntrypointSynthesized
+  -- | It is a computation whose row has a tail.
+  | EntrypointRowOpen
+  -- | Its type is neither `IO Unit`, for a value, nor `Unit / ρ`, for a
+  -- | computation.
+  | EntrypointNotRunnable
+  -- | It is a computation, and no module the header imports exports the
+  -- | standard runner.
+  | EntrypointRunnerUnreached
 
 -- | A value declaration elaborated: its name, where it was declared and its
 -- | ordinal among the module's declarations, its attributes, its scheme, and
@@ -392,7 +418,7 @@ elaborateValuesM attempterOf imports surface importedEntries m =
       , foreigns: crossing.foreigns
       , attributes: attributesRead.declared
       , values: Array.sortWith _.ordinal (generalized.values <> settled'.values)
-      , errors: internalErrors <> unsupported <> signatureErrors <> partialErrors <> crossing.errors <> attributesRead.errors <> cycleErrors <> generalized.errors <> attributeErrorsOf generalized <> bodies.errors <> settled'.errors
+      , errors: internalErrors <> unsupported <> signatureErrors <> partialErrors <> entryPoint.errors <> crossing.errors <> attributesRead.errors <> cycleErrors <> generalized.errors <> attributeErrorsOf generalized <> bodies.errors <> settled'.errors
       , warnings: generalized.warnings
       }
   else pure { data: [], synonyms: [], foreignTypes: [], effects: [], foreigns: [], attributes: [], values: [], errors: dataErrors <> unsupported, warnings: [] }
@@ -550,12 +576,84 @@ elaborateValuesM attempterOf imports surface importedEntries m =
         _ -> Nothing
     )
     partialRead
-  schemes = Array.mapMaybe
+  declaredSchemes = Array.mapMaybe
     ( \(Tuple d s) -> case s of
         Right r | not (Set.member d.name illNamed) -> Just { declared: d, scheme: r.scheme, spine: r.spine }
         _ -> Nothing
     )
     settled
+  -- and the stub that runs the entry point, where it is a computation
+  schemes = declaredSchemes <> entryPoint.stub
+
+  -- the declarations carrying `@[entrypoint]`, by where the attribute stands: a
+  -- module has at most one, and none of several is its entry point
+  entryMarked = Array.mapMaybe
+    ( case _ of
+        DeclValue d -> { name: d.name, at: _, signed: isJust d.signature } <$> entrypointAt d.attributes
+        DeclComputation d -> { name: d.name, at: _, signed: true } <$> entrypointAt d.attributes
+        _ -> Nothing
+    )
+    m.declarations
+  entrypointAt = map _.origin <<< Array.find (\a -> a.name == primAttribute "entrypoint")
+  entryPoint = case entryMarked of
+    [ e ] -> case Array.find (\v -> v.declared.name == e.name) declaredSchemes of
+      Just v -> case runnable v.spine of
+        Left problem -> refusedEntry e problem
+        Right false -> { errors: [], stub: [] }
+        Right true
+          | Set.member standardRunner surface.published && Map.member standardRunner internal -> { errors: [], stub: [ stubOf e ] }
+          | otherwise -> refusedEntry e EntrypointRunnerUnreached
+      -- one whose signature gave no scheme is reported as such already
+      Nothing
+        | not e.signed -> refusedEntry e EntrypointUnsigned
+        | Array.any (\(Tuple d _) -> d.name == e.name) partialRead -> refusedEntry e EntrypointPartial
+        | otherwise -> { errors: [], stub: [] }
+    several -> { errors: map (\e -> EntrypointRefused e.at EntrypointSeveral) several, stub: [] }
+  refusedEntry e problem = { errors: [ EntrypointRefused e.at problem ], stub: [] }
+  -- a value of type `IO Unit` runs as it stands, and a computation of type
+  -- `Unit / ρ`, `ρ` closed, through the stub
+  runnable spine
+    | not (Array.null spine.kindVars) = Left EntrypointQuantified
+    | otherwise = case spine.body of
+        Plain t | typeEquiv t (TApp (TCon ioTy []) unit') -> Right false
+        Computation t row
+          | typeEquiv t unit' && closed row -> Right true
+          | otherwise -> Left EntrypointNotRunnable
+        Forall _ _ _ -> Left (quantified [] spine.body)
+        Constrained _ _ -> Left EntrypointQuantified
+        Synthesized _ _ -> Left EntrypointSynthesized
+        Plain _ -> Left EntrypointNotRunnable
+  unit' = TCon unitTy []
+  closed = case _ of
+    TRowEmpty -> true
+    TRowExtend _ rest -> closed rest
+    TRowUnion a b -> closed a && closed b
+    _ -> false
+  -- a quantifier binding the tail of the computation's row leaves the row
+  -- open, which is what it is reported as
+  quantified bound = case _ of
+    Forall a _ body -> quantified (Array.snoc bound a) body
+    Constrained _ body -> quantified bound body
+    Computation _ row | Just a <- rowTail row, Array.elem a bound -> EntrypointRowOpen
+    _ -> EntrypointQuantified
+  rowTail = case _ of
+    TVar a -> Just a
+    TRowExtend _ rest -> rowTail rest
+    TRowUnion a b -> maybe (rowTail b) Just (rowTail a)
+    _ -> Nothing
+  -- the stub, a value of type `IO Unit` declared after every declaration of
+  -- the module: the standard runner applied to the computation's thunk, under
+  -- an annotation that makes the λ a boundary at `( LiftIO )`, every part of it
+  -- standing where the attribute does
+  stubOf e =
+    { declared: { name: Qualified m.name entrypointStub, origin: e.at, ordinal: Array.length m.declarations, attributes: [], definition: Right (ValueBody [] (stubBody e)) }
+    , scheme: { kindVars: [], body: TApp (TCon ioTy []) unit' }
+    , spine: { kindVars: [], body: Plain (TApp (TCon ioTy []) unit') }
+    }
+  stubBody e = ExprApp e.at (ExprValue e.at standardRunner)
+    ( ExprTyped e.at (ExprLambda e.at [ BinderWildcard e.at ] (ExprComputation e.at e.name))
+        (Surface.TypeFunction e.at (Surface.TypeConstructor e.at unitTy) (Surface.TypeConstructor e.at unitTy) (Just (Surface.TypeEffectRow e.at [ EffectElement { origin: e.at, effect: liftIOEffect, arguments: [] } ])))
+    )
   -- a synthesized parameter names a synthesizer an import reaches, at the type
   -- one is invoked at, where it is written: one this module declares has no
   -- bytecode to run yet. A signature naming either gives no scheme
@@ -648,8 +746,8 @@ elaborateValuesM attempterOf imports surface importedEntries m =
 
   -- the catalog the bodies are elaborated against: what the imports publish,
   -- and every value and foreign the module declares at its scheme, with its
-  -- attributes; and the implicit handlers a boundary in a body may insert
-  own = map (\v -> { name: v.declared.name, sort: if isForeignDefinition v.declared.definition then ForeignEntry else ValueEntry, scheme: { kindVars: v.scheme.kindVars, body: fromCore v.scheme.body }, attributes: v.declared.attributes }) schemes
+  -- attributes, the stub none of them; and the implicit handlers a boundary in a body may insert
+  own = map (\v -> { name: v.declared.name, sort: if isForeignDefinition v.declared.definition then ForeignEntry else ValueEntry, scheme: { kindVars: v.scheme.kindVars, body: fromCore v.scheme.body }, attributes: v.declared.attributes }) declaredSchemes
   session = (sessionEnvOf signature (imported <> own)) { implicits = implicits }
   -- what the bodies read beyond: the module's values taking a synthesized
   -- argument, at their spines, among those the imports declare
@@ -1735,7 +1833,14 @@ assembled signature m exports elaborated =
     , attributes: Map.fromFoldable (map (\a -> Tuple a.decl.name { positional: a.decl.positional, keyword: map _.type a.decl.keyword }) elaborated.attributes)
     , implicitHandlers: Map.fromFoldable
         (Array.mapMaybe (\i -> i.value >>= \v -> Tuple (nameOf v.name) <$> capabilityElements i.declaration.handled v.scheme.body) implicitDeclared)
+    , entrypoint
     }
+  -- the entry point elaboration accepted, which a module it reports nothing
+  -- of has where a declaration carries the attribute: the stub, where it
+  -- declared one, and otherwise the value the attribute stands on
+  entrypoint
+    | Array.any (\v -> nameOf v.name == entrypointStub) values = Just entrypointStub
+    | otherwise = nameOf <<< _.name <$> Array.find (\v -> Array.any (\a -> a.name == primAttribute "entrypoint") v.attributes) values
 
   nameOf (Qualified _ n) = n
   tyNameOf (Qualified _ n) = n

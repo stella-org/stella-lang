@@ -17,6 +17,7 @@
 module Stella.Compiler.Elaborate.Environment.Implicit
   ( ImplicitCandidate
   , importedImplicits
+  , publishedValues
   , compareIdentity
   , cyclicComponents
   ) where
@@ -50,14 +51,20 @@ type ImplicitCandidate =
 -- | imports publish, each once, in the order of their identities. `Prim`, which
 -- | every module sees without importing it, publishes none.
 importedImplicits :: ModuleView -> Array ImplicitCandidate
-importedImplicits view = Array.sortBy (\a b -> compareIdentity a.handler b.handler) (Array.mapMaybe candidate published)
+importedImplicits view = Array.sortBy (\a b -> compareIdentity a.handler b.handler) (Array.mapMaybe candidate (publishedValues view))
   where
-  published = Array.nubBy compareIdentity
-    (foldMap (\m -> foldMap (map _.entity <<< Array.fromFoldable <<< Map.values <<< _.values) (exportsOf m view)) (Array.filter (_ /= primModule) (Array.fromFoldable (reachable view))))
   candidate q = do
     h <- lookupImplicitHandler q view
     entry <- lookupValue q view
     pure { handler: q, source: h.source, targets: h.targets, scheme: coreScheme entry.scheme }
+
+-- | The values the value exports of the modules a view's header imports
+-- | publish, by identity, each once: a re-export publishes what the module
+-- | declaring it declares, and an import list selects none of them. `Prim`
+-- | publishes none.
+publishedValues :: ModuleView -> Array (Qualified Ident)
+publishedValues view = Array.nubBy compareIdentity
+  (foldMap (\m -> foldMap (map _.entity <<< Array.fromFoldable <<< Map.values <<< _.values) (exportsOf m view)) (Array.filter (_ /= primModule) (Array.fromFoldable (reachable view))))
 
 -- | The order of identities: the module's name, then the global's, each
 -- | compared by scalar value.

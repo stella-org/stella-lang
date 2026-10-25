@@ -12,7 +12,10 @@
 -- | that they speak of one module: each declaration the surface part holds has
 -- | its Core entry and no other has one, the two agree on what each is, and a
 -- | data type or an effect has as many constructors or operations in both. A
--- | part that disagrees is refused rather than made into an interface.
+-- | part that disagrees is refused rather than made into an interface. **The
+-- | stub elaboration declares to run an entry point is the one value of the Core
+-- | part no source declaration is**: the surface part holds it as a value
+-- | carrying no attribute.
 module Stella.Compiler.Interface.Assemble
   ( SurfaceInterface
   , SurfaceTypeSort(..)
@@ -84,6 +87,9 @@ type CoreInterface =
   , effects :: Map EffName { params :: Array TyBinder, operations :: Array { binders :: Array TyBinder, arguments :: Array Type, resumesWith :: Type } }
   , attributes :: Map Ident { positional :: Array Type, keyword :: Array Type }
   , implicitHandlers :: Map Ident { source :: RowEntry, targets :: Array RowEntry }
+  -- | The value the module's entry point is, where it has one: the value the
+  -- | attribute stands on, or the stub elaboration declares to run it.
+  , entrypoint :: Maybe Ident
   }
 
 -- | The Core types of a type declaration: a data type's parameters and the
@@ -250,12 +256,12 @@ coreConstant = case _ of
 -- | The interface the parts make, or where they do not speak of one module.
 assemble :: SurfaceInterface -> CoreInterface -> Map Ident Int -> Either AssembleError ModuleInterface
 assemble s c arities = do
-  sameKeys ValueTable identText s.values c.schemes
+  sameKeys ValueTable identText surfaceValues c.schemes
   sameKeys TypeTable tyNameText s.types c.types
   sameKeys EffectTable effNameText s.effects c.effects
   sameKeys AttributeTable identText s.attributes c.attributes
   sameKeys ImplicitHandlerTable identText (Map.fromFoldable (map (\h -> Tuple h unit) s.implicit)) c.implicitHandlers
-  values <- for (pairs s.values c.schemes) \(Tuple k (Tuple v scheme)) ->
+  values <- for (pairs surfaceValues c.schemes) \(Tuple k (Tuple v scheme)) ->
     pure (Tuple k ({ sort: v.sort, scheme, attributes: v.attributes } :: ValueEntry))
   types <- for (pairs s.types c.types) \(Tuple k (Tuple v core)) -> Tuple k <$> typeEntry k v core
   effects <- for (pairs s.effects c.effects) \(Tuple k (Tuple v core)) ->
@@ -292,8 +298,14 @@ assemble s c arities = do
     , implicitHandlers
     , catalogOnly: s.catalogOnly
     , arities
+    , entrypoint: c.entrypoint
     }
   where
+  -- the stub elaboration declares to run an entry point, which no source
+  -- declaration is: a value, carrying no attribute
+  surfaceValues = case c.entrypoint of
+    Just e | not (Map.member e s.values) -> Map.insert e { sort: SortValue, attributes: [] } s.values
+    _ -> s.values
   ownExport name = Map.member name s.values && reachedFromOutside s.name s.exports s.operators name
 
   typeEntry k v core = case v.sort, core.sort of

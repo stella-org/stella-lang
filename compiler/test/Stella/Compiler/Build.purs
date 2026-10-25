@@ -102,6 +102,7 @@ interfaceA =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.singleton (Ident "inc") 1
+  , entrypoint: Nothing
   }
   where
   macros = [ "unwrap", "failing" ]
@@ -119,6 +120,7 @@ interfaceC =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
 
 -- | `Effects`, declaring `effect Console` with `log :: Int ->* Unit`.
@@ -134,6 +136,7 @@ interfaceEffects =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
 
 -- | `Synonyms`, declaring `type Twice a = (a, a)` and `type Effects = {| Console |}`,
@@ -160,6 +163,7 @@ interfaceSynonyms =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
 
 -- | `Marks`, declaring `attribute note Int`.
@@ -172,6 +176,7 @@ interfaceMarks =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
 
 -- | `Synth`, declaring the synthesizer `resolve` at the type one is invoked at,
@@ -190,6 +195,7 @@ interfaceSynth =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
 
 synthModule :: ModuleName
@@ -1307,28 +1313,34 @@ spec = describe "Stella.Compiler.Build" do
             )
 
   describe "the standard runner" do
-    -- `Base.IO`, `Base.Continuation`, and `Base.IO.Effect`, each compiled
-    -- against the interfaces of those before it
+    let
+      -- `Base.IO`, `Base.Continuation`, and `Base.IO.Effect` compiled from their
+      -- sources, then the modules given, each against the interfaces of those
+      -- before it
+      compiledAfterBase modules = do
+        texts <- liftEffect (traverse (\m -> readRepositoryFile ("stella-packages/base/src/Base/" <> m <> ".stel")) [ "IO", "Continuation", "IO/Effect" ])
+        pure (foldM onto { environment: initialEnvironment, last: Nothing } (texts <> map (joinWith "\n") modules))
+      onto built text = case compileModule action defaultSettings built.environment Map.empty text of
+        Identity (Left errors) -> Left (joinWith "; " (map printCompileError (NonEmptyArray.toArray errors)))
+        Identity (Right made) -> do
+          env <- lmap show (addInterface made.interface built.environment)
+          pure { environment: env, last: Just made.interface }
+
+      action :: CompilerAction Identity
+      action =
+        { readSource: \_ -> pure (Left "no file")
+        , runParser: \_ _ _ -> pure (ExecutionFailedAs { reason: NoSuchModule, detail: "no parser runs" })
+        , synthesis: withoutSynthesizers
+        , hooks: defaultHooks
+        }
     it "is declared by `Base.IO.Effect` compiled from its source, under its own name, exported, at the scheme listed" do
-      texts <- liftEffect (traverse (\m -> readRepositoryFile ("stella-packages/base/src/Base/" <> m <> ".stel")) [ "IO", "Continuation", "IO/Effect" ])
+      compiled' <- compiledAfterBase []
       let
-        action :: CompilerAction Identity
-        action =
-          { readSource: \_ -> pure (Left "no file")
-          , runParser: \_ _ _ -> pure (ExecutionFailedAs { reason: NoSuchModule, detail: "no parser runs" })
-          , synthesis: withoutSynthesizers
-          , hooks: defaultHooks
-          }
-        onto built text = case compileModule action defaultSettings built.environment Map.empty text of
-          Identity (Left errors) -> Left (joinWith "; " (map printCompileError (NonEmptyArray.toArray errors)))
-          Identity (Right made) -> do
-            env <- lmap show (addInterface made.interface built.environment)
-            pure { environment: env, last: Just made.interface }
         effectModule = ModuleName "Base.IO.Effect"
         runner = Qualified effectModule (Ident "runIO")
         a = TyVar "a"
         expected = TForall a KType (pureFn (fn (TCon unitTy []) (TRowExtend (RowEffectEntry (Qualified effectModule (EffName "LiftIO")) []) TRowEmpty) (TVar a)) (TApp (TCon ioTy []) (TVar a)))
-      case foldM onto { environment: initialEnvironment, last: Nothing } texts of
+      case compiled' of
         Left why -> fail why
         Right { last: Nothing } -> fail "nothing compiled"
         Right { last: Just i } -> do
@@ -1339,6 +1351,35 @@ spec = describe "Stella.Compiler.Build" do
               show v.sort `shouldEqual` show SortValue
               typeEquiv (coreScheme v.scheme).body expected `shouldEqual` true
             Nothing -> fail "`runIO` is not declared"
+
+    it "runs an entry point that is a computation by a stub its interface declares as the entry point, exporting it nowhere, through its file unchanged" do
+      compiledAfterBase
+        [ [ "module Program where"
+          , "import Base.IO.Effect"
+          , "effect Say where"
+          , "  say :: Unit ->* Unit"
+          , "implicit"
+          , "handler sayAsLift :: Say ~> ( LiftIO ) where"
+          , "  fast | say _ = ()"
+          , "@[entrypoint]"
+          , "main :: Unit / {| Say |}"
+          , "main = say ()"
+          ]
+        ] >>= case _ of
+        Left why -> fail why
+        Right { last: Nothing } -> fail "nothing compiled"
+        Right { last: Just i } -> do
+          let stub = Ident "$entrypoint"
+          i.entrypoint `shouldEqual` Just stub
+          map (\v -> Tuple (show v.sort) (Tuple v.scheme v.attributes)) (Map.lookup stub i.declarations.values) `shouldEqual`
+            Just (Tuple (show SortValue) (Tuple (plainScheme (monoScheme (TApp (TCon ioTy []) (TCon unitTy [])))) []))
+          Array.filter (\e -> e.entity == Qualified (ModuleName "Program") stub) (Array.fromFoldable (Map.values i.exports.values)) `shouldEqual` []
+          Map.member stub i.arities `shouldEqual` false
+          -- `main` keeps the attribute, and is exported as written
+          map (map _.name <<< _.attributes) (Map.lookup (Ident "main") i.declarations.values) `shouldEqual` Just [ primAttribute "entrypoint" ]
+          case lmap show (encode { interface: i, buildHash: Nothing }) >>= (lmap show <<< decode) of
+            Right stored -> stored.interface `shouldEqual` i
+            Left problem -> fail problem
 
   describe "a foreign and an attribute the module declares" do
     let

@@ -79,6 +79,7 @@ environment = case addInterface interfaceA initialEnvironment of
     , implicitHandlers: []
     , catalogOnly: Set.empty
     , arities: Map.empty
+    , entrypoint: Nothing
     }
 
   declared :: forall a. a -> { entity :: a, via :: Via }

@@ -146,6 +146,7 @@ interfaceOf name d =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
   where
   int = TCon intTy []

@@ -44,6 +44,7 @@ interfaceOf name imports marked =
   , implicitHandlers: []
   , catalogOnly: if marked then Set.singleton (Ident "n") else Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
 
 -- | The seed: `Base.Int`, and `Stella.Syntax` over it.

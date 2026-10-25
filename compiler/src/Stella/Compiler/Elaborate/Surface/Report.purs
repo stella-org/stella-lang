@@ -35,7 +35,7 @@ import Stella.Compiler.Elaborate.CorePlus.Type (XRowEntry(..), XType(..), fromCo
 import Stella.Compiler.Elaborate.Mechanism.Obligation (Breach(..))
 import Stella.Compiler.Elaborate.Mechanism.Unify (UnifyError(..))
 import Stella.Compiler.Elaborate.Surface.Internal (EntryDeclaration(..))
-import Stella.Compiler.Elaborate.Surface.Module (ElaborationError(..), ImplicitProblem(..))
+import Stella.Compiler.Elaborate.Surface.Module (ElaborationError(..), EntrypointProblem(..), ImplicitProblem(..))
 import Stella.Compiler.Elaborate.Surface.Type (Atom(..), Unsupported(..))
 import Stella.Compiler.Elaborate.Surface.Match (Witness(..))
 import Stella.Compiler.TypedCore.Domain (codePointOf, textOf)
@@ -95,6 +95,7 @@ elaborationOrigins = case _ of
   CoreRefused failure -> [ failure.at ]
   InternalEntryMismatch _ -> []
   InternalEntryDeclared o _ _ -> [ o ]
+  EntrypointRefused o _ -> [ o ]
   Broken _ -> []
   AttemptPostponed -> []
 
@@ -186,6 +187,15 @@ printElaborationError = case _ of
     EntryAt declared -> fmt @"`{name}` is an entry the compiler refers to, at `{expected}`; it cannot be declared at `{declared}`" { name: qualifiedText name, expected: printType (fromCore r.expected.body), declared: printType (fromCore declared.body) }
     EntryAbsent -> fmt @"`{name}` is an entry the compiler refers to, at `{expected}`, which this module is to declare" { name: qualifiedText name, expected: printType (fromCore r.expected.body) }
     EntryUnexported -> fmt @"`{name}` is an entry the compiler refers to, which this module is to declare as a value and export" { name: qualifiedText name }
+  EntrypointRefused _ problem -> case problem of
+    EntrypointSeveral -> "A module has at most one entry point, and several of its declarations carry `@[entrypoint]`"
+    EntrypointUnsigned -> "An entry point needs a signature"
+    EntrypointPartial -> "An entry point needs a complete signature, with no wildcard or hole"
+    EntrypointQuantified -> "An entry point has one closed type, with no quantifier or constraint"
+    EntrypointSynthesized -> "An entry point takes no synthesized parameter"
+    EntrypointRowOpen -> "An entry point that is a computation performs a closed row of effects"
+    EntrypointNotRunnable -> "An entry point is a value of type `IO Unit`, or a computation of type `Unit / ρ` with `ρ` closed"
+    EntrypointRunnerUnreached -> "An entry point that is a computation is run by `Base.IO.Effect.runIO`, which no module this one imports exports"
   Broken defect -> internal (show defect)
   AttemptPostponed -> internal "an elaboration attempt postponed itself"
   where

@@ -12,9 +12,12 @@
 -- | `Base.Continuation.continue`. `Lifted` runs a computation by
 -- | `Base.IO.Effect.runIO`, written by hand under an annotation whose boundary
 -- | an implicit handler of its own meets, lowering a greeting to a `LiftIO`
--- | carrying a `Console` action. `dependencies` listing a seed module with
--- | another interface, `Prim`, or a module twice is refused. The cases run in
--- | order: the first builds `Base`.
+-- | carrying a `Console` action. `Entry` marks a computation `@[entrypoint]`,
+-- | and is run from the global its interface names as its entry point, the
+-- | stub that applies the runner, `Lifted`'s handler lowering what it
+-- | performs. `dependencies` listing a seed module with another interface,
+-- | `Prim`, or a module twice is refused. The cases run in order: the first
+-- | builds `Base`.
 module Test.E2E.BasePackage (spec) where
 
 import Prelude
@@ -22,6 +25,7 @@ import Prelude
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
+import Data.Maybe (Maybe(..))
 import Data.String (Pattern(..), contains, split)
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
@@ -35,7 +39,7 @@ import Stella.Compiler.TypedCore (Ident(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 import Node.Process (cwd)
-import Test.E2E.Process (Outcome, buildBase, compile, copyTree, removeTree, steamRun, writeFiles)
+import Test.E2E.Process (Outcome, buildBase, compile, copyTree, removeTree, steamRun, steamRunGlobal, writeFiles)
 import Test.E2E.StellaJson (Entry, entriesIn, listedAt, settings, stellaJson)
 
 -- | Where this suite's files stand, written afresh for each run.
@@ -50,7 +54,7 @@ baseOutput = dir <> "/base"
 -- | the modules given.
 buildApp :: String -> Array Entry -> Aff Outcome
 buildApp file dependencies = do
-  writeFiles dir [ { path: "app/" <> file, text: stellaJson ((settings (map listedAt [ "src/Console.stel", "src/Main.stel", "src/Lifted.stel" ])) { dependencies = dependencies }) } ]
+  writeFiles dir [ { path: "app/" <> file, text: stellaJson ((settings (map listedAt [ "src/Console.stel", "src/Main.stel", "src/Lifted.stel", "src/Entry.stel" ])) { dependencies = dependencies }) } ]
   compile (dir <> "/app/" <> file)
 
 -- | The entries of `dependencies.json`, which the script wrote.
@@ -121,6 +125,24 @@ spec = describe "the `Base` package, built from its sources and listed by `depen
     outcome.err `shouldEqual` ""
     outcome.status `shouldEqual` 0
     printed outcome `shouldEqual` [ "hello, runner", "hello, LiftIO" ]
+
+  it "runs a computation the attribute marks from the global its interface names, the stub that runs it" do
+    stored <- bytesOf (dir <> "/app/output/Entry.dmi")
+    case Interface.decode stored of
+      Left err -> fail (show err)
+      Right file -> case file.interface.entrypoint of
+        Nothing -> fail "no entry point"
+        Just (Ident global) -> do
+          entries <- listed
+          outcome <- steamRunGlobal
+            { manifest: dir <> "/app/foreign.json"
+            , entry: "Entry"
+            , global
+            , modules: map _.object entries <> map (\m -> dir <> "/app/output/" <> m <> ".dmo") [ "Console", "Lifted", "Entry" ]
+            }
+          outcome.err `shouldEqual` ""
+          outcome.status `shouldEqual` 0
+          printed outcome `shouldEqual` [ "hello, entry point", "hello, stub" ]
 
   it "refuses `dependencies` listing a seed module with another interface" do
     stored <- bytesOf (baseOutput <> "/seeds/Base.Int.dmi")

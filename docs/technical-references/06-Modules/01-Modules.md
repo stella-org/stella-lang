@@ -693,12 +693,22 @@ A design collecting signatures first and permitting forward references is also p
 
 ### The entry point
 
-```text
-  ( M.main : IO Unit ) ∈ Σ
-  ─────────────────────────────
-  M is an executable module
+**`@[entrypoint]` marks the declaration a program starts from** ([Implicit Effect Runner](../../proposals/01-Implicit-Effect-Runner.md)). A module carries it on at most one declaration, a value or a computation with a complete signature, and the compiler checks what the signature is, normalized, where the attribute stands:
+
+| Signature, normalized | The entry point |
+| --- | --- |
+| `IO Unit`, a value | the value as it stands |
+| `Unit / ρ`, a computation, `ρ` closed | the stub that runs it by the standard runner |
+| anything else | none: refused |
+
+**A quantifier, a constraint, or a synthesized parameter on the spine is refused**, and so is a result other than `Unit` and a row with a tail; a module carrying the attribute on several declarations has none, each refused. **The stub is a value elaboration declares**, `$entrypoint : IO Unit`, after every declaration of the module:
+
+```stella
+$entrypoint = Base.IO.Effect.runIO ((\_ -> main) :: Unit -> Unit / {| LiftIO |})
 ```
 
-Together with D20 this establishes mechanically that unhandled effects are never executed. The type of `main` is `IO Unit`, an ordinary type with no effect row, so a computation carrying effects cannot have it.
+The annotation makes the λ a boundary at `( LiftIO )`, so implicit handlers lower `ρ` to `LiftIO` by the ordinary insertion rules (D29), and what the boundary finds no plan for is reported where the attribute stands. The stub carries no attribute, is in the module's declarations and its interface's values, and in no export, no catalog, and no scope a name is resolved in; the attribute stays on the declaration it is written on. **The runner is reached through the header**: a computation's entry point needs a module the header imports to export `Base.IO.Effect.runIO` among its values, a re-export publishing it as the module declaring it does and an import list selecting nothing of it, and is refused where the attribute stands otherwise. A value's entry point needs no runner.
 
-A module that is not executable either has no `main` or gives `main` a different type. That is not an error; it means the module is a library.
+**The module's interface names the entry point**, the value or the stub ([Interface](../05-Backend/03-Interface.md)), and the build hands that identity to whatever runs the program. Together with D20 this establishes mechanically that unhandled effects are never executed: what a program starts from is an `IO Unit`, an ordinary type with no effect row, and a computation reaches it only through a runner its row is lowered to.
+
+A module without the attribute is a library, which is no error; so is a module whose entry point nothing runs, a dependency's competing with nothing.

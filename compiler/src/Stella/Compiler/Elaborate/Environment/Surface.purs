@@ -27,7 +27,7 @@ import Data.Maybe (Maybe(..))
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
-import Stella.Compiler.Elaborate.Environment.Implicit (ImplicitCandidate, importedImplicits)
+import Stella.Compiler.Elaborate.Environment.Implicit (ImplicitCandidate, importedImplicits, publishedValues)
 import Stella.Compiler.Elaborate.Environment.Synonyms (SynonymEnv, emptySynonyms, importedSynonyms)
 import Stella.Compiler.Interface.Environment (BuildEnvironment, ModuleView, lookupInterface, reachable)
 import Stella.Compiler.Interface.Module (ValueSort(..))
@@ -40,8 +40,9 @@ import Stella.Compiler.Elaborate.Environment.Operations (EffectEnv, OperationEnv
 -- | The synonyms, the operations, the effects, the values taking a synthesized
 -- | argument at the spine their interface gives them, and the module's values
 -- | without a signature, each by the qualified name of its declaration; the
--- | implicit handlers the imports publish; and the values the modules the
--- | imports reach declare and export as values.
+-- | implicit handlers the imports publish; the values the modules the imports
+-- | reach declare and export as values; and the values the modules the header
+-- | imports publish, by identity.
 type SurfaceEnv =
   { synonyms :: SynonymEnv
   , operations :: OperationEnv
@@ -50,6 +51,7 @@ type SurfaceEnv =
   , bindings :: Map (Qualified Ident) SurfaceBinding
   , implicits :: Array ImplicitCandidate
   , exportedValues :: Set (Qualified Ident)
+  , published :: Set (Qualified Ident)
   }
 
 -- | A value without a signature, as a reference to it reads it: at the scheme
@@ -64,7 +66,7 @@ data SurfaceBinding
   | ProvisionalScheme
 
 emptySurface :: SurfaceEnv
-emptySurface = { synonyms: emptySynonyms, operations: Map.empty, effects: Map.empty, synthesizing: Map.empty, bindings: Map.empty, implicits: [], exportedValues: Set.empty }
+emptySurface = { synonyms: emptySynonyms, operations: Map.empty, effects: Map.empty, synthesizing: Map.empty, bindings: Map.empty, implicits: [], exportedValues: Set.empty, published: Set.empty }
 
 -- | What the modules the imports reach declare.
 importedSurface :: BuildEnvironment -> ModuleView -> SurfaceEnv
@@ -76,6 +78,7 @@ importedSurface env view =
   , bindings: Map.empty
   , implicits: importedImplicits view
   , exportedValues: Set.fromFoldable (Array.concatMap exportedOf (Set.toUnfoldable (reachable view)))
+  , published: Set.fromFoldable (publishedValues view)
   }
   where
   synthesizingOf m = case lookupInterface m env of

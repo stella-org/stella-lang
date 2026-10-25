@@ -25,7 +25,7 @@ import Stella.Compiler.Surface.Type (TypeOperatorTarget(..))
 import Stella.Compiler.TypedCore.Domain (scalarString, scalarValue)
 import Stella.Compiler.TypedCore.Kind (Kind(..), RowElemKind(..), monoScheme)
 import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), ModuleName(..), Qualified(..), RegionName(..), Symbol(..), Tag(..), TyName(..), TyVar(..))
-import Stella.Compiler.TypedCore.Prim (intTy)
+import Stella.Compiler.TypedCore.Prim (intTy, ioTy, unitTy)
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..))
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), Type(..))
@@ -78,6 +78,7 @@ rich =
           , Tuple (Ident "k") { sort: SortValue, scheme: { kindVars: [], body: Plain (TForall (TyVar "e") (KRow RowEffect) (TConstrained (Lacks (EffectKey (inM (EffName "E"))) (TVar (TyVar "e"))) int)) }, attributes: [] }
           , Tuple (Ident "Leaf") { sort: SortConstructor (inM (TyName "T")), scheme: plain, attributes: [] }
           , Tuple (Ident "get") { sort: SortOperation (inM (EffName "E")), scheme: plain, attributes: [] }
+          , Tuple (Ident "$entrypoint") { sort: SortValue, scheme: { kindVars: [], body: Plain ioUnit }, attributes: [] }
           ]
       , types: Map.fromFoldable
           [ Tuple (TyName "T")
@@ -116,6 +117,7 @@ rich =
   , implicitHandlers: [ { handler: Ident "h", source: RowEffectEntry (inM (EffName "E")) [ int ], targets: [ RowLabelledEffectEntry (Symbol "log") (inM (EffName "E")) [] ] } ]
   , catalogOnly: Set.fromFoldable [ Ident "hidden", Ident "secret" ]
   , arities: Map.fromFoldable [ Tuple (Ident "f") 2, Tuple (Ident "h") 1 ]
+  , entrypoint: Just (Ident "$entrypoint")
   }
   where
   a = TyVar "a"
@@ -155,6 +157,15 @@ charConstant c = case scalarValue c of
   Just v -> ConstantLiteral (LitChar v)
   Nothing -> ConstantLiteral (LitBoolean true)
 
+-- | An interface declaring `main` as the sort given at the scheme body given,
+-- | with the entry point given.
+declaring :: ValueSort -> SchemeBody -> Maybe Ident -> ModuleInterface
+declaring sort body entrypoint = empty { declarations = emptyDeclarations { values = Map.singleton (Ident "main") { sort, scheme: { kindVars: [], body }, attributes: [] } }, entrypoint = entrypoint }
+
+-- | `IO Unit`.
+ioUnit :: Type
+ioUnit = TApp (TCon ioTy []) (TCon unitTy [])
+
 empty :: ModuleInterface
 empty =
   { name: moduleM
@@ -164,6 +175,7 @@ empty =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
 
 stored :: ModuleInterface -> StoredInterface
@@ -189,7 +201,7 @@ file :: P.Array P.String -> P.Array (Tuple P.Int Bytes) -> Bytes
 file extra replaced = header <> section 0x01 ([ Array.length ss ] <> Array.concatMap text ss) <> Array.concatMap one ids
   where
   ss = [ "M" ] <> extra
-  ids = Array.range 0x02 0x0D
+  ids = Array.range 0x02 0x0E
   one id = section id (fromMaybe (emptyOf id) (map (\(Tuple _ b) -> b) (Array.find (\(Tuple i _) -> i == id) replaced)))
   emptyOf id
     | id == 0x02 = [ 0x00 ]
@@ -250,7 +262,7 @@ spec = describe "Stella.Compiler.Interface.File" do
         `shouldEqual` Left (UnknownAbiVersion "other")
 
     it "a section missing, or one it does not know below the boundary" do
-      decode (Array.take (Array.length (file [] []) - 3) (file [] [])) `shouldEqual` Left (SectionMissing 0x0D)
+      decode (Array.take (Array.length (file [] []) - 3) (file [] [])) `shouldEqual` Left (SectionMissing 0x0E)
       decode (file [] [] <> section 0x20 []) `shouldEqual` Left (UnknownSection 0x20)
 
     it "nothing it does not know at or above the boundary, which it skips" do
@@ -266,7 +278,28 @@ spec = describe "Stella.Compiler.Interface.File" do
       decode (file [ "b", "a" ] [ Tuple 0x0D [ 2, 1, 1, 2, 1 ] ]) `shouldEqual` Left EntriesOutOfOrder
       decode (file [ "a" ] [ Tuple 0x0D [ 2, 1, 1, 1, 1 ] ]) `shouldEqual` Left EntriesOutOfOrder
 
+    -- the bytes of an interface without an entry point, its last section
+    -- naming `main`, the first name after the module's, as one
+    it "an entry point naming no value the file declares as a value of type `IO Unit`" do
+      let
+        naming i = Array.dropEnd 3 (bytesOf (stored i)) <> section 0x0E [ 1, 1 ]
+      decode (naming (empty { catalogOnly = Set.singleton (Ident "main") })) `shouldEqual` Left (NotAnEntrypoint (Ident "main"))
+      decode (naming (declaring SortHandler (Plain ioUnit) Nothing)) `shouldEqual` Left (NotAnEntrypoint (Ident "main"))
+      decode (naming (declaring SortValue (Plain int) Nothing)) `shouldEqual` Left (NotAnEntrypoint (Ident "main"))
+      decode (naming (declaring SortValue (Plain ioUnit) Nothing)) `shouldEqual` Right (stored (declaring SortValue (Plain ioUnit) (Just (Ident "main"))))
+
   describe "what an encoder refuses" do
+    it "an entry point naming no value the interface declares as a value of type `IO Unit`" do
+      let
+        entry = Just (Ident "main")
+        refused i = encode (stored i) `shouldEqual` Left (EntrypointNotRunnable (Ident "main"))
+      refused (empty { entrypoint = Just (Ident "main") })
+      refused (declaring SortHandler (Plain ioUnit) entry)
+      refused (declaring SortValue (Plain (TApp (TCon ioTy []) int)) entry)
+      refused (declaring SortValue (Computation (TCon unitTy []) TRowEmpty) entry)
+      refused (declaring SortValue (Forall (TyVar "a") KType (Plain ioUnit)) entry)
+      decode (bytesOf (stored (declaring SortValue (Plain ioUnit) entry))) `shouldEqual` Right (stored (declaring SortValue (Plain ioUnit) entry))
+
     it "an arity below one, a count below zero, and a name no reader could read" do
       encode (stored empty { arities = Map.singleton (Ident "f") 0 }) `shouldEqual` Left (ArityBelowOne (Ident "f") 0)
       encode (stored empty { declarations = emptyDeclarations { operators = Map.singleton (OperatorName "+") { associativity: AssociateLeft, precedence: -1, target: FixityValue (inM (Ident "f")) } } })

@@ -6,8 +6,8 @@ of each module it depends on; a `.dmo` is read only to link or to execute.
 
 **A `.dmi` holds the module's whole interface**: what a module contributes to the
 build environment once it is compiled — what it publishes, every declaration with
-its Core types, its implicit handlers, what it publishes to the catalog alone, and
-its arities ([Modules](../06-Modules/01-Modules.md)). Name resolution and
+its Core types, its implicit handlers, what it publishes to the catalog alone, its
+arities, and its entry point ([Modules](../06-Modules/01-Modules.md)). Name resolution and
 elaboration of a module downstream read it, and so does translation. **What
 optimization across a module boundary wants beyond that is settled when the
 optimizer is written** (D34): the bodies eligible for inlining are not here.
@@ -27,6 +27,7 @@ optimizer is written** (D34): the bodies eligible for inlining are not here.
 | Implicit handlers | Each handler it declares `implicit`, with the element it handles and the elements it performs in its place |
 | Catalog only | The values it publishes to the catalog without exporting them to source. In this version no declaration is: which one is marked so is left open ([Open Questions](../99-Open-Questions/01-Open-Questions.md)), and every interface a build writes holds none |
 | Arities | The definitional arity of each value it declares that a module downstream can reach, where it has one |
+| Entry point | Where it has one, the value a program whose entry module it is starts from: the value `@[entrypoint]` stands on, or the stub elaboration declares to run a computation ([Modules](../06-Modules/01-Modules.md#the-entry-point)). It is the Core global as the module declares it, so no naming convention is part of the ABI |
 | Build hash | Where one was computed, the module's build hash |
 
 **The declarations are every top-level declaration of the module**, and not only
@@ -250,9 +251,10 @@ as for a `.dmo`: until then the format is revised in place and stays at version 
 | `0x0B` | `IMPLICIT_HANDLERS` | `vec`, in the order declared |
 | `0x0C` | `CATALOG_ONLY` | a map from a name to nothing |
 | `0x0D` | `ARITIES` | a map from a name to `uvar arity` |
+| `0x0E` | `ENTRYPOINT` | `optional(name)`: the entry point, a value `VALUES` declares as a value of type `IO Unit` |
 | `0x70` | `BUILD_HASH` | `uvar byteLength`, then the hash; absent where none was computed |
 
-**The sections `0x01` to `0x0D` that format 0 defines are all required**, empty or
+**The sections `0x01` to `0x0E` that format 0 defines are all required**, empty or
 not. No other id below `0x70` is defined, and a reader rejects one where it stands. **An id at or above `0x70` carries no meaning** and a reader
 skips one it does not know: the build hash stands there because nothing reads it to
 decide what the module means. A section that bears on name resolution, type
@@ -315,12 +317,16 @@ region element or a region's key, and the row forms have no tag for either
 | Ill-formed UTF-8, a surrogate, or a `Char` that is no scalar value | A name and a literal are text a Stella `String` could hold (D27) |
 | An arity of zero | A definitional arity is a count of leading lambdas and is at least one; a value with none is not listed, and absence is not zero |
 | A map whose keys do not ascend, a repeated key among them | The order is the format's, and one interface has one file |
+| An entry point naming no value `VALUES` declares as a value, of type `IO Unit` with no quantifier | What a program starts from is checked where the file is written and where it is read alike |
 
-**What a reader checks is the bytes, and not the interface.** Whether a type is well
-kinded, whether an export names a declaration that exists, and whether an arity is
-the one the declaring module's `.dmo` states are not its questions: the first two
-are the build environment's and the type checker's, and the last a loader's,
-through the calls a translation produced (above).
+**What a reader checks is the bytes, and not the interface**, the entry point
+aside. Whether a type is well kinded, whether an export names a declaration that
+exists, and whether an arity is the one the declaring module's `.dmo` states are
+not its questions: the first two are the build environment's and the type
+checker's, and the last a loader's, through the calls a translation produced
+(above). **The entry point is held to name a value of type `IO Unit` the file
+declares**, as it is written and as it is read, since what starts a program from
+the file has nothing else to check it against.
 
 ## What an encoder refuses
 
@@ -332,6 +338,7 @@ through the calls a translation produced (above).
 | An arity below one | A definitional arity counts leading lambdas; a value with none is absent from the table |
 | A precedence or a row position below zero | Each is a count, which a reader reads as one |
 | A region name, as a row element or as a key | No published scheme mentions one (above), and the format has no tag to write it with |
+| An entry point naming no value it declares as a value of type `IO Unit` | The reader refuses it (above) |
 
 None arises from the ordinary route: a translation gives a global installed as a
 function an arity of at least one, a precedence is written as decimal digits, and a
@@ -347,7 +354,7 @@ does for a `.dmo` ([Encoding](02-Encoding.md)).
 | Part | Decided by | Holds |
 | --- | --- | --- |
 | Surface | name resolution | the module's name and imports, its exports, what each declaration is and its members — a data type's constructors, an effect's operations — its fixities, its attributes with their arguments normalized, its attribute declarations' keyword parameters and defaults, which handlers are `implicit`, what it publishes to the catalog alone, and each foreign's observation |
-| Core | elaboration | every scheme and kind, a data type's parameters and constructor fields, a synonym's parameters and body, each operation's signature, each attribute parameter's type, and what each implicit handler handles and performs |
+| Core | elaboration | every scheme and kind, a data type's parameters and constructor fields, a synonym's parameters and body, each operation's signature, each attribute parameter's type, and what each implicit handler handles and performs, and the entry point, with the stub it declares to run one that is a computation |
 | Arities | lowering | read off the Mid IR module the `.dmo` is lowered from: a global installed as a function has the number of parameters of the function table entry it names, and one evaluated at initialization has none ([Mid IR](../04-MiddleEnd/01-Mid-IR.md)) |
 
 **The parts are keyed by the declarations, and assembling them checks that they
@@ -355,7 +362,7 @@ speak of one module.** An interface is made only where the checks pass.
 
 | The parts | Why |
 | --- | --- |
-| A value, type, effect, attribute declaration, or implicit handler the surface part holds and the Core part does not, or a Core entry for none | Each of these has one entry, made of both parts; a fixity is the surface part's alone |
+| A value, type, effect, attribute declaration, or implicit handler the surface part holds and the Core part does not, or a Core entry for none | Each of these has one entry, made of both parts; a fixity is the surface part's alone. The stub that runs an entry point is the one value of the Core part no source declaration is, and the surface part holds it as a value carrying no attribute |
 | A type declaration of one sort in one part and another in the other | A data type's fields, a synonym's body, and a foreign type's nothing are not interchangeable |
 | A data type with another number of constructors in each, an effect with another number of operations, an attribute declaration with another number of parameters | The two are joined member by member |
 | An arity of a value the module does not declare, or that no module downstream can reach; an arity below one | See [Which values have one](#which-values-have-one) |
@@ -373,7 +380,7 @@ speak of one module.** An interface is made only where the checks pass.
 | an intrinsic type the signature holds under the module's name | an intrinsic type of the module, with its canonical class |
 | an attribute declaration | an attribute declaration |
 | an exported value carrying `Prim.macro` | a macro exported in the macro namespace, and no value exported; declared as any value is |
-| fixities, implicit handlers, entries published to the catalog alone, synonyms, foreign types | none |
+| fixities, implicit handlers, entries published to the catalog alone, synonyms, foreign types, an entry point | none |
 
 **What the module owns is what the checked signature holds under its name**, and nothing of an import or of `Prim` is. An intrinsic type the signature holds under the module's name is the module's as a declared type is; a data type there must have the module's Core declaration behind it. **A projection is refused** where a data type in the signature has no declaration of the module, where an export names nothing the module declares, and where an arity is of a value no module downstream reaches or is below one, as an assembled interface's arities are checked. **A module written in source is never projected so**: its interface is assembled from the three parts above, which hold what Core has lost.
 

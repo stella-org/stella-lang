@@ -79,6 +79,9 @@ type ModuleInterface =
   -- | one, which is what makes a saturated call to it a `callk`. A value it
   -- | re-exports has its arity in the interface of the module declaring it.
   , arities :: Map Ident Int
+  -- | The value a program whose entry module this is starts from, a value of
+  -- | type `IO Unit` it declares, where it has an entry point.
+  , entrypoint :: Maybe Ident
   }
 
 -- | The names a module publishes, one table per namespace, each keyed by the

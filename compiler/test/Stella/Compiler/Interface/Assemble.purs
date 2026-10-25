@@ -77,6 +77,7 @@ coreA =
   , effects: Map.singleton (EffName "E") { params: [], operations: [ { binders: [], arguments: [ TCon unitTy [] ], resumesWith: int } ] }
   , attributes: Map.singleton (Ident "json") { positional: [], keyword: [ TCon stringTy [], int ] }
   , implicitHandlers: Map.singleton (Ident "quiet") { source: RowEffectEntry (inA (EffName "E")) [], targets: [] }
+  , entrypoint: Nothing
   }
   where
   shape = TCon (inA (TyName "Shape")) []

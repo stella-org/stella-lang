@@ -64,6 +64,7 @@ environment = case addInterface interfaceA initialEnvironment of
     , implicitHandlers: []
     , catalogOnly: Set.empty
     , arities: Map.empty
+    , entrypoint: Nothing
     }
   scheme = plainScheme (monoScheme (TCon intTy []))
   int = TCon intTy []

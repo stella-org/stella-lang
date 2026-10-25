@@ -41,8 +41,8 @@ import Stella.Compiler.Elaborate.Surface.Types (readTypes)
 import Stella.Compiler.Elaborate.Mechanism.Fit (FitUse(..))
 import Stella.Compiler.Elaborate.Mechanism.Kinding (KindEvidence(..))
 import Stella.Compiler.Elaborate.Mechanism.Pending (PendingId(..))
-import Stella.Compiler.Elaborate.Surface.Internal (EntryDeclaration(..), standardRunner)
-import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), ImplicitProblem(..), cellRecords, elaborateModuleM, escapedCells, settleBodies)
+import Stella.Compiler.Elaborate.Surface.Internal (EntryDeclaration(..), entrypointStub, liftIOEffect, standardRunner)
+import Stella.Compiler.Elaborate.Surface.Module (ElaboratedValue, ElaborationError(..), EntrypointProblem(..), ImplicitProblem(..), cellRecords, elaborateModuleM, escapedCells, settleBodies)
 import Data.Identity (Identity(..))
 import Stella.Compiler.Elaborate.Surface.Report (elaborationOrigins, printElaborationError, printType)
 import Stella.Compiler.Elaborate.Surface.Type (Unsupported(..))
@@ -133,6 +133,7 @@ libInterface =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
   where
   a = TyVar "a"
@@ -185,6 +186,42 @@ continuationInterfaceHolding field = libInterface
 
 environment :: Either String BuildEnvironment
 environment = environmentWith continuationInterface
+
+-- | The type the standard runner is listed at.
+runnerType :: Type
+runnerType = TForall a KType (pureFn (fn (TCon unitTy []) (TRowExtend (RowEffectEntry liftIOEffect []) TRowEmpty) (TVar a)) (TApp (TCon ioTy []) (TVar a)))
+  where
+  a = TyVar "a"
+
+-- | `Base.IO.Effect`: `LiftIO`, with no operation, and `runIO` of the sort and
+-- | at the type given, exported or not.
+ioEffectHolding :: Boolean -> ValueSort -> Type -> ModuleInterface
+ioEffectHolding exported sort ty = libInterface
+  { name = ioEffectModule
+  , imports = []
+  , exports = emptyExports
+      { values = if exported then Map.singleton "runIO" { entity: standardRunner, via: Declared } else Map.empty
+      , types = Map.singleton "LiftIO" { entity: EffectEntity liftIOEffect, via: Declared, members: [] }
+      }
+  , declarations = emptyDeclarations
+      { values = Map.singleton (Ident "runIO") { sort, scheme: plainScheme (monoScheme ty), attributes: [] }
+      , effects = Map.singleton (EffName "LiftIO") { params: [], operations: [], attributes: [] }
+      }
+  }
+
+ioEffectModule :: ModuleName
+ioEffectModule = ModuleName "Base.IO.Effect"
+
+-- | `Base.IO.Effect` as its source compiles; `Mid`, importing it and exporting
+-- | nothing; and `Re`, re-exporting its runner.
+runnerEnvironment :: Either String BuildEnvironment
+runnerEnvironment = environment >>= \env -> lmap show (addInterface (ioEffectHolding true SortValue runnerType) env >>= addInterface mid >>= addInterface re)
+  where
+  mid = libInterface { name = ModuleName "Mid", imports = [ ioEffectModule ], exports = emptyExports, declarations = emptyDeclarations }
+  re = mid
+    { name = ModuleName "Re"
+    , exports = emptyExports { values = Map.singleton "runIO" { entity: standardRunner, via: ThroughImport ioEffectModule } }
+    }
 
 -- | `Stella.Elab`, which `Lib`'s synthesizers are written against, `Lib`, and
 -- | the `Base.Continuation` given.
@@ -367,6 +404,15 @@ at = case _ of
   CoreRefused _ -> "the Core checker refused it"
   InternalEntryMismatch _ -> "an internal entry mismatched"
   InternalEntryDeclared _ name _ -> "an internal entry declared otherwise: " <> show name
+  EntrypointRefused o problem -> located o <> " entrypoint: " <> case problem of
+    EntrypointSeveral -> "several"
+    EntrypointUnsigned -> "unsigned"
+    EntrypointPartial -> "partial"
+    EntrypointQuantified -> "quantified"
+    EntrypointSynthesized -> "synthesized"
+    EntrypointRowOpen -> "row open"
+    EntrypointNotRunnable -> "not runnable"
+    EntrypointRunnerUnreached -> "runner unreached"
   Broken _ -> "broken"
   AttemptPostponed -> "postponed"
 
@@ -1713,31 +1759,76 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
 
     it "is refused, its module importing a `Base.IO.Effect` whose standard runner is at another scheme, unexported, or a handler, as the compiler's fault" do
       let
-        effectModule = ModuleName "Base.IO.Effect"
-        liftIO = Qualified effectModule (EffName "LiftIO")
         a = TyVar "a"
-        listed = TForall a KType (pureFn (fn (TCon unitTy []) (TRowExtend (RowEffectEntry liftIO []) TRowEmpty) (TVar a)) (TApp (TCon ioTy []) (TVar a)))
-        other = TForall a KType (pureFn (fn (TCon unitTy []) (TRowExtend (RowEffectEntry liftIO []) TRowEmpty) (TVar a)) (TVar a))
-        importing exported sort ty k = elaboratingIn (environment >>= (lmap show <<< addInterface (holding exported sort ty))) "module M where\nimport Base.IO.Effect" [ "f :: Int", "f = 1" ] k
+        other = TForall a KType (pureFn (fn (TCon unitTy []) (TRowExtend (RowEffectEntry liftIOEffect []) TRowEmpty) (TVar a)) (TVar a))
+        importing exported sort ty k = elaboratingIn (environment >>= (lmap show <<< addInterface (ioEffectHolding exported sort ty))) "module M where\nimport Base.IO.Effect" [ "f :: Int", "f = 1" ] k
         refused r = case r.errors of
           [ InternalEntryMismatch name ] -> name `shouldEqual` standardRunner
           errors -> fail ("not a mismatch: " <> show (map at errors))
-        holding exported sort ty = libInterface
-          { name = effectModule
-          , imports = []
-          , exports = emptyExports
-              { values = if exported then Map.singleton "runIO" { entity: standardRunner, via: Declared } else Map.empty
-              , types = Map.singleton "LiftIO" { entity: EffectEntity liftIO, via: Declared, members: [] }
-              }
-          , declarations = emptyDeclarations
-              { values = Map.singleton (Ident "runIO") { sort, scheme: plainScheme (monoScheme ty), attributes: [] }
-              , effects = Map.singleton (EffName "LiftIO") { params: [], operations: [], attributes: [] }
-              }
-          }
+        listed = runnerType
       importing true SortValue listed \r -> map at r.errors `shouldEqual` []
       importing true SortValue other refused
       importing false SortValue listed refused
       importing true SortHandler listed refused
+
+  describe "an entry point" do
+    let
+      -- an effect of the module's own, and an implicit handler lowering it to
+      -- `LiftIO`, as the header given names it
+      lowering liftIO = [ "effect Say where", "  say :: Unit ->* Unit", "implicit", "handler sayAsLift :: Say ~> ( " <> liftIO <> " ) where", "  fast | say _ = ()" ]
+      running header declarations k = elaboratingIn runnerEnvironment ("module M where\n" <> header) declarations k
+      computation = [ "@[entrypoint]", "main :: Unit / {| Say |}", "main = say ()" ]
+      stub = inM "$entrypoint"
+      entrypointOf r = r.module >>= _.interface.entrypoint
+      refusedAs header declarations expected = running header declarations \r -> map spanned r.errors `shouldEqual` expected
+
+    it "is a value of type `IO Unit` as it stands, with no stub, whatever the header imports" do
+      running "" [ "foreign io :: IO Unit", "@[entrypoint]", "main :: IO Unit", "main = io" ] \r -> do
+        map at r.errors `shouldEqual` []
+        entrypointOf r `shouldEqual` Just (Ident "main")
+        map _.name r.values `shouldEqual` [ inM "main" ]
+
+    it "is, for a computation, a stub of type `IO Unit` applying the standard runner to its thunk, an implicit handler lowering it to `LiftIO`" do
+      running "import Base.IO.Effect" (lowering "LiftIO" <> computation) \r -> do
+        map at r.errors `shouldEqual` []
+        entrypointOf r `shouldEqual` Just entrypointStub
+        case Array.find (\v -> v.name == stub) r.values of
+          Nothing -> fail "no stub"
+          Just v -> do
+            v.scheme `shouldEqual` { kindVars: [], body: TApp (TCon ioTy []) (TCon unitTy []) }
+            v.attributes `shouldEqual` []
+            let referred = Array.fromFoldable (globalsOf v.body)
+            Array.elem standardRunner referred `shouldEqual` true
+            Array.elem (inM "sayAsLift") referred `shouldEqual` true
+            Array.elem (inM "main") referred `shouldEqual` true
+        checked r \core -> Array.filter (_ == ExportValue entrypointStub) core.exports `shouldEqual` []
+        map (Map.member entrypointStub <<< _.interface.schemes) r.module `shouldEqual` Just true
+
+    it "reaches the runner through any module the header imports exporting it, whatever its import list, and through no other" do
+      running "import Base.IO.Effect (LiftIO)" (lowering "LiftIO" <> computation) \r -> map at r.errors `shouldEqual` []
+      running "import Base.IO.Effect hiding (runIO)" (lowering "LiftIO" <> computation) \r -> map at r.errors `shouldEqual` []
+      running "import Base.IO.Effect as E" (lowering "E.LiftIO" <> computation) \r -> map at r.errors `shouldEqual` []
+      -- `Re` alone, whose import list selects nothing, re-exporting the runner
+      running "import Re ()" [ "@[entrypoint]", "main :: Unit / {||}", "main = ()" ] \r -> do
+        map at r.errors `shouldEqual` []
+        entrypointOf r `shouldEqual` Just entrypointStub
+      running "import Mid" [ "@[entrypoint]", "main :: Unit / {||}", "main = ()" ] \r -> map spanned r.errors `shouldEqual` [ "4:1 entrypoint: runner unreached" ]
+
+    it "is refused where the attribute stands, a module carrying it on several declarations having none" do
+      refusedAs "import Base.IO.Effect" [ "foreign io :: IO Unit", "@[entrypoint]", "main :: IO Unit", "main = io", "@[entrypoint]", "other :: IO Unit", "other = io" ]
+        [ "5:1 entrypoint: several", "8:1 entrypoint: several" ]
+      refusedAs "" [ "foreign io :: IO Unit", "@[entrypoint]", "main = io" ] [ "5:1 entrypoint: unsigned" ]
+      refusedAs "" [ "foreign io :: IO Unit", "@[entrypoint]", "main :: _", "main = io" ] [ "5:1 entrypoint: partial" ]
+      refusedAs "" [ "foreign io :: IO Unit", "@[entrypoint]", "main :: forall a. a -> IO Unit", "main _ = io" ] [ "5:1 entrypoint: quantified" ]
+      refusedAs "" [ "foreign io :: IO Unit", "@[entrypoint]", "main :: {{ d :: Int by resolveInt }} -> IO Unit", "main _ = io" ] [ "5:1 entrypoint: synthesized" ]
+      refusedAs "import Base.IO.Effect" (lowering "LiftIO" <> [ "@[entrypoint]", "main :: forall r. Unit / {| Say, ...r |}", "main = say ()" ]) [ "9:1 entrypoint: row open" ]
+      refusedAs "" [ "@[entrypoint]", "main :: Int", "main = 1" ] [ "4:1 entrypoint: not runnable" ]
+      refusedAs "import Base.IO.Effect" [ "@[entrypoint]", "main :: Int / {||}", "main = 1" ] [ "4:1 entrypoint: not runnable" ]
+      refusedAs "" [ "@[entrypoint]", "main :: Unit / {||}", "main = ()" ] [ "4:1 entrypoint: runner unreached" ]
+
+    it "reports what the stub's boundary finds no plan for where the attribute stands" do
+      -- checking stops there, leaving the computation unchecked
+      refusedAs "import Base.IO.Effect" [ "effect Say where", "  say :: Unit ->* Unit", "@[entrypoint]", "main :: Unit / {| Say |}", "main = say ()" ] [ "6:1 no implicit handler", "8:1 left unchecked" ]
 
   describe "a handling expression declaring cells" do
     let

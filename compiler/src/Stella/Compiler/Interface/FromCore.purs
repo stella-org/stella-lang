@@ -86,6 +86,7 @@ interfaceOfCore m declared imports arities = do
     , implicitHandlers: []
     , catalogOnly: Set.empty
     , arities
+    , entrypoint: Nothing
     }
   where
   self = m.name

@@ -410,6 +410,16 @@ Residual computation over an unknown tail takes this shape: `normalizeRow` extra
 
 **The Core type checker checks the reference as it checks any other**, as the application of a newtype constructor, and does not ask who wrote it. That no other term builds a `Continuation` is a guarantee of surface elaboration, and of nothing beneath it.
 
+**An entry point that is a computation is run by a value elaboration declares**, `$entrypoint : IO Unit`, after every declaration of the module ([Modules](../06-Modules/01-Modules.md#the-entry-point)). Its body is written as source would write it, and elaborated as any value with a signature is:
+
+```text
+@[entrypoint] main :: Unit / ρ
+  ⟹  $entrypoint :: IO Unit
+      $entrypoint = Base.IO.Effect.runIO ((\_ -> main) :: Unit -> Unit / {| LiftIO |})
+```
+
+The annotation makes the λ a [checking boundary](#explicit-checking-boundaries) at `( LiftIO )`, whose plan of implicit handlers lowers `ρ`; every part of the stub stands where the attribute does, so what the boundary finds no plan for is reported there. The stub is no catalog entry, and its name, beginning with `$`, is in no scope.
+
 ## Inference
 
 The surface elaborator infers what a signature does not write. This section fixes the judgement it uses, how an effect row is fitted where it is used, when and over what a declaration is generalized, and how a written signature is checked. The mechanism it runs on — jobs, attempts, the transaction — is the subject of [Elaborator API](03-Elaborator-API.md).

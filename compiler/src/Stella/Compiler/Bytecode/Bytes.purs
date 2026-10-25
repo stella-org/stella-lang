@@ -111,6 +111,9 @@ data EncodeError
   -- | A region name in an interface. A published scheme is checked with no
   -- | region in scope, so none can mention one, and the format has no tag for it.
   | RegionInInterface RegionName
+  -- | An interface's entry point naming no value it declares as a value of type
+  -- | `IO Unit`, which no reader would read back.
+  | EntrypointNotRunnable Ident
 
 -- Writing ------------------------------------------------------------------------
 
@@ -263,6 +266,9 @@ data DecodeError
   -- | Interface entries that do not ascend strictly by name, a repeated name among
   -- | them. The order is the format's, and one module has one file.
   | EntriesOutOfOrder
+  -- | An interface's entry point naming no value it declares as a value of type
+  -- | `IO Unit`.
+  | NotAnEntrypoint Ident
   -- | A byte after what the file holds. A longer file is a later format, not this
   -- | one with something ignorable at the end.
   | TrailingBytes

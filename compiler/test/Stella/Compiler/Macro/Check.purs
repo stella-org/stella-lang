@@ -60,6 +60,7 @@ macrosInterface =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
 
 spec :: Spec Unit

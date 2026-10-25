@@ -103,8 +103,8 @@ main :: Unit / ρ
 main = e
 
 -- generated
-$entry_main :: IO Unit
-$entry_main = Base.IO.Effect.runIO ((\_ -> main) :: Unit -> Unit / {| LiftIO |})
+$entrypoint :: IO Unit
+$entrypoint = Base.IO.Effect.runIO ((\_ -> main) :: Unit -> Unit / {| LiftIO |})
 ```
 
 **The annotation is what makes insertion happen.** An argument is checked against the type the
@@ -115,14 +115,15 @@ annotation writes the arrow, so the λ is a boundary at `( LiftIO )`, its body i
 complete source row, and a unique plan of implicit handlers lowers that row to `( LiftIO )`
 ([Effect Handlers](../technical-references/02-Surface-Language/02-Effect-Handlers.md#insertion)).
 The rest is standard elaboration: `main` inside the λ is a computation reference, forced as any
-other is, and `$entry_main` is a top-level value with a signature, its right-hand side a boundary
+other is, and `$entrypoint` is a top-level value with a signature, its right-hand side a boundary
 at `()`.
 
 **Where several capabilities lower independently into `LiftIO`, the plan is ambiguous as it is
 anywhere** (D29). The entry point is not a special case: its author writes the composition.
 
-**The generated global is private.** Its name is one source cannot write, fresh in the module;
-`$entry_main` illustrates it and is no naming rule. It stands in the module's declaration table as
+**The generated global is private.** Its name, `$entrypoint`, is one source cannot write, and is
+fresh in the module, which has one entry point. The name is no part of the ABI: whatever runs the
+program reads the identity from the interface (§5). It stands in the module's declaration table as
 a value of type `IO Unit`, and in no export, no catalog, and no scope a name is resolved in. The
 attribute stays on the declaration its author wrote it on, and is not moved to the stub. The stub is
 an ordinary value declaration, initialized as any other is.

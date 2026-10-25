@@ -1,0 +1,12 @@
+module Entry where
+
+import Base.IO.Effect (LiftIO)
+import Lifted (Greet(..))
+
+-- Run by the stub the attribute asks for, `greetAsLift`, which `Lifted`
+-- exports, lowering each greeting.
+@[entrypoint]
+main :: Unit / {| Greet |}
+main =
+  let _ = greet "entry point" in
+  greet "stub"

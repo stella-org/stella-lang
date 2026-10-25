@@ -16,7 +16,10 @@
 -- | **A reader checks the bytes, not the interface.** A tag it does not know, an
 -- | index outside the string table, a map out of order, and an arity below one
 -- | are refused; whether a type is well kinded, or an export names a
--- | declaration that exists, is not this file's to say.
+-- | declaration that exists, is not this file's to say. **The entry point is
+-- | the exception**: what starts a program from the file is held to name a
+-- | value of type `IO Unit` the file declares, as it is written and as it is
+-- | read.
 module Stella.Compiler.Interface.File
   ( StoredInterface
   , magic
@@ -32,7 +35,7 @@ import Prim as P
 
 import Data.Array as Array
 import Data.Either (Either)
-import Data.Foldable (traverse_)
+import Data.Foldable (for_, traverse_)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
@@ -54,6 +57,7 @@ import Stella.Compiler.TypedCore.Name (EffName(..), Ident(..), KindVar(..), Modu
 import Stella.Compiler.TypedCore.Signature (CanonicalClass(..))
 import Stella.Compiler.TypedCore.Term (Literal(..))
 import Stella.Compiler.TypedCore.Type (Constraint(..), RowEntry(..), RowKey(..), TyBinder, Type(..))
+import Stella.Compiler.TypedCore.Prim (ioTy, unitTy)
 
 -- | An interface as a file holds it: the interface, and the build hash of the
 -- | module, where one was computed. What the hash is computed from is not
@@ -112,6 +116,9 @@ sectionCatalogOnly = 0x0C
 sectionArities :: P.Int
 sectionArities = 0x0D
 
+sectionEntrypoint :: P.Int
+sectionEntrypoint = 0x0E
+
 -- | The build hash, which says nothing of the module and is skippable.
 sectionBuildHash :: P.Int
 sectionBuildHash = 0x70
@@ -133,6 +140,7 @@ layout =
       , sectionImplicitHandlers
       , sectionCatalogOnly
       , sectionArities
+      , sectionEntrypoint
       ]
   }
 
@@ -140,7 +148,8 @@ layout =
 
 -- | **What this writes, a decoder returns.** An arity below one is refused
 -- | rather than written, absence being what a value without one has, and so is
--- | a count below zero and a name no reader could read.
+-- | a count below zero, a name no reader could read, and an entry point naming
+-- | no value of type `IO Unit` the interface declares.
 encode :: StoredInterface -> Either EncodeError Bytes
 encode stored = do
   abi <- utf8 abiVersion
@@ -173,6 +182,7 @@ sectionsOf i = do
   implicit <- vec implicitHandler i.implicitHandlers
   catalogOnly <- vec (str <<< identText) (Array.sortBy (\a b -> compareByScalar (identText a) (identText b)) (Set.toUnfoldable i.catalogOnly))
   arities <- vec arity (Array.sortBy (\(Tuple a _) (Tuple b _) -> compareByScalar (identText a) (identText b)) (Map.toUnfoldable i.arities))
+  entrypoint <- optional entry i.entrypoint
   pure
     ( section sectionModule name
         <> section sectionImports imports
@@ -186,11 +196,22 @@ sectionsOf i = do
         <> section sectionImplicitHandlers implicit
         <> section sectionCatalogOnly catalogOnly
         <> section sectionArities arities
+        <> section sectionEntrypoint entrypoint
     )
   where
   arity (Tuple name n)
     | n < 1 = throwE (ArityBelowOne name n)
     | otherwise = (_ <> uvar n) <$> str (identText name)
+  entry name
+    | runnable i name = str (identText name)
+    | otherwise = throwE (EntrypointNotRunnable name)
+
+-- | Whether the value an entry point names is one the interface declares as a
+-- | value of type `IO Unit`, which is what a program starts from.
+runnable :: ModuleInterface -> Ident -> P.Boolean
+runnable i name = case Map.lookup name i.declarations.values of
+  Just { sort: SortValue, scheme: { kindVars: [], body: Plain t } } -> t == TApp (TCon ioTy []) (TCon unitTy [])
+  _ -> false
 
 -- | A map, each key as its spelling then its value, in ascending order of the
 -- | spelling by scalar value.
@@ -523,7 +544,8 @@ decode bytes = runR bytes do
   implicit <- sectionR attributes.previous sectionImplicitHandlers (vecR (implicitHandlerR ss))
   catalogOnly <- sectionR implicit.previous sectionCatalogOnly (tableR ss Ident (pure unit))
   arities <- sectionR catalogOnly.previous sectionArities (tableR ss Ident arityR)
-  trailing <- C.trailingR layout known arities.previous
+  entrypoint <- sectionR arities.previous sectionEntrypoint (optionalR (Ident <$> strR ss))
+  trailing <- C.trailingR layout known entrypoint.previous
   let
     declarations :: Declarations
     declarations =
@@ -534,16 +556,21 @@ decode bytes = runR bytes do
       , typeOperators: typeOperators.value
       , attributes: attributes.value
       }
+
+    interface :: ModuleInterface
+    interface =
+      { name: name.value
+      , imports: imports.value
+      , exports: exports.value
+      , declarations
+      , implicitHandlers: implicit.value
+      , catalogOnly: Set.fromFoldable (Map.keys catalogOnly.value)
+      , arities: arities.value
+      , entrypoint: entrypoint.value
+      }
+  for_ interface.entrypoint \e -> when (not (runnable interface e)) (throwR (NotAnEntrypoint e))
   pure
-    { interface:
-        { name: name.value
-        , imports: imports.value
-        , exports: exports.value
-        , declarations
-        , implicitHandlers: implicit.value
-        , catalogOnly: Set.fromFoldable (Map.keys catalogOnly.value)
-        , arities: arities.value
-        }
+    { interface
     , buildHash: map (\(Tuple _ hash) -> hash) (Array.head trailing)
     }
   where

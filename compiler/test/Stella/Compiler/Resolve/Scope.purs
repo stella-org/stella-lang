@@ -65,6 +65,7 @@ interfaceOf name imports exports =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
 
 -- | `B` imports `A`, exports its own `x`, and re-exports `A`'s `T` and `+`.

@@ -48,7 +48,7 @@ qualifier     ::= ( upperName "." )+
 - **A qualified name** is a qualifier followed with no space by a lower case name, an upper case name, a discriminator, an operator, or `(`: `Data.Array.length`, `M.Just`, `M.Just?`, `DA.++`, `DA.(++)`, `DA.( … )`. A qualifier may contain digits: `Html5.div`.
 - **A keyword is lexed as a name**, and the grammar tells it apart. That is what lets a record field be named by a keyword ([Syntax](05-Syntax.md)).
 
-A name the compiler generates, such as `$entry_main`, is not a name of this grammar, and so never meets one written in the source.
+A name the compiler generates, such as `$entrypoint`, is not a name of this grammar, and so never meets one written in the source.
 
 ### Keywords
 

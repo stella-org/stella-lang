@@ -50,6 +50,7 @@ bare name imports =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
 
 -- | `A` declares and exports `x`, an `Int`.

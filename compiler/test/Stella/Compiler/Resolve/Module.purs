@@ -82,6 +82,7 @@ environment = case addInterface interfaceA initialEnvironment >>= addInterface e
     , implicitHandlers: []
     , catalogOnly: Set.empty
     , arities: Map.empty
+    , entrypoint: Nothing
     }
 
   elab :: ModuleInterface
@@ -93,6 +94,7 @@ environment = case addInterface interfaceA initialEnvironment >>= addInterface e
     , implicitHandlers: []
     , catalogOnly: Set.empty
     , arities: Map.empty
+    , entrypoint: Nothing
     }
 
 type Ran = { declarations :: Array String, errors :: Array String }

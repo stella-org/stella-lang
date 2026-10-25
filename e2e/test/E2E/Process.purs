@@ -7,6 +7,7 @@ module Test.E2E.Process
   , compile
   , graph
   , steamRun
+  , steamRunGlobal
   , devtools
   , buildBase
   , writeFiles
@@ -57,6 +58,10 @@ graph file = run "stellac/index.dev.js" [ "graph", file ]
 -- | dependency order.
 steamRun :: { manifest :: String, entry :: String, modules :: Array String } -> Aff Outcome
 steamRun p = run "steam/index.dev.js" ([ "run", "--manifest", p.manifest, "--entry", p.entry ] <> p.modules)
+
+-- | `steam run` starting from the global given of the entry module.
+steamRunGlobal :: { manifest :: String, entry :: String, global :: String, modules :: Array String } -> Aff Outcome
+steamRunGlobal p = run "steam/index.dev.js" ([ "run", "--manifest", p.manifest, "--entry", p.entry, "--entry-global", p.global ] <> p.modules)
 
 -- | `stella-devtools` with the arguments given.
 devtools :: Array String -> Aff Outcome

@@ -86,6 +86,7 @@ libInterface =
   , implicitHandlers: []
   , catalogOnly: Set.singleton (Ident "found")
   , arities: Map.empty
+  , entrypoint: Nothing
   }
   where
   declared n = { entity: Qualified lib (Ident n), via: Declared }
@@ -101,6 +102,7 @@ reInterface =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
 
 -- | The same two data types as a Core module, which Core declares.
@@ -202,7 +204,7 @@ spec = describe "Stella.Compiler.Elaborate.Environment.Imported" do
 
     it "holds what a module reached only through another publishes" do
       let
-        c = { name: ModuleName "C", imports: [ re ], exports: emptyExports, declarations: emptyDeclarations, implicitHandlers: [], catalogOnly: Set.empty, arities: Map.empty }
+        c = { name: ModuleName "C", imports: [ re ], exports: emptyExports, declarations: emptyDeclarations, implicitHandlers: [], catalogOnly: Set.empty, arities: Map.empty, entrypoint: Nothing }
       viewing [ libInterface, reInterface, c ] [ ModuleName "C" ] \env view ->
         Array.filter (String.contains (String.Pattern "Lib.")) (names (importedCatalog env view)) `shouldEqual`
           [ "Lib.Box:ConstructorEntry", "Lib.ext:ForeignEntry", "Lib.found:ValueEntry", "Lib.peek:ValueEntry", "Lib.wrap:ValueEntry" ]

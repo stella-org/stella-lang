@@ -41,6 +41,7 @@ interfaceOf name imports =
   , implicitHandlers: []
   , catalogOnly: Set.empty
   , arities: Map.empty
+  , entrypoint: Nothing
   }
 
 -- | `Prim` and a module standing for one the compiler provides.

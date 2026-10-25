@@ -105,15 +105,17 @@ Its README records the state of each result; what follows is what the proofs est
 
 ### What is proved
 
-**Type safety and effect safety are proved for the pure fragment and for programs with effects.** Under a well-formed `Σ` and a conforming global environment:
+**Type safety and effect safety are proved for the pure fragment, for programs with effects, and for regions and cells.** Under a well-formed `Σ` and a conforming global environment:
 
 | Property | Proved of |
 | --- | --- |
-| Preservation of type, ambient row, and coverage | every step that uses no rule of regions and cells: β, `let`, the record and variant rules, `case` and `match`, join points, a saturated foreign's chain through its typed adapter, and handlers, `full` and `fast` clauses alike, deep and multi-shot |
-| Progress | a closed, covered term typed at the empty row, calling foreigns only inside their preconditions, and holding no region, cell, `letrec`, `force`, or `fill`: it is a value, steps, or faults |
+| Preservation of type, ambient row, and coverage | every step by a rule other than those of `letrec`, `force`, and `fill`: β, `let`, the record and variant rules, `case` and `match`, join points, a saturated foreign's chain through its typed adapter, handlers, `full` and `fast` clauses alike, deep and multi-shot, and regions and cells: an opening extends `Γ_R` with the region it allocates, and every other rule keeps it |
+| Progress | a closed, covered term typed at the empty row, calling foreigns only inside their preconditions, and holding no `letrec`, `force`, or `fill`: it is a value, steps, or faults. A cell operation at the empty row always stands under a frame of its region |
 | Effect safety | the same rules, along every reduction sequence: no sequence from a closed term typed at the empty row reaches a `perform` that no handler of its key encloses |
 
-**The rest of the properties are being extended to.** Preservation and effect safety over the rules of regions and cells are under review, and progress over them is not yet stated. `letrec`, `force`, and `fill` with their store are still to be added, and with them initialization safety. Erasure is planned: the semantic environment already separates each foreign's typed adapter from its erased function and carries erasure coherence (D53), so the obligation it will discharge is in place.
+Preservation and effect safety also assume that the region names allocated so far include those of `Γ_R`, from which an opening picks a fresh one; this holds at the start of a run.
+
+**The rest of the properties are being extended to.** `letrec`, `force`, and `fill` with their store are still to be added, and with them initialization safety. Erasure is planned: the semantic environment already separates each foreign's typed adapter from its erased function and carries erasure coherence (D53), so the obligation it will discharge is in place.
 
 **Proving them repaired the specification.** Where a property failed to go through, the cause was a hole in these documents, and the repairs are the decisions it led to: total type equality and the checked `Σ ok` ([Core Soundness Repairs](../../proposals/14-Core-Soundness-Repairs.md)), application chains (D49), relative scoping of join points (D50), the value restriction on kind-generalized definitions (D52), and typed foreign adapters with coverage preservation (D53).
 
@@ -1787,6 +1789,20 @@ A `foreign` the ABI fixes, against one a host implements ([Prim and Base](../06-
 | `Base.IO.Effect` compiled from its source | Its interface exports `LiftIO` and `runIO` under their own names, `runIO` a value at the scheme listed |
 | A module of the same program running a computation by `Base.IO.Effect.runIO`, written by hand under an annotation at `( LiftIO )`, the computation performing an effect of the module's own that an implicit handler of its own lowers to `LiftIO` | Run by `steam run`, printing the two greetings in order |
 | The same program whose `dependencies` lists `Base.Int` with another interface, `Prim`, or `Base.String` and `Base.Int` twice | Refused, each with its message |
+
+### Entry points (step 7)
+
+`@[entrypoint]` accepted, the stub that runs a computation, and the interface naming the entry point ([Modules](../06-Modules/01-Modules.md#the-entry-point)).
+
+| Input | Required outcome |
+| --- | --- |
+| A value `main :: IO Unit` carrying the attribute, in a module importing no runner | Accepted, with no stub; the interface's entry point is `main` |
+| A computation `main :: Unit / {| Say |}` carrying it, an implicit handler `Say ~> ( LiftIO )` of the module's, the header importing `Base.IO.Effect` | A stub `$entrypoint : IO Unit`, carrying no attribute, applying `Base.IO.Effect.runIO` to a thunk of `main` through the handler; in the module's declarations and its interface's values, in no export and no catalog, with no arity; the interface's entry point is the stub, through its file unchanged |
+| The same computation, the header importing `Base.IO.Effect` with an import list, `hiding`, or an alias, or a module re-exporting `runIO`; importing only a module that imports `Base.IO.Effect` and exports nothing | Accepted; the last refused where the attribute stands, the runner unreached |
+| The attribute on two declarations; on a value with no signature, a partial signature, a quantifier, or a synthesized parameter; on a computation whose row has a tail; on a value not at `IO Unit`, or a computation whose result is not `Unit`; on a computation in a module importing no runner | Each refused where the attribute stands, both of the two; a module carrying several has no entry point |
+| A computation entry point whose row no implicit handler lowers to `LiftIO` | Reported where the attribute stands |
+| An interface whose entry point names no value it declares, a handler, or a value not exactly at `IO Unit`; the same bytes, the entry point written in | Refused by the encoder, and by the decoder |
+| A program built from source with an entry module whose entry point is a computation | Run by `steam run` from the global its `.dmi` names |
 
 ### Source dependencies, read from headers (step 7)
 
