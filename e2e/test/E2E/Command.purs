@@ -29,16 +29,19 @@ import Prelude
 
 import Prim as P
 
+import Data.Argonaut.Core (fromObject, toObject)
+import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
-import Data.Either (Either(..))
+import Data.Either (Either(..), hush)
 import Data.Foldable (for_)
 import Data.Maybe (Maybe(..), maybe)
 import Data.Set as Set
-import Data.Traversable (traverse)
+import Data.Traversable (for, traverse)
+import Data.Tuple (Tuple(..))
 import Node.FS.Perms as Perms
 import Node.FS.Stats as Stats
 import Data.String as String
-import Effect.Aff (Aff)
+import Effect.Aff (Aff, error, throwError)
 import Effect.Class (liftEffect)
 import Node.Buffer as Buffer
 import Node.ChildProcess.Types (Exit(..))
@@ -46,6 +49,8 @@ import Node.Encoding (Encoding(..))
 import Node.FS.Aff as FS
 import Node.Library.Execa (execa)
 import Node.Process as Process
+import Foreign.Object as Object
+import Stella.Compiler.ProgramDescriptor as ProgramDescriptor
 import E2E.Build (Sources, builtFrom)
 import Stella.Compiler.Bytecode (Dmo, encode)
 import Stella.Compiler.Bytecode.Instr (ConstIx(..), ForeignIx(..), FuncIx(..), Instr(..), Reg(..), Tail(..))
@@ -160,10 +165,10 @@ type Fixture = P.Array Dmo
 compiled :: Sources -> Either P.String Fixture
 compiled sources = builtFrom sources [ "command" ]
 
--- | The paths of the modules named and of every module they import, in the order
--- | they were built, which is an order an import admits.
-reaching :: Fixture -> P.Array P.String -> P.Array P.String
-reaching made names = map (\d -> pathOf (nameOf d)) (Array.filter (\d -> Set.member (nameOf d) wanted) made)
+-- | The modules named and every module they import, in the order they were
+-- | built, which is an order an import admits.
+closureOf :: Fixture -> P.Array P.String -> P.Array P.String
+closureOf made names = map nameOf (Array.filter (\d -> Set.member (nameOf d) wanted) made)
   where
   nameOf d = case d.name of
     ModuleName n -> n
@@ -178,6 +183,28 @@ reaching made names = map (\d -> pathOf (nameOf d)) (Array.filter (\d -> Set.mem
 
 -- Running the command ----------------------------------------------------------------
 
+type Program = { entry :: P.String, global :: P.String, modules :: P.Array P.String, manifest :: Maybe P.String }
+
+-- | A manifest file's version is the file's, and not part of what a
+-- | descriptor embeds.
+programOf :: P.String -> Program -> Aff P.String
+programOf name p = do
+  foreign' <- for p.manifest \m -> do
+    text <- FS.readTextFile UTF8 (manifestPath m)
+    case toObject =<< hush (jsonParser text) of
+      Just fields -> pure (fromObject (Object.delete "formatVersion" fields))
+      Nothing -> throwError (error ("the manifest " <> m <> " is not an object"))
+  let path = dir <> "/" <> name <> ".program.json"
+  writeText path $ ProgramDescriptor.print
+    { entry: Qualified (ModuleName p.entry) (Ident p.global)
+    , modules: map (\m -> { module: ModuleName m, object: m <> ".dmo" }) p.modules
+    , foreign: foreign'
+    }
+  pure path
+
+running :: P.String -> Program -> Aff Outcome
+running name p = programOf name p >>= \path -> invoke [ path ]
+
 -- | What one invocation left.
 type Outcome =
   { status :: P.Int
@@ -191,7 +218,7 @@ invoke :: P.Array P.String -> Aff Outcome
 invoke = invokeCommand "run"
 
 -- | The same, run from another directory, which is what shows a relative specifier
--- | is resolved against the manifest and not the working directory.
+-- | is resolved against the descriptor and not the working directory.
 invokeFrom :: P.String -> P.Array P.String -> Aff Outcome
 invokeFrom cwd args = do
   result <- execa "node" ([ "../steam/index.dev.js", "run" ] <> args) (_ { cwd = Just cwd })
@@ -202,10 +229,6 @@ invokeFrom cwd args = do
         BySignal _ -> -1
     , err: result.stderr
     }
-
--- | A path as it reads from inside `e2e`.
-pathOfIn :: P.String -> P.String
-pathOfIn name = ".test-dmo/" <> name <> ".dmo"
 
 invokeCommand :: P.String -> P.Array P.String -> Aff Outcome
 invokeCommand command args = do
@@ -367,7 +390,13 @@ manifestPath name = dir <> "/" <> name <> ".json"
 
 spec :: Sources -> Spec Unit
 spec sources = describe "the steam run command" $ requiring (compiled sources) \made -> do
-  let inOrder = reaching made [ "Main" ]
+  let
+    closure = closureOf made
+    -- a program of the entry point given, its modules the closure of its module
+    program entry global = { entry, global, modules: closure [ entry ], manifest: Nothing }
+    host global manifest = (program "Host" global) { manifest = manifest }
+    -- the bytecode written directly reaches `Base.IO` alone
+    bugProgram entry global = { entry, global, modules: closure [ "Base.IO" ] <> [ entry ], manifest: Nothing }
 
   it "writes the fixture" do
     writeModules made
@@ -377,52 +406,66 @@ spec sources = describe "the steam run command" $ requiring (compiled sources) \
   describe "a run that finishes" do
 
     it "exits 0, and says nothing of what the entry point produced" do
-      outcome <- invoke inOrder
+      outcome <- running "main" (program "Main" "main")
       outcome.status `shouldEqual` 0
       outcome.err `shouldEqual` ""
 
-    it "takes the entry point named by --entry-global" do
-      outcome <- invoke (inOrder <> [ "--entry-global", "second" ])
-      outcome.status `shouldEqual` 0
-
-    -- the entry module is named, so another module's `main` is not a competitor
-    it "ignores a main in a module that is not the entry module" do
-      outcome <- invoke
-        (reaching made [ "Other", "Main" ] <> [ "--entry", "Main" ])
+    it "takes the entry point the descriptor names" do
+      outcome <- running "second" (program "Main" "second")
       outcome.status `shouldEqual` 0
 
   describe "a refusal before the entry point runs" do
 
-    it "exits 1 where the order an import needs is not the order given" do
-      outcome <- invoke [ pathOf "Main", pathOf "Base.IO" ]
+    it "exits 1 where the descriptor is not there, or does not read as one" do
+      missing <- invoke [ dir <> "/nowhere.program.json" ]
+      missing.status `shouldEqual` 1
+      String.contains (String.Pattern "Cannot read") missing.err `shouldEqual` true
+      writeText (dir <> "/garbage.program.json") "{ not json"
+      garbage <- invoke [ dir <> "/garbage.program.json" ]
+      garbage.status `shouldEqual` 1
+      String.contains (String.Pattern "is not JSON") garbage.err `shouldEqual` true
+      writeText (dir <> "/later.program.json") """{ "formatVersion": 1, "entry": { "module": "Main", "global": "main" }, "modules": [] }"""
+      later <- invoke [ dir <> "/later.program.json" ]
+      later.status `shouldEqual` 1
+      String.contains (String.Pattern "formatVersion is 1") later.err `shouldEqual` true
+
+    it "exits 1 where a module is listed before one it imports" do
+      outcome <- running "reversed" ((program "Main" "main") { modules = Array.reverse (closure [ "Main" ]) })
       outcome.status `shouldEqual` 1
+      String.contains (String.Pattern "which it does not list before it") outcome.err `shouldEqual` true
+
+    -- `Other` declares a `main` too, and the entry module does not reach it
+    it "exits 1 where a module is listed that the entry module does not reach, initializing nothing" do
+      outcome <- running "unreached" ((program "Main" "main") { modules = closure [ "Other", "Main" ] })
+      outcome.status `shouldEqual` 1
+      String.contains (String.Pattern "it lists Other, which the entry module does not reach") outcome.err `shouldEqual` true
 
     it "exits 1 where a file is not there" do
-      outcome <- invoke [ pathOf "Missing" ]
+      outcome <- running "missing" { entry: "Missing", global: "main", modules: [ "Missing" ], manifest: Nothing }
       outcome.status `shouldEqual` 1
       String.contains (String.Pattern "Cannot read") outcome.err
         `shouldEqual` true
 
     -- told apart from a file that is not there, which is a different thing to act on
     it "exits 1 where a file is not bytecode, and says so" do
-      outcome <- invoke [ pathOf "Garbage" ]
+      outcome <- running "garbage-module" { entry: "Garbage", global: "main", modules: [ "Garbage" ], manifest: Nothing }
       outcome.status `shouldEqual` 1
       String.contains (String.Pattern "Not readable as bytecode") outcome.err
         `shouldEqual` true
 
-    it "exits 1 where no module of the entry name was given" do
-      outcome <- invoke (inOrder <> [ "--entry", "Nowhere" ])
+    it "exits 1 where the descriptor does not list the entry module" do
+      outcome <- running "nowhere" ((program "Main" "main") { entry = "Nowhere" })
       outcome.status `shouldEqual` 1
-      String.contains (String.Pattern "--entry") outcome.err `shouldEqual` true
+      String.contains (String.Pattern "it does not list Nowhere") outcome.err `shouldEqual` true
 
     it "exits 1 where the entry module holds no such global" do
-      outcome <- invoke (inOrder <> [ "--entry-global", "absent" ])
+      outcome <- running "absent" (program "Main" "absent")
       outcome.status `shouldEqual` 1
-      String.contains (String.Pattern "--entry-global") outcome.err
+      String.contains (String.Pattern "Main.absent is no global to run") outcome.err
         `shouldEqual` true
 
     it "exits 1 where the entry point is not an action" do
-      outcome <- invoke (inOrder <> [ "--entry-global", "notAnAction" ])
+      outcome <- running "not-an-action" (program "Main" "notAnAction")
       outcome.status `shouldEqual` 1
       String.contains (String.Pattern "not an action") outcome.err
         `shouldEqual` true
@@ -430,34 +473,32 @@ spec sources = describe "the steam run command" $ requiring (compiled sources) \
     -- the module did not load, so the program never started — which is what a
     -- caller acts on, and is why this is `1` and not the `2` of a fault at run
     it "exits 1 where a module faults while it initializes" do
-      outcome <- invoke
-        (reaching made [ "BadInit", "Main" ])
+      outcome <- running "bad-init" (program "BadInit" "boom")
       outcome.status `shouldEqual` 1
 
   describe "a failure after the entry point begins" do
 
     it "exits 2 where the program faults" do
-      outcome <- invoke (inOrder <> [ "--entry-global", "faulting" ])
+      outcome <- running "faulting" (program "Main" "faulting")
       outcome.status `shouldEqual` 2
 
     -- **the two are told apart by when, not by what**: the same fault reached
     -- while a module initialized is `1`, and here it is `2`
     it "tells that apart from the same fault reached before the run" do
-      during <- invoke (inOrder <> [ "--entry-global", "faulting" ])
-      before <- invoke
-        (reaching made [ "BadInit", "Main" ])
+      during <- running "faulting" (program "Main" "faulting")
+      before <- running "bad-init" (program "BadInit" "boom")
       during.status `shouldEqual` 2
       before.status `shouldEqual` 1
 
     -- **the question asked first is whose the defect is**, not when it happened,
     -- so this is `3` and not the `2` of a program that faulted
     it "exits 3 where the interpreter reaches a state no .dmo admits" do
-      outcome <- invoke (reaching made [ "Base.IO" ] <> [ pathOf "Bug", "--entry", "Bug" ])
+      outcome <- running "bug" (bugProgram "Bug" "main")
       outcome.status `shouldEqual` 3
 
     -- a reader acting on this should not take it for their own program failing
     it "says that a bug is a defect above the program" do
-      outcome <- invoke (reaching made [ "Base.IO" ] <> [ pathOf "Bug", "--entry", "Bug" ])
+      outcome <- running "bug" (bugProgram "Bug" "main")
       String.contains (String.Pattern "Internal error") outcome.err
         `shouldEqual` true
 
@@ -465,15 +506,14 @@ spec sources = describe "the steam run command" $ requiring (compiled sources) \
     -- module initialized is `3` and not the `1` of a module that did not load. A
     -- wiring that wrapped every refusal alike would answer `1` here
     it "exits 3 for a bug reached while a module initializes" do
-      outcome <- invoke (reaching made [ "Base.IO" ] <> [ pathOf "BugInit" ])
+      outcome <- running "bug-init" (bugProgram "BugInit" "boom")
       outcome.status `shouldEqual` 3
       String.contains (String.Pattern "Internal error") outcome.err
         `shouldEqual` true
 
     it "tells that apart from a fault reached in the same place" do
-      bug <- invoke (reaching made [ "Base.IO" ] <> [ pathOf "BugInit" ])
-      fault <- invoke
-        (reaching made [ "BadInit", "Main" ])
+      bug <- running "bug-init" (bugProgram "BugInit" "boom")
+      fault <- running "bad-init" (program "BadInit" "boom")
       bug.status `shouldEqual` 3
       fault.status `shouldEqual` 1
 
@@ -481,15 +521,7 @@ spec sources = describe "the steam run command" $ requiring (compiled sources) \
 
     -- what the manifest is for: a foreign nothing else can supply
     it "supplies a foreign the interpreter does not claim" do
-      outcome <- invoke
-        [ pathOf "Host"
-        , "--entry"
-        , "Host"
-        , "--entry-global"
-        , "greeted"
-        , "--manifest"
-        , manifestPath "good"
-        ]
+      outcome <- running "host-good" (host "greeted" (Just "good"))
       -- `greeted` is not an action, so the run stops there — after the table was
       -- assembled and the module loaded, which is what this is about
       outcome.status `shouldEqual` 1
@@ -500,185 +532,124 @@ spec sources = describe "the steam run command" $ requiring (compiled sources) \
     -- getting past initialization is what shows the argument crossed, unwrapped and
     -- as an argument of its own
     it "hands the arguments to the adapter, all at once" do
-      outcome <- invoke
-        [ pathOf "Host"
-        , "--entry"
-        , "Host"
-        , "--entry-global"
-        , "greeted"
-        , "--manifest"
-        , manifestPath "good"
-        ]
+      outcome <- running "host-good" (host "greeted" (Just "good"))
       String.contains (String.Pattern "wrong argument") outcome.err
         `shouldEqual` false
 
     -- a refusal is a fault the ABI admits, and needs no exception to report it
     it "makes a refusal a fault, with the reason the adapter gave" do
-      outcome <- invoke
-        [ pathOf "Host"
-        , "--entry"
-        , "Host"
-        , "--entry-global"
-        , "greeted"
-        , "--manifest"
-        , manifestPath "refusing"
-        ]
+      outcome <- running "host-refusing" (host "greeted" (Just "refusing"))
       -- reached during initialization, so the program never started
       outcome.status `shouldEqual` 1
       String.contains (String.Pattern "nothing to give") outcome.err
         `shouldEqual` true
 
-    it "refuses the module where no manifest was given" do
-      outcome <- invoke [ pathOf "Host", "--entry", "Host" ]
+    it "refuses the module where the descriptor has no `foreign`" do
+      outcome <- running "host-none" (host "greeted" Nothing)
       outcome.status `shouldEqual` 1
       -- the foreign is what was unmet, not the file that was not given
       String.contains (String.Pattern "greet") outcome.err `shouldEqual` true
 
     it "runs a program over Base alone with no manifest at all" do
-      outcome <- invoke inOrder
+      outcome <- running "main" (program "Main" "main")
       outcome.status `shouldEqual` 0
 
     it "refuses a module the manifest names that cannot be reached" do
-      outcome <- invoke
-        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "missing-module" ]
+      outcome <- running "host-missing-module" (host "greeted" (Just "missing-module"))
       outcome.status `shouldEqual` 1
       String.contains (String.Pattern "Cannot reach") outcome.err `shouldEqual` true
 
     it "refuses an export that is not there, naming what was looked for" do
-      outcome <- invoke
-        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "wrong-export" ]
+      outcome <- running "host-wrong-export" (host "greeted" (Just "wrong-export"))
       outcome.status `shouldEqual` 1
       String.contains (String.Pattern "have no `greet`") outcome.err
         `shouldEqual` true
 
     -- the one shape that can be checked, a `.dmo` carrying no type
     it "refuses an export that is reached and is not a function" do
-      outcome <- invoke
-        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "not-a-function" ]
+      outcome <- running "host-not-a-function" (host "greeted" (Just "not-a-function"))
       outcome.status `shouldEqual` 1
       String.contains (String.Pattern "is not a function") outcome.err
         `shouldEqual` true
 
     -- first-wins and last-wins both make the meaning depend on the order of writing
     it "rejects a manifest naming one module twice" do
-      outcome <- invoke
-        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "twice" ]
+      outcome <- running "host-twice" (host "greeted" (Just "twice"))
       outcome.status `shouldEqual` 1
       String.contains (String.Pattern "ModuleTwice") outcome.err `shouldEqual` true
 
     -- a manifest for another target describes a machine that is not this one, so it
     -- is rejected rather than read past
     it "rejects a manifest written for another target" do
-      outcome <- invoke
-        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "other-target" ]
+      outcome <- running "host-other-target" (host "greeted" (Just "other-target"))
       outcome.status `shouldEqual` 1
       String.contains (String.Pattern "WrongTarget") outcome.err `shouldEqual` true
 
-    it "rejects a formatVersion it does not implement" do
-      outcome <- invoke
-        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "later-version" ]
+    it "rejects a `foreign` that is no manifest" do
+      writeText (dir <> "/host-garbage.program.json")
+        """{ "formatVersion": 0, "entry": { "module": "Host", "global": "greeted" }, "modules": [ { "module": "Host", "object": "Host.dmo" } ], "foreign": "nothing" }"""
+      outcome <- invoke [ dir <> "/host-garbage.program.json" ]
       outcome.status `shouldEqual` 1
-      String.contains (String.Pattern "UnknownFormatVersion") outcome.err
+      String.contains (String.Pattern "`foreign` is not an object") outcome.err
         `shouldEqual` true
 
-    it "rejects a manifest that does not read as one" do
-      outcome <- invoke
-        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "garbage" ]
-      outcome.status `shouldEqual` 1
-      String.contains (String.Pattern "Not readable as a foreign manifest") outcome.err
-        `shouldEqual` true
-
-    -- a relative specifier is resolved against the manifest's directory, so the same
-    -- manifest reaches the same module from anywhere
-    it "resolves a relative specifier against the manifest and not the directory" do
-      outcome <- invokeFrom "e2e"
-        [ pathOfIn "Host"
-        , "--entry"
-        , "Host"
-        , "--entry-global"
-        , "greeted"
-        , "--manifest"
-        , ".test-dmo/good.json"
-        ]
+    -- a relative specifier is resolved against the descriptor's directory, so the
+    -- same descriptor reaches the same module from anywhere
+    it "resolves a relative specifier against the descriptor and not the directory" do
+      _ <- programOf "host-good" (host "greeted" (Just "good"))
+      outcome <- invokeFrom "e2e" [ ".test-dmo/host-good.program.json" ]
       -- reached and loaded: the failure is the entry not being an action
       String.contains (String.Pattern "not an action") outcome.err
         `shouldEqual` true
 
     -- nothing is reached for a module no declaration asks about
     it "reaches nothing for a manifest entry the program does not use" do
-      outcome <- invoke (inOrder <> [ "--manifest", manifestPath "missing-module" ])
+      outcome <- running "main-missing-module" ((program "Main" "main") { manifest = Just "missing-module" })
       outcome.status `shouldEqual` 0
 
     -- the manifest and the declaration came from one compiler, so a disagreement is
     -- refused rather than believed
     it "refuses a signature whose params disagree with the declared arity" do
-      outcome <- invoke
-        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "two-params" ]
+      outcome <- running "host-two-params" (host "greeted" (Just "two-params"))
       outcome.status `shouldEqual` 1
       String.contains (String.Pattern "gives Host.greet 2 parameters") outcome.err
         `shouldEqual` true
 
     it "refuses a foreign the manifest gives no signature" do
-      outcome <- invoke
-        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "no-signature" ]
+      outcome <- running "host-no-signature" (host "greeted" (Just "no-signature"))
       outcome.status `shouldEqual` 1
       String.contains (String.Pattern "how the values of Host.greet cross") outcome.err
         `shouldEqual` true
 
-    -- the package stands under the manifest's directory and nowhere this command
+    -- the package stands under the descriptor's directory and nowhere this command
     -- could reach it from, so loading shows where the search started
-    it "resolves a bare specifier from the manifest's directory" do
-      outcome <- invoke
-        [ pathOf "Host"
-        , "--entry"
-        , "Host"
-        , "--entry-global"
-        , "greeted"
-        , "--manifest"
-        , manifestPath "bare"
-        ]
+    it "resolves a bare specifier from the descriptor's directory" do
+      outcome <- running "host-bare" (host "greeted" (Just "bare"))
       String.contains (String.Pattern "not an action") outcome.err
         `shouldEqual` true
 
     -- a URL is imported as it stands, so `node:fs` is reached and is simply not
     -- where `greet` lives; resolved as a package it would not be reached at all
     it "imports a node: URL as it stands" do
-      outcome <- invoke
-        [ pathOf "Host", "--entry", "Host", "--manifest", manifestPath "node-url" ]
+      outcome <- running "host-node-url" (host "greeted" (Just "node-url"))
       outcome.status `shouldEqual` 1
       String.contains (String.Pattern "have no `greet`") outcome.err
         `shouldEqual` true
 
     it "imports a file: URL as it stands" do
-      outcome <- invoke
-        [ pathOf "Host"
-        , "--entry"
-        , "Host"
-        , "--entry-global"
-        , "greeted"
-        , "--manifest"
-        , manifestPath "file-url"
-        ]
+      outcome <- running "host-file-url" (host "greeted" (Just "file-url"))
       String.contains (String.Pattern "not an action") outcome.err
         `shouldEqual` true
 
     it "imports an absolute path as it stands" do
-      outcome <- invoke
-        [ pathOf "Host"
-        , "--entry"
-        , "Host"
-        , "--entry-global"
-        , "greeted"
-        , "--manifest"
-        , manifestPath "absolute-path"
-        ]
+      outcome <- running "host-absolute-path" (host "greeted" (Just "absolute-path"))
       String.contains (String.Pattern "not an action") outcome.err
         `shouldEqual` true
 
     -- `Base.IO` and `Base.String` declare only names the interpreter claims, so
     -- entries for them are dead: neither reached nor asked for a signature
     it "consults no entry for names the interpreter claims" do
-      outcome <- invoke (inOrder <> [ "--manifest", manifestPath "claimed" ])
+      outcome <- running "main-claimed" ((program "Main" "main") { manifest = Just "claimed" })
       outcome.status `shouldEqual` 0
 
   describe "an entry point a host constructs" do
@@ -686,18 +657,22 @@ spec sources = describe "the steam run command" $ requiring (compiled sources) \
     -- the whole chain: the table from the manifest, the module loaded against it,
     -- and the action the foreign returned performed where the entry point runs
     it "performs the action and finishes" do
-      outcome <- invoke
-        (reaching made [ "Speaker" ] <> [ "--entry", "Speaker", "--manifest", manifestPath "speaking" ])
+      outcome <- running "speaking" ((program "Speaker" "main") { manifest = Just "speaking" })
       outcome.status `shouldEqual` 0
       String.contains (String.Pattern "said 7") outcome.err `shouldEqual` true
 
     -- a refusal where the action is performed is a fault after the entry point
     -- began, which is a program that ran and failed
     it "exits 2 where the action refuses" do
-      outcome <- invoke
-        (reaching made [ "Speaker" ] <> [ "--entry", "Speaker", "--manifest", manifestPath "silent" ])
+      outcome <- running "silent" ((program "Speaker" "main") { manifest = Just "silent" })
       outcome.status `shouldEqual` 2
       String.contains (String.Pattern "nothing to say") outcome.err `shouldEqual` true
+
+  describe "the command line" do
+
+    it "takes a descriptor and nothing in place of one" do
+      flags <- invoke [ "--entry", "Main", pathOf "Main" ]
+      flags.status `shouldEqual` 1
 
   describe "the session mode" do
 
@@ -714,12 +689,13 @@ spec sources = describe "the steam run command" $ requiring (compiled sources) \
     -- the technical references are for whoever works on the compiler, and a user
     -- reading a failure has no use for a path into them
     it "points at no internal document" do
-      outcomes <- traverse invoke
-        [ [ pathOf "Missing" ]
-        , [ pathOf "Garbage" ]
-        , inOrder <> [ "--entry", "Nowhere" ]
-        , inOrder <> [ "--entry-global", "notAnAction" ]
-        , [ pathOf "Main", pathOf "Base.IO" ]
+      outcomes <- traverse (\(Tuple name p) -> running name p)
+        [ Tuple "missing" { entry: "Missing", global: "main", modules: [ "Missing" ], manifest: Nothing }
+        , Tuple "garbage-module" { entry: "Garbage", global: "main", modules: [ "Garbage" ], manifest: Nothing }
+        , Tuple "nowhere" ((program "Main" "main") { entry = "Nowhere" })
+        , Tuple "not-an-action" (program "Main" "notAnAction")
+        , Tuple "reversed" ((program "Main" "main") { modules = Array.reverse (closure [ "Main" ]) })
+        , Tuple "unreached" ((program "Main" "main") { modules = closure [ "Other", "Main" ] })
         ]
       let
         mentions pattern = Array.any

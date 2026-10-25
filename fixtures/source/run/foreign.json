@@ -1,3 +1,0 @@
-{ "formatVersion": 1, "target": "javascript", "modules": [
-  { "module": "Lib.Console", "specifier": "./host/console.mjs",
-    "foreigns": [ { "name": "log", "params": [ "string" ], "result": { "action": "unit" } } ] } ] }

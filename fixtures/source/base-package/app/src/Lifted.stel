@@ -19,5 +19,6 @@ greetings =
 
 -- The annotation makes the λ a boundary at `LiftIO`, which `greetAsLift`
 -- meets.
+@[entrypoint]
 main :: IO Unit
 main = runIO ((\_ -> greetings) :: Unit -> Unit / {| LiftIO |})

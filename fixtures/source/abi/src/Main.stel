@@ -7,5 +7,6 @@ import Console (log, logInt)
 words :: Array String
 words = unsafeNew 2
 
+@[entrypoint]
 main :: IO Unit
 main = bind (pure (unsafeSet 0 "built" words)) (\_ -> bind (pure (unsafeSet 1 "from source" words)) (\_ -> bind (log (unsafeIndex words 1)) (\_ -> logInt (length words))))

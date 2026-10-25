@@ -2,5 +2,6 @@ module App.Main where
 
 import Lib.Greet
 
+@[entrypoint]
 main :: IO Unit
 main = say Glad

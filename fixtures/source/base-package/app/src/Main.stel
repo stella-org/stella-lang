@@ -33,5 +33,6 @@ total s = case s of
 greeting :: String
 greeting = append "built " "apart"
 
+@[entrypoint]
 main :: IO Unit
 main = bind (pure greeting) (\s -> bind (log s) (\_ -> bind (log (toString (add (length s) 1))) (\_ -> log (toString (total (generate ()))))))

@@ -13,8 +13,8 @@
 -- | `Base.IO.Effect.runIO`, written by hand under an annotation whose boundary
 -- | an implicit handler of its own meets, lowering a greeting to a `LiftIO`
 -- | carrying a `Console` action. `Entry` marks a computation `@[entrypoint]`,
--- | and is run from the global its interface names as its entry point, the
--- | stub that applies the runner, `Lifted`'s handler lowering what it
+-- | and is run from the entry point its build states, the stub that applies the
+-- | runner, `Lifted`'s handler lowering what it
 -- | performs. `dependencies` listing a seed module with another interface,
 -- | `Prim`, or a module twice is refused. The cases run in order: the first
 -- | builds `Base`.
@@ -39,7 +39,8 @@ import Stella.Compiler.TypedCore (Ident(..))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 import Node.Process (cwd)
-import Test.E2E.Process (Outcome, buildBase, compile, copyTree, removeTree, steamRun, steamRunGlobal, writeFiles)
+import Test.E2E.Process (Outcome, buildBase, compile, copyTree, removeTree, steamRun, writeFiles)
+import Test.E2E.Program (programFrom, statedSeeds)
 import Test.E2E.StellaJson (Entry, entriesIn, listedAt, settings, stellaJson)
 
 -- | Where this suite's files stand, written afresh for each run.
@@ -75,6 +76,15 @@ bytesOf path = FS.readFile path >>= liftEffect <<< Buffer.toArray
 writeBytes :: String -> Bytes -> Aff Unit
 writeBytes path bytes = liftEffect (Buffer.fromArray bytes) >>= FS.writeFile path
 
+-- | `steam run` of the program whose entry module is given, its descriptor made
+-- | from what the builds of `Base` and of `App` wrote.
+runFrom :: String -> Aff Outcome
+runFrom entry = do
+  let at = fmt @"{dir}/app/{entry}.program.json" { dir, entry }
+  written <- programFrom { outputs: [ baseOutput <> "/output.json", baseOutput <> "/seeds/output.json", dir <> "/app/output/output.json" ], entry, at }
+  written `shouldEqual` Right unit
+  steamRun at
+
 -- | The lines a run printed, the development entry point's banner left out.
 printed :: Outcome -> Array String
 printed o = Array.filter (\l -> l /= "" && not (isBanner l)) (split (Pattern "\n") o.out)
@@ -105,44 +115,24 @@ spec = describe "the `Base` package, built from its sources and listed by `depen
     when (built.status /= 0) (fail ("the program did not build: " <> built.err))
 
   it "runs the program over the bytecode the entries name" do
-    entries <- listed
-    outcome <- steamRun
-      { manifest: dir <> "/app/foreign.json"
-      , entry: "Main"
-      , modules: map _.object entries <> [ dir <> "/app/output/Console.dmo", dir <> "/app/output/Main.dmo" ]
-      }
+    stated <- statedSeeds (baseOutput <> "/seeds") [ "Base.Int" ]
+    stated `shouldEqual` Right unit
+    outcome <- runFrom "Main"
     outcome.err `shouldEqual` ""
     outcome.status `shouldEqual` 0
     printed outcome `shouldEqual` [ "built apart", "12", "6" ]
 
   it "runs a computation by the standard runner, an implicit handler lowering what it performs to `LiftIO`" do
-    entries <- listed
-    outcome <- steamRun
-      { manifest: dir <> "/app/foreign.json"
-      , entry: "Lifted"
-      , modules: map _.object entries <> [ dir <> "/app/output/Console.dmo", dir <> "/app/output/Lifted.dmo" ]
-      }
+    outcome <- runFrom "Lifted"
     outcome.err `shouldEqual` ""
     outcome.status `shouldEqual` 0
     printed outcome `shouldEqual` [ "hello, runner", "hello, LiftIO" ]
 
   it "runs a computation the attribute marks from the global its interface names, the stub that runs it" do
-    stored <- bytesOf (dir <> "/app/output/Entry.dmi")
-    case Interface.decode stored of
-      Left err -> fail (show err)
-      Right file -> case file.interface.entrypoint of
-        Nothing -> fail "no entry point"
-        Just (Ident global) -> do
-          entries <- listed
-          outcome <- steamRunGlobal
-            { manifest: dir <> "/app/foreign.json"
-            , entry: "Entry"
-            , global
-            , modules: map _.object entries <> map (\m -> dir <> "/app/output/" <> m <> ".dmo") [ "Console", "Lifted", "Entry" ]
-            }
-          outcome.err `shouldEqual` ""
-          outcome.status `shouldEqual` 0
-          printed outcome `shouldEqual` [ "hello, entry point", "hello, stub" ]
+    outcome <- runFrom "Entry"
+    outcome.err `shouldEqual` ""
+    outcome.status `shouldEqual` 0
+    printed outcome `shouldEqual` [ "hello, entry point", "hello, stub" ]
 
   it "refuses `dependencies` listing a seed module with another interface" do
     stored <- bytesOf (baseOutput <> "/seeds/Base.Int.dmi")

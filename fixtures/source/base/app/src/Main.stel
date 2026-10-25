@@ -3,5 +3,6 @@ module Main where
 import Base.Int (add)
 import Console (logInt)
 
+@[entrypoint]
 main :: IO Unit
 main = logInt (add 1 2)

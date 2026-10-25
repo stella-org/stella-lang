@@ -1,3 +1,0 @@
-{ "formatVersion": 1, "target": "javascript", "modules": [
-  { "module": "Console", "specifier": "./host/console.mjs",
-    "foreigns": [ { "name": "logInt", "params": [ "int" ], "result": { "action": "unit" } } ] } ] }
