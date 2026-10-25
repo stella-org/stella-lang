@@ -57,9 +57,11 @@ import Data.String.CodePoints (toCodePointArray)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Traversable (for, sequence, traverse)
+import Data.TraversableWithIndex (traverseWithIndex)
 import Data.Tuple (Tuple(..))
 import Stella.Compiler.CST.Range (binderRange, covering, exprRange, letBindingRange, nonEmpty, typeRange)
 import Stella.Compiler.CST.Types as CST
+import Stella.Compiler.CST.Types (sameSpace)
 import Stella.Compiler.Resolve.Binder (Member(..), ResolvedMember(..), requireIrrefutable, resolveAlternative, resolveBinders, resolveCells, resolveGroup, resolveScopedBinders)
 import Stella.Compiler.Resolve.Fixity (rebracket)
 import Stella.Compiler.Resolve.Group (GroupError(..), LocalBinding(..), groupBindings)
@@ -67,7 +69,7 @@ import Stella.Compiler.Resolve.Label (reportLabelsTwice)
 import Stella.Compiler.Interface.Environment (reachable)
 import Stella.Compiler.Macro.Bundle (syntaxModuleName)
 import Stella.Compiler.Resolve.Quotation (quotation)
-import Stella.Compiler.Resolve.Monad (Cell(..), CellClosure(..), Found(..), HandledEffectProblem(..), Resolve, SynonymBody(..), ResolveReason(..), ResumeBlock(..), ResumeState(..), TypeReference(..), ValueKind(..), ValueReference(..), blockResume, context, declaresNoOperations, freshBinding, lookupCell, lookupOperator, lookupType, lookupValue, lookupValueReference, openedBy, operationOf, operationsOf, report, resumeState, speculatively, synonymBody, valueKind, withCells, withCellsClosed, withOpened, withResume, withTypeVariables, withValues)
+import Stella.Compiler.Resolve.Monad (Cell(..), CellClosure(..), Found(..), HandledEffectProblem(..), Resolve, SynonymBody(..), ResolveReason(..), ResumeBlock(..), ResumeState(..), TypeReference(..), ValueKind(..), ValueReference(..), blockResume, context, constructorOf, declaresNoOperations, freshBinding, lookupCell, lookupOperator, lookupType, lookupValue, lookupValueReference, openedBy, operationOf, operationsOf, report, resumeState, speculatively, synonymBody, valueKind, withCells, withCellsClosed, withOpened, withResume, withTypeVariables, withValues)
 import Stella.Compiler.Resolve.Type (resolveSignature, resolveType, scopeOf, signatureScope)
 import Stella.Compiler.Surface.Decl (Associativity(..))
 import Stella.Compiler.Surface.Expr (AlternativeBody(..), Binder(..), CellDeclaration, ClauseForm(..), Expr(..), Group, GuardLine(..), HandlerBody, HandlerItem(..), LetBinding(..), OperationClause, RecordField(..), exprOrigin)
@@ -84,14 +86,16 @@ resolveExpr :: CST.Expr -> Resolve Expr
 resolveExpr e = case e of
   CST.ExprVar n -> reference o n
   CST.ExprConstructor n -> constructor ExprConstructor n
-  CST.ExprDiscriminator n -> constructor ExprDiscriminator n
+  CST.ExprDiscriminator n -> discriminator n
   CST.ExprOperatorValue n -> lookupOperator n >>= case _ of
     Found f -> maybe (pure (ExprInvalid o)) (global o) f.target
     NotFound -> invalid (UnknownOperator (written n))
     Ambiguous -> invalid (AmbiguousOperator (written n))
   CST.ExprTag n -> pure (ExprTag o (originOf n.range) (Tag n.name) Nothing)
   CST.ExprHole n -> pure (ExprHole o n.name)
-  CST.ExprSection _ -> invalid (NotYetSupported "The anonymous argument `_`")
+  CST.ExprSection r
+    | writtenInMacroInput r -> invalid AnonymousArgumentInMacroInput
+    | otherwise -> invalid AnonymousArgumentMisplaced
   CST.ExprBoolean _ b -> pure (ExprLiteral o (LitBoolean b))
   CST.ExprInt l -> pure (ExprLiteral o (LitInt l.value))
   CST.ExprNumber l -> pure (ExprLiteral o (LitNumber l.value))
@@ -102,8 +106,12 @@ resolveExpr e = case e of
     Just s -> pure (ExprLiteral o (LitString s))
     Nothing -> invalid LiteralNotScalar
   CST.ExprUnit _ -> pure (ExprConstructor o unitCtor)
-  CST.ExprParens inner -> resolveExpr inner
-  CST.ExprTuple es -> ExprTuple o <$> traverse resolveExpr es
+  CST.ExprParens bounds inner
+    | anonymousOperands bounds inner -> section bounds (operands inner) \at -> operatorChain at inner
+    | otherwise -> resolveExpr inner
+  CST.ExprTuple bounds es
+    | Array.any (isAnonymous bounds) es -> section bounds es \at -> ExprTuple o <$> traverseWithIndex at es
+    | otherwise -> ExprTuple o <$> traverse resolveExpr es
   CST.ExprRecord _ fields -> ExprRecord o <$> recordFields fields
   CST.ExprApp f a
     | Just applied <- tagApplied f [ a ] -> case applied.payloads of
@@ -112,7 +120,7 @@ resolveExpr e = case e of
     | otherwise -> case unparenthesized f of
         CST.ExprResume r -> ExprApp o <$> resumeAt r <*> resolveExpr a
         _ -> ExprApp o <$> resolveExpr f <*> resolveExpr a
-  CST.ExprOp _ _ _ -> operatorChain e
+  CST.ExprOp _ _ _ -> operatorChain (const resolveExpr) e
   CST.ExprTyped inner t -> ExprTyped o <$> resolveExpr inner <*> resolveType t
   CST.ExprAccess inner labels -> do
     inner' <- resolveExpr inner
@@ -122,8 +130,8 @@ resolveExpr e = case e of
     traverse_ requireIrrefutable r.binders
     ExprLambda o r.binders <$> withValues r.bound (resolveExpr body)
   CST.ExprLet items body -> resolveLet o items (resolveExpr body)
-  CST.ExprCase scrutinees alternatives -> do
-    anonymous <- traverse anonymousScrutinee scrutinees
+  CST.ExprCase bounds scrutinees alternatives -> do
+    anonymous <- traverse (anonymousScrutinee bounds) scrutinees
     let
       params = Array.catMaybes anonymous
       matching = do
@@ -146,10 +154,9 @@ resolveExpr e = case e of
   CST.ExprInvalid _ -> pure (ExprInvalid o)
   CST.ExprAt n label -> operationAt n label
   CST.ExprCellRead n -> cell n <#> maybe (ExprInvalid o) (ExprCellRead o)
-  CST.ExprCellWrite n v -> do
-    c <- cell n
-    v' <- resolveExpr v
-    pure (maybe (ExprInvalid o) (\c' -> ExprCellWrite o c' v') c)
+  CST.ExprCellWrite n v
+    | isAnonymous (cellWriteRange n v) v -> section (cellWriteRange n v) [ v ] (cellWrite n v)
+    | otherwise -> cellWrite n v (const resolveExpr)
   CST.ExprResume _ -> resumeState >>= case _ of
     ResumeAvailable -> invalid ResumeNotApplied
     ResumeBlocked why -> invalid (ResumeMisplaced why)
@@ -164,10 +171,42 @@ resolveExpr e = case e of
     NotFound -> invalid (UnknownConstructor (written n))
     Ambiguous -> invalid (AmbiguousValue (written n))
 
+  discriminator n = lookupValue n >>= case _ of
+    Found q -> constructorOf q >>= case _ of
+      Just c -> do
+        id@(BindingId k) <- freshBinding
+        let
+          x = LocalVar { id, name: Ident ("discriminator#" <> show k) }
+          answering b holds = { origin: o, patterns: [ [ b ] ], body: Unconditional (ExprLiteral o (LitBoolean holds)) }
+          built = answering (BinderConstructor o q (Array.replicate c.arity (BinderWildcard o))) true
+        pure (ExprLambda o [ BinderVar o x ] (ExprCase o [ ExprLocal o x ] (if c.siblings == 1 then [ built ] else [ built, answering (BinderWildcard o) false ])))
+      Nothing -> invalid (NotAConstructor (written n))
+    NotFound -> invalid (UnknownConstructor (written n))
+    Ambiguous -> invalid (AmbiguousValue (written n))
+
+  cellWrite n v resolveValue = do
+    c <- cell n
+    v' <- resolveValue 0 v
+    pure (maybe (ExprInvalid o) (\c' -> ExprCellWrite o c' v') c)
+
+  -- what a section holds is inside the λ it stands for, so a `resume` in it
+  -- would be kept beyond its clause
+  section bounds slots build = blockResume InsideLambda do
+    params <- traverse
+      ( \x -> case unparenthesized x of
+          CST.ExprSection r | isAnonymous bounds x -> do
+            id@(BindingId k) <- freshBinding
+            pure (Just { origin: originOf r, var: LocalVar { id, name: Ident ("section#" <> show k) } })
+          _ -> pure Nothing
+      )
+      slots
+    body <- build (\i x -> maybe (resolveExpr x) (\p -> pure (ExprLocal p.origin p.var)) (join (Array.index params i)))
+    pure (ExprLambda o (map (\p -> BinderVar p.origin p.var) (Array.catMaybes params)) body)
+
   -- an anonymous scrutinee, parenthesized or not, is a parameter of a λ
   -- around the `case`, named apart from every name source can write
-  anonymousScrutinee s = case unparenthesized s of
-    CST.ExprSection r -> do
+  anonymousScrutinee bounds s = case unparenthesized s of
+    CST.ExprSection r | isAnonymous bounds s -> do
       id@(BindingId n) <- freshBinding
       pure (Just { origin: originOf r, var: LocalVar { id, name: Ident ("case#" <> show n) } })
     _ -> pure Nothing
@@ -225,11 +264,11 @@ global o q = valueKind q <#> case _ of
 
 -- | A chain of operators, rebracketed by fixity. An operator nothing in scope
 -- | stands for, or two that cannot be chained, leave the chain invalid.
-operatorChain :: CST.Expr -> Resolve Expr
-operatorChain e = do
+operatorChain :: (Int -> CST.Expr -> Resolve Expr) -> CST.Expr -> Resolve Expr
+operatorChain resolveOperand e = do
   let chain = flatten e
-  first <- resolveExpr chain.first
-  rest <- traverse (\(Tuple op operand) -> Tuple <$> operator op <*> resolveExpr operand) chain.rest
+  first <- resolveOperand 0 chain.first
+  rest <- traverseWithIndex (\i (Tuple op operand) -> Tuple <$> operator op <*> resolveOperand (i + 1) operand) chain.rest
   case traverse (\(Tuple op operand) -> map (\op' -> Tuple op' operand) op) rest of
     Nothing -> pure (ExprInvalid o)
     Just ops -> case rebracket _.fixity apply first ops of
@@ -385,9 +424,52 @@ resolveTopDefinition params body local = do
     LocalValue v -> covering v.name.range (exprRange v.body)
     LocalPattern b v -> covering (binderRange b) (exprRange v)
 
+operands :: CST.Expr -> Array CST.Expr
+operands = case _ of
+  CST.ExprOp a _ b -> Array.snoc (operands a) b
+  x -> [ x ]
+
+anonymousOperands :: CST.SourceRange -> CST.Expr -> Boolean
+anonymousOperands bounds e = case e of
+  CST.ExprOp _ _ _ -> Array.any (isAnonymous bounds) (operands e)
+  _ -> false
+
+-- | A macro may copy, drop, or move what its input holds, so a `_` is an
+-- | argument only where every token from the first bound of what it is an
+-- | argument of through the last was written in the text the `_` was.
+isAnonymous :: CST.SourceRange -> CST.Expr -> Boolean
+isAnonymous bounds e = case unparenthesized e of
+  CST.ExprSection r -> case r.space of
+    CST.Expansion x
+      | sameSpace bounds.space r.space ->
+          let
+            writtenIn c = map _.space (Array.index x.written (c - 1))
+            together c = case writtenIn c, writtenIn r.start.column of
+              Just a, Just b -> sameSpace a b
+              _, _ -> false
+          in
+            Array.all together (Array.range bounds.start.column (bounds.end.column - 1))
+      | otherwise -> false
+    _ -> true
+  _ -> false
+
+-- | A cell write, its value's parentheses among it.
+cellWriteRange :: CST.Name -> CST.Expr -> CST.SourceRange
+cellWriteRange n v = covering n.range case v of
+  CST.ExprParens r _ -> r
+  _ -> exprRange v
+
+writtenInMacroInput :: CST.SourceRange -> Boolean
+writtenInMacroInput r = case r.space of
+  CST.Expansion e -> case Array.index e.written (r.start.column - 1) of
+    Just { space: CST.Quotation _ } -> false
+    Just _ -> true
+    Nothing -> false
+  _ -> false
+
 unparenthesized :: CST.Expr -> CST.Expr
 unparenthesized = case _ of
-  CST.ExprParens inner -> unparenthesized inner
+  CST.ExprParens _ inner -> unparenthesized inner
   e -> e
 
 -- | A tag at the head of an application, and the payloads it is applied to,

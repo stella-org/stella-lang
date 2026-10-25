@@ -270,6 +270,8 @@ data ResolveReason
   | RefutablePattern
   -- | A form this version does not resolve yet, named.
   | NotYetSupported String
+  | AnonymousArgumentMisplaced
+  | AnonymousArgumentInMacroInput
   -- | A quotation in a module that reaches no `Stella.Syntax` through its
   -- | imports, the syntax it builds being of that module's types.
   | QuotationWithoutSyntax
@@ -457,6 +459,8 @@ printResolveReason = case _ of
   LiteralNotScalar -> "This literal holds something that is no Unicode scalar value"
   RefutablePattern -> "This pattern can fail to match, which a binding cannot; match it with `case`"
   NotYetSupported what -> what <> " is not supported yet"
+  AnonymousArgumentMisplaced -> "`_` stands for an argument only as a scrutinee of `case`, an operand of an operator chain in parentheses, as in `(_ + 1)`, an element of a tuple, as in `(_, 1)`, or the value a cell is written, as in `n := _`"
+  AnonymousArgumentInMacroInput -> "`_` written in what a macro call is given is an argument only of a section written there with it, as in `m%[(_, 1)]`; otherwise write the λ around the call, as in `\\x -> m%[x]`"
   QuotationWithoutSyntax -> "A quotation builds syntax of `Stella.Syntax`, which this module must import"
   UnknownAlias a -> "There is no module imported as `" <> a <> "`"
   UnknownOperator n -> "There is no operator `" <> n <> "` in scope"

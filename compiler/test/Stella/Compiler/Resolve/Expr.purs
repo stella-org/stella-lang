@@ -277,7 +277,7 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
   describe "references" do
     it "become the node of what they name" do
       shows [ "f a = (a, x, comp, c, Just, Nothing?, get, tick, own, 'T, ?h, 1, true, 'c', \"s\", 1.5, ())" ]
-        "(a#0, A.x, comp:A.comp, comp:M.c, A.Just, A.Nothing?, op:A.get, op:M.tick, M.own, 'T, ?h, 1, true, char99, \"s\", 1.5, Prim.Unit)"
+        "(a#0, A.x, comp:A.comp, comp:M.c, A.Just, (\\discriminator#1#1 -> (case discriminator#1#1 of A.Nothing -> true ; _ -> false)), op:A.get, op:M.tick, M.own, 'T, ?h, 1, true, char99, \"s\", 1.5, Prim.Unit)"
         []
 
     it "report a name nothing in scope stands for" do
@@ -671,10 +671,69 @@ spec = describe "Stella.Compiler.Resolve.Expr" do
         "(handle A.x with A.E{full A.put _ _ -> 0; full A.get _ -> (\\case#0#0 -> (case case#0#0 of _ -> (! 1)))})"
         [ ResumeMisplaced InsideAnonymousCase ]
 
+  describe "discriminators" do
+    it "are a λ over a `case` matching the constructor, its fields left unnamed, and anything else" do
+      shows [ "f = (Just?, M.Nothing?, Cons?)" ]
+        "((\\discriminator#0#0 -> (case discriminator#0#0 of (A.Just _) -> true ; _ -> false)), (\\discriminator#1#1 -> (case discriminator#1#1 of A.Nothing -> true ; _ -> false)), (\\discriminator#2#2 -> (case discriminator#2#2 of (A.Cons _ _) -> true ; _ -> false)))"
+        []
+
+    it "match nothing else where the constructor is its type's only one" do
+      shows [ "data Box = Box Int", "f = Box?" ] "(\\discriminator#0#0 -> (case discriminator#0#0 of (M.Box _) -> true))" []
+
+    it "are refused for what is no constructor" do
+      shows [ "f = Gone?" ] "!" [ UnknownConstructor "Gone" ]
+
+  describe "sections" do
+    it "are a λ around the parenthesized chain, a parameter for each `_` operand from the left, rebracketed by fixity" do
+      shows [ "f = (_ + 1)" ] "(\\section#0#0 -> <A.plus section#0#0 1>)" []
+      shows [ "f = (1 + _ * _)" ] "(\\section#0#0 section#1#1 -> <A.plus 1 <A.times section#0#0 section#1#1>>)" []
+      shows [ "f = (_ M.+ 1)" ] "(\\section#0#0 -> <A.plus section#0#0 1>)" []
+
+    it "take a parenthesized `_` as one standing bare, and make each parenthesized chain a λ of its own" do
+      shows [ "f = ((_) + 1)" ] "(\\section#0#0 -> <A.plus section#0#0 1>)" []
+      shows [ "f = ((_ + 1) * _)" ] "(\\section#0#0 -> <A.times (\\section#1#1 -> <A.plus section#1#1 1>) section#0#0>)" []
+
+    it "report `resume` inside them within a clause" do
+      shows [ "f = handle x with", "  E -> | put _ _ = 0", "       | get _ = (resume 1 + _)" ]
+        "(handle A.x with A.E{full A.put _ _ -> 0; full A.get _ -> (\\section#0#0 -> <A.plus (! 1) section#0#0>)})"
+        [ ResumeMisplaced InsideLambda ]
+      shows [ "f = handle x with", "  E -> | put _ _ = 0", "       | get _ = (resume 1, _)" ]
+        "(handle A.x with A.E{full A.put _ _ -> 0; full A.get _ -> (\\section#0#0 -> ((! 1), section#0#0))})"
+        [ ResumeMisplaced InsideLambda ]
+
+  describe "tuple sections" do
+    it "are a λ around the tuple, a parameter for each `_` element from the left, a parenthesized one among them" do
+      shows [ "f = (_, _)" ] "(\\section#0#0 section#1#1 -> (section#0#0, section#1#1))" []
+      shows [ "f = (1, _)" ] "(\\section#0#0 -> (1, section#0#0))" []
+      shows [ "f = (_, \"ok\", (_))" ] "(\\section#0#0 section#1#1 -> (section#0#0, \"ok\", section#1#1))" []
+
+    it "make each tuple a λ of its own, an operator section among their elements" do
+      shows [ "f = ((_, _), _)" ] "(\\section#0#0 -> ((\\section#1#1 section#2#2 -> (section#1#1, section#2#2)), section#0#0))" []
+      shows [ "f = ((_ + 1), _)" ] "(\\section#0#0 -> ((\\section#1#1 -> <A.plus section#1#1 1>), section#0#0))" []
+
+  describe "cell-write sections" do
+    it "are a λ writing their argument to the cell, the value a `_` alone, parenthesized or not" do
+      shows [ "f = handle x with", "  var n := 0", "  Own ->", "    | fast tick _ = let w = n := _ in let v = (n := (_)) in w 1" ]
+        "(handle A.x with var n#0 := 0, M.Own{fast M.tick _ -> (let w#1 = (\\section#2#2 -> (n#0 := section#2#2)) in (let v#3 = (\\section#4#4 -> (n#0 := section#4#4)) in (w#1 1)))})"
+        []
+
+    it "take no `_` from inside the value, which may itself be a section" do
+      shows [ "f = handle x with", "  var n := 0", "  Own ->", "    | fast tick _ = let w = n := _ + 1 in let v = n := (_ + 1) in ()" ]
+        "(handle A.x with var n#0 := 0, M.Own{fast M.tick _ -> (let w#1 = (n#0 := <A.plus ! 1>) in (let v#2 = (n#0 := (\\section#3#3 -> <A.plus section#3#3 1>)) in Prim.Unit))})"
+        [ AnonymousArgumentMisplaced ]
+
+  describe "the anonymous argument" do
+    it "is refused anywhere but a `case`'s scrutinee, an operand of a parenthesized chain, and an element of a tuple" do
+      shows [ "f = x _" ] "(A.x !)" [ AnonymousArgumentMisplaced ]
+      shows [ "f = (_)" ] "!" [ AnonymousArgumentMisplaced ]
+      shows [ "f = _ + 1" ] "<A.plus ! 1>" [ AnonymousArgumentMisplaced ]
+      shows [ "f = (x _, 1)" ] "((A.x !), 1)" [ AnonymousArgumentMisplaced ]
+      shows [ "f = (_ + 1, 2)" ] "(<A.plus ! 1>, 2)" [ AnonymousArgumentMisplaced ]
+      shows [ "f = { a: _ }" ] "{ a: ! }" [ AnonymousArgumentMisplaced ]
+
   describe "what is not supported yet" do
     it "is reported where it stands" do
-      shows [ "f = (_ + 1, m%(1))" ] "(<A.plus ! 1>, !)"
-        [ NotYetSupported "The anonymous argument `_`", NotYetSupported "A macro call" ]
+      shows [ "f = m%(1)" ] "!" [ NotYetSupported "A macro call" ]
 
 renderVar :: LocalVar -> String
 renderVar (LocalVar v) = case v.name, v.id of
@@ -687,7 +746,6 @@ renderExpr = case _ of
   ExprComputation _ q -> "comp:" <> qualified q
   ExprConstructor _ q -> qualified q
   ExprOperation _ _ q label -> "op:" <> qualified q <> maybe "" (\{ label: Symbol l } -> "@" <> l) label
-  ExprDiscriminator _ q -> qualified q <> "?"
   ExprTag _ _ (Tag t) payload -> maybe ("'" <> t) (\p -> fmt @"('{t} {p})" { t, p: renderExpr p }) payload
   ExprLiteral _ l -> literal l
   ExprHole _ h -> "?" <> h

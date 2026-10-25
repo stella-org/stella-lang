@@ -1415,6 +1415,21 @@ A `case` compiled into a decision tree by the surface elaborator ([Elaboration](
 | `case _, y, _ of …`, and `case (_) of …` | `\a b -> case a, y, b of …`, a parameter for each anonymous scrutinee from the left, `y` read when the function is applied. Parentheses around `_` change nothing |
 | `resume` inside `case _ of` within a `full` clause | Reported as standing inside a `case _ of`. Naming a lambda names one the author did not write |
 | An expression hole, or a value not matched, inside `case _ of` | Reported naming no variable the compiler made |
+| `Just?`, `M.Nothing?`, `Cons?`, and the discriminator of a type of one constructor | `\x -> case x of Just _ -> true; _ -> false` and its like, a `_` for each field; for the last, no catch-all. Elaborated to a predicate on the constructor's type, generalized, and accepted by the Core checker; run, `true` exactly where the value was built with the constructor |
+| `C?` where `C` is no constructor | Refused where it is written |
+| `(_ + 1)`, `(1 + _ * _)`, `((_) + 1)`, `(_ M.+ 1)` | A `λ` with a parameter for each anonymous operand from the left, the chain rebracketed by fixity around them; elaborated, accepted by the Core checker, and run to what the operators give |
+| `((_ + 1) * _)` | A section inside a section, each parenthesized chain a `λ` of its own |
+| `(_, _)`, `(1, _)`, `(_, "ok", (_))` | A `λ` with a parameter for each anonymous element from the left; elaborated to `forall a. forall b. a -> b -> (a, b)` and its like, accepted by the Core checker, and run |
+| `((_, _), _)`, `((_ + 1), _)` | Each tuple and each parenthesized chain a section of its own |
+| `(resume x + _)` inside a `full` clause | Reported as standing inside a lambda: the section is one, and would keep the continuation beyond the clause |
+| `(resume x, _)` inside a `full` clause | Reported as standing inside a lambda, as for an operator section |
+| `n := _` and `n := (_)` inside the cell's handling expression | A `λ` writing its argument to `n`; run, each write through it reaching the cell |
+| `n := _ + 1`; `n := (_ + 1)` | The first refused, the `_` no whole value; the second writing an operator section |
+| `_!`, `_ := 1`, `_ := _` | Refused by the parser: a cell is named where it is read or written, and is never a section's parameter |
+| `ls%[_, 2]`, and a macro splicing its input `_` into a tuple, parentheses, a `case`, or a cell write it writes, the input among them `(_), (1)` and `\x -> x, (_ :: (Int))` | Refused at the call, naming where the `_` was written: no section is bounded by a macro call or by a form the macro wrote, its bounds read off the parentheses and keywords themselves |
+| `ls%[(_, 1), ((_), 1)]`, `ls%[(_ + 1)]`, `ls%[(\x -> x, _)]` | A list of tuple sections and an operator section, each bounded by what the call's input wrote with the `_`; run |
+| `_` as an argument, alone in parentheses, an operand of a chain no parentheses enclose, inside a tuple's element, `(f _, 1)` and `(_ + 1, 2)`, or in a record | Refused where it is written, as no anonymous argument |
+| An operator chain, `1 + 2 * 3` | Each operator, the reference it stands for, applied to its two operands; elaborated and run |
 
 ### Records and tuples (step 7)
 

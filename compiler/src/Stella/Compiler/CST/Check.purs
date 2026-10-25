@@ -272,8 +272,8 @@ checkExpr = expr
 
 expr :: Expr -> Array CheckError
 expr = case _ of
-  ExprParens e -> expr e
-  ExprTuple es -> foldMap expr es
+  ExprParens _ e -> expr e
+  ExprTuple _ es -> foldMap expr es
   ExprRecord _ fs -> foldMap field fs
   ExprApp f a -> expr f <> expr a
   ExprOp a _ b -> expr a <> expr b
@@ -281,7 +281,7 @@ expr = case _ of
   ExprAccess e _ -> expr e
   ExprLambda bs e -> foldMap binder bs <> expr e
   ExprLet ls e -> foldMap letBinding ls <> expr e
-  ExprCase es as -> foldMap expr es <> foldMap alternative as
+  ExprCase _ es as -> foldMap expr es <> foldMap alternative as
   ExprHandle e is -> expr e <> foldMap listItem is
   ExprUsing is e -> foldMap listItem is <> expr e
   ExprLocalOpen _ e -> expr e

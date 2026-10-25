@@ -1,0 +1,22 @@
+module Main where
+import Data.List (List(..))
+import Data.List.Syntax (macro ls)
+import Pairing
+xs :: List Int
+xs = ls%[_, 2]
+ys :: List (Int -> (Int, Int))
+ys = ls%[(_, 1)]
+zs :: Int -> (Int, Int)
+zs = pairedWithOne%[_]
+ws :: Int -> (Int, Int)
+ws = wrapped%[(_), (1)]
+vs :: Int -> Int
+vs = scrutinized%[_]
+effect Count where
+  count :: Int ->* Int
+us :: Int
+us = handle count 1 with
+  var n := 0
+  Count -> fast | count k = let set = assigned%[_] in n!
+rs :: Int -> (Int -> Int, Int)
+rs = wrapped%[\x -> x, (_ :: (Int))]

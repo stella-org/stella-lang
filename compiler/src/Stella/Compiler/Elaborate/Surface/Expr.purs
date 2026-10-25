@@ -781,6 +781,7 @@ infer scope expr = case expr of
     Nothing -> do
       f' <- infer scope f
       applyTo scope (exprOrigin f) (exprOrigin expr) f' \argument -> check scope x Derived argument
+  ExprOperator o op l r -> infer scope (ExprApp o (ExprApp o op l) r)
   ExprHandle o cells items body
     | Array.null cells -> handling scope o items body
     | otherwise -> cellRegion scope o cells items body

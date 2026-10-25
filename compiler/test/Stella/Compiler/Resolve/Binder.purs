@@ -184,7 +184,7 @@ spec = describe "Stella.Compiler.Resolve.Binder" do
     it "of a `case` alternative are its patterns, its or-choices at its top binding nothing" do
       let
         alternatives = case _ of
-          CST.DeclValue _ _ (CST.ExprCase _ alts) _ -> traverse (\alt -> resolveAlternative alt.patterns <#> \r -> joinWith " ; " (map (joinWith " " <<< map renderBinder) r.patterns) <> " | " <> joinWith " " (map renderVar r.bound)) alts
+          CST.DeclValue _ _ (CST.ExprCase _ _ alts) _ -> traverse (\alt -> resolveAlternative alt.patterns <#> \r -> joinWith " ; " (map (joinWith " " <<< map renderBinder) r.patterns) <> " | " <> joinWith " " (map renderVar r.bound)) alts
           _ -> pure []
       resolvingF [ "f = case p, q of", "  Nothing, One | x, Two _ -> 1", "  Just a, b -> 2" ] alternatives \ran -> do
         ran.result `shouldEqual` [ "A.Nothing M.One ; ! (M.Two _) | x#0", "(A.Just a#1) b#2 | a#1 b#2" ]

@@ -220,8 +220,8 @@ sketchExpr = case _ of
   ExprChar l -> l.raw
   ExprString l -> l.raw
   ExprUnit _ -> "()"
-  ExprParens e -> list [ "parens", sketchExpr e ]
-  ExprTuple es -> list ([ "tuple" ] <> map sketchExpr es)
+  ExprParens _ e -> list [ "parens", sketchExpr e ]
+  ExprTuple _ es -> list ([ "tuple" ] <> map sketchExpr es)
   ExprRecord _ fs -> list ([ "record" ] <> map field fs)
   ExprApp f a -> list [ sketchExpr f, sketchExpr a ]
   ExprOp a o b -> list [ operator o, sketchExpr a, sketchExpr b ]
@@ -229,7 +229,7 @@ sketchExpr = case _ of
   ExprAccess e ls -> list [ ".", sketchExpr e, names ls ]
   ExprLambda bs e -> list ([ "\\" ] <> map sketchBinder bs <> [ sketchExpr e ])
   ExprLet ls e -> list ([ "let" ] <> map letBinding ls <> [ sketchExpr e ])
-  ExprCase es as -> list ([ "case" ] <> map sketchExpr es <> map alternative as)
+  ExprCase _ es as -> list ([ "case" ] <> map sketchExpr es <> map alternative as)
   ExprHandle e is -> list ([ "handle", sketchExpr e ] <> map listItem is)
   ExprUsing is e -> list ([ "using" ] <> map listItem is <> [ sketchExpr e ])
   ExprLocalOpen n e -> list [ "open", name n, sketchExpr e ]

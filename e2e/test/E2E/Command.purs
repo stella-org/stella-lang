@@ -417,7 +417,9 @@ spec sources = describe "the steam run command" $ requiring (compiled sources) \
   describe "a refusal before the entry point runs" do
 
     it "exits 1 where the descriptor is not there, or does not read as one" do
-      missing <- invoke [ dir <> "/nowhere.program.json" ]
+      -- a name no case writes, removed in case an earlier run left one
+      FS.rm' (dir <> "/absent.program.json") { force: true, maxRetries: 0, recursive: false, retryDelay: 0 }
+      missing <- invoke [ dir <> "/absent.program.json" ]
       missing.status `shouldEqual` 1
       String.contains (String.Pattern "Cannot read") missing.err `shouldEqual` true
       writeText (dir <> "/garbage.program.json") "{ not json"

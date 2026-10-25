@@ -50,7 +50,6 @@ Origin = FromSource range
 | `ExprComputation` | a computation declaration, which runs each time it is referred to ([Top-level Computation Declaration](../../proposals/05-Toplevel-Computation-Declaration.md)) |
 | `ExprConstructor` | a data constructor; `()` is `Prim.Unit` |
 | `ExprOperation` | an operation, with the label of the instance it is performed on where one is written, `get@cache` |
-| `ExprDiscriminator` | the discriminator `C?` of a constructor ([Discriminator](../../proposals/04-Discriminator.md)) |
 | `TypeConstructor` | a data type, a newtype, a foreign type, or an intrinsic; `()` is `Prim.Unit` |
 | `TypeSynonym` | a type synonym, expanded where the type is elaborated |
 
@@ -89,6 +88,7 @@ Origin = FromSource range
 ## Expressions and patterns
 
 - **An operator is applied to its two operands**, rebracketed by fixity: `ExprOperator` holds the operator, as the reference it stands for with the origin of where it was written, and then the operands.
+- **No discriminator and no anonymous argument is left**: each is the `λ` it stands for by the time the Surface AST is made, built of the nodes above.
 - **`e.a.b` is two selections**, one label at a time, each holding where its label is written beside where it stands; **each labelled field of a record literal holds both too**, a pun's label being the whole field, and a spread only where it stands. What a label asks of a row is reported where the label stands ([Elaboration](01-Elaboration.md#records-and-tuples)).
 - **A declaration's `where` is a `let`** around the body.
 - **`case _ of` is a `λ` around a `case`**, a parameter for each anonymous scrutinee, from the left, under a name no source can write; no anonymous scrutinee stands in a `case`.
@@ -192,10 +192,11 @@ A fixity declaration, of an operator or of a type operator, names the operator r
 | `TypeParens`, `TypeUnit` | the type it encloses, and `Prim.Unit` |
 | `TypeDirective` | invalid; no directive of this version stands in a type |
 | `RowItem` | the item of the row its bracket gives; one the bracket does not admit is dropped |
-| `ExprVar`, `ExprConstructor`, `ExprDiscriminator`, `ExprOperatorValue` | the reference node of what it resolves to |
+| `ExprVar`, `ExprConstructor`, `ExprOperatorValue` | the reference node of what it resolves to |
+| `ExprDiscriminator` | the `λ` over a `case` it stands for ([Name Resolution](06-Name-Resolution.md#discriminators)) |
 | `ExprOp` | `ExprOperator`, rebracketed by fixity |
 | `ExprTag`, and an `ExprApp` whose head is a tag, with parentheses optionally around that tag itself | `ExprTag`, holding the argument as its payload; a tag applied to more than one argument is refused |
-| `ExprSection` | the lambda it stands for |
+| `ExprSection` | a parameter of the `λ` it is an anonymous argument of, a `case`'s or a section's; anywhere else invalid ([Name Resolution](06-Name-Resolution.md)) |
 | `ExprAccess`, `ExprAt` | nested `ExprSelect`, and an `ExprOperation` with its label |
 | `ExprHandle`, `ExprUsing` | `ExprHandle` |
 | `ListCell`, `ListGroup`, `ListHandler` | a cell of the `ExprHandle` they are items of, a `HandlerGroup`, and a `HandlerApplied` |

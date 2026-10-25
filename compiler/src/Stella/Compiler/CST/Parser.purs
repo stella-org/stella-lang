@@ -2158,21 +2158,33 @@ semanticActionTable =
           ((C.ExprUnit { space: o.range.space, start: o.range.start, end: c.range.end }) :: C.Expr)
   , \puppyValues ->
       let
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
         e :: C.Expr
         e = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 2 puppyValues)
       in
         Puppy.Runtime.box
-          ((C.ExprParens e) :: C.Expr)
+          ((C.ExprParens (B.between o c) e) :: C.Expr)
   , \puppyValues ->
       let
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
         e :: C.Expr
         e = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
 
         es :: Array C.Expr
         es = Puppy.Runtime.unbox (Puppy.Runtime.slot 3 puppyValues)
+
+        c :: C.SourceToken
+        c = Puppy.Runtime.unbox (Puppy.Runtime.slot 4 puppyValues)
       in
         Puppy.Runtime.box
-          ((C.ExprTuple ([ e ] <> es)) :: C.Expr)
+          ((C.ExprTuple (B.between o c) ([ e ] <> es)) :: C.Expr)
   , \puppyValues ->
       let
         o :: C.SourceToken
@@ -2577,13 +2589,19 @@ semanticActionTable =
           (C.ExprLet bs e)
   , \puppyValues ->
       let
+        k :: C.SourceToken
+        k = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
+
         es :: Array C.Expr
         es = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+
+        f :: C.SourceToken
+        f = Puppy.Runtime.unbox (Puppy.Runtime.slot 2 puppyValues)
 
         as = Puppy.Runtime.unbox (Puppy.Runtime.slot 3 puppyValues)
       in
         Puppy.Runtime.box
-          (C.ExprCase es as)
+          (C.ExprCase (B.between k f) es as)
   , \puppyValues ->
       let
         e :: C.Expr
@@ -4332,6 +4350,9 @@ semanticActionTable =
         d :: C.SourceToken
         d = Puppy.Runtime.unbox (Puppy.Runtime.slot 0 puppyValues)
 
+        o :: C.SourceToken
+        o = Puppy.Runtime.unbox (Puppy.Runtime.slot 1 puppyValues)
+
         e :: C.Expr
         e = Puppy.Runtime.unbox (Puppy.Runtime.slot 2 puppyValues)
 
@@ -4339,7 +4360,7 @@ semanticActionTable =
         c = Puppy.Runtime.unbox (Puppy.Runtime.slot 3 puppyValues)
       in
         Puppy.Runtime.box
-          ((B.antiquoted d c.range (C.ExprParens e)) :: C.Antiquote)
+          ((B.antiquoted d c.range (C.ExprParens (B.between o c) e)) :: C.Antiquote)
   , \puppyValues ->
       let
         t :: C.SourceToken

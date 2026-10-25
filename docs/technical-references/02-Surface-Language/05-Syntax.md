@@ -350,7 +350,7 @@ letBinding  ::= ident "::" type | binder1 "=" expr
 - **Every operator is read at one precedence and associates to the left**, in the order written. Declared fixities rebracket the chain afterwards, by the rule above, which is where an imported operator's fixity is known.
 - **Application binds tighter than any operator.** A negative literal is one token, so `f -1` is `f` applied to `-1` ([Lexical Structure](04-Lexical-Structure.md)).
 - **A lambda, `let`, `case`, `handle`, and `using` extend as far to the right as they can**, and may stand as the last argument of an application: `map \x -> x + 1`.
-- **`_` is an anonymous argument**: `case _, _ of`, and the section `(_ + 1)`.
+- **`_` is an anonymous argument**: a scrutinee, `case _, _ of`, an operand of an operator chain in parentheses, the operator section `(_ + 1)`, an element of a tuple, the tuple section `(_, 1)`, and the whole value a cell is written, the cell-write section `n := _`; anywhere else it is refused ([Name Resolution](06-Name-Resolution.md)).
 - **A record literal's field is `name: e`, a pun `name`, or a replacement `name = e`, and one spread `...e` may stand last.** A replacement replaces a field of the record spread ([Elaboration](01-Elaboration.md#records-and-tuples)).
 - **`op@label`** performs an operation of a labelled effect, and on the left of a guard block's binding `m@(Just x)` is an as-pattern; **`x!`** reads a cell and **`x := e`** writes one ([Effect Handlers](02-Effect-Handlers.md)).
 - **`M.( e )` opens `M` within `e`**, and **`import M in e`** does the same over the rest of the expression ([Name Resolution](06-Name-Resolution.md)).

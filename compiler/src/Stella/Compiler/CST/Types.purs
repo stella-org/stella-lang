@@ -542,8 +542,9 @@ data Expr
   | ExprChar (Literal String)
   | ExprString (Literal String)
   | ExprUnit SourceRange
-  | ExprParens Expr
-  | ExprTuple (Array Expr)
+  -- | The range of the parentheses is kept, since a section is bounded by them.
+  | ExprParens SourceRange Expr
+  | ExprTuple SourceRange (Array Expr)
   -- | A record literal; the range covers its braces.
   | ExprRecord SourceRange (Array RecordField)
   | ExprApp Expr Expr
@@ -553,7 +554,8 @@ data Expr
   | ExprAccess Expr (Array Name)
   | ExprLambda (Array Binder) Expr
   | ExprLet (Array LetBinding) Expr
-  | ExprCase (Array Expr) (Array CaseAlternative)
+  -- | `case` through `of`, which bound an anonymous scrutinee.
+  | ExprCase SourceRange (Array Expr) (Array CaseAlternative)
   | ExprHandle Expr (Array HandlerListItem)
   | ExprUsing (Array HandlerListItem) Expr
   | ExprLocalOpen Name Expr

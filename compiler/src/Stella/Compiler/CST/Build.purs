@@ -90,7 +90,7 @@ binderApp atoms = case Array.uncons atoms of
   Just { head: BinderConstructor n [], tail } -> BinderConstructor n tail
   Just { head: BinderTag n [], tail } -> BinderTag n tail
   Just { head, tail } -> BinderApp head tail
-  Nothing -> BinderInvalid (ExprTuple [])
+  Nothing -> BinderInvalid (ExprTuple (inSource { line: 0, column: 0 } { line: 0, column: 0 }) [])
 
 -- | The left of a `let` binding, read as a pattern and told apart here: a name
 -- | followed by patterns binds a local function, a name alone a value, and
@@ -122,8 +122,8 @@ toBinder = case _ of
   ExprChar l -> BinderChar l
   ExprString l -> BinderString l
   ExprUnit r -> BinderUnit r
-  ExprParens e -> BinderParens (toBinder e)
-  ExprTuple es -> BinderTuple (map toBinder es)
+  ExprParens _ e -> BinderParens (toBinder e)
+  ExprTuple _ es -> BinderTuple (map toBinder es)
   ExprTyped e t -> BinderTyped (toBinder e) t
   ExprAt n e -> BinderAs n (toBinder e)
   ExprRecord r fs -> BinderRecord r (map field fs)

@@ -58,8 +58,6 @@ data Expr
   -- | where its name is written. The label is that of the instance it is
   -- | performed on, `get@cache`, with where the label is written.
   | ExprOperation Origin Origin (Qualified Ident) (Maybe { origin :: Origin, label :: Symbol })
-  -- | `C?`, the predicate that holds of a value built with the constructor `C`.
-  | ExprDiscriminator Origin (Qualified Ident)
   -- | `'Ok e`, the value `e` injected into a variant at the tag `'Ok`, with where
   -- | the tag is written. A tag written with no payload, `'None`, carries `()`. A
   -- | tag is no function: it is applied to its payload where it is written.
@@ -100,7 +98,6 @@ exprOrigin = case _ of
   ExprComputation o _ -> o
   ExprConstructor o _ -> o
   ExprOperation o _ _ _ -> o
-  ExprDiscriminator o _ -> o
   ExprTag o _ _ _ -> o
   ExprLiteral o _ -> o
   ExprHole o _ -> o

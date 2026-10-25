@@ -1,0 +1,66 @@
+module Main where
+
+import Base.Int as Int
+import Data.Maybe (Maybe(..))
+import Data.Maybe as M
+
+data Shape = Circle Int | Square Int Int | Dot
+
+plus :: Int -> Int -> Int
+plus x y = Int.add x y
+
+times :: Int -> Int -> Int
+times x y = Int.mul x y
+
+infixl 6 plus as +
+infixl 7 times as *
+
+justOne :: Boolean
+justOne = Just? (Just 1)
+
+nothingQualified :: Boolean
+nothingQualified = M.Nothing? (Just 1)
+
+circle :: Boolean
+circle = Circle? (Square 1 2)
+
+dot :: Boolean
+dot = Dot? Dot
+
+seven :: Int
+seven = 1 + 2 * 3
+
+next :: Int
+next = (_ + 1) 41
+
+both :: Int
+both = (_ * _) 6 7
+
+apply :: (Int -> Int) -> Int -> Int
+apply f x = f x
+
+nested :: Int
+nested = apply (_ + apply (_ * 2) 3) 1
+
+firstOf :: (Int, Int) -> Int
+firstOf p = case p of
+  (a, _) -> a
+
+secondOf :: (Int, Int) -> Int
+secondOf p = case p of
+  (_, b) -> b
+
+paired :: Int
+paired = firstOf ((_, _) 4 2) + secondOf ((40, _) 2)
+
+effect Count where
+  count :: Int ->* Int
+
+summed :: Int
+summed =
+  handle
+    let _ = count 2 in
+    count 3
+  with
+    var n := 0
+    Count -> fast | count k = let set = n := _ in let _ = set (n! + k) in n!

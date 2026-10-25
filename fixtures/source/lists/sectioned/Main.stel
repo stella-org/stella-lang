@@ -1,0 +1,37 @@
+module Main where
+
+import Base.Int (add)
+import Data.List (List(..))
+import Data.List.Syntax (macro ls)
+
+infixl 6 add as +
+
+pairs :: List (Int -> (Int, Int))
+pairs = ls%[(_, 1), ((_), 1)]
+
+paired :: Int
+paired = case pairs of
+  Cons f (Cons g _) ->
+    case f 4 of
+      (a, b) -> 
+        case g 5 of
+          (c, d) -> a + b + c + d
+  _ -> 0
+
+increments :: List (Int -> Int)
+increments = ls%[(_ + 1)]
+
+incremented :: Int
+incremented = case increments of
+  Cons f _ -> f 4
+  Nil -> 0
+
+identities :: List (Int -> (Int -> Int, Int))
+identities = ls%[(\x -> x, _)]
+
+applied :: Int
+applied = case identities of
+  Cons f _ ->
+    case f 2 of
+      (i, n) -> i n
+  Nil -> 0

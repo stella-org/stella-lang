@@ -118,8 +118,8 @@ exprRange = case _ of
   ExprChar l -> l.range
   ExprString l -> l.range
   ExprUnit r -> r
-  ExprParens e -> exprRange e
-  ExprTuple es -> nonEmpty (map exprRange es)
+  ExprParens _ e -> exprRange e
+  ExprTuple _ es -> nonEmpty (map exprRange es)
   ExprRecord r _ -> r
   ExprApp f a -> covering (exprRange f) (exprRange a)
   ExprOp a _ b -> covering (exprRange a) (exprRange b)
@@ -127,7 +127,7 @@ exprRange = case _ of
   ExprAccess e ls -> cover (exprRange e) (map _.range ls)
   ExprLambda bs e -> cover (exprRange e) (map binderRange bs)
   ExprLet ls e -> cover (exprRange e) (map letBindingRange ls)
-  ExprCase es as -> cover (nonEmpty (map exprRange es)) (map alternativeRange as)
+  ExprCase _ es as -> cover (nonEmpty (map exprRange es)) (map alternativeRange as)
   ExprHandle e is -> cover (exprRange e) (map listItemRange is)
   ExprUsing is e -> cover (exprRange e) (map listItemRange is)
   ExprLocalOpen n e -> covering n.range (exprRange e)

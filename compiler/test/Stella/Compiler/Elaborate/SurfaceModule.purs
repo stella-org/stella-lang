@@ -520,7 +520,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         , "bad :: Int"
         , "bad = inc"
         , "lam :: Int"
-        , "lam = Unit?"
+        , "lam = let (a, b) = (1, a) in b"
         , "open :: Int"
         , "open = const 1 id"
         , "ok :: Int"
@@ -529,7 +529,7 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         \r -> do
           map at r.errors `shouldEqual`
             [ "5:7 rejected"
-            , "7:7 outside: this form"
+            , "7:12 outside: a pattern a recursive group binds"
             , "9:8 type undetermined"
             , "9:16 type undetermined"
             ]
@@ -937,6 +937,24 @@ spec = describe "Stella.Compiler.Elaborate.Surface.Module" do
         \r -> map at r.errors `shouldEqual` []
       elaborating (types <> [ "x :: Opt Int", "x = case x of", "  _ -> None" ]) \r ->
         map at r.errors `shouldEqual` [ "6:10 reads x early" ]
+
+  describe "the sugar resolution desugars" do
+    let
+      schemeOf name values = map (\v -> printType (fromCore v.scheme.body)) (Array.find (\x -> x.name == inM name) values)
+      declared = [ "data Shape = Circle Int | Square Int Int | Dot", "plus :: Int -> Int -> Int", "plus x y = inc y", "infixl 6 plus as +" ]
+    it "makes a discriminator a predicate on its constructor's type, one of a type with one constructor among them, which the Core checker accepts" do
+      elaborating (declared <> [ "isCircle = Circle?", "isSquare = Square?", "isPair = Tuple?", "applied = Dot? Dot", "applies :: (Shape -> Boolean) -> Boolean", "applies p = p (Circle 1)", "passed = applies Square?" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        map (\name -> schemeOf name r.values) [ "isCircle", "isSquare", "isPair", "applied", "passed" ]
+          `shouldEqual` map Just [ "Shape -> Boolean", "Shape -> Boolean", "forall a. forall b. Tuple a b -> Boolean", "Boolean", "Boolean" ]
+        checked r \core -> shapes core `shouldEqual` [ "nonrec plus", "nonrec isCircle", "nonrec isSquare", "nonrec isPair", "nonrec applied", "nonrec applies", "nonrec passed" ]
+
+    it "applies an operator to its operands, and makes an operator section and a tuple section a λ over them, which the Core checker accepts" do
+      elaborating (declared <> [ "total = 1 + 2 + 3", "next = (_ + 1)", "both = (_ + _)", "used = (1 + _) 2", "pair = (_, _)", "tagged = (1, _)" ]) \r -> do
+        map at r.errors `shouldEqual` []
+        map (\name -> schemeOf name r.values) [ "total", "next", "both", "used", "pair", "tagged" ]
+          `shouldEqual` map Just [ "Int", "Int -> Int", "Int -> Int -> Int", "Int", "forall a. forall b. a -> b -> (a, b)", "forall a. a -> (Int, a)" ]
+        checked r \core -> shapes core `shouldEqual` [ "nonrec plus", "nonrec total", "nonrec next", "nonrec both", "nonrec used", "nonrec pair", "nonrec tagged" ]
 
   describe "a guard block" do
     let

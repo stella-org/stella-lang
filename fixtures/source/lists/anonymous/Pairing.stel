@@ -1,0 +1,32 @@
+module Pairing where
+
+import Stella.Syntax (List, Parser, Syntax(..), Term, TokenTree, brackets, many, map, nodesOf, tree)
+
+pair :: List TokenTree -> Syntax Term
+pair ts = %term{ ($(Syntax (nodesOf ts)), 1) }
+
+@[macro]
+pairedWithOne :: Parser (Syntax Term)
+pairedWithOne = brackets (map pair (many tree))
+
+spliced :: List TokenTree -> Syntax Term
+spliced ts = %term{ $(Syntax (nodesOf ts)) }
+
+@[macro]
+wrapped :: Parser (Syntax Term)
+wrapped = brackets (map spliced (many tree))
+
+scrutinee :: List TokenTree -> Syntax Term
+scrutinee ts = %term{ case $(Syntax (nodesOf ts)) of
+  _ -> 0 }
+
+@[macro]
+scrutinized :: Parser (Syntax Term)
+scrutinized = brackets (map scrutinee (many tree))
+
+assignment :: List TokenTree -> Syntax Term
+assignment ts = %term{ n := $(Syntax (nodesOf ts)) }
+
+@[macro]
+assigned :: Parser (Syntax Term)
+assigned = brackets (map assignment (many tree))

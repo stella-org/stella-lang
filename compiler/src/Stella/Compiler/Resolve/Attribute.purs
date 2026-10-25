@@ -157,7 +157,7 @@ resolveConstant e = case e of
     Just s -> pure (ConstantLiteral o (LitString s))
     Nothing -> invalid LiteralNotScalar
   CST.ExprUnit _ -> pure (ConstantConstructor o unitCtor [])
-  CST.ExprParens inner -> resolveConstant inner
+  CST.ExprParens _ inner -> resolveConstant inner
   CST.ExprRecord _ fields -> case traverse field fields of
     Just fs -> do
       reportLabelsTwice (map (\f -> f.name) fs)
@@ -190,7 +190,7 @@ resolveConstant e = case e of
     _ -> Nothing
   application x = case x of
     CST.ExprApp f a -> let s = application f in s { arguments = Array.snoc s.arguments a }
-    CST.ExprParens inner -> application inner
+    CST.ExprParens _ inner -> application inner
     _ -> { head: x, arguments: [] }
 
 -- | An attribute declaration's parameters: the positional ones, closed types

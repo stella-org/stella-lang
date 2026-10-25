@@ -178,8 +178,8 @@ clause ctx = case _ of
 
 expr :: forall m. Monad m => Context m -> Expr -> Ex m Expr
 expr ctx e = case e of
-  ExprParens inner -> ExprParens <$> go inner
-  ExprTuple es -> ExprTuple <$> traverse go es
+  ExprParens r inner -> ExprParens r <$> go inner
+  ExprTuple r es -> ExprTuple r <$> traverse go es
   ExprRecord r fields -> ExprRecord r <$> traverse field fields
   ExprApp f x -> ExprApp <$> go f <*> go x
   ExprOp l op r -> (\l' r' -> ExprOp l' op r') <$> go l <*> go r
@@ -187,7 +187,7 @@ expr ctx e = case e of
   ExprAccess inner labels -> (\i -> ExprAccess i labels) <$> go inner
   ExprLambda params body -> ExprLambda params <$> go body
   ExprLet bindings body -> ExprLet <$> traverse letBinding bindings <*> go body
-  ExprCase scrutinees alternatives -> ExprCase <$> traverse go scrutinees <*> traverse alternative alternatives
+  ExprCase r scrutinees alternatives -> ExprCase r <$> traverse go scrutinees <*> traverse alternative alternatives
   ExprHandle inner items -> ExprHandle <$> go inner <*> traverse listItem items
   ExprUsing items inner -> ExprUsing <$> traverse listItem items <*> go inner
   ExprLocalOpen alias inner -> opened alias inner (ExprLocalOpen alias)

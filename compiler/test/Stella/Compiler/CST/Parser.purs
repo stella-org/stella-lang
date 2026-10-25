@@ -174,6 +174,11 @@ spec = describe "Stella.Compiler.CST.Parser" do
         "(handle w (var n 0) (group Counter (| fast next _ n!)) runEmit)"
       "using\n  var n := 0\n  Counter -> fast | next _ = n!\nhandle\n  w" `exprIs`
         "(using (var n 0) (group Counter fast (| next _ n!)) w)"
+    -- a cell is named where it is read or written, and never stands as a value
+    it "refuses `_` in place of a cell's name, read or written" do
+      exprRejected "_!"
+      exprRejected "_ := 1"
+      exprRejected "_ := _"
     it "refuses a cell written after a group's head" do
       exprRejected "handle w with\n  Counter ->\n    var n := 0\n    | fast next _ = n!"
     it "reads a group's marker on the line of its `->` or on one of its own, its clauses after it or on the lines below" do

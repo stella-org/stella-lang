@@ -196,3 +196,22 @@ fixtures/source/lists/unimported/Main.stel:5:6: There is no constructor `Nil` in
         r.result `shouldEqual` Left
           """fixtures/source/lists/unbound/Main.stel:5:6: There is no value `y` in scope (written at fixtures/source/lists/unbound/Main.stel:5:13)
 fixtures/source/lists/unbound/Main.stel:7:6: There is no value `z` in scope (written at fixtures/source/lists/unbound/Main.stel:7:14)"""
+
+    -- the macros of `Pairing` write the tuple, the parentheses, the `case`,
+    -- and the cell write their input is spliced into
+    it "makes no section of a `_` written in the call's input whose bounds the macro wrote, the call itself among them" do
+      building sources [] [] "anonymous" [] \r ->
+        r.result `shouldEqual` Left
+          """fixtures/source/lists/anonymous/Main.stel:6:6: `_` written in what a macro call is given is an argument only of a section written there with it, as in `m%[(_, 1)]`; otherwise write the λ around the call, as in `\x -> m%[x]` (written at fixtures/source/lists/anonymous/Main.stel:6:10)
+fixtures/source/lists/anonymous/Main.stel:10:6: `_` written in what a macro call is given is an argument only of a section written there with it, as in `m%[(_, 1)]`; otherwise write the λ around the call, as in `\x -> m%[x]` (written at fixtures/source/lists/anonymous/Main.stel:10:21)
+fixtures/source/lists/anonymous/Main.stel:12:6: `_` written in what a macro call is given is an argument only of a section written there with it, as in `m%[(_, 1)]`; otherwise write the λ around the call, as in `\x -> m%[x]` (written at fixtures/source/lists/anonymous/Main.stel:12:16)
+fixtures/source/lists/anonymous/Main.stel:14:6: `_` written in what a macro call is given is an argument only of a section written there with it, as in `m%[(_, 1)]`; otherwise write the λ around the call, as in `\x -> m%[x]` (written at fixtures/source/lists/anonymous/Main.stel:14:19)
+fixtures/source/lists/anonymous/Main.stel:20:39: `_` written in what a macro call is given is an argument only of a section written there with it, as in `m%[(_, 1)]`; otherwise write the λ around the call, as in `\x -> m%[x]` (written at fixtures/source/lists/anonymous/Main.stel:20:49)
+fixtures/source/lists/anonymous/Main.stel:22:6: `_` written in what a macro call is given is an argument only of a section written there with it, as in `m%[(_, 1)]`; otherwise write the λ around the call, as in `\x -> m%[x]` (written at fixtures/source/lists/anonymous/Main.stel:22:25)"""
+
+    it "makes a section of one written in the call's input with its bounds, a tuple section and an operator section, and runs it" do
+      building sources [] [] "sectioned" [ "paired", "incremented", "applied" ] \r -> do
+        r.result `shouldEqual` Right [ "Data.List.Syntax", "Data.List", "Main" ]
+        Map.lookup "paired" r.values `shouldEqual` Just "11"
+        Map.lookup "incremented" r.values `shouldEqual` Just "5"
+        Map.lookup "applied" r.values `shouldEqual` Just "2"

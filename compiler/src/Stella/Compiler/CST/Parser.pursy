@@ -708,8 +708,8 @@ expr3block:
       { C.ExprLambda bs e }
   | LET bs = letBindings IN e = expr
       { C.ExprLet bs e }
-  | CASE es = exprs1 OF as = layout(caseAlternative)
-      { C.ExprCase es as }
+  | k = CASE es = exprs1 f = OF as = layout(caseAlternative)
+      { C.ExprCase (B.between k f) es as }
   | HANDLE e = expr WITH is = layout(handlerListItem)
       { C.ExprHandle e is }
   | USING is = layout(handlerListItem) HANDLE e = expr
@@ -726,7 +726,7 @@ quotation:
 
 antiquote:
   | d = ANTIQUOTE n = ident                  { B.antiquoted d n.range (C.ExprVar n) }
-  | d = ANTIQUOTE LPAREN e = expr c = RPAREN { B.antiquoted d c.range (C.ExprParens e) }
+  | d = ANTIQUOTE o = LPAREN e = expr c = RPAREN { B.antiquoted d c.range (C.ExprParens (B.between o c) e) }
 
 quoteParts:
   | pss = manyOrEmpty(quoteItem) { B.quoted pss }
@@ -772,8 +772,8 @@ exprAtom:
   | t = LIT_STRING          { C.ExprString (B.stringLiteral t) }
   | t = RESUME              { C.ExprResume (B.range t) }
   | o = LPAREN c = RPAREN   { C.ExprUnit { space: o.range.space, start: o.range.start, end: c.range.end } }
-  | LPAREN e = expr RPAREN  { C.ExprParens e }
-  | LPAREN e = expr COMMA es = exprs1 RPAREN      { C.ExprTuple ([ e ] <> es) }
+  | o = LPAREN e = expr c = RPAREN  { C.ExprParens (B.between o c) e }
+  | o = LPAREN e = expr COMMA es = exprs1 c = RPAREN      { C.ExprTuple (B.between o c) ([ e ] <> es) }
   | o = LBRACE c = RBRACE                                 { C.ExprRecord (B.between o c) [] }
   | o = LBRACE fs = recordFields c = RBRACE               { C.ExprRecord (B.between o c) fs }
   | t = LOCALOPEN e = expr RPAREN                 { C.ExprLocalOpen (B.name t) e }
