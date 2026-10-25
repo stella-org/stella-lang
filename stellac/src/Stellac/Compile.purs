@@ -10,6 +10,10 @@
 -- | for it, except a seed module, which runs as the session holds it. A seed
 -- | module in `modules` is refused.
 -- |
+-- | The `output.json` an earlier build left is removed before anything else is
+-- | done, and the build writes its own last ([Output](Output.purs)), so a build
+-- | that fails leaves none.
+-- |
 -- | `dependencies` is checked even when `modules` is empty; nothing is then
 -- | written and the command succeeds.
 module Stellac.Compile (cmd) where
@@ -37,11 +41,16 @@ import Stella.Compiler.Macro.Run (defaultSettings)
 import Stellac.Config (Config)
 import Stellac.Dependencies (printDependencyError)
 import Stellac.Dependencies as Dependencies
+import Stellac.Output (printOutputError)
+import Stellac.Output as Output
 import Stellac.Paths (builtPath)
 import Type.Row (type (+))
 
 cmd :: forall r. Config -> Run (FS + LOG + PROCESS + EXCEPT String + EFFECT + AFF + r) Unit
 cmd config = do
+  -- what an earlier build stated is not this one's
+  Output.withdrawn config
+    >>= either (\err -> Log.error (printOutputError err) *> throw "The build failed") pure
   seed <- either (\why -> throw (internal ("the seed modules do not compile: " <> why))) pure compiled
   environment <- either (\err -> throw (internal ("the seed modules do not make an environment: " <> show err))) pure
     (foldM (flip addInterface) initialEnvironment seed.moduleInterfaces)
@@ -61,6 +70,7 @@ cmd config = do
       , steamCmd: config.options.steamCmd
       , traced: config.options.traceOptimizer
       , emitCore: config.options.emitCore
+      , finish: either (pure <<< printOutputError) (const []) <$> Output.written config
       , destination: output
       }
       \action env -> build action defaultSettings env (map (\m -> { path: m.path, name: m.module }) config.modules)

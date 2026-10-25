@@ -10,6 +10,8 @@ package:
     - arrays
     - avar
     - bifunctors
+    - codec
+    - codec-argonaut
     - compiler
     - console
     - control
@@ -35,6 +37,7 @@ package:
     - partial
     - prelude
     - record
+    - record-extra
     - refs
     - run
     - strings

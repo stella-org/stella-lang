@@ -101,6 +101,7 @@ rebuilding name files k = do
         , steamCmd: "steam"
         , traced: []
         , emitCore: false
+        , finish: pure []
         , destination: dir <> "/" <> sub
         }
     _ <- FS.makeDirectory (dir <> "/before/out")

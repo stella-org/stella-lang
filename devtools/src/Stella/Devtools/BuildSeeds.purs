@@ -55,6 +55,7 @@ cmd opts = do
     , steamCmd: opts.steamCmd
     , traced: []
     , emitCore: false
+    , finish: pure []
     , destination: opts.output
     }
     \action env -> buildSeeds action defaultSettings env seedModules

@@ -76,7 +76,9 @@ import Type.Row (type (+))
 -- | opening; `objects` are the bytecode of modules outside the build that the
 -- | session may load, no seed module among them; `written` places a module's
 -- | file by extension; `traced` names the modules whose optimizer rounds are
--- | traced; `destination` is what the closing message names.
+-- | traced; `finish` writes what the caller adds once every module is written,
+-- | and answers why the build fails, nothing where it does not; `destination`
+-- | is what the closing message names.
 type Host =
   { seed :: Compiled
   , environment :: BuildEnvironment
@@ -85,6 +87,7 @@ type Host =
   , steamCmd :: String
   , traced :: Array ModuleName
   , emitCore :: Boolean
+  , finish :: Run (FS + ()) (Array String)
   , destination :: String
   }
 
@@ -219,6 +222,10 @@ onDisk host entry = do
           failures <- liftEffect (Ref.read unwritten)
           for_ failures Log.error
           when (not (Array.null failures) || closedBadly closed) do
+            throw "The build failed"
+          finishing <- expand host.finish
+          for_ finishing Log.error
+          when (not (Array.null finishing)) do
             throw "The build failed"
           Log.info (fmt @"✓ Built {count} module(s) → {destination}" { count: Array.length built, destination: host.destination })
           { modules: built, loaded: _ } <$> liftEffect (Ref.read loaded)

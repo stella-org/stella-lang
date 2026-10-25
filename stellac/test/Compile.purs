@@ -2,22 +2,23 @@
 -- | files: what it writes where, what it says, and how it fails on a refused
 -- | file, a module that does not compile, or a file it cannot write.
 -- |
--- | The files are a map from path to text or bytes, and writing a path listed
--- | as unwritable fails. The command runs in `/work`. No build here runs a
--- | macro, so none opens a session.
+-- | The files are a map from path to text or bytes, writing a path listed as
+-- | unwritable fails, and reading a path listed as misread reads another
+-- | file. The command runs in `/work`. No build here runs a macro, so none
+-- | opens a session.
 module Test.Stellac.Compile (spec) where
 
 import Prelude
 
 import Data.Array as Array
-import Data.Either (Either(..))
+import Data.Either (Either(..), isLeft)
 import Data.Foldable (for_)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
 import Data.String (Pattern(..), contains, joinWith)
 import Data.String as String
-import Data.Tuple (Tuple(..))
+import Data.Tuple (Tuple(..), snd)
 import Dodo as Dodo
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
@@ -34,11 +35,12 @@ import Stella.CLI.Effect.Log (LOG, Log(..), LogLevel(..))
 import Stella.CLI.Effect.Log as Log
 import Stella.CLI.Effect.Process (PROCESS)
 import Stella.CLI.Effect.Process as Process
-import Stella.Compiler.TypedCore (ModuleName(..))
+import Stella.Compiler.TypedCore (Ident(..), ModuleName(..))
 import Stellac.Config (load, normalize)
 import Stellac.Config as Config
 import Stellac.Options (Command(..))
 import Stellac.Options as Options
+import Stellac.Output as Output
 import Stellac.Program (loaded, program)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
@@ -47,11 +49,12 @@ import Type.Row (type (+))
 
 data File = Text String | Binary (Array Int)
 
--- | Paths whose writing fails.
-type Faults = { unwritable :: Array String }
+-- | Paths whose writing fails, and pairs of paths, the first read as the second
+-- | is.
+type Faults = { unwritable :: Array String, misread :: Array (Tuple String String) }
 
 noFaults :: Faults
-noFaults = { unwritable: [] }
+noFaults = { unwritable: [], misread: [] }
 
 type Ran = { result :: Either String Unit, files :: Map String File, said :: Array String }
 
@@ -83,7 +86,7 @@ inMemory files faults log p = p
 
 handler :: forall r. Ref (Map String File) -> Faults -> FileSystem ~> Run (EFFECT + r)
 handler files faults = case _ of
-  ReadBytes path reply -> Run.liftEffect (Ref.read files) <#> \fs -> reply case Map.lookup path fs of
+  ReadBytes path reply -> Run.liftEffect (Ref.read files) <#> \fs -> reply case Map.lookup (read path) fs of
     Just (Binary bytes) -> Right bytes
     _ -> Left "no such file"
   ReadText path reply -> Run.liftEffect (Ref.read files) <#> \fs -> reply case Map.lookup path fs of
@@ -97,6 +100,8 @@ handler files faults = case _ of
   Resolve path reply -> pure (reply (normalize (if String.take 1 path == "/" then path else "/work/" <> path)))
   Glob _ _ reply -> pure (reply (Left "no pattern is listed in these tests"))
   where
+  read path = maybe path snd (Array.find (\(Tuple from _) -> from == path) faults.misread)
+
   writing :: forall a. String -> File -> (Either String Unit -> a) -> Run (EFFECT + r) a
   writing path file reply
     | Array.elem path faults.unwritable = pure (reply (Left "the disk is full"))
@@ -139,13 +144,13 @@ spec = describe "stellac compile" do
   it "writes each module's bytecode and interface to the output directory, in the order listed" do
     compiling (settings [ listed "Main" "src/Main.stel", listed "Data.Util" "src/Data/Util.stel" ]) noFaults [ mainModule, util ] \r -> do
       r.result `shouldEqual` Right unit
-      written r `shouldEqual` [ "output/Data.Util.dmi", "output/Data.Util.dmo", "output/Main.dmi", "output/Main.dmo" ]
+      written r `shouldEqual` [ "output/Data.Util.dmi", "output/Data.Util.dmo", "output/Main.dmi", "output/Main.dmo", "output/output.json" ]
       Array.take 2 r.said `shouldEqual` [ "[1/2] Compiling Main (src/Main.stel)", "[2/2] Compiling Data.Util (src/Data/Util.stel)" ]
 
   it "compiles a module against the modules listed before it that it imports, their data types among them" do
     compiling (settings [ listed "Data.Util" "src/Data/Util.stel", listed "Main" "src/Main.stel" ]) noFaults [ mainOverUtil, util ] \r -> do
       r.result `shouldEqual` Right unit
-      written r `shouldEqual` [ "output/Data.Util.dmi", "output/Data.Util.dmo", "output/Main.dmi", "output/Main.dmo" ]
+      written r `shouldEqual` [ "output/Data.Util.dmi", "output/Data.Util.dmo", "output/Main.dmi", "output/Main.dmo", "output/output.json" ]
 
   it "refuses a module listed before a module of the build it imports, before compiling any" do
     compiling (settings [ listed "Main" "src/Main.stel", listed "Data.Util" "src/Data/Util.stel" ]) noFaults [ mainOverUtil, util ] \r -> do
@@ -174,7 +179,7 @@ spec = describe "stellac compile" do
       [ Tuple "pkg/src/Main.stel" (Text "module Main where\nn :: Int\nn = 1"), Tuple "pkg/stella.json" (Text (stellaJson (mainOnly { output = "./out/../output" }))) ]
       \r -> do
         r.result `shouldEqual` Right unit
-        written r `shouldEqual` [ "pkg/output/Main.dmi", "pkg/output/Main.dmo" ]
+        written r `shouldEqual` [ "pkg/output/Main.dmi", "pkg/output/Main.dmo", "pkg/output/output.json" ]
         Array.take 1 r.said `shouldEqual` [ "[1/1] Compiling Main (pkg/src/Main.stel)" ]
 
   it "writes where an absolute `output` names, wherever `stella.json` stands" do
@@ -200,7 +205,7 @@ spec = describe "stellac compile" do
       withLibrary \dmi ->
         compiling (depending mainOnly) noFaults [ dmi, mainOverUtil ] \r -> do
           r.result `shouldEqual` Right unit
-          written r `shouldEqual` [ "output/Main.dmi", "output/Main.dmo" ]
+          written r `shouldEqual` [ "output/Main.dmi", "output/Main.dmo", "output/output.json" ]
 
     it "reports an interface it cannot use, and builds nothing" do
       compiling (depending mainOnly) noFaults [ mainOverUtil ] \r -> do
@@ -217,6 +222,75 @@ spec = describe "stellac compile" do
           r.result `shouldEqual` Right unit
           r.said `shouldEqual` [ "Nothing to build" ]
           written r `shouldEqual` []
+
+  describe "`output.json`" do
+    let
+      -- `Data.A` imports `Data.B`; `Data.Types` supplies a type alone
+      dataA = source "src/Data/A.stel" [ "module Data.A where", "import Data.B", "a :: Int", "a = b" ]
+      dataB = source "src/Data/B.stel" [ "module Data.B where", "b :: Int", "b = 1" ]
+      types = source "src/Data/Types.stel" [ "module Data.Types where", "type Count = Int" ]
+      entryModule = source "src/Main.stel"
+        [ "module Main where", "import Data.A", "import Data.B", "import Data.Types", "n :: Count", "n = a", "foreign io :: IO Unit", "@[entrypoint]", "main :: IO Unit", "main = io" ]
+      four = settings [ listed "Data.B" "src/Data/B.stel", listed "Data.A" "src/Data/A.stel", listed "Data.Types" "src/Data/Types.stel", listed "Main" "src/Main.stel" ]
+      stated r = case Map.lookup "output/output.json" r.files of
+        Just (Text text) -> pure (Output.decode text)
+        _ -> liftEffect (throwException (error "no `output.json` was written"))
+      built m imports entrypoint = { module: ModuleName m, interface: m <> ".dmi", object: m <> ".dmo", imports: map ModuleName imports, entrypoint: Ident <$> entrypoint }
+
+    it "states each module built, in the order listed: its files from the output directory, the modules its bytecode imports, and the entry point its interface names" do
+      compiling four noFaults [ dataA, dataB, types, entryModule ] \r -> do
+        r.result `shouldEqual` Right unit
+        -- `Main` runs with `Data.A` alone, its other imports supplying a name or a type
+        stated r >>= shouldEqual
+          ( Right
+              { modules:
+                  [ built "Data.B" [] Nothing
+                  , built "Data.A" [ "Data.B" ] Nothing
+                  , built "Data.Types" [] Nothing
+                  , built "Main" [ "Data.A" ] (Just "main")
+                  ]
+              }
+          )
+        Array.last r.said `shouldEqual` Just "✓ Built 4 module(s) → output"
+
+    it "is removed, where an earlier build left one, by a build that fails and by one with no module to build" do
+      compiling four noFaults [ dataA, dataB, types, entryModule ] \first -> do
+        Map.member "output/output.json" first.files `shouldEqual` true
+        compiling four noFaults (Map.toUnfoldable first.files <> [ source "src/Main.stel" [ "module Main where", "n :: Int", "n = nope" ] ]) \r -> do
+          r.result `shouldEqual` Left "The build failed"
+          Map.member "output/output.json" r.files `shouldEqual` false
+        compiling (settings []) noFaults (Map.toUnfoldable first.files) \r -> do
+          r.result `shouldEqual` Right unit
+          r.said `shouldEqual` [ "Nothing to build" ]
+          Map.member "output/output.json" r.files `shouldEqual` false
+
+    it "fails the build where a file it reads back holds another module than the one it was written for" do
+      compiling four noFaults { misread = [ Tuple "output/Main.dmi" "output/Data.A.dmi" ] } [ dataA, dataB, types, entryModule ] \r -> do
+        r.result `shouldEqual` Left "The build failed"
+        saying r "`output/Main.dmi`, which the build wrote for `Main`, holds `Data.A`" `shouldEqual` true
+        Map.member "output/output.json" r.files `shouldEqual` false
+      compiling four noFaults { misread = [ Tuple "output/Main.dmo" "output/Data.A.dmo" ] } [ dataA, dataB, types, entryModule ] \r -> do
+        r.result `shouldEqual` Left "The build failed"
+        saying r "`output/Main.dmo`, which the build wrote for `Main`, holds `Data.A`" `shouldEqual` true
+
+    it "fails the build where it cannot be written, which then says nothing is built" do
+      compiling mainOnly noFaults { unwritable = [ "output/output.json" ] } [ mainModule ] \r -> do
+        r.result `shouldEqual` Left "The build failed"
+        saying r "`output/output.json` could not be written: the disk is full" `shouldEqual` true
+        Array.filter (contains (Pattern "✓")) r.said `shouldEqual` []
+
+    it "is read back as written, and refused with another version, a field no rule names, an empty string, or a module listed twice" do
+      let
+        output = { modules: [ built "Data.A" [ "Data.B" ] Nothing, built "Main" [ "Data.A" ] (Just "$entrypoint") ] }
+        text = Output.encode output
+        refused by = isLeft (Output.decode by)
+      Output.decode text `shouldEqual` Right output
+      refused (String.replace (Pattern "\"formatVersion\": 0") (String.Replacement "\"formatVersion\": 1") text) `shouldEqual` true
+      refused (String.replace (Pattern "\"formatVersion\": 0") (String.Replacement "\"formatVersion\": 0, \"target\": \"javascript\"") text) `shouldEqual` true
+      refused (String.replace (Pattern "\"entrypoint\": \"$entrypoint\"") (String.Replacement "\"entrypoint\": \"\"") text) `shouldEqual` true
+      refused (String.replace (Pattern "\"object\": \"Main.dmo\"") (String.Replacement "\"object\": \"Main.dmo\", \"arity\": 0") text) `shouldEqual` true
+      -- a module listed twice
+      refused (Output.encode { modules: [ built "Main" [] Nothing, built "Main" [] Nothing ] }) `shouldEqual` true
 
   describe "a build that fails" do
     it "reports a module that does not compile where it stands" do

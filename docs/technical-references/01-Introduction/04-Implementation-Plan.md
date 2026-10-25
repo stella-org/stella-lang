@@ -1835,4 +1835,8 @@ What a `stellac` command is given, and the ordinary build `stellac compile` runs
 | `traceOptimizer` naming two modules, and `[]` | `<output>/<M>.mir` for each module named; none |
 | `logLevel` `error`; `logLevel` `debug` with `monochrome` `false`, and with `true` | No progress said; what is said coloured, and not |
 | `stellac compile` given no file, or more than one; `stellac build` | Refused |
-| A package built by `compile` | `<output>/<M>.dmo` and `<output>/<M>.dmi` for each module, and nothing else |
+| A package built by `compile` | `<output>/<M>.dmo` and `<output>/<M>.dmi` for each module, `<output>/output.json`, and nothing else |
+| `Data.B`, `Data.A` importing it, `Data.Types` supplying a type alone, and `Main` importing all three, naming `Data.A`'s value and `Data.Types`'s type, with an entry point, listed in that order | `output.json` written after every pair and before the build says it built: the four modules in that order, each with its pair's paths from the output directory; the imports `[]`, `Data.B`, `[]`, and `Data.A` alone; an entry point for `Main` alone |
+| A build over an `output.json` an earlier build left, in which a module does not compile; one with `modules` empty | Neither leaves an `output.json` |
+| `output.json` unwritable; an interface or bytecode file the build wrote for `Main` read back holding `Data.A` | A build that fails, saying it built nothing, and leaving no `output.json` |
+| An `output.json` that `Stellac.Output.encode` wrote; one with another `formatVersion`, a field no rule names, an empty string, or a module listed twice | Read back as written; each of the rest refused |

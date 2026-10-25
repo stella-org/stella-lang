@@ -23,7 +23,6 @@ package:
     - ordered-collections
     - prelude
     - profunctor
-    - record-extra
     - run
     - strings
     - tuples

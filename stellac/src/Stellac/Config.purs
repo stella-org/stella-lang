@@ -48,7 +48,6 @@ import Data.Bifunctor (lmap)
 import Data.Codec as Codec
 import Data.Codec.Argonaut (JsonCodec, JsonDecodeError(..))
 import Data.Codec.Argonaut as CA
-import Data.Codec.Argonaut.Record as CAR
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
 import Data.Generic.Rep (class Generic)
@@ -58,19 +57,16 @@ import Data.Profunctor (dimap)
 import Data.Set as Set
 import Data.Show.Generic (genericShow)
 import Data.String as String
-import Data.String.CodeUnits as SCU
 import Data.Traversable (for)
 import Data.Tuple (Tuple(..))
 import Fmt (fmt)
-import Foreign.Object as Object
-import Prim.RowList as RL
-import Record.Extra (class Keys, keys)
 import Run (Run)
 import Stella.CLI.Effect.FS (FS, FilePath)
 import Stella.CLI.Effect.FS as FS
 import Stella.CLI.Effect.Log (LogLevel(..))
 import Stella.Compiler.TypedCore (ModuleName(..))
 import Stella.Compiler.TypedCore.Prim (primModule)
+import Stella.CLI.Codec (exactly, moduleName, nonEmpty)
 import Stellac.Dependencies (Dependency)
 import Type.Row (type (+))
 
@@ -144,12 +140,6 @@ codec =
   listed = dimap (\l -> { module: l.module, path: l.path }) (\l -> { module: l.module, path: l.path, written: l.path })
     $ exactly "module" { module: moduleName, path: nonEmpty }
 
-  nonEmpty = CA.prismaticCodec "a string with something in it" (\s -> if s == "" then Nothing else Just s) identity CA.string
-
-  moduleName = CA.prismaticCodec "a module's name" named (\(ModuleName m) -> m) CA.string
-    where
-    named m = if Array.all isProperName (String.split (String.Pattern ".") m) then Just (ModuleName m) else Nothing
-
   logLevel = CA.prismaticCodec "one of `debug`, `info`, `warn`, and `error`" level written CA.string
     where
     level = case _ of
@@ -164,27 +154,6 @@ codec =
       Warn -> "warn"
       Error -> "error"
 
--- | An object of exactly the fields the record gives a codec for. A field of
--- | no codec is refused as `AtKey` the field and `UnexpectedValue` alone,
--- | which no other codec of the file reports unnamed.
-exactly
-  :: forall ri ro rl
-   . RL.RowToList ri rl
-  => CAR.RowListCodec rl ri ro
-  => Keys rl
-  => String
-  -> Record ri
-  -> JsonCodec (Record ro)
-exactly name codecs = Codec.codec' decoded (Codec.encode object)
-  where
-  object = CAR.object name codecs
-  taken = Array.fromFoldable (keys codecs)
-  decoded json = do
-    fields <- Codec.decode CA.jobject json
-    case Array.find (\k -> not (Array.elem k taken)) (Array.sort (Object.keys fields)) of
-      Just other -> Left (Named name (AtKey other (UnexpectedValue (fromMaybe json (Object.lookup other fields)))))
-      Nothing -> Codec.decode object json
-
 -- | `stella.json` as written, its paths not yet resolved.
 decode :: String -> Either (NonEmptyArray ConfigError) Config
 decode text = case jsonParser text of
@@ -194,16 +163,6 @@ decode text = case jsonParser text of
 -- | The file as `codec` writes it, indented.
 encode :: Config -> String
 encode config = stringifyWithIndent 2 (Codec.encode codec config)
-
--- | A segment of a module's name: an upper case letter, then letters, digits,
--- | `_`, and `'`.
-isProperName :: String -> Boolean
-isProperName segment = case SCU.uncons segment of
-  Just { head, tail } -> isUpper head && Array.all isNameChar (SCU.toCharArray tail)
-  Nothing -> false
-  where
-  isUpper c = c >= 'A' && c <= 'Z'
-  isNameChar c = c >= 'a' && c <= 'z' || isUpper c || c >= '0' && c <= '9' || c == '_' || c == '\''
 
 -- | The file at the path given, decoded, its paths resolved, and checked
 -- | against the rules of the file.
